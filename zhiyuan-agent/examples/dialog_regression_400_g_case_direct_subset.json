@@ -310,15 +310,11 @@
             "民办"
           ],
           "assertNoFollowups": true,
-          "expectedToolNames": [
-            "query_plan"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "query_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
-          ]
+          "expectedRoutingPath": "needs_plan_first_guard",
+          "expectedToolCounts": {
+            "query_plan": 0
+          },
+          "maxToolCallCount": 0
         }
       ]
     }

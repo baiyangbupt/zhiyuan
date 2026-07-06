@@ -331,6 +331,7 @@ def test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_fol
     assert "不要只传 action" in text
     assert "review_issue_code=\"high_tuition\"" in text
     assert "那高收费的别要了" in text
+    assert "那如果我不接受稿费呢高高学费" in text
     assert "raw_user_text" in text
 
 
@@ -1111,6 +1112,40 @@ async def test_review_plan_force_refresh_primes_review_cache(mocker):
     run_mock.assert_awaited_once_with(1, ctx.sessionid)
 
 
+async def test_review_plan_no_issue_message_keeps_existing_plan_fact(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.run_planning_review",
+        AsyncMock(return_value={"code": 0, "data": {}}),
+    )
+    ctx = _poc_context(with_plan=True)
+    ctx.sandbox.prime(
+        "plan/review.json",
+        {
+            "available": True,
+            "version": 12,
+            "summary": {"riskCount": 0, "warnCount": 0, "passedCount": 8},
+            "risk_count": 0,
+            "warn_count": 0,
+            "checks": [],
+        },
+        version=12,
+    )
+
+    result = _load(
+        await review_plan(
+            make_run_context(request_context=ctx),
+            focus="tuition",
+            force_refresh=False,
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["has_plan"] is True
+    assert result["data"]["ordered_total"] == 45
+    assert "当前正式方案有45个志愿" in result["message"]
+    assert "还没有生成具体志愿" not in result["message"]
+
+
 async def test_review_plan_can_include_fix_proposals(mocker):
     mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.run_planning_review",
@@ -1368,6 +1403,78 @@ async def test_preview_intent_accepts_major_field_aliases(mocker):
     assert saved_state["executionPayload"]["merged"]["major_intents"] == {
         "level3": ["生物医学工程", "智能医学工程"],
         "negative_level3": ["临床医学", "口腔医学"],
+    }
+
+
+async def test_preview_intent_refines_broad_major_display_from_latest_user_text(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.simulate_plan_diff",
+        AsyncMock(return_value={"code": 500}),
+    )
+    ctx = _poc_context()
+    ctx.chat_history = [{"role": "user", "content": "会计学和审计学要，土木工程不要"}]
+
+    result = _load(
+        await preview_intent_change(
+            make_run_context(request_context=ctx),
+            intent_type="major",
+            positive={"level2": ["工商管理类"], "major": ["会计学", "审计学"]},
+            negative={"level2": ["土木类"]},
+            constraint_type="must_have",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["normalized"]["positive"]["level2"] == []
+    assert result["data"]["normalized"]["positive"]["level3"] == ["会计学", "审计学"]
+    assert result["data"]["normalized"]["negative"]["level2"] == []
+    assert result["data"]["normalized"]["negative"]["level3"] == ["土木工程"]
+    assert "工商管理类" not in result["message"]
+    assert "土木类" not in result["message"]
+    assert "要：会计学、审计学" in result["message"]
+    assert "不要：土木工程" in result["message"]
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["summary"] == "专业要求：要：会计学、审计学；不要：土木工程"
+    assert saved_state["executionPayload"]["merged"]["major_intents"] == {
+        "level3": ["会计学", "审计学"],
+        "negative_level3": ["土木工程"],
+    }
+
+
+async def test_preview_intent_keeps_broad_major_scope_when_user_says_related(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.simulate_plan_diff",
+        AsyncMock(return_value={"code": 500}),
+    )
+    ctx = _poc_context()
+    ctx.chat_history = [{"role": "user", "content": "不要英语相关专业，当前方案里有的话也删掉"}]
+
+    result = _load(
+        await preview_intent_change(
+            make_run_context(request_context=ctx),
+            intent_type="major",
+            negative={"level2": ["外国语言文学类"]},
+            constraint_type="exclude",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["normalized"]["negative"]["level2"] == ["外国语言文学类"]
+    assert result["data"]["normalized"]["negative"]["level3"] == []
+    assert "不要：外国语言文学类" in result["message"]
+    assert "不要：英语" not in result["message"]
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["summary"] == "专业要求：不要：外国语言文学类"
+    assert saved_state["executionPayload"]["merged"]["major_intents"] == {
+        "negative_level2": ["外国语言文学类"]
     }
 
 
@@ -2237,6 +2344,56 @@ async def test_preview_plan_action_replace_review_issue_requires_candidate_when_
     assert "候选志愿" in result["message"]
 
 
+async def test_preview_plan_action_replace_review_issue_rejects_unsafe_auto_candidates(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_review()
+    ctx.sandbox.prime(
+        "plan/candidates.json",
+        {
+            "available": True,
+            "items": [
+                {
+                    "volunteerId": "unit-nanfang_999",
+                    "schoolName": "广州南方学院",
+                    "majorName": "软件工程",
+                    "tier": "稳",
+                    "provinceName": "广东",
+                    "schoolNature": "民办",
+                    "tuitionPerYear": 12000,
+                    "admissionRatio": 90,
+                },
+                {
+                    "volunteerId": "cand-high-001",
+                    "schoolName": "广东以色列理工学院",
+                    "majorName": "材料科学与工程",
+                    "tier": "稳",
+                    "provinceName": "广东",
+                    "programType": "中外合作",
+                    "tuitionPerYear": 95000,
+                    "admissionRatio": 88,
+                },
+            ],
+        },
+        version=12,
+    )
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="replace",
+            review_issue_code="high_tuition",
+            raw_user_text="替换审查里的高收费项",
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "candidate_no_match"
+    save_mock.assert_not_awaited()
+
+
 async def test_preview_plan_action_replace_review_issue_auto_selects_candidate(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
@@ -2291,6 +2448,233 @@ async def test_preview_plan_action_replace_review_issue_auto_selects_candidate(m
     atomic = saved_state["executionPayload"]["atomic_actions"][0]
     assert atomic["unit_ids"] == ["unit-nanfang"]
     assert atomic["volunteer_ids"] == ["cand-szu-001"]
+    assert "planPayload" not in saved_state["executionPayload"]
+
+
+async def test_preview_plan_action_replace_filters_auto_selects_low_tuition_candidates(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_review()
+    ctx.sandbox.prime(
+        "plan/candidates.json",
+        {
+            "available": True,
+            "items": [
+                {
+                    "volunteerId": "cand-szu-001",
+                    "schoolName": "深圳大学",
+                    "majorName": "软件工程",
+                    "tier": "稳",
+                    "provinceName": "广东",
+                    "schoolNature": "公办",
+                    "tuitionPerYear": 6850,
+                    "admissionRatio": 76,
+                },
+                {
+                    "volunteerId": "cand-guangwai-001",
+                    "schoolName": "广东外语外贸大学",
+                    "majorName": "数字经济",
+                    "tier": "保",
+                    "provinceName": "广东",
+                    "schoolNature": "公办",
+                    "tuitionPerYear": 6060,
+                    "admissionRatio": 82,
+                },
+                {
+                    "volunteerId": "cand-coop-001",
+                    "schoolName": "广东以色列理工学院",
+                    "majorName": "材料科学与工程",
+                    "tier": "稳",
+                    "provinceName": "广东",
+                    "programType": "中外合作",
+                    "tuitionPerYear": 95000,
+                    "admissionRatio": 88,
+                },
+            ],
+        },
+        version=12,
+    )
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="replace",
+            filters={"tuition_min": 20000},
+            raw_user_text="方案里学费贵的太多了 能不能帮我换成便宜的",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["action_family"] == "replace_units"
+    assert result["data"]["execution_payload"]["unit_ids"] == ["unit-nanfang", "unit-coop"]
+    assert result["data"]["execution_payload"]["volunteer_ids"] == ["cand-szu-001", "cand-guangwai-001"]
+    assert result["data"]["execution_payload"]["filters"]["tuition_min"] == 20000
+    assert result["data"]["execution_payload"]["filters"]["auto_selected_candidates"] is True
+    assert result["data"]["execution_payload"]["filters"]["auto_select_reason"] == "high_tuition"
+    saved_state = save_mock.await_args.args[1]
+    atomic = saved_state["executionPayload"]["atomic_actions"][0]
+    assert atomic["unit_ids"] == ["unit-nanfang", "unit-coop"]
+    assert atomic["volunteer_ids"] == ["cand-szu-001", "cand-guangwai-001"]
+    assert atomic["filters"]["tuition_min"] == 20000
+    assert "planPayload" not in saved_state["executionPayload"]
+
+
+async def test_preview_plan_action_replace_targeted_high_tuition_item_auto_selects_candidate(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_review()
+    ctx.sandbox.prime(
+        "plan/candidates.json",
+        {
+            "available": True,
+            "items": [
+                {
+                    "volunteerId": "cand-szu-001",
+                    "schoolName": "深圳大学",
+                    "majorName": "软件工程",
+                    "tier": "稳",
+                    "provinceName": "广东",
+                    "schoolNature": "公办",
+                    "tuitionPerYear": 6850,
+                    "admissionRatio": 76,
+                }
+            ],
+        },
+        version=12,
+    )
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="replace",
+            targets=["广州南方学院"],
+            raw_user_text="把高收费的换成正常收费的看看",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["action_family"] == "replace_units"
+    assert result["data"]["execution_payload"]["unit_ids"] == ["unit-nanfang"]
+    assert result["data"]["execution_payload"]["volunteer_ids"] == ["cand-szu-001"]
+    assert result["data"]["execution_payload"]["filters"]["auto_select_reason"] == "high_tuition"
+    saved_state = save_mock.await_args.args[1]
+    atomic = saved_state["executionPayload"]["atomic_actions"][0]
+    assert atomic["unit_ids"] == ["unit-nanfang"]
+    assert atomic["volunteer_ids"] == ["cand-szu-001"]
+
+
+async def test_preview_plan_action_replace_review_issue_intersects_filters(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_review()
+    review = ctx.sandbox.peek("plan/review.json")
+    review["checks"][0]["affectedUnitIds"] = ["unit-nanfang", "unit-coop"]
+    ctx.sandbox.prime(
+        "plan/candidates.json",
+        {
+            "available": True,
+            "items": [
+                {
+                    "volunteerId": "cand-szu-001",
+                    "schoolName": "深圳大学",
+                    "majorName": "软件工程",
+                    "tier": "稳",
+                    "provinceName": "广东",
+                    "schoolNature": "公办",
+                    "tuitionPerYear": 6850,
+                    "admissionRatio": 76,
+                }
+            ],
+        },
+        version=12,
+    )
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="replace",
+            filters={"school_nature": ["民办"]},
+            review_issue_code="high_tuition",
+            raw_user_text="审查里民办又贵的换掉",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["review_issue_target"]["code"] == "high_tuition"
+    assert result["data"]["execution_payload"]["unit_ids"] == ["unit-nanfang"]
+    assert result["data"]["execution_payload"]["volunteer_ids"] == ["cand-szu-001"]
+    assert result["data"]["execution_payload"]["filters"]["school_nature"] == ["民办"]
+    assert result["data"]["execution_payload"]["filters"]["auto_select_reason"] == "high_tuition"
+    saved_state = save_mock.await_args.args[1]
+    atomic = saved_state["executionPayload"]["atomic_actions"][0]
+    assert atomic["unit_ids"] == ["unit-nanfang"]
+    assert atomic["filters"]["school_nature"] == ["民办"]
+    assert "planPayload" not in saved_state["executionPayload"]
+
+
+async def test_preview_plan_action_replace_review_issue_falls_back_to_issue_filter(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_review()
+    review = ctx.sandbox.peek("plan/review.json")
+    review["checks"][0]["affectedUnitIds"] = ["stale-unit-id"]
+    ctx.sandbox.prime(
+        "plan/candidates.json",
+        {
+            "available": True,
+            "items": [
+                {
+                    "volunteerId": "cand-szu-001",
+                    "schoolName": "深圳大学",
+                    "majorName": "软件工程",
+                    "tier": "稳",
+                    "provinceName": "广东",
+                    "schoolNature": "公办",
+                    "tuitionPerYear": 6850,
+                    "admissionRatio": 76,
+                },
+                {
+                    "volunteerId": "cand-guangwai-001",
+                    "schoolName": "广东外语外贸大学",
+                    "majorName": "数字经济",
+                    "tier": "保",
+                    "provinceName": "广东",
+                    "schoolNature": "公办",
+                    "tuitionPerYear": 6060,
+                    "admissionRatio": 82,
+                },
+            ],
+        },
+        version=12,
+    )
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="replace",
+            review_issue_code="high_tuition",
+            raw_user_text="方案里学费贵的太多了 能不能帮我换成便宜的",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["action_family"] == "replace_units"
+    assert result["data"]["execution_payload"]["unit_ids"] == ["unit-nanfang", "unit-coop"]
+    assert result["data"]["execution_payload"]["volunteer_ids"] == ["cand-szu-001", "cand-guangwai-001"]
+    assert result["data"]["execution_payload"]["filters"]["program_type"] == ["高收费"]
+    assert result["data"]["execution_payload"]["filters"]["auto_select_reason"] == "high_tuition"
+    saved_state = save_mock.await_args.args[1]
+    atomic = saved_state["executionPayload"]["atomic_actions"][0]
+    assert atomic["unit_ids"] == ["unit-nanfang", "unit-coop"]
+    assert atomic["filters"]["program_type"] == ["高收费"]
     assert "planPayload" not in saved_state["executionPayload"]
 
 
@@ -2505,6 +2889,33 @@ async def test_preview_plan_action_move_falls_back_selector_from_raw_text(mocker
     save_mock.assert_awaited_once()
 
 
+async def test_preview_plan_action_move_recovers_missing_action_from_latest_user_text(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _poc_context()
+    ctx.chat_history = [{"role": "user", "content": "帮我把保底区里录取率最高的那个调到保底的第一位"}]
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["action_family"] == "move_ordered_unit"
+    assert result["data"]["execution_payload"]["unit_ids"] == ["unit-guanggong"]
+    assert result["data"]["execution_payload"]["target_position"] == 31
+    assert result["data"]["execution_payload"]["filters"]["tier"] == ["保"]
+    assert result["data"]["execution_payload"]["filters"]["selector_sort"] == "admission_probability"
+    assert result["data"]["execution_payload"]["filters"]["selector_rank"] == "max"
+    atomic = save_mock.await_args.args[1]["executionPayload"]["atomic_actions"][0]
+    assert atomic["action_type"] == "move_ordered_unit"
+    assert atomic["target_position"] == 31
+
+
 async def test_preview_plan_action_move_clarifies_ambiguous_tier_without_selector(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
@@ -2680,6 +3091,42 @@ async def test_query_plan_can_show_tail_slice_with_admission_probability():
     assert result["data"]["query_controls"]["slice"] == "tail"
     assert "保底末尾1条" in result["message"]
     assert "录取率82%" in result["message"]
+
+
+async def test_query_plan_defaults_to_compact_limit():
+    result = _load(
+        await query_plan(
+            make_run_context(request_context=_poc_context()),
+            scope="plan",
+            filters={},
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["limit"] == 5
+    assert result["data"]["returned_total"] <= 5
+    assert "展示前" in result["message"]
+
+
+async def test_query_plan_school_question_summarizes_schools_not_major_rows():
+    ctx = _poc_context()
+    ctx.chat_history = [{"role": "user", "content": "再给我看下保底学校"}]
+
+    result = _load(
+        await query_plan(
+            make_run_context(request_context=ctx),
+            scope="plan",
+            filters={"tier": "保"},
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["limit"] == 5
+    assert result["data"]["school_total"] == 2
+    assert [item["school"] for item in result["data"]["school_summary"]] == ["暨南大学", "广东工业大学"]
+    assert "涉及2所院校" in result["message"]
+    assert "展示前2所院校" in result["message"]
+    assert "网络与新媒体" not in result["message"]
 
 
 async def test_query_plan_candidates_uses_candidate_file_query():
@@ -3214,6 +3661,27 @@ def test_zhiyuan_agent_direct_tool_output_uses_next_step():
     ]
     assert agent.should_return_directly_from_tool(["query_plan"], readonly_returns, None) is False
 
+    confirm_returns = [
+        _tool_return(
+            {
+                "next_step": "respond",
+                "data": {
+                    "action": "confirm",
+                    "kind": "intent_change",
+                    "action_family": "apply_selected_intents",
+                    "applied": True,
+                },
+                "message": "已采纳你的报考要求。",
+            },
+            tool_name="confirm_pending",
+        )
+    ]
+    assert agent.should_return_directly_from_tool(["confirm_pending"], confirm_returns, None) is True
+    assert (
+        agent.render_direct_tool_output(["confirm_pending"], confirm_returns, None)
+        == "已采纳你的报考要求。"
+    )
+
 
 def test_zhiyuan_agent_direct_tool_output_combines_readonly_before_preview():
     agent = ZhiyuanAgent(SimpleNamespace(model=TestModel(), model_settings={}))
@@ -3266,6 +3734,16 @@ def test_zhiyuan_agent_retries_incomplete_plan_action_before_user_clarify():
             tool_name="preview_plan_action",
         )
     ]
+    candidate_no_match = [
+        _tool_return(
+            {
+                "next_step": "clarify",
+                "data": {"reason": "candidate_no_match", "action": "replace"},
+                "message": "替换需要同时唯一定位要移出的当前方案项和要加入的候选志愿。",
+            },
+            tool_name="preview_plan_action",
+        )
+    ]
     active_conflict = [
         _tool_return(
             {
@@ -3279,6 +3757,7 @@ def test_zhiyuan_agent_retries_incomplete_plan_action_before_user_clarify():
 
     assert agent.should_return_directly_from_tool(["preview_plan_action"], incomplete_plan_action, None) is False
     assert agent.should_return_directly_from_tool(["preview_plan_action"], review_issue_not_in_plan, None) is False
+    assert agent.should_return_directly_from_tool(["preview_plan_action"], candidate_no_match, None) is False
     assert agent.should_return_directly_from_tool(["preview_plan_action"], active_conflict, None) is True
 
 
@@ -3310,6 +3789,7 @@ async def test_preview_intent_change_blocks_new_pending_when_turn_started_with_p
             intent_type="major",
             positive={"level2": ["计算机类"]},
             constraint_type="must_have",
+            raw_user_text="计算机和自动化方向考生不考虑",
         )
     )
 
@@ -3317,6 +3797,7 @@ async def test_preview_intent_change_blocks_new_pending_when_turn_started_with_p
     assert result["next_step"] == "clarify"
     assert result["data"]["pending_created"] is False
     assert "不会再生成第二张待确认卡" in result["message"]
+    assert "计算机和自动化方向考生不考虑" in result["message"]
     save_mock.assert_not_awaited()
 
 
@@ -3340,6 +3821,7 @@ async def test_preview_plan_action_blocks_new_pending_when_turn_started_with_pen
     assert result["next_step"] == "clarify"
     assert result["data"]["pending_created"] is False
     assert "不会再生成第二张待确认卡" in result["message"]
+    assert "那把民办的删掉" in result["message"]
     save_mock.assert_not_awaited()
 
 

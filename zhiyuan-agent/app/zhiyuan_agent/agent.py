@@ -99,11 +99,19 @@ class ZhiyuanAgent(BaseAgent[str]):
             payload = self._parse_tool_payload(tool_return)
             if not isinstance(payload, dict):
                 continue
-            if str(payload.get("next_step") or "").strip() in _TERMINAL_NEXT_STEPS:
+            if self._is_terminal_tool_payload(tool_return, payload):
                 if self._should_retry_incomplete_plan_action(tool_return, payload):
                     continue
                 return True
         return False
+
+    @staticmethod
+    def _is_terminal_tool_payload(tool_return: ToolReturnPart, payload: dict[str, Any]) -> bool:
+        next_step = str(payload.get("next_step") or "").strip()
+        if next_step in _TERMINAL_NEXT_STEPS:
+            return True
+        tool_name = str(getattr(tool_return, "tool_name", "") or "").strip()
+        return tool_name == "confirm_pending" and next_step == "respond"
 
     def _should_retry_incomplete_plan_action(self, tool_return: ToolReturnPart, payload: dict[str, Any]) -> bool:
         if str(getattr(tool_return, "tool_name", "") or "").strip() != "preview_plan_action":
@@ -119,6 +127,10 @@ class ZhiyuanAgent(BaseAgent[str]):
             "missing_filters",
             "review_issue_not_found",
             "review_issue_units_not_in_plan",
+            "candidate_items_unavailable",
+            "candidate_no_match",
+            "candidate_insufficient",
+            "missing_old_items",
         }
 
     def render_direct_tool_output(
@@ -131,8 +143,7 @@ class ZhiyuanAgent(BaseAgent[str]):
             payload = self._parse_tool_payload(tool_return)
             if not isinstance(payload, dict):
                 continue
-            next_step = str(payload.get("next_step") or "").strip()
-            if next_step not in _TERMINAL_NEXT_STEPS:
+            if not self._is_terminal_tool_payload(tool_return, payload):
                 continue
             rendered = self._render_tool_payload(payload)
             if rendered:

@@ -92,7 +92,7 @@ class PendingConfirmation(BaseModel):
 
     # 确认后执行所需的完整 payload
     # Intent: intent cache data
-    # Plan: PlanActionPlan dict（stage 替换为 apply）
+    # Plan: 4.0 结构化 pending payload
     execution_payload: dict[str, Any] = Field(default_factory=dict)
 
     # 影响范围描述（如 "涉及3个高收费志愿"）

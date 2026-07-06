@@ -61,8 +61,8 @@ def build_planning_context(deps: RequestContext) -> str:
     header = "当前会话已存在统一规划状态，用户的方案概况如下：\n"
     footer = (
         "\n请基于以上方案现状回答用户。"
-        "如果用户问方案情况，应直接走 plan_next_action(action_family=\"query_state\") -> execute_plan_action，"
-        "不要先单独调用 collect_plan_context_inputs；plan_next_action 内部会读取必要上下文。"
+        "如果用户只是问当前方案总体情况，优先使用这里注入的方案概况回答；"
+        "如果需要列出某个具体学校、专业、地域或候选范围的命中项，可使用局部查询工具。"
         "\n3.0.1 用户侧不再使用“草稿”概念；即使底层字段叫 draft，也要表达为“方案/已加入方案”。"
         "\n当前 planning 状态的优先级高于历史对话。如果当前方案志愿数为0，即使历史里提到过候选，也不能当成当前方案。"
     )

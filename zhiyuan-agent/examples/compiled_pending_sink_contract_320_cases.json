@@ -36,7 +36,7 @@
           "id": "cp-plan-1",
           "type": "plan_confirmation_candidate",
           "actionFamily": "remove_units",
-          "planPayload": {
+          "plan_payload": {
             "stage": "apply",
             "action_family": "remove_units",
             "requires_confirmation": false,

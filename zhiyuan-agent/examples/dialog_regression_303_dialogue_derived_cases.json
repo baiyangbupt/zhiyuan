@@ -1189,7 +1189,7 @@
       "name": "303-dialogue-operation-school-abbrev-query",
       "sessionId": "17",
       "flow": ["plan"],
-      "coverage": ["plan_operations", "school_abbreviation", "plan_query_fast_route"],
+      "coverage": ["plan_operations", "school_abbreviation", "zhiyuan_agent_direct"],
       "prompts": [
         {
           "prompt": "青城那个是不是放多了，能查下",

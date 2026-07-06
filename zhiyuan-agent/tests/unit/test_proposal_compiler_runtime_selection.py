@@ -3,23 +3,6 @@ import json
 from app.domain import proposal_compiler
 
 
-class _Decision:
-    def __init__(
-        self,
-        *,
-        action_family: str = "preview_fix_proposal",
-        confidence: float = 0.9,
-        target_strategies=None,
-        target_issue_codes=None,
-        reply_focus=None,
-    ):
-        self.actionFamily = action_family
-        self.confidence = confidence
-        self.targetStrategies = target_strategies or []
-        self.targetIssueCodes = target_issue_codes or []
-        self.replyFocus = reply_focus or []
-
-
 class _TurnDecision:
     def __init__(
         self,
@@ -195,171 +178,6 @@ def test_readonly_school_or_candidate_query_anchor_blocks_region_intent_fast_pat
     assert proposal_compiler.content_has_readonly_school_or_candidate_query_anchor("以后推荐江西的大学") is False
 
 
-def test_runtime_fix_selection_uses_selected_ready_proposal_id():
-    result = proposal_compiler.select_fix_proposal_candidate_for_runtime(
-        _latest_result(
-            _proposal("fp-count", strategy="fill_missing_count"),
-            _proposal("fp-gap", strategy="fill_probability_gap"),
-            selected_proposal_id="fp-gap",
-        )
-    )
-
-    assert result.proposal is not None
-    assert proposal_compiler.proposal_id(result.proposal) == "fp-gap"
-    assert result.selected_proposal_id == "fp-gap"
-    assert result.blocking_reasons == []
-
-
-def test_runtime_fix_selection_blocks_missing_selected_proposal_id_without_fallback():
-    result = proposal_compiler.select_fix_proposal_candidate_for_runtime(
-        _latest_result(
-            _proposal("fp-count", strategy="fill_missing_count"),
-            selected_proposal_id="fp-stale",
-        )
-    )
-
-    assert result.proposal is None
-    assert result.selected_proposal_id == "fp-stale"
-    assert result.target_match_empty is False
-    assert result.blocking_reasons == ["selected_fix_proposal_not_ready_or_missing"]
-
-
-def test_runtime_fix_selection_marks_explicit_empty_target_scope():
-    result = proposal_compiler.select_fix_proposal_candidate_for_runtime(
-        _latest_result(_proposal("fp-count", strategy="fill_missing_count")),
-        target_scope_explicit=True,
-    )
-
-    assert result.proposal is None
-    assert result.target_match_empty is True
-    assert result.blocking_reasons == ["explicit_target_scope_without_supported_target"]
-
-
-def test_runtime_fix_selection_marks_target_scope_without_ready_match():
-    result = proposal_compiler.select_fix_proposal_candidate_for_runtime(
-        _latest_result(_proposal("fp-count", strategy="fill_missing_count")),
-        target_strategies=["fill_probability_gap"],
-        target_scope_explicit=True,
-    )
-
-    assert result.proposal is None
-    assert result.target_strategies == ["fill_probability_gap"]
-    assert result.target_match_empty is True
-    assert result.blocking_reasons == ["no_ready_fix_proposal_for_target_scope"]
-
-
-def test_runtime_fix_selection_blocks_ambiguous_target_scope():
-    result = proposal_compiler.select_fix_proposal_candidate_for_runtime(
-        _latest_result(
-            _proposal("fp-count-a", strategy="fill_missing_count", issue_codes=["count_shortage"]),
-            _proposal("fp-count-b", strategy="fill_missing_count", issue_codes=["count_shortage"]),
-        ),
-        target_strategies=["fill_missing_count"],
-        target_issue_codes=["count_shortage"],
-        target_scope_explicit=True,
-    )
-
-    assert result.proposal is None
-    assert result.target_match_empty is False
-    assert result.blocking_reasons == ["ambiguous_ready_fix_proposal_for_target_scope"]
-
-
-def test_runtime_fix_selection_uses_unique_ready_proposal_without_target_scope():
-    result = proposal_compiler.select_fix_proposal_candidate_for_runtime(
-        _latest_result(
-            _proposal("fp-count", strategy="fill_missing_count"),
-            _proposal("fp-gap", strategy="fill_probability_gap", status="preview_only"),
-        )
-    )
-
-    assert result.proposal is not None
-    assert proposal_compiler.proposal_id(result.proposal) == "fp-count"
-    assert result.selected_proposal_id == "fp-count"
-    assert result.blocking_reasons == []
-
-
-def test_runtime_fix_confirmation_source_requires_preview_fix_result():
-    result = _latest_result(_proposal("fp-count", strategy="fill_missing_count"))
-    result["action_family"] = "review_plan"
-    result["result_kind"] = "review_result"
-
-    source = proposal_compiler.runtime_fix_proposal_confirmation_source_from_result(result)
-
-    assert source is None
-
-
-def test_runtime_fix_confirmation_source_drops_untargeted_result_without_ready_match():
-    result = _latest_result(_proposal("fp-count", strategy="fill_missing_count", status="preview_only"))
-    result["action_family"] = "preview_fix_proposal"
-    result["result_kind"] = "fix_proposal_preview"
-
-    source = proposal_compiler.runtime_fix_proposal_confirmation_source_from_result(result)
-
-    assert source is None
-
-
-def test_runtime_fix_confirmation_source_preserves_empty_target_match_boundary():
-    result = _latest_result(_proposal("fp-count", strategy="fill_missing_count"))
-    result["action_family"] = "preview_fix_proposal"
-    result["result_kind"] = "fix_proposal_preview"
-
-    source = proposal_compiler.runtime_fix_proposal_confirmation_source_from_result(
-        result,
-        plan_payload={"target_strategies": ["fill_probability_gap"]},
-    )
-
-    assert source is not None
-    assert source["target_strategies"] == ["fill_probability_gap"]
-    assert source["target_match_empty"] is True
-
-
-def test_runtime_fix_confirmation_source_uses_plan_payload_target_scope():
-    result = _latest_result(_proposal("fp-count", strategy="fill_missing_count", issue_codes=["count_shortage"]))
-    result["action_family"] = "preview_fix_proposal"
-    result["result_kind"] = "fix_proposal_preview"
-
-    source = proposal_compiler.runtime_fix_proposal_confirmation_source_from_result(
-        result,
-        plan_payload={
-            "targetStrategies": ["fill_missing_count"],
-            "targetIssueCodes": ["count_shortage"],
-        },
-    )
-
-    assert source is not None
-    assert source["target_strategies"] == ["fill_missing_count"]
-    assert source["target_issue_codes"] == ["count_shortage"]
-    assert source["target_match_empty"] is False
-
-
-def test_compile_runtime_review_fix_source_builds_compiled_proposal():
-    result = _latest_result(
-        {
-            **_proposal("fp-count", strategy="fill_missing_count", issue_codes=["count_shortage"]),
-            "actions": [{"type": "add", "detail": "补足数量"}],
-            "dryRunObservation": {"status": "ready"},
-            "summary": "补足志愿数量",
-        }
-    )
-
-    compiled_source = proposal_compiler.compile_runtime_review_fix_source(
-        session_id="s1",
-        latest_plan_result=result,
-        target_strategies=["fill_missing_count"],
-        target_issue_codes=["count_shortage"],
-    )
-
-    assert compiled_source.proposal is not None
-    assert compiled_source.source_version_guard == 3
-    assert compiled_source.proposal_source == "review_check"
-    assert compiled_source.blocking_reasons == []
-    assert compiled_source.compiled is not None
-    assert compiled_source.compiled["pendingType"] == "plan_mutation"
-    assert compiled_source.compiled["workspaceRefreshTargets"] == ["review"]
-    assert compiled_source.compiled["proposalCandidates"][0]["proposalId"] == "fp-count"
-    assert compiled_source.compiled["proposalCandidates"][0]["sourceVersionGuard"] == 3
-
-
 def test_compile_user_goal_fix_proposal_refreshes_ordered_context():
     compiled = proposal_compiler.compile_user_goal_fix_proposal(
         session_id="s1",
@@ -377,36 +195,6 @@ def test_compile_user_goal_fix_proposal_refreshes_ordered_context():
     assert compiled["pendingType"] == "plan_mutation"
     assert compiled["executionPayload"]["targetView"] == "ordered"
     assert compiled["workspaceRefreshTargets"] == ["ordered"]
-
-
-def test_compile_runtime_review_fix_source_blocks_missing_version_guard():
-    result = _latest_result(_proposal("fp-count", strategy="fill_missing_count"))
-    result["facts"]["fix_proposals"].pop("source_version_guard")
-
-    compiled_source = proposal_compiler.compile_runtime_review_fix_source(
-        session_id="s1",
-        latest_plan_result=result,
-    )
-
-    assert compiled_source.proposal is not None
-    assert compiled_source.compiled is None
-    assert compiled_source.blocking_reasons == ["missing_source_version_guard"]
-
-
-def test_compile_runtime_review_fix_source_preserves_selection_blocking_reason():
-    result = _latest_result(
-        _proposal("fp-count", strategy="fill_missing_count"),
-        _proposal("fp-gap", strategy="fill_probability_gap"),
-    )
-
-    compiled_source = proposal_compiler.compile_runtime_review_fix_source(
-        session_id="s1",
-        latest_plan_result=result,
-    )
-
-    assert compiled_source.proposal is None
-    assert compiled_source.compiled is None
-    assert compiled_source.blocking_reasons == ["missing_unique_ready_fix_proposal"]
 
 
 def test_select_user_goal_fix_proposal_uses_goal_type_ready_match():
@@ -463,82 +251,29 @@ def test_select_user_goal_fix_proposal_blocks_missing_goal_type():
     assert selection.blocking_reasons == ["missing_user_goal_type"]
 
 
-def test_compile_structured_user_goal_fix_request_source_builds_java_request_and_intent_payload():
-    source = {
-        "composite_proposal": {
-            "source_version": 12,
-            "goal": {
-                "goal_type": "exclude_scope",
-                "user_original_text": "避开经济与金融",
-                "negative_scopes": [
-                    {"entity_type": "major", "values": ["经济与金融"]},
-                ],
-                "confidence": "high",
-            },
-        },
+def test_build_structured_user_goal_fix_proposal_request_builds_java_request():
+    goal = {
+        "goal_type": "exclude_scope",
+        "user_original_text": "避开经济与金融",
+        "negative_scopes": [
+            {"entity_type": "major", "values": ["经济与金融"]},
+        ],
+        "confidence": "high",
     }
 
-    compiled = proposal_compiler.compile_structured_user_goal_fix_request_source(
-        source=source,
-        context_source="plan_next_action_structured_goal",
+    request = proposal_compiler.build_structured_user_goal_fix_proposal_request(
+        goal,
+        12,
+        context={"source": "chat_service_constraint_confirmation"},
+        evidence_source="confirmed_intent",
     )
 
-    assert compiled.matched is True
-    assert compiled.goal_type == "exclude_scope"
-    assert compiled.source_version_guard == 12
-    assert compiled.user_goal_request["goalType"] == "exclude_scope"
-    assert compiled.user_goal_request["sourceVersionGuard"] == 12
-    assert compiled.user_goal_request["context"] == {"source": "plan_next_action_structured_goal"}
-    assert compiled.user_goal_request["negativeScopes"][0]["entityType"] == "major"
-    assert compiled.user_goal_request["negativeScopes"][0]["normalizedName"] == "经济与金融"
-    assert compiled.intent_payload == {
-        "selected": [{"major_intents": {"negative_level3": ["经济与金融"]}}],
-        "intentMode": "constraint",
-        "constraintIntentType": "default",
-    }
-    assert compiled.blocking_reasons == []
-
-
-def test_compile_structured_user_goal_fix_request_source_blocks_without_version_guard():
-    source = {
-        "composite_proposal": {
-            "goal": {
-                "goal_type": "only_keep_scope",
-                "target_scopes": [
-                    {"entity_type": "school", "values": ["厦门大学"]},
-                ],
-            },
-        },
-    }
-
-    compiled = proposal_compiler.compile_structured_user_goal_fix_request_source(
-        source=source,
-        context_source="plan_next_action_structured_goal",
-    )
-
-    assert compiled.matched is False
-    assert compiled.goal_type == "only_keep_scope"
-    assert compiled.user_goal_request == {}
-    assert compiled.blocking_reasons == ["missing_source_version_guard"]
-
-
-def test_compile_structured_goal_intent_input_source_preserves_override_payload():
-    override = {
-        "selected": [{"school_intents": {"colleges": ["厦门大学"]}}],
-        "intentMode": "constraint",
-        "constraintIntentType": "only_keep",
-    }
-
-    compiled = proposal_compiler.compile_structured_goal_intent_input_source(
-        source={"composite_proposal": {"goal": {"goal_type": "exclude_scope"}}},
-        intent_payload_override=override,
-    )
-
-    assert compiled.matched is True
-    assert compiled.intent_payload is override
-    assert compiled.selected_values == [{"school_intents": {"colleges": ["厦门大学"]}}]
-    assert compiled.intent_mode == "constraint"
-    assert compiled.raw_constraint_intent_type == "only_keep"
+    assert request["goalType"] == "exclude_scope"
+    assert request["sourceVersionGuard"] == 12
+    assert request["context"] == {"source": "chat_service_constraint_confirmation"}
+    assert request["negativeScopes"][0]["entityType"] == "major"
+    assert request["negativeScopes"][0]["normalizedName"] == "经济与金融"
+    assert request["negativeScopes"][0]["evidence"]["source"] == "confirmed_intent"
 
 
 def test_resolve_structured_goal_clarification_returns_questions_and_scope_values():
@@ -687,174 +422,6 @@ def test_intent_payload_scope_helpers_detect_positive_and_negative_values():
     ) is True
 
 
-def test_runtime_fix_selection_blocks_multiple_ready_proposals_without_target_scope():
-    result = proposal_compiler.select_fix_proposal_candidate_for_runtime(
-        _latest_result(
-            _proposal("fp-count", strategy="fill_missing_count"),
-            _proposal("fp-gap", strategy="fill_probability_gap"),
-        )
-    )
-
-    assert result.proposal is None
-    assert result.blocking_reasons == ["missing_unique_ready_fix_proposal"]
-
-
-def test_explicit_target_scope_from_result_normalizes_string_and_list_values():
-    scope = proposal_compiler.explicit_fix_proposal_target_scope_from_result(
-        {
-            "targetStrategies": "fill_missing_count",
-            "targetIssueCodes": ["count_shortage", "count_shortage", ""],
-        }
-    )
-
-    assert scope.explicit is True
-    assert scope.target_strategies == ["fill_missing_count"]
-    assert scope.target_issue_codes == ["count_shortage"]
-
-
-def test_semantic_decision_target_scope_respects_action_family_and_confidence():
-    allowed = {"preview_fix_proposal"}
-
-    low_confidence = proposal_compiler.semantic_decision_fix_proposal_target_scope(
-        _Decision(confidence=0.4, target_strategies=["fill_missing_count"]),
-        allowed_action_families=allowed,
-        confidence_threshold=0.8,
-    )
-    wrong_action = proposal_compiler.semantic_decision_fix_proposal_target_scope(
-        _Decision(action_family="query_state", target_strategies=["fill_missing_count"]),
-        allowed_action_families=allowed,
-        confidence_threshold=0.8,
-    )
-    accepted = proposal_compiler.semantic_decision_fix_proposal_target_scope(
-        _Decision(target_strategies="fill_missing_count", target_issue_codes="count_shortage"),
-        allowed_action_families=allowed,
-        confidence_threshold=0.8,
-    )
-
-    assert low_confidence.explicit is False
-    assert wrong_action.explicit is False
-    assert accepted.explicit is True
-    assert accepted.target_strategies == ["fill_missing_count"]
-    assert accepted.target_issue_codes == ["count_shortage"]
-
-
-def test_target_scope_precheck_uses_explicit_result_scope_without_semantic_decision():
-    result = _latest_result(_proposal("fp-count", strategy="fill_missing_count"))
-    result["target_strategies"] = ["fill_missing_count"]
-
-    scope = proposal_compiler.resolve_fix_proposal_target_scope_precheck(result)
-
-    assert scope.source == "explicit_result_scope"
-    assert scope.explicit is True
-    assert scope.needs_semantic_decision is False
-    assert scope.target_strategies == ["fill_missing_count"]
-
-
-def test_target_scope_precheck_skips_semantic_decision_when_selected_id_exists():
-    scope = proposal_compiler.resolve_fix_proposal_target_scope_precheck(
-        _latest_result(
-            _proposal("fp-count", strategy="fill_missing_count"),
-            selected_proposal_id="fp-count",
-        )
-    )
-
-    assert scope.source == "selected_proposal_id"
-    assert scope.explicit is False
-    assert scope.needs_semantic_decision is False
-
-
-def test_target_scope_precheck_skips_semantic_decision_without_ready_proposal():
-    scope = proposal_compiler.resolve_fix_proposal_target_scope_precheck(
-        _latest_result(_proposal("fp-count", strategy="fill_missing_count", status="preview_only"))
-    )
-
-    assert scope.source == "no_ready_fix_proposal"
-    assert scope.needs_semantic_decision is False
-    assert scope.blocking_reasons == ["missing_ready_fix_proposal"]
-
-
-def test_target_scope_precheck_requests_semantic_decision_for_ready_unselected_proposals():
-    scope = proposal_compiler.resolve_fix_proposal_target_scope_precheck(
-        _latest_result(_proposal("fp-count", strategy="fill_missing_count"))
-    )
-
-    assert scope.source == "semantic_decision_required"
-    assert scope.needs_semantic_decision is True
-
-
-def test_target_scope_resolution_from_semantic_decision_normalizes_scope():
-    scope = proposal_compiler.resolve_fix_proposal_target_scope_from_decision(
-        _Decision(target_strategies="fill_missing_count", target_issue_codes=["count_shortage"]),
-        allowed_action_families={"preview_fix_proposal"},
-        confidence_threshold=0.8,
-    )
-
-    assert scope.source == "semantic_decision_scope"
-    assert scope.explicit is True
-    assert scope.target_strategies == ["fill_missing_count"]
-    assert scope.target_issue_codes == ["count_shortage"]
-
-
-def test_target_scope_resolution_from_semantic_decision_marks_no_scope():
-    scope = proposal_compiler.resolve_fix_proposal_target_scope_from_decision(
-        _Decision(action_family="query_state", target_strategies="fill_missing_count"),
-        allowed_action_families={"preview_fix_proposal"},
-        confidence_threshold=0.8,
-    )
-
-    assert scope.source == "semantic_decision_no_scope"
-    assert scope.explicit is False
-    assert scope.target_strategies == []
-    assert scope.target_issue_codes == []
-
-
-def test_semantic_decision_issue_codes_are_filtered_by_available_fix_proposals():
-    context = {
-        "fixProposals": {
-            "proposals": [
-                _proposal("fp-count", strategy="fill_missing_count", issue_codes=["count_shortage"]),
-                _proposal("fp-gap", strategy="fill_probability_gap", issue_codes=["probability_gap"]),
-            ]
-        }
-    }
-
-    result = proposal_compiler.semantic_decision_target_issue_codes_for_context(
-        _Decision(
-            target_strategies=["fill_missing_count"],
-            target_issue_codes=["count_shortage", "not_available"],
-        ),
-        allowed_action_families={"preview_fix_proposal"},
-        confidence_threshold=0.8,
-        target_strategies=["fill_missing_count"],
-        context=context,
-    )
-
-    assert result == ["count_shortage"]
-
-
-def test_semantic_decision_issue_codes_drop_when_strategy_conflicts_with_expected_target():
-    context = {
-        "fixProposals": {
-            "proposals": [
-                _proposal("fp-count", strategy="fill_missing_count", issue_codes=["count_shortage"]),
-            ]
-        }
-    }
-
-    result = proposal_compiler.semantic_decision_target_issue_codes_for_context(
-        _Decision(
-            target_strategies=["fill_probability_gap"],
-            target_issue_codes=["count_shortage"],
-        ),
-        allowed_action_families={"preview_fix_proposal"},
-        confidence_threshold=0.8,
-        target_strategies=["fill_missing_count"],
-        context=context,
-    )
-
-    assert result == []
-
-
 def _review_context(*proposals):
     return {
         "lastActionFamily": "review_plan",
@@ -868,140 +435,17 @@ def _review_context(*proposals):
     }
 
 
-def test_compile_runtime_review_refocus_source_builds_targeted_review_payload():
-    latest_review = {
-        "action_family": "review_plan",
-        "result_kind": "review_result",
-        "facts": {"risk_count": 1},
-    }
-
-    source = proposal_compiler.compile_runtime_review_refocus_source(
-        content="一年学费最多两三万，方案里高收费多吗",
-        latest_review_result=latest_review,
-        recent_plan_context=_review_context(_proposal("fp-fee", strategy="replace_risk_items")),
-        decision=_Decision(
-            action_family="review_plan",
-            target_issue_codes=["high_tuition", "cooperative_program"],
-            target_strategies=["replace_risk_items"],
-            reply_focus=["target_issue_only"],
-        ),
-        planning_version=18,
-    )
-
-    assert source.matched is True
-    assert source.route == "review_target_refocus"
-    assert source.side_effect == "readonly"
-    assert source.target_issue_codes == ["high_tuition", "cooperative_program"]
-    assert source.plan_payload == {
-        "stage": "review",
-        "action_family": "review_plan",
-        "user_goal": "一年学费最多两三万，方案里高收费多吗",
-        "requires_confirmation": False,
-        "target_issue_codes": ["high_tuition", "cooperative_program"],
-        "reply_focus": ["target_issue_only"],
-        "target_strategies": ["replace_risk_items"],
-        "planning_version": 18,
-    }
-    assert source.evidence_plan["trigger"] == "review_target_refocus"
-    assert source.evidence_plan["sourceInputs"] == [
-        "latest_review_result",
-        "plan_semantic_action",
-    ]
-
-
-def test_compile_runtime_review_refocus_source_blocks_already_targeted_review():
-    latest_review = {
-        "action_family": "review_plan",
-        "result_kind": "review_result",
-        "facts": {"target_issue_codes": ["high_tuition"]},
-    }
-
-    source = proposal_compiler.compile_runtime_review_refocus_source(
-        content="再看高收费",
-        latest_review_result=latest_review,
-        recent_plan_context={},
-        decision=_Decision(
-            action_family="review_plan",
-            target_issue_codes=["high_tuition"],
-            reply_focus=["target_issue_only"],
-        ),
-    )
-
-    assert source.matched is False
-    assert source.blocking_reasons == ["review_result_already_targeted"]
-
-
-def test_compile_runtime_review_to_fix_preview_source_builds_preview_payload_with_target_scope():
-    context = _review_context(
-        _proposal("fp-fee", strategy="replace_risk_items", issue_codes=["high_tuition"]),
-    )
-
-    source = proposal_compiler.compile_runtime_review_to_fix_preview_source(
-        content="高收费的先给我看处理预览",
-        current_plan_context=context,
-        decision=_Decision(
-            action_family="preview_fix_proposal",
-            target_strategies=["replace_risk_items"],
-            target_issue_codes=["high_tuition"],
-        ),
-        planning_version=18,
-    )
-
-    assert source.matched is True
-    assert source.route == "post_review_fix_preview"
-    assert source.side_effect == "plan_preview"
-    assert source.target_scope_explicit is True
-    assert source.plan_payload == {
-        "stage": "apply",
-        "action_family": "preview_fix_proposal",
-        "user_goal": "高收费的先给我看处理预览",
-        "requires_confirmation": False,
-        "target_strategies": ["replace_risk_items"],
-        "target_issue_codes": ["high_tuition"],
-        "planning_version": 18,
-    }
-
-
-def test_compile_runtime_review_to_fix_preview_source_blocks_missing_review_proposals():
-    source = proposal_compiler.compile_runtime_review_to_fix_preview_source(
-        content="给我看处理预览",
-        current_plan_context={
-            "lastActionFamily": "review_plan",
-            "lastResultKind": "review_result",
-            "fixProposals": {},
-        },
-        decision=_Decision(action_family="preview_fix_proposal"),
-    )
-
-    assert source.matched is False
-    assert source.blocking_reasons == ["missing_review_fix_proposals"]
-
-
-def test_compile_runtime_review_to_fix_preview_source_blocks_low_confidence_decision():
-    source = proposal_compiler.compile_runtime_review_to_fix_preview_source(
-        content="给我看处理预览",
-        current_plan_context=_review_context(_proposal("fp-fee", strategy="replace_risk_items")),
-        decision=_Decision(action_family="preview_fix_proposal", confidence=0.2),
-    )
-
-    assert source.matched is False
-    assert source.blocking_reasons == ["semantic_decision_not_fix_preview"]
-
-
 def test_resolve_plan_confirmation_candidate_allows_apply_payload_and_version_guard():
     candidate = {
         "action_family": "add_units",
-        "plan_payload": json.dumps(
-            {
-                "stage": "apply",
-                "action_family": "add_units",
-                "requires_confirmation": False,
-                "target_view": "ordered",
-                "planning_version": 12,
-                "atomic_actions": [{"action_type": "add_units", "volunteer_ids": ["v1"]}],
-            },
-            ensure_ascii=False,
-        ),
+        "plan_payload": {
+            "stage": "apply",
+            "action_family": "add_units",
+            "requires_confirmation": False,
+            "target_view": "ordered",
+            "planning_version": 12,
+            "atomic_actions": [{"action_type": "add_units", "volunteer_ids": ["v1"]}],
+        },
     }
 
     resolution = proposal_compiler.resolve_plan_confirmation_candidate(candidate)
@@ -1016,16 +460,13 @@ def test_resolve_plan_confirmation_candidate_allows_apply_payload_and_version_gu
 def test_compile_runtime_plan_confirmation_source_builds_compiled_plan_candidate():
     candidate = {
         "action_family": "remove_units",
-        "plan_payload": json.dumps(
-            {
-                "stage": "apply",
-                "action_family": "remove_units",
-                "requires_confirmation": False,
-                "planning_version": 9,
-                "atomic_actions": [{"action_type": "remove_units", "volunteer_ids": ["v1"]}],
-            },
-            ensure_ascii=False,
-        ),
+        "plan_payload": {
+            "stage": "apply",
+            "action_family": "remove_units",
+            "requires_confirmation": False,
+            "planning_version": 9,
+            "atomic_actions": [{"action_type": "remove_units", "volunteer_ids": ["v1"]}],
+        },
         "intent_update": {"selected": [{"major_intents": {"negative_level3": ["护理学"]}}]},
     }
 
@@ -1050,15 +491,12 @@ def test_compile_runtime_plan_confirmation_source_builds_compiled_plan_candidate
 def test_compile_runtime_plan_confirmation_source_blocks_fix_proposal_in_plain_plan_sink():
     candidate = {
         "action_family": "apply_fix_proposal",
-        "plan_payload": json.dumps(
-            {
-                "stage": "apply",
-                "action_family": "apply_fix_proposal",
-                "requires_confirmation": False,
-                "planning_version": 7,
-            },
-            ensure_ascii=False,
-        ),
+        "plan_payload": {
+            "stage": "apply",
+            "action_family": "apply_fix_proposal",
+            "requires_confirmation": False,
+            "planning_version": 7,
+        },
     }
 
     source = proposal_compiler.compile_runtime_plan_confirmation_source(
@@ -1091,7 +529,8 @@ def test_compile_apply_then_generate_plan_source_builds_generate_plan_candidate(
     assert source.compiled["executionPayload"]["actionFamily"] == "generate_plan"
     assert source.compiled["executionPayload"]["targetView"] == "ordered"
     assert proposal_compiler.plan_sink_contract(source.compiled) == (True, [])
-    payload = json.loads(source.confirmation_candidate["plan_payload"])
+    payload = source.confirmation_candidate["plan_payload"]
+    assert isinstance(payload, dict)
     assert payload["stage"] == "apply"
     assert payload["action_family"] == "generate_plan"
     assert payload["planning_version"] == 19
@@ -1102,16 +541,13 @@ def test_compile_apply_then_generate_plan_source_builds_generate_plan_candidate(
 def test_plan_candidate_resolution_blocks_action_family_mismatch():
     candidate = {
         "action_family": "add_units",
-        "plan_payload": json.dumps(
-            {
-                "stage": "apply",
-                "action_family": "remove_units",
-                "requires_confirmation": False,
-                "planning_version": 7,
-                "atomic_actions": [{"action_type": "remove_units", "volunteer_ids": ["v1"]}],
-            },
-            ensure_ascii=False,
-        ),
+        "plan_payload": {
+            "stage": "apply",
+            "action_family": "remove_units",
+            "requires_confirmation": False,
+            "planning_version": 7,
+            "atomic_actions": [{"action_type": "remove_units", "volunteer_ids": ["v1"]}],
+        },
     }
 
     source = proposal_compiler.compile_runtime_plan_confirmation_source(
@@ -1128,16 +564,13 @@ def test_plan_candidate_resolution_blocks_action_family_mismatch():
 def test_plan_candidate_resolution_blocks_non_apply_stage():
     candidate = {
         "action_family": "add_units",
-        "plan_payload": json.dumps(
-            {
-                "stage": "preview",
-                "action_family": "add_units",
-                "requires_confirmation": True,
-                "planning_version": 7,
-                "atomic_actions": [{"action_type": "add_units", "volunteer_ids": ["v1"]}],
-            },
-            ensure_ascii=False,
-        ),
+        "plan_payload": {
+            "stage": "preview",
+            "action_family": "add_units",
+            "requires_confirmation": True,
+            "planning_version": 7,
+            "atomic_actions": [{"action_type": "add_units", "volunteer_ids": ["v1"]}],
+        },
     }
 
     source = proposal_compiler.compile_runtime_plan_confirmation_source(
@@ -1218,234 +651,6 @@ def test_post_apply_readonly_evidence_plan_uses_structured_target_issues():
         "noResultReason": "post_apply_plan_requires_refreshed_evidence",
         "mustNotAnswerWithoutEvidence": True,
     }
-
-
-def test_compile_readonly_workspace_evidence_plan_from_prior_plan_attempt():
-    source = proposal_compiler.compile_runtime_readonly_workspace_evidence_plan_source(
-        current_result={
-            "action_family": "query_state",
-            "result_kind": "status_overview",
-            "reply_focus": ["current_state", "tier_distribution"],
-            "facts": {"risk_count": 1},
-        },
-        prior_plan_attempt_result={
-            "action_family": "remove_units",
-            "result_kind": "no_change",
-        },
-    )
-
-    assert source.matched is True
-    assert source.route == "post_plan_attempt_readonly_workspace_evidence"
-    assert source.workspace_refresh_targets == ["ordered", "review"]
-    assert source.evidence_plan["trigger"] == "post_plan_attempt_readonly_status_overview"
-    assert source.evidence_plan["sourceInputs"] == [
-        "current_execute_plan_action_result",
-        "prior_plan_mutation_attempt_result",
-    ]
-    assert source.evidence_plan["priorAttempt"] == {
-        "actionFamily": "remove_units",
-        "resultKind": "no_change",
-    }
-
-
-def test_compile_readonly_workspace_evidence_plan_blocks_apply_pending_without_pending_entrypoint():
-    source = proposal_compiler.compile_runtime_readonly_workspace_evidence_plan_source(
-        current_result={
-            "action_family": "query_state",
-            "result_kind": "status_overview",
-            "reply_focus": ["current_state"],
-            "facts": {},
-        },
-        turn_decision=_TurnDecision(
-            task_layer="mixed",
-            side_effect="apply_pending_then_readonly",
-            scope_anchor="current_plan",
-            scenario="apply_pending_then_readonly_query",
-            confidence=0.95,
-        ),
-    )
-
-    assert source.matched is False
-    assert "apply_pending_then_readonly_requires_active_pending_entrypoint" in source.blocking_reasons
-    assert "missing_prior_plan_mutation_attempt" in source.blocking_reasons
-    assert source.workspace_refresh_targets == []
-
-
-def test_compile_workspace_presentation_refreshes_mutating_preview_result():
-    source = proposal_compiler.compile_runtime_workspace_presentation_source(
-        execute_plan_results=[
-            {
-                "applied": False,
-                "action_family": "move_unit",
-                "stage": "preview",
-                "result_kind": "preview_only",
-                "workspace_refresh_targets": ["ordered", "review"],
-            }
-        ]
-    )
-
-    assert source.matched is True
-    assert source.route == "execute_plan_result_refresh"
-    assert source.workspace_refresh_targets == ["ordered", "review"]
-    assert source.workspace_view_targets == []
-    assert source.result_is_readonly_no_refresh is False
-
-
-def test_compile_workspace_presentation_blocks_readonly_review_refresh():
-    source = proposal_compiler.compile_runtime_workspace_presentation_source(
-        execute_plan_results=[
-            {
-                "applied": True,
-                "action_family": "review_plan",
-                "stage": "review",
-                "result_kind": "review_result",
-                "workspace_refresh_targets": ["review"],
-            }
-        ]
-    )
-
-    assert source.matched is True
-    assert source.route == "execute_plan_result_no_refresh"
-    assert source.workspace_refresh_targets == []
-    assert source.result_is_readonly_no_refresh is True
-
-
-def test_compile_workspace_presentation_strips_explanation_only_initial_refresh():
-    source = proposal_compiler.compile_runtime_workspace_presentation_source(
-        initial_refresh_targets=["ordered", "review"],
-        execute_plan_results=[
-            {
-                "applied": False,
-                "action_family": "preview_fix_proposal",
-                "stage": "preview",
-                "result_kind": "fix_proposal_preview",
-                "workspace_refresh_targets": ["ordered", "review"],
-            }
-        ],
-    )
-
-    assert source.matched is True
-    assert source.route == "explanation_only_result_no_refresh"
-    assert source.workspace_refresh_targets == []
-    assert source.latest_result_is_explanation_only is True
-
-
-def test_compile_workspace_presentation_keeps_explanation_refresh_when_explicitly_allowed():
-    source = proposal_compiler.compile_runtime_workspace_presentation_source(
-        initial_refresh_targets=["review"],
-        execute_plan_results=[
-            {
-                "applied": False,
-                "action_family": "analyze_adjustment",
-                "stage": "analysis",
-                "result_kind": "adjustment_analysis",
-            }
-        ],
-        allow_explanation_refresh=True,
-    )
-
-    assert source.matched is True
-    assert source.workspace_refresh_targets == ["review"]
-    assert source.latest_result_is_explanation_only is True
-
-
-def test_compile_workspace_presentation_uses_structured_tool_call_fallback():
-    source = proposal_compiler.compile_runtime_workspace_presentation_source(
-        tool_call_names=["execute_plan_action"],
-        execute_plan_action_call_families=["move_ordered_unit"],
-    )
-
-    assert source.matched is True
-    assert source.route == "execute_plan_call_family"
-    assert source.workspace_refresh_targets == ["ordered", "review"]
-
-
-def test_compile_workspace_presentation_opens_view_after_prior_plan_attempt():
-    source = proposal_compiler.compile_runtime_workspace_presentation_source(
-        execute_plan_results=[
-            {
-                "action_family": "query_state",
-                "result_kind": "status_overview",
-                "reply_focus": ["current_state", "tier_distribution"],
-                "facts": {"risk_count": 1},
-            }
-        ],
-        include_result_view_targets=False,
-        include_post_plan_attempt_view=True,
-        prior_plan_attempt_result={
-            "action_family": "remove_units",
-            "result_kind": "no_change",
-        },
-    )
-
-    assert source.matched is True
-    assert source.workspace_refresh_targets == []
-    assert source.workspace_view_targets == ["ordered", "review"]
-    assert source.evidence_plan["trigger"] == "post_plan_attempt_readonly_status_overview"
-
-
-def test_compile_semantic_plan_display_confirmation_card():
-    source = proposal_compiler.compile_runtime_semantic_plan_display_source(
-        action_family="preview_fix_proposal",
-        result={"result_kind": "fix_proposal_preview"},
-        pending_card_created=True,
-    )
-
-    assert source.matched is True
-    assert source.route == "semantic_plan_confirmation_card"
-    assert source.display_payload == {
-        "presentation": "confirmation_card",
-        "pendingCardType": "pendingConfirmationCard",
-    }
-    assert source.reply_plan["focus"] == ["confirmable_plan_mutation"]
-
-
-def test_compile_semantic_plan_display_framework_conditional_options():
-    source = proposal_compiler.compile_runtime_semantic_plan_display_source(
-        action_family="review_plan",
-        result={"result_kind": "review_result", "facts": {}},
-        pending_card_created=False,
-        prefer_conditional_options=True,
-    )
-
-    assert source.matched is True
-    assert source.route == "semantic_plan_conditional_options"
-    assert source.display_payload == {"presentation": "conditional_options"}
-
-
-def test_compile_semantic_plan_display_conditional_options_from_fix_proposals():
-    source = proposal_compiler.compile_runtime_semantic_plan_display_source(
-        action_family="analyze_adjustment",
-        result={
-            "result_kind": "adjustment_analysis",
-            "facts": {
-                "fix_proposals": {
-                    "blocked_count": 1,
-                    "proposals": [{"proposal_id": "fp_1", "status": "blocked"}],
-                }
-            },
-        },
-        pending_card_created=False,
-    )
-
-    assert source.matched is True
-    assert source.display_payload == {"presentation": "conditional_options"}
-    assert source.reply_plan == {
-        "mode": ["conditional_options"],
-        "focus": ["review_or_repair_options"],
-    }
-
-
-def test_compile_semantic_plan_display_readonly_answer_without_options():
-    source = proposal_compiler.compile_runtime_semantic_plan_display_source(
-        action_family="review_plan",
-        result={"result_kind": "review_result", "facts": {}},
-        pending_card_created=False,
-    )
-
-    assert source.matched is True
-    assert source.route == "semantic_plan_readonly_answer"
-    assert source.display_payload == {"presentation": "readonly_answer"}
 
 
 def test_compile_reply_guard_blocks_unbacked_plan_confirmation():
@@ -1629,24 +834,6 @@ def test_pending_turn_resolution_routes_plan_action_scoped_confirmation_without_
         assert resolution.side_effect == "apply_existing_pending"
         assert resolution.pending_type == "plan"
         assert resolution.requires_model_decision is False
-
-
-def test_pending_turn_resolution_routes_action_scoped_confirmation_from_plan_payload():
-    resolution = proposal_compiler.resolve_pending_turn_action(
-        "确认生成方案",
-        pending_state={
-            "status": "active",
-            "kind": "plan_mutation",
-            "executionPayload": {
-                "planPayload": json.dumps({"action_family": "generate_plan"}),
-            },
-        },
-    )
-
-    assert resolution.action == "confirm_pending"
-    assert resolution.side_effect == "apply_existing_pending"
-    assert resolution.pending_type == "plan"
-    assert resolution.requires_model_decision is False
 
 
 def test_pending_turn_resolution_does_not_apply_mismatched_plan_action_confirmation():
@@ -2010,6 +1197,35 @@ def test_needs_plan_first_guard_blocks_plan_mutation_without_formal_plan_referen
     assert resolution.blocking_reasons == ["missing_formal_plan"]
 
 
+def test_needs_plan_first_guard_blocks_plan_add_without_formal_plan_referent():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "把广西师大统计加进来",
+        planning_summary={"ordered_total": 0, "working_total": 0},
+    )
+
+    assert resolution.side_effect == "needs_plan_first"
+    assert resolution.reference_resolution == "no_referent"
+    assert resolution.requires_model_decision is False
+    assert resolution.target_issues == ["plan_add_without_referent"]
+    assert "加入当前方案" in resolution.primary_reply
+    assert resolution.blocking_reasons == ["missing_formal_plan"]
+
+
+def test_needs_plan_first_guard_blocks_no_plan_dual_track_mutation():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "希望通过生物科学和化学这样的专业保住院校层次，在方案中增加湖南的湘潭大学、长沙理工、湖南科技大学、吉首大学、湖南农业大学、延边大学的工科专业组。去掉",
+        planning_summary={"ordered_total": 0, "working_total": 0},
+    )
+
+    assert resolution.side_effect == "needs_plan_first"
+    assert resolution.reference_resolution == "no_referent"
+    assert resolution.target_issues == ["plan_mutation_without_referent"]
+    assert "这轮诉求是" in resolution.primary_reply
+    assert "生物科学" in resolution.primary_reply
+    assert "湘潭大学" in resolution.primary_reply
+    assert resolution.blocking_reasons == ["missing_formal_plan"]
+
+
 def test_needs_plan_first_guard_blocks_implicit_sort_without_formal_plan_referent():
     resolution = proposal_compiler.resolve_needs_plan_first_guard(
         "按好学校排下看看",
@@ -2186,229 +1402,3 @@ def test_resolve_profile_change_replan_state_query_requires_structured_query_sce
     assert resolved.matched is True
     assert resolved.route == "profile_change_stale_plan_state_query"
     assert resolved.side_effect == "readonly"
-
-
-def _current_plan_atomic_turn_decision(**overrides):
-    data = {
-        "taskLayer": "plan",
-        "sideEffect": "plan_preview",
-        "scopeAnchor": "current_plan",
-        "scenario": "atomic_mutation",
-        "confidence": 0.95,
-    }
-    data.update(overrides)
-    return data
-
-
-def test_compile_current_plan_mutation_from_intent_preview_builds_remove_units_payload():
-    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
-        content="不要这些专业",
-        turn_decision=_current_plan_atomic_turn_decision(),
-        merged_intent={
-            "major_intents": {
-                "negative_level3": ["英语"],
-                "negative_level2": ["外国语言文学类"],
-            }
-        },
-        intent_mode="constraint",
-        constraint_intent_type="exclude_hard",
-        summary="排除专业：英语",
-        planning_version=4,
-    )
-
-    assert source.matched is True
-    assert source.route == "current_plan_remove_preview"
-    assert source.action_family == "remove_units"
-    assert source.source_version_guard == 4
-    assert source.mutation_dsl["type"] == "CurrentPlanMutation"
-    assert source.mutation_dsl["selector"]["sourceMajorNames"] == ["英语", "外国语言文学类"]
-    payload = source.plan_payload
-    assert payload["stage"] == "preview"
-    assert payload["action_family"] == "remove_units"
-    assert payload["planning_version"] == 4
-    assert payload["atomic_actions"][0]["filters"] == {
-        "negative_level3": ["英语"],
-        "negative_level2": ["外国语言文学类"],
-    }
-    assert payload["facts"]["currentPlanMutationDsl"]["actionFamily"] == "remove_units"
-
-
-def test_compile_current_plan_mutation_from_intent_preview_builds_review_issue_replace_payload():
-    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
-        content="把高收费的换成正常收费的看看",
-        turn_decision=_current_plan_atomic_turn_decision(),
-        merged_intent={"physical_constraints": {"special_limits": ["高收费"]}},
-        intent_mode="constraint",
-        constraint_intent_type="default",
-        summary="避开项目：高收费",
-        planning_version=9,
-    )
-
-    assert source.matched is True
-    assert source.route == "current_plan_review_issue_preview"
-    assert source.action_family == "replace_units"
-    assert source.mutation_dsl["selector"]["reviewIssueCode"] == "high_tuition"
-    payload = source.plan_payload
-    assert payload["stage"] == "preview"
-    assert payload["action_family"] == "replace_units"
-    assert payload["planning_version"] == 9
-    assert payload["atomic_actions"][0]["review_issue_target"] == {
-        "code": "high_tuition",
-        "scope_mode": "full_issue",
-        "label": "高收费",
-    }
-    assert payload["facts"]["currentPlanMutationDsl"]["actionFamily"] == "replace_units"
-
-
-def test_compile_current_plan_mutation_from_intent_preview_builds_cooperative_program_payload():
-    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
-        content="去掉中外合作",
-        turn_decision=_current_plan_atomic_turn_decision(),
-        merged_intent={"physical_constraints": {"special_limits": ["中外合作"]}},
-        intent_mode="constraint",
-        constraint_intent_type="default",
-        summary="避开项目：中外合作",
-        planning_version=3,
-    )
-
-    assert source.matched is True
-    assert source.route == "current_plan_review_issue_preview"
-    assert source.action_family == "replace_units"
-    assert source.mutation_dsl["selector"]["reviewIssueCode"] == "cooperative_program"
-    payload = source.plan_payload
-    assert payload["action_family"] == "replace_units"
-    assert payload["atomic_actions"][0]["review_issue_target"]["code"] == "cooperative_program"
-    assert payload["atomic_actions"][0]["review_issue_target"]["label"] == "中外合作"
-
-
-def test_compile_current_plan_mutation_blocks_future_reference_intent_scope():
-    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
-        content="后面不要英语",
-        turn_decision=_current_plan_atomic_turn_decision(scopeAnchor="future_reference"),
-        merged_intent={"major_intents": {"negative_level3": ["英语"]}},
-        intent_mode="constraint",
-    )
-
-    assert source.matched is False
-    assert source.blocking_reasons == ["unsupported_current_plan_mutation_scope_anchor"]
-
-
-def test_compile_current_plan_mutation_blocks_readonly_or_non_atomic_turn():
-    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
-        content="看看英语相关的影响",
-        turn_decision=_current_plan_atomic_turn_decision(sideEffect="readonly", scenario="plan_query"),
-        merged_intent={"major_intents": {"negative_level3": ["英语"]}},
-        intent_mode="constraint",
-    )
-
-    assert source.matched is False
-    assert source.blocking_reasons == [
-        "unsupported_current_plan_mutation_side_effect",
-        "unsupported_current_plan_mutation_scenario",
-    ]
-
-
-def test_compile_current_plan_mutation_requires_constraint_negative_major_scope():
-    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
-        content="当前方案处理一下",
-        turn_decision=_current_plan_atomic_turn_decision(),
-        merged_intent={"major_intents": {"level3": ["英语"]}},
-        intent_mode="preference",
-    )
-
-    assert source.matched is False
-    assert source.blocking_reasons == [
-        "current_plan_mutation_requires_constraint_intent",
-        "missing_current_plan_mutation_scope",
-    ]
-
-
-def test_compile_atomic_plan_action_builds_plan_next_action_args_for_tuition_preference_scope():
-    source = proposal_compiler.compile_runtime_atomic_plan_action_source(
-        content="把两万以上且跟意向不沾边的先删掉",
-        action_family="remove_units",
-        confidence=0.95,
-        min_tuition_per_year=20000,
-        preference_fit="unrelated",
-        planning_version=8,
-    )
-
-    assert source.matched is True
-    assert source.route == "atomic_plan_action_preview"
-    assert source.action_family == "remove_units"
-    assert source.plan_next_action_args["action_family"] == "remove_units"
-    assert source.plan_next_action_args["current_stage"] == "preview"
-    assert source.plan_next_action_args["min_tuition_per_year"] == 20000
-    assert source.plan_next_action_args["preference_fit"] == "unrelated"
-    assert "planning_version" not in source.plan_next_action_args
-    assert source.plan_action_dsl["type"] == "AtomicPlanActionDsl"
-    assert source.plan_action_dsl["selector"]["min_tuition_per_year"] == 20000
-    assert source.plan_action_dsl["selector"]["preference_fit"] == "unrelated"
-    assert source.plan_action_dsl["sourceVersionGuard"] == 8
-
-
-def test_compile_atomic_move_unit_bridges_school_major_selector_to_volunteer_ref():
-    source = proposal_compiler.compile_runtime_atomic_plan_action_source(
-        content="把青岛城市学院的国际经济与贸易改到第3位",
-        action_family="move_unit",
-        confidence=0.95,
-        source_major_names=["国际经济与贸易"],
-        school_keyword="青岛城市学院",
-        target_position=3,
-        planning_version=8,
-    )
-
-    assert source.matched is True
-    assert source.action_family == "move_unit"
-    assert source.plan_next_action_args["volunteer_ids"] == ["青岛城市学院的国际经济与贸易"]
-    assert source.plan_next_action_args["school_keyword"] == "青岛城市学院"
-    assert source.plan_next_action_args["source_major_names"] == ["国际经济与贸易"]
-    assert source.plan_next_action_args["target_position"] == 3
-    assert source.plan_action_dsl["selector"]["volunteer_ids"] == ["青岛城市学院的国际经济与贸易"]
-    assert source.plan_action_dsl["selector"]["school_keyword"] == "青岛城市学院"
-    assert source.plan_action_dsl["selector"]["source_major_names"] == ["国际经济与贸易"]
-
-
-def test_compile_atomic_add_units_bridges_school_major_selector_to_volunteer_ref():
-    source = proposal_compiler.compile_runtime_atomic_plan_action_source(
-        content="把湖北工程学院的计算机科学与技术加进来",
-        action_family="add_units",
-        confidence=0.95,
-        school_keyword="湖北工程学院",
-        major_keyword="计算机科学与技术",
-        planning_version=8,
-    )
-
-    assert source.matched is True
-    assert source.action_family == "add_units"
-    assert source.plan_next_action_args["volunteer_ids"] == ["湖北工程学院的计算机科学与技术"]
-    assert source.plan_next_action_args["school_keyword"] == "湖北工程学院"
-    assert source.plan_next_action_args["major_keyword"] == "计算机科学与技术"
-    assert source.plan_action_dsl["selector"]["volunteer_ids"] == ["湖北工程学院的计算机科学与技术"]
-    assert source.plan_action_dsl["selector"]["school_keyword"] == "湖北工程学院"
-    assert source.plan_action_dsl["selector"]["major_keyword"] == "计算机科学与技术"
-
-
-def test_compile_atomic_plan_action_blocks_pin_lock_noop_move():
-    source = proposal_compiler.compile_runtime_atomic_plan_action_source(
-        content="把第一个志愿锁定在第一位",
-        action_family="move_ordered_unit",
-        confidence=0.95,
-        source_position=1,
-        target_position=1,
-        position_scope="single",
-    )
-
-    assert source.matched is False
-    assert "unsupported_atomic_plan_action_pin_or_lock" in source.blocking_reasons
-
-
-def test_compile_atomic_plan_action_blocks_unscoped_remove():
-    source = proposal_compiler.compile_runtime_atomic_plan_action_source(
-        content="删掉一些",
-        action_family="remove_units",
-        confidence=0.95,
-    )
-
-    assert source.matched is False
-    assert source.blocking_reasons == ["missing_atomic_plan_action_scope"]

@@ -8,8 +8,6 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.agent.context import RequestContext
-from app.tools.plan_execution_tool import execute_plan_action
-from app.tools.plan_orchestration_tool import plan_next_action
 from app.tools.intent_response_tool import (
     ExploreFollowupResult,
     serialize_explore_followup_result,
@@ -20,11 +18,24 @@ from app.util.internal_client import (
     get_planning_state,
     query_planning_candidate_pool,
 )
+from app.zhiyuan_agent.sandbox import build_request_sandbox
+from app.zhiyuan_agent.tools import query_plan
 
 logger = logging.getLogger(__name__)
 
 
-def _build_minimal_request_context(session_id: str, batch: str) -> Any:
+def _build_minimal_request_context(
+    session_id: str,
+    batch: str,
+    *,
+    planning_state: dict[str, Any] | None = None,
+) -> Any:
+    sandbox = build_request_sandbox(
+        session_id=session_id,
+        tenant_id=1,
+        batch=batch,
+        planning_state=planning_state,
+    )
     request_context = RequestContext(
         userid="",
         sessionid=session_id,
@@ -33,6 +44,7 @@ def _build_minimal_request_context(session_id: str, batch: str) -> Any:
         score_detail=None,
         init_profile=None,
         planning_summary=None,
+        sandbox=sandbox,
     )
     return SimpleNamespace(deps=request_context)
 
@@ -61,6 +73,52 @@ def _build_candidate_filters_from_intents(merged: dict[str, Any]) -> dict[str, A
         "majorTags": major_intents.get("level1", []),
         "negativeMajorTags": major_intents.get("negative_level1", []),
     }
+
+
+def _build_plan_query_filters_from_intents(merged: dict[str, Any]) -> dict[str, Any]:
+    city_intents = merged.get("city_intents") or {}
+    school_intents = merged.get("school_intents") or {}
+    major_intents = merged.get("major_intents") or {}
+    filters: dict[str, Any] = {}
+
+    provinces = list(
+        dict.fromkeys(
+            (city_intents.get("province", []) or [])
+            + (city_intents.get("negative_province", []) or [])
+        )
+    )
+    schools = list(
+        dict.fromkeys(
+            (school_intents.get("colleges", []) or [])
+            + (school_intents.get("negative_colleges", []) or [])
+        )
+    )
+    majors = list(
+        dict.fromkeys(
+            (major_intents.get("level3", []) or [])
+            + (major_intents.get("level2", []) or [])
+            + (major_intents.get("negative_level3", []) or [])
+            + (major_intents.get("negative_level2", []) or [])
+        )
+    )
+    major_tags = list(
+        dict.fromkeys(
+            (major_intents.get("level1", []) or [])
+            + (major_intents.get("negative_level1", []) or [])
+        )
+    )
+
+    if provinces:
+        filters["province"] = provinces
+    if schools:
+        filters["school"] = schools
+    if majors:
+        filters["major"] = majors
+    if major_tags:
+        filters["major_tag"] = major_tags
+    filters["include_fields"] = ["school", "major", "province", "tier", "admission_probability"]
+    filters["limit"] = 8
+    return filters
 
 
 async def _query_candidate_total(session_id: str, candidate_filters: dict[str, Any]) -> int | None:
@@ -218,16 +276,23 @@ async def handle_interest_analysis_action_result(
         )
 
     if action_type == "plan_analyze":
-        ctx = _build_minimal_request_context(session_id, batch)
-        plan_payload = await plan_next_action(
-            ctx,
-            user_goal="结合当前已识别偏好/要求分析方案",
-            action_family="analyze_adjustment",
-            user_confirmed=True,
+        try:
+            planning_state = await get_planning_state(int(session_id))
+        except Exception:
+            logger.warning("Load planning state for follow-up plan analysis failed: session_id=%s", session_id, exc_info=True)
+            planning_state = None
+        ctx = _build_minimal_request_context(
+            session_id,
+            batch,
+            planning_state=(planning_state or {}).get("data") if isinstance(planning_state, dict) else None,
         )
-        plan_result_text = await execute_plan_action(ctx, plan_payload)
+        plan_result_text = await query_plan(
+            ctx,
+            scope="plan",
+            filters=_build_plan_query_filters_from_intents(merged),
+        )
         plan_result = json.loads(plan_result_text)
-        delegated_text = plan_result.get("summary") or plan_result.get("state_summary") or ""
+        delegated_text = plan_result.get("message") or ""
         return serialize_explore_followup_result(
             ExploreFollowupResult(
                 actionType=action_type,

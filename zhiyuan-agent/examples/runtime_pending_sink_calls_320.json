@@ -27,15 +27,6 @@
     "rationale": "user-goal fix candidate 先编译为 CompiledProposal 并通过 fix sink contract 后才调用底层 sink；返回 result 保留卡片、刷新目标和阻断原因，contract gap 不创建 pending。"
   },
   {
-    "id": "sink-compiled-structured-goal-intent-card",
-    "target": "_create_pending_intent_confirmation_response",
-    "caller": "_create_pending_intent_confirmation_from_structured_goal_candidate",
-    "kind": "compiler_sink_call",
-    "phase4Action": "compiled_structured_intent_candidate_sink",
-    "risk": "medium",
-    "rationale": "structured goal intent candidate 先编译为 CompiledProposal 并通过 intent sink contract 后才调用底层 sink。"
-  },
-  {
     "id": "sink-compiled-intent-preview-card",
     "target": "_create_pending_intent_confirmation_response",
     "caller": "_create_pending_intent_confirmation_result_from_preview_payload",
@@ -43,15 +34,6 @@
     "phase4Action": "compiled_intent_preview_candidate_sink",
     "risk": "medium",
     "rationale": "intent preview payload 先编译为 CompiledProposal 并通过 intent sink contract 后才调用底层 sink；返回 result 保留卡片、刷新目标和阻断原因。"
-  },
-  {
-    "id": "sink-runtime-intent-entity-profile-card",
-    "target": "_create_pending_intent_confirmation_response",
-    "caller": "_create_pending_intent_confirmation_from_entity_profile",
-    "kind": "compiler_sink_call",
-    "phase4Action": "compiled_runtime_intent_entity_profile_sink",
-    "risk": "medium",
-    "rationale": "runtime hard cut 的 intent_entity_profile 输出先转为 selectedData/merged 并编译为 CompiledProposal，通过 intent sink contract 后才调用底层 intent sink。"
   },
   {
     "id": "sink-intent-save",
@@ -63,15 +45,6 @@
     "rationale": "intent pending sink 可保留，但调用者必须是 compiler output。"
   },
   {
-    "id": "sink-plan-save",
-    "target": "_save_pending_confirmation_state",
-    "caller": "_create_pending_plan_confirmation_response",
-    "kind": "compiler_sink_call",
-    "phase4Action": "restrict_to_compiled_proposal",
-    "risk": "medium",
-    "rationale": "plan pending sink 可保留，但调用者必须是 compiler output。"
-  },
-  {
     "id": "sink-fix-proposal-save",
     "target": "_save_pending_confirmation_state",
     "caller": "_create_pending_fix_proposal_confirmation_response",
@@ -79,24 +52,6 @@
     "phase4Action": "restrict_to_compiled_proposal",
     "risk": "medium",
     "rationale": "fix proposal pending sink 可保留，但调用者必须是 compiler output。"
-  },
-  {
-    "id": "sink-runtime-compiled-plan-card",
-    "target": "_create_pending_plan_confirmation_response",
-    "caller": "_create_runtime_compiled_plan_pending",
-    "kind": "compiler_sink_call",
-    "phase4Action": "compiled_runtime_plan_sink",
-    "risk": "medium",
-    "rationale": "runtime plan pending entry 只消费已生成的 CompiledProposal；通过 plan sink contract 后才调用底层 plan sink，旧 plan wrapper 已删除。"
-  },
-  {
-    "id": "sink-runtime-compiled-review-fix-card",
-    "target": "_create_pending_fix_proposal_confirmation_response",
-    "caller": "_create_runtime_compiled_review_fix_pending",
-    "kind": "compiler_sink_call",
-    "phase4Action": "compiled_runtime_review_fix_sink",
-    "risk": "medium",
-    "rationale": "runtime review/fix pending entry 只消费已生成的 CompiledProposal；通过 fix sink contract 后才调用底层 fix sink，旧 review/fix wrapper 已删除。"
   },
   {
     "id": "sink-compiled-intent-select-card",
@@ -126,25 +81,5 @@
     "phase4Action": "keep_apply_guard_status_update",
     "risk": "low",
     "rationale": "确认入口 intent_change 采纳状态更新，保留。"
-  },
-  {
-    "id": "status-apply-fix-proposal-pending",
-    "target": "_save_pending_confirmation_state",
-    "caller": "ChatService.handle_pending_confirmation",
-    "occurrence": 3,
-    "kind": "status_update_keep",
-    "phase4Action": "keep_apply_guard_status_update",
-    "risk": "low",
-    "rationale": "确认入口 apply_fix_proposal 采纳状态更新，保留。"
-  },
-  {
-    "id": "status-apply-plan-pending",
-    "target": "_save_pending_confirmation_state",
-    "caller": "ChatService.handle_pending_confirmation",
-    "occurrence": 4,
-    "kind": "status_update_keep",
-    "phase4Action": "keep_apply_guard_status_update",
-    "risk": "low",
-    "rationale": "确认入口 plan mutation 采纳状态更新，保留。"
   }
 ]

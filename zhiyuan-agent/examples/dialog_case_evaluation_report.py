@@ -258,13 +258,7 @@ _READONLY_BOUNDARY_REQUIRED_PROMPT_TOKENS = (
     "不要直接",
 )
 
-_LEGACY_OPTIMIZATION_ROUTES = {
-    "plan_fast_route",
-    "plan_query_fast_route",
-    "career_direction_fast_route",
-    "major_compare_fast_route",
-    "major_intent_fast_route",
-}
+_SOFT_EXPECTED_ROUTES: set[str] = set()
 
 _EXPECTED_ROUTES_BY_COVERAGE: dict[str, str] = {
     "readonly_closure_ack": "readonly_closure_ack",
@@ -667,8 +661,8 @@ def _first_tag_mapping(tags: list[str], mapping: dict[str, str]) -> str | None:
     return None
 
 
-def _is_legacy_optimization_route(route: str | None) -> bool:
-    return bool(route and route in _LEGACY_OPTIMIZATION_ROUTES)
+def _is_soft_expected_route(route: str | None) -> bool:
+    return bool(route and route in _SOFT_EXPECTED_ROUTES)
 
 
 def _expected_route_from_metadata(step_coverage: list[str], prompt_text: str) -> str | None:
@@ -892,26 +886,22 @@ def _semantic_mapped_route_from_frame(frame: dict[str, Any]) -> str | None:
 
     if layer == "intent":
         if side_effect == "readonly":
-            return "pending_intent_impact_fast_route"
-        return "major_intent_fast_route"
+            return "zhiyuan_agent_direct"
+        return "zhiyuan_agent_direct"
 
     if layer == "explore":
-        if topic == "career":
-            return "career_direction_fast_route"
-        if topic == "major" and verb in {"compare", "recommend"}:
-            return "major_compare_fast_route"
-        return "full_agent"
+        return "zhiyuan_agent_direct"
 
     if layer == "plan":
         if topic == "region" and verb in {"analyze", "explain"}:
             return "region_safety_tradeoff_route"
         if verb == "review":
-            return "plan_fast_route"
+            return "zhiyuan_agent_direct"
         if verb in {"add", "remove", "move", "sort", "replace", "generate"}:
-            return "plan_fast_route"
+            return "zhiyuan_agent_direct"
         if verb in {"query", "analyze", "explain", "recommend"}:
-            return "plan_query_fast_route" if topic in {"school", "major"} else "plan_fast_route"
-        return "plan_fast_route"
+            return "zhiyuan_agent_direct"
+        return "zhiyuan_agent_direct"
 
     return None
 
@@ -1598,7 +1588,7 @@ def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
         expected_route
         and actual_route
         and actual_route != expected_route
-        and not _is_legacy_optimization_route(expected_route)
+        and not _is_soft_expected_route(expected_route)
     ):
         violations.append(f"route_mismatch:{expected_route}!={actual_route}")
 
@@ -1650,9 +1640,9 @@ def _evaluation_warnings(record: dict[str, Any], text: str) -> list[str]:
         expected_route
         and actual_route
         and actual_route != expected_route
-        and _is_legacy_optimization_route(expected_route)
+        and _is_soft_expected_route(expected_route)
     ):
-        warnings.append(f"optimization_route_not_matched:{expected_route}!={actual_route}")
+        warnings.append(f"soft_route_not_matched:{expected_route}!={actual_route}")
     if expected_action and not _action_observed(record, expected_action):
         warnings.append(f"missing_action_observability:{expected_action}")
     semantic_expectation = _semantic_expectation_result(record)
@@ -1680,7 +1670,7 @@ def _route_score(record: dict[str, Any]) -> int:
     expected_no_action = bool(record.get("expectedNoAction"))
 
     score = 4
-    if _is_legacy_optimization_route(expected_route):
+    if _is_soft_expected_route(expected_route):
         score = 4
     elif expected_route:
         if actual_route == expected_route:

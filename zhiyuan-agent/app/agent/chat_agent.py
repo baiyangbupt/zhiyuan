@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic_ai import ToolCallPart
-
 from app.agent.base_agent import BaseAgent
 from app.agent.context import RequestContext
 from app.agent.instructions import build_instructions
@@ -29,9 +27,6 @@ from app.tools.intent_preview_tool import (
     preview_current_region_intent_confirmation,
     preview_current_school_intent_confirmation,
 )
-from app.tools.plan_context_tool import collect_plan_context_inputs
-from app.tools.plan_execution_tool import execute_plan_action
-from app.tools.plan_orchestration_tool import plan_next_action
 from app.tools.plan_query_tool import query_volunteer_plan
 from app.tools.planning_workflow_tool import generate_planning_fix_proposals
 from app.tools.plan_validation_tool import validate_major_subjects, validate_plan_params
@@ -70,9 +65,6 @@ _TOOL_PROGRESS_HINTS: dict[str, str] = {
     "preview_current_school_intent_confirmation": "正在整理这个院校想法的影响和边界...",
     "preview_current_region_intent_confirmation": "正在整理这个地域想法的影响和边界...",
     "preview_current_career_intent_confirmation": "正在整理这个发展方向的影响和边界...",
-    "collect_plan_context_inputs":      "正在读取你的方案、偏好和审查结果...",
-    "plan_next_action":                 "正在读取当前方案并整理这次请求...",
-    "execute_plan_action":              "正在处理你的方案，请稍等...",
     "generate_planning_fix_proposals":  "正在根据审查结果整理可处理的调整建议...",
     "validate_major_subjects":          "正在检查专业对选科有没有要求...",
     "validate_plan_params":             "正在检查生成方案需要的信息是否完整...",
@@ -106,9 +98,6 @@ class ChatAgent(BaseAgent[str]):
                 answer_admission_policy_question,
                 search_official_admission_sources,
                 match_admission_rule_to_student,
-                collect_plan_context_inputs,
-                plan_next_action,
-                execute_plan_action,
                 generate_planning_fix_proposals,
                 validate_major_subjects,
                 validate_plan_params,
@@ -131,29 +120,6 @@ class ChatAgent(BaseAgent[str]):
     def get_progress_hint(self, tool_name: str) -> str | None:
         """将工具名映射为用户可见的中文进度提示。"""
         return _TOOL_PROGRESS_HINTS.get(tool_name)
-
-    def get_progress_hint_for_tool_call(self, tool_call: ToolCallPart) -> str | None:
-        """Return progress text using structured tool-call arguments when available."""
-        tool_name = str(tool_call.tool_name or "")
-        args = tool_call.args if isinstance(tool_call.args, dict) else {}
-        action_family = str(args.get("action_family") or "").strip()
-        stage = str(args.get("stage") or "").strip()
-
-        if tool_name == "execute_plan_action":
-            if stage == "preview" or action_family in {
-                "preview_fix_proposal",
-                "analyze_adjustment",
-                "sort_ordered_plan",
-                "add_units",
-                "remove_units",
-                "move_unit",
-                "move_ordered_unit",
-                "remove_ordered_unit",
-                "replace_units",
-                "regenerate_order",
-            }:
-                return "正在生成这次调整的影响预览..."
-        return super().get_progress_hint_for_tool_call(tool_call)
 
     def should_return_directly_from_tool(self, tool_names: list[str], tool_returns: list[Any], deps: Any | None = None) -> bool:
         """Use a centralized policy for safe direct tool replies."""

@@ -159,7 +159,7 @@ def _build_sink_request(compiled: dict[str, Any]) -> dict[str, Any]:
                 candidate_action_family = str(plan_candidate.get("actionFamily") or "").strip()
                 if candidate_action_family and action_family and candidate_action_family != action_family:
                     blocking_reasons.append("plan_candidate_action_family_mismatch")
-                plan_payload = _as_dict(plan_candidate.get("planPayload"))
+                plan_payload = _as_dict(plan_candidate.get("plan_payload"))
                 if not plan_payload:
                     blocking_reasons.append("plan_candidate_requires_plan_payload")
                 elif str(plan_payload.get("action_family") or plan_payload.get("actionFamily") or "").strip() not in {"", action_family}:

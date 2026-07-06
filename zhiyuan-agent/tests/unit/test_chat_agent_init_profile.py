@@ -77,9 +77,9 @@ def test_build_instructions_includes_planning_tool_policy():
     assert "## 副作用边界" in instructions
     assert "只读查询、解释和分析可以直接做" in instructions
     assert "必须先确认" in instructions
-    assert "现在方案怎么样" in instructions
-    assert "还差几个怎么补" in instructions
-    assert "按录取率排序 / 按院校层次排序 / 按推荐系数排序" in instructions
+    assert "full-agent 不再承接旧的当前方案编排/执行工具" in instructions
+    assert "当前方案的生成、审查、删除、替换、补齐、移动、排序、重排和确认执行由 4.0 direct 链路" in instructions
+    assert "不要承诺已经创建方案调整卡片" in instructions
     assert "不要机械复读工具原始 JSON" in instructions
     assert "不要写“你现在必须决定”" in instructions
     assert "不要把它改写成另一份更长的'系统播报摘要'" in instructions
@@ -103,35 +103,19 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
 
     instructions = _build_instructions(ctx)
 
-    assert "只读动作可以直接执行，高副作用动作必须先编排预览" in instructions
-    assert '"action_family":"query_state"' in instructions
-    assert '"action_family":"review_plan"' in instructions
-    assert "不要先单独调用 `collect_plan_context_inputs`" in instructions
+    assert "full-agent 不再承接旧的当前方案编排/执行工具" in instructions
+    assert "当前方案的生成、审查、删除、替换、补齐、移动、排序、重排和确认执行由 4.0 direct 链路" in instructions
+    assert "不要承诺已经创建方案调整卡片" in instructions
     assert "`query_volunteer_plan` 只用于局部命中查询" in instructions
-    assert "还差几个怎么补" in instructions
-    assert "必须走 Plan 主链路" in instructions
-    assert "不要先用 `query_state` 做状态播报" in instructions
-    assert "直接规划对应 action 的 preview" in instructions
+    assert "不要用局部查询替代调整预览" in instructions
     assert "当前方案志愿数为0" in instructions
     assert "不能编造" in instructions
     assert "当前 planning 状态的优先级高于历史对话" in instructions
-    assert "即使历史里答过，也要重新读取当前 plan 状态" in instructions
     assert "高副作用动作" in instructions
-    assert "`move_ordered_unit` 或 `remove_ordered_unit`" in instructions
-    assert "删除第 N 个专业组" in instructions
-    assert "用户只说“第 N 个/第 N 位/第 N 条”" in instructions
-    assert "不要规划成缺少 `volunteer_ids` 的 `move_unit`" in instructions
-    assert "专业组顺序" in instructions
-    assert "专业组/志愿组" not in instructions
-    assert "target_position=M" in instructions
-    assert "青岛电影学院的新闻学" in instructions
     assert "query_volunteer_plan" in instructions
-    assert "不提供固定/锁定志愿入口" in instructions
-    assert "execute_plan_action" in instructions
-    assert "`result_kind`/`reply_focus`/`next_step_hints`/`facts`" in instructions
-    assert "result_kind=\"preview_only\"" in instructions
-    assert "result_kind=\"no_change\"" in instructions
-    assert "不要当成失败重试" in instructions
+    assert "execute_plan_action" not in instructions
+    assert "plan_next_action" not in instructions
+    assert "collect_plan_context_inputs" not in instructions
     assert "不是新的长期偏好或要求" in instructions
     assert "不要调用 Intent 状态工具" in instructions
     assert "不要调用 Intent 状态工具" in instructions
@@ -142,13 +126,7 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "source_scope=\"school_brochure\"" in instructions
     assert "检索结果只是来源材料，不等于最终适配结论" in instructions
     assert "不要把原始网页整段丢给它" in instructions
-    assert "公办/民办占比" in instructions
-    assert "不要升级成 `review_plan` 或改方案预览" in instructions
-    assert "如果用户只是问是否存在某类风险" in instructions
-    assert "不要自动规划删除、替换或补偿" in instructions
-    assert "本轮审查结果是风险与提醒数量的权威事实" in instructions
-    assert "不要再拿历史上下文里的旧方案概览" in instructions
-    assert "单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs` 或 `plan_next_action`" in instructions
+    assert "方案现状问法先基于已注入的 planning summary" in instructions
 
 
 def test_build_instructions_includes_plan_mutation_confirmation_payload():
@@ -174,8 +152,8 @@ def test_build_instructions_includes_plan_mutation_confirmation_payload():
 
     assert "当前存在上一轮待确认的方案动作" in instructions
     assert "动作类型：regenerate_order" in instructions
-    assert "确认后执行 payload" in instructions
-    assert "直接调用 `execute_plan_action`" in instructions
+    assert "确认后执行 payload" not in instructions
+    assert "execute_plan_action" not in instructions
 
 
 def test_build_instructions_includes_explore_first_direction_fit_guidance():
@@ -215,7 +193,7 @@ def test_build_instructions_includes_explore_first_direction_fit_guidance():
     assert "不要先调用 `analyze_current_major_interest`" in instructions
     assert "不要在同一轮再追加 `get_major_introduction`" in instructions
     assert "Explore 专用工具已经返回当前方案概况" in instructions
-    assert "不要再补调 `plan_next_action(action_family=\"query_state\")`" in instructions
+    assert "不要再补调局部查询做重复状态查询" in instructions
     assert "直接传结构化参数" in instructions
     assert "不要在同一轮重复调用同一个 preview 工具" in instructions
     assert "只使用 canonical key" in instructions

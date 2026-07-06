@@ -76,7 +76,7 @@ def test_turn_observability_merges_late_zhiyuan_agent_shadow_event():
     running_event = {
         "type": "routeObservability",
         "event": "conversation_turn_event",
-        "routingPath": "runtime_intent_hard_cut",
+        "routingPath": "zhiyuan_agent_direct",
         "zhiyuanAgentPocShadow": {
             "enabled": True,
             "status": "running",
@@ -98,7 +98,7 @@ def test_turn_observability_merges_late_zhiyuan_agent_shadow_event():
     turn_messages = [
         {"parts": [{"part_kind": "user-prompt", "content": "那高收费的别要了"}]},
         {"model_name": "route-observability", "parts": [{"part_kind": "text", "content": json.dumps(running_event)}]},
-        {"model_name": "runtime-intent-hard-cut", "parts": [{"part_kind": "text", "content": "已列出预览"}]},
+        {"model_name": "zhiyuan-agent-direct", "parts": [{"part_kind": "text", "content": "已列出预览"}]},
         {"model_name": "route-observability", "parts": [{"part_kind": "text", "content": json.dumps(completed_event)}]},
     ]
 
@@ -218,7 +218,6 @@ def test_backend_state_clone_keys_include_pending_only_for_active_pending_fixtur
         "userprofile",
         "userScoreDetail",
         "pendingConfirmation",
-        "planEditCache",
     )
     assert runner._backend_state_clone_keys_for_case(normal_case) == (
         "planningState",
@@ -518,7 +517,7 @@ def test_runtime_shadow_observation_uses_route_display_payload_for_conditional_o
             "prompt": "方案里高收费或者中外合作风险大的，先看看能怎么处理，别直接动",
             "elapsedMs": 5000,
             "turnObservability": {
-                "routingPath": "semantic_plan_action",
+                "routingPath": "zhiyuan_agent_direct",
                 "toolCallCount": 1,
                 "toolReturnCount": 1,
                 "actionFamilies": ["analyze_adjustment"],
@@ -751,13 +750,7 @@ def test_clear_backend_pending_state_clears_latest_version(monkeypatch):
         for item in requests_seen
         if item["dataKey"] == "pendingConfirmation"
     ]
-    plan_cache_versions = [
-        item["version"]
-        for item in requests_seen
-        if item["dataKey"] == "planEditCache"
-    ]
     assert pending_versions == [0, 248]
-    assert plan_cache_versions == [0, 248]
     assert all(item["ok"] for item in results)
 
 
@@ -817,7 +810,7 @@ def test_run_cases_keeps_cloned_active_backend_pending(monkeypatch, tmp_path, ca
             "http://backend.test",
             "35",
             "9903235",
-            ("planningState", "userprofile", "userScoreDetail", "pendingConfirmation", "planEditCache"),
+            ("planningState", "userprofile", "userScoreDetail", "pendingConfirmation"),
         )
     ]
     output = capsys.readouterr().out
@@ -1021,20 +1014,18 @@ def test_latest_turn_messages_returns_latest_matching_prompt():
 
 
 def test_summarize_turn_observability_extracts_tool_action_and_result():
-    plan_payload = {
-        "stage": "preview",
-        "action_family": "move_ordered_unit",
-        "user_goal": "把第4个专业组移到第2位",
-    }
     turn_messages = [
         {"parts": [{"part_kind": "user-prompt", "content": "把第4个专业组移到第2位"}]},
         {
             "parts": [
                 {
                     "part_kind": "tool-call",
-                    "tool_name": "execute_plan_action",
-                    "tool_call_id": "functions.execute_plan_action:1",
-                    "args": {"plan_payload": json.dumps(plan_payload, ensure_ascii=False)},
+                    "tool_name": "preview_plan_action",
+                    "tool_call_id": "functions.preview_plan_action:1",
+                    "args": {
+                        "action_family": "move_ordered_unit",
+                        "current_stage": "preview",
+                    },
                 }
             ]
         },
@@ -1042,8 +1033,8 @@ def test_summarize_turn_observability_extracts_tool_action_and_result():
             "parts": [
                 {
                     "part_kind": "tool-return",
-                    "tool_name": "execute_plan_action",
-                    "tool_call_id": "functions.execute_plan_action:1",
+                    "tool_name": "preview_plan_action",
+                    "tool_call_id": "functions.preview_plan_action:1",
                     "content": json.dumps(
                         {
                             "applied": False,
@@ -1065,24 +1056,24 @@ def test_summarize_turn_observability_extracts_tool_action_and_result():
     assert observed["toolReturnCount"] == 1
     assert observed["actionFamilies"] == ["move_ordered_unit"]
     assert observed["resultKinds"] == ["preview_only"]
-    assert observed["toolCalls"][0]["name"] == "execute_plan_action"
+    assert observed["toolCalls"][0]["name"] == "preview_plan_action"
     assert observed["toolCalls"][0]["actionFamily"] == "move_ordered_unit"
     assert observed["toolCalls"][0]["stage"] == "preview"
     assert observed["toolCalls"][0]["resultKind"] == "preview_only"
     assert observed["toolCalls"][0]["applied"] is False
 
 
-def test_summarize_turn_observability_infers_routing_path_from_fast_route_history():
+def test_summarize_turn_observability_infers_routing_path_from_direct_pending_history():
     turn_messages = [
-        {"parts": [{"part_kind": "user-prompt", "content": "按院校层次排序"}]},
+        {"parts": [{"part_kind": "user-prompt", "content": "确认执行"}]},
         {
-            "model_name": "plan-fast-route",
+            "model_name": "direct-pending-plan-confirmation",
             "parts": [
                 {
                     "part_kind": "tool-call",
-                    "tool_name": "plan_next_action",
-                    "tool_call_id": "fast-plan-next-sort_ordered_plan",
-                    "args": {"action_family": "sort_ordered_plan"},
+                    "tool_name": "confirm_pending",
+                    "tool_call_id": "direct-pending-plan-confirmation:1",
+                    "args": {"action_family": "remove_units"},
                 }
             ],
         },
@@ -1090,12 +1081,12 @@ def test_summarize_turn_observability_infers_routing_path_from_fast_route_histor
             "parts": [
                 {
                     "part_kind": "tool-return",
-                    "tool_name": "plan_next_action",
-                    "tool_call_id": "fast-plan-next-sort_ordered_plan",
+                    "tool_name": "confirm_pending",
+                    "tool_call_id": "direct-pending-plan-confirmation:1",
                     "content": json.dumps(
                         {
-                            "action_family": "sort_ordered_plan",
-                            "stage": "preview",
+                            "action_family": "remove_units",
+                            "stage": "apply",
                         },
                         ensure_ascii=False,
                     ),
@@ -1106,8 +1097,8 @@ def test_summarize_turn_observability_infers_routing_path_from_fast_route_histor
 
     observed = runner._summarize_turn_observability(turn_messages)
 
-    assert observed["routingPath"] == "plan_fast_route"
-    assert observed["actionFamilies"] == ["sort_ordered_plan"]
+    assert observed["routingPath"] == "direct_pending_plan_confirm"
+    assert observed["actionFamilies"] == ["remove_units"]
 
 
 def test_summarize_turn_observability_infers_readonly_closure_ack_route_from_model_name():
@@ -1145,8 +1136,19 @@ def test_summarize_turn_observability_extracts_semantic_router_shadow():
     turn_messages = [
         {"parts": [{"part_kind": "user-prompt", "content": "财管会计审计怎么排优先级"}]},
         {
-            "model_name": "major-compare-fast-route",
-            "parts": [{"part_kind": "text", "content": "专业对比回复"}],
+            "model_name": "route-observability",
+            "parts": [
+                {
+                    "part_kind": "text",
+                    "content": json.dumps(
+                        {
+                            "event": "conversation_turn_event",
+                            "routingPath": "zhiyuan_agent_direct",
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
         },
         {
             "model_name": "semantic-router-shadow",
@@ -1164,7 +1166,7 @@ def test_summarize_turn_observability_extracts_semantic_router_shadow():
 
     observed = runner._summarize_turn_observability(turn_messages)
 
-    assert observed["routingPath"] == "major_compare_fast_route"
+    assert observed["routingPath"] == "zhiyuan_agent_direct"
     assert observed["semanticRouterShadow"]["status"] == "success"
     assert observed["semanticRouterShadow"]["frame"]["taskLayer"] == "explore"
 
@@ -1176,8 +1178,8 @@ def test_summarize_turn_observability_does_not_infer_route_from_plain_tool_name(
             "parts": [
                 {
                     "part_kind": "tool-call",
-                    "tool_name": "query_volunteer_plan",
-                    "tool_call_id": "functions.query_volunteer_plan:1",
+                    "tool_name": "query_plan",
+                    "tool_call_id": "functions.query_plan:1",
                     "args": {"query": "看看方案"},
                 }
             ],
@@ -1187,7 +1189,7 @@ def test_summarize_turn_observability_does_not_infer_route_from_plain_tool_name(
     observed = runner._summarize_turn_observability(turn_messages)
 
     assert "routingPath" not in observed
-    assert observed["toolCalls"][0]["name"] == "query_volunteer_plan"
+    assert observed["toolCalls"][0]["name"] == "query_plan"
 
 
 def test_summarize_turn_observability_counts_plain_text_tool_returns():
@@ -1196,9 +1198,9 @@ def test_summarize_turn_observability_counts_plain_text_tool_returns():
             "parts": [
                 {
                     "part_kind": "tool-call",
-                    "tool_name": "compare_majors",
-                    "tool_call_id": "fast-compare-majors",
-                    "args": {"major_name1": "法学", "major_name2": "财政学"},
+                    "tool_name": "compare_entities",
+                    "tool_call_id": "functions.compare_entities:1",
+                    "args": {"entity_type": "major", "names": ["法学", "财政学"]},
                 }
             ]
         },
@@ -1206,8 +1208,8 @@ def test_summarize_turn_observability_counts_plain_text_tool_returns():
             "parts": [
                 {
                     "part_kind": "tool-return",
-                    "tool_name": "compare_majors",
-                    "tool_call_id": "fast-compare-majors",
+                    "tool_name": "compare_entities",
+                    "tool_call_id": "functions.compare_entities:1",
                     "content": "法学和财政学的对比文本",
                 }
             ]
@@ -1218,22 +1220,15 @@ def test_summarize_turn_observability_counts_plain_text_tool_returns():
 
     assert observed["toolCallCount"] == 1
     assert observed["toolReturnCount"] == 1
-    assert observed["toolCalls"][0]["name"] == "compare_majors"
+    assert observed["toolCalls"][0]["name"] == "compare_entities"
 
 
-def test_summarize_turn_observability_extracts_fast_route_arbitration():
+def test_summarize_turn_observability_extracts_route_decision():
     route_decision = {
-        "source": "plan_fast_route",
-        "arbitration": {
-            "source": "fast_route_arbitrator",
-            "selectedPath": "plan_query_fast_route",
-            "semanticArbitrationNeeded": True,
-            "semanticArbitrationReason": "close_fast_route_candidates",
-            "semanticArbitrationCandidatePaths": [
-                "plan_query_fast_route",
-                "major_intent_fast_route",
-            ],
-        },
+        "source": "zhiyuan_agent",
+        "matched": True,
+        "route": "direct",
+        "firstToolNames": ["query_plan"],
     }
     turn_messages = [
         {
@@ -1243,7 +1238,7 @@ def test_summarize_turn_observability_extracts_fast_route_arbitration():
                     "content": json.dumps(
                         {
                             "event": "conversation_turn_event",
-                            "routingPath": "plan_query_fast_route",
+                            "routingPath": "zhiyuan_agent_direct",
                             "routeDecision": route_decision,
                         },
                         ensure_ascii=False,
@@ -1255,13 +1250,9 @@ def test_summarize_turn_observability_extracts_fast_route_arbitration():
 
     observed = runner._summarize_turn_observability(turn_messages)
 
-    assert observed["routingPath"] == "plan_query_fast_route"
+    assert observed["routingPath"] == "zhiyuan_agent_direct"
     assert observed["routeDecision"] == route_decision
-    assert observed["fastRouteArbitration"]["semanticArbitrationNeeded"] is True
-    assert observed["fastRouteArbitration"]["semanticArbitrationCandidatePaths"] == [
-        "plan_query_fast_route",
-        "major_intent_fast_route",
-    ]
+    assert set(observed) >= {"routingPath", "routeDecision"}
 
 
 def test_summarize_turn_observability_extracts_route_event_timings():
@@ -1276,7 +1267,7 @@ def test_summarize_turn_observability_extracts_route_event_timings():
                         {
                             "type": "routeObservability",
                             "event": "conversation_turn_event",
-                            "routingPath": "semantic_plan_action",
+                            "routingPath": "zhiyuan_agent_direct",
                             "routeDecision": {"route": "review_plan"},
                             "totalDurationMs": 28000,
                             "llmDurationMs": 4200,
@@ -1357,7 +1348,7 @@ def test_summarize_turn_observability_extracts_zhiyuan_agent_poc_shadow():
                         {
                             "type": "routeObservability",
                             "event": "conversation_turn_event",
-                            "routingPath": "major_intent_fast_route",
+                            "routingPath": "zhiyuan_agent_direct",
                             "zhiyuanAgentPocShadow": shadow,
                         },
                         ensure_ascii=False,
@@ -1392,17 +1383,13 @@ def test_summarize_turn_observability_extracts_action_family_from_route_event_to
                         {
                             "type": "routeObservability",
                             "event": "conversation_turn_event",
-                            "routingPath": "direct_atomic_plan_action",
+                            "routingPath": "zhiyuan_agent_direct",
                             "actionFamily": "replace_units",
                             "toolCalls": [
                                 {
-                                    "name": "plan_next_action",
+                                    "name": "preview_plan_action",
                                     "actionFamily": "replace_units",
                                     "stage": "preview",
-                                },
-                                {
-                                    "name": "execute_plan_action",
-                                    "actionFamily": "replace_units",
                                     "resultKind": "preview_only",
                                 },
                             ],
@@ -1416,7 +1403,7 @@ def test_summarize_turn_observability_extracts_action_family_from_route_event_to
 
     observed = runner._summarize_turn_observability(turn_messages)
 
-    assert observed["routingPath"] == "direct_atomic_plan_action"
+    assert observed["routingPath"] == "zhiyuan_agent_direct"
     assert observed["actionFamilies"] == ["replace_units"]
     assert observed["resultKinds"] == ["preview_only"]
 
@@ -1453,7 +1440,7 @@ def test_runtime_shadow_observation_extracts_plan_pending_card_and_workspace_tar
         "prompt": "把第4个专业组移到第2位",
         "elapsedMs": 1200,
         "turnObservability": {
-            "routingPath": "plan_fast_route",
+            "routingPath": "zhiyuan_agent_direct",
             "toolCallCount": 1,
             "toolReturnCount": 1,
             "actionFamilies": ["move_ordered_unit"],
@@ -1527,7 +1514,7 @@ def test_runtime_shadow_observation_builds_latency_profile_diagnostic():
             "firstMessageMs": 1200,
             "finalMessageMs": 28072,
             "turnObservability": {
-                "routingPath": "semantic_plan_action",
+                "routingPath": "zhiyuan_agent_direct",
                 "toolCallCount": 1,
                 "toolReturnCount": 1,
                 "actionFamilies": ["review_plan"],
@@ -1647,7 +1634,7 @@ def test_runtime_shadow_observation_marks_readonly_while_pending_from_case_profi
             "stepIndex": 1,
             "sessionId": "17",
             "prompt": "先不确认，当前方案里有没有护理",
-            "turnObservability": {"routingPath": "plan_query_fast_route"},
+            "turnObservability": {"routingPath": "zhiyuan_agent_direct"},
         },
         [],
         2,
@@ -1673,7 +1660,7 @@ def test_runtime_shadow_observation_does_not_treat_readonly_tool_applied_as_pend
                 "routingPath": "full_agent",
                 "toolCalls": [
                     {
-                        "name": "execute_plan_action",
+                        "name": "query_plan",
                         "actionFamily": "query_state",
                         "resultKind": "status_overview",
                         "applied": True,
@@ -2122,7 +2109,7 @@ def test_content_assertions_report_missing_thinking_message():
 def test_tool_assertions_can_require_exact_tool_sequence():
     violations = runner._check_tool_assertions(
         {
-            "routingPath": "pending_readonly_plan_query",
+            "routingPath": "zhiyuan_agent_direct",
             "actionFamilies": ["query_ordered"],
             "resultKinds": ["ordered_snapshot"],
             "toolCalls": [
@@ -2131,12 +2118,12 @@ def test_tool_assertions_can_require_exact_tool_sequence():
         },
         {
             "prompt": "财管会计审计怎么排",
-            "expectedRoutingPath": "pending_readonly_plan_query",
+            "expectedRoutingPath": "zhiyuan_agent_direct",
             "assertActionFamiliesContain": ["query_ordered"],
             "assertResultKindsContain": ["ordered_snapshot"],
             "expectedToolNames": ["compare_major_options"],
             "expectedToolCounts": {"compare_major_options": 1},
-            "assertToolNamesNotContain": ["compare_majors"],
+            "assertToolNamesNotContain": ["compare_major_options_legacy"],
             "assertNoRepeatedToolNames": True,
         },
         "case-tools",
@@ -2227,7 +2214,7 @@ def test_tool_assertions_report_repeated_or_forbidden_tools():
         },
         {
             "prompt": "建筑城乡规划要不要美术基础",
-            "expectedRoutingPath": "pending_readonly_plan_query",
+            "expectedRoutingPath": "zhiyuan_agent_direct",
             "assertActionFamiliesContain": ["query_ordered"],
             "assertResultKindsContain": ["ordered_snapshot"],
             "expectedToolNames": ["get_major_introductions"],
@@ -2251,14 +2238,14 @@ def test_tool_assertions_report_repeated_or_forbidden_tools():
 def test_tool_assertions_accept_any_expected_routing_path():
     violations = runner._check_tool_assertions(
         {
-            "routingPath": "pending_readonly_plan_query",
+            "routingPath": "zhiyuan_agent_direct",
             "actionFamilies": ["query_ordered"],
             "resultKinds": ["ordered_snapshot"],
-            "toolCalls": [{"name": "execute_plan_action"}],
+            "toolCalls": [{"name": "query_plan"}],
         },
         {
             "prompt": "两万以上的都算贵",
-            "expectedRoutingPathAny": ["direct_readonly_plan_query", "pending_readonly_plan_query"],
+            "expectedRoutingPathAny": ["zhiyuan_agent_direct"],
             "assertActionFamiliesContain": ["query_ordered"],
             "assertResultKindsContain": ["ordered_snapshot"],
         },
@@ -2272,10 +2259,10 @@ def test_tool_assertions_accept_any_expected_routing_path():
 def test_tool_assertions_accept_any_expected_result_kind():
     violations = runner._check_tool_assertions(
         {
-            "routingPath": "direct_atomic_plan_action",
+            "routingPath": "zhiyuan_agent_direct",
             "actionFamilies": ["remove_units"],
             "resultKinds": ["no_change"],
-            "toolCalls": [{"name": "plan_next_action"}, {"name": "execute_plan_action"}],
+            "toolCalls": [{"name": "preview_plan_action"}],
         },
         {
             "prompt": "两万以上且不贴合意向的删掉",
@@ -2292,10 +2279,10 @@ def test_tool_assertions_accept_any_expected_result_kind():
 def test_tool_assertions_report_any_expected_result_kind_mismatch():
     violations = runner._check_tool_assertions(
         {
-            "routingPath": "direct_atomic_plan_action",
+            "routingPath": "zhiyuan_agent_direct",
             "actionFamilies": ["remove_units"],
             "resultKinds": ["error"],
-            "toolCalls": [{"name": "plan_next_action"}, {"name": "execute_plan_action"}],
+            "toolCalls": [{"name": "preview_plan_action"}],
         },
         {
             "prompt": "两万以上且不贴合意向的删掉",
@@ -2313,7 +2300,7 @@ def test_tool_assertions_report_any_expected_routing_path_mismatch():
         {"routingPath": "full_agent", "toolCalls": []},
         {
             "prompt": "两万以上的都算贵",
-            "expectedRoutingPathAny": ["direct_readonly_plan_query", "pending_readonly_plan_query"],
+            "expectedRoutingPathAny": ["zhiyuan_agent_direct"],
         },
         "case-tools",
         "9903235",
@@ -2413,54 +2400,6 @@ def test_fixture_and_root_cause_fields_accept_case_and_step_overrides():
     assert record["fixtureType"] == "empty_plan"
     assert record["fixtureContract"] == {"type": "empty_plan", "requiredState": []}
     assert record["expectedRootCause"] == "assertion_noise"
-
-
-def test_metrics_summary_reports_fast_route_arbitration_distribution():
-    summary = runner._build_metrics_summary(
-        [
-            {
-                "case": "a",
-                "sessionId": "17",
-                "prompt": "当前方案里有没有法学",
-                "elapsedMs": 1000,
-                "turnObservability": {
-                    "fastRouteArbitration": {
-                        "selectedPath": "plan_query_fast_route",
-                        "semanticArbitrationNeeded": False,
-                        "semanticArbitrationCandidatePaths": ["plan_query_fast_route"],
-                    }
-                },
-            },
-            {
-                "case": "b",
-                "sessionId": "17",
-                "prompt": "医学别碰，先看看影响",
-                "elapsedMs": 2000,
-                "turnObservability": {
-                    "fastRouteArbitration": {
-                        "selectedPath": "major_intent_fast_route",
-                        "semanticArbitrationNeeded": True,
-                        "semanticArbitrationReason": "intent_plan_mixed_candidates",
-                        "semanticArbitrationCandidatePaths": [
-                            "plan_query_fast_route",
-                            "major_intent_fast_route",
-                        ],
-                    }
-                },
-            },
-        ]
-    )
-
-    arbitration = summary["fastRouteArbitration"]
-    assert arbitration["observed"] == 2
-    assert arbitration["semanticArbitrationNeeded"] == 1
-    assert arbitration["selectedPaths"] == {
-        "plan_query_fast_route": 1,
-        "major_intent_fast_route": 1,
-    }
-    assert arbitration["neededReasons"] == {"intent_plan_mixed_candidates": 1}
-    assert arbitration["candidatePaths"]["plan_query_fast_route"] == 2
-    assert arbitration["neededExamples"][0]["prompt"] == "医学别碰，先看看影响"
 
 
 def test_metrics_summary_reports_zhiyuan_agent_poc_shadow_distribution():

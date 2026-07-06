@@ -135,74 +135,13 @@ def decide_tool_reply(
 
     if payload:
         result_kind = str(payload.get("result_kind") or "").strip()
-        action_family = str(payload.get("action_family") or "").strip()
         reply_focus = _reply_focus_set(payload)
         reply = _payload_reply(payload)
-        if (
-            tool_name == "execute_plan_action"
-            and action_family == "query_state"
-            and result_kind == "status_overview"
-            and reply
-        ):
-            return ToolReplyDecision(reason="structured_status_overview_needs_model_synthesis")
-        if (
-            tool_name == "execute_plan_action"
-            and action_family == "review_plan"
-            and result_kind == "review_result"
-            and reply
-        ):
-            return ToolReplyDecision(reason="structured_review_result_needs_model_synthesis")
         if result_kind == "error" and reply_focus & DIRECT_BLOCKING_REPLY_FOCUS and reply:
             return ToolReplyDecision(
                 strategy="direct_blocking",
                 reply=reply,
                 reason="structured_blocking_result",
-            )
-        if (
-            tool_name == "execute_plan_action"
-            and result_kind == "preview_only"
-            and str(payload.get("action_family") or "").strip() == "sort_ordered_plan"
-            and reply
-        ):
-            return ToolReplyDecision(
-                strategy="preview_wait_confirm",
-                reply=reply,
-                reason="structured_sort_preview",
-            )
-        if (
-            tool_name == "execute_plan_action"
-            and result_kind == "preview_only"
-            and ({"unit_position_preview", "volunteer_position_preview"} & reply_focus)
-            and reply
-        ):
-            return ToolReplyDecision(
-                strategy="preview_wait_confirm",
-                reply=reply,
-                reason="structured_position_preview",
-            )
-        if (
-            tool_name == "execute_plan_action"
-            and action_family == "add_units"
-            and result_kind == "preview_only"
-            and "confirmation_required" in reply_focus
-            and reply
-        ):
-            return ToolReplyDecision(
-                strategy="preview_wait_confirm",
-                reply=reply,
-                reason="structured_add_preview",
-            )
-        if (
-            tool_name == "execute_plan_action"
-            and action_family in {"remove_units", "replace_units"}
-            and result_kind == "preview_only"
-            and "review_issue_batch_scope" in reply_focus
-            and reply
-        ):
-            return ToolReplyDecision(
-                strategy="preview_wait_confirm",
-                reply=reply,
-                reason="structured_review_issue_batch_preview",
             )
         if result_kind in DIRECT_REPLY_RESULT_KINDS and reply:
             return ToolReplyDecision(
@@ -264,16 +203,11 @@ def _trust_explicit_reply_strategy(tool_name: str, payload: dict[str, Any], stra
 
     Read-only tools may return useful facts or a draft summary, but they should
     still go back to the model so mixed user questions are answered in full.
-    `execute_plan_action` direct replies are handled by structured result_kind /
-    reply_focus checks below, except for blocking errors where bypassing another
-    model turn prevents accidental retry or hallucinated execution.
     """
     if not payload:
         return False
     if tool_name in INTENT_PREVIEW_TOOL_NAMES and strategy == "preview_wait_confirm":
         return True
-    if tool_name == "execute_plan_action" and strategy == "direct_blocking":
-        return bool(_payload_reply(payload))
     return False
 
 

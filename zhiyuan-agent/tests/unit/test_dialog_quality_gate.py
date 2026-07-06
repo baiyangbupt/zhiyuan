@@ -151,7 +151,6 @@ def test_local_gate_filters_removed_pytest_targets(tmp_path):
 
     assert "tests/unit/test_dialog_quality_gate.py" in local.command
     assert "tests/unit/models/test_semantic_router.py" not in local.command
-    assert "tests/unit/test_major_intent_fast_router.py" not in local.command
     assert all(
         (gate.ROOT / target).exists()
         for target in local.command

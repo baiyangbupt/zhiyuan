@@ -13,9 +13,8 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
-from pydantic_ai import Agent
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 
 from app.agent.base_agent import ProgressCallback
@@ -46,36 +45,20 @@ from app.services.profile_manager import _normalize_batch
 from app.schemas.ws import WSResponse
 from app.sync.state_sync import PlanningStateSync
 from app.tools.explore_followup_tool import handle_interest_analysis_action_result
-from app.tools.plan_execution_tool import (
-    clear_recent_plan_execution_result,
-    consume_recent_plan_execution_result,
-    execute_plan_action,
-)
-from app.tools.candidate_filter_extraction_tool import extract_candidate_query_filters_async
-from app.tools.plan_orchestration_tool import plan_next_action
-from app.tools.plan_semantic_action_tool import (
-    classify_plan_atomic_action_dsl,
-    classify_local_plan_action_dsl,
-    classify_plan_semantic_action,
-)
-from app.tools.plan_query_profile_tool import PlanQueryProfileResult, classify_plan_query_profile
 from app.tools.planning_workflow_tool import _format_fix_proposal_apply_result
 from app.tools.planning_workflow_tool import _fix_proposal_facts
 from app.tools.plan_orchestration_models import (
     CompositePlanProposal,
     PlanGoal,
-    normalize_plan_action_payload,
 )
 from app.tools.intent_state_tool import (
     ANALYSIS_STAGE_CONFIRMED,
     apply_selected_intents as _apply_selected_intents,
     analyze_volunteer_intent_change,
-    _classify_intent_side_effect,
     merge_selected_values,
     _normalize_constraint_type_for_payload,
     _remove_positive_major_targets_excluded_by_negative_scope,
 )
-from app.tools.intent_entity_profile_tool import extract_intent_entity_profile
 from app.tools.intent_response_tool import (
     parse_intent_analysis_payload,
     parse_explore_followup_result,
@@ -95,7 +78,6 @@ from app.util.internal_client import (
     get_planning_workspace_state,
     get_user_init_profile,
     get_user_score_detail,
-    save_intent_change_cache,
     save_pending_confirmation,
     update_session_tuition_range,
     update_message,
@@ -270,8 +252,6 @@ _NO_TOOL_NO_ACTION_BOUNDARY_REPLY = (
 )
 _ROUTE_OBSERVABILITY_MODEL_NAME = "route-observability"
 _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD = 0.8
-_LOCAL_PLAN_ACTION_DSL_CONFIDENCE_THRESHOLD = 0.85
-_LOCAL_PLAN_UNSUPPORTED_ACTIONS = frozenset({"pin_or_lock_unit"})
 _INTENT_PREVIEW_TOOL_NAMES = {
     "analyze_volunteer_intent_change",
     "preview_current_intent_confirmation",
@@ -316,21 +296,6 @@ _USER_REPLY_ENGLISH_WORD_REPLACEMENTS = (
     (re.compile(r"\s*\bincreasingly\b\s*", re.IGNORECASE), "越来越"),
     (re.compile(r"\s*\bbaseline\b\s*", re.IGNORECASE), "基准"),
 )
-
-_PLAN_ACTION_REPLY_SYNTHESIS_INSTRUCTIONS = """\
-你负责把已经执行完成的志愿方案工具结果，整理成用户能看懂的一段中文回复。
-
-约束：
-- 只基于输入里的结构化事实回答，不新增数字、学校、专业、风险结论。
-- 不要说“工具、系统、action_family、payload、blocked、preview_only、cannot_satisfy、候选池、自动修复、自动处理、自动补齐、自动应用、系统阻塞、预览验证未通过、预览参考状态、被卡住”。
-- 不要说“系统给了/系统能执行/系统没法执行/暂时动不了/卡在哪/我立刻处理/给我明确态度我就能处理”。
-- 统一用“你”，不要用“您”。
-- 不要照抄 summary/state_summary；它们只是事实摘要。
-- 如果已有可确认的调整预览，说明“我已把可确认的处理内容列出来，确认前不会改方案”，并点出核心处理内容。
-- 如果某些建议暂时不能直接处理，用用户能理解的原因说清楚，例如“没有足够相近且风险更低的可替换志愿”“需要你先决定是否接受降层次或换专业范围”。
-- 没有当前轮可确认的调整预览时，不要让用户直接“确认就执行”；应表达为“我可以先列出调整预览，确认前不会改方案”。
-- 回复可以结构化，但要简洁，优先用 2-4 个短要点；不要堆叠多层标题。
-"""
 
 _FIX_PROPOSAL_STRATEGY_TEXT = {
     "replace_risk_items": "替换风险项",
@@ -406,38 +371,6 @@ def _requests_profile_change_replan(value: Any) -> bool:
     return _PROFILE_CHANGE_REPLAN_REPLY_FOCUS in _reply_focus_set(value)
 
 
-def _semantic_current_plan_analysis_allowed(value: Any) -> bool:
-    """Whether semantic quick route may answer analysis without review context.
-
-    Generic questions such as "这版值不值得/偏专业还是学校/省外是不是多"
-    need richer plan reading by the full agent.  The semantic route should only
-    take first-turn analysis when the classifier explicitly marks a bounded
-    shortage/unavailable-guidance scenario and the user is actually asking for
-    that boundary explanation.
-    """
-
-    focus = _reply_focus_set(value)
-    if "unavailable_guidance" in focus:
-        return True
-    return "shortage_boundary" in focus and "plan_structure_shortage_only" in focus
-
-
-def _semantic_current_plan_analysis_matches_prompt(value: Any, user_prompt: str | None) -> bool:
-    focus = _reply_focus_set(value)
-    if "shortage_boundary" in focus:
-        return "plan_structure_shortage_only" in focus
-    if "unavailable_guidance" in focus:
-        return _review_prompt_prefers_unavailable_guidance(user_prompt) or _prompt_requests_plan_constraint_adjustment(user_prompt)
-    return False
-
-
-def _semantic_targeted_review_allowed(value: Any) -> bool:
-    return proposal_compiler.semantic_targeted_review_allowed(
-        value,
-        confidence_threshold=_SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD,
-    )
-
-
 def _turn_decision_is_plan_review_or_repair_preview(decision: Any) -> bool:
     try:
         confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
@@ -511,131 +444,6 @@ def _semantic_query_state_should_run_review(content: str | None) -> bool:
         )
     )
     return has_review_subject and has_review_judgment
-
-
-def _plan_result_reply_focus_set(value: Any) -> set[str]:
-    if not isinstance(value, dict):
-        return set()
-    focus: list[Any] = []
-    raw_focus = value.get("reply_focus")
-    if isinstance(raw_focus, list):
-        focus.extend(raw_focus)
-    facts = value.get("facts") if isinstance(value.get("facts"), dict) else {}
-    requested_focus = facts.get("requested_reply_focus") if isinstance(facts, dict) else None
-    if isinstance(requested_focus, list):
-        focus.extend(requested_focus)
-    return {str(item or "").strip() for item in focus if str(item or "").strip()}
-
-
-def _plan_result_requests_fix_preview(value: Any) -> bool:
-    focus = _plan_result_reply_focus_set(value)
-    return bool(focus & {"fix_proposal_preview", "ready_fix_proposals"})
-
-
-def _plan_result_has_fix_proposals(value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-    facts = value.get("facts") if isinstance(value.get("facts"), dict) else {}
-    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
-    if not isinstance(fix_facts, dict):
-        return False
-    if any(_as_int(fix_facts.get(key)) > 0 for key in ("ready_count", "blocked_count", "preview_only_count")):
-        return True
-    proposals = fix_facts.get("proposals")
-    return isinstance(proposals, list) and bool(proposals)
-
-
-def _plan_result_has_ready_fix_proposals(value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-    facts = value.get("facts") if isinstance(value.get("facts"), dict) else {}
-    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
-    if not isinstance(fix_facts, dict):
-        return False
-    if _as_int(fix_facts.get("ready_count") or fix_facts.get("readyCount")) > 0:
-        return True
-    proposals = fix_facts.get("proposals") if isinstance(fix_facts.get("proposals"), list) else []
-    return any(
-        isinstance(proposal, dict) and str(proposal.get("status") or "").strip() == "ready"
-        for proposal in proposals
-    )
-
-
-def _plan_route_context_requests_fix_preview(value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-    focus = value.get("replyFocus")
-    return isinstance(focus, list) and any(
-        str(item or "").strip() in {"fix_proposal_preview", "ready_fix_proposals"}
-        for item in focus
-    )
-
-
-def _plan_route_context_has_fix_proposals(value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-    fix_facts = value.get("fixProposals")
-    if not isinstance(fix_facts, dict):
-        return False
-    if any(_as_int(fix_facts.get(key)) > 0 for key in ("readyCount", "blockedCount", "previewOnlyCount")):
-        return True
-    proposals = fix_facts.get("proposals")
-    return isinstance(proposals, list) and bool(proposals)
-
-
-def _structured_review_context_is_readonly(value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-    if str(value.get("lastActionFamily") or "").strip() != "review_plan":
-        return False
-    if str(value.get("lastResultKind") or "").strip() != "review_result":
-        return False
-    if _plan_route_context_requests_fix_preview(value):
-        return False
-    return _plan_route_context_has_fix_proposals(value)
-
-
-def _structured_review_result_is_readonly(value: Any) -> bool:
-    """A review result that should be explained, not promoted into a mutation.
-
-    This only inspects structured tool output.  When the review result explicitly
-    requests a fix preview, recovery is still allowed; otherwise a review result
-    with proposals is treated as a read-only explanation/listing boundary.
-    """
-
-    if not isinstance(value, dict):
-        return False
-    if str(value.get("action_family") or "").strip() != "review_plan":
-        return False
-    if str(value.get("result_kind") or "").strip() != "review_result":
-        return False
-    if _plan_result_requests_fix_preview(value):
-        return False
-    focus = _plan_result_reply_focus_set(value)
-    return _plan_result_has_fix_proposals(value) and (
-        not focus or bool(focus & {"review_result", "fix_proposals", "unavailable_guidance"})
-    )
-
-
-def _prompt_asks_review_explanation_only(content: str | None) -> bool:
-    compact = _compact_plan_reply_text(str(content or ""))
-    if not compact:
-        return False
-    has_review_context = any(marker in compact for marker in ("审查", "提醒", "风险", "自动处理", "只是看看"))
-    has_explanation_request = any(
-        marker in compact
-        for marker in (
-            "看不懂",
-            "帮我分一下",
-            "分一下",
-            "哪些只是看看",
-            "哪些可以自动处理",
-            "哪些可以先出调整预览",
-            "哪些需要人工",
-            "解释一下",
-        )
-    )
-    return has_review_context and has_explanation_request
 
 
 def _build_profile_change_replan_reply(
@@ -852,28 +660,6 @@ def _compile_profile_replan_from_payload(
     )
 
 
-def _semantic_decision_is_current_student_profile_replan(decision: Any) -> bool:
-    if not _requests_profile_change_replan(decision):
-        return False
-    return str(getattr(decision, "profileScenario", "none") or "none").strip() == "current_student_update"
-
-
-def _semantic_decision_is_profile_replan(decision: Any) -> bool:
-    if not _requests_profile_change_replan(decision):
-        return False
-    return str(getattr(decision, "profileScenario", "none") or "none").strip() in {
-        "current_student_update",
-        "adhoc_scenario",
-        "ambiguous",
-    }
-
-
-def _turn_decision_is_current_student_profile_replan(decision: Any) -> bool:
-    if not _turn_decision_is_profile_replan(decision):
-        return False
-    return str(getattr(decision, "profileScenario", "none") or "none").strip() == "current_student_update"
-
-
 def _turn_decision_is_profile_replan(decision: Any) -> bool:
     confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
     profile_scenario = str(getattr(decision, "profileScenario", "none") or "none").strip()
@@ -953,144 +739,6 @@ async def _classify_active_pending_turn_decision(
         return None
     _store_current_turn_decision(request_context, decision)
     return decision
-
-
-def _compact_fix_proposal_for_reply_synthesis(proposal: dict[str, Any]) -> dict[str, Any]:
-    def clean_text(value: Any) -> str:
-        return _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(value or "").strip()))
-
-    status = str(proposal.get("status") or "").strip()
-    strategy = str(proposal.get("strategy") or "").strip()
-    action_summaries = [
-        clean_text(item)
-        for item in (proposal.get("action_summaries") or proposal.get("actionSummaries") or [])
-        if clean_text(item)
-    ][:4]
-    shortages: list[str] = []
-    for shortage in proposal.get("candidate_shortages") or proposal.get("candidateShortages") or []:
-        if not isinstance(shortage, dict):
-            continue
-        message = str(shortage.get("message") or "").strip()
-        if message:
-            shortages.append(clean_text(message))
-    warnings = [
-        clean_text(item)
-        for item in (proposal.get("warnings") or [])
-        if clean_text(item)
-    ][:3]
-    reason_parts = [
-        str(proposal.get("blocking_reason") or proposal.get("blockingReason") or "").strip(),
-        *shortages[:3],
-        *warnings,
-    ]
-    return {
-        "title": clean_text(proposal.get("title")),
-        "availability": _FIX_PROPOSAL_STATUS_TEXT.get(status, "需要结合审查结果进一步判断"),
-        "strategy": _FIX_PROPOSAL_STRATEGY_TEXT.get(strategy, strategy),
-        "summary": clean_text(proposal.get("summary")),
-        "impact": clean_text(proposal.get("impact")),
-        "action_summaries": action_summaries,
-        "change_counts": {
-            "remove_volunteers": _as_int(proposal.get("remove_volunteer_count") or proposal.get("removeVolunteerCount")),
-            "add_volunteers": _as_int(proposal.get("add_volunteer_count") or proposal.get("addVolunteerCount")),
-            "remove_units": _as_int(proposal.get("remove_unit_count") or proposal.get("removeUnitCount")),
-            "add_units": _as_int(proposal.get("add_unit_count") or proposal.get("addUnitCount")),
-        },
-        "reason": [
-            clean_text(part)
-            for part in reason_parts
-            if clean_text(part)
-        ][:4],
-    }
-
-
-def _compact_plan_action_result_for_reply_synthesis(result: dict[str, Any]) -> dict[str, Any]:
-    facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
-    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
-    proposals = [
-        _compact_fix_proposal_for_reply_synthesis(proposal)
-        for proposal in (fix_facts.get("proposals") or [])[:6]
-        if isinstance(proposal, dict)
-    ]
-    issue_examples: list[dict[str, Any]] = []
-    for issue in (facts.get("issue_hit_plan_examples") or facts.get("review_issue_hit_plan_examples") or [])[:6]:
-        if not isinstance(issue, dict):
-            continue
-        issue_examples.append(
-            {
-                "code": str(issue.get("code") or "").strip(),
-                "summary": _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(issue.get("summary") or "").strip())),
-                "count_text": str(issue.get("count_text") or issue.get("countText") or "").strip(),
-                "items": [
-                    _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(item or "").strip()))
-                    for item in (issue.get("items") or [])[:4]
-                    if str(item or "").strip()
-                ],
-            }
-        )
-    return {
-        "action_family": str(result.get("action_family") or "").strip(),
-        "result_kind": str(result.get("result_kind") or "").strip(),
-        "summary": _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(result.get("summary") or "").strip())),
-        "state_summary": _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(result.get("state_summary") or "").strip())),
-        "reply_focus": result.get("reply_focus") if isinstance(result.get("reply_focus"), list) else [],
-        "review": {
-            "plan_total": _as_int(facts.get("plan_total")),
-            "target_total": _as_int(facts.get("target_total")),
-            "risk_count": _as_int(facts.get("risk_count")),
-            "warn_count": _as_int(facts.get("warn_count")),
-            "tier_counts": facts.get("tier_counts") if isinstance(facts.get("tier_counts"), dict) else {},
-            "main_problems": [
-                _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(item or "").strip()))
-                for item in (facts.get("main_problems") or [])[:6]
-                if str(item or "").strip()
-            ],
-            "issue_examples": issue_examples,
-            "target_issue_codes": [
-                str(code or "").strip()
-                for code in (facts.get("target_issue_codes") or facts.get("targetIssueCodes") or [])
-                if str(code or "").strip()
-            ],
-        },
-        "fix_proposals": {
-            "total": _as_int(fix_facts.get("total") or len(proposals)),
-            "ready_count": _as_int(fix_facts.get("ready_count")),
-            "needs_user_decision_count": _as_int(fix_facts.get("blocked_count")) + _as_int(fix_facts.get("preview_only_count")),
-            "proposals": proposals,
-        },
-    }
-
-
-async def _synthesize_semantic_plan_action_reply(
-    llm_client: LLMClient,
-    *,
-    user_prompt: str,
-    result: dict[str, Any],
-    recent_plan_context: dict[str, Any] | None = None,
-) -> tuple[str, Any | None]:
-    """Use a no-tool model pass to turn plan facts into user-facing prose."""
-
-    synthesis_agent = Agent(
-        model=llm_client.model,
-        output_type=str,
-        instructions=_PLAN_ACTION_REPLY_SYNTHESIS_INSTRUCTIONS,
-        tools=[],
-        model_settings=llm_client.model_settings,
-    )
-    prompt_payload = {
-        "user_prompt": user_prompt,
-        "recent_plan_context": recent_plan_context or {},
-        "tool_result_facts": _compact_plan_action_result_for_reply_synthesis(result),
-    }
-    run_result = await synthesis_agent.run(
-        json.dumps(prompt_payload, ensure_ascii=False, default=str),
-        model_settings=llm_client.model_settings,
-    )
-    reply = str(getattr(run_result, "output", "") or "").strip()
-    usage = None
-    with contextlib.suppress(Exception):
-        usage = run_result.usage()
-    return _sanitize_reply_for_user(_normalize_user_facing_terms(reply)), usage
 
 
 def _log_conversation_turn_event(**fields: Any) -> None:
@@ -1869,75 +1517,6 @@ async def _expire_active_pending_confirmation_state(
     await _save_pending_confirmation_state(session_id, expired_state)
 
 
-async def _clear_legacy_plan_edit_cache_best_effort(session_id: str) -> None:
-    try:
-        session_id_int = int(str(session_id).strip())
-    except (TypeError, ValueError):
-        return
-    try:
-        await save_intent_change_cache(session_id_int, {})
-    except Exception:
-        logger.warning("Failed to clear legacy planEditCache: session_id=%s", session_id, exc_info=True)
-
-
-def _build_plan_pending_state(
-    session_id: str,
-    confirmation_candidate: dict[str, Any],
-    *,
-    replaced_pending: dict[str, Any] | None = None,
-    compiled_sink_metadata: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    pending_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    resolution = proposal_compiler.resolve_plan_confirmation_candidate(confirmation_candidate)
-    action_family = resolution.action_family
-    payload_data = proposal_compiler.ensure_structured_plan_payload(
-        resolution.plan_payload,
-        action_family=action_family,
-    )
-    source_backend_version = resolution.source_version_guard
-    execution_payload = dict(payload_data)
-    execution_payload["toolName"] = "confirm_pending"
-    execution_payload["action_family"] = action_family
-    execution_payload.setdefault("stage", "apply")
-    execution_payload.setdefault("requires_confirmation", False)
-    execution_payload.setdefault("should_refresh_workspace", True)
-    execution_payload.setdefault("should_rerun_review", True)
-    state = {
-        "type": "pendingConfirmation",
-        "pendingId": pending_id,
-        "sessionId": str(session_id),
-        "kind": "plan_mutation",
-        "status": "active",
-        "actionFamily": action_family,
-        "summary": str(confirmation_candidate.get("summary") or "").strip(),
-        "userGoal": str(confirmation_candidate.get("user_goal") or "").strip(),
-        "executionPayload": execution_payload,
-        "createdAt": now,
-        "updatedAt": now,
-        "sourceBackendVersion": source_backend_version,
-    }
-    composite_proposal = payload_data.get("composite_proposal")
-    if isinstance(composite_proposal, dict):
-        state["compositeProposal"] = composite_proposal
-    intent_update = confirmation_candidate.get("intent_update")
-    if isinstance(intent_update, dict) and intent_update.get("selected"):
-        state["executionPayload"]["intentPayload"] = intent_update
-    compiled_proposal_id = ""
-    if isinstance(compiled_sink_metadata, dict):
-        compiled_proposal_id = str(compiled_sink_metadata.get("compiledProposalId") or "").strip()
-    if compiled_proposal_id:
-        state["compiledProposalId"] = compiled_proposal_id
-        state["compilerSink"] = {
-            "compiledProposalId": compiled_proposal_id,
-            "sinkType": str(compiled_sink_metadata.get("sinkType") or "plan").strip() or "plan",
-        }
-        state["executionPayload"]["compiledProposalId"] = compiled_proposal_id
-    if replaced_pending and replaced_pending.get("pendingId"):
-        state["replacesPendingId"] = replaced_pending.get("pendingId")
-    return state
-
-
 def _soft_negative_label(label: str, *, intent_mode: str) -> str:
     if intent_mode == "constraint":
         return label
@@ -2059,73 +1638,6 @@ def _summarize_intent_values(
     return "；".join(parts)
 
 
-_PREFERENCE_STRENGTH_SUMMARY_LABELS = {
-    "primary": "优先专业",
-    "preferred": "偏好专业",
-    "acceptable": "可以考虑专业",
-    "must_have": "至少保留专业",
-    "only_keep": "只保留专业",
-    "exclude_soft": "不优先专业",
-    "exclude_hard": "排除专业",
-}
-
-
-def _intent_entity_profile_strength_display_summary(profile: Any, *, batch: str = "01") -> str:
-    """Build display text from 3.2.0 profile strength fields.
-
-    Runtime execution still uses selectedData/merged for backend compatibility;
-    this helper only preserves the user's visible priority semantics on cards
-    and replies.
-    """
-
-    preference_strength = _model_value(profile, "preferenceStrength", {}) or {}
-    if not isinstance(preference_strength, dict):
-        return ""
-    major_values = set(_profile_text_values(_model_value(profile, "majorValues", [])))
-    if not major_values:
-        return ""
-    span_major_values: dict[str, set[str]] = {}
-    for span in _model_value(profile, "entityPolaritySpans", []) or []:
-        if not isinstance(span, dict):
-            continue
-        if str(span.get("entityType") or "").strip() != "major":
-            continue
-        strength = str(span.get("strength") or "").strip()
-        entity = str(span.get("entity") or "").strip()
-        if strength and entity:
-            span_major_values.setdefault(strength, set()).add(entity)
-
-    parts: list[str] = []
-    for strength in ("primary", "preferred", "acceptable", "must_have", "only_keep", "exclude_soft", "exclude_hard"):
-        negative = strength in {"exclude_soft", "exclude_hard"}
-        values: list[str] = []
-        for value in _profile_text_values(preference_strength.get(strength)):
-            if value not in major_values and value not in span_major_values.get(strength, set()):
-                continue
-            _key, normalized_value = _profile_major_payload_key(value, batch=batch, negative=negative)
-            if normalized_value and normalized_value not in values:
-                values.append(normalized_value)
-        if not values:
-            continue
-        label = _PREFERENCE_STRENGTH_SUMMARY_LABELS.get(strength, "偏好专业")
-        parts.append(f"{label}：{'、'.join(dict.fromkeys(values))}")
-    return "；".join(parts)
-
-
-def _intent_profile_strength_summary_can_cover_merged(merged: dict[str, Any]) -> bool:
-    """The strength summary currently only represents major entities."""
-
-    if not isinstance(merged, dict):
-        return False
-    for key in ("school_intents", "city_intents", "career_intents", "tuition_budget", "physical_constraints", "physicalConstraints"):
-        value = merged.get(key)
-        if not isinstance(value, dict):
-            continue
-        if any(_as_text_list(raw_values) for raw_values in value.values()):
-            return False
-    return True
-
-
 def _as_text_list(values: Any) -> list[str]:
     raw_values = values if isinstance(values, list) else [values] if values else []
     return [str(value or "").strip() for value in raw_values if str(value or "").strip()]
@@ -2222,6 +1734,65 @@ def _format_intent_card_content(summary: str, *, existing_summary: str = "") -> 
     return "\n".join(lines).strip() or summary
 
 
+_PRIMARY_INTENT_REQUIREMENT_LABELS = {
+    "偏好专业": ("专业要求", "要"),
+    "偏好专业类": ("专业要求", "要"),
+    "偏好专业门类": ("专业要求", "要"),
+    "优先专业": ("专业要求", "要"),
+    "可以考虑专业": ("专业要求", "要"),
+    "排除专业": ("专业要求", "不要"),
+    "排除专业类": ("专业要求", "不要"),
+    "排除专业门类": ("专业要求", "不要"),
+    "偏好院校": ("院校要求", "要"),
+    "排除院校": ("院校要求", "不要"),
+    "偏好地域": ("地域要求", "要"),
+    "排除地域": ("地域要求", "不要"),
+    "发展方向": ("发展方向要求", "要"),
+    "排除方向": ("发展方向要求", "不要"),
+}
+
+
+def _rewrite_mixed_intent_summary_for_primary(summary: str) -> tuple[str, bool]:
+    parts = [part.strip() for part in str(summary or "").split("；") if part.strip()]
+    if not parts:
+        return "", False
+    grouped: dict[str, dict[str, list[str]]] = {}
+    unmatched: list[str] = []
+    for part in parts:
+        if "：" not in part:
+            unmatched.append(part)
+            continue
+        label, values_text = part.split("：", 1)
+        target = _PRIMARY_INTENT_REQUIREMENT_LABELS.get(label.strip())
+        if not target:
+            unmatched.append(part)
+            continue
+        group_label, polarity_label = target
+        values = [item.strip() for item in re.split(r"[、，,]", values_text) if item.strip()]
+        if not values:
+            unmatched.append(part)
+            continue
+        bucket = grouped.setdefault(group_label, {"要": [], "不要": []})
+        for value in values:
+            if value not in bucket[polarity_label]:
+                bucket[polarity_label].append(value)
+    rewritten: list[str] = []
+    changed = False
+    for group_label, values_by_polarity in grouped.items():
+        positive = values_by_polarity.get("要") or []
+        negative = values_by_polarity.get("不要") or []
+        if positive and negative:
+            rewritten.append(f"{group_label}：要：{'、'.join(positive)}；不要：{'、'.join(negative)}")
+            changed = True
+        else:
+            for label, values in (("要", positive), ("不要", negative)):
+                if values:
+                    rewritten.append(f"{group_label}：{label}：{'、'.join(values)}")
+    if not changed:
+        return summary, False
+    return "；".join(rewritten + unmatched), True
+
+
 def _intent_card_primary_reply(
     summary: str,
     *,
@@ -2232,8 +1803,9 @@ def _intent_card_primary_reply(
     existing_text = str(existing_summary or "").strip()
     if not summary_text and existing_text:
         summary_text = existing_text
+    summary_text, summary_rewritten = _rewrite_mixed_intent_summary_for_primary(summary_text)
     if summary_text:
-        title = "已列出这次报考条件预览" if intent_mode == "constraint" else "已列出这次报考想法预览"
+        title = "已列出这次报考要求预览" if summary_rewritten or intent_mode == "constraint" else "已列出这次报考想法预览"
         reply = f"{title}：{summary_text}。"
     else:
         reply = "已列出这次待采纳内容。"
@@ -2518,7 +2090,7 @@ def _compile_full_agent_intent_preview_turn_decision_arbitration(
     )
     return proposal_compiler.compile_runtime_intent_preview_turn_decision_arbitration_source(
         turn_decision=turn_decision,
-        turn_decision_blocks_intent_pending=_turn_decision_blocks_runtime_intent_hard_cut(turn_decision),
+        turn_decision_blocks_intent_pending=_turn_decision_blocks_intent_pending(turn_decision),
         semantic_intent_preview_requested=_semantic_decision_requests_intent_preview(semantic_decision),
         semantic_entity_kinds=_semantic_intent_decision_entity_kinds(semantic_decision),
         preview_payload_entity_kinds=_intent_preview_payload_entity_kinds(preview_payload),
@@ -2755,17 +2327,6 @@ def _intent_payload_has_negative_value(payload: dict[str, Any] | None) -> bool:
         ("physicalConstraints", "specialLimits"),
     ]
     return _intent_payload_has_any_value(payload, paths)
-
-
-def _constraint_payload_has_required_scope(
-    merged: dict[str, Any] | None,
-    *,
-    constraint_intent_type: str,
-) -> bool:
-    return proposal_compiler.intent_payload_has_required_constraint_scope(
-        merged,
-        constraint_intent_type=constraint_intent_type,
-    )
 
 
 def _intent_preview_missing_required_constraint_scope(payload: dict[str, Any] | None) -> bool:
@@ -3039,16 +2600,6 @@ class _IntentPreviewCandidate:
 
 
 @dataclass
-class _StructuredGoalIntentCandidate:
-    selected_data: dict[str, Any]
-    merged: dict[str, Any]
-    intent_mode: str
-    batch: str
-    fallback_mechanism_line: str = ""
-    fallback_detail_lines: list[str] = field(default_factory=list)
-
-
-@dataclass
 class _RuntimeCompiledPendingResult:
     card: WSResponse | None = None
     primary_reply: str = ""
@@ -3302,226 +2853,6 @@ def _merge_existing_intent_payload(payload: dict[str, Any] | None) -> dict[str, 
     return _merge_intent_preview_item_values(list(preview.existingItems))
 
 
-async def _structured_user_goal_fix_candidate_from_source(
-    session_id: str,
-    source: dict[str, Any] | None,
-    *,
-    context_source: str,
-    intent_payload_override: dict[str, Any] | None = None,
-    attempt: _UserGoalFixConfirmationAttempt | None = None,
-) -> _UserGoalFixCandidate | None:
-    compiled_request = proposal_compiler.compile_structured_user_goal_fix_request_source(
-        source=source,
-        context_source=context_source,
-        intent_payload_override=intent_payload_override,
-    )
-    planning_version = compiled_request.source_version_guard
-    if planning_version <= 0:
-        try:
-            state_resp = await get_planning_state(session_id)
-            planning_version = _as_int(((state_resp or {}).get("data") or {}).get("version"))
-        except Exception:
-            logger.warning(
-                "Failed to load planning state for structured user-goal proposal: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            planning_version = 0
-        if planning_version > 0 and isinstance(compiled_request.goal, dict):
-            compiled_request = proposal_compiler.compile_structured_user_goal_fix_request_source(
-                source=source,
-                planning_version=planning_version,
-                context_source=context_source,
-                intent_payload_override=intent_payload_override,
-            )
-    if not compiled_request.matched:
-        logger.info(
-            "Skip structured user-goal proposal before Java preview: session_id=%s reasons=%s",
-            session_id,
-            compiled_request.blocking_reasons,
-        )
-        return None
-    user_goal_request = compiled_request.user_goal_request
-    try:
-        proposal_result = await generate_user_goal_planning_fix_proposals(1, session_id, user_goal_request)
-    except Exception:
-        logger.warning(
-            "Failed to generate structured user-goal plan proposal: session_id=%s goal_type=%s",
-            session_id,
-            user_goal_request.get("goalType"),
-            exc_info=True,
-        )
-        return None
-    if proposal_result.get("code") != 0:
-        return None
-    data = proposal_result.get("data")
-    if not isinstance(data, dict):
-        return None
-    selection = proposal_compiler.select_user_goal_fix_proposal(
-        data,
-        goal_type=str(user_goal_request.get("goalType") or "").strip(),
-        fallback_source_version_guard=planning_version,
-    )
-    if not isinstance(selection.proposal, dict):
-        if attempt is not None:
-            fallback_intent_payload = (
-                intent_payload_override
-                or proposal_compiler.structured_intent_payload_from_composite_proposal(source)
-                or {}
-            )
-            fallback_constraint_type = str(
-                fallback_intent_payload.get("constraintIntentType")
-                or fallback_intent_payload.get("constraint_intent_type")
-                or "default"
-            ).strip() or "default"
-            attempt.fallback_to_intent = True
-            attempt.fallback_mechanism_line, attempt.fallback_detail_lines = _constraint_plan_confirmation_fallback(
-                selection.fallback_proposal,
-                constraint_intent_type=fallback_constraint_type,
-            )
-        return None
-    intent_payload = (
-        compiled_request.intent_payload
-        or intent_payload_override
-        or proposal_compiler.structured_intent_payload_from_composite_proposal(source)
-    )
-    summary = _summarize_selected_intent_payload(intent_payload)
-    if not summary:
-        summary = str(
-            selection.proposal.get("summary")
-            or selection.proposal.get("title")
-            or compiled_request.summary_hint
-            or ""
-        ).strip()
-    return _UserGoalFixCandidate(
-        proposal=selection.proposal,
-        source_version_guard=selection.source_version_guard,
-        user_goal_request=user_goal_request,
-        intent_payload=intent_payload,
-        summary=summary,
-    )
-
-
-async def _structured_goal_intent_candidate_from_source(
-    session_id: str,
-    source: dict[str, Any] | None,
-    *,
-    intent_payload_override: dict[str, Any] | None = None,
-    fallback_mechanism_line: str = "",
-    fallback_detail_lines: list[str] | None = None,
-) -> _StructuredGoalIntentCandidate | None:
-    compiled_input = proposal_compiler.compile_structured_goal_intent_input_source(
-        source=source,
-        intent_payload_override=intent_payload_override,
-    )
-    intent_payload = compiled_input.intent_payload
-    if not isinstance(intent_payload, dict):
-        return None
-    selected_values = compiled_input.selected_values
-    if not selected_values:
-        logger.info(
-            "Skip structured goal intent fallback before merge: session_id=%s reasons=%s",
-            session_id,
-            compiled_input.blocking_reasons,
-        )
-        return None
-    try:
-        merged = merge_selected_values(selected_values)
-    except Exception:
-        logger.warning(
-            "Failed to merge structured goal intent fallback: session_id=%s",
-            session_id,
-            exc_info=True,
-        )
-        return None
-    if not merged:
-        return None
-    intent_resolution = proposal_compiler.resolve_intent_select_input(
-        selected_values=selected_values,
-        merged=merged,
-        intent_mode=compiled_input.intent_mode,
-        raw_constraint_intent_type=compiled_input.raw_constraint_intent_type,
-    )
-    if not intent_resolution.allowed:
-        logger.info(
-            "Skip structured goal intent fallback before compiled input: session_id=%s constraint=%s reasons=%s merged=%s",
-            session_id,
-            compiled_input.raw_constraint_intent_type,
-            intent_resolution.blocking_reasons,
-            merged,
-        )
-        return None
-    intent_mode = intent_resolution.intent_mode
-    constraint_intent_type = intent_resolution.constraint_intent_type
-    selected_data = {
-        **intent_payload,
-        "selected": selected_values,
-        "intentMode": intent_mode,
-        "constraintIntentType": constraint_intent_type,
-    }
-    batch = await _resolve_session_batch(session_id)
-    return _StructuredGoalIntentCandidate(
-        selected_data=selected_data,
-        merged=merged,
-        intent_mode=intent_mode,
-        batch=batch,
-        fallback_mechanism_line=fallback_mechanism_line,
-        fallback_detail_lines=list(fallback_detail_lines or []),
-    )
-
-
-async def _create_pending_intent_confirmation_from_structured_goal_candidate(
-    session_id: str,
-    candidate: _StructuredGoalIntentCandidate,
-) -> WSResponse | None:
-    constraint_intent_type = str(
-        candidate.selected_data.get("constraintIntentType")
-        or candidate.selected_data.get("constraint_intent_type")
-        or "default"
-    ).strip() or "default"
-    summary = _display_summary_from_intent_payload(candidate.selected_data) or _summarize_intent_values(
-        candidate.merged,
-        intent_mode=candidate.intent_mode,
-        constraint_intent_type=constraint_intent_type,
-    )
-    if not summary:
-        summary = "本次选择的要求内容。" if candidate.intent_mode == "constraint" else "本次选择的偏好内容。"
-    compiled = proposal_compiler.compile_intent_preview_proposal(
-        session_id=session_id,
-        selected_data=candidate.selected_data,
-        merged=candidate.merged,
-        intent_mode=candidate.intent_mode,
-        batch=candidate.batch,
-        constraint_intent_type=constraint_intent_type,
-        summary=summary,
-    )
-    contract_ok, contract_reasons = proposal_compiler.intent_sink_contract(compiled)
-    if not contract_ok:
-        logger.info(
-            "Block structured-goal intent pending before sink: session_id=%s reasons=%s",
-            session_id,
-            contract_reasons,
-        )
-        return None
-    intent_response = await _create_pending_intent_confirmation_response(
-        session_id,
-        selected_data=candidate.selected_data,
-        merged=candidate.merged,
-        intent_mode=candidate.intent_mode,
-        batch=candidate.batch,
-        fallback_mechanism_line=candidate.fallback_mechanism_line,
-        fallback_detail_lines=candidate.fallback_detail_lines,
-        compiled_sink_metadata={
-            "compiledProposalId": compiled["compiledProposalId"],
-            "sinkType": "intent",
-        },
-    )
-    for followup in intent_response.followups:
-        if isinstance(followup, WSResponse) and followup.type == "pendingConfirmationCard":
-            return followup
-    return None
-
-
 async def _create_pending_intent_confirmation_response(
     session_id: str,
     *,
@@ -3590,7 +2921,6 @@ async def _create_pending_intent_confirmation_response(
         compiled_sink_metadata=compiled_sink_metadata,
     )
     await _save_pending_confirmation_state(session_id, pending_state)
-    await _clear_legacy_plan_edit_cache_best_effort(session_id)
     card_content = _format_intent_card_content(summary, existing_summary=existing_summary)
     payload = {
         "type": "pendingConfirmationCard",
@@ -3937,169 +3267,6 @@ async def _resolve_intent_mode_from_message(message_id: Any) -> str:
     return "preference"
 
 
-async def _create_pending_plan_confirmation_response(
-    session_id: str,
-    confirmation_candidate: dict[str, Any],
-    *,
-    compiled_sink_metadata: dict[str, Any] | None = None,
-) -> WSResponse | None:
-    compiled_proposal_id = ""
-    if isinstance(compiled_sink_metadata, dict):
-        compiled_proposal_id = str(compiled_sink_metadata.get("compiledProposalId") or "").strip()
-    if not compiled_proposal_id:
-        logger.warning(
-            "Block plan pending sink without compiled proposal: session_id=%s action_family=%s",
-            session_id,
-            str(confirmation_candidate.get("action_family") or "").strip(),
-        )
-        return None
-    replaced_pending = await _load_pending_confirmation_state(session_id)
-    pending_state = _build_plan_pending_state(
-        session_id,
-        confirmation_candidate,
-        replaced_pending=replaced_pending if isinstance(replaced_pending, dict) else None,
-        compiled_sink_metadata=compiled_sink_metadata,
-    )
-    await _save_pending_confirmation_state(session_id, pending_state)
-
-    action_family = str(confirmation_candidate.get("action_family") or "").strip()
-    summary = _plan_confirmation_candidate_summary_for_user(confirmation_candidate)
-    unit_kind = _plan_confirmation_unit_kind(confirmation_candidate)
-    content = summary or "确认后会执行本次方案调整。"
-    is_ordered_group_action = action_family in {"move_ordered_unit", "remove_ordered_unit"} and unit_kind != "志愿"
-    if action_family == "move_ordered_unit" and is_ordered_group_action:
-        compact_content = _compact_plan_reply_text(content)
-        if "不是按单条志愿位置" not in compact_content and "按专业组顺序计算" not in compact_content:
-            content = (
-                content.rstrip()
-                + "\n\n位置说明：这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；组内专业会保持连续。"
-            )
-    if action_family == "remove_ordered_unit" and is_ordered_group_action:
-        compact_content = _compact_plan_reply_text(content)
-        if "组内专业" not in compact_content and "后续专业组会前移" not in compact_content:
-            content = content.rstrip() + "\n\n执行后该专业组内的专业会一并移出，后续专业组会前移。"
-    execution_payload = pending_state.get("executionPayload")
-    intent_payload = execution_payload.get("intentPayload") if isinstance(execution_payload, dict) else None
-    intent_summary = _summarize_selected_intent_payload(intent_payload)
-    if intent_summary and intent_summary not in content:
-        intent_lines = [part.strip() for part in intent_summary.split("；") if part.strip()]
-        intent_content = "\n".join(f"- {part}" for part in intent_lines)
-        content = (
-            content.rstrip()
-            + "\n\n同时更新后续报考参考：\n"
-            + intent_content
-        )
-    title_by_action = {
-        "add_units": "确认加入方案",
-        "remove_units": "确认移出志愿",
-        "move_unit": "确认移动志愿",
-        "move_ordered_unit": "确认移动志愿" if unit_kind == "志愿" else "确认移动专业组",
-        "remove_ordered_unit": "确认移出志愿" if unit_kind == "志愿" else "确认移出专业组",
-        "replace_units": "确认替换志愿",
-        "sort_ordered_plan": "确认方案排序",
-        "regenerate_order": "确认重排方案",
-        "generate_plan": "确认生成方案",
-    }
-    payload = {
-        "type": "pendingConfirmationCard",
-        "pendingId": pending_state["pendingId"],
-        "kind": "plan_mutation",
-        "actionFamily": action_family,
-        "title": title_by_action.get(action_family) or "请确认本次方案调整",
-        "summary": summary or "确认后会执行本次方案调整。",
-        "content": content,
-        "impactTitle": "确认说明",
-        "impact": "完成确认前不会改动当前方案；点“确认执行”最清楚，直接回复“确认/执行”也会按当前有效预览处理。",
-        "clickable": True,
-        "status": "active",
-        "confirmText": "确认执行",
-        "cancelText": "暂不执行",
-    }
-    if isinstance(intent_payload, dict) and intent_payload.get("selected"):
-        payload["impact"] = _format_plan_card_intent_impact(intent_payload)
-    return WSResponse(
-        type="pendingConfirmationCard",
-        session_id=session_id,
-        content=json.dumps(payload, ensure_ascii=False),
-    )
-
-
-def _runtime_plan_compiled_proposal_from_candidate(
-    *,
-    session_id: str,
-    confirmation_candidate: dict[str, Any] | None,
-    source: str,
-) -> dict[str, Any] | None:
-    if not isinstance(confirmation_candidate, dict):
-        return None
-    compiled_source = proposal_compiler.compile_runtime_plan_confirmation_source(
-        session_id=session_id,
-        confirmation_candidate=confirmation_candidate,
-        source=source,
-        summary=_plan_confirmation_candidate_summary_for_user(confirmation_candidate),
-    )
-    return compiled_source.compiled
-
-
-async def _create_runtime_compiled_plan_pending(
-    session_id: str,
-    confirmation_candidate: dict[str, Any] | None,
-    *,
-    source: str,
-    compiled: dict[str, Any] | None,
-) -> _RuntimeCompiledPendingResult:
-    if not isinstance(confirmation_candidate, dict):
-        return _RuntimeCompiledPendingResult(
-            source=source,
-            blocked_reasons=["missing_plan_confirmation_candidate"],
-        )
-    if not isinstance(compiled, dict):
-        return _RuntimeCompiledPendingResult(
-            source=source,
-            blocked_reasons=["missing_compiled_plan_proposal"],
-        )
-    action_family = str(confirmation_candidate.get("action_family") or "").strip()
-    if action_family == "generate_plan":
-        score_detail = await _load_session_score_detail_for_generation(session_id)
-        if not _score_detail_ready_for_generate_plan(score_detail):
-            return _RuntimeCompiledPendingResult(
-                source=source,
-                blocked_reasons=["missing_generate_plan_score_detail"],
-            )
-    compiled_sink_metadata = proposal_compiler.plan_sink_metadata_or_none(
-        compiled,
-        session_id=session_id,
-        source=source,
-    )
-    if compiled_sink_metadata is None:
-        _contract_ok, contract_reasons = proposal_compiler.plan_sink_contract(compiled)
-        return _RuntimeCompiledPendingResult(
-            source=source,
-            blocked_reasons=["compiled_plan_sink_blocked", *contract_reasons],
-        )
-    card = await _create_pending_plan_confirmation_response(
-        session_id,
-        confirmation_candidate,
-        compiled_sink_metadata=compiled_sink_metadata,
-    )
-    if card is None:
-        return _RuntimeCompiledPendingResult(
-            source=source,
-            blocked_reasons=["compiled_plan_pending_sink_returned_empty"],
-        )
-    includes_intent_update = bool(
-        isinstance(confirmation_candidate.get("intent_update"), dict)
-        and confirmation_candidate.get("intent_update", {}).get("selected")
-    )
-    return _RuntimeCompiledPendingResult(
-        card=card,
-        primary_reply=_plan_confirmation_card_primary_reply(confirmation_candidate),
-        source=source,
-        plan_includes_intent_update=includes_intent_update,
-        workspace_refresh_targets=_compiled_workspace_refresh_targets(compiled),
-    )
-
-
 def _score_detail_ready_for_generate_plan(score_detail: ScoreDetail | None) -> bool:
     if score_detail is None:
         return False
@@ -4126,164 +3293,6 @@ async def _load_session_score_detail_for_generation(session_id: str) -> ScoreDet
     if not isinstance(raw_data, dict) or not raw_data:
         return None
     return _parse_score_detail_from_backend(raw_data)
-
-
-async def _create_apply_then_generate_plan_pending_result(
-    *,
-    session_id: str,
-    user_prompt: str,
-    applied_pending_state: dict[str, Any],
-) -> _RuntimeCompiledPendingResult:
-    current_version = 0
-    try:
-        state_resp = await get_planning_state(session_id)
-        current_version = _as_int(((state_resp or {}).get("data") or {}).get("version"))
-    except Exception:
-        logger.warning(
-            "Failed to load planning state before apply-then-generate pending: session_id=%s",
-            session_id,
-            exc_info=True,
-        )
-    generated_source = proposal_compiler.compile_apply_then_generate_plan_source(
-        session_id=session_id,
-        user_prompt=user_prompt,
-        pending_state=applied_pending_state,
-        source_version_guard=current_version,
-    )
-    if not generated_source.compiled or not generated_source.confirmation_candidate:
-        return _RuntimeCompiledPendingResult(
-            source="apply_pending_then_new_request",
-            blocked_reasons=list(generated_source.blocking_reasons),
-        )
-    return await _create_runtime_compiled_plan_pending(
-        session_id,
-        generated_source.confirmation_candidate,
-        source="apply_pending_then_new_request",
-        compiled=generated_source.compiled,
-    )
-
-
-async def _user_requested_fix_proposal_preview(
-    *,
-    content: str,
-    request_context: RequestContext,
-    latest_plan_result: dict[str, Any],
-) -> bool:
-    facts = latest_plan_result.get("facts") if isinstance(latest_plan_result.get("facts"), dict) else {}
-    if not proposal_compiler.ready_fix_proposals(facts):
-        return False
-    if _structured_review_result_is_readonly(latest_plan_result):
-        return False
-    context = _latest_plan_semantic_route_context(
-        [
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="execute_plan_action",
-                        content=json.dumps(latest_plan_result, ensure_ascii=False, default=str),
-                        tool_call_id="current-fix-proposal-preview-request-check",
-                    )
-                ]
-            )
-        ]
-    )
-    if not context:
-        return False
-    try:
-        decision = await classify_plan_semantic_action(
-            content,
-            request_context=request_context,
-            recent_plan_context=context,
-        )
-    except Exception:
-        logger.warning("Fix proposal preview request check failed", exc_info=True)
-        return False
-    action_family = str(getattr(decision, "actionFamily", "") or "").strip()
-    confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
-    return action_family == "preview_fix_proposal" and confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
-
-
-async def _infer_plan_target_issue_codes_from_context(
-    *,
-    content: str,
-    request_context: RequestContext,
-    recent_plan_context: dict[str, Any] | None,
-    expected_action_family: str,
-    target_strategies: list[str],
-) -> list[str]:
-    if not recent_plan_context:
-        return []
-    fix_facts = recent_plan_context.get("fixProposals")
-    if not isinstance(fix_facts, dict) or not isinstance(fix_facts.get("proposals"), list):
-        return []
-    try:
-        decision = await classify_plan_semantic_action(
-            content,
-            request_context=request_context,
-            recent_plan_context=recent_plan_context,
-        )
-    except Exception:
-        logger.warning("Plan target issue-code inference failed", exc_info=True)
-        return []
-    return proposal_compiler.semantic_decision_target_issue_codes_for_context(
-        decision,
-        allowed_action_families={expected_action_family, "preview_fix_proposal", "analyze_adjustment"},
-        confidence_threshold=_SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD,
-        target_strategies=target_strategies,
-        context=recent_plan_context,
-    )
-
-
-async def _infer_fix_proposal_target_scope(
-    *,
-    content: str,
-    request_context: RequestContext,
-    latest_plan_result: dict[str, Any],
-) -> tuple[list[str], list[str], bool]:
-    """Infer the user's repair target and whether that target was explicit.
-
-    Non-empty strategy/issue-code lists are used to select the matching ready
-    proposal. The boolean distinguishes "no explicit target" from "explicit
-    target exists, but no ready proposal can satisfy it"; the latter must not
-    fall back to the first unrelated ready proposal.
-    """
-
-    precheck = proposal_compiler.resolve_fix_proposal_target_scope_precheck(latest_plan_result)
-    if not precheck.needs_semantic_decision:
-        return precheck.target_strategies, precheck.target_issue_codes, precheck.explicit
-    context = _latest_plan_semantic_route_context(
-        [
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="execute_plan_action",
-                        content=json.dumps(latest_plan_result, ensure_ascii=False, default=str),
-                        tool_call_id="current-fix-proposal-preview",
-                    )
-                ]
-            )
-        ]
-    )
-    if not context:
-        return [], [], False
-    try:
-        decision = await classify_plan_semantic_action(
-            content,
-            request_context=request_context,
-            recent_plan_context=context,
-        )
-    except Exception:
-        logger.warning(
-            "Fix proposal target strategy inference failed",
-            exc_info=True,
-        )
-        return [], [], False
-    scope = proposal_compiler.resolve_fix_proposal_target_scope_from_decision(
-        decision,
-        allowed_action_families={"preview_fix_proposal", "review_plan", "analyze_adjustment"},
-        confidence_threshold=_SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD,
-    )
-    return scope.target_strategies, scope.target_issue_codes, scope.explicit
 
 
 def _build_fix_proposal_pending_state(
@@ -4530,113 +3539,11 @@ async def _create_pending_fix_proposal_confirmation_response(
     )
 
 
-async def _create_runtime_compiled_review_fix_pending(
-    session_id: str,
-    proposal: dict[str, Any] | None,
-    *,
-    source_version_guard: int,
-    proposal_source: str = "review_check",
-    compiled: dict[str, Any] | None,
-) -> _RuntimeCompiledPendingResult:
-    if not isinstance(proposal, dict):
-        return _RuntimeCompiledPendingResult(
-            source="review_fix_proposal",
-            blocked_reasons=["missing_review_fix_proposal"],
-        )
-    if not isinstance(compiled, dict):
-        return _RuntimeCompiledPendingResult(
-            source="review_fix_proposal",
-            blocked_reasons=["missing_compiled_review_fix_proposal"],
-        )
-    contract_ok, contract_reasons = proposal_compiler.fix_proposal_sink_contract(compiled)
-    if not contract_ok:
-        logger.info(
-            "Block review fix proposal pending before sink: session_id=%s proposal_id=%s reasons=%s",
-            session_id,
-            proposal_compiler.proposal_id(proposal),
-            contract_reasons,
-        )
-        return _RuntimeCompiledPendingResult(
-            source="review_fix_proposal",
-            blocked_reasons=["compiled_fix_sink_blocked", *contract_reasons],
-        )
-    card = await _create_pending_fix_proposal_confirmation_response(
-        session_id,
-        proposal,
-        source_version_guard=source_version_guard,
-        proposal_source=proposal_source,
-        compiled_sink_metadata={
-            "compiledProposalId": compiled["compiledProposalId"],
-            "sinkType": "fix_proposal",
-        },
-    )
-    if card is None:
-        return _RuntimeCompiledPendingResult(
-            source="review_fix_proposal",
-            blocked_reasons=["compiled_fix_pending_sink_returned_empty"],
-        )
-    return _RuntimeCompiledPendingResult(
-        card=card,
-        primary_reply=_fix_proposal_pending_primary_reply(proposal),
-        source="review_fix_proposal",
-        workspace_refresh_targets=_compiled_workspace_refresh_targets(
-            compiled,
-            fallback_targets=["review"],
-        ),
-    )
-
-
-def _plan_confirmation_unit_kind(confirmation_candidate: dict[str, Any]) -> str:
-    plan_payload = confirmation_candidate.get("plan_payload")
-    if not isinstance(plan_payload, str) or not plan_payload.strip():
-        return ""
-    try:
-        payload = json.loads(plan_payload)
-    except Exception:
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    facts = payload.get("facts") if isinstance(payload.get("facts"), dict) else {}
-    unit_kind = str(facts.get("unit_kind") or facts.get("unitKind") or "").strip()
-    return unit_kind if unit_kind in {"志愿", "专业组"} else ""
-
-
-_EXECUTE_PLAN_ACTION_VIEW_FAMILIES = proposal_compiler.EXECUTE_PLAN_ACTION_VIEW_FAMILIES
 _LOW_PRIORITY_LOG_ACTION_FAMILIES = {
     "query_state",
     "query_ordered",
     "query_candidates",
 }
-
-
-def _extract_execute_plan_action_family(part: ToolCallPart) -> str | None:
-    payload = _extract_execute_plan_payload(part)
-    if not isinstance(payload, dict):
-        return None
-    return str(payload.get("action_family") or "").strip() or None
-
-
-def _extract_execute_plan_payload(part: ToolCallPart) -> dict[str, Any] | None:
-    if part.tool_name != "execute_plan_action":
-        return None
-    args = _parse_tool_call_args(part.args)
-    plan_payload = args.get("plan_payload")
-    if not isinstance(plan_payload, str) or not plan_payload.strip():
-        raw_args = getattr(part, "args", None)
-        if isinstance(raw_args, str) and raw_args.strip():
-            try:
-                direct_payload = json.loads(raw_args)
-            except Exception:
-                direct_payload = None
-            if isinstance(direct_payload, dict) and str(direct_payload.get("action_family") or "").strip():
-                return direct_payload
-        return None
-    try:
-        payload = json.loads(plan_payload)
-    except Exception:
-        logger.warning("Failed to parse execute_plan_action payload", exc_info=True)
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 def _parse_tool_return_json(content: Any) -> dict[str, Any] | None:
@@ -4649,13 +3556,6 @@ def _parse_tool_return_json(content: Any) -> dict[str, Any] | None:
             return None
         return data if isinstance(data, dict) else None
     return None
-
-
-def _pending_card_kind(card: WSResponse | None) -> str:
-    payload = _parse_tool_return_json(getattr(card, "content", "") or "") if card is not None else None
-    if not isinstance(payload, dict):
-        return ""
-    return str(payload.get("kind") or "").strip()
 
 
 def _enforce_single_pending_confirmation_followup(followups: list[WSResponse]) -> list[WSResponse]:
@@ -4703,333 +3603,6 @@ def _extract_recent_intent_analysis_payload(messages: list[Any] | None) -> dict[
         if any(key in data for key in ("items", "existingItems", "impactAnalysis", "impactText")):
             return data
     return None
-
-
-def _extract_tool_arg_text_values(args: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
-    values: list[str] = []
-    for key in keys:
-        raw = args.get(key)
-        raw_values = raw if isinstance(raw, list) else [raw] if raw else []
-        for item in raw_values:
-            text = str(item or "").strip()
-            if text and text not in values:
-                values.append(text)
-    return values
-
-
-def _extract_positive_major_intent_values(payload: dict[str, Any]) -> list[str]:
-    values: list[str] = []
-
-    def add(raw: Any) -> None:
-        for value in _as_text_list(raw):
-            if value and value not in values:
-                values.append(value)
-
-    def collect_from_major_intents(major_intents: Any) -> None:
-        if not isinstance(major_intents, dict):
-            return
-        for key in ("level3", "level2", "level1"):
-            add(major_intents.get(key))
-
-    def collect_from_item(item: Any) -> None:
-        if not isinstance(item, dict):
-            return
-        value = item.get("value")
-        if isinstance(value, dict):
-            collect_from_major_intents(value.get("major_intents"))
-        collect_from_major_intents(item.get("major_intents"))
-
-    collect_from_major_intents(payload.get("major_intents"))
-    value = payload.get("value")
-    if isinstance(value, dict):
-        collect_from_major_intents(value.get("major_intents"))
-    raw_items = payload.get("items")
-    if isinstance(raw_items, list):
-        for item in raw_items:
-            if isinstance(item, dict) and item.get("selected") is False:
-                continue
-            collect_from_item(item)
-    return values
-
-
-def _extract_positive_school_intent_values(payload: dict[str, Any]) -> list[str]:
-    values: list[str] = []
-
-    def add(raw: Any) -> None:
-        for value in _as_text_list(raw):
-            if value and value not in values:
-                values.append(value)
-
-    def collect_from_school_intents(school_intents: Any) -> None:
-        if not isinstance(school_intents, dict):
-            return
-        add(school_intents.get("colleges") or school_intents.get("schoolNames") or school_intents.get("schools"))
-
-    def collect_from_item(item: Any) -> None:
-        if not isinstance(item, dict):
-            return
-        value = item.get("value")
-        if isinstance(value, dict):
-            collect_from_school_intents(value.get("school_intents"))
-        collect_from_school_intents(item.get("school_intents"))
-
-    collect_from_school_intents(payload.get("school_intents"))
-    value = payload.get("value")
-    if isinstance(value, dict):
-        collect_from_school_intents(value.get("school_intents"))
-    raw_items = payload.get("items")
-    if isinstance(raw_items, list):
-        for item in raw_items:
-            if isinstance(item, dict) and item.get("selected") is False:
-                continue
-            collect_from_item(item)
-    return values
-
-
-def _extract_positive_region_intent_values(payload: dict[str, Any]) -> list[str]:
-    values: list[str] = []
-
-    def add(raw: Any) -> None:
-        for value in _as_text_list(raw):
-            if value and value not in values:
-                values.append(value)
-
-    def collect_from_city_intents(city_intents: Any) -> None:
-        if not isinstance(city_intents, dict):
-            return
-        for key in ("province", "city", "area"):
-            add(city_intents.get(key))
-
-    def collect_from_item(item: Any) -> None:
-        if not isinstance(item, dict):
-            return
-        value = item.get("value")
-        if isinstance(value, dict):
-            collect_from_city_intents(value.get("city_intents"))
-        collect_from_city_intents(item.get("city_intents"))
-
-    collect_from_city_intents(payload.get("city_intents"))
-    value = payload.get("value")
-    if isinstance(value, dict):
-        collect_from_city_intents(value.get("city_intents"))
-    raw_items = payload.get("items")
-    if isinstance(raw_items, list):
-        for item in raw_items:
-            if isinstance(item, dict) and item.get("selected") is False:
-                continue
-            collect_from_item(item)
-    return values
-
-
-def _extract_positive_career_intent_values(payload: dict[str, Any]) -> list[str]:
-    values: list[str] = []
-
-    def add(raw: Any) -> None:
-        for value in _as_text_list(raw):
-            if value and value not in values:
-                values.append(value)
-
-    def collect_from_career_intents(career_intents: Any) -> None:
-        if not isinstance(career_intents, dict):
-            return
-        add(career_intents.get("positive"))
-
-    def collect_from_item(item: Any) -> None:
-        if not isinstance(item, dict):
-            return
-        value = item.get("value")
-        if isinstance(value, dict):
-            collect_from_career_intents(value.get("career_intents"))
-        collect_from_career_intents(item.get("career_intents"))
-
-    collect_from_career_intents(payload.get("career_intents"))
-    add(payload.get("career_directions") or payload.get("careerDirections"))
-    value = payload.get("value")
-    if isinstance(value, dict):
-        collect_from_career_intents(value.get("career_intents"))
-    raw_items = payload.get("items")
-    if isinstance(raw_items, list):
-        for item in raw_items:
-            if isinstance(item, dict) and item.get("selected") is False:
-                continue
-            collect_from_item(item)
-    return values
-
-
-def _empty_recent_entity_context() -> dict[str, list[str]]:
-    return {"major": [], "school": [], "region": [], "career": []}
-
-
-def _append_unique_values(target: list[str], values: list[str]) -> None:
-    for value in values:
-        text = str(value or "").strip()
-        if text and text not in target:
-            target.append(text)
-
-
-def _latest_previous_turn_messages(messages: list[Any] | None) -> list[Any]:
-    latest: list[Any] = []
-    for message in reversed(messages or []):
-        latest.append(message)
-        if isinstance(message, ModelRequest) and any(
-            isinstance(part, UserPromptPart)
-            for part in (getattr(message, "parts", []) or [])
-        ):
-            break
-    return list(reversed(latest))
-
-
-def _extract_structured_entity_context_from_tool_history(messages: list[Any] | None) -> dict[str, list[str]]:
-    """Recover recent readonly entities from structured tool calls/returns.
-
-    This supports follow-ups like "那两个都加吧" after an explain/compare turn.
-    It deliberately uses tool args/results instead of assistant prose.
-    """
-
-    messages = _latest_previous_turn_messages(messages)
-    context = _empty_recent_entity_context()
-
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name not in _ENTITY_CONTEXT_TOOL_NAMES:
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        _append_unique_values(
-            context["major"],
-            _extract_tool_arg_text_values(data, ("major_names", "majorNames", "major_name", "majorName"))
-            + _extract_positive_major_intent_values(data),
-        )
-        _append_unique_values(
-            context["school"],
-            _extract_tool_arg_text_values(
-                data,
-                (
-                    "school_names",
-                    "schoolNames",
-                    "school_name",
-                    "schoolName",
-                    "school_name1",
-                    "school_name2",
-                    "schoolName1",
-                    "schoolName2",
-                    "collegeName",
-                ),
-            )
-            + _extract_positive_school_intent_values(data),
-        )
-        _append_unique_values(
-            context["region"],
-            _extract_tool_arg_text_values(
-                data,
-                ("region_names", "regionNames", "province", "provinces", "city", "cities", "area", "areas"),
-            )
-            + _extract_positive_region_intent_values(data),
-        )
-        _append_unique_values(
-            context["career"],
-            _extract_tool_arg_text_values(
-                data,
-                (
-                    "career_directions",
-                    "careerDirections",
-                    "career_direction",
-                    "careerDirection",
-                    "direction_slots",
-                    "directionSlots",
-                    "direction_slot",
-                    "directionSlot",
-                ),
-            )
-            + _extract_positive_career_intent_values(data),
-        )
-
-    for part in reversed(_iter_tool_call_parts(messages)):
-        if part.tool_name not in _ENTITY_CONTEXT_TOOL_NAMES:
-            continue
-        args = _parse_tool_call_args(part.args)
-        _append_unique_values(
-            context["major"],
-            _extract_tool_arg_text_values(
-                args,
-                ("major_names", "majorNames", "major_name", "majorName", "major_name1", "major_name2"),
-            )
-            + _extract_positive_major_intent_values(args),
-        )
-        _append_unique_values(
-            context["school"],
-            _extract_tool_arg_text_values(
-                args,
-                (
-                    "school_names",
-                    "schoolNames",
-                    "school_name",
-                    "schoolName",
-                    "school_name1",
-                    "school_name2",
-                    "schoolName1",
-                    "schoolName2",
-                    "collegeName",
-                ),
-            )
-            + _extract_positive_school_intent_values(args),
-        )
-        _append_unique_values(
-            context["region"],
-            _extract_tool_arg_text_values(
-                args,
-                ("region_names", "regionNames", "province", "provinces", "city", "cities", "area", "areas"),
-            )
-            + _extract_positive_region_intent_values(args),
-        )
-        _append_unique_values(
-            context["career"],
-            _extract_tool_arg_text_values(
-                args,
-                (
-                    "career_directions",
-                    "careerDirections",
-                    "career_direction",
-                    "careerDirection",
-                    "direction_slots",
-                    "directionSlots",
-                    "direction_slot",
-                    "directionSlot",
-                ),
-            )
-            + _extract_positive_career_intent_values(args),
-        )
-    return {key: values[:6] for key, values in context.items() if values}
-
-
-def _extract_structured_major_context_from_tool_history(messages: list[Any] | None) -> list[str]:
-    return _extract_structured_entity_context_from_tool_history(messages).get("major", [])
-
-
-def _runtime_intent_entity_profile_context(history: list[Any] | None) -> dict[str, Any]:
-    recent_entity_context = _extract_structured_entity_context_from_tool_history(history)
-    if not recent_entity_context:
-        return {}
-    recent_major_context = recent_entity_context.get("major", [])
-    hints = [
-        {
-            "type": f"{entity_type}_context",
-            "source": "recent_readonly_tool",
-            "entityType": entity_type,
-            "values": values,
-        }
-        for entity_type, values in recent_entity_context.items()
-        if values
-    ]
-    result: dict[str, Any] = {
-        "recentEntityContext": recent_entity_context,
-        "referenceResolutionHints": hints,
-    }
-    if recent_major_context:
-        result["recentMajorContext"] = recent_major_context
-        if hints:
-            hints[0]["source"] = "recent_readonly_major_tool" if hints[0].get("entityType") == "major" else hints[0]["source"]
-    return result
 
 
 def _extract_confirmable_intent_payload_from_interest_tool(messages: list[Any] | None) -> dict[str, Any] | None:
@@ -5198,35 +3771,7 @@ def _store_current_turn_decision(request_context: RequestContext, decision: Any)
     setattr(request_context, "_turn_decision_object", decision)
 
 
-def _pending_state_allows_runtime_intent_hard_cut(pending_state: dict[str, Any] | None) -> bool:
-    if not isinstance(pending_state, dict) or str(pending_state.get("status") or "").strip() != "active":
-        return True
-    return str(pending_state.get("kind") or "").strip() == "intent_change"
-
-
-def _turn_decision_allows_runtime_intent_hard_cut(
-    decision: Any,
-    *,
-    pending_state: dict[str, Any] | None = None,
-) -> bool:
-    side_effect = str(getattr(decision, "sideEffect", "") or "").strip()
-    task_layer = str(getattr(decision, "taskLayer", "") or "").strip()
-    scope_anchor = str(getattr(decision, "scopeAnchor", "") or "").strip()
-    scenario = str(getattr(decision, "scenario", "") or "").strip()
-    confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
-    if (
-        confidence >= 0.65
-        and side_effect == "intent_pending"
-        and task_layer in {"intent", "mixed"}
-        and scope_anchor == "future_reference"
-        and scenario in {"intent_update", "region_preference_update", ""}
-    ):
-        return True
-
-    return False
-
-
-def _turn_decision_allows_runtime_intent_soft_candidate(decision: Any) -> bool:
+def _turn_decision_allows_intent_update_soft_candidate(decision: Any) -> bool:
     side_effect = str(getattr(decision, "sideEffect", "") or "").strip()
     scenario = str(getattr(decision, "scenario", "") or "").strip()
     confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
@@ -5237,7 +3782,7 @@ def _turn_decision_allows_runtime_intent_soft_candidate(decision: Any) -> bool:
     )
 
 
-def _turn_decision_blocks_runtime_intent_hard_cut(
+def _turn_decision_blocks_intent_pending(
     decision: Any,
 ) -> bool:
     side_effect = str(getattr(decision, "sideEffect", "") or "").strip()
@@ -5262,7 +3807,7 @@ def _turn_decision_blocks_runtime_intent_hard_cut(
         # TurnDecision can over-anchor future intent updates to current_plan.
         # Keep only intent-update scenarios as soft candidates; high-confidence
         # current-plan atomic mutations must stay in the plan path.
-        return not _turn_decision_allows_runtime_intent_soft_candidate(decision)
+        return not _turn_decision_allows_intent_update_soft_candidate(decision)
     if task_layer in {"explore", "policy"} and side_effect != "intent_pending":
         return True
     if scope_anchor in {"current_plan", "candidate_pool", "current_profile", "current_major_group"} and side_effect != "intent_pending":
@@ -5280,147 +3825,10 @@ def _turn_decision_blocks_runtime_intent_hard_cut(
     }
 
 
-def _should_defer_runtime_intent_hard_cut_to_current_plan_action(
-    content: str,
-    *,
-    planning_summary: PlanningSummary | None,
-) -> bool:
-    if proposal_compiler.content_has_future_reference_anchor(content):
-        return False
-    if not _planning_summary_has_formal_plan(planning_summary):
-        return False
-    return proposal_compiler.content_has_current_plan_mutation_anchor(content)
-
-
-def _profile_is_durable_constraint_intent(profile: Any) -> bool:
-    strength = _model_value(profile, "preferenceStrength", {})
-    if isinstance(strength, dict) and (
-        _as_text_list(strength.get("only_keep"))
-        or _as_text_list(strength.get("must_have"))
-        or _as_text_list(strength.get("exclude_hard"))
-    ):
-        return True
-    return bool(_runtime_intent_profile_physical_constraints(profile))
-
-
 def _turn_decision_blocks_full_agent_intent_pending(decision: Any | None) -> bool:
     if decision is None:
         return False
-    return _turn_decision_blocks_runtime_intent_hard_cut(decision)
-
-
-def _atomic_add_units_scope_can_override_intent(decision: Any) -> bool:
-    if str(getattr(decision, "actionFamily", "") or "").strip() != "add_units":
-        return True
-    volunteer_ids = _as_text_list(getattr(decision, "volunteerIds", []) or [])
-    unit_ids = _as_text_list(getattr(decision, "unitIds", []) or [])
-    major_keyword = str(getattr(decision, "majorKeyword", "") or "").strip()
-    school_keyword = str(getattr(decision, "schoolKeyword", "") or "").strip()
-    major_tags = _as_text_list(getattr(decision, "majorTags", []) or [])
-    school_tags = _as_text_list(getattr(decision, "schoolTags", []) or [])
-    tier = str(getattr(decision, "tier", "") or "").strip()
-    if volunteer_ids or unit_ids:
-        return True
-    if school_keyword and major_keyword:
-        return True
-    if major_keyword or major_tags:
-        return True
-    return bool(school_tags and tier)
-
-
-_RUNTIME_INTENT_DEFERABLE_ATOMIC_ACTION_FAMILIES = {
-    "add_units",
-    "remove_units",
-    "move_unit",
-    "move_ordered_unit",
-    "remove_ordered_unit",
-    "replace_units",
-    "sort_ordered_plan",
-    "regenerate_order",
-}
-
-
-async def _semantic_atomic_plan_action_should_defer_runtime_intent(
-    *,
-    content: str,
-    request_context: RequestContext,
-    history: list[Any] | None,
-    turn_decision: Any | None,
-) -> tuple[bool, dict[str, Any]]:
-    if proposal_compiler.content_has_future_reference_anchor(content):
-        return False, {"reason": "future_reference_anchor"}
-    try:
-        decision = await classify_plan_atomic_action_dsl(
-            content,
-            request_context=request_context,
-            recent_plan_context=_latest_plan_semantic_route_context(history),
-        )
-    except Exception:
-        logger.warning(
-            "Runtime intent atomic plan action arbitration failed: session_id=%s",
-            getattr(request_context, "sessionid", ""),
-            exc_info=True,
-        )
-        return False, {"reason": "atomic_plan_action_dsl_failed"}
-    action_family = str(getattr(decision, "actionFamily", "none") or "none").strip()
-    if action_family not in _RUNTIME_INTENT_DEFERABLE_ATOMIC_ACTION_FAMILIES:
-        return False, {
-            "reason": "non_mutating_atomic_plan_action_family",
-            "source": "plan_atomic_action_dsl",
-            "actionFamily": action_family,
-            "confidence": float(getattr(decision, "confidence", 0.0) or 0.0),
-        }
-    if not _atomic_add_units_scope_can_override_intent(decision):
-        return False, {
-            "reason": "weak_add_units_scope",
-            "source": "plan_atomic_action_dsl",
-            "actionFamily": action_family,
-            "confidence": float(getattr(decision, "confidence", 0.0) or 0.0),
-        }
-
-    planning_version = 0
-    planning_summary = getattr(request_context, "planning_summary", None)
-    if planning_summary is not None:
-        with contextlib.suppress(TypeError, ValueError):
-            planning_version = int(getattr(planning_summary, "version", 0) or 0)
-    compiled_source = proposal_compiler.compile_runtime_atomic_plan_action_source(
-        content=content,
-        action_family=getattr(decision, "actionFamily", "none"),
-        confidence=float(getattr(decision, "confidence", 0.0) or 0.0),
-        turn_decision=turn_decision,
-        require_turn_decision=False,
-        volunteer_ids=list(getattr(decision, "volunteerIds", []) or []),
-        unit_ids=list(getattr(decision, "unitIds", []) or []),
-        source_major_names=list(getattr(decision, "sourceMajorNames", []) or []),
-        source_position=getattr(decision, "sourcePosition", None),
-        position_scope=getattr(decision, "positionScope", None),
-        target_position=getattr(decision, "targetPosition", None),
-        sort_field=getattr(decision, "sortField", None),
-        review_issue_code=getattr(decision, "reviewIssueCode", None),
-        tier=getattr(decision, "tier", None),
-        province_keyword=getattr(decision, "provinceKeyword", None),
-        school_keyword=getattr(decision, "schoolKeyword", None),
-        major_keyword=getattr(decision, "majorKeyword", None),
-        school_tags=list(getattr(decision, "schoolTags", []) or []),
-        major_tags=list(getattr(decision, "majorTags", []) or []),
-        min_tuition_per_year=getattr(decision, "minTuitionPerYear", None),
-        max_tuition_per_year=getattr(decision, "maxTuitionPerYear", None),
-        preference_fit=getattr(decision, "preferenceFit", None),
-        preserve_count=bool(getattr(decision, "preserveCount", False)),
-        limit=int(getattr(decision, "limit", 5) or 5),
-        planning_version=planning_version,
-        allow_mutation_anchor_turn_decision_override=True,
-    )
-    arbitration = {
-        "source": "plan_atomic_action_dsl",
-        "matched": bool(compiled_source.matched),
-        "actionFamily": action_family,
-        "confidence": float(getattr(decision, "confidence", 0.0) or 0.0),
-        "blockingReasons": list(compiled_source.blocking_reasons),
-        "planActionDsl": dict(compiled_source.plan_action_dsl),
-        "turnDecisionDsl": dict(compiled_source.turn_decision_dsl),
-    }
-    return bool(compiled_source.matched), arbitration
+    return _turn_decision_blocks_intent_pending(decision)
 
 
 def _full_agent_intent_pending_blocked_by_turn_decision_reply(decision: Any | None) -> str:
@@ -5455,1246 +3863,6 @@ def _blocked_intent_preview_for_plan_route_reply(
     return _full_agent_intent_pending_blocked_by_turn_decision_reply(decision)
 
 
-def _model_value(value: Any, key: str, default: Any = None) -> Any:
-    if isinstance(value, dict):
-        return value.get(key, default)
-    return getattr(value, key, default)
-
-
-def _profile_text_values(value: Any) -> list[str]:
-    raw_values = value if isinstance(value, list) else [value] if value else []
-    result: list[str] = []
-    for item in raw_values:
-        text = str(item or "").strip()
-        if text and text not in result:
-            result.append(text)
-    return result
-
-
-_SCHOOL_NATURE_INTENT_ALIASES = {
-    "公办": "公办",
-    "公立": "公办",
-    "公办院校": "公办",
-    "公办学校": "公办",
-    "公办大学": "公办",
-    "公立院校": "公办",
-    "公立学校": "公办",
-    "公立大学": "公办",
-    "民办": "民办",
-    "私立": "民办",
-    "民办院校": "民办",
-    "民办学校": "民办",
-    "民办大学": "民办",
-    "私立院校": "民办",
-    "私立学校": "民办",
-    "私立大学": "民办",
-}
-
-
-def _normalize_school_nature_intent_value(value: Any) -> str:
-    compact = re.sub(r"\s+", "", str(value or "").strip())
-    if compact in _SCHOOL_NATURE_INTENT_ALIASES:
-        return _SCHOOL_NATURE_INTENT_ALIASES[compact]
-    if "公办" in compact or "公立" in compact:
-        return "公办"
-    if "民办" in compact or "私立" in compact:
-        return "民办"
-    return ""
-
-
-def _profile_confidence_value(value: Any) -> float:
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"high", "高", "高置信"}:
-            return 0.9
-        if normalized in {"medium", "中", "中等", "中置信"}:
-            return 0.65
-        if normalized in {"low", "低", "低置信"}:
-            return 0.35
-    try:
-        return float(value or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _runtime_intent_profile_tuition_budget(profile: Any) -> dict[str, list[int]]:
-    raw_budget = _model_value(profile, "tuitionBudget", {}) or {}
-    if not isinstance(raw_budget, dict):
-        return {}
-    result: dict[str, list[int]] = {}
-    min_tuition = _as_int(raw_budget.get("minTuitionPerYear") or raw_budget.get("min_tuition_per_year"))
-    max_tuition = _as_int(raw_budget.get("maxTuitionPerYear") or raw_budget.get("max_tuition_per_year"))
-    if min_tuition > 0:
-        result["min_tuition_per_year"] = [min_tuition]
-    if max_tuition > 0:
-        result["max_tuition_per_year"] = [max_tuition]
-    if min_tuition > 0 and max_tuition > 0 and min_tuition > max_tuition:
-        return {}
-    return result
-
-
-def _runtime_intent_profile_physical_constraints(profile: Any) -> dict[str, list[str]]:
-    raw_constraints = _model_value(profile, "physicalConstraints", {}) or {}
-    if not isinstance(raw_constraints, dict):
-        return {}
-    special_limits = [
-        value
-        for value in _as_text_list(raw_constraints.get("specialLimits") or raw_constraints.get("special_limits"))
-        if not _normalize_school_nature_intent_value(value)
-    ]
-    return {"special_limits": special_limits} if special_limits else {}
-
-
-_TURN_DECISION_TARGET_ISSUE_SPECIAL_LIMITS = {
-    "high_tuition": "高收费",
-    "cooperative_program": "中外合作",
-    "admission_limit": "限报条件",
-    "special_enrollment": "特殊类型招生",
-}
-
-
-def _turn_decision_target_issue_special_limits(
-    turn_decision: Any | None,
-) -> list[str]:
-    if turn_decision is None:
-        return []
-    special_limits: list[str] = []
-    for issue in _as_text_list(getattr(turn_decision, "targetIssue", []) or []):
-        label = _TURN_DECISION_TARGET_ISSUE_SPECIAL_LIMITS.get(str(issue or "").strip())
-        if label and label not in special_limits:
-            special_limits.append(label)
-    return special_limits
-
-
-def _runtime_intent_profile_from_turn_decision_target_issue(
-    turn_decision: Any | None,
-) -> Any | None:
-    if turn_decision is None:
-        return None
-    if not _turn_decision_allows_runtime_intent_hard_cut(turn_decision):
-        return None
-    confidence = float(getattr(turn_decision, "confidence", 0.0) or 0.0)
-    if confidence < 0.9:
-        return None
-    special_limits = _turn_decision_target_issue_special_limits(turn_decision)
-    if not special_limits:
-        return None
-    spans = [
-        {
-            "entity": label,
-            "entityType": "budget",
-            "polarity": "negative",
-            "strength": "exclude_hard",
-        }
-        for label in special_limits
-    ]
-    payload = {
-        "entityType": "budget",
-        "majorValues": [],
-        "regionValues": [],
-        "schools": [],
-        "careerValues": [],
-        "tuitionBudget": {},
-        "physicalConstraints": {"specialLimits": special_limits},
-        "preferenceStrength": {"exclude_hard": special_limits},
-        "entityPolaritySpans": spans,
-        "contextResolution": {},
-        "admissionPath": None,
-        "confidence": confidence,
-        "reason": "structured_turn_decision_target_issue_fallback",
-    }
-    return SimpleNamespace(**payload, model_dump=lambda: dict(payload))
-
-
-def _add_profile_value(payload: dict[str, list[str]], key: str, value: str) -> None:
-    text = str(value or "").strip()
-    if not text:
-        return
-    bucket = payload.setdefault(key, [])
-    if text not in bucket:
-        bucket.append(text)
-
-
-def _profile_major_payload_key(entity: str, *, batch: str, negative: bool) -> tuple[str, str]:
-    try:
-        resolved = resolve_major_entity(entity, batch)
-        best = resolved.best
-        if best is None and compact_major_text(entity) in CATEGORY_PREFERRED_MAJOR_ALIASES:
-            best = next(
-                (
-                    candidate
-                    for candidate in resolved.candidates
-                    if str(getattr(candidate, "level", "") or "") == "level2"
-                ),
-                None,
-            )
-    except Exception:
-        best = None
-    level = str(getattr(best, "level", "") or "level3").strip()
-    if level not in {"level1", "level2", "level3"}:
-        level = "level3"
-    name = str(getattr(best, "canonical_name", "") or entity).strip()
-    return (f"negative_{level}" if negative else level), name
-
-
-_ABSTRACT_REGION_PROFILE_VALUES = {
-    "长三角",
-    "珠三角",
-    "江浙沪",
-    "南方",
-    "北方",
-    "华东",
-    "华北",
-    "华中",
-    "华南",
-    "东北",
-    "西北",
-    "西南",
-    "东南",
-    "中南",
-}
-
-
-def _profile_region_payload_key(entity: str, *, negative: bool) -> tuple[str, str]:
-    try:
-        resolved_entity = resolve_region_entity(entity)
-        best = resolved_entity.best
-    except Exception:
-        best = None
-    if best is not None and str(best.level or "") in {"province", "city", "area"}:
-        level = str(best.level or "").strip()
-        key = f"negative_{level}" if negative else level
-        return key, str(best.canonical_name or entity).strip()
-    normalized = str(entity or "").strip()
-    if normalized in _ABSTRACT_REGION_PROFILE_VALUES:
-        return ("negative_area" if negative else "area"), normalized
-    return ("negative_area" if negative else "area"), normalized
-
-
-def _normalize_career_profile_values(values: Any) -> list[str]:
-    normalized: list[str] = []
-    for value in _as_text_list(values):
-        slots = normalize_career_slots([value])
-        resolved = slots[0] if slots else value
-        if resolved and resolved not in normalized:
-            normalized.append(resolved)
-    return normalized
-
-
-def _is_career_profile_value(value: Any) -> bool:
-    return bool(normalize_career_slots([str(value or "").strip()]))
-
-
-def _runtime_intent_profile_records(profile: Any) -> list[tuple[str, str, str, bool]]:
-    raw_major_values = _profile_text_values(_model_value(profile, "majorValues", []))
-    major_values = {value for value in raw_major_values if not _is_career_profile_value(value)}
-    region_values = set(_profile_text_values(_model_value(profile, "regionValues", [])))
-    school_values = set()
-    for value in _profile_text_values(_model_value(profile, "schools", [])):
-        school_values.add(_normalize_school_nature_intent_value(value) or value)
-    career_values = set(_profile_text_values(_model_value(profile, "careerValues", [])))
-    career_values.update(value for value in raw_major_values if _is_career_profile_value(value))
-    records: list[tuple[str, str, str, bool]] = []
-    seen: set[tuple[str, str, bool]] = set()
-    covered_entities: set[tuple[str, str]] = set()
-
-    def add(entity_type: str, entity: str, strength: str, negative: bool) -> None:
-        entity_type = str(entity_type or "").strip()
-        entity = str(entity or "").strip()
-        strength = str(strength or "").strip()
-        if not entity_type or not entity:
-            return
-        school_nature = _normalize_school_nature_intent_value(entity)
-        if school_nature:
-            entity_type = "school"
-            entity = school_nature
-        covered_entities.add((entity_type, entity))
-        key = (entity_type, entity, negative)
-        if key in seen:
-            return
-        seen.add(key)
-        records.append((entity_type, entity, strength, negative))
-
-    for span in _model_value(profile, "entityPolaritySpans", []) or []:
-        if not isinstance(span, dict):
-            continue
-        entity = str(span.get("entity") or "").strip()
-        entity_type = str(span.get("entityType") or "").strip()
-        school_nature = _normalize_school_nature_intent_value(entity)
-        if school_nature:
-            entity_type = "school"
-            entity = school_nature
-        if entity_type == "major" and entity not in major_values and entity in career_values:
-            entity_type = "career"
-        if entity_type not in {"major", "school", "region", "career"}:
-            if entity in major_values:
-                entity_type = "major"
-            elif entity in school_values:
-                entity_type = "school"
-            elif entity in region_values:
-                entity_type = "region"
-            elif entity in career_values:
-                entity_type = "career"
-        polarity = str(span.get("polarity") or "").strip()
-        strength = str(span.get("strength") or "").strip()
-        add(entity_type, entity, strength, polarity == "negative" or strength.startswith("exclude_"))
-
-    preference_strength = _model_value(profile, "preferenceStrength", {}) or {}
-    if isinstance(preference_strength, dict):
-        for strength, raw_values in preference_strength.items():
-            strength_text = str(strength or "").strip()
-            negative = strength_text in {"exclude_soft", "exclude_hard"}
-            for entity in _profile_text_values(raw_values):
-                school_nature = _normalize_school_nature_intent_value(entity)
-                if school_nature:
-                    add("school", school_nature, strength_text, negative)
-                elif entity in major_values:
-                    add("major", entity, strength_text, negative)
-                elif entity in school_values:
-                    add("school", entity, strength_text, negative)
-                elif entity in region_values:
-                    add("region", entity, strength_text, negative)
-                elif entity in career_values:
-                    add("career", entity, strength_text, negative)
-
-    for entity in major_values:
-        if ("major", entity) not in covered_entities:
-            add("major", entity, "preferred", False)
-    for entity in school_values:
-        if ("school", entity) not in covered_entities:
-            add("school", entity, "preferred", False)
-    for entity in region_values:
-        if ("region", entity) not in covered_entities:
-            add("region", entity, "preferred", False)
-    for entity in career_values:
-        if ("career", entity) not in covered_entities:
-            add("career", entity, "preferred", False)
-    return records
-
-
-def _runtime_intent_profile_selected_values(
-    profile: Any,
-    *,
-    batch: str,
-) -> tuple[list[dict[str, Any]], str, str]:
-    major_payload: dict[str, list[str]] = {}
-    school_payload: dict[str, list[str]] = {}
-    city_payload: dict[str, list[str]] = {}
-    career_payload: dict[str, list[str]] = {}
-    tuition_budget_payload = _runtime_intent_profile_tuition_budget(profile)
-    physical_constraints_payload = _runtime_intent_profile_physical_constraints(profile)
-    has_only_keep = False
-    has_must_have = False
-    has_hard_negative = False
-    if physical_constraints_payload:
-        has_hard_negative = True
-
-    for entity_type, entity, strength, negative in _runtime_intent_profile_records(profile):
-        if strength == "only_keep":
-            has_only_keep = True
-        elif strength == "must_have":
-            has_must_have = True
-        elif strength == "exclude_hard" or (negative and strength != "exclude_soft"):
-            has_hard_negative = True
-        if entity_type == "major":
-            key, value = _profile_major_payload_key(entity, batch=batch, negative=negative)
-            _add_profile_value(major_payload, key, value)
-        elif entity_type == "school":
-            values = _normalize_school_intent_names([entity], batch)
-            value = values[0] if values else entity
-            _add_profile_value(school_payload, "negative_colleges" if negative else "colleges", value)
-        elif entity_type == "region":
-            key, value = _profile_region_payload_key(entity, negative=negative)
-            _add_profile_value(city_payload, key, value)
-        elif entity_type == "career":
-            for value in _normalize_career_profile_values([entity]):
-                _add_profile_value(career_payload, "negative" if negative else "positive", value)
-
-    selected_values: list[dict[str, Any]] = []
-    if major_payload:
-        selected_values.append({"major_intents": major_payload})
-    if school_payload:
-        selected_values.append({"school_intents": school_payload})
-    if city_payload:
-        selected_values.append({"city_intents": city_payload})
-    if career_payload:
-        selected_values.append({"career_intents": career_payload})
-    if tuition_budget_payload:
-        selected_values.append({"tuition_budget": tuition_budget_payload})
-    if physical_constraints_payload:
-        selected_values.append({"physical_constraints": physical_constraints_payload})
-
-    if has_only_keep:
-        return selected_values, "constraint", "only_keep"
-    if has_must_have:
-        return selected_values, "constraint", "must_have"
-    if has_hard_negative:
-        return selected_values, "constraint", "default"
-    return selected_values, "preference", "default"
-
-
-def _intent_preview_payload_from_entity_profile(
-    *,
-    session_id: str,
-    profile: Any,
-    batch: str,
-) -> dict[str, Any] | None:
-    selected_values, intent_mode, constraint_intent_type = _runtime_intent_profile_selected_values(
-        profile,
-        batch=batch,
-    )
-    if not selected_values:
-        return None
-    try:
-        merged = merge_selected_values(selected_values)
-    except Exception:
-        logger.warning(
-            "Failed to merge runtime intent profile values for plan reroute: session_id=%s",
-            session_id,
-            exc_info=True,
-        )
-        return None
-    if not merged:
-        return None
-    summary = (
-        _intent_entity_profile_strength_display_summary(profile, batch=batch)
-        or _summarize_intent_values(
-            merged,
-            intent_mode=intent_mode,
-            constraint_intent_type=constraint_intent_type,
-        )
-        or "本次选择的报考想法。"
-    )
-    items: list[dict[str, Any]] = []
-    for selected in selected_values:
-        if not isinstance(selected, dict) or not selected:
-            continue
-        try:
-            item_merged = merge_selected_values([selected])
-        except Exception:
-            item_merged = selected
-        item_summary = _summarize_intent_values(
-            item_merged,
-            intent_mode=intent_mode,
-            constraint_intent_type=constraint_intent_type,
-        ) or summary
-        items.append(
-            {
-                "content": item_summary,
-                "selected": True,
-                "value": selected,
-            }
-        )
-    if not items:
-        return None
-    admission_path = str(_model_value(profile, "admissionPath", "") or "").strip()
-    payload = {
-        "status": "ready",
-        "sessionId": session_id,
-        "title": "确认这条报考想法",
-        "intentMode": intent_mode,
-        "constraintIntentType": constraint_intent_type,
-        "analysisStage": "confirmed",
-        "items": items,
-        "existingItems": [],
-        "message": summary,
-        "batch": batch,
-        "entityProfile": (
-            profile.model_dump()
-            if hasattr(profile, "model_dump")
-            else dict(profile)
-            if isinstance(profile, dict)
-            else {}
-        ),
-    }
-    if admission_path:
-        payload["admissionPath"] = admission_path
-    return payload
-
-
-def _split_runtime_intent_selected_values(
-    selected_values: list[dict[str, Any]],
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
-    major_intents: dict[str, Any] = {}
-    school_intents: dict[str, Any] = {}
-    city_intents: dict[str, Any] = {}
-    career_intents: dict[str, Any] = {}
-    for item in selected_values:
-        if not isinstance(item, dict):
-            continue
-        for source, target in (
-            ("major_intents", major_intents),
-            ("school_intents", school_intents),
-            ("city_intents", city_intents),
-            ("career_intents", career_intents),
-        ):
-            payload = item.get(source)
-            if not isinstance(payload, dict):
-                continue
-            for key, raw_values in payload.items():
-                values = _as_text_list(raw_values)
-                if not values:
-                    continue
-                bucket = target.setdefault(str(key or "").strip(), [])
-                for value in values:
-                    if value not in bucket:
-                        bucket.append(value)
-    return (
-        major_intents or None,
-        school_intents or None,
-        city_intents or None,
-        career_intents or None,
-    )
-
-
-def _selected_values_have_negative_intent(selected_values: list[dict[str, Any]]) -> bool:
-    for item in selected_values:
-        if not isinstance(item, dict):
-            continue
-        for payload in item.values():
-            if not isinstance(payload, dict):
-                continue
-            for key, raw_values in payload.items():
-                if str(key or "").strip().startswith("negative_") and _as_text_list(raw_values):
-                    return True
-    return False
-
-
-def _selected_values_entity_bucket_count(selected_values: list[dict[str, Any]]) -> int:
-    buckets = {
-        key
-        for item in selected_values
-        if isinstance(item, dict)
-        for key, value in item.items()
-        if isinstance(value, dict) and any(_as_text_list(raw_values) for raw_values in value.values())
-    }
-    return len(buckets)
-
-
-def _selected_values_have_tuition_budget(selected_values: list[dict[str, Any]]) -> bool:
-    for item in selected_values:
-        if not isinstance(item, dict):
-            continue
-        budget = item.get("tuition_budget")
-        if not isinstance(budget, dict):
-            continue
-        if _positive_int_from_structured_value(budget.get("min_tuition_per_year") or budget.get("minTuitionPerYear")) > 0:
-            return True
-        if _positive_int_from_structured_value(budget.get("max_tuition_per_year") or budget.get("maxTuitionPerYear")) > 0:
-            return True
-    return False
-
-
-def _selected_values_have_physical_constraint(selected_values: list[dict[str, Any]]) -> bool:
-    for item in selected_values:
-        if not isinstance(item, dict):
-            continue
-        constraints = item.get("physical_constraints") or item.get("physicalConstraints")
-        if not isinstance(constraints, dict):
-            continue
-        if _as_text_list(constraints.get("special_limits") or constraints.get("specialLimits")):
-            return True
-    return False
-
-
-def _selected_values_have_only_non_major_positive_scope(selected_values: list[dict[str, Any]]) -> bool:
-    has_positive = False
-    for item in selected_values:
-        if not isinstance(item, dict):
-            return False
-        for group_key, payload in item.items():
-            if group_key == "major_intents":
-                return False
-            if not isinstance(payload, dict):
-                return False
-            for key, raw_values in payload.items():
-                if str(key or "").startswith("negative_") or str(key or "") == "negative":
-                    if _as_text_list(raw_values):
-                        return False
-                    continue
-                if _as_text_list(raw_values):
-                    has_positive = True
-    return has_positive
-
-
-def _selected_values_have_only_positive_career_scope(selected_values: list[dict[str, Any]]) -> bool:
-    has_positive = False
-    for item in selected_values:
-        if not isinstance(item, dict):
-            return False
-        for group_key, payload in item.items():
-            if group_key != "career_intents":
-                return False
-            if not isinstance(payload, dict):
-                return False
-            for key, raw_values in payload.items():
-                values = _as_text_list(raw_values)
-                if str(key or "").strip() == "negative":
-                    if values:
-                        return False
-                    continue
-                if values:
-                    has_positive = True
-    return has_positive
-
-
-def _runtime_intent_profile_can_trust_turn_decision_side_effect(
-    *,
-    turn_decision: Any | None,
-    profile: Any | None,
-    selected_values: list[dict[str, Any]],
-    intent_mode: str,
-    constraint_intent_type: str,
-) -> bool:
-    if turn_decision is None:
-        return False
-    confidence = float(getattr(turn_decision, "confidence", 0.0) or 0.0)
-    context_resolution = _model_value(profile, "contextResolution", {}) if profile is not None else {}
-    context_resolution = context_resolution if isinstance(context_resolution, dict) else {}
-    context_used = bool(context_resolution.get("used"))
-    context_source = str(context_resolution.get("source") or "").strip()
-    context_confidence = _profile_confidence_value(context_resolution.get("confidence"))
-    trusted_context_resolution = (
-        context_used
-        and context_source in {"recentEntityContext", "recentMajorContext"}
-        and context_confidence >= 0.8
-    )
-    if confidence < 0.9 and not (confidence >= 0.85 and trusted_context_resolution):
-        return False
-    if str(getattr(turn_decision, "taskLayer", "") or "").strip() not in {"intent", "mixed"}:
-        return False
-    if str(getattr(turn_decision, "sideEffect", "") or "").strip() != "intent_pending":
-        return False
-    if str(getattr(turn_decision, "scopeAnchor", "") or "").strip() != "future_reference":
-        return False
-    if str(getattr(turn_decision, "scenario", "") or "").strip() not in {
-        "intent_update",
-        "region_preference_update",
-        "",
-    }:
-        return False
-    if not selected_values:
-        return False
-    if intent_mode == "constraint" or constraint_intent_type != "default":
-        return confidence >= 0.9
-    if _selected_values_have_negative_intent(selected_values):
-        return confidence >= 0.9
-    if _selected_values_have_tuition_budget(selected_values):
-        return confidence >= 0.9
-    if _selected_values_have_physical_constraint(selected_values):
-        return confidence >= 0.9
-    if _selected_values_have_only_positive_career_scope(selected_values):
-        return trusted_context_resolution
-    if _selected_values_have_only_non_major_positive_scope(selected_values):
-        return confidence >= 0.9 or trusted_context_resolution
-    if _selected_values_entity_bucket_count(selected_values) >= 2:
-        return True
-    return False
-
-
-async def _classify_runtime_intent_profile_side_effect(
-    *,
-    request_context: RequestContext,
-    content: str,
-    profile: Any,
-    selected_values: list[dict[str, Any]],
-    intent_mode: str,
-) -> Any | None:
-    major_intents, school_intents, city_intents, career_intents = _split_runtime_intent_selected_values(selected_values)
-    started_at = time.monotonic()
-    try:
-        decision = await _classify_intent_side_effect(
-            latest_utterance=content,
-            major_intents=major_intents,
-            school_intents=school_intents,
-            city_intents=city_intents,
-            career_intents=career_intents,
-            intent_mode=intent_mode,
-        )
-    except Exception:
-        _record_observability_duration(
-            request_context,
-            "intentSideEffectDurationMs",
-            int((time.monotonic() - started_at) * 1000),
-        )
-        logger.warning(
-            "Runtime intent hard cut side-effect arbitration failed: session_id=%s",
-            getattr(request_context, "sessionid", ""),
-            exc_info=True,
-        )
-        return None
-    _record_observability_duration(
-        request_context,
-        "intentSideEffectDurationMs",
-        int((time.monotonic() - started_at) * 1000),
-    )
-    observability = getattr(request_context, "agent_observability", None)
-    if isinstance(observability, dict):
-        observability["runtimeIntentSideEffectDecision"] = (
-            decision.model_dump() if hasattr(decision, "model_dump") else dict(decision) if isinstance(decision, dict) else {}
-        )
-    return decision
-
-
-async def _create_pending_intent_confirmation_from_entity_profile(
-    session_id: str,
-    *,
-    profile: Any,
-    batch: str,
-) -> WSResponse | None:
-    selected_values, intent_mode, constraint_intent_type = _runtime_intent_profile_selected_values(
-        profile,
-        batch=batch,
-    )
-    if not selected_values:
-        return None
-    try:
-        merged = merge_selected_values(selected_values)
-    except Exception:
-        logger.warning("Failed to merge runtime intent profile values: session_id=%s", session_id, exc_info=True)
-        return None
-    if not merged:
-        return None
-
-    admission_path = str(_model_value(profile, "admissionPath", "") or "").strip()
-    standard_summary = _summarize_intent_values(
-        merged,
-        intent_mode=intent_mode,
-        constraint_intent_type=constraint_intent_type,
-    )
-    strength_summary = _intent_entity_profile_strength_display_summary(profile, batch=batch)
-    summary = (
-        strength_summary
-        if strength_summary and _intent_profile_strength_summary_can_cover_merged(merged)
-        else standard_summary
-    )
-    if admission_path == "strongbase":
-        summary = f"{summary}；强基路径" if summary else "强基路径"
-    if not summary:
-        summary = "本次选择的报考想法。"
-    selected_data = {
-        "selected": selected_values,
-        "intentMode": intent_mode,
-        "constraintIntentType": constraint_intent_type,
-        "batch": batch,
-        "displaySummary": summary,
-        "entityProfile": (
-            profile.model_dump()
-            if hasattr(profile, "model_dump")
-            else dict(profile)
-            if isinstance(profile, dict)
-            else {}
-        ),
-    }
-    if admission_path:
-        selected_data["admissionPath"] = admission_path
-    compiled = proposal_compiler.compile_intent_preview_proposal(
-        session_id=session_id,
-        selected_data=selected_data,
-        merged=merged,
-        intent_mode=intent_mode,
-        batch=batch,
-        summary=summary,
-        constraint_intent_type=constraint_intent_type,
-    )
-    compiled_sink_metadata = proposal_compiler.intent_sink_metadata_or_none(
-        compiled,
-        session_id=session_id,
-        source="intent_entity_profile",
-    )
-    if compiled_sink_metadata is None:
-        return None
-    intent_response = await _create_pending_intent_confirmation_response(
-        session_id,
-        selected_data=selected_data,
-        merged=merged,
-        intent_mode=intent_mode,
-        batch=batch,
-        summary_override=summary,
-        impact_payload={
-            **merged,
-            "admissionPath": admission_path,
-        },
-        compiled_sink_metadata=compiled_sink_metadata,
-    )
-    for followup in intent_response.followups:
-        if isinstance(followup, WSResponse) and followup.type == "pendingConfirmationCard":
-            return followup
-    return None
-
-
-async def _create_runtime_intent_hard_cut_pending_from_prompt(
-    *,
-    session_id: str,
-    request_context: RequestContext,
-    content: str,
-    history: list[Any] | None = None,
-    min_profile_confidence: float = 0.55,
-    profile: Any | None = None,
-    turn_decision: Any | None = None,
-) -> WSResponse | None:
-    """Create intent pending for the pre-agent TurnDecision hard-cut path."""
-
-    if profile is None:
-        profile_started_at = time.monotonic()
-        try:
-            profile = await extract_intent_entity_profile(
-                content,
-                context=_runtime_intent_entity_profile_context(history),
-            )
-        except Exception:
-            _record_observability_duration(
-                request_context,
-                "intentEntityProfileDurationMs",
-                int((time.monotonic() - profile_started_at) * 1000),
-            )
-            logger.warning(
-                "Explicit intent profile extraction failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            return None
-        _record_observability_duration(
-            request_context,
-            "intentEntityProfileDurationMs",
-            int((time.monotonic() - profile_started_at) * 1000),
-        )
-    selected_values, intent_mode, constraint_intent_type = _runtime_intent_profile_selected_values(
-        profile,
-        batch=str(getattr(request_context, "batch", "") or "01"),
-    )
-    if not selected_values:
-        fallback_profile = _runtime_intent_profile_from_turn_decision_target_issue(turn_decision)
-        if fallback_profile is not None:
-            profile = fallback_profile
-            selected_values, intent_mode, constraint_intent_type = _runtime_intent_profile_selected_values(
-                profile,
-                batch=str(getattr(request_context, "batch", "") or "01"),
-            )
-            observability = getattr(request_context, "agent_observability", None)
-            if isinstance(observability, dict):
-                observability["runtimeIntentEntityProfileFallback"] = {
-                    "source": "turn_decision_target_issue",
-                    "targetIssue": _as_text_list(getattr(turn_decision, "targetIssue", []) or []),
-                }
-    if float(_model_value(profile, "confidence", 0.0) or 0.0) < min_profile_confidence:
-        return None
-    if not selected_values:
-        return None
-    side_effect_decision = None
-    readonly_school_or_candidate_query = proposal_compiler.content_has_readonly_school_or_candidate_query_anchor(content)
-    if (
-        not readonly_school_or_candidate_query
-        and _runtime_intent_profile_can_trust_turn_decision_side_effect(
-            turn_decision=turn_decision,
-            profile=profile,
-            selected_values=selected_values,
-            intent_mode=intent_mode,
-            constraint_intent_type=constraint_intent_type,
-        )
-    ):
-        observability = getattr(request_context, "agent_observability", None)
-        if isinstance(observability, dict):
-            observability["runtimeIntentSideEffectDecision"] = {
-                "decision": "intent_preview",
-                "confidence": float(getattr(turn_decision, "confidence", 0.0) or 0.0),
-                "constraintIntentType": constraint_intent_type,
-                "source": "turn_decision_profile_fast_path",
-                "reason": "High-confidence TurnDecision and structured intent profile are sufficient for runtime intent pending.",
-            }
-            observability["runtimeIntentSideEffectSkipped"] = True
-    else:
-        if readonly_school_or_candidate_query:
-            observability = getattr(request_context, "agent_observability", None)
-            if isinstance(observability, dict):
-                observability["runtimeIntentSideEffectFastPathBlocked"] = {
-                    "reason": "readonly_school_or_candidate_query_anchor",
-                }
-        side_effect_decision = await _classify_runtime_intent_profile_side_effect(
-            request_context=request_context,
-            content=content,
-            profile=profile,
-            selected_values=selected_values,
-            intent_mode=intent_mode,
-        )
-        if side_effect_decision is None:
-            return None
-        if not (
-            str(getattr(side_effect_decision, "decision", "") or "").strip() == "intent_preview"
-            and float(getattr(side_effect_decision, "confidence", 0.0) or 0.0) >= 0.7
-        ):
-            logger.info(
-                "Runtime intent hard cut skipped by side-effect arbitration: session_id=%s decision=%s confidence=%s reason=%s",
-                session_id,
-                str(getattr(side_effect_decision, "decision", "") or "").strip(),
-                float(getattr(side_effect_decision, "confidence", 0.0) or 0.0),
-                str(getattr(side_effect_decision, "reason", "") or ""),
-            )
-            return None
-    card = await _create_pending_intent_confirmation_from_entity_profile(
-        session_id,
-        profile=profile,
-        batch=str(getattr(request_context, "batch", "") or "01"),
-    )
-    if card is None:
-        return None
-    observability = getattr(request_context, "agent_observability", None)
-    if isinstance(observability, dict):
-        observability["runtimeIntentHardCut"] = {
-            "source": "turn_decision_entity_profile",
-            "entityType": str(_model_value(profile, "entityType", "") or "").strip(),
-            "pendingKind": _pending_card_kind(card),
-            "entityProfileContext": _runtime_intent_entity_profile_context(history),
-        }
-        observability["latestIntentEntityProfile"] = (
-            profile.model_dump()
-            if hasattr(profile, "model_dump")
-            else dict(profile)
-            if isinstance(profile, dict)
-            else {}
-        )
-    return card
-
-
-async def _maybe_handle_runtime_intent_hard_cut(
-    *,
-    session_id: str,
-    user_id: str,
-    content: str,
-    history: list[Any] | None,
-    history_store: ChatHistoryStore,
-    request_context: RequestContext,
-    planning_summary: PlanningSummary | None,
-    pending_state: dict[str, Any] | None,
-    score_detail: ScoreDetail | None,
-    turn_started_at: float,
-    turn_decision: Any | None = None,
-    current_plan_mutation_reroute: Callable[[Any], Awaitable[ChatServiceResponseEnvelope | None]] | None = None,
-) -> ChatServiceResponseEnvelope | None:
-    if not _pending_state_allows_runtime_intent_hard_cut(pending_state):
-        return None
-    planning_state_profile = _planning_state_profile_for_turn_decision(
-        planning_summary=planning_summary,
-        pending_state=pending_state,
-        score_detail=score_detail,
-    )
-    decision = turn_decision
-    if decision is None:
-        try:
-            decision = await _classify_turn_decision_cached(
-                content,
-                request_context=request_context,
-                payload={
-                    "planningStateProfile": planning_state_profile,
-                    "pendingState": pending_state if isinstance(pending_state, dict) else {},
-                },
-            )
-        except Exception:
-            logger.warning("Runtime intent hard cut TurnDecision failed: session_id=%s", session_id, exc_info=True)
-            return None
-    decision_allows_hard_cut = _turn_decision_allows_runtime_intent_hard_cut(
-        decision,
-        pending_state=pending_state,
-    )
-    durable_target_issue_profile = _runtime_intent_profile_from_turn_decision_target_issue(decision)
-    if (
-        decision_allows_hard_cut
-        and durable_target_issue_profile is not None
-        and not _should_defer_runtime_intent_hard_cut_to_current_plan_action(
-            content,
-            planning_summary=planning_summary,
-        )
-    ):
-        card = await _create_runtime_intent_hard_cut_pending_from_prompt(
-            session_id=session_id,
-            request_context=request_context,
-            content=content,
-            history=history,
-            min_profile_confidence=0.75,
-            profile=durable_target_issue_profile,
-            turn_decision=decision,
-        )
-        if card is not None:
-            _store_current_turn_decision(request_context, decision)
-            primary_text = _pending_confirmation_primary_reply_from_card(card)
-            if not primary_text:
-                primary_text = "已列出这次报考想法预览。\n\n点“采纳”前不会生效。"
-            turn_event = {
-                "sessionId": session_id,
-                "userId": user_id,
-                "scene": "intent",
-                "routingPath": "runtime_intent_hard_cut",
-                "routeDecision": {
-                    "source": "turn_decision_target_issue",
-                    "matched": True,
-                    "taskLayer": str(getattr(decision, "taskLayer", "") or "").strip(),
-                    "sideEffect": str(getattr(decision, "sideEffect", "") or "").strip(),
-                    "scopeAnchor": str(getattr(decision, "scopeAnchor", "") or "").strip(),
-                    "scenario": str(getattr(decision, "scenario", "") or "").strip(),
-                    "targetIssue": _as_text_list(getattr(decision, "targetIssue", []) or []),
-                    "confidence": float(getattr(decision, "confidence", 0.0) or 0.0),
-                    "hardCutAccepted": True,
-                    "entityProfileFallback": True,
-                },
-                "pendingType": "intent",
-                "actionFamily": "apply_selected_intents",
-                "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
-                **_observability_timing_fields(request_context),
-                "toolCalls": ["turn_decision", "proposal_compiler.intent"],
-                "postProcessingApplied": ["runtime_intent_hard_cut", "turn_decision_target_issue_profile"],
-                "status": "success",
-                "errorType": None,
-            }
-            await _save_direct_guard_history(
-                history_store,
-                session_id,
-                history,
-                content,
-                primary_text,
-                model_name="runtime-intent-hard-cut",
-                turn_event=turn_event,
-                request_context=request_context,
-                user_id=user_id,
-            )
-            _log_conversation_turn_event(**turn_event)
-            return ChatServiceResponseEnvelope(primary=primary_text, followups=[card])
-    if decision_allows_hard_cut and _should_defer_runtime_intent_hard_cut_to_current_plan_action(
-        content,
-        planning_summary=planning_summary,
-    ):
-        observability = getattr(request_context, "agent_observability", None)
-        if isinstance(observability, dict):
-            observability["runtimeIntentHardCutDeferred"] = {
-                "reason": "current_plan_mutation_anchor",
-                "formalPlanPresent": True,
-            }
-        return None
-    if decision_allows_hard_cut:
-        atomic_should_defer, atomic_arbitration = await _semantic_atomic_plan_action_should_defer_runtime_intent(
-            content=content,
-            request_context=request_context,
-            history=history,
-            turn_decision=decision,
-        )
-        if atomic_should_defer:
-            observability = getattr(request_context, "agent_observability", None)
-            if isinstance(observability, dict):
-                observability["runtimeIntentHardCutDeferred"] = {
-                    "reason": "semantic_atomic_plan_action",
-                    "formalPlanPresent": _planning_summary_has_formal_plan(planning_summary),
-                    "arbitration": atomic_arbitration,
-                }
-            if _planning_summary_has_formal_plan(planning_summary):
-                return None
-            needs_plan_first_resolution = proposal_compiler.compile_no_plan_atomic_action_boundary_source(
-                content,
-                action_family=str(atomic_arbitration.get("actionFamily") or ""),
-            )
-            if needs_plan_first_resolution.side_effect == "needs_plan_first":
-                reply_text = _needs_plan_first_guard_reply(content, needs_plan_first_resolution)
-                turn_event = {
-                    "sessionId": session_id,
-                    "userId": user_id,
-                    "scene": "plan",
-                    "routingPath": "needs_plan_first_guard",
-                    "routeDecision": {
-                        "source": "plan_atomic_action_dsl",
-                        "matched": True,
-                        "route": needs_plan_first_resolution.side_effect,
-                        "referenceResolution": needs_plan_first_resolution.reference_resolution,
-                        "targetIssues": list(needs_plan_first_resolution.target_issues),
-                        "displayPayload": dict(needs_plan_first_resolution.display_payload),
-                        "replyPlan": dict(needs_plan_first_resolution.reply_plan),
-                        "blockingReasons": list(needs_plan_first_resolution.blocking_reasons),
-                        "arbitration": atomic_arbitration,
-                    },
-                    "pendingType": None,
-                    "actionFamily": str(atomic_arbitration.get("actionFamily") or ""),
-                    "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
-                    "status": "success",
-                    "errorType": None,
-                }
-                await _save_direct_guard_history(
-                    history_store,
-                    session_id,
-                    history,
-                    content,
-                    reply_text,
-                    model_name="needs-plan-first-atomic-action-guard",
-                    turn_event=turn_event,
-                    request_context=request_context,
-                    user_id=user_id,
-                )
-                _log_conversation_turn_event(**turn_event)
-                return ChatServiceResponseEnvelope(primary=reply_text)
-    side_effect = str(getattr(decision, "sideEffect", "") or "").strip()
-    scenario = str(getattr(decision, "scenario", "") or "").strip()
-    turn_decision_blocks_intent = _turn_decision_blocks_runtime_intent_hard_cut(decision)
-    if (
-        not decision_allows_hard_cut
-        and turn_decision_blocks_intent
-        and side_effect not in {"plan_preview", "readonly_or_plan_preview"}
-    ):
-        return None
-    durable_constraint_intent = False
-    profile: Any | None = None
-    if (
-        not decision_allows_hard_cut
-        and turn_decision_blocks_intent
-        and side_effect in {"plan_preview", "readonly_or_plan_preview"}
-    ):
-        profile_started_at = time.monotonic()
-        try:
-            profile = await extract_intent_entity_profile(
-                content,
-                context=_runtime_intent_entity_profile_context(history),
-            )
-        except Exception:
-            _record_observability_duration(
-                request_context,
-                "intentEntityProfileDurationMs",
-                int((time.monotonic() - profile_started_at) * 1000),
-            )
-            logger.warning(
-                "Runtime intent hard cut durable constraint profile extraction failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            profile = None
-        else:
-            _record_observability_duration(
-                request_context,
-                "intentEntityProfileDurationMs",
-                int((time.monotonic() - profile_started_at) * 1000),
-            )
-        durable_constraint_intent = (
-            profile is not None
-            and float(_model_value(profile, "confidence", 0.0) or 0.0) >= 0.75
-            and _profile_is_durable_constraint_intent(profile)
-        )
-        if profile is not None:
-            observability = getattr(request_context, "agent_observability", None)
-            if isinstance(observability, dict):
-                observability["latestIntentEntityProfile"] = (
-                    profile.model_dump()
-                    if hasattr(profile, "model_dump")
-                    else dict(profile)
-                    if isinstance(profile, dict)
-                    else {}
-                )
-                observability["latestIntentPreviewPayload"] = _intent_preview_payload_from_entity_profile(
-                    session_id=session_id,
-                    profile=profile,
-                    batch=str(getattr(request_context, "batch", "") or "01"),
-                )
-        if durable_constraint_intent and current_plan_mutation_reroute is not None:
-            _store_current_turn_decision(request_context, decision)
-            rerouted = await current_plan_mutation_reroute(profile)
-            if rerouted is not None:
-                return rerouted
-        if durable_constraint_intent and _should_defer_runtime_intent_hard_cut_to_current_plan_action(
-            content,
-            planning_summary=planning_summary,
-        ):
-            observability = getattr(request_context, "agent_observability", None)
-            if isinstance(observability, dict):
-                observability["runtimeIntentHardCutDeferred"] = {
-                    "reason": "current_plan_action_anchor_after_durable_profile",
-                    "formalPlanPresent": True,
-                    "turnDecisionSideEffect": side_effect,
-                    "turnDecisionScenario": scenario,
-                }
-            return None
-    if (
-        not decision_allows_hard_cut
-        and turn_decision_blocks_intent
-        and side_effect in {"plan_preview", "readonly_or_plan_preview"}
-        and not durable_constraint_intent
-    ):
-        return None
-    if not decision_allows_hard_cut and (
-        (
-            side_effect
-            in {
-                "apply_pending_then_new_request",
-                "apply_pending_then_readonly",
-                "conflict_with_existing_pending",
-                "profile_change_replan",
-                "profile_replan_adhoc",
-                "profile_replan_ambiguous",
-                "readonly_while_pending",
-            }
-        )
-        or scenario
-        in {
-            "apply_intent_then_generate_plan",
-            "apply_pending_then_readonly_query",
-            "plan_query",
-            "plan_query_while_pending",
-            "profile_adhoc_replan",
-            "profile_scope_ambiguous",
-            "profile_update_replan",
-            "state_query_while_pending",
-            "profile_change_state_query",
-        }
-    ):
-        return None
-
-    card = await _create_runtime_intent_hard_cut_pending_from_prompt(
-        session_id=session_id,
-        request_context=request_context,
-        content=content,
-        history=history,
-        min_profile_confidence=0.55 if decision_allows_hard_cut else 0.75,
-        profile=profile if durable_constraint_intent else None,
-        turn_decision=decision,
-    )
-    if card is None:
-        return None
-    _store_current_turn_decision(request_context, decision)
-    primary_text = _pending_confirmation_primary_reply_from_card(card)
-    if not primary_text:
-        primary_text = "已列出这次报考想法预览。\n\n点“采纳”前不会生效。"
-    turn_event = {
-        "sessionId": session_id,
-        "userId": user_id,
-        "scene": "intent",
-        "routingPath": "runtime_intent_hard_cut",
-        "routeDecision": {
-            "source": "turn_decision",
-            "matched": True,
-            "taskLayer": str(getattr(decision, "taskLayer", "") or "").strip(),
-            "sideEffect": str(getattr(decision, "sideEffect", "") or "").strip(),
-            "scopeAnchor": str(getattr(decision, "scopeAnchor", "") or "").strip(),
-            "scenario": str(getattr(decision, "scenario", "") or "").strip(),
-            "confidence": float(getattr(decision, "confidence", 0.0) or 0.0),
-            "hardCutAccepted": decision_allows_hard_cut,
-            "entityProfileFallback": not decision_allows_hard_cut,
-        },
-        "pendingType": "intent",
-        "actionFamily": "apply_selected_intents",
-        "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
-        **_observability_timing_fields(request_context),
-        "toolCalls": ["turn_decision", "intent_entity_profile", "proposal_compiler.intent"],
-        "postProcessingApplied": ["runtime_intent_hard_cut"],
-        "status": "success",
-        "errorType": None,
-    }
-    await _save_direct_guard_history(
-        history_store,
-        session_id,
-        history,
-        content,
-        primary_text,
-        model_name="runtime-intent-hard-cut",
-        turn_event=turn_event,
-        request_context=request_context,
-        user_id=user_id,
-    )
-    _log_conversation_turn_event(**turn_event)
-    return ChatServiceResponseEnvelope(primary=primary_text, followups=[card])
-
-
 def _select_conversation_action_family(tool_returns: list[ToolReturnPart]) -> str | None:
     """Choose the action family that best describes the completed turn.
 
@@ -6716,39 +3884,6 @@ def _select_conversation_action_family(tool_returns: list[ToolReturnPart]) -> st
         if action_family not in _LOW_PRIORITY_LOG_ACTION_FAMILIES:
             return action_family
     return families[-1]
-
-
-def _latest_readonly_plan_execution_result(messages: list[Any] | None) -> dict[str, Any] | None:
-    readonly_pairs = {
-        ("review_plan", "review_result"),
-        ("analyze_adjustment", "adjustment_analysis"),
-        ("query_state", "status_overview"),
-    }
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not data:
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        result_kind = str(data.get("result_kind") or "").strip()
-        if (action_family, result_kind) in readonly_pairs:
-            return data
-    return None
-
-
-def _latest_review_plan_result(messages: list[Any] | None) -> dict[str, Any] | None:
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        result_kind = str(data.get("result_kind") or "").strip()
-        if action_family == "review_plan" and result_kind == "review_result":
-            return data
-    return None
 
 
 def _latest_readonly_plan_query_reply(messages: list[Any] | None) -> str | None:
@@ -6903,17 +4038,6 @@ def _summarize_tool_calls_for_observability(
             or ""
         ).strip()
         stage = str(args.get("current_stage") or returned.get("stage") or "").strip()
-        if part.tool_name == "execute_plan_action":
-            raw_payload = args.get("plan_payload")
-            if isinstance(raw_payload, str) and raw_payload.strip():
-                try:
-                    plan_payload = json.loads(raw_payload)
-                except Exception:
-                    plan_payload = {}
-                if isinstance(plan_payload, dict):
-                    action_family = action_family or str(plan_payload.get("action_family") or "").strip()
-                    stage = stage or str(plan_payload.get("stage") or "").strip()
-
         if action_family:
             item["actionFamily"] = action_family
         if stage:
@@ -6995,540 +4119,22 @@ def _summarize_full_agent_tool_trial(tool_names: list[str]) -> dict[str, Any]:
     }
 
 
-def _tool_calls_include_plan_workspace_refresh(messages: list[Any] | None) -> list[str]:
-    compiled = proposal_compiler.compile_runtime_workspace_presentation_source(
-        execute_plan_results=_execute_plan_action_results(messages),
-        tool_call_names=[part.tool_name for part in _iter_tool_call_parts(messages)],
-        execute_plan_action_call_families=_execute_plan_action_call_families(messages),
-    )
-    return _dedupe_workspace_targets(compiled.workspace_refresh_targets)
-
-
-def _tool_context_has_execute_plan_return(messages: list[Any] | None) -> bool:
-    return any(part.tool_name == "execute_plan_action" for part in _iter_tool_return_parts(messages))
-
-
-def _execute_plan_action_results(messages: list[Any] | None) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for part in _iter_tool_return_parts(messages):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if isinstance(data, dict) and data:
-            results.append(data)
-    return results
-
-
-def _execute_plan_action_call_families(messages: list[Any] | None) -> list[str]:
-    families: list[str] = []
-    for part in _iter_tool_call_parts(messages):
-        if part.tool_name != "execute_plan_action":
-            continue
-        action_family = _extract_execute_plan_action_family(part)
-        families.append(action_family or "")
-    return families
-
-
-def _current_turn_workspace_refresh_targets(
-    *,
-    tool_context_messages: list[Any] | None,
-    new_messages: list[Any] | None,
-    all_messages: list[Any] | None,
-    content: str,
-) -> list[str]:
-    """Extract workspace refresh only from the current turn."""
-
-    targets = _tool_calls_include_plan_workspace_refresh(tool_context_messages)
-    if not targets:
-        targets = _tool_calls_include_plan_workspace_refresh(new_messages)
-    compiled = proposal_compiler.compile_runtime_workspace_presentation_source(
-        execute_plan_results=_execute_plan_action_results(tool_context_messages),
-        initial_refresh_targets=targets,
-        allow_explanation_refresh=_semantic_query_state_should_run_review(content),
-        include_call_fallback=False,
-    )
-    return _dedupe_workspace_targets(compiled.workspace_refresh_targets)
-
-
-def _current_turn_workspace_view_targets(
-    *,
-    tool_context_messages: list[Any] | None,
-    all_messages: list[Any] | None,
-    content: str,
-    turn_decision: Any | None = None,
-) -> list[str]:
-    current_result = _latest_execute_plan_action_result(tool_context_messages)
-    boundary = _latest_user_turn_boundary(all_messages)
-    prior_messages = list(all_messages[:boundary] if boundary is not None else [])
-    prior_attempt = _latest_plan_mutation_attempt_result(prior_messages)
-    compiled = proposal_compiler.compile_runtime_workspace_presentation_source(
-        execute_plan_results=_execute_plan_action_results(tool_context_messages),
-        include_call_fallback=False,
-        include_result_view_targets=False,
-        include_post_plan_attempt_view=True,
-        current_result=current_result,
-        prior_plan_attempt_result=prior_attempt if isinstance(prior_attempt, dict) else None,
-        turn_decision=turn_decision,
-    )
-    return _dedupe_workspace_targets(compiled.workspace_view_targets)
-
-
-def _plan_result_is_readonly_workspace_no_refresh(action_family: str, result_kind: str) -> bool:
-    return proposal_compiler.workspace_plan_result_is_readonly_no_refresh(action_family, result_kind)
-
-
-def _tool_calls_include_plan_execution(messages: list[Any] | None) -> bool:
-    return any(part.tool_name == "execute_plan_action" for part in _iter_tool_call_parts(messages))
-
-
-def _tool_returns_successful_plan_apply(messages: list[Any] | None) -> bool:
-    for part in _iter_tool_return_parts(messages):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not data:
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        if (
-            data.get("applied") is True
-            and str(data.get("stage") or "").strip() == "apply"
-            and action_family in _PENDING_PLAN_ACTION_FAMILIES
-        ):
-            return True
-    return False
-
-
-def _tool_returns_plan_mutation_context(messages: list[Any] | None) -> bool:
-    """Return true when this turn is actually about a plan mutation flow.
-
-    Read-only plan queries may still mention confirming a pending intent. Those
-    should not receive the "no executable plan preview" boundary, otherwise the
-    user sees a plan-adjustment warning for a preference confirmation.
-    """
-    mutation_families = set(_PENDING_PLAN_ACTION_FAMILIES)
-    mutation_families.update({"analyze_adjustment", "preview_fix_proposal"})
-    for part in _iter_tool_return_parts(messages):
-        if part.tool_name not in {"plan_next_action", "execute_plan_action"}:
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not data:
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        if action_family in mutation_families:
-            return True
-    return False
-
-
-def _tool_returns_mutating_plan_preview(messages: list[Any] | None) -> bool:
-    return _extract_plan_confirmation_candidate(messages) is not None
-
-
-def _latest_fix_proposal_confirmation_source(
-    messages: list[Any] | None,
-) -> dict[str, Any] | None:
-    latest: dict[str, Any] | None = None
-    payloads_by_call_id: dict[str, dict[str, Any]] = {}
-    for call in _iter_tool_call_parts(messages):
-        payload = _extract_execute_plan_payload(call)
-        if isinstance(payload, dict):
-            payloads_by_call_id[str(call.tool_call_id or "")] = payload
-    for part in _iter_tool_return_parts(messages):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not data:
-            continue
-        plan_payload = payloads_by_call_id.get(str(part.tool_call_id or "")) or {}
-        confirmation_source = proposal_compiler.runtime_fix_proposal_confirmation_source_from_result(
-            data,
-            plan_payload=plan_payload,
-        )
-        if confirmation_source is not None:
-            latest = confirmation_source
-    return latest
-
-
-def _latest_fix_proposal_preview_result(
-    messages: list[Any] | None,
-) -> dict[str, Any] | None:
-    latest: dict[str, Any] | None = None
-    for part in _iter_tool_return_parts(messages):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not data:
-            continue
-        result_kind = str(data.get("result_kind") or "").strip()
-        action_family = str(data.get("action_family") or "").strip()
-        if action_family == "preview_fix_proposal" and result_kind == "fix_proposal_preview":
-            latest = data
-    return latest
-
-
-def _full_agent_plan_display_source(
-    *,
-    action_family: str | None,
-    tool_context_messages: list[Any] | None,
-    pending_card_created: bool,
-    turn_decision: Any | None,
-) -> proposal_compiler.RuntimeSemanticPlanDisplaySource | None:
-    family = str(action_family or "").strip()
-    if family not in {"review_plan", "analyze_adjustment", "preview_fix_proposal"}:
-        return None
-    latest_result = _latest_execute_plan_action_result(tool_context_messages)
-    if not isinstance(latest_result, dict) or not latest_result:
-        return None
-    result_family = str(latest_result.get("action_family") or latest_result.get("actionFamily") or "").strip()
-    if result_family and result_family != family:
-        return None
-    prefer_conditional_options = bool(
-        _turn_decision_is_plan_review_or_repair_preview(turn_decision)
-    )
-    display_source = proposal_compiler.compile_runtime_semantic_plan_display_source(
-        action_family=family,
-        result=latest_result,
-        pending_card_created=pending_card_created,
-        prefer_conditional_options=prefer_conditional_options,
-    )
-    if not display_source.matched:
-        return None
-    return display_source
-
-
-def _latest_plan_next_missing_inputs_payload(
-    messages: list[Any] | None,
-    *,
-    action_family: str | None = None,
-) -> dict[str, Any] | None:
-    target_family = str(action_family or "").strip()
-    latest_payload: dict[str, Any] | None = None
-    for part in _iter_tool_return_parts(messages):
-        if part.tool_name != "plan_next_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        family = str(data.get("action_family") or "").strip()
-        if target_family and family != target_family:
-            continue
-        missing_inputs = [
-            str(item or "").strip()
-            for item in (data.get("missing_inputs") or data.get("missingInputs") or [])
-            if str(item or "").strip()
-        ]
-        if not missing_inputs:
-            continue
-        normalized = normalize_plan_action_payload(dict(data))
-        normalized["missing_inputs"] = missing_inputs
-        latest_payload = normalized
-    return latest_payload
-
-
-def _latest_turn_allows_plan_followup_confirmation(messages: list[Any] | None) -> bool:
-    """Whether a short confirmation should continue a structured plan follow-up.
-
-    This covers turns such as review/analyze replies that only offered to
-    generate a preview. They have no active pending action yet, so a short
-    "确认/可以" must not be consumed as an apply confirmation.
-    """
-    turn_messages = _messages_after_index(messages, _latest_user_turn_boundary(messages))
-    if _extract_plan_confirmation_candidate(turn_messages) is not None:
-        return False
-    for part in _iter_tool_return_parts(turn_messages):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        result_kind = str(data.get("result_kind") or "").strip()
-        facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
-        fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
-        proposals = fix_facts.get("proposals") if isinstance(fix_facts, dict) else None
-        if (
-            action_family == "review_plan"
-            and result_kind == "review_result"
-            and isinstance(proposals, list)
-            and proposals
-        ):
-            return True
-        if action_family == "preview_fix_proposal" and result_kind in {
-            "fix_proposal_preview",
-            "preview_only",
-        }:
-            return True
-    return False
-
-
-def _latest_plan_semantic_route_context(messages: list[Any] | None) -> dict[str, Any]:
-    """Return structured plan facts for semantic routing.
-
-    This intentionally uses only prior tool results and assistant-side state,
-    never raw user wording.  The semantic classifier may use these facts to
-    decide whether the next user turn asks for a repair preview.
-    """
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        result_kind = str(data.get("result_kind") or "").strip()
-        if action_family not in {"review_plan", "analyze_adjustment", "preview_fix_proposal", "query_state"}:
-            continue
-        facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
-        fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
-        proposals = fix_facts.get("proposals") if isinstance(fix_facts.get("proposals"), list) else []
-        strategy_counts: dict[str, int] = {}
-        for proposal in proposals:
-            if not isinstance(proposal, dict):
-                continue
-            strategy = str(proposal.get("strategy") or "").strip()
-            if strategy:
-                strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
-        proposal_summaries: list[dict[str, Any]] = []
-        ordered_proposals = sorted(
-            [proposal for proposal in proposals if isinstance(proposal, dict)],
-            key=lambda proposal: (
-                0 if str(proposal.get("status") or "").strip() == "ready" else 1,
-                0 if str(proposal.get("status") or "").strip() == "preview_only" else 1,
-            ),
-        )
-        for proposal in ordered_proposals[:8]:
-            if not isinstance(proposal, dict):
-                continue
-            proposal_summaries.append(
-                {
-                    "proposalId": str(proposal.get("proposal_id") or proposal.get("proposalId") or "").strip(),
-                    "status": str(proposal.get("status") or "").strip(),
-                    "strategy": str(proposal.get("strategy") or "").strip(),
-                    "sourceCheckCodes": [
-                        str(code or "").strip()
-                        for code in (proposal.get("source_check_codes") or proposal.get("sourceCheckCodes") or [])
-                        if str(code or "").strip()
-                    ],
-                    "title": _normalize_fix_proposal_user_text(str(proposal.get("title") or "").strip()),
-                    "summary": _normalize_fix_proposal_user_text(str(proposal.get("summary") or "").strip()),
-                }
-            )
-        return {
-            "lastActionFamily": action_family,
-            "lastResultKind": result_kind,
-            "summary": _normalize_fix_proposal_user_text(str(data.get("summary") or data.get("state_summary") or "").strip()),
-            "replyFocus": data.get("reply_focus") if isinstance(data.get("reply_focus"), list) else [],
-            "fixProposals": {
-                "readyCount": _as_int(fix_facts.get("ready_count")),
-                "blockedCount": _as_int(fix_facts.get("blocked_count")),
-                "previewOnlyCount": _as_int(fix_facts.get("preview_only_count")),
-                "proposalSource": str(
-                    fix_facts.get("proposal_source")
-                    or fix_facts.get("proposalSource")
-                    or ""
-                ).strip(),
-                "strategyCounts": strategy_counts,
-                "strategies": list(strategy_counts.keys()),
-                "proposals": proposal_summaries,
-            },
-        }
-    return {}
-
-
-def _latest_review_fix_proposal_route_context(messages: list[Any] | None) -> dict[str, Any]:
-    """Return the latest review/analysis context that carries fix proposals.
-
-    A later failed atomic mutation can appear after a successful review in the
-    same model turn. For repair recovery we still need the review facts; the
-    failed mutation should not erase the structured review issue scope.
-    """
-
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        result_kind = str(data.get("result_kind") or "").strip()
-        if action_family not in {"review_plan", "analyze_adjustment", "preview_fix_proposal"}:
-            continue
-        if result_kind not in {"review_result", "adjustment_analysis", "fix_proposal_preview"}:
-            continue
-        context = _latest_plan_semantic_route_context(
-            [
-                ModelRequest(
-                    parts=[
-                        ToolReturnPart(
-                            tool_name="execute_plan_action",
-                            content=json.dumps(data, ensure_ascii=False, default=str),
-                            tool_call_id="review-fix-proposal-route-context",
-                        )
-                    ]
-                )
-            ]
-        )
-        fix_facts = context.get("fixProposals") if isinstance(context, dict) else None
-        if isinstance(fix_facts, dict) and (
-            _as_int(fix_facts.get("readyCount")) > 0
-            or _as_int(fix_facts.get("blockedCount")) > 0
-            or _as_int(fix_facts.get("previewOnlyCount")) > 0
-            or bool(fix_facts.get("proposals"))
-        ):
-            return context
-    return {}
-
-
-def _has_plan_semantic_route_context(
-    planning_summary: PlanningSummary | None,
-    recent_plan_context: dict[str, Any] | None,
-) -> bool:
+def _has_plan_semantic_route_context(planning_summary: PlanningSummary | None) -> bool:
     if planning_summary is None:
         return False
-    if (
+    return (
         int(getattr(planning_summary, "ordered_total", 0) or 0) > 0
         or int(getattr(planning_summary, "working_total", 0) or 0) > 0
         or int(getattr(planning_summary, "review_risk_count", 0) or 0) > 0
         or int(getattr(planning_summary, "review_warn_count", 0) or 0) > 0
-    ):
-        return True
-    fix_facts = (recent_plan_context or {}).get("fixProposals")
-    return isinstance(fix_facts, dict) and any(
-        _as_int(fix_facts.get(key)) > 0
-        for key in ("readyCount", "blockedCount", "previewOnlyCount")
-    )
-
-
-def _semantic_preview_fix_proposal_route_allowed(
-    decision: Any,
-    recent_plan_context: dict[str, Any] | None,
-) -> bool:
-    return proposal_compiler.review_context_supports_fix_preview_route(
-        decision,
-        recent_plan_context,
-    )
-
-
-def _semantic_decision_requests_fix_preview(
-    decision: Any,
-    *,
-    require_issue_code_for_non_preview: bool,
-) -> bool:
-    return proposal_compiler.semantic_decision_requests_fix_preview(
-        decision,
-        confidence_threshold=_SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD,
-    )
-
-
-def _plan_context_has_fix_proposals(context: dict[str, Any] | None) -> bool:
-    if not isinstance(context, dict) or not context:
-        return False
-    fix_facts = context.get("fixProposals")
-    if not isinstance(fix_facts, dict):
-        return False
-    return (
-        _as_int(fix_facts.get("readyCount")) > 0
-        or _as_int(fix_facts.get("blockedCount")) > 0
-        or _as_int(fix_facts.get("previewOnlyCount")) > 0
-        or bool(fix_facts.get("proposals"))
     )
 
 
 def _tool_calls_include_plan_chain(messages: list[Any] | None) -> bool:
     plan_tool_names = {
-        "collect_plan_context_inputs",
-        "plan_next_action",
-        "execute_plan_action",
         "query_volunteer_plan",
     }
     return any(part.tool_name in plan_tool_names for part in _iter_tool_call_parts(messages))
-
-
-def _turn_has_structured_plan_result(messages: list[Any] | None) -> bool:
-    """Whether the latest turn already has structured Plan facts.
-
-    This is used only by post-processing recovery guards. When a review or
-    adjustment tool has returned structured facts, we should not start an
-    unrelated Intent recovery just because the model used confirmation-like
-    wording in its final prose.
-    """
-
-    turn_messages = _messages_after_index(messages, _latest_user_turn_boundary(messages))
-    if not turn_messages:
-        turn_messages = list(messages or [])
-    for part in _iter_tool_return_parts(turn_messages):
-        if part.tool_name not in {"plan_next_action", "execute_plan_action"}:
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        result_kind = str(data.get("result_kind") or "").strip()
-        if action_family in {
-            "review_plan",
-            "analyze_adjustment",
-            "preview_fix_proposal",
-            "query_state",
-            "query_ordered",
-            "query_candidates",
-        }:
-            return True
-        if result_kind in {
-            "review_result",
-            "adjustment_analysis",
-            "fix_proposal_preview",
-            "status_overview",
-            "ordered_query",
-            "candidate_query",
-        }:
-            return True
-    return False
-
-
-async def _candidate_query_should_bypass_semantic_plan_action(
-    content: str,
-    *,
-    request_context: RequestContext,
-) -> bool:
-    """Let read-only candidate opportunity queries stay on the local query path.
-
-    This uses the shared LLM-backed candidate filter extractor instead of a
-    phrase shortcut. The semantic plan-action shortcut is only for review and
-    repair explanations; candidate opportunity lookup should be answered by
-    `query_volunteer_plan(scope="candidate")` in the full agent path.
-    """
-
-    try:
-        result = await extract_candidate_query_filters_async(
-            content,
-            batch=getattr(request_context, "batch", None),
-        )
-    except Exception:
-        logger.warning(
-            "Candidate query semantic bypass extraction failed: session_id=%s",
-            getattr(request_context, "sessionid", ""),
-            exc_info=True,
-        )
-        return False
-    if not bool((result or {}).get("should_query_candidate")):
-        return False
-    try:
-        confidence = float((result or {}).get("confidence") or 0.0)
-    except (TypeError, ValueError):
-        confidence = 0.0
-    if confidence < 0.7:
-        return False
-    filters = (result or {}).get("filters") if isinstance(result, dict) else {}
-    if not isinstance(filters, dict):
-        return False
-    return any(bool(filters.get(key)) for key in (
-        "tiers",
-        "province_names",
-        "city_names",
-        "school_keywords",
-        "major_keywords",
-        "school_tags",
-        "major_tags",
-    ))
 
 
 def _tool_calls_include_intent_preview(messages: list[Any] | None) -> bool:
@@ -7555,102 +4161,7 @@ def _tool_calls_allow_unbacked_intent_recovery(
     if all("intent" in name for name in tool_names if name):
         return True
     if semantic_intent_preview and _tool_calls_include_plan_chain(messages):
-        return _extract_plan_confirmation_candidate(messages) is None
-    return False
-
-
-def _reply_indicates_unresolved_readonly_plan_query(reply: str | None) -> bool:
-    compact = _compact_plan_reply_text(str(reply or ""))
-    if not compact:
-        return False
-    return any(
-        marker in compact
-        for marker in (
-            "没有稳定收敛",
-            "没能稳定收敛",
-            "没有拿到稳定结果",
-            "没有稳定结果",
-            "先不继续重复查询",
-            "不继续重复查询",
-            "换一个更具体的条件",
-            "这轮查询没有稳定",
-        )
-    )
-
-
-def _plan_chain_allows_intent_recovery(
-    messages: list[Any] | None,
-    *,
-    reply: str | None = None,
-) -> bool:
-    """Allow structured intent recovery after a read-only Plan misroute.
-
-    This is a guardrail for turns such as "排除某地域，再看候选": if the model
-    only queried plan/candidate data and produced no confirmable preview, the
-    service can ask the Intent tool to recover a pending update from the current
-    utterance. The recovery itself still decides whether a real intent exists.
-    """
-    if not _tool_calls_include_plan_chain(messages):
-        return False
-    if _tool_calls_include_intent_preview(messages):
-        return False
-    if _extract_plan_confirmation_candidate(messages) is not None:
-        return False
-    if _latest_turn_has_plan_mutation_preview(messages):
-        return False
-    if not _latest_turn_looks_readonly(messages):
-        return False
-    return _reply_indicates_unresolved_readonly_plan_query(reply)
-
-
-def _plan_chain_failed_without_pending_preview(messages: list[Any] | None) -> bool:
-    """Detect a misrouted Plan chain that produced no actionable preview.
-
-    This is intentionally based on structured tool results, not on user wording.
-    If the main agent sent an explicit preference/constraint update through a
-    Plan action and that Plan action failed before producing a pending preview,
-    the service can ask the Intent tool to recover the structured intent.
-    """
-
-    if not _tool_calls_include_plan_chain(messages):
-        return False
-    if _extract_plan_confirmation_candidate(messages) is not None:
-        return False
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        result_kind = str(data.get("result_kind") or "").strip()
-        action_family = str(data.get("action_family") or "").strip()
-        if result_kind == "error":
-            reply_focus = {
-                str(item or "").strip()
-                for item in (data.get("reply_focus") or [])
-                if str(item or "").strip()
-            }
-            if reply_focus & {
-                "missing_inputs",
-                "needs_candidate_selection",
-                "needs_volunteer_selection",
-                "replacement_scope_required",
-                "replacement_scope_unresolved",
-                "replacement_scope_insufficient",
-                "unsupported_action",
-                "stale_pending",
-                "confirmation_invalid",
-            }:
-                return False
-            if action_family in _PENDING_PLAN_ACTION_FAMILIES:
-                return False
-            return True
-        if action_family == "preview_fix_proposal" and result_kind in {"no_change", "preview_only"}:
-            facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
-            fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
-            proposals = fix_facts.get("proposals") if isinstance(fix_facts, dict) else None
-            if not proposals:
-                return True
+        return True
     return False
 
 
@@ -8455,29 +4966,6 @@ def _append_downgraded_intent_focus_summary(reply: str, decision: dict[str, Any]
     return _normalize_user_facing_terms(f"{reply.rstrip()}\n\n这次识别到的方向：{summary}。")
 
 
-def _result_explicitly_has_no_executable_preview(data: dict[str, Any] | None) -> bool:
-    if not isinstance(data, dict):
-        return False
-    combined = _compact_plan_reply_text(
-        " ".join(
-            str(data.get(key) or "")
-            for key in ("summary", "reply", "message", "preview_summary", "previewSummary")
-        )
-    )
-    if not combined:
-        return False
-    return any(
-        marker in combined
-        for marker in (
-            "没有生成可执行调整内容",
-            "没有生成可执行的调整内容",
-            "没有形成可执行的调整预览",
-            "还没有生成可执行的调整内容",
-            "没有生成可点击的方案待采纳内容",
-        )
-    )
-
-
 def _append_pending_intent_boundary(reply: str, *, has_pending_intent: bool) -> str:
     """Keep pending intent analysis visibly non-mutating across follow-up turns."""
     if not has_pending_intent or not isinstance(reply, str) or not reply.strip():
@@ -8557,297 +5045,6 @@ def _is_pending_intent_followup_turn(content: str, reply: str) -> bool:
     )
 
 
-def _pending_reference_values_from_state(pending_state: dict[str, Any] | None, entity_type: str) -> list[str]:
-    if not isinstance(pending_state, dict):
-        return []
-
-    def add_values(target: list[str], values: Any) -> None:
-        if isinstance(values, str):
-            text = values.strip()
-            if text:
-                target.append(text)
-            return
-        if isinstance(values, dict):
-            for item in values.values():
-                add_values(target, item)
-            return
-        if isinstance(values, (list, tuple, set)):
-            for item in values:
-                add_values(target, item)
-
-    execution_payload = pending_state.get("executionPayload") if isinstance(pending_state, dict) else None
-    selected_data = execution_payload.get("selectedData") if isinstance(execution_payload, dict) else None
-    entity_profile = selected_data.get("entityProfile") if isinstance(selected_data, dict) else None
-
-    values: list[str] = []
-    if isinstance(entity_profile, dict):
-        if entity_type == "major":
-            add_values(values, entity_profile.get("majorValues"))
-        elif entity_type == "school":
-            add_values(values, entity_profile.get("schools") or entity_profile.get("schoolValues"))
-        for span in entity_profile.get("entityPolaritySpans") or []:
-            if not isinstance(span, dict):
-                continue
-            if str(span.get("entityType") or "").strip() == entity_type:
-                polarity = str(span.get("polarity") or "").strip()
-                if polarity in {"", "positive"}:
-                    add_values(values, span.get("entity"))
-        strength = entity_profile.get("preferenceStrength")
-        if isinstance(strength, dict):
-            for key in ("primary", "preferred", "acceptable"):
-                add_values(values, strength.get(key))
-
-    merged = execution_payload.get("merged") if isinstance(execution_payload, dict) else None
-    selected = selected_data.get("selected") if isinstance(selected_data, dict) else None
-    selected = selected if isinstance(selected, list) else []
-    if isinstance(merged, dict):
-        selected.append(merged)
-    for item in selected:
-        if not isinstance(item, dict):
-            continue
-        if entity_type == "major":
-            major_intents = item.get("major_intents") if isinstance(item.get("major_intents"), dict) else {}
-            add_values(values, major_intents.get("level3") or major_intents.get("level2") or major_intents.get("level1"))
-        elif entity_type == "school":
-            school_intents = item.get("school_intents") if isinstance(item.get("school_intents"), dict) else {}
-            add_values(values, school_intents.get("schoolNames") or school_intents.get("names") or school_intents.get("schools"))
-
-    result: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        text = str(value or "").strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        result.append(text)
-    return result[:3]
-
-
-def _plan_query_profile_from_candidate_filters(
-    extracted: dict[str, Any] | None,
-    *,
-    reason: str,
-) -> PlanQueryProfileResult | None:
-    if not bool((extracted or {}).get("should_query_candidate")):
-        return None
-    try:
-        confidence = float((extracted or {}).get("confidence") or 0.0)
-    except (TypeError, ValueError):
-        confidence = 0.0
-    if confidence < 0.7:
-        return None
-    filters = (extracted or {}).get("filters") if isinstance(extracted, dict) else {}
-    if not isinstance(filters, dict):
-        return None
-    structured_filters = {
-        "tiers": [str(item or "").strip() for item in (filters.get("tiers") or []) if str(item or "").strip()],
-        "provinceNames": [
-            str(item or "").strip()
-            for item in (filters.get("province_names") or [])
-            if str(item or "").strip()
-        ],
-        "cityNames": [
-            str(item or "").strip()
-            for item in (filters.get("city_names") or [])
-            if str(item or "").strip()
-        ],
-        "schoolKeywords": [
-            str(item or "").strip()
-            for item in (filters.get("school_keywords") or [])
-            if str(item or "").strip()
-        ],
-        "majorKeywords": [
-            str(item or "").strip()
-            for item in (filters.get("major_keywords") or [])
-            if str(item or "").strip()
-        ],
-        "schoolTags": [
-            str(item or "").strip()
-            for item in (filters.get("school_tags") or [])
-            if str(item or "").strip()
-        ],
-        "majorTags": [
-            str(item or "").strip()
-            for item in (filters.get("major_tags") or [])
-            if str(item or "").strip()
-        ],
-    }
-    structured_filters = {key: value for key, value in structured_filters.items() if value}
-    for target, source in (
-        ("minTuitionPerYear", "min_tuition_per_year"),
-        ("maxTuitionPerYear", "max_tuition_per_year"),
-    ):
-        if filters.get(source):
-            structured_filters[target] = filters.get(source)
-    if not structured_filters:
-        return None
-
-    runtime_filters: dict[str, Any] = {"limit": 5, "item_type": "school"}
-    if structured_filters.get("tiers"):
-        runtime_filters["tiers"] = structured_filters["tiers"]
-        runtime_filters["tier"] = structured_filters["tiers"][0]
-    if structured_filters.get("provinceNames"):
-        runtime_filters["province_names"] = structured_filters["provinceNames"]
-        runtime_filters["province_keyword"] = structured_filters["provinceNames"][0]
-    if structured_filters.get("cityNames"):
-        runtime_filters["city_names"] = structured_filters["cityNames"]
-        runtime_filters["city_keyword"] = structured_filters["cityNames"][0]
-    if structured_filters.get("schoolKeywords"):
-        runtime_filters["school_keywords"] = structured_filters["schoolKeywords"]
-        runtime_filters["school_keyword"] = structured_filters["schoolKeywords"][0]
-    if structured_filters.get("majorKeywords"):
-        runtime_filters["major_keywords"] = structured_filters["majorKeywords"]
-        runtime_filters["major_keyword"] = structured_filters["majorKeywords"][0]
-    if structured_filters.get("schoolTags"):
-        runtime_filters["school_tags"] = structured_filters["schoolTags"]
-    if structured_filters.get("majorTags"):
-        runtime_filters["major_tags"] = structured_filters["majorTags"]
-    if structured_filters.get("minTuitionPerYear"):
-        runtime_filters["min_tuition_per_year"] = structured_filters["minTuitionPerYear"]
-    if structured_filters.get("maxTuitionPerYear"):
-        runtime_filters["max_tuition_per_year"] = structured_filters["maxTuitionPerYear"]
-
-    return PlanQueryProfileResult(
-        queryType="readonly_plan_query",
-        scopeAnchor="candidate_pool",
-        sideEffect="readonly",
-        dimensions=["item_list"],
-        condition={
-            "target": "candidate_pool",
-            "filters": structured_filters,
-            "sort": {"field": "recommendation", "order": "desc"},
-            "page": 1,
-            "pageSize": 5,
-        },
-        filters=runtime_filters,
-        projection={"mode": "school_list", "limit": 5},
-        replyFocus=["candidate_snapshot", "local_candidate_query", "school_list_query"],
-        pendingReferenceType="none",
-        confidence=confidence,
-        reason=reason,
-    )
-
-
-async def _candidate_filter_plan_query_profile_fallback(
-    content: str,
-    *,
-    request_context: RequestContext,
-) -> PlanQueryProfileResult | None:
-    try:
-        extracted = await extract_candidate_query_filters_async(
-            content,
-            batch=getattr(request_context, "batch", None),
-        )
-    except Exception:
-        logger.warning(
-            "Candidate filter PlanQuery fallback extraction failed: session_id=%s",
-            getattr(request_context, "sessionid", ""),
-            exc_info=True,
-        )
-        return None
-    return _plan_query_profile_from_candidate_filters(
-        extracted if isinstance(extracted, dict) else None,
-        reason="candidate_filter_extraction_fallback",
-    )
-
-
-async def _compile_runtime_plan_query_from_profile(
-    *,
-    content: str,
-    request_context: RequestContext,
-    planning_version: int = 0,
-    pending_state: dict[str, Any] | None = None,
-    pending_exists: bool = False,
-) -> tuple[proposal_compiler.RuntimePlanQueryCompiledSource, Any | None]:
-    try:
-        query_profile = await classify_plan_query_profile(
-            content,
-            payload={
-                "planningStateProfile": _planning_state_profile_for_turn_decision(
-                    planning_summary=getattr(request_context, "planning_summary", None),
-                    pending_state=pending_state if isinstance(pending_state, dict) else None,
-                    score_detail=getattr(request_context, "score_detail", None),
-                ),
-                "pendingState": pending_state if isinstance(pending_state, dict) else {},
-            },
-        )
-    except Exception:
-        logger.warning(
-            "Plan query profile classification failed: session_id=%s",
-            getattr(request_context, "sessionid", ""),
-            exc_info=True,
-        )
-        return proposal_compiler.RuntimePlanQueryCompiledSource(
-            blocking_reasons=["plan_query_profile_classification_failed"],
-        ), None
-
-    confidence = float(getattr(query_profile, "confidence", 0.0) or 0.0)
-    if confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
-        fallback_profile = await _candidate_filter_plan_query_profile_fallback(
-            content,
-            request_context=request_context,
-        )
-        if fallback_profile is not None:
-            compiled_query = proposal_compiler.compile_runtime_plan_query_profile_source(
-                content=content,
-                query_profile=fallback_profile,
-                planning_version=planning_version,
-                pending_exists=pending_exists,
-                pending_state=pending_state if isinstance(pending_state, dict) else None,
-            )
-            if compiled_query.matched:
-                return compiled_query, fallback_profile
-        return proposal_compiler.RuntimePlanQueryCompiledSource(
-            blocking_reasons=["low_confidence_plan_query_profile"],
-        ), query_profile
-    compiled_query = proposal_compiler.compile_runtime_plan_query_profile_source(
-        content=content,
-        query_profile=query_profile,
-        planning_version=planning_version,
-        pending_exists=pending_exists,
-        pending_state=pending_state if isinstance(pending_state, dict) else None,
-    )
-    if not compiled_query.matched:
-        fallback_profile = await _candidate_filter_plan_query_profile_fallback(
-            content,
-            request_context=request_context,
-        )
-        if fallback_profile is not None:
-            fallback_compiled = proposal_compiler.compile_runtime_plan_query_profile_source(
-                content=content,
-                query_profile=fallback_profile,
-                planning_version=planning_version,
-                pending_exists=pending_exists,
-                pending_state=pending_state if isinstance(pending_state, dict) else None,
-            )
-            if fallback_compiled.matched:
-                return fallback_compiled, fallback_profile
-    return compiled_query, query_profile
-
-
-def _turn_decision_allows_plan_query_profile(
-    decision: Any,
-    *,
-    pending_exists: bool = False,
-) -> bool:
-    confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
-    task_layer = str(getattr(decision, "taskLayer", "") or "").strip()
-    side_effect = str(getattr(decision, "sideEffect", "") or "").strip()
-    scope_anchor = str(getattr(decision, "scopeAnchor", "") or "").strip()
-    scenario = str(getattr(decision, "scenario", "") or "").strip()
-    if confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
-        return False
-    if task_layer != "plan" or scope_anchor not in {"current_plan", "candidate_pool"}:
-        return False
-    if scenario not in {"plan_query", "plan_query_while_pending"} and not (
-        scenario == "" and scope_anchor == "candidate_pool" and side_effect in {"readonly", "readonly_while_pending"}
-    ):
-        return False
-    if pending_exists:
-        return side_effect in {"readonly", "readonly_while_pending"}
-    return side_effect == "readonly"
-
-
 def _turn_decision_is_candidate_pool_readonly_query(decision: Any | None) -> bool:
     if decision is None:
         return False
@@ -8924,36 +5121,6 @@ def _conditional_candidate_readonly_boundary_reply(
     )
 
 
-async def _classify_plan_query_turn_decision(
-    *,
-    content: str,
-    request_context: RequestContext,
-    pending_state: dict[str, Any] | None = None,
-) -> Any | None:
-    try:
-        decision = await _classify_turn_decision_cached(
-            content,
-            request_context=request_context,
-            payload={
-                "planningStateProfile": _planning_state_profile_for_turn_decision(
-                    planning_summary=getattr(request_context, "planning_summary", None),
-                    pending_state=pending_state if isinstance(pending_state, dict) else None,
-                    score_detail=getattr(request_context, "score_detail", None),
-                ),
-                "pendingState": pending_state if isinstance(pending_state, dict) else {},
-            },
-        )
-        _store_current_turn_decision(request_context, decision)
-        return decision
-    except Exception:
-        logger.warning(
-            "Plan query TurnDecision failed: session_id=%s",
-            getattr(request_context, "sessionid", ""),
-            exc_info=True,
-        )
-        return None
-
-
 def _build_pending_readonly_impact_reply(pending_state: dict[str, Any]) -> str:
     kind = str((pending_state or {}).get("kind") or "").strip()
     action_family = str((pending_state or {}).get("actionFamily") or "").strip()
@@ -9009,15 +5176,6 @@ def _post_apply_evidence_workspace_targets(
     if targets:
         return targets
     return _dedupe_workspace_targets([str(target) for target in (fallback_targets or [])])
-
-
-def _planning_summary_has_formal_plan(planning_summary: PlanningSummary | None) -> bool:
-    if planning_summary is None:
-        return False
-    return (
-        _as_int(getattr(planning_summary, "ordered_total", 0)) > 0
-        or _as_int(getattr(planning_summary, "working_total", 0)) > 0
-    )
 
 
 def _workspace_targets_from_followups(followups: list[WSResponse]) -> set[str]:
@@ -9414,29 +5572,6 @@ def _latest_turn_tool_names(messages: list[Any] | None) -> list[str]:
     return [part.tool_name for part in _iter_tool_call_parts(_messages_after_index(messages, boundary))]
 
 
-def _latest_turn_has_intent_preview(messages: list[Any] | None) -> bool:
-    boundary = _latest_user_turn_boundary(messages)
-    return _tool_calls_include_intent_preview(_messages_after_index(messages, boundary))
-
-
-def _latest_turn_has_plan_mutation_preview(messages: list[Any] | None) -> bool:
-    boundary = _latest_user_turn_boundary(messages)
-    turn_messages = _messages_after_index(messages, boundary)
-    for part in _iter_tool_return_parts(turn_messages):
-        if part.tool_name not in {"plan_next_action", "execute_plan_action"}:
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not data:
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        effective_family = action_family
-        result_kind = str(data.get("result_kind") or "").strip()
-        result_stage = str(data.get("stage") or "").strip()
-        if effective_family in _PENDING_PLAN_ACTION_FAMILIES and result_stage == "preview":
-            return True
-    return False
-
-
 def _latest_turn_looks_readonly(messages: list[Any] | None) -> bool:
     if _latest_turn_is_readonly_interruption_fallback(messages):
         return True
@@ -9445,7 +5580,6 @@ def _latest_turn_looks_readonly(messages: list[Any] | None) -> bool:
         return False
     readonly_tool_names = {
         "query_volunteer_plan",
-        "collect_plan_context_inputs",
         "analyze_current_interest",
         "analyze_current_interest_profile",
         "analyze_current_school_interest",
@@ -9467,23 +5601,8 @@ def _latest_turn_looks_readonly(messages: list[Any] | None) -> bool:
     }
     if any(name in _INTENT_PREVIEW_TOOL_NAMES for name in tool_names):
         return False
-    if _latest_turn_has_plan_mutation_preview(messages):
-        return False
     for name in tool_names:
-        if name == "plan_next_action":
-            continue
-        if name == "execute_plan_action":
-            continue
         if name not in readonly_tool_names:
-            return False
-    for part in _iter_tool_return_parts(_messages_after_index(messages, _latest_user_turn_boundary(messages))):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        action_family = str((data or {}).get("action_family") or "").strip()
-        if action_family not in _EXECUTE_PLAN_ACTION_VIEW_FAMILIES and action_family not in {"analyze_adjustment", "preview_fix_proposal"}:
-            return False
-        if bool((data or {}).get("applied")) and action_family not in _EXECUTE_PLAN_ACTION_VIEW_FAMILIES:
             return False
     return True
 
@@ -9498,661 +5617,8 @@ def _latest_turn_is_readonly_interruption_fallback(messages: list[Any] | None) -
     return False
 
 
-def _no_pending_intent_confirmation_guard_reply() -> str:
-    return "我这边没有找到上一轮仍在等待采纳的内容。你可以直接说想保留、排除或重点关注的方向，我会先列出来让你采纳。"
-
-
-def _pending_requires_card_click_reply(kind: str | None = None) -> str:
-    if kind == "plan_mutation":
-        return "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
-    if kind == "intent_change":
-        return "这次想法或报考条件已经列出来，正在等待采纳。请以最新内容为准；采纳前不会写入后续报考参考。如果内容已失效，可以重新说明你的想法。"
-    return "这次更新还没有生效。请以最新内容为准；确认前不会生效。如果内容已失效，可以重新说明要更新的内容。"
-
-
-def _pending_confirmation_type_mismatch_reply(active_kind: str, requested_kind: str) -> str:
-    if active_kind == "plan_mutation" and requested_kind == "intent_change":
-        return "当前等待确认的是方案调整，不是想法或报考条件更新。如果要确认方案调整，可以点“确认执行”或只回复“确认”；如果要更新想法，请重新说明具体内容。"
-    if active_kind == "intent_change" and requested_kind == "plan_mutation":
-        return "当前等待确认的是想法或报考条件更新，不是方案调整。如果要采纳这次内容，可以点“采纳”或只回复“确认”；如果要调整方案，请重新说明具体动作。"
-    return "当前等待确认的内容和这次确认的对象不一致，请点最新内容里的按钮，或重新说明要确认的内容。"
-
-
 def _readonly_closure_ack_reply() -> str:
     return "先按刚才的分析结论理解。这轮没有待确认的偏好或方案动作，也不会改动方案；后面想继续看具体学校、专业或方案调整，随时告诉我。"
-
-
-_PENDING_PLAN_ACTION_FAMILIES = proposal_compiler.PENDING_PLAN_ACTION_FAMILIES
-
-_NO_EXECUTABLE_PLAN_PREVIEW_REPLY = (
-    "这次没有形成可执行的调整预览，方案不会因为这轮回复而改变。"
-    "如果还需要处理这类问题，可以重新说明要调整的目标，我会按最新方案重新给出预览。"
-)
-
-
-def _latest_execute_plan_action_result(messages: list[Any] | None) -> dict[str, Any] | None:
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if isinstance(data, dict) and data:
-            return data
-    return None
-
-
-def _latest_non_actionable_plan_mutation_result(messages: list[Any] | None) -> dict[str, Any] | None:
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not data:
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        if action_family not in _PENDING_PLAN_ACTION_FAMILIES:
-            continue
-        if _build_plan_confirmation_candidate_from_payload(data) is not None:
-            continue
-        result_kind = str(data.get("result_kind") or "").strip()
-        if result_kind in {"preview_only", "error"}:
-            return data
-    return None
-
-
-_PLAN_EXECUTION_RESULT_KINDS = {
-    "status_overview",
-    "ordered_snapshot",
-    "candidate_snapshot",
-    "generation_result",
-    "adjustment_analysis",
-    "fix_proposal_preview",
-    "mutation_result",
-    "review_result",
-    "preview_only",
-    "no_change",
-    "error",
-}
-
-
-def _plan_execution_result_is_non_actionable(data: dict[str, Any] | None) -> bool:
-    if not isinstance(data, dict) or not data:
-        return False
-    action_family = str(data.get("action_family") or "").strip()
-    result_kind = str(data.get("result_kind") or "").strip()
-    if result_kind == "adjustment_analysis":
-        return not _adjustment_analysis_has_actionable_suggestions(data)
-    if data.get("applied") is True:
-        return False
-    if _result_explicitly_has_no_executable_preview(data):
-        return True
-    if result_kind in {"error", "no_change"}:
-        return True
-    if result_kind == "preview_only":
-        return action_family not in _PENDING_PLAN_ACTION_FAMILIES
-    if result_kind and result_kind not in _PLAN_EXECUTION_RESULT_KINDS:
-        return True
-    return False
-
-
-def _latest_non_actionable_plan_result(messages: list[Any] | None) -> dict[str, Any] | None:
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name not in {"execute_plan_action", "plan_next_action"}:
-            continue
-        data = _parse_tool_return_json(part.content)
-        if part.tool_name == "plan_next_action" and isinstance(data, dict):
-            action_family = str(data.get("action_family") or "").strip()
-            missing_inputs = [
-                str(item or "").strip()
-                for item in (data.get("missing_inputs") or data.get("missingInputs") or [])
-                if str(item or "").strip()
-            ]
-            if action_family in _PENDING_PLAN_ACTION_FAMILIES and missing_inputs:
-                normalized = normalize_plan_action_payload(dict(data))
-                normalized["result_kind"] = "error"
-                normalized["missing_inputs"] = missing_inputs
-                normalized.setdefault("reply_focus", ["missing_inputs"])
-                return normalized
-            continue
-        if _plan_execution_result_is_non_actionable(data):
-            return data
-    return None
-
-
-def _latest_readonly_plan_query_misroute_candidate(messages: list[Any] | None) -> dict[str, Any] | None:
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        result_kind = str(data.get("result_kind") or "").strip()
-        if action_family == "query_state" and result_kind == "status_overview":
-            return data
-    return None
-
-
-def _latest_profile_change_replan_result(messages: list[Any] | None) -> dict[str, Any] | None:
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if isinstance(data, dict) and _requests_profile_change_replan(data):
-            return data
-    return None
-
-
-def _latest_empty_status_overview_result(messages: list[Any] | None) -> dict[str, Any] | None:
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        if str(data.get("action_family") or "").strip() != "query_state":
-            continue
-        if str(data.get("result_kind") or "").strip() != "status_overview":
-            continue
-        facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
-        if _as_int(facts.get("current_total")) <= 0:
-            return data
-    return None
-
-
-def _non_actionable_plan_preview_boundary(result: dict[str, Any] | None) -> str:
-    if not isinstance(result, dict) or not result:
-        return _NO_EXECUTABLE_PLAN_PREVIEW_REPLY
-    if _requests_profile_change_replan(result):
-        return _build_profile_change_replan_reply(None)
-    action_family = str(result.get("action_family") or "").strip()
-    result_kind = str(result.get("result_kind") or "").strip()
-    reply_focus = {str(item or "").strip() for item in (result.get("reply_focus") or []) if str(item or "").strip()}
-    facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
-    if action_family == "preview_fix_proposal" and result_kind == "fix_proposal_preview" and facts:
-        return _sanitize_reply_for_user(
-            _normalize_user_facing_terms(
-                "\n".join(
-                    _build_fix_proposal_preview_fallback_lines(
-                        facts,
-                        summary=str(result.get("summary") or "").strip(),
-                    )
-                )
-            )
-        )
-    if action_family == "review_plan" and result_kind == "error":
-        summary = _clean_review_fallback_text(result.get("summary"))
-        lines = [
-            "这轮没有拿到完整的方案审查结果，当前方案不会因为这次回复发生变化。",
-        ]
-        if summary and "调整预览" not in summary:
-            lines.append(summary)
-        lines.append("你可以稍后重新审查，或直接说想重点看哪类风险，我再按当前方案重新检查。")
-        return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
-    position_resolution = str(facts.get("position_resolution") or "").strip()
-    if action_family in {"move_ordered_unit", "move_unit"} and position_resolution in {"empty_plan", "source_position_out_of_range"}:
-        return (
-            "这轮只是说明当前不能按这个位置移动，不会改动方案。"
-            "需要先生成或补齐方案后，再按位置生成移动预览。"
-        )
-    if action_family in {"remove_ordered_unit", "remove_units"} and position_resolution in {"empty_plan", "source_position_out_of_range"}:
-        return (
-            "这轮只是说明当前不能按这个位置删除，不会改动方案。"
-            "需要先生成或补齐方案后，再按位置生成删除预览。"
-        )
-    if action_family in {"remove_ordered_unit", "remove_units"} and position_resolution == "range_empty":
-        return (
-            "这轮已经检查过这个位置范围，当前没有命中需要删除的内容，所以不会改动方案。"
-            "如果你想删除别的范围，可以再说明位置、冲稳保区间或具体学校专业。"
-        )
-    if "needs_candidate_selection" in reply_focus:
-        return (
-            "这轮还没有定位到要加入方案的具体候选志愿，不会改动当前方案。"
-            "可以补充学校、专业、地域等范围，我再给你确认预览；或先在候选里选中目标。"
-        )
-    if "needs_volunteer_selection" in reply_focus:
-        return (
-            "这轮还没有生成可执行的调整内容，也没有定位到当前方案里要处理的具体志愿，不会改动当前方案。"
-            "可以补充学校、专业组或专业名称后，我会重新定位影响范围并列出调整预览。"
-        )
-    if "replacement_scope_required" in reply_focus or "replacement_scope_unresolved" in reply_focus:
-        return (
-            "这轮还缺少替换方向，不会改动方案。"
-            "你可以补充想换成的专业、院校、地域或风险层次，我再给你预览。"
-        )
-    if "replacement_scope_insufficient" in reply_focus:
-        return (
-            "当前可选范围里没有足够合适的替换项，不会改动方案。"
-            "可以放宽地域、专业、院校层次或风险要求后再试。"
-        )
-    if "missing_inputs" in reply_focus:
-        missing_inputs = {
-            str(item or "").strip()
-            for item in (result.get("missing_inputs") or result.get("missingInputs") or [])
-            if str(item or "").strip()
-        }
-        if action_family in {"move_unit", "move_ordered_unit"} and "target_position" in missing_inputs:
-            scope_label = _plan_action_scope_label_from_payload(result)
-            target_text = f"“{scope_label}”" if scope_label else "这批志愿"
-            return (
-                f"我理解你想调整{target_text}的位置，但还需要明确移动到哪里，"
-                "比如放到第几位、某个志愿前后，或按录取率/推荐系数整体重排。"
-                "这轮不会改动方案；你补充规则后，我再列出调整预览。"
-            )
-        if action_family in {"move_unit", "move_ordered_unit"} and missing_inputs:
-            return (
-                "这轮还没有唯一定位到要移动的志愿，或者还缺少目标位置，不会改动方案。"
-                "可以补充学校专业、专业组位置，以及要移动到哪里，我再给你预览。"
-            )
-        summary = str(result.get("summary") or "").strip()
-        if summary:
-            return (
-                "这轮还没有生成可执行的调整内容，缺少生成或加入方案所需的基础信息，"
-                "比如省份、分数/位次、选科等，所以不会改动当前方案。"
-                "你可以补充缺少的信息后，我会重新定位影响范围并列出调整预览。"
-            )
-    return _NO_EXECUTABLE_PLAN_PREVIEW_REPLY
-
-
-def _adjustment_analysis_has_actionable_suggestions(result: dict[str, Any]) -> bool:
-    facts = result.get("facts")
-    if not isinstance(facts, dict):
-        return False
-    actionable_counts = facts.get("actionable_suggestion_counts")
-    if isinstance(actionable_counts, dict):
-        return any(int(actionable_counts.get(key) or 0) > 0 for key in ("add", "reorder", "replace", "remove"))
-    return bool(facts.get("has_actionable_suggestions"))
-
-
-def _plan_action_has_filter_selection_scope(filters: Any) -> bool:
-    if not isinstance(filters, dict):
-        return False
-    for key, value in filters.items():
-        if key in {"limit", "preserve_count", "preserveCount", "require_capacity_check", "requireCapacityCheck"}:
-            continue
-        if key in {"school_tags", "major_tags"} and str(value or "").strip() == "[]":
-            continue
-        if str(value or "").strip():
-            return True
-    return False
-
-
-def _plan_action_scope_label_from_payload(payload: dict[str, Any]) -> str:
-    """Build a short user-visible label from structured action scope only."""
-    if not isinstance(payload, dict):
-        return ""
-    atomic_actions = payload.get("atomic_actions") or payload.get("atomicActions") or []
-    if not isinstance(atomic_actions, list):
-        atomic_actions = []
-
-    labels: list[str] = []
-
-    def add(value: Any, suffix: str = "") -> None:
-        text = str(value or "").strip()
-        if not text:
-            return
-        label = f"{text}{suffix}"
-        if label not in labels:
-            labels.append(label)
-
-    def add_list(value: Any, suffix: str = "") -> None:
-        if isinstance(value, list):
-            values: list[Any] = value
-        else:
-            text = str(value or "").strip()
-            if not text:
-                return
-            values = [text]
-            if text.startswith("["):
-                with contextlib.suppress(Exception):
-                    parsed = json.loads(text)
-                    if isinstance(parsed, list):
-                        values = parsed
-        for item in values:
-            add(item, suffix)
-
-    for atomic in atomic_actions:
-        if not isinstance(atomic, dict):
-            continue
-        filters = atomic.get("filters")
-        if isinstance(filters, dict):
-            add(filters.get("province_keyword") or filters.get("province"), "志愿")
-            add(filters.get("city_keyword") or filters.get("city"), "志愿")
-            add(filters.get("school_keyword") or filters.get("school"), "相关志愿")
-            add(filters.get("major_keyword") or filters.get("major"), "相关志愿")
-            add(filters.get("tier"), "区志愿")
-            add_list(filters.get("school_tags"), "相关志愿")
-            add_list(filters.get("major_tags"), "相关志愿")
-            add_list(filters.get("program_types") or filters.get("program_type"), "相关志愿")
-        add_list(atomic.get("source_major_names") or atomic.get("sourceMajorNames"), "相关志愿")
-        add_list(atomic.get("volunteer_ids") or atomic.get("volunteerIds"))
-        add_list(atomic.get("unit_ids") or atomic.get("unitIds"))
-    return "、".join(labels[:3])
-
-
-def _replace_plan_payload_lacks_replacement_scope(payload: dict[str, Any]) -> bool:
-    if str(payload.get("action_family") or "").strip() != "replace_units":
-        return False
-    atomic_actions = payload.get("atomic_actions")
-    if not isinstance(atomic_actions, list) or not atomic_actions:
-        return True
-    for atomic in atomic_actions:
-        if not isinstance(atomic, dict):
-            continue
-        if _atomic_has_review_issue_target(atomic):
-            return False
-        if _plan_action_has_filter_selection_scope(atomic.get("filters")):
-            return False
-    return True
-
-
-def _atomic_volunteer_ids(atomic: dict[str, Any]) -> list[str]:
-    volunteer_ids = atomic.get("volunteer_ids") or atomic.get("volunteerIds")
-    if isinstance(volunteer_ids, list):
-        return [str(item or "").strip() for item in volunteer_ids if str(item or "").strip()]
-    text = str(volunteer_ids or "").strip()
-    return [text] if text else []
-
-
-def _atomic_unit_ids(atomic: dict[str, Any]) -> list[str]:
-    unit_ids = atomic.get("unit_ids") or atomic.get("unitIds")
-    if isinstance(unit_ids, list):
-        return [str(item or "").strip() for item in unit_ids if str(item or "").strip()]
-    text = str(unit_ids or "").strip()
-    return [text] if text else []
-
-
-def _atomic_source_major_names(atomic: dict[str, Any]) -> list[str]:
-    source_major_names = atomic.get("source_major_names") or atomic.get("sourceMajorNames")
-    if isinstance(source_major_names, list):
-        return [str(item or "").strip() for item in source_major_names if str(item or "").strip()]
-    text = str(source_major_names or "").strip()
-    return [text] if text else []
-
-
-def _atomic_has_review_issue_target(atomic: dict[str, Any]) -> bool:
-    review_issue_target = atomic.get("review_issue_target") or atomic.get("reviewIssueTarget")
-    return isinstance(review_issue_target, dict) and bool(str(review_issue_target.get("code") or "").strip())
-
-
-def _atomic_has_filter_scope(atomic: dict[str, Any]) -> bool:
-    filters = atomic.get("filters")
-    return _plan_action_has_filter_selection_scope(filters if isinstance(filters, dict) else None)
-
-
-_COMPOSITE_CLARIFICATION_MIN_TUITION_FILTER_KEYS = frozenset(
-    {
-        "min_tuition_per_year",
-        "minTuitionPerYear",
-        "tuition_min_per_year",
-        "tuitionMinPerYear",
-    }
-)
-
-_COMPOSITE_CLARIFICATION_MAX_TUITION_FILTER_KEYS = frozenset(
-    {
-        "max_tuition_per_year",
-        "maxTuitionPerYear",
-        "tuition_cap",
-        "tuitionCap",
-        "max_tuition",
-        "maxTuition",
-    }
-)
-
-_COMPOSITE_CLARIFICATION_PREFERENCE_FIT_FILTER_KEYS = frozenset(
-    {
-        "preference_fit",
-        "preferenceFit",
-        "intent_relation",
-        "intentRelation",
-    }
-)
-
-_COMPOSITE_CLARIFICATION_PREFERENCE_FIT_VALUES = frozenset(
-    {
-        "aligned",
-        "preferred",
-        "positive",
-        "意向",
-        "匹配",
-        "unrelated",
-        "irrelevant",
-        "non_intent",
-        "not_intent",
-        "not_aligned",
-        "not_preferred",
-        "不沾边",
-        "非意向",
-        "不相关",
-        "不匹配",
-        "conflict",
-        "negative",
-        "excluded",
-        "排除",
-        "冲突",
-    }
-)
-
-
-def _filter_has_positive_numeric_value(filters: dict[str, Any], keys: frozenset[str]) -> bool:
-    for key in keys:
-        value = filters.get(key)
-        try:
-            if int(float(str(value or "").strip())) > 0:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
-
-
-def _filter_has_preference_fit_value(filters: dict[str, Any]) -> bool:
-    for key in _COMPOSITE_CLARIFICATION_PREFERENCE_FIT_FILTER_KEYS:
-        value = filters.get(key)
-        values = value if isinstance(value, (list, tuple, set)) else [value]
-        for item in values:
-            text = str(item or "").strip()
-            if text and (
-                text in _COMPOSITE_CLARIFICATION_PREFERENCE_FIT_VALUES
-                or text.lower() in _COMPOSITE_CLARIFICATION_PREFERENCE_FIT_VALUES
-            ):
-                return True
-    return False
-
-
-def _atomic_has_current_plan_selector(atomic: dict[str, Any]) -> bool:
-    return bool(
-        _atomic_volunteer_ids(atomic)
-        or _atomic_unit_ids(atomic)
-        or _atomic_source_major_names(atomic)
-        or _atomic_has_review_issue_target(atomic)
-    )
-
-
-def _atomic_has_relation_and_tuition_filter_scope(atomic: dict[str, Any]) -> bool:
-    filters = atomic.get("filters")
-    if not isinstance(filters, dict):
-        return False
-    has_tuition_bound = (
-        _filter_has_positive_numeric_value(filters, _COMPOSITE_CLARIFICATION_MIN_TUITION_FILTER_KEYS)
-        or _filter_has_positive_numeric_value(filters, _COMPOSITE_CLARIFICATION_MAX_TUITION_FILTER_KEYS)
-    )
-    return _filter_has_preference_fit_value(filters) and has_tuition_bound
-
-
-def _atomic_action_can_override_structured_clarification(action_family: str, atomic: Any) -> bool:
-    if not isinstance(atomic, dict):
-        return False
-    if action_family == "add_units":
-        return bool(_atomic_volunteer_ids(atomic))
-    if action_family == "remove_units":
-        return _atomic_has_current_plan_selector(atomic) or _atomic_has_relation_and_tuition_filter_scope(atomic)
-    if action_family == "replace_units":
-        if _atomic_has_review_issue_target(atomic):
-            return True
-        return _atomic_has_current_plan_selector(atomic) and _atomic_has_filter_scope(atomic)
-    if action_family in {"move_unit", "move_ordered_unit", "remove_ordered_unit"}:
-        return _atomic_action_has_execution_scope(action_family, atomic)
-    return False
-
-
-def _atomic_has_position(atomic: dict[str, Any], *keys: str) -> bool:
-    return any(atomic.get(key) is not None for key in keys)
-
-
-def _atomic_action_has_execution_scope(action_family: str, atomic: Any) -> bool:
-    if not isinstance(atomic, dict):
-        return False
-    if action_family == "add_units":
-        return bool(_atomic_volunteer_ids(atomic)) or _atomic_has_filter_scope(atomic)
-    if action_family == "remove_units":
-        return (
-            bool(_atomic_volunteer_ids(atomic))
-            or bool(_atomic_source_major_names(atomic))
-            or _atomic_has_review_issue_target(atomic)
-            or _atomic_has_filter_scope(atomic)
-        )
-    if action_family == "move_unit":
-        return bool(_atomic_volunteer_ids(atomic)) and _atomic_has_position(atomic, "target_position", "targetPosition")
-    if action_family == "move_ordered_unit":
-        has_source = (
-            bool(_atomic_unit_ids(atomic))
-            or _atomic_has_position(atomic, "source_position", "sourcePosition")
-        )
-        return has_source and _atomic_has_position(atomic, "target_position", "targetPosition")
-    if action_family == "remove_ordered_unit":
-        return bool(_atomic_unit_ids(atomic)) or _atomic_has_position(atomic, "source_position", "sourcePosition")
-    if action_family == "replace_units":
-        has_source = (
-            bool(_atomic_volunteer_ids(atomic))
-            or bool(_atomic_source_major_names(atomic))
-            or _atomic_has_review_issue_target(atomic)
-        )
-        if _atomic_has_review_issue_target(atomic):
-            return True
-        return has_source and _atomic_has_filter_scope(atomic)
-    return False
-
-
-def _plan_payload_has_executable_mutation_scope(payload: dict[str, Any]) -> bool:
-    action_family = str(payload.get("action_family") or "").strip()
-    if action_family in {"generate_plan", "regenerate_order", "sort_ordered_plan"}:
-        return True
-    atomic_actions = payload.get("atomic_actions")
-    if isinstance(atomic_actions, list) and any(
-        _atomic_action_has_execution_scope(action_family, item)
-        for item in atomic_actions
-    ):
-        return True
-    facts = payload.get("facts") if isinstance(payload.get("facts"), dict) else {}
-    resolved_payload = facts.get("resolved_apply_payload") if isinstance(facts, dict) else None
-    if isinstance(resolved_payload, dict) and resolved_payload is not payload:
-        resolved_with_context = dict(payload)
-        resolved_with_context.update(resolved_payload)
-        resolved_facts = dict(facts)
-        resolved_facts.pop("resolved_apply_payload", None)
-        if resolved_facts:
-            resolved_with_context["facts"] = resolved_facts
-        else:
-            resolved_with_context.pop("facts", None)
-        return _plan_payload_has_executable_mutation_scope(resolved_with_context)
-    return False
-
-
-def _plan_payload_can_override_structured_clarification(payload: dict[str, Any]) -> bool:
-    action_family = str(payload.get("action_family") or "").strip()
-    atomic_actions = payload.get("atomic_actions")
-    if isinstance(atomic_actions, list) and any(
-        _atomic_action_can_override_structured_clarification(action_family, item)
-        for item in atomic_actions
-    ):
-        return True
-    facts = payload.get("facts") if isinstance(payload.get("facts"), dict) else {}
-    resolved_payload = facts.get("resolved_apply_payload") if isinstance(facts, dict) else None
-    if isinstance(resolved_payload, dict) and resolved_payload is not payload:
-        resolved_with_context = dict(payload)
-        resolved_with_context.update(resolved_payload)
-        resolved_facts = dict(facts)
-        resolved_facts.pop("resolved_apply_payload", None)
-        if resolved_facts:
-            resolved_with_context["facts"] = resolved_facts
-        else:
-            resolved_with_context.pop("facts", None)
-        return _plan_payload_can_override_structured_clarification(resolved_with_context)
-    return False
-
-
-def _plan_payload_lacks_position_target(payload: dict[str, Any]) -> bool:
-    if str(payload.get("action_family") or "").strip() not in {"move_ordered_unit", "remove_ordered_unit"}:
-        return False
-    facts = payload.get("facts") if isinstance(payload.get("facts"), dict) else {}
-    if str(facts.get("position_resolution") or "").strip() in {"empty_plan", "source_position_out_of_range", "range_empty", "missing_source_position"}:
-        return True
-    return False
-
-
-def _build_plan_confirmation_candidate_from_payload(payload: dict[str, Any], summary: str | None = None) -> dict[str, Any] | None:
-    payload = normalize_plan_action_payload(payload)
-    if (
-        proposal_compiler.structured_proposal_needs_clarification(payload)
-        and not _plan_payload_can_override_structured_clarification(payload)
-    ):
-        return None
-    preview_action_family = str(payload.get("action_family") or "").strip()
-    action_family = preview_action_family
-    if action_family not in _PENDING_PLAN_ACTION_FAMILIES:
-        return None
-    if str(payload.get("result_kind") or "").strip() == "no_change":
-        return None
-    if payload.get("missing_inputs"):
-        return None
-    if action_family == "replace_units" and not payload.get("atomic_actions"):
-        return None
-    if not _plan_payload_has_executable_mutation_scope(payload):
-        return None
-    if _replace_plan_payload_lacks_replacement_scope(payload):
-        return None
-    if _plan_payload_lacks_position_target(payload):
-        return None
-    apply_payload = dict(payload)
-    facts = apply_payload.get("facts") if isinstance(apply_payload.get("facts"), dict) else {}
-    source_backend_version = _as_int(
-        payload.get("source_backend_version")
-        or payload.get("planning_version")
-        or facts.get("source_backend_version")
-        or facts.get("planning_version")
-    )
-    resolved_payload = facts.get("resolved_apply_payload") if isinstance(facts, dict) else None
-    if isinstance(resolved_payload, dict):
-        apply_payload.update(resolved_payload)
-    resolved_action_family = str(apply_payload.get("action_family") or "").strip()
-    if resolved_action_family in _PENDING_PLAN_ACTION_FAMILIES:
-        action_family = resolved_action_family
-    apply_payload["action_family"] = action_family
-    if not _plan_payload_has_executable_mutation_scope(apply_payload):
-        return None
-    apply_payload.pop("current_stage", None)
-    apply_payload.pop("user_confirmed", None)
-    apply_payload["stage"] = "apply"
-    apply_payload["requires_confirmation"] = False
-    apply_payload["should_refresh_workspace"] = True
-    apply_payload["should_rerun_review"] = True
-    if source_backend_version > 0:
-        apply_payload["planning_version"] = source_backend_version
-    pending = {
-        "action_family": action_family,
-        "user_goal": payload.get("user_goal") or "",
-        "summary": summary or payload.get("preview_summary") or "",
-        "plan_payload": json.dumps(apply_payload, ensure_ascii=False),
-    }
-    intent_update = facts.get("intent_update") if isinstance(facts, dict) else None
-    if isinstance(intent_update, dict) and intent_update.get("selected"):
-        pending["intent_update"] = intent_update
-    if source_backend_version > 0:
-        pending["source_backend_version"] = source_backend_version
-        pending["planning_version"] = source_backend_version
-    created_turn = _as_int(payload.get("created_turn"))
-    if created_turn > 0:
-        pending["created_turn"] = created_turn
-    return pending
 
 
 def _parse_tool_call_args(args: Any) -> dict[str, Any]:
@@ -10165,257 +5631,6 @@ def _parse_tool_call_args(args: Any) -> dict[str, Any]:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
-
-
-def _merge_plan_next_payload_for_pending_candidate(
-    call_payload: dict[str, Any],
-    latest_plan_next_payload: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Keep pending execution payload as complete as the structured plan.
-
-    The model can call ``plan_next_action`` with the full structured plan and
-    then pass a thinner payload to ``execute_plan_action`` for preview. Pending
-    confirmation must persist the executable structure, not the thinner copy.
-    """
-    if not isinstance(call_payload, dict):
-        return {}
-    action_family = str(call_payload.get("action_family") or "").strip()
-    if not action_family:
-        return dict(call_payload)
-    if (
-        not isinstance(latest_plan_next_payload, dict)
-        or str(latest_plan_next_payload.get("action_family") or "").strip() != action_family
-    ):
-        return dict(call_payload)
-
-    merged = dict(latest_plan_next_payload)
-    merged.update(call_payload)
-    if (
-        not call_payload.get("atomic_actions")
-        and latest_plan_next_payload.get("atomic_actions")
-    ):
-        merged["atomic_actions"] = latest_plan_next_payload.get("atomic_actions")
-    return merged
-
-
-def _extract_plan_confirmation_candidate(messages: list[Any] | None) -> dict[str, Any] | None:
-    """Find a current-turn plan preview that can be persisted as a confirmation card."""
-    pending_calls: dict[str, dict[str, Any]] = {}
-    latest_plan_next_payload: dict[str, Any] | None = None
-    latest_candidate: dict[str, Any] | None = None
-    has_non_actionable_adjustment_analysis = False
-    user_turns_since_candidate = 0
-    current_user_turn = 0
-
-    for message in messages or []:
-        if isinstance(message, ModelResponse):
-            for part in getattr(message, "parts", []) or []:
-                if not isinstance(part, ToolCallPart) or part.tool_name != "execute_plan_action":
-                    continue
-                payload = _extract_execute_plan_payload(part)
-                if not isinstance(payload, dict):
-                    continue
-                call_id = str(part.tool_call_id or "")
-                if call_id:
-                    pending_calls[call_id] = payload
-
-        if not isinstance(message, ModelRequest):
-            continue
-        user_prompt_parts = [
-            part for part in getattr(message, "parts", []) or []
-            if isinstance(part, UserPromptPart)
-        ]
-        if user_prompt_parts:
-            current_user_turn += 1
-            pending_calls.clear()
-            latest_plan_next_payload = None
-            has_non_actionable_adjustment_analysis = False
-            if latest_candidate is not None:
-                user_turns_since_candidate += 1
-                if user_turns_since_candidate > 3:
-                    latest_candidate = None
-                    user_turns_since_candidate = 0
-            continue
-        for part in getattr(message, "parts", []) or []:
-            if not isinstance(part, ToolReturnPart):
-                continue
-            result = _parse_tool_return_json(part.content)
-            if not result:
-                continue
-            if part.tool_name == "plan_next_action":
-                if result.get("stage") == "preview":
-                    latest_plan_next_payload = normalize_plan_action_payload(dict(result))
-                continue
-            if part.tool_name != "execute_plan_action":
-                continue
-            action_family = str(result.get("action_family") or "").strip()
-            result_kind = str(result.get("result_kind") or "").strip()
-            if _plan_execution_result_is_non_actionable(result):
-                call_payload = pending_calls.get(str(part.tool_call_id or "")) or {}
-                if action_family in {"query_state", "query_ordered", "query_candidates"}:
-                    pending_calls.clear()
-                    continue
-                latest_candidate = None
-                user_turns_since_candidate = 0
-                pending_calls.clear()
-                latest_plan_next_payload = None
-                if action_family == "analyze_adjustment" and result_kind == "adjustment_analysis":
-                    has_non_actionable_adjustment_analysis = True
-                continue
-            call_id = str(part.tool_call_id or "")
-            call_payload = pending_calls.get(call_id) or {}
-            result_stage = str(result.get("stage") or call_payload.get("stage") or "").strip()
-            is_preview_result = (
-                result_kind == "preview_only"
-                and result_stage == "preview"
-            )
-            if is_preview_result and _result_explicitly_has_no_executable_preview(result):
-                latest_candidate = None
-                user_turns_since_candidate = 0
-                pending_calls.clear()
-                latest_plan_next_payload = None
-                continue
-            call_action_family = str(call_payload.get("action_family") or "").strip()
-            effective_action_family = action_family or call_action_family
-            call_stage = str(call_payload.get("stage") or "").strip()
-            if (
-                not is_preview_result
-                and effective_action_family in _EXECUTE_PLAN_ACTION_VIEW_FAMILIES
-                and isinstance(latest_plan_next_payload, dict)
-            ):
-                candidate = _build_plan_confirmation_candidate_from_payload(
-                    latest_plan_next_payload,
-                    summary=latest_plan_next_payload.get("preview_summary")
-                    or latest_plan_next_payload.get("summary")
-                    or "",
-                )
-                if candidate is not None:
-                    if current_user_turn > 0:
-                        candidate["created_turn"] = current_user_turn
-                    latest_candidate = candidate
-                    user_turns_since_candidate = 0
-                pending_calls.clear()
-                continue
-            if not is_preview_result and (
-                result.get("applied") is True
-                or call_stage == "apply"
-            ):
-                if effective_action_family in _PENDING_PLAN_ACTION_FAMILIES:
-                    latest_candidate = None
-                    user_turns_since_candidate = 0
-                    pending_calls.clear()
-                continue
-            if not is_preview_result:
-                continue
-            if effective_action_family not in _PENDING_PLAN_ACTION_FAMILIES:
-                continue
-            if not call_payload:
-                continue
-            pending_payload = _merge_plan_next_payload_for_pending_candidate(
-                normalize_plan_action_payload(dict(call_payload)),
-                latest_plan_next_payload,
-            )
-            result_facts = result.get("facts")
-            if isinstance(result_facts, dict) and result_facts:
-                pending_payload["facts"] = result_facts
-                result_version = _as_int(
-                    result_facts.get("source_backend_version")
-                    or result_facts.get("planning_version")
-                )
-                if result_version > 0:
-                    pending_payload["planning_version"] = result_version
-            top_level_version = _as_int(result.get("source_backend_version") or result.get("planning_version"))
-            if top_level_version > 0:
-                pending_payload["planning_version"] = top_level_version
-            candidate = _build_plan_confirmation_candidate_from_payload(
-                pending_payload,
-                summary=result.get("summary") or call_payload.get("preview_summary") or "",
-            )
-            if candidate is None:
-                continue
-            if (
-                has_non_actionable_adjustment_analysis
-                and str(candidate.get("action_family") or "").strip() == "generate_plan"
-            ):
-                continue
-            if current_user_turn > 0:
-                candidate["created_turn"] = current_user_turn
-            latest_candidate = candidate
-            user_turns_since_candidate = 0
-
-    return latest_candidate
-
-
-def _latest_structured_goal_plan_preview(messages: list[Any] | None) -> dict[str, Any] | None:
-    latest: dict[str, Any] | None = None
-    for part in _iter_tool_return_parts(messages):
-        if part.tool_name != "plan_next_action":
-            continue
-        result = _parse_tool_return_json(part.content)
-        if not isinstance(result, dict):
-            continue
-        if str(result.get("stage") or "").strip() != "preview":
-            continue
-        if proposal_compiler.structured_goal_from_composite_proposal(result) is None:
-            continue
-        latest = result
-    return latest
-
-
-def _latest_goal_scoped_plan_preview(messages: list[Any] | None) -> dict[str, Any] | None:
-    latest: dict[str, Any] | None = None
-    for part in _iter_tool_return_parts(messages):
-        if part.tool_name != "plan_next_action":
-            continue
-        result = _parse_tool_return_json(part.content)
-        if not isinstance(result, dict):
-            continue
-        if str(result.get("stage") or "").strip() != "preview":
-            continue
-        composite = result.get("composite_proposal") or result.get("compositeProposal")
-        if not isinstance(composite, dict):
-            continue
-        goal = composite.get("goal")
-        if not isinstance(goal, dict):
-            continue
-        goal_type = str(goal.get("goal_type") or goal.get("goalType") or "").strip()
-        if goal_type not in proposal_compiler.STRUCTURED_USER_GOAL_TYPES:
-            continue
-        latest = result
-    return latest
-
-
-def _structured_goal_clarification_reply(source: dict[str, Any] | None) -> str | None:
-    resolution = proposal_compiler.resolve_structured_goal_clarification(source)
-    if not resolution.needed:
-        return None
-    note = resolution.questions[0] if resolution.questions else ""
-    scope_text = "、".join(resolution.scope_values)
-    if note:
-        return (
-            f"我先确认一下范围：{note}\n\n"
-            "这轮不会改动当前方案。你可以补充一下具体按哪个专业层级处理，"
-            "我再给你列出调整预览。"
-        )
-    if scope_text:
-        return (
-            f"我先确认一下“{scope_text}”具体按哪个范围处理。\n\n"
-            "这轮不会改动当前方案。你补充清楚后，我再给你列出调整预览。"
-        )
-    return "这次调整范围还不够明确，这轮不会改动当前方案。你补充清楚后，我再给你列出调整预览。"
-
-
-def _latest_plan_mutation_attempt_result(messages: list[Any] | None) -> dict[str, Any] | None:
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name not in {"execute_plan_action", "plan_next_action"}:
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        if action_family in _PENDING_PLAN_ACTION_FAMILIES:
-            return data
-    return None
 
 
 _READONLY_CLOSURE_ACK_PHRASES = {
@@ -10434,10 +5649,6 @@ _READONLY_CLOSURE_ACK_PHRASES = {
     "先按这个吧",
     "先按刚才的吧",
 }
-
-
-def _pending_semantic_decision(action: str, confidence: float = 1.0, reason: str = "") -> SimpleNamespace:
-    return SimpleNamespace(action=action, confidence=confidence, reason=reason)
 
 
 def _normalize_confirmation_only_text(content: str, *, strip_fullwidth_question: bool = False) -> str:
@@ -10610,31 +5821,6 @@ def _sanitize_reply_for_user(reply: str) -> str:
     if reply != original_reply:
         reply = reply.strip()
     return reply.strip()
-
-
-def _is_basic_plan_status_question(content: str) -> bool:
-    normalized = re.sub(r"\s+", "", (content or "").strip())
-    normalized = normalized.strip("。.!！?？")
-    if not normalized:
-        return False
-    return normalized in {
-        "方案有了么",
-        "方案有了吗",
-        "有方案了吗",
-        "方案生成了吗",
-        "方案出来了吗",
-        "当前方案有了吗",
-        "现在有方案了吗",
-        "现在方案有了吗",
-        "看看现在的方案",
-        "看看方案",
-        "看下方案",
-        "看一下方案",
-        "方案怎么样了",
-        "方案情况",
-        "当前方案怎么样",
-        "我的方案",
-    }
 
 
 def _prompt_explicitly_readonly(content: str | None) -> bool:
@@ -10852,10 +6038,19 @@ def _needs_plan_first_guard_reply(
         focus = "这类方案范围要求"
     return (
         "当前还没有生成正式方案，所以没法判断或调整“刚才/当前方案”里的具体志愿。"
-        f"这轮不会把{focus}写成新的报考偏好，也不会改动当前方案。"
+        f"这轮不会把{focus}写成新的报考要求，也不会改动当前方案。"
         "也就是说，这轮不会改动方案。"
         "你可以先让我生成一版方案；有了正式方案后，我再按这条要求检查或调整。"
     )
+
+
+def _planning_summary_for_boundary_guard(
+    planning_summary: PlanningSummary | dict[str, Any] | None,
+) -> PlanningSummary | dict[str, Any] | None:
+    # Only a successfully parsed backend planning summary can prove "no plan".
+    # Sandbox may contain a local has_plan=false placeholder when backend state
+    # is unavailable, and that must not trigger the no-plan guard.
+    return planning_summary
 
 
 def _no_formal_plan_review_boundary_reply(
@@ -11112,9 +6307,9 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("点击卡片", "点“采纳”"),
         ("卡片采纳后", "采纳后"),
         ("卡片确认", "确认"),
-        ("硬性要求", "报考要求"),
-        ("硬要求", "报考要求"),
-        ("硬约束", "报考要求"),
+        ("硬性要求", "明确要求"),
+        ("硬要求", "明确要求"),
+        ("硬约束", "明确要求"),
         ("软偏好", "优先考虑的方向"),
         ("软意向", "优先考虑的方向"),
         ("约束", "要求"),
@@ -11547,68 +6742,6 @@ def _normalize_plan_reply_style(reply: str) -> str:
     return "\n".join(normalized_lines)
 
 
-def _append_plan_preview_confirmation_boundary(
-    reply: str,
-    new_messages: list[Any] | None,
-) -> str:
-    """Make current-turn Plan previews explicit when the model skipped execute_plan_action."""
-    if not reply.strip():
-        non_actionable_result = _latest_non_actionable_plan_result(new_messages)
-        if non_actionable_result:
-            return _non_actionable_plan_preview_boundary(non_actionable_result)
-        return reply
-    confirmation_candidate = _extract_plan_confirmation_candidate(new_messages)
-    if _tool_returns_successful_plan_apply(new_messages):
-        return reply
-    asks_confirmation = _reply_has_plan_confirmation_request(reply)
-    if not confirmation_candidate:
-        non_actionable_result = _latest_non_actionable_plan_result(new_messages)
-        fix_proposal_preview_result = _latest_fix_proposal_preview_result(new_messages)
-        readonly_explore_reply = _latest_readonly_explore_reply(new_messages)
-        if asks_confirmation:
-            if readonly_explore_reply:
-                compact_explore = _compact_plan_reply_text(readonly_explore_reply)
-                if "不会改动当前方案" not in compact_explore and "不会直接改" not in compact_explore:
-                    return f"{readonly_explore_reply.rstrip()}\n\n{_READONLY_ANALYSIS_NO_PLAN_PREVIEW_REPLY}"
-                return readonly_explore_reply
-            if not non_actionable_result and not fix_proposal_preview_result and not _tool_returns_plan_mutation_context(new_messages):
-                return reply
-            reply = _remove_unbacked_plan_confirmation_copy(reply)
-            boundary = _non_actionable_plan_preview_boundary(
-                non_actionable_result
-                or fix_proposal_preview_result
-                or _latest_non_actionable_plan_mutation_result(new_messages)
-            )
-            stripped_reply = reply.strip()
-            if not stripped_reply:
-                return boundary
-            return f"{stripped_reply}\n\n{boundary}"
-        if non_actionable_result and any(marker in reply for marker in ("补偿环节", "技术问题", "无法进入可执行")):
-            stripped = _remove_unbacked_plan_confirmation_copy(reply).strip()
-            if not stripped or any(marker in stripped for marker in ("补偿环节", "技术问题", "无法进入可执行")):
-                return _NO_EXECUTABLE_PLAN_PREVIEW_REPLY
-            return f"{stripped}\n\n{_non_actionable_plan_preview_boundary(non_actionable_result)}"
-        if non_actionable_result and _reply_is_internal_plan_error(reply):
-            return _non_actionable_plan_preview_boundary(non_actionable_result)
-        return reply
-    action_family = str(confirmation_candidate.get("action_family") or "")
-    if action_family not in _PENDING_PLAN_ACTION_FAMILIES:
-        return reply
-    unit_kind = _plan_confirmation_candidate_unit_kind(confirmation_candidate)
-    if action_family in {"move_ordered_unit", "remove_ordered_unit"} and unit_kind != "志愿":
-        compact_reply = _compact_plan_reply_text(reply)
-        if "不是按单条志愿位置" not in compact_reply and "按专业组顺序计算" not in compact_reply:
-            reply = (
-                reply.rstrip()
-                + "\n\n位置说明：这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；组内专业会保持连续。"
-            )
-    if _reply_conflicts_with_plan_confirmation_candidate(reply):
-        return _build_plan_confirmation_preview_reply(confirmation_candidate)
-    if asks_confirmation:
-        return reply
-    return reply.rstrip() + "\n\n如果你确认要这样做，我再执行；现在还不会改动方案。"
-
-
 def _reply_is_internal_plan_error(reply: str) -> bool:
     if not isinstance(reply, str):
         return False
@@ -11618,314 +6751,12 @@ def _reply_is_internal_plan_error(reply: str) -> bool:
     )
 
 
-def _plan_confirmation_candidate_unit_kind(confirmation_candidate: dict[str, Any] | None) -> str:
-    if not isinstance(confirmation_candidate, dict):
-        return ""
-    payload = confirmation_candidate.get("plan_payload")
-    if not isinstance(payload, str) or not payload.strip():
-        return ""
-    try:
-        data = json.loads(payload)
-    except Exception:
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
-    unit_kind = str(facts.get("unit_kind") or facts.get("unitKind") or "").strip()
-    return unit_kind if unit_kind in {"志愿", "专业组"} else ""
-
-
-def _plan_confirmation_candidate_is_explicit_atomic_target(
-    confirmation_candidate: dict[str, Any] | None,
-) -> bool:
-    if not isinstance(confirmation_candidate, dict):
-        return False
-    action_family = str(confirmation_candidate.get("action_family") or "").strip()
-    if action_family not in {"add_units", "remove_units", "replace_units"}:
-        return False
-    payload = confirmation_candidate.get("plan_payload")
-    if not isinstance(payload, str) or not payload.strip():
-        return False
-    try:
-        data = json.loads(payload)
-    except Exception:
-        return False
-    if not isinstance(data, dict):
-        return False
-    if data.get("composite_proposal") or data.get("compositeProposal"):
-        return False
-    if isinstance(data.get("intent_update"), dict) or isinstance(data.get("intentUpdate"), dict):
-        return False
-    atomic_actions = data.get("atomic_actions") if isinstance(data.get("atomic_actions"), list) else []
-    for action in atomic_actions:
-        if not isinstance(action, dict):
-            continue
-        volunteer_ids = _as_text_list(action.get("volunteer_ids") or action.get("volunteerIds"))
-        if volunteer_ids:
-            return True
-    return False
-
-
-def _pending_state_constraint_intent_type(pending_state: dict[str, Any] | None) -> str:
-    if not isinstance(pending_state, dict):
-        return ""
-    direct = str(
-        pending_state.get("constraintIntentType")
-        or pending_state.get("constraint_intent_type")
-        or ""
-    ).strip()
-    if direct:
-        return direct
-    execution_payload = pending_state.get("executionPayload")
-    if not isinstance(execution_payload, dict):
-        return ""
-    for source in (
-        execution_payload,
-        execution_payload.get("selectedData"),
-        execution_payload.get("intentPayload"),
-    ):
-        if not isinstance(source, dict):
-            continue
-        value = str(
-            source.get("constraintIntentType")
-            or source.get("constraint_intent_type")
-            or ""
-        ).strip()
-        if value:
-            return value
-    return ""
-
-
-def _plan_confirmation_candidate_payload(
-    confirmation_candidate: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if not isinstance(confirmation_candidate, dict):
-        return {}
-    payload = confirmation_candidate.get("plan_payload")
-    if not isinstance(payload, str) or not payload.strip():
-        return {}
-    try:
-        parsed = json.loads(payload)
-    except Exception:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _plan_candidate_intent_update(
-    confirmation_candidate: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if not isinstance(confirmation_candidate, dict):
-        return {}
-    direct = confirmation_candidate.get("intent_update") or confirmation_candidate.get("intentUpdate")
-    if isinstance(direct, dict) and direct:
-        return direct
-    payload = _plan_confirmation_candidate_payload(confirmation_candidate)
-    if not payload:
-        return {}
-    for source in (
-        payload,
-        payload.get("facts") if isinstance(payload.get("facts"), dict) else None,
-    ):
-        if not isinstance(source, dict):
-            continue
-        value = source.get("intent_update") or source.get("intentUpdate")
-        if isinstance(value, dict) and value:
-            return value
-    return {}
-
-
-def _plan_candidate_structured_goal_type(
-    confirmation_candidate: dict[str, Any] | None,
-) -> str:
-    payload = _plan_confirmation_candidate_payload(confirmation_candidate)
-    if not payload:
-        return ""
-    composite = payload.get("composite_proposal") or payload.get("compositeProposal")
-    if not isinstance(composite, dict):
-        return ""
-    goal = composite.get("goal")
-    if not isinstance(goal, dict):
-        return ""
-    return str(goal.get("goal_type") or goal.get("goalType") or "").strip()
-
-
-def _merged_selected_intent_payload(intent_payload: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(intent_payload, dict):
-        return {}
-    merged = _merge_selected_intent_payload(intent_payload)
-    return merged if merged else intent_payload
-
-
-def _plain_plan_candidate_conflicts_with_active_only_keep_intent(
-    pending_state: dict[str, Any] | None,
-    confirmation_candidate: dict[str, Any] | None,
-) -> bool:
-    """Prevent an active only-keep intent from being replaced by a derived removal list.
-
-    The unified path for only-keep goals is Intent/UserGoal -> Java FixProposal.
-    A plain execute_plan_action/remove_units card that only carries generated
-    negative complements is a model-side expansion, not a safe replacement for
-    the active pending only-keep state.
-    """
-    if not isinstance(pending_state, dict) or not isinstance(confirmation_candidate, dict):
-        return False
-    if str(pending_state.get("status") or "").strip() != "active":
-        return False
-    if str(pending_state.get("kind") or "").strip() != "intent_change":
-        return False
-    if _pending_state_constraint_intent_type(pending_state) != "only_keep":
-        return False
-    if _plan_candidate_structured_goal_type(confirmation_candidate) == "only_keep_scope":
-        return False
-
-    action_family = str(confirmation_candidate.get("action_family") or "").strip()
-    if action_family not in {"remove_units", "replace_units", "add_units", "generate_plan"}:
-        return False
-    intent_update = _plan_candidate_intent_update(confirmation_candidate)
-    if not intent_update:
-        return False
-    candidate_constraint_type = str(
-        intent_update.get("constraintIntentType")
-        or intent_update.get("constraint_intent_type")
-        or ""
-    ).strip()
-    if candidate_constraint_type == "only_keep":
-        return False
-    merged_intent = _merged_selected_intent_payload(intent_update)
-    return _intent_payload_has_negative_value(merged_intent) and not _intent_payload_has_positive_value(merged_intent)
-
-
 def _compact_plan_reply_text(reply: str) -> str:
     return re.sub(r'[\s"“”‘’`\'「」『』【】\[\]（）()<>《》:：,，。.!！？?、]+', "", str(reply or ""))
 
 
 def _reply_has_plan_confirmation_request(reply: str) -> bool:
     return proposal_compiler.runtime_reply_has_plan_confirmation_request(reply)
-
-
-def _reply_conflicts_with_plan_confirmation_candidate(reply: str) -> bool:
-    compact = _compact_plan_reply_text(reply)
-    return any(
-        marker in compact
-        for marker in (
-            "无法进入可执行",
-            "没有上一轮待确认",
-            "还没有拿到可执行",
-            "系统在补偿环节遇到",
-            "技术问题",
-            "现在还不会改动方案",
-        )
-    )
-
-
-def _build_plan_confirmation_preview_reply(confirmation_candidate: dict[str, Any]) -> str:
-    summary = str(confirmation_candidate.get("summary") or "").strip()
-    summary = summary.replace("补偿", "补齐")
-    title = "调整预览已生成。"
-    boundary = "如果你确认要这样做，我再执行；现在还不会改动方案。"
-    body = f"\n\n{summary}" if summary else ""
-    return f"{title}{body}\n\n{boundary}"
-
-
-def _plan_summary_is_low_information(summary: str) -> bool:
-    compact = _compact_plan_reply_text(summary)
-    if not compact:
-        return True
-    return any(
-        marker in compact
-        for marker in (
-            "这轮我先把影响范围和可选方向说明清楚",
-            "不会直接改动当前方案",
-            "需要你确认后才会执行",
-        )
-    ) and not any(
-        marker in compact
-        for marker in (
-            "补入",
-            "移出",
-            "替换",
-            "移动",
-            "排序",
-            "生成",
-            "补齐",
-            "当前位置",
-            "目标位置",
-            "源志愿",
-            "源专业组",
-            "志愿：",
-        )
-    )
-
-
-def _fallback_plan_confirmation_candidate_summary(confirmation_candidate: dict[str, Any]) -> str:
-    action_family = str(confirmation_candidate.get("action_family") or "").strip()
-    user_goal = str(confirmation_candidate.get("user_goal") or "").strip()
-    action_text = {
-        "generate_plan": "根据当前候选和当前报考信息生成或补齐方案。",
-        "add_units": "把符合条件的候选加入当前方案。",
-        "remove_units": "从当前方案里移出命中的志愿。",
-        "replace_units": "用更合适的候选替换当前方案里的命中项。",
-        "sort_ordered_plan": "按指定规则重新排列当前方案。",
-        "regenerate_order": "重新生成当前排序方案。",
-        "move_unit": "移动当前方案里的指定志愿。",
-        "move_ordered_unit": "移动当前排序里的指定位置。",
-        "remove_ordered_unit": "移出当前排序里的指定位置。",
-    }.get(action_family, "按这次要求生成一版调整预览。")
-    if user_goal:
-        return f"{action_text}\n\n本次要求：{user_goal}"
-    return action_text
-
-
-def _plan_confirmation_candidate_summary_for_user(confirmation_candidate: dict[str, Any]) -> str:
-    summary = str(confirmation_candidate.get("summary") or confirmation_candidate.get("preview_summary") or "").strip()
-    summary = _normalize_user_facing_terms(summary.replace("补偿", "补齐"))
-    if _plan_summary_is_low_information(summary):
-        return _fallback_plan_confirmation_candidate_summary(confirmation_candidate)
-    return summary
-
-
-def _plan_confirmation_card_primary_reply(confirmation_candidate: dict[str, Any]) -> str:
-    summary = _plan_confirmation_candidate_summary_for_user(confirmation_candidate)
-    if summary:
-        summary = re.sub(r"(?:需要你)?确认后才会执行[。；;]?", "", summary).strip("；;。 \n")
-        reply = f"已列出调整预览：{summary}。"
-    else:
-        reply = "已列出调整预览。"
-    return _sanitize_reply_for_user(f"{reply}\n\n确认前不会改动当前方案。")
-
-
-def _remove_current_turn_mutating_plan_preview(messages: list[Any] | None) -> None:
-    """Rewrite mutating Plan preview returns so they cannot become stale pending state.
-
-    This is a side-effect safety boundary for explicit read-only prompts. It does
-    not route the request; it only prevents a model/tool detour from leaving a
-    confirmable add/remove/move/sort preview after the user said to only inspect.
-    """
-    for part in _iter_tool_return_parts(messages):
-        if part.tool_name not in {"plan_next_action", "execute_plan_action"}:
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not data:
-            continue
-        action_family = str(data.get("action_family") or "").strip()
-        effective_family = action_family
-        result_kind = str(data.get("result_kind") or "").strip()
-        if effective_family not in _PENDING_PLAN_ACTION_FAMILIES:
-            continue
-        if result_kind != "preview_only" and data.get("stage") != "preview":
-            continue
-        data["stage"] = "apply"
-        data["action_family"] = "query_candidates" if effective_family == "add_units" else "query_ordered"
-        data["result_kind"] = "candidate_snapshot" if effective_family == "add_units" else "ordered_snapshot"
-        data["applied"] = True
-        data["requires_confirmation"] = False
-        data["should_rerun_review"] = False
-        data["should_refresh_workspace"] = False
-        data["workspace_refresh_targets"] = []
-        data["reply_focus"] = [str(data["result_kind"])]
-        data["summary"] = _READONLY_MUTATION_GUARD_REPLY
-        data.pop("preview_summary", None)
-        part.content = json.dumps(data, ensure_ascii=False)
 
 
 def _remove_unbacked_plan_confirmation_copy(reply: str) -> str:
@@ -11944,25 +6775,6 @@ def _guard_unbacked_plan_confirmation_reply(reply: str) -> str:
     if not stripped or _reply_has_plan_confirmation_request(stripped):
         return _UNBACKED_PLAN_CONFIRMATION_REPLY
     return f"{stripped}\n\n{_UNBACKED_PLAN_CONFIRMATION_REPLY}"
-
-
-def _guard_plan_preview_reply_without_card(reply: str) -> str:
-    confirmation_source = proposal_compiler.compile_runtime_reply_guard_source(
-        reply=reply,
-        guard_context="plan_confirmation",
-    )
-    if confirmation_source.matched:
-        return _guard_unbacked_plan_confirmation_reply(reply)
-    preview_source = proposal_compiler.compile_runtime_reply_guard_source(
-        reply=reply,
-        guard_context="plan_preview_without_card",
-    )
-    if not preview_source.matched:
-        return _guard_unbacked_plan_confirmation_reply(reply)
-    stripped = preview_source.stripped_reply.strip()
-    if not stripped or stripped == reply.strip() or _reply_has_plan_confirmation_request(stripped):
-        return _UNBACKED_PLAN_CONFIRMATION_REPLY
-    return _sanitize_reply_for_user(f"{stripped}\n\n{_UNBACKED_PLAN_CONFIRMATION_REPLY}")
 
 
 def _normalize_unbacked_no_tool_action_boundary(reply: str) -> str:
@@ -12479,77 +7291,6 @@ def _build_fix_proposal_preview_fallback_lines(
     return lines
 
 
-def _fix_proposal_matches_any_target_scope(
-    proposal: dict[str, Any],
-    target_strategies: list[str],
-    target_issue_codes: list[str],
-) -> bool:
-    return (
-        proposal_compiler.fix_proposal_matches_target_scope(proposal, target_strategies, [])
-        or proposal_compiler.fix_proposal_matches_target_scope(proposal, [], target_issue_codes)
-    )
-
-
-def _targeted_fix_proposal_unavailable_reply(
-    result: dict[str, Any],
-    *,
-    target_strategies: list[str] | None = None,
-    target_issue_codes: list[str] | None = None,
-) -> str:
-    facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
-    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
-    proposals = fix_facts.get("proposals") if isinstance(fix_facts.get("proposals"), list) else []
-    normalized_strategies = proposal_compiler.normalize_fix_proposal_target_strategies(
-        target_strategies
-        or result.get("target_strategies")
-        or result.get("targetStrategies")
-        or []
-    )
-    normalized_issue_codes = proposal_compiler.normalize_fix_proposal_target_issue_codes(
-        target_issue_codes
-        or result.get("target_issue_codes")
-        or result.get("targetIssueCodes")
-        or []
-    )
-    matched = [
-        proposal
-        for proposal in proposals
-        if isinstance(proposal, dict)
-        and _fix_proposal_matches_any_target_scope(
-            proposal,
-            normalized_strategies,
-            normalized_issue_codes,
-        )
-    ]
-    if not matched:
-        return ""
-
-    ready = [
-        proposal
-        for proposal in matched
-        if str(proposal.get("status") or "").strip() == "ready"
-    ]
-    if ready:
-        return ""
-
-    proposal = matched[0]
-    title = _clean_fix_proposal_title(proposal.get("title")) or "你想处理的这类问题"
-    strategy = _FIX_PROPOSAL_STRATEGY_TEXT.get(str(proposal.get("strategy") or "").strip(), "")
-    reason = _review_fallback_proposal_reason(proposal)
-    next_step = _review_fallback_proposal_next_step(proposal)
-    label = strategy or title
-    lines = [
-        f"我看了你想处理的“{label}”，这轮还没有足够合适的可执行预览，所以不会改动当前方案。",
-        "",
-        f"- 当前看到的问题：{title}。",
-        f"- 主要原因：{reason}。",
-        f"- 可以怎么推进：{next_step}。",
-        "",
-        "如果你愿意放宽范围或接受对应取舍，我再按新的范围重新列调整预览；确认前不会改动当前方案。",
-    ]
-    return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
-
-
 def _review_reply_needs_structured_fallback(reply: str, result: dict[str, Any] | None) -> bool:
     if not isinstance(result, dict) or not isinstance(reply, str):
         return False
@@ -12658,30 +7399,6 @@ def _review_prompt_prefers_unavailable_guidance(user_prompt: str | None) -> bool
     return wants_reason and repair_context
 
 
-def _prompt_requests_plan_constraint_adjustment(user_prompt: str | None) -> bool:
-    compact = _compact_plan_reply_text(str(user_prompt or ""))
-    if not compact:
-        return False
-    return any(
-        marker in compact
-        for marker in (
-            "别放",
-            "不要放",
-            "不放",
-            "避开",
-            "排除",
-            "去掉",
-            "拿掉",
-            "换掉",
-            "控制在",
-            "限制在",
-            "不超过",
-            "低于",
-            "以内",
-        )
-    )
-
-
 def _result_prefers_unavailable_guidance(result: dict[str, Any], *, user_prompt: str | None = None) -> bool:
     facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
     requested_focus = {
@@ -12719,7 +7436,14 @@ def _result_needs_unavailable_guidance_fallback(result: dict[str, Any], *, user_
 def _build_plan_timeout_fallback_reply(result: dict[str, Any], *, user_prompt: str | None = None) -> str | None:
     result_kind = str(result.get("result_kind") or "").strip()
     if str(result.get("action_family") or "").strip() == "review_plan" and result_kind == "error":
-        return _non_actionable_plan_preview_boundary(result)
+        summary = _clean_review_fallback_text(result.get("summary"))
+        lines = [
+            "这轮没有拿到完整的方案审查结果，当前方案不会因为这次回复发生变化。",
+        ]
+        if summary and "调整预览" not in summary:
+            lines.append(summary)
+        lines.append("你可以稍后重新审查，或直接说想重点看哪类风险，我再按当前方案重新检查。")
+        return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
     if result_kind not in {
         "review_result",
         "adjustment_analysis",
@@ -12987,51 +7711,6 @@ def _build_status_overview_fallback_lines(facts: dict[str, Any]) -> list[str]:
     return lines
 
 
-def build_timeout_fallback_from_recent_plan_execution(
-    session_id: str,
-    user_prompt: str,
-) -> ChatServiceResponseEnvelope | None:
-    result = consume_recent_plan_execution_result(session_id, user_prompt)
-    if not result:
-        return None
-    reply = _build_plan_timeout_fallback_reply(result, user_prompt=user_prompt)
-    if not reply:
-        return None
-    workspace_refresh_targets = _dedupe_workspace_targets(
-        [str(target) for target in (result.get("workspace_refresh_targets") or [])]
-    )
-    if workspace_refresh_targets:
-        return ChatServiceResponseEnvelope(
-            primary=reply,
-            followups=[
-                _build_silent_workspace_refresh_response(session_id, target)
-                for target in workspace_refresh_targets
-            ],
-        )
-    return ChatServiceResponseEnvelope(primary=reply)
-
-
-async def build_interruption_fallback_from_recent_plan_execution(
-    session_id: str,
-    user_prompt: str,
-) -> ChatServiceResponseEnvelope | None:
-    result = consume_recent_plan_execution_result(session_id, user_prompt)
-    if not result:
-        return None
-
-    reply = _build_plan_timeout_fallback_reply(result, user_prompt=user_prompt)
-    if not reply:
-        return None
-    workspace_refresh_targets = _dedupe_workspace_targets(
-        [str(target) for target in (result.get("workspace_refresh_targets") or [])]
-    )
-    followups = [
-        _build_silent_workspace_refresh_response(session_id, target)
-        for target in workspace_refresh_targets
-    ]
-    return ChatServiceResponseEnvelope(primary=reply, followups=followups)
-
-
 def _replace_text_reply(messages: list[Any] | None, old_reply: str, new_reply: str) -> None:
     if old_reply == new_reply:
         return
@@ -13041,40 +7720,6 @@ def _replace_text_reply(messages: list[Any] | None, old_reply: str, new_reply: s
         for part in getattr(message, "parts", []) or []:
             if isinstance(part, TextPart) and part.content == old_reply:
                 part.content = new_reply
-
-
-def _build_direct_plan_action_messages(
-    user_prompt: str,
-    *,
-    tool_call_id: str,
-    plan_payload: dict[str, Any],
-    result_text: str,
-    reply: str,
-    model_name: str,
-) -> list[Any]:
-    return [
-        ModelRequest(parts=[UserPromptPart(content=user_prompt)]),
-        ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="execute_plan_action",
-                    args={"plan_payload": json.dumps(plan_payload, ensure_ascii=False)},
-                    tool_call_id=tool_call_id,
-                )
-            ],
-            model_name=model_name,
-        ),
-        ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="execute_plan_action",
-                    content=result_text,
-                    tool_call_id=tool_call_id,
-                )
-            ]
-        ),
-        ModelResponse(parts=[TextPart(content=reply)], model_name=model_name),
-    ]
 
 
 @dataclass
@@ -13606,6 +8251,103 @@ class ChatService:
             return False
         return _zhiyuan_agent_direct_rollout_bucket(session_id, user_id) < rollout_percent
 
+    async def _maybe_handle_no_plan_boundary_guard(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        content: str,
+        history: list[Any] | None,
+        request_context: RequestContext,
+        planning_summary: PlanningSummary | dict[str, Any] | None,
+        pending_state: dict[str, Any] | None,
+        recent_intent_summary: str,
+        turn_started_at: float,
+    ) -> str | None:
+        boundary_summary = _planning_summary_for_boundary_guard(planning_summary)
+        no_formal_plan_review = proposal_compiler.resolve_no_formal_plan_review_boundary(
+            content,
+            planning_summary=boundary_summary,
+        )
+        if no_formal_plan_review.side_effect == "readonly":
+            reply = _no_formal_plan_review_boundary_reply(content, pending_state=pending_state)
+            turn_event = {
+                "sessionId": session_id,
+                "userId": user_id,
+                "scene": "plan",
+                "routingPath": "no_formal_plan_review_boundary",
+                "routeDecision": {
+                    "source": "proposal_compiler",
+                    "matched": True,
+                    "route": no_formal_plan_review.side_effect,
+                    "sideEffect": no_formal_plan_review.side_effect,
+                    "referenceResolution": no_formal_plan_review.reference_resolution,
+                    "replyFocus": list(no_formal_plan_review.reply_focus),
+                    "blockingReasons": list(no_formal_plan_review.blocking_reasons),
+                },
+                "pendingType": None,
+                "actionFamily": None,
+                "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
+                "status": "success",
+                "errorType": None,
+            }
+            await _save_direct_guard_history(
+                self.history_store,
+                session_id,
+                history,
+                content,
+                reply,
+                model_name="no-formal-plan-review-boundary",
+                turn_event=turn_event,
+                request_context=request_context,
+                user_id=user_id,
+            )
+            _log_conversation_turn_event(**turn_event)
+            return reply
+
+        needs_plan_first_resolution = proposal_compiler.resolve_needs_plan_first_guard(
+            content,
+            planning_summary=boundary_summary,
+            recent_intent_summary=recent_intent_summary,
+        )
+        if needs_plan_first_resolution.side_effect != "needs_plan_first":
+            return None
+        reply = _needs_plan_first_guard_reply(content, needs_plan_first_resolution)
+        turn_event = {
+            "sessionId": session_id,
+            "userId": user_id,
+            "scene": "plan",
+            "routingPath": "needs_plan_first_guard",
+            "routeDecision": {
+                "source": "proposal_compiler",
+                "matched": True,
+                "route": needs_plan_first_resolution.side_effect,
+                "referenceResolution": needs_plan_first_resolution.reference_resolution,
+                "targetIssues": list(needs_plan_first_resolution.target_issues),
+                "displayPayload": dict(needs_plan_first_resolution.display_payload),
+                "replyPlan": dict(needs_plan_first_resolution.reply_plan),
+                "blockingReasons": list(needs_plan_first_resolution.blocking_reasons),
+            },
+            "pendingType": None,
+            "actionFamily": None,
+            "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
+            "status": "success",
+            "errorType": None,
+        }
+        await _save_direct_guard_history(
+            self.history_store,
+            session_id,
+            history,
+            content,
+            reply,
+            model_name="needs-plan-first-guard",
+            turn_event=turn_event,
+            request_context=request_context,
+            user_id=user_id,
+        )
+        _log_conversation_turn_event(**turn_event)
+        return reply
+
     async def _pending_state_for_direct_card(
         self,
         *,
@@ -13828,20 +8570,6 @@ class ChatService:
             )
         return final_reply
 
-    async def _execute_semantic_plan_payload(
-        self,
-        *,
-        request_context: RequestContext,
-        plan_payload: dict[str, Any],
-    ) -> tuple[str, dict[str, Any], int]:
-        started_at = time.monotonic()
-        result_text = await execute_plan_action(
-            SimpleNamespace(deps=request_context),
-            json.dumps(plan_payload, ensure_ascii=False),
-        )
-        duration_ms = int((time.monotonic() - started_at) * 1000)
-        return result_text, _parse_tool_return_json(result_text) or {}, duration_ms
-
     async def _maybe_handle_profile_change_replan_state_query(
         self,
         *,
@@ -13884,37 +8612,12 @@ class ChatService:
             )
             turn_decision = None
 
-        decision_source = "turn_decision+proposal_compiler"
-        confidence = 0.0
-        reply_focus: list[str] = []
-        if turn_decision is not None and _turn_decision_is_profile_change_state_query(
+        if turn_decision is None or not _turn_decision_is_profile_change_state_query(
             turn_decision,
             pending_exists=pending_exists,
         ):
-            confidence = float(getattr(turn_decision, "confidence", 0.0) or 0.0)
-        else:
-            # Compatibility fallback while the old plan-semantic node is being
-            # retired for profile-state questions. The compiler still receives
-            # only the structured query scenario below.
-            try:
-                decision = await classify_plan_semantic_action(
-                    content,
-                    request_context=request_context,
-                    recent_plan_context=_latest_plan_semantic_route_context(history),
-                )
-            except Exception:
-                logger.warning(
-                    "Profile change state query classification failed: session_id=%s",
-                    session_id,
-                    exc_info=True,
-                )
-                return None
-            confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
-            focus = _reply_focus_set(decision)
-            if confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD or "profile_change_state_query" not in focus:
-                return None
-            decision_source = "semantic_plan_action+proposal_compiler"
-            reply_focus = list(focus)
+            return None
+        confidence = float(getattr(turn_decision, "confidence", 0.0) or 0.0)
 
         resolution = proposal_compiler.resolve_profile_change_replan_state_query(
             profile_change_dsl=profile_change_dsl,
@@ -13932,12 +8635,11 @@ class ChatService:
             "scene": "plan",
             "routingPath": "profile_change_replan_state_query",
             "routeDecision": {
-                "source": decision_source,
+                "source": "turn_decision+proposal_compiler",
                 "matched": True,
                 "confidence": confidence,
                 "route": resolution.route,
                 "sideEffect": "readonly_while_pending" if pending_exists else "readonly",
-                "replyFocus": reply_focus,
                 "turnDecision": (
                     {
                         "taskLayer": str(getattr(turn_decision, "taskLayer", "") or "").strip(),
@@ -13983,1455 +8685,6 @@ class ChatService:
         )
         return reply
 
-    async def _maybe_handle_pending_readonly_plan_query(
-        self,
-        *,
-        session_id: str,
-        user_id: str,
-        content: str,
-        history: list[Any] | None,
-        request_context: RequestContext,
-        pending_state: dict[str, Any] | None,
-        turn_started_at: float,
-        turn_decision: Any | None = None,
-    ) -> ChatServiceResponseEnvelope | str | None:
-        if not (
-            isinstance(pending_state, dict)
-            and str(pending_state.get("status") or "").strip() == "active"
-        ):
-            return None
-        planning_version = 0
-        planning_summary = getattr(request_context, "planning_summary", None)
-        if planning_summary is not None:
-            with contextlib.suppress(TypeError, ValueError):
-                planning_version = int(getattr(planning_summary, "version", 0) or 0)
-        if turn_decision is None:
-            turn_decision = await _classify_plan_query_turn_decision(
-                content=content,
-                request_context=request_context,
-                pending_state=pending_state,
-            )
-        if not _turn_decision_allows_plan_query_profile(turn_decision, pending_exists=True):
-            return None
-        compiled_query, query_profile = await _compile_runtime_plan_query_from_profile(
-            content=content,
-            request_context=request_context,
-            planning_version=planning_version,
-            pending_state=pending_state,
-            pending_exists=True,
-        )
-        if not compiled_query.matched:
-            return None
-        plan_payload = compiled_query.plan_payload
-        result_text, result, tool_duration_ms = await self._execute_semantic_plan_payload(
-            request_context=request_context,
-            plan_payload=plan_payload,
-        )
-        reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or str(
-            result.get("summary") or result.get("state_summary") or ""
-        ).strip()
-        if not reply:
-            return None
-        pending_kind = str(pending_state.get("kind") or "").strip()
-        if pending_kind == "intent_change":
-            reply = _append_pending_intent_boundary(reply, has_pending_intent=True)
-        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-        action_family = str(plan_payload.get("action_family") or "").strip()
-        tool_call_id = f"pending-readonly-{action_family or 'plan-query'}"
-        new_messages = _build_direct_plan_action_messages(
-            content,
-            tool_call_id=tool_call_id,
-            plan_payload=plan_payload,
-            result_text=result_text,
-            reply=reply,
-            model_name="pending-readonly-plan-query",
-        )
-        observed_tool_calls = _summarize_tool_calls_for_observability(
-            _iter_tool_call_parts(new_messages),
-            _iter_tool_return_parts(new_messages),
-        )
-        turn_event = {
-            "sessionId": session_id,
-            "userId": user_id,
-            "scene": "plan",
-            "routingPath": "pending_readonly_plan_query",
-            "routeDecision": {
-                "source": "proposal_compiler",
-                "matched": True,
-                "route": "readonly_while_pending",
-                "sideEffect": "readonly_while_pending",
-                "actionFamily": action_family,
-                "turnDecision": {
-                    "taskLayer": str(getattr(turn_decision, "taskLayer", "") or "").strip(),
-                    "sideEffect": str(getattr(turn_decision, "sideEffect", "") or "").strip(),
-                    "scopeAnchor": str(getattr(turn_decision, "scopeAnchor", "") or "").strip(),
-                    "scenario": str(getattr(turn_decision, "scenario", "") or "").strip(),
-                    "confidence": float(getattr(turn_decision, "confidence", 0.0) or 0.0),
-                },
-                "queryProfile": query_profile.model_dump() if hasattr(query_profile, "model_dump") else None,
-                "planQueryDsl": compiled_query.plan_query_dsl if compiled_query.matched else None,
-            },
-            "pendingType": "plan" if pending_kind == "plan_mutation" else "intent" if pending_kind == "intent_change" else None,
-            "actionFamily": action_family,
-            "modelProvider": _llm_config_value(self.llm_client, "provider"),
-            "modelName": _llm_config_value(self.llm_client, "model_name"),
-            "toolCallCount": len(observed_tool_calls),
-            "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
-            "toolDurationMs": tool_duration_ms,
-            "toolCalls": observed_tool_calls,
-            "postProcessingApplied": ["pending_readonly_plan_query"],
-            "status": "success" if result.get("result_kind") != "error" else "error",
-            "errorType": result.get("result_kind") if result.get("result_kind") == "error" else None,
-        }
-        _log_conversation_turn_event(**turn_event)
-        try:
-            history_to_save = list(history or [])
-            history_to_save.extend(
-                _append_turn_observability_messages(
-                    new_messages,
-                    turn_event,
-                    request_context=request_context,
-                    session_id=session_id,
-                    user_id=user_id,
-                    prompt_length=len(content or ""),
-                )
-            )
-            await self.history_store.save(session_id, history_to_save)
-        except Exception:
-            logger.exception("Failed to save pending readonly plan query history: session_id=%s", session_id)
-        return reply
-
-    async def _maybe_handle_direct_readonly_plan_slice_query(
-        self,
-        *,
-        session_id: str,
-        user_id: str,
-        content: str,
-        history: list[Any] | None,
-        request_context: RequestContext,
-        turn_started_at: float,
-    ) -> ChatServiceResponseEnvelope | str | None:
-        planning_version = 0
-        planning_summary = getattr(request_context, "planning_summary", None)
-        if planning_summary is not None:
-            with contextlib.suppress(TypeError, ValueError):
-                planning_version = int(getattr(planning_summary, "version", 0) or 0)
-        turn_decision = await _classify_plan_query_turn_decision(
-            content=content,
-            request_context=request_context,
-            pending_state=None,
-        )
-        if not _turn_decision_allows_plan_query_profile(turn_decision, pending_exists=False):
-            return None
-        compiled_query, query_profile = await _compile_runtime_plan_query_from_profile(
-            content=content,
-            request_context=request_context,
-            planning_version=planning_version,
-            pending_exists=False,
-        )
-        if not compiled_query.matched:
-            return None
-        plan_payload = compiled_query.plan_payload
-        result_text, result, tool_duration_ms = await self._execute_semantic_plan_payload(
-            request_context=request_context,
-            plan_payload=plan_payload,
-        )
-        reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or str(
-            result.get("summary") or result.get("state_summary") or ""
-        ).strip()
-        if not reply:
-            return None
-        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-        action_family = str(plan_payload.get("action_family") or "").strip()
-        if compiled_query.matched and compiled_query.route == "readonly_plan_slice_query":
-            routing_path = "direct_readonly_plan_slice_query"
-            route_name = "readonly_plan_slice_query"
-            model_name = "direct-readonly-plan-slice-query"
-            post_processing = "direct_readonly_plan_slice_query"
-        elif compiled_query.matched:
-            routing_path = "direct_readonly_plan_query"
-            route_name = compiled_query.route
-            model_name = "direct-readonly-plan-query"
-            post_processing = "direct_readonly_plan_query"
-        else:
-            routing_path = "direct_readonly_plan_slice_query"
-            route_name = "readonly_plan_slice_query"
-            model_name = "direct-readonly-plan-slice-query"
-            post_processing = "direct_readonly_plan_slice_query"
-        tool_call_id = f"direct-readonly-{action_family or 'plan-query'}"
-        new_messages = _build_direct_plan_action_messages(
-            content,
-            tool_call_id=tool_call_id,
-            plan_payload=plan_payload,
-            result_text=result_text,
-            reply=reply,
-            model_name=model_name,
-        )
-        observed_tool_calls = _summarize_tool_calls_for_observability(
-            _iter_tool_call_parts(new_messages),
-            _iter_tool_return_parts(new_messages),
-        )
-        turn_event = {
-            "sessionId": session_id,
-            "userId": user_id,
-            "scene": "plan",
-            "routingPath": routing_path,
-            "routeDecision": {
-                "source": "proposal_compiler",
-                "matched": compiled_query.matched,
-                "route": route_name,
-                "sideEffect": "readonly",
-                "actionFamily": action_family,
-                "turnDecision": {
-                    "taskLayer": str(getattr(turn_decision, "taskLayer", "") or "").strip(),
-                    "sideEffect": str(getattr(turn_decision, "sideEffect", "") or "").strip(),
-                    "scopeAnchor": str(getattr(turn_decision, "scopeAnchor", "") or "").strip(),
-                    "scenario": str(getattr(turn_decision, "scenario", "") or "").strip(),
-                    "confidence": float(getattr(turn_decision, "confidence", 0.0) or 0.0),
-                },
-                "queryProfile": query_profile.model_dump() if hasattr(query_profile, "model_dump") else None,
-                "planQueryDsl": compiled_query.plan_query_dsl if compiled_query.matched else None,
-            },
-            "pendingType": None,
-            "actionFamily": action_family,
-            "modelProvider": _llm_config_value(self.llm_client, "provider"),
-            "modelName": _llm_config_value(self.llm_client, "model_name"),
-            "toolCallCount": len(observed_tool_calls),
-            "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
-            "toolDurationMs": tool_duration_ms,
-            "toolCalls": observed_tool_calls,
-            "postProcessingApplied": [post_processing],
-            "status": "success" if result.get("result_kind") != "error" else "error",
-            "errorType": result.get("result_kind") if result.get("result_kind") == "error" else None,
-        }
-        _log_conversation_turn_event(**turn_event)
-        try:
-            history_to_save = list(history or [])
-            history_to_save.extend(
-                _append_turn_observability_messages(
-                    new_messages,
-                    turn_event,
-                    request_context=request_context,
-                    session_id=session_id,
-                    user_id=user_id,
-                    prompt_length=len(content or ""),
-                )
-            )
-            await self.history_store.save(session_id, history_to_save)
-        except Exception:
-            logger.exception("Failed to save direct readonly plan slice query history: session_id=%s", session_id)
-        return reply
-
-    async def _maybe_handle_direct_local_plan_action(
-        self,
-        *,
-        session_id: str,
-        user_id: str,
-        content: str,
-        history: list[Any] | None,
-        request_context: RequestContext,
-        turn_started_at: float,
-    ) -> ChatServiceResponseEnvelope | str | None:
-        planning_version = 0
-        planning_summary = getattr(request_context, "planning_summary", None)
-        if planning_summary is not None:
-            with contextlib.suppress(TypeError, ValueError):
-                planning_version = int(getattr(planning_summary, "version", 0) or 0)
-        try:
-            decision = await classify_local_plan_action_dsl(
-                content,
-                request_context=request_context,
-            )
-        except Exception:
-            logger.warning(
-                "Local plan action DSL classification failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            return None
-        confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
-        action_family = str(getattr(decision, "actionFamily", "none") or "none").strip()
-        unsupported_action = str(getattr(decision, "unsupportedAction", "") or "").strip()
-        if confidence < _LOCAL_PLAN_ACTION_DSL_CONFIDENCE_THRESHOLD:
-            return None
-        if action_family == "none" and unsupported_action in _LOCAL_PLAN_UNSUPPORTED_ACTIONS:
-            reply = (
-                f"你这次的诉求是：{content.strip()}\n\n"
-                "这属于锁定/固定当前方案位置的动作。当前还没有可执行的锁定动作，"
-                "所以不会创建确认卡，也不会改动方案。\n\n"
-                "你可以先核对当前位置；后续如果要做已支持的排序调整，"
-                "可以说明目标档位和目标位置。"
-            )
-            reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-local-plan-action-unsupported"),
-            ]
-            turn_event = {
-                "sessionId": session_id,
-                "userId": user_id,
-                "scene": "plan",
-                "routingPath": "direct_local_plan_action_unsupported",
-                "routeDecision": {
-                    "source": "proposal_compiler",
-                    "matched": True,
-                    "route": "local_plan_action_unsupported",
-                    "sideEffect": "plan_preview_or_clarification",
-                    "actionFamily": unsupported_action,
-                    "unsupportedAction": unsupported_action,
-                    "confidence": confidence,
-                    "reason": str(getattr(decision, "reason", "") or ""),
-                },
-                "pendingType": None,
-                "actionFamily": unsupported_action,
-                "modelProvider": _llm_config_value(self.llm_client, "provider"),
-                "modelName": _llm_config_value(self.llm_client, "model_name"),
-                "toolCallCount": 0,
-                "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
-                "toolDurationMs": 0,
-                "toolCalls": [],
-                "postProcessingApplied": ["direct_local_plan_action_unsupported"],
-                "status": "success",
-                "errorType": None,
-            }
-            _log_conversation_turn_event(**turn_event)
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(
-                    _append_turn_observability_messages(
-                        new_messages,
-                        turn_event,
-                        request_context=request_context,
-                        session_id=session_id,
-                        user_id=user_id,
-                        prompt_length=len(content or ""),
-                    )
-                )
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save direct local unsupported plan action history: session_id=%s", session_id)
-            return reply
-        if action_family == "none":
-            return None
-        compiled_source = proposal_compiler.compile_runtime_local_plan_action_source(
-            content=content,
-            action_family=action_family,
-            tier=getattr(decision, "tier", None),
-            sort_field=getattr(decision, "sortField", None),
-            rank=getattr(decision, "rank", None),
-            target_ordinal=getattr(decision, "targetOrdinal", None),
-            target_rank=getattr(decision, "targetRank", None),
-            planning_version=planning_version,
-        )
-        plan_payload = compiled_source.plan_payload
-        if not compiled_source.matched or not plan_payload:
-            return None
-
-        result_text, result, tool_duration_ms = await self._execute_semantic_plan_payload(
-            request_context=request_context,
-            plan_payload=plan_payload,
-        )
-        reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or str(
-            result.get("summary") or result.get("state_summary") or ""
-        ).strip()
-        if not reply:
-            return None
-        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-        action_family = str(result.get("action_family") or plan_payload.get("action_family") or "").strip()
-        tool_call_id = f"direct-local-plan-action-{action_family or 'move'}"
-        new_messages = _build_direct_plan_action_messages(
-            content,
-            tool_call_id=tool_call_id,
-            plan_payload=plan_payload,
-            result_text=result_text,
-            reply=reply,
-            model_name="direct-local-plan-action",
-        )
-
-        compiled_plan_pending_card: WSResponse | None = None
-        plan_confirmation_candidate = _extract_plan_confirmation_candidate(new_messages)
-        if plan_confirmation_candidate is not None:
-            compiled_plan_proposal = _runtime_plan_compiled_proposal_from_candidate(
-                session_id=session_id,
-                confirmation_candidate=plan_confirmation_candidate,
-                source="direct_local_plan_action",
-            )
-            compiled_pending = await _create_runtime_compiled_plan_pending(
-                session_id,
-                plan_confirmation_candidate,
-                source="direct_local_plan_action",
-                compiled=compiled_plan_proposal,
-            )
-            compiled_plan_pending_card = compiled_pending.card
-            if compiled_plan_pending_card is not None and compiled_pending.primary_reply:
-                _replace_text_reply(new_messages, reply, compiled_pending.primary_reply)
-                reply = compiled_pending.primary_reply
-
-        observed_tool_calls = _summarize_tool_calls_for_observability(
-            _iter_tool_call_parts(new_messages),
-            _iter_tool_return_parts(new_messages),
-        )
-        workspace_refresh_targets = _dedupe_workspace_targets(
-            [str(target) for target in (result.get("workspace_refresh_targets") or [])]
-        )
-        if compiled_plan_pending_card is None and _plan_result_is_readonly_workspace_no_refresh(
-            action_family,
-            str(result.get("result_kind") or "").strip(),
-        ):
-            workspace_refresh_targets = []
-        turn_event = {
-            "sessionId": session_id,
-            "userId": user_id,
-            "scene": "plan",
-            "routingPath": "direct_local_plan_action",
-            "routeDecision": {
-                "source": "proposal_compiler",
-                "matched": True,
-                "route": compiled_source.route,
-                "sideEffect": "plan_preview" if compiled_plan_pending_card is not None else "readonly",
-                "actionFamily": action_family,
-                "planActionDsl": compiled_source.plan_action_dsl,
-                "confidence": confidence,
-                "reason": str(getattr(decision, "reason", "") or ""),
-            },
-            "pendingType": "plan" if compiled_plan_pending_card is not None else None,
-            "actionFamily": action_family,
-            "modelProvider": _llm_config_value(self.llm_client, "provider"),
-            "modelName": _llm_config_value(self.llm_client, "model_name"),
-            "toolCallCount": len(observed_tool_calls),
-            "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
-            "toolDurationMs": tool_duration_ms,
-            "toolCalls": observed_tool_calls,
-            "postProcessingApplied": ["direct_local_plan_action"],
-            "status": "success" if result.get("result_kind") != "error" else "error",
-            "errorType": result.get("result_kind") if result.get("result_kind") == "error" else None,
-        }
-        _log_conversation_turn_event(**turn_event)
-        try:
-            history_to_save = list(history or [])
-            history_to_save.extend(
-                _append_turn_observability_messages(
-                    new_messages,
-                    turn_event,
-                    request_context=request_context,
-                    session_id=session_id,
-                    user_id=user_id,
-                    prompt_length=len(content or ""),
-                )
-            )
-            await self.history_store.save(session_id, history_to_save)
-        except Exception:
-            logger.exception("Failed to save direct local plan action history: session_id=%s", session_id)
-
-        followups = [
-            _build_silent_workspace_refresh_response(session_id, target)
-            for target in workspace_refresh_targets
-        ]
-        if compiled_plan_pending_card is not None:
-            followups.append(compiled_plan_pending_card)
-        if followups:
-            return ChatServiceResponseEnvelope(primary=reply, followups=followups)
-        return reply
-
-    async def _maybe_handle_direct_atomic_plan_action(
-        self,
-        *,
-        session_id: str,
-        user_id: str,
-        content: str,
-        history: list[Any] | None,
-        request_context: RequestContext,
-        turn_started_at: float,
-    ) -> ChatServiceResponseEnvelope | str | None:
-        if resolve_pending_confirmation(request_context) is not None:
-            return None
-        turn_decision = getattr(request_context, "_turn_decision_object", None)
-        if turn_decision is None:
-            turn_decision = await _classify_plan_query_turn_decision(
-                content=content,
-                request_context=request_context,
-                pending_state=None,
-            )
-            if turn_decision is None:
-                return None
-        mutation_anchor_override = _should_defer_runtime_intent_hard_cut_to_current_plan_action(
-            content,
-            planning_summary=getattr(request_context, "planning_summary", None),
-        )
-        turn_decision_probe = proposal_compiler.compile_runtime_atomic_plan_action_source(
-            content=content,
-            action_family="none",
-            confidence=1.0,
-            turn_decision=turn_decision,
-            require_turn_decision=True,
-            planning_version=0,
-            allow_mutation_anchor_turn_decision_override=mutation_anchor_override,
-        )
-        turn_decision_blocks = [
-            reason
-            for reason in turn_decision_probe.blocking_reasons
-            if reason.startswith("unsupported_current_plan_mutation_")
-            or reason == "missing_turn_decision"
-            or reason == "low_turn_decision_confidence"
-        ]
-        if turn_decision_blocks:
-            return None
-        recent_plan_context = _latest_plan_semantic_route_context(history)
-        try:
-            decision = await classify_plan_atomic_action_dsl(
-                content,
-                request_context=request_context,
-                recent_plan_context=recent_plan_context,
-            )
-        except Exception:
-            logger.warning(
-                "Atomic plan action DSL classification failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            return None
-
-        planning_version = 0
-        planning_summary = getattr(request_context, "planning_summary", None)
-        if planning_summary is not None:
-            with contextlib.suppress(TypeError, ValueError):
-                planning_version = int(getattr(planning_summary, "version", 0) or 0)
-        compiled_source = proposal_compiler.compile_runtime_atomic_plan_action_source(
-            content=content,
-            action_family=getattr(decision, "actionFamily", "none"),
-            confidence=float(getattr(decision, "confidence", 0.0) or 0.0),
-            turn_decision=turn_decision,
-            require_turn_decision=True,
-            volunteer_ids=list(getattr(decision, "volunteerIds", []) or []),
-            unit_ids=list(getattr(decision, "unitIds", []) or []),
-            source_major_names=list(getattr(decision, "sourceMajorNames", []) or []),
-            source_position=getattr(decision, "sourcePosition", None),
-            position_scope=getattr(decision, "positionScope", None),
-            target_position=getattr(decision, "targetPosition", None),
-            sort_field=getattr(decision, "sortField", None),
-            review_issue_code=getattr(decision, "reviewIssueCode", None),
-            tier=getattr(decision, "tier", None),
-            province_keyword=getattr(decision, "provinceKeyword", None),
-            school_keyword=getattr(decision, "schoolKeyword", None),
-            major_keyword=getattr(decision, "majorKeyword", None),
-            school_tags=list(getattr(decision, "schoolTags", []) or []),
-            major_tags=list(getattr(decision, "majorTags", []) or []),
-            min_tuition_per_year=getattr(decision, "minTuitionPerYear", None),
-            max_tuition_per_year=getattr(decision, "maxTuitionPerYear", None),
-            preference_fit=getattr(decision, "preferenceFit", None),
-            preserve_count=bool(getattr(decision, "preserveCount", False)),
-            limit=int(getattr(decision, "limit", 5) or 5),
-            planning_version=planning_version,
-            allow_mutation_anchor_turn_decision_override=mutation_anchor_override,
-        )
-        if not compiled_source.matched:
-            if isinstance(getattr(request_context, "agent_observability", None), dict):
-                request_context.agent_observability["atomicPlanActionCompiler"] = {
-                    "matched": False,
-                    "blockingReasons": list(compiled_source.blocking_reasons),
-                    "turnDecisionDsl": dict(compiled_source.turn_decision_dsl),
-                    "actionFamily": str(getattr(decision, "actionFamily", "none") or "none"),
-                    "confidence": float(getattr(decision, "confidence", 0.0) or 0.0),
-                }
-            return None
-
-        plan_started_at = time.monotonic()
-        plan_text = await plan_next_action(
-            SimpleNamespace(deps=request_context),
-            **compiled_source.plan_next_action_args,
-        )
-        plan_duration_ms = int((time.monotonic() - plan_started_at) * 1000)
-        plan_payload = _parse_tool_return_json(plan_text) or {}
-        if not isinstance(plan_payload, dict) or not plan_payload:
-            return None
-        result_text, result, execute_duration_ms = await self._execute_semantic_plan_payload(
-            request_context=request_context,
-            plan_payload=plan_payload,
-        )
-        reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or str(
-            result.get("summary") or result.get("preview_summary") or ""
-        ).strip()
-        if not reply:
-            return None
-        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-        plan_tool_call_id = "direct-atomic-plan-action-plan"
-        execute_tool_call_id = "direct-atomic-plan-action-execute"
-        new_messages = [
-            ModelRequest(parts=[UserPromptPart(content=content)]),
-            ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="plan_next_action",
-                        args=dict(compiled_source.plan_next_action_args),
-                        tool_call_id=plan_tool_call_id,
-                    )
-                ],
-                model_name="direct-atomic-plan-action",
-            ),
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="plan_next_action",
-                        content=plan_text,
-                        tool_call_id=plan_tool_call_id,
-                    )
-                ]
-            ),
-            ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="execute_plan_action",
-                        args={"plan_payload": json.dumps(plan_payload, ensure_ascii=False)},
-                        tool_call_id=execute_tool_call_id,
-                    )
-                ],
-                model_name="direct-atomic-plan-action",
-            ),
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="execute_plan_action",
-                        content=result_text,
-                        tool_call_id=execute_tool_call_id,
-                    )
-                ]
-            ),
-            ModelResponse(parts=[TextPart(content=reply)], model_name="direct-atomic-plan-action"),
-        ]
-
-        compiled_plan_pending_card: WSResponse | None = None
-        compiled_pending_workspace_refresh_targets: list[str] = []
-        plan_confirmation_candidate = _extract_plan_confirmation_candidate(new_messages)
-        pending_result = _RuntimeCompiledPendingResult(source="direct_atomic_plan_action")
-        if plan_confirmation_candidate is not None:
-            compiled_plan_proposal = _runtime_plan_compiled_proposal_from_candidate(
-                session_id=session_id,
-                confirmation_candidate=plan_confirmation_candidate,
-                source="direct_atomic_plan_action",
-            )
-            pending_result = await _create_runtime_compiled_plan_pending(
-                session_id,
-                plan_confirmation_candidate,
-                source="direct_atomic_plan_action",
-                compiled=compiled_plan_proposal,
-            )
-            compiled_plan_pending_card = pending_result.card
-            compiled_pending_workspace_refresh_targets = list(pending_result.workspace_refresh_targets)
-            if compiled_plan_pending_card is not None and pending_result.primary_reply:
-                _replace_text_reply(new_messages, reply, pending_result.primary_reply)
-                reply = pending_result.primary_reply
-
-        observed_tool_calls = _summarize_tool_calls_for_observability(
-            _iter_tool_call_parts(new_messages),
-            _iter_tool_return_parts(new_messages),
-        )
-        action_family = str(result.get("action_family") or plan_payload.get("action_family") or compiled_source.action_family)
-        turn_event = {
-            "sessionId": session_id,
-            "userId": user_id,
-            "scene": "plan",
-            "routingPath": "direct_atomic_plan_action",
-            "routeDecision": {
-                "source": "proposal_compiler",
-                "matched": True,
-                "route": compiled_source.route,
-                "sideEffect": "plan_preview" if compiled_plan_pending_card is not None else "readonly",
-                "actionFamily": action_family,
-                "planActionDsl": compiled_source.plan_action_dsl,
-                "turnDecisionDsl": compiled_source.turn_decision_dsl,
-                "confidence": float(getattr(decision, "confidence", 0.0) or 0.0),
-                "reason": str(getattr(decision, "reason", "") or ""),
-                "blockingReasons": list(compiled_source.blocking_reasons) + list(pending_result.blocked_reasons),
-            },
-            "pendingType": "plan" if compiled_plan_pending_card is not None else None,
-            "actionFamily": action_family,
-            "modelProvider": _llm_config_value(self.llm_client, "provider"),
-            "modelName": _llm_config_value(self.llm_client, "model_name"),
-            "toolCallCount": len(observed_tool_calls),
-            "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
-            "toolDurationMs": plan_duration_ms + execute_duration_ms,
-            "toolCalls": observed_tool_calls,
-            "postProcessingApplied": ["direct_atomic_plan_action"],
-            "status": "success" if result.get("result_kind") != "error" else "error",
-            "errorType": result.get("result_kind") if result.get("result_kind") == "error" else None,
-        }
-        _log_conversation_turn_event(**turn_event)
-        try:
-            history_to_save = list(history or [])
-            history_to_save.extend(
-                _append_turn_observability_messages(
-                    new_messages,
-                    turn_event,
-                    request_context=request_context,
-                    session_id=session_id,
-                    user_id=user_id,
-                    prompt_length=len(content or ""),
-                )
-            )
-            await self.history_store.save(session_id, history_to_save)
-        except Exception:
-            logger.exception("Failed to save direct atomic plan action history: session_id=%s", session_id)
-
-        followups: list[WSResponse] = [
-            _build_silent_workspace_refresh_response(session_id, target)
-            for target in _dedupe_workspace_targets(compiled_pending_workspace_refresh_targets)
-        ]
-        if compiled_plan_pending_card is not None:
-            followups.append(compiled_plan_pending_card)
-        if followups:
-            return ChatServiceResponseEnvelope(primary=reply, followups=followups)
-        return reply
-
-    async def _maybe_create_current_plan_mutation_preview_from_intent_payload(
-        self,
-        *,
-        session_id: str,
-        content: str,
-        request_context: RequestContext,
-        preview_payload: dict[str, Any] | None,
-    ) -> _StructuredPlanRerouteResult | None:
-        candidate = _intent_preview_candidate_from_payload(session_id, preview_payload)
-        if candidate is None:
-            return None
-
-        planning_version = 0
-        planning_summary = getattr(request_context, "planning_summary", None)
-        if planning_summary is not None:
-            with contextlib.suppress(TypeError, ValueError):
-                planning_version = int(getattr(planning_summary, "version", 0) or 0)
-        compiled_source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
-            content=content,
-            turn_decision=getattr(request_context, "_turn_decision_object", None),
-            merged_intent=candidate.merged,
-            intent_mode=candidate.intent_mode,
-            constraint_intent_type=candidate.constraint_intent_type,
-            summary=candidate.summary,
-            planning_version=planning_version,
-        )
-        if not compiled_source.matched:
-            return None
-        plan_payload = compiled_source.plan_payload
-
-        result_text, result, _tool_duration_ms = await self._execute_semantic_plan_payload(
-            request_context=request_context,
-            plan_payload=plan_payload,
-        )
-        reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or str(
-            result.get("summary") or result.get("state_summary") or ""
-        ).strip()
-        if not reply:
-            return None
-        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-        new_messages = _build_direct_plan_action_messages(
-            content,
-            tool_call_id="turn-decision-intent-preview-remove-units",
-            plan_payload=plan_payload,
-            result_text=result_text,
-            reply=reply,
-            model_name="turn-decision-intent-preview-plan-mutation",
-        )
-        confirmation_candidate = _extract_plan_confirmation_candidate(new_messages)
-        pending_result = _RuntimeCompiledPendingResult(
-            source="turn_decision_intent_preview_plan_mutation",
-        )
-        if confirmation_candidate is not None:
-            compiled_plan_proposal = _runtime_plan_compiled_proposal_from_candidate(
-                session_id=session_id,
-                confirmation_candidate=confirmation_candidate,
-                source="turn_decision_intent_preview_plan_mutation",
-            )
-            pending_result = await _create_runtime_compiled_plan_pending(
-                session_id,
-                confirmation_candidate,
-                source="turn_decision_intent_preview_plan_mutation",
-                compiled=compiled_plan_proposal,
-            )
-            if pending_result.card is not None and pending_result.primary_reply:
-                _replace_text_reply(new_messages, reply, pending_result.primary_reply)
-                reply = pending_result.primary_reply
-
-        route_decision = {
-            "source": "proposal_compiler",
-            "sourceInputs": ["turn_decision", "intent_preview_payload"],
-            "matched": True,
-            "route": compiled_source.route,
-            "sideEffect": "plan_preview" if pending_result.card is not None else "readonly",
-            "actionFamily": compiled_source.action_family,
-            "blockedIntentPending": True,
-            "currentPlanMutationDsl": compiled_source.mutation_dsl,
-            "sourceVersionGuard": compiled_source.source_version_guard,
-            "blockingReasons": [*compiled_source.blocking_reasons, *pending_result.blocked_reasons],
-        }
-        return _StructuredPlanRerouteResult(
-            reply=reply,
-            messages=new_messages,
-            route_decision=route_decision,
-            pending_result=pending_result,
-            workspace_refresh_targets=list(pending_result.workspace_refresh_targets),
-        )
-
-    async def _maybe_create_current_plan_mutation_preview_from_entity_profile(
-        self,
-        *,
-        session_id: str,
-        content: str,
-        request_context: RequestContext,
-        profile: Any | None,
-    ) -> _StructuredPlanRerouteResult | None:
-        if profile is None:
-            return None
-        preview_payload = _intent_preview_payload_from_entity_profile(
-            session_id=session_id,
-            profile=profile,
-            batch=str(getattr(request_context, "batch", "") or "01"),
-        )
-        if preview_payload is None:
-            return None
-        return await self._maybe_create_current_plan_mutation_preview_from_intent_payload(
-            session_id=session_id,
-            content=content,
-            request_context=request_context,
-            preview_payload=preview_payload,
-        )
-
-    async def _maybe_reroute_runtime_intent_profile_to_plan_response(
-        self,
-        *,
-        session_id: str,
-        user_id: str,
-        content: str,
-        history: list[Any] | None,
-        request_context: RequestContext,
-        turn_started_at: float,
-        profile: Any | None,
-    ) -> ChatServiceResponseEnvelope | None:
-        reroute = await self._maybe_create_current_plan_mutation_preview_from_entity_profile(
-            session_id=session_id,
-            content=content,
-            request_context=request_context,
-            profile=profile,
-        )
-        if reroute is None:
-            return None
-        observed_tool_calls = _summarize_tool_calls_for_observability(
-            _iter_tool_call_parts(reroute.messages),
-            _iter_tool_return_parts(reroute.messages),
-        )
-        turn_event = {
-            "sessionId": session_id,
-            "userId": user_id,
-            "scene": "plan",
-            "routingPath": "runtime_intent_profile_plan_reroute",
-            "routeDecision": reroute.route_decision,
-            "pendingType": "plan" if reroute.pending_result and reroute.pending_result.card is not None else None,
-            "actionFamily": reroute.route_decision.get("actionFamily"),
-            "modelProvider": _llm_config_value(self.llm_client, "provider"),
-            "modelName": _llm_config_value(self.llm_client, "model_name"),
-            "toolCallCount": len(observed_tool_calls),
-            "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
-            **_observability_timing_fields(request_context),
-            "toolCalls": observed_tool_calls,
-            "postProcessingApplied": ["runtime_intent_profile_plan_reroute"],
-            "status": "success",
-            "errorType": None,
-        }
-        _log_conversation_turn_event(**turn_event)
-        try:
-            history_to_save = list(history or [])
-            history_to_save.extend(
-                _append_turn_observability_messages(
-                    reroute.messages,
-                    turn_event,
-                    request_context=request_context,
-                    session_id=session_id,
-                    user_id=user_id,
-                    prompt_length=len(content or ""),
-                )
-            )
-            await self.history_store.save(session_id, history_to_save)
-        except Exception:
-            logger.exception("Failed to save runtime intent profile plan reroute history: session_id=%s", session_id)
-        followups: list[WSResponse] = [
-            _build_silent_workspace_refresh_response(session_id, target)
-            for target in _dedupe_workspace_targets(reroute.workspace_refresh_targets)
-        ]
-        if reroute.pending_result is not None and reroute.pending_result.card is not None:
-            followups.append(reroute.pending_result.card)
-        return ChatServiceResponseEnvelope(primary=reroute.reply, followups=followups)
-
-    async def _maybe_handle_semantic_plan_action(
-        self,
-        *,
-        session_id: str,
-        user_id: str,
-        content: str,
-        history: list[Any] | None,
-        request_context: RequestContext,
-        turn_started_at: float,
-        on_progress: ProgressCallback | None,
-    ) -> ChatServiceResponseEnvelope | str | None:
-        active_pending = resolve_pending_confirmation(request_context)
-        if active_pending is not None:
-            return None
-        recent_plan_context = _latest_plan_semantic_route_context(history)
-        if not _has_plan_semantic_route_context(
-            getattr(request_context, "planning_summary", None),
-            recent_plan_context,
-        ):
-            return None
-
-        classification_started_at = time.monotonic()
-        try:
-            decision = await classify_plan_semantic_action(
-                content,
-                request_context=request_context,
-                recent_plan_context=recent_plan_context,
-            )
-        except Exception:
-            logger.warning(
-                "Semantic plan action classification failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            return None
-        classification_duration_ms = int((time.monotonic() - classification_started_at) * 1000)
-        pre_semantic_route_duration_ms = int((time.monotonic() - turn_started_at) * 1000)
-
-        action_family = str(getattr(decision, "actionFamily", "none") or "none")
-        original_action_family = action_family
-        confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
-        turn_decision = getattr(request_context, "_turn_decision_object", None)
-        framework_review_or_repair_preview = _turn_decision_is_plan_review_or_repair_preview(turn_decision)
-        framework_turn_decision = (
-            _turn_decision_snapshot(turn_decision)
-            if framework_review_or_repair_preview
-            else {}
-        )
-        framework_reply_focus = [
-            str(item or "").strip()
-            for item in (framework_turn_decision.get("targetIssue") or [])
-            if str(item or "").strip()
-        ]
-        semantic_promoted_query_state_to_review = False
-        if (
-            action_family == "query_state"
-            and confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
-            and _semantic_query_state_should_run_review(content)
-        ):
-            action_family = "review_plan"
-            semantic_promoted_query_state_to_review = True
-        if (
-            action_family == "analyze_adjustment"
-            and not framework_review_or_repair_preview
-            and confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
-        ):
-            if await _candidate_query_should_bypass_semantic_plan_action(
-                content,
-                request_context=request_context,
-            ):
-                return None
-        profile_replan_source = _compile_profile_replan_from_decision(
-            decision,
-            request_context=request_context,
-        )
-        if (
-            confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
-            and _semantic_decision_is_profile_replan(decision)
-            and profile_replan_source.matched
-        ):
-            reply = _build_profile_change_replan_reply(
-                content,
-                request_context=request_context,
-                profile_change_dsl=profile_replan_source.profile_change_dsl,
-            )
-            routing_path = _profile_replan_routing_path(
-                profile_replan_source,
-                prefix="semantic",
-            )
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name=routing_path.replace("_", "-")),
-            ]
-            total_duration_ms = int((time.monotonic() - turn_started_at) * 1000)
-            turn_event = {
-                "sessionId": session_id,
-                "userId": user_id,
-                "scene": "plan",
-                "routingPath": routing_path,
-                "routeDecision": {
-                    "source": "semantic_plan_action",
-                    "matched": True,
-                    "confidence": confidence,
-                    "route": action_family,
-                    "sideEffect": profile_replan_source.side_effect,
-                    "reason": str(getattr(decision, "reason", "") or ""),
-                    "replyFocus": list(getattr(decision, "replyFocus", []) or []),
-                    "profileScenario": str(getattr(decision, "profileScenario", "none") or "none"),
-                    "profileChangeReplanDsl": profile_replan_source.profile_change_dsl,
-                    "evidencePlan": profile_replan_source.evidence_plan,
-                },
-                "pendingType": None,
-                "actionFamily": None,
-                "modelProvider": _llm_config_value(self.llm_client, "provider"),
-                "modelName": _llm_config_value(self.llm_client, "model_name"),
-                "toolCallCount": 0,
-                "totalDurationMs": total_duration_ms,
-                "classificationDurationMs": classification_duration_ms,
-                "preSemanticRouteDurationMs": pre_semantic_route_duration_ms,
-                **_observability_timing_fields(request_context),
-                "unattributedDurationMs": max(
-                    0,
-                    total_duration_ms - classification_duration_ms,
-                ),
-                "toolCalls": [],
-                "postProcessingApplied": [routing_path],
-                "status": "success",
-                "errorType": None,
-            }
-            _log_conversation_turn_event(**turn_event)
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(
-                    _append_turn_observability_messages(
-                        new_messages,
-                        turn_event,
-                        request_context=request_context,
-                        session_id=session_id,
-                        user_id=user_id,
-                        prompt_length=len(content or ""),
-                    )
-                )
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save profile change replan history: session_id=%s", session_id)
-            return reply
-        short_review_followup = (
-            action_family == "review_plan"
-            and bool(recent_plan_context)
-            and len(str(content or "").strip()) <= 12
-        )
-        has_existing_plan_context = _has_plan_semantic_route_context(
-            getattr(request_context, "planning_summary", None),
-            None,
-        )
-        targeted_review = (
-            action_family == "review_plan"
-            and has_existing_plan_context
-            and _semantic_targeted_review_allowed(decision)
-        )
-        promoted_review_query = (
-            action_family == "review_plan"
-            and has_existing_plan_context
-            and semantic_promoted_query_state_to_review
-        )
-        current_state_query = (
-            action_family == "query_state"
-            and has_existing_plan_context
-        )
-        review_analysis_followup = (
-            action_family == "analyze_adjustment"
-            and bool(recent_plan_context)
-            and isinstance(recent_plan_context.get("fixProposals"), dict)
-        )
-        current_plan_analysis = (
-            action_family == "analyze_adjustment"
-            and not recent_plan_context
-            and has_existing_plan_context
-            and _semantic_current_plan_analysis_allowed(decision)
-            and _semantic_current_plan_analysis_matches_prompt(decision, content)
-        )
-        framework_review_or_repair_preview_route = (
-            framework_review_or_repair_preview
-            and has_existing_plan_context
-            and action_family in {"review_plan", "analyze_adjustment"}
-            and confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
-        )
-        if framework_review_or_repair_preview_route and action_family == "analyze_adjustment":
-            action_family = "review_plan"
-        if (
-            action_family != "preview_fix_proposal"
-            and not framework_review_or_repair_preview_route
-            and not review_analysis_followup
-            and not current_plan_analysis
-            and not current_state_query
-            and not short_review_followup
-            and not targeted_review
-            and not promoted_review_query
-        ) or confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
-            return None
-        needs_review_before_preview = False
-        target_strategies = [
-            str(strategy or "").strip()
-            for strategy in list(getattr(decision, "targetStrategies", []) or [])
-            if str(strategy or "").strip()
-        ]
-        target_issue_codes = [
-            str(code or "").strip()
-            for code in list(getattr(decision, "targetIssueCodes", []) or [])
-            if str(code or "").strip()
-        ]
-        requested_reply_focus = [
-            str(item or "").strip()
-            for item in list(getattr(decision, "replyFocus", []) or [])
-            if str(item or "").strip()
-        ]
-        use_target_scope_for_payload = (
-            action_family != "review_plan"
-            or targeted_review
-            or framework_review_or_repair_preview_route
-        )
-        if action_family == "preview_fix_proposal":
-            preview_allowed = _semantic_preview_fix_proposal_route_allowed(
-                decision,
-                recent_plan_context,
-            )
-            if not preview_allowed:
-                has_existing_plan = _has_plan_semantic_route_context(
-                    getattr(request_context, "planning_summary", None),
-                    None,
-                )
-                if recent_plan_context or not has_existing_plan:
-                    return None
-                needs_review_before_preview = True
-
-        if on_progress is not None:
-            with contextlib.suppress(Exception):
-                if action_family == "review_plan":
-                    await on_progress("正在重新检查当前方案...")
-                else:
-                    await on_progress("正在根据当前方案提醒整理调整预览...")
-
-        plan_payload = {
-            "stage": "review" if action_family == "review_plan" else "apply",
-            "action_family": action_family,
-            "user_goal": content,
-            "requires_confirmation": False,
-        }
-        if target_strategies and use_target_scope_for_payload:
-            plan_payload["target_strategies"] = target_strategies
-        if target_issue_codes and use_target_scope_for_payload:
-            plan_payload["target_issue_codes"] = target_issue_codes
-        if requested_reply_focus and use_target_scope_for_payload:
-            plan_payload["reply_focus"] = requested_reply_focus
-        if getattr(request_context, "planning_summary", None) is not None:
-            try:
-                plan_payload["planning_version"] = int(request_context.planning_summary.version or 0)
-            except (TypeError, ValueError):
-                pass
-
-        tool_duration_ms = 0
-        executed_tool_results: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
-        needs_review_before_target_resolution = (
-            action_family == "analyze_adjustment"
-            and bool(target_strategies)
-            and not target_issue_codes
-            and not recent_plan_context
-            and has_existing_plan_context
-        )
-        if needs_review_before_preview or needs_review_before_target_resolution:
-            review_payload = {
-                "stage": "review",
-                "action_family": "review_plan",
-                "user_goal": content,
-                "requires_confirmation": False,
-            }
-            if target_strategies:
-                review_payload["target_strategies"] = target_strategies
-            if target_issue_codes:
-                review_payload["target_issue_codes"] = target_issue_codes
-            if requested_reply_focus:
-                review_payload["reply_focus"] = requested_reply_focus
-            if "planning_version" in plan_payload:
-                review_payload["planning_version"] = plan_payload["planning_version"]
-            review_result_text, review_result, review_duration_ms = await self._execute_semantic_plan_payload(
-                request_context=request_context,
-                plan_payload=review_payload,
-            )
-            tool_duration_ms += review_duration_ms
-            executed_tool_results.append((review_result_text, review_result, review_payload))
-            review_context = _latest_plan_semantic_route_context(
-                [
-                    ModelRequest(
-                        parts=[
-                            ToolReturnPart(
-                                tool_name="execute_plan_action",
-                                content=review_result_text,
-                                tool_call_id="semantic-review-before-preview",
-                            )
-                        ]
-                    )
-                ]
-            )
-            if needs_review_before_preview and not _semantic_preview_fix_proposal_route_allowed(decision, review_context):
-                return None
-            if needs_review_before_target_resolution:
-                inferred_issue_codes = await _infer_plan_target_issue_codes_from_context(
-                    content=content,
-                    request_context=request_context,
-                    recent_plan_context=review_context,
-                    expected_action_family=action_family,
-                    target_strategies=target_strategies,
-                )
-                if inferred_issue_codes:
-                    target_issue_codes = inferred_issue_codes
-                    plan_payload["target_issue_codes"] = target_issue_codes
-            recent_plan_context = review_context
-        result_text, result, result_duration_ms = await self._execute_semantic_plan_payload(
-            request_context=request_context,
-            plan_payload=plan_payload,
-        )
-        tool_duration_ms += result_duration_ms
-        executed_tool_results.append((result_text, result, plan_payload))
-        llm_started_at = time.monotonic()
-        synthesis_usage = None
-        synthesis_applied = False
-        if action_family in {"preview_fix_proposal", "analyze_adjustment", "review_plan"}:
-            try:
-                reply, synthesis_usage = await _synthesize_semantic_plan_action_reply(
-                    self.llm_client,
-                    user_prompt=content,
-                    result=result,
-                    recent_plan_context=recent_plan_context,
-                )
-                synthesis_applied = bool(reply)
-            except Exception:
-                logger.warning(
-                    "Semantic plan action reply synthesis failed: session_id=%s",
-                    session_id,
-                    exc_info=True,
-                )
-                reply = ""
-        else:
-            reply = ""
-        llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
-        if not reply:
-            reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or str(result.get("summary") or "").strip()
-            reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply or "已查看当前方案的处理建议。"))
-        elif _result_needs_unavailable_guidance_fallback(result, user_prompt=content):
-            reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or reply
-        elif _review_reply_needs_structured_fallback(reply, result):
-            reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or reply
-        elif _adjustment_reply_needs_structured_fallback(reply, result):
-            reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or reply
-        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-        if synthesis_usage is not None:
-            tracker = self._usage_trackers.get(session_id)
-            if tracker is None:
-                tracker = UsageTracker(session_id=session_id)
-            self._usage_trackers[session_id] = tracker
-            with contextlib.suppress(Exception):
-                tracker.record(synthesis_usage)
-        model_name = "semantic-plan-action-synthesis" if synthesis_applied else "semantic-plan-action-fallback"
-        if len(executed_tool_results) == 1:
-            tool_call_id = f"semantic-{action_family}"
-            new_messages = _build_direct_plan_action_messages(
-                content,
-                tool_call_id=tool_call_id,
-                plan_payload=plan_payload,
-                result_text=result_text,
-                reply=reply,
-                model_name=model_name,
-            )
-        else:
-            tool_call_parts: list[ToolCallPart] = []
-            tool_return_parts: list[ToolReturnPart] = []
-            for index, (executed_result_text, _executed_result, executed_payload) in enumerate(executed_tool_results):
-                tool_call_id = f"semantic-{str(executed_payload.get('action_family') or action_family)}-{index}"
-                tool_call_parts.append(
-                    ToolCallPart(
-                        tool_name="execute_plan_action",
-                        args={"plan_payload": json.dumps(executed_payload, ensure_ascii=False)},
-                        tool_call_id=tool_call_id,
-                    )
-                )
-                tool_return_parts.append(
-                    ToolReturnPart(
-                        tool_name="execute_plan_action",
-                        content=executed_result_text,
-                        tool_call_id=tool_call_id,
-                    )
-                )
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=tool_call_parts, model_name=model_name),
-                ModelRequest(parts=tool_return_parts),
-                ModelResponse(parts=[TextPart(content=reply)], model_name=model_name),
-            ]
-
-        compiled_fix_pending_card: WSResponse | None = None
-        compiled_fix_workspace_refresh_targets: list[str] = []
-        latest_plan_result = _latest_fix_proposal_confirmation_source(new_messages)
-        if compiled_fix_pending_card is None and action_family == "preview_fix_proposal" and isinstance(latest_plan_result, dict):
-            compiled_source = proposal_compiler.compile_runtime_review_fix_source(
-                session_id=session_id,
-                latest_plan_result=latest_plan_result,
-                target_strategies=target_strategies,
-                target_issue_codes=target_issue_codes,
-            )
-            ready_proposal = compiled_source.proposal
-            if compiled_source.target_match_empty:
-                latest_plan_result["target_match_empty"] = True
-            if ready_proposal is not None and compiled_source.source_version_guard > 0:
-                compiled_pending = await _create_runtime_compiled_review_fix_pending(
-                    session_id,
-                    ready_proposal,
-                    source_version_guard=compiled_source.source_version_guard,
-                    proposal_source=compiled_source.proposal_source,
-                    compiled=compiled_source.compiled,
-                )
-                compiled_fix_pending_card = compiled_pending.card
-                compiled_fix_workspace_refresh_targets = compiled_pending.workspace_refresh_targets
-                if compiled_fix_pending_card is not None:
-                    primary_reply = compiled_pending.primary_reply
-                    if primary_reply:
-                        _replace_text_reply(new_messages, reply, primary_reply)
-                        reply = primary_reply
-            elif latest_plan_result.get("target_match_empty"):
-                targeted_unavailable_reply = _targeted_fix_proposal_unavailable_reply(
-                    latest_plan_result,
-                    target_strategies=compiled_source.selection.target_strategies,
-                    target_issue_codes=compiled_source.selection.target_issue_codes,
-                )
-                if targeted_unavailable_reply:
-                    _replace_text_reply(new_messages, reply, targeted_unavailable_reply)
-                    reply = targeted_unavailable_reply
-
-        if compiled_fix_pending_card is None:
-            guarded_reply = _guard_plan_preview_reply_without_card(reply)
-            if guarded_reply != reply:
-                _replace_text_reply(new_messages, reply, guarded_reply)
-                reply = guarded_reply
-
-        action_family_result = str(result.get("action_family") or "preview_fix_proposal")
-        observed_tool_calls = _summarize_tool_calls_for_observability(
-            _iter_tool_call_parts(new_messages),
-            _iter_tool_return_parts(new_messages),
-        )
-        display_source = proposal_compiler.compile_runtime_semantic_plan_display_source(
-            action_family=action_family,
-            result=result,
-            pending_card_created=compiled_fix_pending_card is not None,
-            prefer_conditional_options=framework_review_or_repair_preview_route,
-        )
-        display_payload = display_source.display_payload
-        total_duration_ms = int((time.monotonic() - turn_started_at) * 1000)
-        unattributed_duration_ms = max(
-            0,
-            total_duration_ms
-            - classification_duration_ms
-            - tool_duration_ms
-            - (llm_duration_ms if synthesis_applied else 0),
-        )
-        turn_event = {
-            "sessionId": session_id,
-            "userId": user_id,
-            "scene": "plan",
-            "routingPath": "semantic_plan_action",
-                "routeDecision": {
-                    "source": "semantic_plan_action",
-                    "matched": True,
-                    "confidence": confidence,
-                    "route": action_family,
-                    "originalRoute": original_action_family,
-                    "sideEffect": (
-                        "readonly_or_plan_preview"
-                        if framework_review_or_repair_preview_route
-                        else "readonly"
-                    ),
-                    "outputType": (
-                        "readonly_or_plan_mutation"
-                        if framework_review_or_repair_preview_route
-                        else "readonly"
-                    ),
-                    "reason": str(getattr(decision, "reason", "") or ""),
-                    "targetStrategies": list(getattr(decision, "targetStrategies", []) or []),
-                    "targetIssueCodes": list(getattr(decision, "targetIssueCodes", []) or []),
-                    "replyFocus": framework_reply_focus,
-                    **({"turnDecision": framework_turn_decision} if framework_turn_decision else {}),
-                    "recentPlanContext": recent_plan_context,
-                    "displayPayload": display_payload,
-                    "replyPlan": display_source.reply_plan,
-                },
-            "pendingType": None,
-            "actionFamily": action_family_result,
-            "replyFocus": framework_reply_focus,
-            "modelProvider": _llm_config_value(self.llm_client, "provider"),
-            "modelName": _llm_config_value(self.llm_client, "model_name"),
-            "llmRequests": getattr(synthesis_usage, "requests", None),
-            "inputTokens": getattr(synthesis_usage, "input_tokens", None),
-            "outputTokens": getattr(synthesis_usage, "output_tokens", None),
-            "totalTokens": getattr(synthesis_usage, "total_tokens", None),
-            "toolCallCount": len(observed_tool_calls),
-            "totalDurationMs": total_duration_ms,
-            "llmDurationMs": llm_duration_ms if synthesis_applied else None,
-            "toolDurationMs": tool_duration_ms,
-            "classificationDurationMs": classification_duration_ms,
-            "preSemanticRouteDurationMs": pre_semantic_route_duration_ms,
-            **_observability_timing_fields(request_context),
-            "unattributedDurationMs": unattributed_duration_ms,
-            "toolCalls": observed_tool_calls,
-            "postProcessingApplied": [
-                "semantic_plan_action",
-                *(
-                    ["semantic_query_state_promoted_to_review"]
-                    if semantic_promoted_query_state_to_review
-                    else []
-                ),
-                *(
-                    ["turn_decision_review_repair_preview_reroute"]
-                    if framework_review_or_repair_preview_route
-                    else []
-                ),
-                "llm_reply_synthesis" if synthesis_applied else "fallback_reply",
-            ],
-            "status": "success" if result.get("result_kind") != "error" else "error",
-            "errorType": result.get("result_kind") if result.get("result_kind") == "error" else None,
-        }
-        _log_conversation_turn_event(**turn_event)
-
-        try:
-            history_to_save = list(history or [])
-            history_to_save.extend(
-                _append_turn_observability_messages(
-                    new_messages,
-                    turn_event,
-                    request_context=request_context,
-                    session_id=session_id,
-                    user_id=user_id,
-                    prompt_length=len(content or ""),
-                )
-            )
-            await self.history_store.save(session_id, history_to_save)
-        except Exception:
-            logger.exception("Failed to save semantic plan action history: session_id=%s", session_id)
-
-        followups: list[WSResponse] = []
-        if compiled_fix_pending_card is not None:
-            followups.append(compiled_fix_pending_card)
-        workspace_refresh_targets = _dedupe_workspace_targets(
-            [
-                *compiled_fix_workspace_refresh_targets,
-                *[str(target) for target in (result.get("workspace_refresh_targets") or [])],
-            ]
-        )
-        workspace_presentation = proposal_compiler.compile_runtime_workspace_presentation_source(
-            execute_plan_results=_execute_plan_action_results(new_messages),
-            initial_refresh_targets=workspace_refresh_targets,
-            allow_explanation_refresh=_semantic_query_state_should_run_review(content),
-            conditional_review_requested=display_payload.get("presentation") == "conditional_options",
-            include_call_fallback=False,
-        )
-        workspace_refresh_targets = _dedupe_workspace_targets(
-            workspace_presentation.workspace_refresh_targets
-        )
-        followups.extend(
-            _build_silent_workspace_refresh_response(session_id, target)
-            for target in workspace_refresh_targets
-        )
-        if followups:
-            return ChatServiceResponseEnvelope(primary=reply, followups=followups)
-        return reply
-
     async def _maybe_handle_profile_replan_turn_decision(
         self,
         *,
@@ -15445,10 +8698,7 @@ class ChatService:
     ) -> str | None:
         if resolve_pending_confirmation(request_context) is not None:
             return None
-        if not _has_plan_semantic_route_context(
-            getattr(request_context, "planning_summary", None),
-            None,
-        ):
+        if not _has_plan_semantic_route_context(getattr(request_context, "planning_summary", None)):
             return None
         decision = getattr(request_context, "_turn_decision_object", None)
         if decision is None:
@@ -15550,248 +8800,6 @@ class ChatService:
             logger.exception("Failed to save TurnDecision profile change replan history: session_id=%s", session_id)
         return reply
 
-    async def _maybe_reroute_review_to_fix_preview(
-        self,
-        *,
-        session_id: str,
-        content: str,
-        request_context: RequestContext,
-        tool_context_messages: list[Any] | None,
-    ) -> _StructuredPlanRerouteResult | None:
-        """Reroute a broad review result into a structured repair preview.
-
-        The reroute is based on the current turn's structured review result plus
-        the semantic action classifier. It does not infer intent from fixed user
-        phrases.
-        """
-
-        if resolve_pending_confirmation(request_context) is not None:
-            return None
-        if _extract_plan_confirmation_candidate(tool_context_messages) is not None:
-            return None
-        current_plan_context = _latest_plan_semantic_route_context(tool_context_messages)
-        if not _plan_context_has_fix_proposals(current_plan_context):
-            current_plan_context = _latest_review_fix_proposal_route_context(tool_context_messages)
-        if not current_plan_context:
-            return None
-        last_action_family = str(current_plan_context.get("lastActionFamily") or "").strip()
-        last_result_kind = str(current_plan_context.get("lastResultKind") or "").strip()
-        if last_action_family not in {"review_plan", "analyze_adjustment"}:
-            return None
-        if last_result_kind not in {"review_result", "adjustment_analysis"}:
-            return None
-        fix_facts = current_plan_context.get("fixProposals")
-        if not isinstance(fix_facts, dict) or not isinstance(fix_facts.get("proposals"), list):
-            return None
-        if _prompt_asks_review_explanation_only(content):
-            return None
-
-        try:
-            decision = await classify_plan_semantic_action(
-                content,
-                request_context=request_context,
-                recent_plan_context=current_plan_context,
-            )
-        except Exception:
-            logger.warning(
-                "Post-review fix preview classification failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            return None
-
-        planning_version = 0
-        if getattr(request_context, "planning_summary", None) is not None:
-            with contextlib.suppress(TypeError, ValueError):
-                planning_version = int(request_context.planning_summary.version or 0)
-        compiled_source = proposal_compiler.compile_runtime_review_to_fix_preview_source(
-            content=content,
-            current_plan_context=current_plan_context,
-            decision=decision,
-            planning_version=planning_version,
-            confidence_threshold=_SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD,
-        )
-        if not compiled_source.matched:
-            return None
-        plan_payload = compiled_source.plan_payload
-        target_strategies = compiled_source.target_strategies
-        target_issue_codes = compiled_source.target_issue_codes
-
-        try:
-            result_text = await execute_plan_action(
-                SimpleNamespace(deps=request_context),
-                json.dumps(plan_payload, ensure_ascii=False),
-            )
-            result = _parse_tool_return_json(result_text) or {}
-        except Exception:
-            logger.warning(
-                "Post-review fix preview execution failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            return None
-
-        facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
-        selected_proposal = proposal_compiler.select_ready_fix_proposal_for_compiled_source(
-            facts,
-            target_strategies=target_strategies,
-            target_issue_codes=target_issue_codes,
-        )
-        selected_proposal_id = ""
-        if isinstance(selected_proposal, dict):
-            selected_proposal_id = str(
-                selected_proposal.get("proposal_id") or selected_proposal.get("proposalId") or ""
-            ).strip()
-        if selected_proposal_id and "selected_proposal_id" not in result and "selectedProposalId" not in result:
-            result["selected_proposal_id"] = selected_proposal_id
-            result_text = json.dumps(result, ensure_ascii=False, default=str)
-
-        try:
-            reply, _usage = await _synthesize_semantic_plan_action_reply(
-                self.llm_client,
-                user_prompt=content,
-                result=result,
-                recent_plan_context=current_plan_context,
-            )
-        except Exception:
-            logger.warning(
-                "Post-review fix preview reply synthesis failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            reply = ""
-        if not reply:
-            reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or str(result.get("summary") or "").strip()
-        if not reply:
-            reply = "我已把可以处理的调整预览列出来，确认前不会改动当前方案。"
-        result_updated = False
-        if target_strategies and "target_strategies" not in result and "targetStrategies" not in result:
-            result["target_strategies"] = target_strategies
-            result_updated = True
-        if target_issue_codes and "target_issue_codes" not in result and "targetIssueCodes" not in result:
-            result["target_issue_codes"] = target_issue_codes
-            result_updated = True
-        if result_updated:
-            result_text = json.dumps(result, ensure_ascii=False, default=str)
-        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-        messages = _build_direct_plan_action_messages(
-            content,
-            tool_call_id=f"post-review-fix-preview-{uuid.uuid4().hex[:8]}",
-            plan_payload=plan_payload,
-            result_text=result_text,
-            reply=reply,
-            model_name="post-review-fix-preview",
-        )
-        return _StructuredPlanRerouteResult(
-            reply=reply,
-            messages=messages,
-            route_decision={
-                "source": "post_review_fix_preview",
-                "matched": True,
-                "confidence": compiled_source.confidence,
-                "route": compiled_source.route or "post_review_fix_preview",
-                "reason": str(getattr(decision, "reason", "") or ""),
-                "targetStrategies": list(target_strategies),
-                "targetIssueCodes": list(target_issue_codes),
-            },
-        )
-
-    async def _maybe_refocus_broad_review_result(
-        self,
-        *,
-        session_id: str,
-        content: str,
-        request_context: RequestContext,
-        tool_context_messages: list[Any] | None,
-    ) -> _StructuredPlanRerouteResult | None:
-        """Re-run broad review with semantic target scope for narrow read-only questions."""
-
-        if resolve_pending_confirmation(request_context) is not None:
-            return None
-        latest_review = _latest_review_plan_result(tool_context_messages)
-        if not isinstance(latest_review, dict):
-            return None
-        if _prompt_asks_review_explanation_only(content):
-            return None
-        facts = latest_review.get("facts") if isinstance(latest_review.get("facts"), dict) else {}
-        if facts.get("target_issue_codes") or facts.get("targetIssueCodes"):
-            return None
-        context = _latest_plan_semantic_route_context(tool_context_messages)
-        try:
-            decision = await classify_plan_semantic_action(
-                content,
-                request_context=request_context,
-                recent_plan_context=context,
-            )
-        except Exception:
-            logger.warning(
-                "Review refocus classification failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            return None
-        planning_version = 0
-        if getattr(request_context, "planning_summary", None) is not None:
-            with contextlib.suppress(TypeError, ValueError):
-                planning_version = int(request_context.planning_summary.version or 0)
-        compiled_source = proposal_compiler.compile_runtime_review_refocus_source(
-            content=content,
-            latest_review_result=latest_review,
-            recent_plan_context=context,
-            decision=decision,
-            planning_version=planning_version,
-            confidence_threshold=_SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD,
-        )
-        if not compiled_source.matched:
-            return None
-        plan_payload = compiled_source.plan_payload
-        target_issue_codes = compiled_source.target_issue_codes
-        if on_progress := getattr(request_context, "progress_callback", None):
-            with contextlib.suppress(Exception):
-                await on_progress("正在按你关注的这类问题重新检查方案...")
-        result_text, result, _duration_ms = await self._execute_semantic_plan_payload(
-            request_context=request_context,
-            plan_payload=plan_payload,
-        )
-        reply = ""
-        try:
-            reply, _usage = await _synthesize_semantic_plan_action_reply(
-                self.llm_client,
-                user_prompt=content,
-                result=result,
-                recent_plan_context=context,
-            )
-        except Exception:
-            logger.warning(
-                "Review refocus reply synthesis failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-        if not reply:
-            reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or str(result.get("summary") or "").strip()
-        if not reply:
-            return None
-        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-        messages = _build_direct_plan_action_messages(
-            content,
-            tool_call_id=f"refocus-review-{uuid.uuid4().hex[:8]}",
-            plan_payload=plan_payload,
-            result_text=result_text,
-            reply=reply,
-            model_name="review-target-refocus",
-        )
-        return _StructuredPlanRerouteResult(
-            reply=reply,
-            messages=messages,
-            route_decision={
-                "source": "review_target_refocus",
-                "matched": True,
-                "confidence": compiled_source.confidence,
-                "route": compiled_source.route or "review_target_refocus",
-                "targetIssueCodes": target_issue_codes,
-            },
-        )
-
     # ── 消息处理 ──────────────────────────────────────────────────
 
     async def handle_message(
@@ -15870,8 +8878,6 @@ class ChatService:
             session_id, user_id, len(content),
             len(history) if history else 0,
         )
-        clear_recent_plan_execution_result(session_id, content)
-
         past_turn_count = _count_user_turns(history)
         current_turn = past_turn_count + 1
 
@@ -16059,6 +9065,24 @@ class ChatService:
             request_context=request_context,
             message_history=runtime_history.model_history,
         )
+        if active_pending is None:
+            no_plan_boundary_reply = await self._maybe_handle_no_plan_boundary_guard(
+                session_id=session_id,
+                user_id=user_id,
+                content=content,
+                history=history if isinstance(history, list) else None,
+                request_context=request_context,
+                planning_summary=parsed_planning_summary,
+                pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
+                recent_intent_summary=_recent_intent_summary_for_no_plan_guard(
+                    backend_pending_state if isinstance(backend_pending_state, dict) else None,
+                    recent_intent_analysis if isinstance(recent_intent_analysis, dict) else None,
+                ),
+                turn_started_at=turn_started_at,
+            )
+            if no_plan_boundary_reply is not None:
+                await finish_context_progress()
+                return no_plan_boundary_reply
         zhiyuan_agent_direct_reply = await self._maybe_handle_zhiyuan_agent_direct_route(
             session_id=session_id,
             user_id=user_id,
@@ -16073,19 +9097,6 @@ class ChatService:
             await finish_context_progress()
             return zhiyuan_agent_direct_reply
         guard_pipeline_started_at = time.monotonic()
-
-        async def runtime_intent_profile_plan_reroute(
-            profile: Any,
-        ) -> ChatServiceResponseEnvelope | None:
-            return await self._maybe_reroute_runtime_intent_profile_to_plan_response(
-                session_id=session_id,
-                user_id=user_id,
-                content=content,
-                history=history if isinstance(history, list) else None,
-                request_context=request_context,
-                turn_started_at=turn_started_at,
-                profile=profile,
-            )
 
         profile_change_state_reply = await self._maybe_handle_profile_change_replan_state_query(
             session_id=session_id,
@@ -16103,7 +9114,6 @@ class ChatService:
         backend_pending_id = str((backend_pending_state or {}).get("pendingId") or "").strip()
         backend_pending_kind = str((backend_pending_state or {}).get("kind") or "").strip()
         backend_pending_status = str((backend_pending_state or {}).get("status") or "").strip()
-        runtime_intent_hard_cut_checked = False
         pending_turn_decision: Any | None = None
         if backend_pending_id and backend_pending_status == "active":
             pending_turn_resolution = proposal_compiler.resolve_pending_turn_action(
@@ -16152,25 +9162,6 @@ class ChatService:
                 pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
                 score_detail=parsed_score_detail,
             )
-            if backend_pending_kind == "intent_change":
-                runtime_intent_hard_cut_checked = True
-                runtime_intent_hard_cut_reply = await _maybe_handle_runtime_intent_hard_cut(
-                    session_id=session_id,
-                    user_id=user_id,
-                    content=content,
-                    history=history,
-                    history_store=self.history_store,
-                    request_context=request_context,
-                    planning_summary=parsed_planning_summary,
-                    pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
-                    score_detail=parsed_score_detail,
-                    turn_started_at=turn_started_at,
-                    turn_decision=pending_turn_decision,
-                    current_plan_mutation_reroute=runtime_intent_profile_plan_reroute,
-                )
-                if runtime_intent_hard_cut_reply is not None:
-                    await finish_context_progress()
-                    return runtime_intent_hard_cut_reply
 
             structured_pending_resolution = proposal_compiler.compile_runtime_pending_turn_decision_source(
                 content,
@@ -16297,20 +9288,6 @@ class ChatService:
                 await finish_context_progress()
                 return reply
 
-            pending_readonly_plan_query_reply = await self._maybe_handle_pending_readonly_plan_query(
-                session_id=session_id,
-                user_id=user_id,
-                content=content,
-                history=history,
-                request_context=request_context,
-                pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
-                turn_started_at=turn_started_at,
-                turn_decision=pending_turn_decision,
-            )
-            if pending_readonly_plan_query_reply is not None:
-                await finish_context_progress()
-                return pending_readonly_plan_query_reply
-
             no_formal_plan_review = proposal_compiler.resolve_no_formal_plan_review_boundary(
                 content,
                 planning_summary=parsed_planning_summary,
@@ -16381,11 +9358,7 @@ class ChatService:
             await finish_context_progress()
             return reply
 
-        if (
-            active_pending is None
-            and proposal_compiler.pending_turn_looks_no_active_pending_confirmation(content)
-            and not _latest_turn_allows_plan_followup_confirmation(history)
-        ):
+        if active_pending is None and proposal_compiler.pending_turn_looks_no_active_pending_confirmation(content):
             reply = _no_pending_confirmation_guard_reply()
             await _save_direct_guard_history(
                 self.history_store,
@@ -16499,24 +9472,6 @@ class ChatService:
                 await finish_context_progress()
                 return reply
 
-            if active_pending is None or active_pending_kind == "intent_change":
-                runtime_intent_hard_cut_reply = await _maybe_handle_runtime_intent_hard_cut(
-                    session_id=session_id,
-                    user_id=user_id,
-                    content=content,
-                    history=history,
-                    history_store=self.history_store,
-                    request_context=request_context,
-                    planning_summary=parsed_planning_summary,
-                    pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
-                    score_detail=parsed_score_detail,
-                    turn_started_at=turn_started_at,
-                    current_plan_mutation_reroute=runtime_intent_profile_plan_reroute,
-                )
-                if runtime_intent_hard_cut_reply is not None:
-                    await finish_context_progress()
-                    return runtime_intent_hard_cut_reply
-
             profile_replan_turn_reply = await self._maybe_handle_profile_replan_turn_decision(
                 session_id=session_id,
                 user_id=user_id,
@@ -16529,79 +9484,6 @@ class ChatService:
             if profile_replan_turn_reply is not None:
                 await finish_context_progress()
                 return profile_replan_turn_reply
-
-            if (
-                int(getattr(parsed_planning_summary, "ordered_total", 0) or 0) > 0
-                or int(getattr(parsed_planning_summary, "working_total", 0) or 0) > 0
-            ):
-                direct_atomic_plan_action_reply = await self._maybe_handle_direct_atomic_plan_action(
-                    session_id=session_id,
-                    user_id=user_id,
-                    content=content,
-                    history=history,
-                    request_context=request_context,
-                    turn_started_at=turn_started_at,
-                )
-                if direct_atomic_plan_action_reply is not None:
-                    await finish_context_progress()
-                    return direct_atomic_plan_action_reply
-                direct_plan_slice_reply = await self._maybe_handle_direct_readonly_plan_slice_query(
-                    session_id=session_id,
-                    user_id=user_id,
-                    content=content,
-                    history=history,
-                    request_context=request_context,
-                    turn_started_at=turn_started_at,
-                )
-                if direct_plan_slice_reply is not None:
-                    await finish_context_progress()
-                    return direct_plan_slice_reply
-                direct_local_plan_action_reply = await self._maybe_handle_direct_local_plan_action(
-                    session_id=session_id,
-                    user_id=user_id,
-                    content=content,
-                    history=history,
-                    request_context=request_context,
-                    turn_started_at=turn_started_at,
-                )
-                if direct_local_plan_action_reply is not None:
-                    await finish_context_progress()
-                    return direct_local_plan_action_reply
-
-        if (
-            active_pending is not None
-            and active_pending_kind == "intent_change"
-            and not runtime_intent_hard_cut_checked
-        ):
-            runtime_intent_hard_cut_reply = await _maybe_handle_runtime_intent_hard_cut(
-                session_id=session_id,
-                user_id=user_id,
-                content=content,
-                history=history,
-                history_store=self.history_store,
-                request_context=request_context,
-                planning_summary=parsed_planning_summary,
-                pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
-                score_detail=parsed_score_detail,
-                turn_started_at=turn_started_at,
-                current_plan_mutation_reroute=runtime_intent_profile_plan_reroute,
-            )
-            if runtime_intent_hard_cut_reply is not None:
-                await finish_context_progress()
-                return runtime_intent_hard_cut_reply
-
-        semantic_plan_action_reply = await self._maybe_handle_semantic_plan_action(
-            session_id=session_id,
-            user_id=user_id,
-            content=content,
-            history=history,
-            request_context=request_context,
-            turn_started_at=turn_started_at,
-            on_progress=on_progress,
-        )
-        if semantic_plan_action_reply is not None:
-            await finish_context_progress()
-            return semantic_plan_action_reply
 
         progress_sent = False
         tool_progress_sent = False
@@ -16731,13 +9613,6 @@ class ChatService:
                     )
                 )
                 await self.history_store.save(session_id, failed_history)
-            recent_plan_fallback = None
-            if not isinstance(exc, asyncio.CancelledError):
-                with contextlib.suppress(Exception):
-                    recent_plan_fallback = await build_interruption_fallback_from_recent_plan_execution(
-                        session_id,
-                        content,
-                    )
             recent_intent_payload = None
             if not isinstance(exc, asyncio.CancelledError):
                 recent_intent_payload = (
@@ -16823,35 +9698,9 @@ class ChatService:
                         )
                     if context_progress_task is not None:
                         context_progress_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await context_progress_task
-                    return primary_text
-            if recent_plan_fallback is not None:
-                recovery_messages = [
-                    ModelRequest(parts=[UserPromptPart(content=content)]),
-                    ModelResponse(
-                        parts=[TextPart(content=recent_plan_fallback.primary)],
-                        model_name="agent-interruption-plan-preview-recovery",
-                    ),
-                ]
-                with contextlib.suppress(Exception, asyncio.CancelledError):
-                    await self.history_store.save(
-                        session_id,
-                        list(history or [])
-                        + _append_turn_observability_messages(
-                            recovery_messages,
-                            turn_event,
-                            request_context=request_context,
-                            session_id=session_id,
-                            user_id=user_id,
-                            prompt_length=len(content or ""),
-                        ),
-                    )
-                if context_progress_task is not None:
-                    context_progress_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await context_progress_task
-                return recent_plan_fallback
+                    return primary_text
             fallback_reply = _build_agent_interruption_fallback_reply(
                 content,
                 parsed_planning_summary,
@@ -16952,30 +9801,6 @@ class ChatService:
         negative_plan_ack = _prompt_rejects_current_plan_action(content)
         if readonly_policy_prompt:
             readonly_prompt = True
-        readonly_mutation_preview_guarded = False
-        if (readonly_prompt or negative_plan_ack) and _tool_returns_mutating_plan_preview(tool_context_messages):
-            _remove_current_turn_mutating_plan_preview(new_messages)
-            _remove_current_turn_mutating_plan_preview(all_messages)
-            if isinstance(reply, str) and _reply_has_plan_confirmation_request(reply):
-                guarded_reply = _remove_unbacked_plan_confirmation_copy(reply).strip()
-                if not guarded_reply or _reply_has_plan_confirmation_request(guarded_reply):
-                    guarded_reply = _READONLY_MUTATION_GUARD_REPLY
-                else:
-                    compact_guarded = _compact_plan_reply_text(guarded_reply)
-                    if not any(
-                        marker in compact_guarded
-                        for marker in (
-                            "不会加入、删除、移动或重排方案",
-                            "不会改动当前方案",
-                            "不会直接改",
-                            "不直接改",
-                        )
-                    ):
-                        guarded_reply = f"{guarded_reply.rstrip()}\n\n{_READONLY_MUTATION_GUARD_REPLY}"
-                _replace_text_reply(new_messages, reply, guarded_reply)
-                _replace_text_reply(all_messages, reply, guarded_reply)
-                reply = guarded_reply
-            readonly_mutation_preview_guarded = True
         if (
             (plan_chain_used or _should_guard_plan_reply(content))
             and isinstance(reply, str)
@@ -16985,13 +9810,6 @@ class ChatService:
             _replace_text_reply(new_messages, reply, normalized_reply)
             _replace_text_reply(all_messages, reply, normalized_reply)
             reply = normalized_reply
-
-        if plan_chain_used and isinstance(reply, str) and not readonly_mutation_preview_guarded:
-            bounded_reply = _append_plan_preview_confirmation_boundary(reply, tool_context_messages)
-            if bounded_reply != reply:
-                _replace_text_reply(new_messages, reply, bounded_reply)
-                _replace_text_reply(all_messages, reply, bounded_reply)
-                reply = bounded_reply
 
         if intent_preview_used and not intent_preview_downgraded and isinstance(reply, str):
             pending_intent_reply = _normalize_pending_intent_reply(reply)
@@ -17090,33 +9908,18 @@ class ChatService:
                 _replace_text_reply(all_messages, reply, compact_query_reply)
                 reply = compact_query_reply
 
-        workspace_refresh_targets = _current_turn_workspace_refresh_targets(
-            tool_context_messages=tool_context_messages,
-            new_messages=new_messages,
-            all_messages=all_messages,
-            content=content,
-        )
-        if negative_plan_ack:
-            workspace_refresh_targets = []
+        workspace_refresh_targets: list[str] = []
         # Intent preview only prepares a pending preference/constraint. Do not
         # refresh the workspace until the user confirms or explicitly selects
         # the intent card; otherwise the UI looks as if an unconfirmed intent
         # has already changed candidate results.
 
-        workspace_view_targets = _current_turn_workspace_view_targets(
-            tool_context_messages=tool_context_messages,
-            all_messages=all_messages,
-            content=content,
-            turn_decision=getattr(request_context, "_turn_decision_object", None),
-        )
-        if negative_plan_ack:
-            workspace_view_targets = []
         tool_calls = _iter_tool_call_parts(tool_context_messages)
         tool_returns = _iter_tool_return_parts(tool_context_messages)
         called_tool_names = [part.tool_name for part in tool_calls]
         observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
         full_agent_tool_trial = _summarize_full_agent_tool_trial(called_tool_names)
-        if any(name in {"collect_plan_context_inputs", "plan_next_action", "execute_plan_action", "query_volunteer_plan"} for name in called_tool_names):
+        if any(name == "query_volunteer_plan" for name in called_tool_names):
             scene = "plan"
         elif any("intent" in name for name in called_tool_names):
             scene = "intent"
@@ -17126,11 +9929,6 @@ class ChatService:
             scene = "unknown"
         action_family = _select_conversation_action_family(tool_returns)
         pending_intent_card: WSResponse | None = None
-        compiled_plan_pending_card: WSResponse | None = None
-        plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
-        structured_plan_reroute: dict[str, Any] | None = None
-        compiled_plan_includes_intent_update = False
-        compiled_fix_pending_card: WSResponse | None = None
         compiled_pending_workspace_refresh_targets: list[str] = []
         turn_decision_object = getattr(request_context, "_turn_decision_object", None)
         missing_turn_decision_blocks_intent_pending = (
@@ -17145,70 +9943,8 @@ class ChatService:
         )
         full_agent_intent_pending_blocked = False
         full_agent_intent_pending_turn_decision_override = False
-        profile_change_replan_result = _latest_profile_change_replan_result(tool_context_messages)
-        profile_change_replan_source = _compile_profile_replan_from_payload(
-            profile_change_replan_result,
-            request_context=request_context,
-        )
-        if (
-            profile_change_replan_result is not None
-            and isinstance(reply, str)
-            and profile_change_replan_source.matched
-            and profile_change_replan_source.side_effect == "profile_change_replan"
-        ):
-            profile_change_reply = _build_profile_change_replan_reply(
-                content,
-                request_context=request_context,
-                profile_change_dsl=profile_change_replan_source.profile_change_dsl,
-            )
-            _replace_text_reply(new_messages, reply, profile_change_reply)
-            _replace_text_reply(all_messages, reply, profile_change_reply)
-            reply = profile_change_reply
-        elif (
-            plan_confirmation_candidate is None
-            and isinstance(reply, str)
-            and _latest_empty_status_overview_result(tool_context_messages) is not None
-        ):
-            try:
-                profile_change_decision = await classify_plan_semantic_action(
-                    content,
-                    request_context=request_context,
-                    recent_plan_context=_latest_plan_semantic_route_context(tool_context_messages),
-                )
-            except Exception:
-                logger.warning(
-                    "Profile change replan post-query classification failed: session_id=%s",
-                    session_id,
-                    exc_info=True,
-                )
-                profile_change_decision = None
-            if (
-                profile_change_decision is not None
-                and float(getattr(profile_change_decision, "confidence", 0.0) or 0.0)
-                >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
-                and _semantic_decision_is_current_student_profile_replan(profile_change_decision)
-            ):
-                profile_change_source = _compile_profile_replan_from_decision(
-                    profile_change_decision,
-                    request_context=request_context,
-                )
-                if not (
-                    profile_change_source.matched
-                    and profile_change_source.side_effect == "profile_change_replan"
-                ):
-                    profile_change_source = None
-                if profile_change_source is not None:
-                    profile_change_reply = _build_profile_change_replan_reply(
-                        content,
-                        request_context=request_context,
-                        profile_change_dsl=profile_change_source.profile_change_dsl,
-                    )
-                    _replace_text_reply(new_messages, reply, profile_change_reply)
-                    _replace_text_reply(all_messages, reply, profile_change_reply)
-                    reply = profile_change_reply
         if (
             pending_intent_card is None
-            and plan_confirmation_candidate is None
             and isinstance(reply, str)
             and not plan_chain_used
             and not intent_preview_used
@@ -17283,19 +10019,8 @@ class ChatService:
                             _replace_text_reply(new_messages, reply, pending_intent_reply)
                             _replace_text_reply(all_messages, reply, pending_intent_reply)
                             reply = pending_intent_reply
-        goal_scoped_plan_preview = _latest_goal_scoped_plan_preview(tool_context_messages)
-        structured_goal_clarification_reply = _structured_goal_clarification_reply(goal_scoped_plan_preview)
-        if structured_goal_clarification_reply and plan_confirmation_candidate is None:
-            if isinstance(reply, str):
-                clean_clarification_reply = _sanitize_reply_for_user(
-                    structured_goal_clarification_reply
-                )
-                _replace_text_reply(new_messages, reply, clean_clarification_reply)
-                _replace_text_reply(all_messages, reply, clean_clarification_reply)
-                reply = clean_clarification_reply
         if (
             pending_intent_card is None
-            and plan_confirmation_candidate is None
             and isinstance(reply, str)
         ):
             guarded_reply = _guard_unbacked_plan_confirmation_reply(reply)
@@ -17317,36 +10042,24 @@ class ChatService:
                         else:
                             guarded_reply = _READONLY_ANALYSIS_NO_PLAN_PREVIEW_REPLY
                 else:
-                    readonly_plan_result = _latest_readonly_plan_execution_result(tool_context_messages)
-                    if has_readonly_explore_result:
-                        readonly_plan_result = None
-                    if readonly_plan_result is None:
-                        readonly_plan_result = _latest_fix_proposal_preview_result(tool_context_messages)
-                    if readonly_plan_result is not None:
-                        guarded_reply = _build_plan_timeout_fallback_reply(
-                            readonly_plan_result,
-                            user_prompt=content,
-                        ) or guarded_reply
-                    else:
-                        readonly_tool_reply = _latest_readonly_tool_reply(tool_context_messages)
-                        if readonly_tool_reply:
-                            stripped_reply = _remove_unbacked_plan_confirmation_copy(reply).strip()
-                            if (
-                                stripped_reply
-                                and not _reply_has_plan_confirmation_request(stripped_reply)
-                                and _reply_contains_readonly_plan_query_facts(stripped_reply)
-                            ):
-                                guarded_reply = stripped_reply
-                            elif not stripped_reply:
-                                guarded_reply = readonly_tool_reply
-                            else:
-                                guarded_reply = stripped_reply
+                    readonly_tool_reply = _latest_readonly_tool_reply(tool_context_messages)
+                    if readonly_tool_reply:
+                        stripped_reply = _remove_unbacked_plan_confirmation_copy(reply).strip()
+                        if (
+                            stripped_reply
+                            and not _reply_has_plan_confirmation_request(stripped_reply)
+                            and _reply_contains_readonly_plan_query_facts(stripped_reply)
+                        ):
+                            guarded_reply = stripped_reply
+                        elif not stripped_reply:
+                            guarded_reply = readonly_tool_reply
+                        else:
+                            guarded_reply = stripped_reply
                 _replace_text_reply(new_messages, reply, guarded_reply)
                 _replace_text_reply(all_messages, reply, guarded_reply)
                 reply = guarded_reply
         if (
-            plan_confirmation_candidate is None
-            and isinstance(reply, str)
+            isinstance(reply, str)
             and active_pending_kind in {"intent_change", "plan_mutation"}
             and _reply_looks_like_unbacked_plan_action_boundary(reply)
             and not list(_iter_tool_call_parts(tool_context_messages))
@@ -17362,177 +10075,12 @@ class ChatService:
             _replace_text_reply(new_messages, reply, pending_context_reply)
             _replace_text_reply(all_messages, reply, pending_context_reply)
             reply = pending_context_reply
-        candidate_pool_missing_info_boundary_applied = False
         if (
-            structured_plan_reroute is None
-            and plan_confirmation_candidate is None
-            and compiled_fix_pending_card is None
-            and pending_intent_card is None
-            and isinstance(reply, str)
-            and plan_chain_used
-            and not readonly_prompt
-            and not negative_plan_ack
-            and not intent_preview_downgraded
-        ):
-            rerouted_plan_action = await self._maybe_refocus_broad_review_result(
-                session_id=session_id,
-                content=content,
-                request_context=request_context,
-                tool_context_messages=tool_context_messages,
-            )
-            if rerouted_plan_action is not None:
-                reply = rerouted_plan_action.reply
-                new_messages = rerouted_plan_action.messages
-                all_messages = list(runtime_history.model_history or []) + list(new_messages)
-                tool_context_messages = _select_current_tool_context_messages(
-                    new_messages,
-                    all_messages,
-                    runtime_history,
-                )
-                plan_chain_used = _tool_calls_include_plan_chain(tool_context_messages)
-                intent_preview_used_current_turn = _tool_calls_include_intent_preview(tool_context_messages)
-                intent_preview_used = intent_preview_used_current_turn
-                intent_non_pending = _tool_returns_intent_non_pending(tool_context_messages)
-                latest_turn_readonly = _latest_turn_looks_readonly(tool_context_messages)
-                has_pending_intent_context = False
-                workspace_refresh_targets = _current_turn_workspace_refresh_targets(
-                    tool_context_messages=tool_context_messages,
-                    new_messages=new_messages,
-                    all_messages=all_messages,
-                    content=content,
-                )
-                workspace_view_targets = _current_turn_workspace_view_targets(
-                    tool_context_messages=tool_context_messages,
-                    all_messages=all_messages,
-                    content=content,
-                    turn_decision=turn_decision_object,
-                )
-                tool_calls = _iter_tool_call_parts(tool_context_messages)
-                tool_returns = _iter_tool_return_parts(tool_context_messages)
-                called_tool_names = [part.tool_name for part in tool_calls]
-                observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
-                full_agent_tool_trial = _summarize_full_agent_tool_trial(called_tool_names)
-                scene = "plan"
-                action_family = _select_conversation_action_family(tool_returns)
-                plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
-                structured_plan_reroute = rerouted_plan_action.route_decision
-        if (
-            plan_confirmation_candidate is None
-            and compiled_fix_pending_card is None
-            and pending_intent_card is None
-            and isinstance(reply, str)
-            and plan_chain_used
-        ):
-            missing_plan_next_payload = _latest_plan_next_missing_inputs_payload(
-                tool_context_messages,
-            )
-            if missing_plan_next_payload is not None:
-                missing_plan_result = {
-                    "applied": False,
-                    "action_family": missing_plan_next_payload.get("action_family"),
-                    "stage": missing_plan_next_payload.get("stage"),
-                    "result_kind": "error",
-                    "missing_inputs": missing_plan_next_payload.get("missing_inputs") or [],
-                    "atomic_actions": missing_plan_next_payload.get("atomic_actions") or [],
-                    "summary": missing_plan_next_payload.get("summary")
-                    or missing_plan_next_payload.get("preview_summary")
-                    or "",
-                    "reply_focus": [
-                        "missing_inputs",
-                        *[
-                            "needs_candidate_selection"
-                            for item in (missing_plan_next_payload.get("missing_inputs") or [])
-                            if str(item or "").strip() == "selection_scope"
-                        ],
-                    ],
-                }
-                conditional_candidate_boundary = proposal_compiler.resolve_conditional_candidate_readonly_boundary(
-                    result=missing_plan_result
-                )
-                if conditional_candidate_boundary.matched:
-                    missing_plan_reply = _conditional_candidate_readonly_boundary_reply(
-                        content,
-                        reason_code=conditional_candidate_boundary.reason_code,
-                        missing_inputs=conditional_candidate_boundary.missing_inputs,
-                    )
-                else:
-                    missing_plan_reply = _non_actionable_plan_preview_boundary(
-                        missing_plan_result
-                    )
-                _replace_text_reply(new_messages, reply, missing_plan_reply)
-                _replace_text_reply(all_messages, reply, missing_plan_reply)
-                reply = missing_plan_reply
-        if (
-            structured_plan_reroute is None
-            and plan_confirmation_candidate is None
-            and compiled_fix_pending_card is None
-            and pending_intent_card is None
-            and isinstance(reply, str)
-            and plan_chain_used
-            and (
-                _turn_decision_is_candidate_pool_readonly_query(turn_decision_object)
-                or _turn_decision_is_candidate_pool_readonly_query(
-                    request_context.agent_observability.get("turnDecision")
-                    if isinstance(request_context.agent_observability, dict)
-                    else None
-                )
-                or _prompt_looks_like_candidate_pool_query(content)
-            )
-        ):
-            candidate_missing_payload = _latest_plan_next_missing_inputs_payload(
-                tool_context_messages,
-                action_family="generate_plan",
-            )
-            latest_plan_result = _latest_execute_plan_action_result(tool_context_messages)
-            latest_action_family = str((latest_plan_result or {}).get("action_family") or "").strip()
-            latest_result_kind = str((latest_plan_result or {}).get("result_kind") or "").strip()
-            latest_reply_focus = [
-                str(item or "").strip()
-                for item in (
-                    (latest_plan_result or {}).get("reply_focus")
-                    or (latest_plan_result or {}).get("replyFocus")
-                    or []
-                )
-                if str(item or "").strip()
-            ]
-            if candidate_missing_payload is not None or (
-                latest_action_family in {"generate_plan", "query_candidates", "query_state"}
-                and (
-                    latest_result_kind == "error"
-                    or "missing_inputs" in latest_reply_focus
-                )
-            ):
-                raw_missing_inputs = (
-                    candidate_missing_payload.get("missing_inputs")
-                    if isinstance(candidate_missing_payload, dict)
-                    else (latest_plan_result or {}).get("missing_inputs")
-                    or (latest_plan_result or {}).get("missingInputs")
-                    or []
-                )
-                candidate_missing_reply = _candidate_pool_missing_info_reply(
-                    content,
-                    missing_inputs=[
-                        str(item or "").strip()
-                        for item in raw_missing_inputs
-                        if str(item or "").strip()
-                    ],
-                )
-                _replace_text_reply(new_messages, reply, candidate_missing_reply)
-                _replace_text_reply(all_messages, reply, candidate_missing_reply)
-                reply = candidate_missing_reply
-                candidate_pool_missing_info_boundary_applied = True
-        if (
-            structured_plan_reroute is None
-            and plan_confirmation_candidate is None
-            and compiled_fix_pending_card is None
-            and isinstance(reply, str)
+            isinstance(reply, str)
             and intent_preview_used_current_turn
             and not intent_preview_downgraded
             and _latest_existing_only_intent_payload(tool_context_messages) is not None
-            and not _has_plan_semantic_route_context(
-                getattr(request_context, "planning_summary", None),
-                _latest_plan_semantic_route_context(getattr(request_context, "chat_history", None)),
-            )
+            and not _has_plan_semantic_route_context(getattr(request_context, "planning_summary", None))
         ):
             no_plan_reply = _build_existing_only_no_plan_reply(
                 _latest_existing_only_intent_payload(tool_context_messages)
@@ -17541,249 +10089,9 @@ class ChatService:
             _replace_text_reply(all_messages, reply, no_plan_reply)
             reply = no_plan_reply
         if (
-            structured_plan_reroute is None
-            and plan_confirmation_candidate is None
-            and not intent_preview_downgraded
-        ):
-            rerouted_plan_action = await self._maybe_reroute_review_to_fix_preview(
-                session_id=session_id,
-                content=content,
-                request_context=request_context,
-                tool_context_messages=tool_context_messages,
-            )
-            if rerouted_plan_action is not None:
-                reply = rerouted_plan_action.reply
-                new_messages = rerouted_plan_action.messages
-                all_messages = list(runtime_history.model_history or []) + list(new_messages)
-                tool_context_messages = _select_current_tool_context_messages(
-                    new_messages,
-                    all_messages,
-                    runtime_history,
-                )
-                plan_chain_used = _tool_calls_include_plan_chain(tool_context_messages)
-                intent_preview_used_current_turn = _tool_calls_include_intent_preview(tool_context_messages)
-                intent_preview_used = intent_preview_used_current_turn
-                intent_non_pending = _tool_returns_intent_non_pending(tool_context_messages)
-                latest_turn_readonly = _latest_turn_looks_readonly(tool_context_messages)
-                has_pending_intent_context = False
-                workspace_refresh_targets = _current_turn_workspace_refresh_targets(
-                    tool_context_messages=tool_context_messages,
-                    new_messages=new_messages,
-                    all_messages=all_messages,
-                    content=content,
-                )
-                workspace_view_targets = _current_turn_workspace_view_targets(
-                    tool_context_messages=tool_context_messages,
-                    all_messages=all_messages,
-                    content=content,
-                    turn_decision=turn_decision_object,
-                )
-                if negative_plan_ack:
-                    workspace_refresh_targets = []
-                    workspace_view_targets = []
-                tool_calls = _iter_tool_call_parts(tool_context_messages)
-                tool_returns = _iter_tool_return_parts(tool_context_messages)
-                called_tool_names = [part.tool_name for part in tool_calls]
-                observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
-                full_agent_tool_trial = _summarize_full_agent_tool_trial(called_tool_names)
-                scene = "plan"
-                action_family = _select_conversation_action_family(tool_returns)
-                plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
-                structured_plan_reroute = rerouted_plan_action.route_decision
-        if plan_confirmation_candidate is None and not structured_goal_clarification_reply and not intent_preview_downgraded:
-            if compiled_fix_pending_card is None and pending_intent_card is None:
-                latest_plan_result = _latest_fix_proposal_confirmation_source(tool_context_messages)
-                if latest_plan_result is None:
-                    preview_result = _latest_fix_proposal_preview_result(tool_context_messages)
-                    if isinstance(preview_result, dict):
-                        latest_plan_result = preview_result
-                if isinstance(latest_plan_result, dict):
-                    target_strategies, target_issue_codes, target_scope_explicit = await _infer_fix_proposal_target_scope(
-                        content=content,
-                        request_context=request_context,
-                        latest_plan_result=latest_plan_result,
-                    )
-                    compiled_source = proposal_compiler.compile_runtime_review_fix_source(
-                        session_id=session_id,
-                        latest_plan_result=latest_plan_result,
-                        target_strategies=target_strategies,
-                        target_issue_codes=target_issue_codes,
-                        target_scope_explicit=target_scope_explicit,
-                    )
-                    ready_proposal = compiled_source.proposal
-                    if compiled_source.target_match_empty:
-                        latest_plan_result["target_match_empty"] = True
-                    if ready_proposal is not None:
-                        latest_plan_result["selected_proposal_id"] = (
-                            compiled_source.selection.selected_proposal_id
-                            or proposal_compiler.proposal_id(ready_proposal)
-                        )
-                    if ready_proposal is not None and compiled_source.source_version_guard > 0:
-                        compiled_pending = await _create_runtime_compiled_review_fix_pending(
-                            session_id,
-                            ready_proposal,
-                            source_version_guard=compiled_source.source_version_guard,
-                            proposal_source=compiled_source.proposal_source,
-                            compiled=compiled_source.compiled,
-                        )
-                        compiled_fix_pending_card = compiled_pending.card
-                        compiled_pending_workspace_refresh_targets = _dedupe_workspace_targets(
-                            [
-                                *compiled_pending_workspace_refresh_targets,
-                                *compiled_pending.workspace_refresh_targets,
-                            ]
-                        )
-                        if compiled_fix_pending_card is not None and isinstance(reply, str):
-                            primary_fix_reply = compiled_pending.primary_reply
-                            if primary_fix_reply:
-                                _replace_text_reply(new_messages, reply, primary_fix_reply)
-                                _replace_text_reply(all_messages, reply, primary_fix_reply)
-                                reply = primary_fix_reply
-                    elif (
-                        compiled_fix_pending_card is None
-                        and latest_plan_result.get("target_match_empty")
-                        and isinstance(reply, str)
-                    ):
-                        targeted_unavailable_reply = _targeted_fix_proposal_unavailable_reply(
-                            latest_plan_result,
-                            target_strategies=compiled_source.selection.target_strategies,
-                            target_issue_codes=compiled_source.selection.target_issue_codes,
-                        )
-                        if targeted_unavailable_reply:
-                            _replace_text_reply(new_messages, reply, targeted_unavailable_reply)
-                            _replace_text_reply(all_messages, reply, targeted_unavailable_reply)
-                            reply = targeted_unavailable_reply
-                    elif compiled_fix_pending_card is None:
-                        clarification_reply = _structured_goal_clarification_reply(latest_plan_result)
-                        if clarification_reply:
-                            reply = _sanitize_reply_for_user(clarification_reply)
-        if (
-            plan_confirmation_candidate is None
-            and compiled_fix_pending_card is None
-            and pending_intent_card is None
-            and not structured_goal_clarification_reply
-            and not intent_preview_downgraded
-        ):
-            structured_goal_preview = _latest_structured_goal_plan_preview(tool_context_messages)
-            structured_source = goal_scoped_plan_preview or structured_goal_preview
-            structured_attempt = _UserGoalFixConfirmationAttempt()
-            structured_fix_candidate = await _structured_user_goal_fix_candidate_from_source(
-                session_id,
-                structured_source,
-                context_source="plan_next_action_structured_goal",
-                attempt=structured_attempt,
-            )
-            if structured_fix_candidate is not None:
-                compiled_pending = await _create_pending_fix_confirmation_result_from_user_goal_candidate(
-                    session_id,
-                    structured_fix_candidate,
-                    attempt=structured_attempt,
-                )
-                compiled_fix_pending_card = compiled_pending.card
-                compiled_pending_workspace_refresh_targets = _dedupe_workspace_targets(
-                    [
-                        *compiled_pending_workspace_refresh_targets,
-                        *compiled_pending.workspace_refresh_targets,
-                    ]
-                )
-            elif structured_attempt.blocked_by_compiled_contract:
-                compiled_fix_pending_card = None
-            elif structured_attempt.fallback_to_intent:
-                structured_intent_candidate = await _structured_goal_intent_candidate_from_source(
-                    session_id,
-                    structured_source,
-                    fallback_mechanism_line=structured_attempt.fallback_mechanism_line,
-                    fallback_detail_lines=structured_attempt.fallback_detail_lines,
-                )
-                if structured_intent_candidate is not None:
-                    pending_intent_card = await _create_pending_intent_confirmation_from_structured_goal_candidate(
-                        session_id,
-                        structured_intent_candidate,
-                    )
-                    pending_intent_reply = _intent_card_primary_reply_from_card(
-                        pending_intent_card
-                    )
-                    if pending_intent_reply and isinstance(reply, str):
-                        _replace_text_reply(new_messages, reply, pending_intent_reply)
-                        _replace_text_reply(all_messages, reply, pending_intent_reply)
-                        reply = pending_intent_reply
-            if compiled_fix_pending_card is not None and isinstance(reply, str):
-                preview_payload = _parse_tool_return_json(
-                    getattr(compiled_fix_pending_card, "content", "") or ""
-                )
-                primary_structured_goal_reply = ""
-                if isinstance(preview_payload, dict):
-                    card_summary = str(preview_payload.get("summary") or "").strip()
-                    card_content = str(preview_payload.get("content") or "").strip()
-                    preview_lines = ["已列出这次调整预览。"]
-                    if card_summary:
-                        preview_lines.extend(["", card_summary])
-                    elif card_content:
-                        preview_lines.extend(["", card_content])
-                    preview_lines.extend(
-                        [
-                            "",
-                            "具体调整内容在下面卡片里。确认前不会改动当前方案；点“确认执行”后，我会按这条建议处理，并重新刷新方案和审查结果。",
-                        ]
-                    )
-                    primary_structured_goal_reply = _sanitize_reply_for_user("\n".join(preview_lines))
-                    if primary_structured_goal_reply:
-                        _replace_text_reply(new_messages, reply, primary_structured_goal_reply)
-                        _replace_text_reply(all_messages, reply, primary_structured_goal_reply)
-                        reply = primary_structured_goal_reply
-        if (
-            plan_confirmation_candidate
-            and _plain_plan_candidate_conflicts_with_active_only_keep_intent(
-                backend_pending_state if isinstance(backend_pending_state, dict) else None,
-                plan_confirmation_candidate,
-            )
-        ):
-            plan_confirmation_candidate = None
-            pending_context_reply = _build_pending_readonly_impact_reply(
-                backend_pending_state if isinstance(backend_pending_state, dict) else {}
-            )
-            if isinstance(reply, str):
-                guarded_pending_reply = (
-                    pending_context_reply.rstrip()
-                    + "\n\n如果这就是你想采用的方向，请先点“采纳”；采纳后我再按这条参考检查或调整当前方案。"
-                )
-                guarded_pending_reply = _sanitize_reply_for_user(guarded_pending_reply)
-                _replace_text_reply(new_messages, reply, guarded_pending_reply)
-                _replace_text_reply(all_messages, reply, guarded_pending_reply)
-                reply = guarded_pending_reply
-        if plan_confirmation_candidate and intent_preview_downgraded:
-            plan_confirmation_candidate = None
-        if plan_confirmation_candidate:
-            compiled_plan_proposal = _runtime_plan_compiled_proposal_from_candidate(
-                session_id=session_id,
-                confirmation_candidate=plan_confirmation_candidate,
-                source="main_plan_confirmation_candidate",
-            )
-            compiled_pending = await _create_runtime_compiled_plan_pending(
-                session_id,
-                plan_confirmation_candidate,
-                source="main_plan_confirmation_candidate",
-                compiled=compiled_plan_proposal,
-            )
-            compiled_plan_pending_card = compiled_pending.card
-            compiled_plan_includes_intent_update = compiled_pending.plan_includes_intent_update
-            compiled_pending_workspace_refresh_targets = _dedupe_workspace_targets(
-                [
-                    *compiled_pending_workspace_refresh_targets,
-                    *compiled_pending.workspace_refresh_targets,
-                ]
-            )
-            if compiled_plan_pending_card is not None and isinstance(reply, str):
-                primary_preview_reply = compiled_pending.primary_reply
-                _replace_text_reply(new_messages, reply, primary_preview_reply)
-                _replace_text_reply(all_messages, reply, primary_preview_reply)
-                reply = primary_preview_reply
-        if (
             intent_preview_used_current_turn
             and not intent_preview_downgraded
-            and not compiled_plan_includes_intent_update
             and turn_decision_blocks_intent_pending
-            and compiled_fix_pending_card is None
             and pending_intent_card is None
             and isinstance(reply, str)
         ):
@@ -17818,79 +10126,17 @@ class ChatService:
                         preview_arbitration.arbitration_dsl
                     )
             else:
-                intent_plan_reroute = await self._maybe_create_current_plan_mutation_preview_from_intent_payload(
-                    session_id=session_id,
-                    content=content,
-                    request_context=request_context,
-                    preview_payload=aligned_preview_payload_for_plan,
+                intent_preview_downgraded = True
+                has_pending_intent_context = False
+                full_agent_intent_pending_blocked = True
+                blocked_reply = _blocked_intent_preview_for_plan_route_reply(
+                    turn_decision_object,
+                    aligned_preview_payload_for_plan,
                 )
-                if intent_plan_reroute is not None:
-                    reply = intent_plan_reroute.reply
-                    new_messages = intent_plan_reroute.messages
-                    all_messages = list(runtime_history.model_history or []) + list(new_messages)
-                    tool_context_messages = _select_current_tool_context_messages(
-                        new_messages,
-                        all_messages,
-                        runtime_history,
-                    )
-                    plan_chain_used = _tool_calls_include_plan_chain(tool_context_messages)
-                    intent_preview_used_current_turn = _tool_calls_include_intent_preview(tool_context_messages)
-                    intent_preview_used = intent_preview_used_current_turn
-                    intent_non_pending = _tool_returns_intent_non_pending(tool_context_messages)
-                    latest_turn_readonly = _latest_turn_looks_readonly(tool_context_messages)
-                    has_pending_intent_context = False
-                    workspace_refresh_targets = _current_turn_workspace_refresh_targets(
-                        tool_context_messages=tool_context_messages,
-                        new_messages=new_messages,
-                        all_messages=all_messages,
-                        content=content,
-                    )
-                    workspace_view_targets = _current_turn_workspace_view_targets(
-                        tool_context_messages=tool_context_messages,
-                        all_messages=all_messages,
-                        content=content,
-                        turn_decision=turn_decision_object,
-                    )
-                    tool_calls = _iter_tool_call_parts(tool_context_messages)
-                    tool_returns = _iter_tool_return_parts(tool_context_messages)
-                    called_tool_names = [part.tool_name for part in tool_calls]
-                    observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
-                    full_agent_tool_trial = _summarize_full_agent_tool_trial(called_tool_names)
-                    scene = "plan"
-                    action_family = _select_conversation_action_family(tool_returns)
-                    plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
-                    structured_plan_reroute = intent_plan_reroute.route_decision
-                    full_agent_intent_pending_blocked = True
-                    compiled_plan_pending_card = (
-                        intent_plan_reroute.pending_result.card
-                        if intent_plan_reroute.pending_result is not None
-                        else None
-                    )
-                    compiled_plan_includes_intent_update = bool(
-                        intent_plan_reroute.pending_result.plan_includes_intent_update
-                        if intent_plan_reroute.pending_result is not None
-                        else False
-                    )
-                    compiled_pending_workspace_refresh_targets = _dedupe_workspace_targets(
-                        [
-                            *compiled_pending_workspace_refresh_targets,
-                            *intent_plan_reroute.workspace_refresh_targets,
-                        ]
-                    )
-                    if compiled_plan_pending_card is not None:
-                        plan_confirmation_candidate = None
-                else:
-                    intent_preview_downgraded = True
-                    has_pending_intent_context = False
-                    full_agent_intent_pending_blocked = True
-                    blocked_reply = _blocked_intent_preview_for_plan_route_reply(
-                        turn_decision_object,
-                        aligned_preview_payload_for_plan,
-                    )
-                    _replace_text_reply(new_messages, reply, blocked_reply)
-                    _replace_text_reply(all_messages, reply, blocked_reply)
-                    reply = blocked_reply
-        if intent_preview_used_current_turn and not intent_preview_downgraded and not compiled_plan_includes_intent_update:
+                _replace_text_reply(new_messages, reply, blocked_reply)
+                _replace_text_reply(all_messages, reply, blocked_reply)
+                reply = blocked_reply
+        if intent_preview_used_current_turn and not intent_preview_downgraded:
             preview_payload = _extract_recent_intent_analysis_payload(tool_context_messages)
             if not preview_payload and not plan_chain_used:
                 preview_payload = _extract_recent_intent_analysis_payload(all_messages)
@@ -17906,7 +10152,7 @@ class ChatService:
                 if isinstance(request_context.agent_observability, dict)
                 else None,
             )
-            if compiled_fix_pending_card is None and pending_intent_card is None:
+            if pending_intent_card is None:
                 pending_result = await _create_pending_intent_confirmation_result_from_preview_payload(
                     session_id,
                     preview_payload,
@@ -17946,70 +10192,11 @@ class ChatService:
                 _replace_text_reply(all_messages, reply, readonly_policy_reply)
                 reply = readonly_policy_reply
                 pending_intent_card = None
-                compiled_plan_pending_card = None
-                compiled_fix_pending_card = None
-                plan_confirmation_candidate = None
-                structured_plan_reroute = None
                 workspace_refresh_targets = []
-        non_actionable_plan_preview_boundary_applied = False
-        if (
-            plan_confirmation_candidate is None
-            and compiled_plan_pending_card is None
-            and compiled_fix_pending_card is None
-            and pending_intent_card is None
-            and isinstance(reply, str)
-            and plan_chain_used
-            and not readonly_prompt
-            and not negative_plan_ack
-            and not intent_preview_downgraded
-            and not candidate_pool_missing_info_boundary_applied
-        ):
-            non_actionable_mutation_result = _latest_non_actionable_plan_mutation_result(
-                tool_context_messages
-            )
-            latest_plan_execution_result = _latest_execute_plan_action_result(tool_context_messages)
-            latest_action_family = str(
-                (latest_plan_execution_result or {}).get("action_family") or ""
-            ).strip()
-            latest_result_kind = str(
-                (latest_plan_execution_result or {}).get("result_kind") or ""
-            ).strip()
-            latest_result_is_readonly_query = (
-                (latest_action_family, latest_result_kind)
-                in {
-                    ("query_state", "status_overview"),
-                    ("query_ordered", "ordered_snapshot"),
-                    ("query_candidates", "candidate_snapshot"),
-                }
-            )
-            if non_actionable_mutation_result is not None and (
-                latest_result_is_readonly_query
-                or _plan_execution_result_is_non_actionable(latest_plan_execution_result)
-            ):
-                conditional_candidate_boundary = proposal_compiler.resolve_conditional_candidate_readonly_boundary(
-                    result=non_actionable_mutation_result
-                )
-                if conditional_candidate_boundary.matched:
-                    boundary_reply = _conditional_candidate_readonly_boundary_reply(
-                        content,
-                        reason_code=conditional_candidate_boundary.reason_code,
-                        missing_inputs=conditional_candidate_boundary.missing_inputs,
-                    )
-                else:
-                    boundary_reply = _non_actionable_plan_preview_boundary(non_actionable_mutation_result)
-                boundary_reply = _sanitize_reply_for_user(_normalize_user_facing_terms(boundary_reply))
-                _replace_text_reply(new_messages, reply, boundary_reply)
-                _replace_text_reply(all_messages, reply, boundary_reply)
-                reply = boundary_reply
-                workspace_refresh_targets = []
-                workspace_view_targets = []
-                non_actionable_plan_preview_boundary_applied = True
         if isinstance(reply, str):
             final_user_reply = _sanitize_reply_for_user(reply)
             if (
-                compiled_plan_pending_card is None
-                and compiled_fix_pending_card is None
-                and pending_intent_card is None
+                pending_intent_card is None
                 and _reply_claims_intent_recorded_without_pending(final_user_reply)
             ):
                 final_user_reply = _recorded_intent_claim_without_pending_reply(final_user_reply)
@@ -18018,70 +10205,8 @@ class ChatService:
                 _replace_text_reply(new_messages, reply, final_user_reply)
                 _replace_text_reply(all_messages, reply, final_user_reply)
                 reply = final_user_reply
-            latest_review_result = _latest_readonly_plan_execution_result(tool_context_messages)
-            if (
-                latest_review_result is not None
-                and not has_readonly_explore_result
-                and _result_needs_unavailable_guidance_fallback(latest_review_result, user_prompt=content)
-            ):
-                structured_review_reply = _build_plan_timeout_fallback_reply(
-                    latest_review_result,
-                    user_prompt=content,
-                ) or reply
-                structured_review_reply = _sanitize_reply_for_user(structured_review_reply)
-                if structured_review_reply != reply:
-                    _replace_text_reply(new_messages, reply, structured_review_reply)
-                    _replace_text_reply(all_messages, reply, structured_review_reply)
-                    reply = structured_review_reply
-            elif latest_review_result is not None and not has_readonly_explore_result and _review_reply_overclaims_admission_safety(reply, latest_review_result):
-                structured_review_reply = _build_plan_timeout_fallback_reply(
-                    latest_review_result,
-                    user_prompt=content,
-                ) or reply
-                structured_review_reply = _sanitize_reply_for_user(structured_review_reply)
-                if structured_review_reply != reply:
-                    _replace_text_reply(new_messages, reply, structured_review_reply)
-                    _replace_text_reply(all_messages, reply, structured_review_reply)
-                    reply = structured_review_reply
-            elif latest_review_result is not None and not has_readonly_explore_result and _review_reply_needs_structured_fallback(reply, latest_review_result):
-                structured_review_reply = _build_plan_timeout_fallback_reply(
-                    latest_review_result,
-                    user_prompt=content,
-                ) or reply
-                structured_review_reply = _sanitize_reply_for_user(structured_review_reply)
-                if structured_review_reply != reply:
-                    _replace_text_reply(new_messages, reply, structured_review_reply)
-                    _replace_text_reply(all_messages, reply, structured_review_reply)
-                    reply = structured_review_reply
-            elif latest_review_result is not None and not has_readonly_explore_result and _review_reply_needs_boundary(reply, latest_review_result):
-                bounded_review_reply = _sanitize_reply_for_user(
-                    f"已完成方案审查。\n\n{reply.lstrip()}"
-                )
-                if bounded_review_reply != reply:
-                    _replace_text_reply(new_messages, reply, bounded_review_reply)
-                    _replace_text_reply(all_messages, reply, bounded_review_reply)
-                    reply = bounded_review_reply
-            latest_adjustment_result = _latest_readonly_plan_execution_result(tool_context_messages)
-            if (
-                latest_adjustment_result is not None
-                and not has_readonly_explore_result
-                and _adjustment_reply_needs_structured_fallback(reply, latest_adjustment_result)
-            ):
-                structured_adjustment_reply = _build_plan_timeout_fallback_reply(
-                    latest_adjustment_result,
-                    user_prompt=content,
-                ) or reply
-                structured_adjustment_reply = _sanitize_reply_for_user(structured_adjustment_reply)
-                if structured_adjustment_reply != reply:
-                    _replace_text_reply(new_messages, reply, structured_adjustment_reply)
-                    _replace_text_reply(all_messages, reply, structured_adjustment_reply)
-                    reply = structured_adjustment_reply
         if (
-            structured_plan_reroute is None
-            and compiled_plan_pending_card is None
-            and plan_confirmation_candidate is None
-            and compiled_fix_pending_card is None
-            and pending_intent_card is None
+            pending_intent_card is None
             and isinstance(reply, str)
             and _reply_looks_like_unbacked_plan_action_boundary(reply)
             and not list(_iter_tool_call_parts(tool_context_messages))
@@ -18091,38 +10216,15 @@ class ChatService:
                 _replace_text_reply(new_messages, reply, no_action_reply)
                 _replace_text_reply(all_messages, reply, no_action_reply)
                 reply = no_action_reply
-        if compiled_plan_pending_card is not None or compiled_fix_pending_card is not None:
-            pending_type = "plan"
-        elif pending_intent_card is not None:
+        if pending_intent_card is not None:
             pending_type = "intent"
         else:
             pending_type = "plan" if active_pending_kind == "plan_mutation" else "intent" if active_pending_kind == "intent_change" else None
-        post_processing_applied = ["structured_plan_reroute"] if structured_plan_reroute else []
+        post_processing_applied = []
         if full_agent_intent_pending_blocked:
             post_processing_applied.append("turn_decision_blocked_full_agent_intent_pending")
         if full_agent_intent_pending_turn_decision_override:
             post_processing_applied.append("turn_decision_aligned_full_agent_intent_preview")
-        if non_actionable_plan_preview_boundary_applied:
-            post_processing_applied.append("non_actionable_plan_preview_boundary")
-        full_agent_display_source = _full_agent_plan_display_source(
-            action_family=action_family,
-            tool_context_messages=tool_context_messages,
-            pending_card_created=compiled_plan_pending_card is not None or compiled_fix_pending_card is not None,
-            turn_decision=turn_decision_object,
-        )
-        full_agent_display_payload = (
-            full_agent_display_source.display_payload
-            if full_agent_display_source is not None
-            else {}
-        )
-        full_agent_reply_plan = (
-            full_agent_display_source.reply_plan
-            if full_agent_display_source is not None
-            else {}
-        )
-        full_agent_conditional_options = (
-            full_agent_display_payload.get("presentation") == "conditional_options"
-        )
         full_agent_turn_decision_snapshot = (
             _turn_decision_snapshot(turn_decision_object)
             if turn_decision_object is not None
@@ -18149,24 +10251,6 @@ class ChatService:
                 "confidence": "model",
                 "route": scene,
                 **(
-                    {
-                        "sideEffect": "readonly_or_plan_preview",
-                        "outputType": "readonly_or_plan_mutation",
-                    }
-                    if full_agent_conditional_options
-                    else {}
-                ),
-                **(
-                    {"displayPayload": full_agent_display_payload}
-                    if full_agent_display_payload
-                    else {}
-                ),
-                **(
-                    {"replyPlan": full_agent_reply_plan}
-                    if full_agent_reply_plan
-                    else {}
-                ),
-                **(
                     {"replyFocus": full_agent_reply_focus}
                     if full_agent_reply_focus
                     else {}
@@ -18176,8 +10260,7 @@ class ChatService:
                     if full_agent_turn_decision_snapshot
                     else {}
                 ),
-                "fallbackReason": "structured_plan_reroute" if structured_plan_reroute else "no_direct_route",
-                "structuredReroute": structured_plan_reroute,
+                "fallbackReason": "no_direct_route",
                 "toolTrial": full_agent_tool_trial,
                 "agentRun": dict(getattr(request_context, "agent_observability", {}) or {}),
             },
@@ -18210,8 +10293,6 @@ class ChatService:
             "status": "success",
             "errorType": None,
         }
-        if full_agent_display_source is not None:
-            post_processing_applied.append(full_agent_display_source.route)
         _log_conversation_turn_event(
             **turn_event,
         )
@@ -18295,17 +10376,6 @@ class ChatService:
                 _build_silent_workspace_refresh_response(session_id, target)
                 for target in workspace_refresh_targets
             )
-        if workspace_view_targets:
-            already = set(workspace_refresh_targets)
-            for target in workspace_view_targets:
-                if target not in already:
-                    followups.append(
-                        _build_workspace_action_response(session_id, target, refresh=False)
-                    )
-        if compiled_plan_pending_card is not None:
-            followups.append(compiled_plan_pending_card)
-        if compiled_fix_pending_card is not None:
-            followups.append(compiled_fix_pending_card)
         if pending_intent_card is not None:
             followups.append(pending_intent_card)
         followups = _enforce_single_pending_confirmation_followup(followups)

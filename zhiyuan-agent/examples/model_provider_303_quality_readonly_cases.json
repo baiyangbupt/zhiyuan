@@ -12,7 +12,7 @@
     ]
   },
   {
-    "name": "303-quality-plan-local-query-readonly-fast-route",
+    "name": "303-quality-plan-local-query-readonly-direct",
     "sessionId": "17",
     "prompts": [
       {
@@ -24,7 +24,7 @@
     ]
   },
   {
-    "name": "303-quality-plan-named-move-preview-fast-route",
+    "name": "303-quality-plan-named-move-preview-direct",
     "sessionId": "17",
     "prompts": [
       {
@@ -36,14 +36,14 @@
     ]
   },
   {
-    "name": "303-quality-plan-named-add-preview-fast-route",
+    "name": "303-quality-plan-named-add-preview-direct",
     "sessionId": "17",
     "prompts": [
       {
         "prompt": "把华中农业大学的建筑类加进来",
         "assertContains": ["确认", "华中农业大学", "建筑类"],
         "assertContainsAny": ["加入", "加入当前方案", "候选"],
-        "expectedRoutingPath": "direct_atomic_plan_action",
+        "expectedRoutingPath": "zhiyuan_agent_direct",
         "assertActionFamiliesContain": ["add_units"],
         "assertResultKindsContain": ["preview_only"],
         "assertFollowupType": "pendingConfirmationCard",

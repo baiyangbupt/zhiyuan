@@ -40,7 +40,7 @@ pytest -v -s
 ```bash
 RUN_AGENT_DIALOG_E2E=1 \
 AGENT_DIALOG_E2E_URL=ws://127.0.0.1:18291/gaotu-assistant-agent/plus/chat/1/bot/test/do \
-AGENT_DIALOG_E2E_METRICS_OUTPUT=examples/dialog_regression_303_effect_perf_output.json \
+AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/dialog_regression_303_effect_perf_output.json \
 pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s
 ```
 
@@ -50,7 +50,7 @@ pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s
 
 3.2.0 的语义回归应断言结构化路由，不断言中文措辞命中：pending 后只读/影响查询、采纳后再查询、采纳后生成方案、新诉求与 active pending 冲突、只读 PlanQuery 和 intent hard cut，均应通过 `turnObservability.routeDecision`、`sideEffect/scenario`、`TurnDecision -> PendingTurn compiler`、`PlanQueryProfile/PlanQuery DSL` 或 action DSL 验证。协议级短确认/取消可以保留固定短语测试，但业务语义不应依赖用户原话字符串。
 
-如果 case 依赖 backend fixture，`cloneBackendStateFromSessionId` 的 clone/clear 失败会作为 environment failure 跳过 WebSocket 步骤；声明需要源 active pending 的 fixture 会连同 `pendingConfirmation/planEditCache` 克隆，只有源 pending 为 active 时才跳过 per-case pending clear，避免脏 pending 伪造回归结果。
+如果 case 依赖 backend fixture，`cloneBackendStateFromSessionId` 的 clone/clear 失败会作为 environment failure 跳过 WebSocket 步骤；声明需要源 active pending 的 fixture 会连同 `pendingConfirmation` 克隆，只有源 pending 为 active 时才跳过 per-case pending clear，避免脏 pending 伪造回归结果。
 
 默认使用 `examples/dialog_regression_303_effect_perf_cases.json`，覆盖：
 

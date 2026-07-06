@@ -19,7 +19,6 @@ from app.agent.instructions.planning_context import build_planning_context
 from app.agent.instructions.pending_context import build_pending_context
 from app.agent.instructions.style_rules import build_style_rules
 from app.agent.instructions.tool_dispatch_rules import build_tool_dispatch_rules
-from app.tools.plan_orchestration_tool import plan_next_action
 from app.tools.plan_query_tool import query_volunteer_plan
 from app.agent.instructions.assembler import build_instructions
 from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
@@ -213,10 +212,9 @@ class TestToolDispatchRules:
 
     def test_candidate_add_refs_are_plan_mutations(self):
         result = build_tool_dispatch_rules()
-        assert "add_units" in result
-        assert "用户原始引用" in result
-        assert "广西师大统计" in result
-        assert "不要改走学校/分数线 Explore 分析" in result
+        assert "用户明确要求改变当前方案顺序或内容" in result
+        assert "如果 full-agent 没有收到 4.0 direct 的可确认预览结果" in result
+        assert "不要自行生成旧 payload 或自然语言假确认" in result
 
     def test_plan_local_abbreviation_lookup_uses_plan_query_tool(self):
         result = build_tool_dispatch_rules()
@@ -234,13 +232,9 @@ class TestToolDispatchRules:
 
     def test_school_major_move_and_remove_refs_are_plan_mutations(self):
         result = build_tool_dispatch_rules()
-        assert "青岛电影学院的新闻学" in result
-        assert "move_unit" in result
-        assert "target_position" in result
-        assert "query_volunteer_plan" in result
-        assert "remove_units" in result
-        assert "唯一性校验" in result
-        assert 'position_scope="after"' in result
+        assert "删除、替换、补齐、移动、排序、重排" in result
+        assert "高副作用动作必须先有可确认预览再等用户确认" in result
+        assert "确认前不能说“已移出/已替换/已重排/已补齐/已生效”" in result
 
     def test_explore_tool_boundaries_reduce_redundant_tool_chains(self):
         result = build_tool_dispatch_rules()
@@ -274,7 +268,7 @@ class TestToolDispatchRules:
         assert "不能只列“可以聊什么”" in result
         assert "这轮只做分析，不会改动你的方案" in result
         assert "Explore 专用工具已经返回当前方案概况" in result
-        assert "不要再补调 `plan_next_action(action_family=\"query_state\")`" in result
+        assert "不要再补调局部查询做重复状态查询" in result
 
     def test_career_oriented_plan_optimization_is_not_plain_review(self):
         result = build_tool_dispatch_rules()
@@ -283,8 +277,6 @@ class TestToolDispatchRules:
         assert "只有用户明确要求审查风险时" in result
         assert "不能被审查报告淹没" in result
         assert "当前承接、主要短板、调整取舍、下一步是否生成调整预览" in result
-        assert "绑定的是职业路径、升学路径、就业风格" in result
-        assert "不要先当作普通 `review_plan`" in result
 
     def test_intent_preview_tool_boundaries_stop_after_preview(self):
         result = build_tool_dispatch_rules()
@@ -303,34 +295,23 @@ class TestToolDispatchRules:
 
     def test_plan_tool_boundaries_do_not_upgrade_queries_to_mutations(self):
         result = build_tool_dispatch_rules()
-        assert "公办/民办占比" in result
-        assert "高收费占比" in result
-        assert "不要升级成 `review_plan` 或改方案预览" in result
-        assert "如果用户只是问是否存在某类风险" in result
-        assert "不要自动规划删除、替换或补偿" in result
-        assert "费用、预算、中外合作、高收费、学费压力" in result
-        assert "不要只用 `query_state` 返回普通方案概览" in result
-        assert 'result_kind="review_result"' in result
-        assert "本轮审查结果是风险与提醒数量的权威事实" in result
-        assert "不要再拿历史上下文里的旧方案概览" in result
-        assert "单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs` 或 `plan_next_action`" in result
+        assert "full-agent 不再承接旧的当前方案编排/执行工具" in result
+        assert "当前方案的生成、审查、删除、替换、补齐、移动、排序、重排和确认执行由 4.0 direct 链路" in result
+        assert "不要承诺已经创建方案调整卡片" in result
+        assert "不要说已经执行" in result
+        assert "方案现状问法先基于已注入的 planning summary" in result
 
     def test_plan_region_move_should_not_be_generic_sort(self):
         result = build_tool_dispatch_rules()
-        assert "把北京/上海/某学校/某专业方向的志愿往前挪一些" in result
-        assert "不是指定维度排序" in result
-        assert "不要把它规划成 `sort_ordered_plan`" in result
-        assert "目标位置" in result
+        assert "用户明确要求改变当前方案顺序或内容" in result
+        assert "按某维度排序" in result
+        assert "如果 full-agent 没有收到 4.0 direct 的可确认预览结果" in result
 
     def test_plan_tuition_mutation_request_should_preview_only_when_explicit(self):
         result = build_tool_dispatch_rules()
-        assert "fix_proposals" in result
-        assert "不要默认删除" in result
-        assert "只有用户明确要求" in result
-        assert "才规划 `remove_units` preview" in result
-        assert "才规划 `replace_units` preview" in result
-        assert 'review_issue_target.code="high_tuition"' in result
-        assert "不要停留在 `plan_next_action` 的 preview_summary" in result
+        assert "处理高收费或中外合作项" in result
+        assert "只能说明这属于需要生成预览后确认的方案调整" in result
+        assert "不要自行生成旧 payload 或自然语言假确认" in result
 
     def test_policy_metric_explanation_should_not_be_plan_state_query(self):
         result = build_tool_dispatch_rules()
@@ -352,39 +333,25 @@ class TestToolDispatchRules:
 
     def test_candidate_readonly_query_should_not_probe_plan_state_first(self):
         result = build_tool_dispatch_rules()
-        assert "只读候选机会查询" in result
-        assert 'query_volunteer_plan(scope="candidate")' in result
-        assert '不要先调用 `plan_next_action(action_family="query_state")`' in result
-        assert "只有用户明确要求加入、替换、补齐或调整当前方案时" in result
+        assert "query_volunteer_plan" in result
+        assert "局部命中查询" in result
+        assert "不要用它回答整体方案状态" in result
+        assert "用户明确要求改变当前方案时，不要用局部查询替代调整预览" in result
 
     def test_plan_adjustment_preview_boundary_prefers_fix_proposal_preview(self):
         result = build_tool_dispatch_rules()
-        assert "区分“审查解释/调整分析”和“调整预览”" in result
-        assert "用户只是想看懂审查提醒、区分哪些需要关注、哪些可处理、为什么候选不足" in result
-        assert "`analyze_adjustment`" in result
-        assert "不生成待确认调整" in result
-        assert "语义上要看到一版可确认的调整内容" in result
-        assert "不要把用户话术交给服务层兜底猜" in result
-        assert "整体调稳、补稳、降低冒险程度" in result
-        assert "`preview_fix_proposal`" in result
-        assert "没有可执行建议" in result or "没有可执行补齐动作" in result
+        assert "高副作用动作必须先有可确认预览再等用户确认" in result
+        assert "确认前不能说“已移出/已替换/已重排/已补齐/已生效”" in result
 
     def test_plan_composite_goal_requires_structured_goal_fields(self):
         result = build_tool_dispatch_rules()
-        assert "复合方案调整" in result
-        assert 'plan_goal_type="only_keep_scope"' in result
-        assert 'constraint_intent_type="only_keep"' in result
-        assert 'constraint_intent_type="must_have"' in result
-        assert 'plan_goal_type="exclude_scope"' in result
-        assert "不要只把“只保留/必须有/不要”等写进 `user_goal`" in result
-        assert "不要把 `only_keep` 展开成未点名的负向专业" in result
-        assert "具体专业 vs 专业类" in result
+        assert "4.0 direct 链路会负责生成结构化调整预览" in result
+        assert "不要承诺已经创建卡片或已经改动" in result
 
     def test_plan_preview_should_not_query_state_again(self):
         result = build_tool_dispatch_rules()
-        assert '返回 `result_kind="preview_only"` 后' in result
-        assert "不要再补调 `query_state`" in result
-        assert "二次 `plan_next_action`" in result
+        assert "不要用局部查询替代调整预览" in result
+        assert "不要自行生成旧 payload" in result
 
     def test_explore_tool_should_not_repeat_same_tool(self):
         result = build_tool_dispatch_rules()
@@ -408,7 +375,6 @@ class TestToolDispatchRules:
 
     def test_plan_tool_docs_say_refs_do_not_need_pre_query(self):
         assert "不适合在移动/删除前作为“定位 ID”的前置步骤" in (query_volunteer_plan.__doc__ or "")
-        assert "不应为了定位而先调用 query_volunteer_plan" in (plan_next_action.__doc__ or "")
 
 
 # ---------------------------------------------------------------------------

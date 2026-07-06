@@ -18,7 +18,6 @@ from app.schemas import WSMessage, WSResponse
 from app.service import (
     ChatService,
     ChatServiceResponseEnvelope,
-    build_timeout_fallback_from_recent_plan_execution,
 )
 
 # 加载环境变量
@@ -211,27 +210,11 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
                 msg.session_id,
                 _CHAT_SERVICE_TIMEOUT_SECONDS,
             )
-            fallback = build_timeout_fallback_from_recent_plan_execution(
-                msg.session_id,
-                msg.content,
+            resp = WSResponse(
+                type="reply",
+                session_id=msg.session_id,
+                content=_build_timeout_reply(msg.content),
             )
-            if fallback:
-                followup_responses = list(fallback.followups or [])
-                primary = fallback.primary
-                if isinstance(primary, WSResponse):
-                    resp = primary
-                else:
-                    resp = WSResponse(
-                        type="reply",
-                        session_id=msg.session_id,
-                        content=str(primary),
-                    )
-            else:
-                resp = WSResponse(
-                    type="reply",
-                    session_id=msg.session_id,
-                    content=_build_timeout_reply(msg.content),
-                )
         except Exception as e:
             logger.exception("handle_message failed: %s", str(e))
             resp = WSResponse(
@@ -485,19 +468,7 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                     msg.session_id,
                     _CHAT_SERVICE_TIMEOUT_SECONDS,
                 )
-                fallback = build_timeout_fallback_from_recent_plan_execution(
-                    msg.session_id,
-                    msg.content,
-                )
-                if fallback:
-                    followup_responses = list(fallback.followups or [])
-                    primary = fallback.primary
-                    if isinstance(primary, WSResponse):
-                        resp_data = {"type": "text", "content": primary.content, "end": True}
-                    else:
-                        resp_data = {"type": "text", "content": str(primary), "end": True}
-                else:
-                    resp_data = {"type": "text", "content": _build_timeout_reply(msg.content), "end": True}
+                resp_data = {"type": "text", "content": _build_timeout_reply(msg.content), "end": True}
                 already_saved = False
             except Exception as e:
                 logger.exception("handle_message failed (compat): %s", str(e))

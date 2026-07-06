@@ -9,7 +9,7 @@
       "release_3_0_3",
       "effect_quality",
       "performance_smoke",
-      "plan_fast_route",
+      "zhiyuan_agent_direct",
       "plan_status",
       "rich_reply",
       "readonly_no_workspace_card"
@@ -83,7 +83,7 @@
       "release_3_0_3",
       "effect_quality",
       "performance_smoke",
-      "plan_fast_route",
+      "zhiyuan_agent_direct",
       "review_plan",
       "review_workspace",
       "rich_reply"
@@ -145,7 +145,7 @@
     ]
   },
   {
-    "name": "303-quality-plan-local-query-readonly-fast-route",
+    "name": "303-quality-plan-local-query-readonly-direct",
     "sessionId": "17",
     "flow": [
       "plan"
@@ -154,7 +154,7 @@
       "release_3_0_3",
       "effect_quality",
       "performance_smoke",
-      "plan_query_fast_route",
+      "zhiyuan_agent_direct",
       "readonly_no_workspace_card",
       "school_major_lookup"
     ],
@@ -219,7 +219,7 @@
     ]
   },
   {
-    "name": "303-quality-plan-named-move-preview-fast-route",
+    "name": "303-quality-plan-named-move-preview-direct",
     "sessionId": "17",
     "flow": [
       "plan"
@@ -228,7 +228,7 @@
       "release_3_0_3",
       "effect_quality",
       "performance_smoke",
-      "plan_fast_route",
+      "zhiyuan_agent_direct",
       "school_major_ref",
       "preview_confirm_boundary"
     ],
@@ -289,7 +289,7 @@
     ]
   },
   {
-    "name": "303-quality-plan-named-add-preview-fast-route",
+    "name": "303-quality-plan-named-add-preview-direct",
     "sessionId": "17",
     "flow": [
       "plan"
@@ -298,7 +298,7 @@
       "release_3_0_3",
       "effect_quality",
       "performance_smoke",
-      "plan_fast_route",
+      "zhiyuan_agent_direct",
       "candidate_school_major_alias_ref",
       "preview_confirm_boundary"
     ],
@@ -320,7 +320,7 @@
           "加入当前方案",
           "候选"
         ],
-        "expectedRoutingPath": "direct_atomic_plan_action",
+        "expectedRoutingPath": "zhiyuan_agent_direct",
         "assertActionFamiliesContain": [
           "add_units"
         ],
@@ -380,7 +380,7 @@
       "release_3_0_3",
       "effect_quality",
       "performance_smoke",
-      "plan_fast_route",
+      "zhiyuan_agent_direct",
       "majorGroup_model",
       "unit_level_operation",
       "preview_confirm_boundary",
@@ -497,7 +497,7 @@
       "release_3_0_3",
       "effect_quality",
       "performance_smoke",
-      "plan_fast_route",
+      "zhiyuan_agent_direct",
       "sort_ordered_plan",
       "confirmation_boundary"
     ],

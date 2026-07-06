@@ -45,7 +45,7 @@ def test_model_node_benchmark_passes_exact_and_contains_assertions():
 def test_model_node_benchmark_reports_field_mismatch_and_forbidden_value():
     case = {
         "caseId": "case-a",
-        "node": "plan_semantic_action",
+        "node": "intent_side_effect",
         "expected": {"actionFamily": "none"},
         "actual": {"actionFamily": "preview_fix_proposal", "replyFocus": ["unavailable_guidance"]},
         "assert": {
@@ -357,11 +357,11 @@ def test_model_node_benchmark_loads_array_or_wrapped_cases(tmp_path):
 def test_model_node_benchmark_filters_cases_by_nodes():
     cases = [
         {"caseId": "a", "node": "intent_side_effect"},
-        {"caseId": "b", "node": "plan_semantic_action"},
-        {"caseId": "c", "node": "local_plan_action_dsl"},
+        {"caseId": "b", "node": "reply_generation_grounding"},
+        {"caseId": "c", "node": "candidate_filter_extraction"},
     ]
 
-    selected = benchmark._filter_cases_by_nodes(cases, "intent_side_effect, local_plan_action_dsl")
+    selected = benchmark._filter_cases_by_nodes(cases, "intent_side_effect, candidate_filter_extraction")
 
     assert [case["caseId"] for case in selected] == ["a", "c"]
 
@@ -594,56 +594,6 @@ async def test_model_node_benchmark_live_node_turn_side_effect_uses_turn_decisio
         "先不确认，当前方案里有没有护理或者中医学",
         payload={"planningStateProfile": {"formalPlanPresent": True, "pendingExists": True}},
     )
-
-
-@pytest.mark.asyncio
-async def test_model_node_benchmark_live_node_plan_atomic_action_dsl_uses_plan_tool():
-    fake_result = MagicMock()
-    fake_result.model_dump.return_value = {
-        "actionFamily": "add_units",
-        "confidence": 0.96,
-        "schoolKeyword": "湖北工程学院",
-        "majorKeyword": "计算机科学与技术",
-    }
-
-    with patch(
-        "app.tools.plan_semantic_action_tool.classify_plan_atomic_action_dsl",
-        new=AsyncMock(return_value=fake_result),
-    ) as classify_mock:
-        report = await benchmark.build_report_async(
-            [
-                {
-                    "caseId": "plan-atomic-action",
-                    "node": "plan_atomic_action_dsl",
-                    "prompt": "把湖北工程学院的计算机科学与技术加进来",
-                    "input": {
-                        "planningStateProfile": {
-                            "formalPlanPresent": True,
-                            "candidatePoolPresent": True,
-                            "pendingExists": False,
-                        }
-                    },
-                    "expected": {
-                        "actionFamily": "add_units",
-                        "schoolKeyword": "湖北工程学院",
-                        "majorKeyword": "计算机科学与技术",
-                    },
-                    "assert": {
-                        "exact": ["actionFamily"],
-                        "contains": {
-                            "schoolKeyword": ["湖北工程学院"],
-                            "majorKeyword": ["计算机科学与技术"],
-                        },
-                    },
-                }
-            ],
-            actual_source="live-node",
-        )
-
-    record = report["records"][0]
-    assert record["passed"] is True
-    assert record["actualSource"] == "live_node"
-    classify_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio

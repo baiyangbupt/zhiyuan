@@ -146,7 +146,6 @@ def test_dialog_scenario_soft_negative_region_stays_preference_not_constraint():
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -179,7 +178,6 @@ def test_dialog_scenario_hard_constraint_city_recovery_builds_constraint_confirm
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -226,7 +224,6 @@ def test_dialog_scenario_career_fit_question_stays_interest_analysis_not_direct_
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -584,8 +581,8 @@ def test_dialog_scenario_interest_followup_plan_analyze_reuses_pending_intent_an
                 )
             ),
         ),
-        patch("app.tools.explore_followup_tool.plan_next_action", new=AsyncMock(return_value='{"stage":"apply","action_family":"analyze_adjustment"}')) as plan_mock,
-        patch("app.tools.explore_followup_tool.execute_plan_action", new=AsyncMock(return_value='{"summary":"当前判断：可以先补强保区。","state_summary":"当前判断：可以先补强保区。"}')) as exec_mock,
+        patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {}})),
+        patch("app.tools.explore_followup_tool.query_plan", new=AsyncMock(return_value='{"message":"当前判断：可以先补强保区。"}')) as query_mock,
     ):
         resp = _run(
             handle_interest_analysis_action_result(
@@ -596,8 +593,7 @@ def test_dialog_scenario_interest_followup_plan_analyze_reuses_pending_intent_an
         )
 
     assert "当前判断" in _render_followup_result(resp)
-    plan_mock.assert_awaited_once()
-    exec_mock.assert_awaited_once()
+    query_mock.assert_awaited_once()
 
 
 def test_dialog_scenario_major_preference_candidate_query_uses_major_keyword_filter():
@@ -633,7 +629,7 @@ def test_dialog_scenario_major_preference_candidate_query_uses_major_keyword_fil
     assert query_mock.await_args.kwargs["major_keywords"] == ["网络与新媒体"]
 
 
-def test_dialog_scenario_major_preference_plan_analyze_reuses_plan_chain_not_intent_preview():
+def test_dialog_scenario_major_preference_plan_analyze_uses_4_0_plan_query_not_intent_preview():
     from app.tools.explore_followup_tool import handle_interest_analysis_action_result
 
     with (
@@ -645,8 +641,8 @@ def test_dialog_scenario_major_preference_plan_analyze_reuses_plan_chain_not_int
                 )
             ),
         ),
-        patch("app.tools.explore_followup_tool.plan_next_action", new=AsyncMock(return_value='{"stage":"apply","action_family":"analyze_adjustment"}')) as plan_mock,
-        patch("app.tools.explore_followup_tool.execute_plan_action", new=AsyncMock(return_value='{"summary":"当前判断：网络与新媒体承接还可以继续优化。"}')) as exec_mock,
+        patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {}})),
+        patch("app.tools.explore_followup_tool.query_plan", new=AsyncMock(return_value='{"message":"当前判断：网络与新媒体承接还可以继续优化。"}')) as query_mock,
         patch("app.tools.intent_state_tool.analyze_volunteer_intent_change", new=AsyncMock()) as intent_mock,
     ):
         resp = _run(
@@ -658,8 +654,7 @@ def test_dialog_scenario_major_preference_plan_analyze_reuses_plan_chain_not_int
         )
 
     assert "网络与新媒体承接" in _render_followup_result(resp)
-    plan_mock.assert_awaited_once()
-    exec_mock.assert_awaited_once()
+    query_mock.assert_awaited_once()
     intent_mock.assert_not_awaited()
 
 
@@ -713,7 +708,6 @@ def test_dialog_scenario_after_plan_discussion_user_adds_preference_still_gets_p
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -842,7 +836,6 @@ def test_dialog_scenario_mixed_utterance_explore_plus_future_preference_still_su
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -878,7 +871,6 @@ def test_dialog_scenario_mixed_city_explore_and_constraint_keeps_constraint_conf
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -912,7 +904,6 @@ def test_dialog_scenario_hedged_soft_negative_city_stays_preference():
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -945,7 +936,6 @@ def test_dialog_scenario_hedged_career_statement_stays_interest_analysis_before_
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -992,7 +982,6 @@ def test_dialog_scenario_second_confirm_preview_does_not_write_legacy_cache():
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -1008,8 +997,6 @@ def test_dialog_scenario_second_confirm_preview_does_not_write_legacy_cache():
         mock_pm.get_current_profile = AsyncMock(return_value=UserProfile())
         _run(_render_analysis(ctx_first, city_intents={"province": ["北京"]}))
         _run(_render_analysis(ctx_second, edit_flag="delete"))
-
-    assert save_mock.await_count == 0
 
 
 def test_dialog_scenario_explicit_intent_mode_overrides_structural_fallback():
@@ -1027,7 +1014,6 @@ def test_dialog_scenario_explicit_intent_mode_overrides_structural_fallback():
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -1092,7 +1078,6 @@ def test_dialog_scenario_major_category_preference_preview_does_not_write_legacy
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -1109,7 +1094,6 @@ def test_dialog_scenario_major_category_preference_preview_does_not_write_legacy
 
     assert "计算机类" in resp
     assert "电子信息类" in resp
-    save_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_explicit_major_exclusion_recovers_as_constraint_from_latest_turn():
@@ -1135,7 +1119,6 @@ def test_dialog_scenario_explicit_major_exclusion_recovers_as_constraint_from_la
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -1152,7 +1135,6 @@ def test_dialog_scenario_explicit_major_exclusion_recovers_as_constraint_from_la
         resp = _run(_render_analysis(ctx, edit_flag="delete"))
 
     assert "医学" in resp
-    save_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_school_named_preference_stays_intent_preview_not_candidate_refresh():
@@ -1170,7 +1152,6 @@ def test_dialog_scenario_school_named_preference_stays_intent_preview_not_candid
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -1188,7 +1169,6 @@ def test_dialog_scenario_school_named_preference_stays_intent_preview_not_candid
 
     assert "华南理工大学" in resp
     query_mock.assert_not_awaited()
-    save_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_interest_followup_candidate_query_with_major_category_returns_major_filters_only():
@@ -1241,7 +1221,6 @@ def test_dialog_scenario_biology_interest_and_far_region_requirement_can_coexist
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -1261,4 +1240,3 @@ def test_dialog_scenario_biology_interest_and_far_region_requirement_can_coexist
     assert "生物工程" in resp
     assert "新疆" in resp
     assert "黑龙江" in resp
-    save_mock.assert_not_awaited()

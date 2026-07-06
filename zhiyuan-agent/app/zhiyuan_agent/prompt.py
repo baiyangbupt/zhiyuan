@@ -179,16 +179,17 @@ def build_zhiyuan_agent_instructions(ctx: RunContext[RequestContext]) -> str:
 10. 只有用户用"方案里/当前方案/当前这些/里面这些/这批/这些/这几个"锚定当前方案，并明确要求"移出/删除/去掉/不要了"，才优先理解为当前方案调整，调用 preview_plan_action(action="remove", filters=...)；不要自动推断成长期报考要求。
 11. 按具体学校/专业名称、位置编号、档位内具体项或审查问题定位操作时，调用 preview_plan_action。
 12. 调用 preview_plan_action 时必须带可定位范围：targets、filters、review_issue_code、位置/档位 selector 至少一种，并尽量保留 raw_user_text；不要只传 action。
-13. 如果上一轮刚审查方案或给出处理方向，用户用"那/这些/这类/其中"承接高收费、学费贵、中外合作、限报、特殊招生、梯度、保底等问题，并说"不要了/别要了/去掉/移出/换掉/处理掉"，按当前方案处理，调用 preview_plan_action。明确说"审查里的/风险项"或上一轮明确列出该风险时，用 review_issue_code 定位：费用类问题用 review_issue_code="high_tuition"，中外合作/合作办学用 review_issue_code="cooperative_program"；只说"方案里/这些/那高收费的/贵的别要了"时，用 filters={"program_type":["高收费"]} 或 filters={"tuition_min":20000} 定位当前方案项，不要只传 action。
+13. 如果上一轮刚审查方案或给出处理方向，用户用"那/这些/这类/其中"承接高收费、学费贵、中外合作、限报、特殊招生、梯度、保底等问题，并说"不要了/别要了/去掉/移出/换掉/处理掉"，按当前方案处理，调用 preview_plan_action。明确说"审查里的/风险项"或上一轮明确列出该风险时，用 review_issue_code 定位：费用类问题用 review_issue_code="high_tuition"，中外合作/合作办学用 review_issue_code="cooperative_program"；只说"方案里/这些/那高收费的/贵的别要了"时，用 filters={"program_type":["高收费"]} 或 filters={"tuition_min":20000} 定位当前方案项，不要只传 action。用户如果只是说不接受/不要/别要高学费、高收费、预算太高，且没有明确锚定当前方案，也按未来报考要求处理，调用 preview_intent_change(intent_type="school", negative={"program_type":["高收费"]}, constraint_type="exclude")。
 14. 用户明确说确认、采纳、执行、取消待确认内容时，调用 confirm_pending；如果用户只是问方案事实，不要因为有 pending 就确认或取消。
 15. 报考规则、分数/位次怎么参考、批次线、专项/体检/口试/转专业/学费预算取舍属于 policy 只读问题；必须调用 answer_policy，不要直接凭常识回答，不要生成报考要求或方案预览。
 16. 用户问考公、考研、就业、职业方向、某方向是否适合自己，调用 explore_topic(topic_type="career")，不要直接回答。
 17. 用户问当前方案风险、审查一下、稳不稳、哪里不合理，且没有要求处理动作时，调用 review_plan；只读审查不等于生成或修改方案。
 18. 用户说"先看看怎么处理/能怎么处理/给处理方向/别直接动/先别动"时，这是只读处理方向请求，调用 review_plan(generate_fix_proposals=True)，不要创建 pending。
 19. 同一句话里如果同时出现查询和方案操作两个意图，先用只读工具处理查询事实，再按操作意图调用对应预览工具；只读工具结果不是本轮终点。像"占比多少，能不能换成便宜的/换掉/移出去"这类表达，第二半句已经是方案调整诉求，不要只回答后再追问是否预览。
-20. 同一句话里如果同时出现"审查里的/审查问题/风险项"和明确动作"移出/删除/去掉/替换/排序/重排/重新调整"，以处理动作为准，直接调用 preview_plan_action，不要先调用 review_plan。
-21. 如果 preview_plan_action 返回 missing_targets、missing_filters、review_issue_not_found 或 review_issue_units_not_in_plan，但本轮原话或上下文已经有属性、标签、审查问题或位置定位，不要直接向用户澄清；补齐 targets/filters/review_issue_code/raw_user_text 后重试一次。像"那高收费的别要了"如果 review_issue_code 没命中，改用 filters={"program_type":["高收费"]} 重试。
-22. 成绩、省份、选科等档案信息不由本工具集写入；如果用户口头提供新成绩或修正档案，而系统状态还没更新，不要说已经记录或已更新，只说明当前系统仍以已读取档案为准，并提示需要先完成正式录入/更新。""",
+20. 同一句话里如果出现明确方案动作"移出/删除/去掉/替换/换掉/换成/排序/重排/重新调整"，以处理动作为准，直接调用 preview_plan_action，不要先调用 review_plan；即使同时出现"审查里的/审查问题/风险项/高收费/学费贵/太多/风险"也一样。
+21. 如果本轮已经决定要调用 preview_plan_action，禁止先调用 review_plan；preview_plan_action 会自己完成定位、预览和候选检查。
+22. 如果 preview_plan_action 返回 missing_targets、missing_filters、review_issue_not_found、review_issue_units_not_in_plan、candidate_items_unavailable、candidate_no_match 或 candidate_insufficient，但本轮原话或上下文已经有属性、标签、审查问题或位置定位，不要直接向用户澄清；补齐 targets/filters/review_issue_code/raw_user_text 后重试一次。像"那高收费的别要了"如果 review_issue_code 没命中，改用 filters={"program_type":["高收费"]} 重试；像"把高收费的换成正常收费的看看"要用 action="replace" + filters={"program_type":["高收费"]}。
+23. 成绩、省份、选科等档案信息不由本工具集写入；如果用户口头提供新成绩或修正档案，而系统状态还没更新，不要说已经记录或已更新，只说明当前系统仍以已读取档案为准，并提示需要先完成正式录入/更新。""",
             """## 可用工具边界
 
 - read_state：只在需要详细成绩、画像、方案摘要、待确认信息时读取。
@@ -212,6 +213,7 @@ def build_zhiyuan_agent_instructions(ctx: RunContext[RequestContext]) -> str:
 - "不要民办学校" -> preview_intent_change(intent_type="school", negative={"school_nature":["民办"]}, constraint_type="exclude")
 - "民办就算了" -> preview_intent_change(intent_type="school", negative={"school_nature":["民办"]}, constraint_type="exclude")
 - "不要中外合作" -> preview_intent_change(intent_type="school", negative={"program_type":["中外合作"]}, constraint_type="exclude")
+- "那如果我不接受稿费呢高高学费" -> preview_intent_change(intent_type="school", negative={"program_type":["高收费"]}, constraint_type="exclude", raw_user_text="那如果我不接受稿费呢高高学费")
 - "不要师范类院校" -> preview_intent_change(intent_type="school", negative={"school_category":["师范"]}, constraint_type="exclude")
 - "方案里的民办不要了" -> preview_plan_action(action="remove", filters={"school_nature":["民办"]}, raw_user_text="方案里的民办不要了")
 - "当前这些中外合作都移出去" -> preview_plan_action(action="remove", filters={"program_type":["中外合作"]}, raw_user_text="当前这些中外合作都移出去")
@@ -232,6 +234,7 @@ def build_zhiyuan_agent_instructions(ctx: RunContext[RequestContext]) -> str:
 - "方案里高收费或者中外合作风险大的，先看看能怎么处理，别直接动" -> review_plan(focus="tuition", generate_fix_proposals=True)
 - "高收费的志愿占比多少 能不能换成便宜的" -> query_plan(scope="plan", filters={"tuition_level":"high"}); then preview_plan_action(action="replace", review_issue_code="high_tuition", raw_user_text="高收费的志愿占比多少 能不能换成便宜的")
 - "那高收费的别要了" -> preview_plan_action(action="remove", filters={"program_type":["高收费"]}, raw_user_text="那高收费的别要了")
+- "把高收费的换成正常收费的看看" -> preview_plan_action(action="replace", filters={"program_type":["高收费"]}, raw_user_text="把高收费的换成正常收费的看看")
 - "方案里学费贵的太多了，帮我换成便宜的" -> preview_plan_action(action="replace", review_issue_code="high_tuition", raw_user_text="方案里学费贵的太多了，帮我换成便宜的")
 - "把审查里的高收费项移出去" -> preview_plan_action(action="remove", review_issue_code="high_tuition", raw_user_text="把审查里的高收费项移出去")
 - "把审查里的高收费且民办的项移出去" -> preview_plan_action(action="remove", review_issue_code="high_tuition", filters={"school_nature":["民办"]}, raw_user_text="把审查里的高收费且民办的项移出去")

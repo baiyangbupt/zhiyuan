@@ -48,7 +48,7 @@ DEFAULT_BACKEND_VOLUNTEER_DATA_DIR = (
     os.environ.get("ZHIYUAN_REGRESSION_VOLUNTEER_DATA_DIR")
     or str(Path(__file__).resolve().parents[2] / "zhiyuan-server" / "data" / "tmp")
 )
-PENDING_STATE_KEYS = ("pendingConfirmation", "planEditCache")
+PENDING_STATE_KEYS = ("pendingConfirmation",)
 BACKEND_STATE_CLONE_KEYS = ("planningState", "userprofile", "userScoreDetail")
 BACKEND_VOLUNTEER_FILE_SUFFIXES = ("", "_temp", "_final", "_temp_summary", "_final_summary")
 
@@ -181,12 +181,6 @@ PLAN_STYLE_BANNED_EXACT_LINES = {"你。", "只有。", "请。"}
 
 ROUTING_PATH_BY_HISTORY_MODEL_NAME = {
     "semantic-router-shadow": "",
-    "plan-fast-route": "plan_fast_route",
-    "plan-query-fast-route": "plan_query_fast_route",
-    "major-intent-fast-route": "major_intent_fast_route",
-    "major-compare-fast-route": "major_compare_fast_route",
-    "career-direction-fast-route": "career_direction_fast_route",
-    "pending-intent-impact-fast-route": "pending_intent_impact_fast_route",
     "direct-pending-plan-confirmation": "direct_pending_plan_confirm",
     "direct-pending-intent-confirmation": "direct_pending_intent_confirm",
     "direct-plan-confirmation-guard": "plan_confirmation_guard_no_pending",
@@ -194,12 +188,6 @@ ROUTING_PATH_BY_HISTORY_MODEL_NAME = {
 }
 
 ROUTING_PATH_BY_TOOL_CALL_ID_PREFIX = (
-    ("fast-plan-next-", "plan_fast_route"),
-    ("fast-execute-", "plan_fast_route"),
-    ("fast-query-volunteer-plan", "plan_query_fast_route"),
-    ("fast-preview-major-intent", "major_intent_fast_route"),
-    ("fast-compare-majors", "major_compare_fast_route"),
-    ("fast-analyze-current-career-direction", "career_direction_fast_route"),
     ("direct-pending-intent-confirmation", "direct_pending_intent_confirm"),
 )
 
@@ -1323,23 +1311,6 @@ def _step_requires_zhiyuan_agent_poc_shadow(step: dict[str, Any]) -> bool:
     )
 
 
-def _plan_payload_fields_from_call_args(args: dict[str, Any]) -> dict[str, Any]:
-    raw_payload = args.get("plan_payload")
-    if not isinstance(raw_payload, str) or not raw_payload.strip():
-        return {}
-    payload = _parse_json_object(raw_payload)
-    if not payload:
-        return {}
-    result: dict[str, Any] = {}
-    action_family = str(payload.get("action_family") or "").strip()
-    stage = str(payload.get("stage") or "").strip()
-    if action_family:
-        result["actionFamily"] = action_family
-    if stage:
-        result["stage"] = stage
-    return result
-
-
 def _add_unique(target: list[str], value: Any) -> None:
     text = str(value or "").strip()
     if text and text not in target:
@@ -1390,10 +1361,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                 if call_id:
                     item["toolCallId"] = call_id
                 action_family = str(args.get("action_family") or "").strip()
-                if tool_name == "execute_plan_action":
-                    item.update(_plan_payload_fields_from_call_args(args))
-                    action_family = action_family or str(item.get("actionFamily") or "").strip()
-                elif action_family:
+                if action_family:
                     item["actionFamily"] = action_family
                 stage = str(args.get("current_stage") or "").strip()
                 if stage:
@@ -1524,9 +1492,6 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                     }.items()
                     if value not in (None, "")
                 }
-        arbitration = route_decision.get("arbitration")
-        if isinstance(arbitration, dict):
-            summary["fastRouteArbitration"] = arbitration
     return summary
 
 
@@ -2545,7 +2510,6 @@ def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
             }
             for record in slowest
         ],
-        "fastRouteArbitration": _build_fast_route_arbitration_summary(records),
         "zhiyuanAgentPocShadow": _build_zhiyuan_agent_poc_shadow_summary(records),
     }
 
@@ -2628,51 +2592,6 @@ def _build_zhiyuan_agent_poc_shadow_summary(records: list[dict[str, Any]]) -> di
         "toolCallCount": _duration_summary(tool_counts),
         "totalTokens": _duration_summary(total_tokens),
         "errorExamples": error_examples,
-    }
-
-
-def _build_fast_route_arbitration_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
-    observed = 0
-    needed = 0
-    selected_paths: dict[str, int] = {}
-    needed_reasons: dict[str, int] = {}
-    candidate_paths: dict[str, int] = {}
-    needed_examples: list[dict[str, Any]] = []
-
-    for record in records:
-        turn = record.get("turnObservability")
-        if not isinstance(turn, dict):
-            continue
-        arbitration = turn.get("fastRouteArbitration")
-        if not isinstance(arbitration, dict):
-            continue
-        observed += 1
-        _bump(selected_paths, arbitration.get("selectedPath"))
-        for path in arbitration.get("semanticArbitrationCandidatePaths") or []:
-            _bump(candidate_paths, path)
-        if arbitration.get("semanticArbitrationNeeded") is True:
-            needed += 1
-            _bump(needed_reasons, arbitration.get("semanticArbitrationReason"))
-            if len(needed_examples) < 10:
-                needed_examples.append(
-                    {
-                        "case": record.get("case"),
-                        "sessionId": record.get("sessionId"),
-                        "prompt": record.get("prompt"),
-                        "selectedPath": arbitration.get("selectedPath"),
-                        "reason": arbitration.get("semanticArbitrationReason"),
-                        "candidatePaths": arbitration.get("semanticArbitrationCandidatePaths") or [],
-                    }
-                )
-
-    return {
-        "observed": observed,
-        "semanticArbitrationNeeded": needed,
-        "semanticArbitrationNotNeeded": observed - needed,
-        "selectedPaths": selected_paths,
-        "neededReasons": needed_reasons,
-        "candidatePaths": candidate_paths,
-        "neededExamples": needed_examples,
     }
 
 
@@ -3224,12 +3143,12 @@ def main() -> None:
     parser.add_argument(
         "--clear-backend-pending",
         action="store_true",
-        help="clear backend pendingConfirmation and legacy planEditCache for all case sessions before running",
+        help="clear backend pendingConfirmation for all case sessions before running",
     )
     parser.add_argument(
         "--clear-backend-pending-per-case",
         action="store_true",
-        help="clear backend pendingConfirmation and legacy planEditCache for a case session before each case",
+        help="clear backend pendingConfirmation for a case session before each case",
     )
     parser.add_argument(
         "--clear-backend-planning-intent-per-case",

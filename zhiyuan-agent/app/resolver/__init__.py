@@ -1,7 +1,7 @@
 """ActionResolver 确定性动作映射包。
 
 用 IntentFrame + PlanContextInputs → ActionResolution
-的确定性规则替代 plan_orchestration_tool 中的 8 个 _goal_requests_* 关键词匹配函数。
+的确定性规则替代历史 planner 里的关键词匹配动作归一化。
 """
 
 from app.resolver.action_resolver import ActionResolution, ActionResolver

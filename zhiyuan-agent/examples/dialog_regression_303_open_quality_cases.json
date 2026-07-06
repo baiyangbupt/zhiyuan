@@ -257,7 +257,7 @@
     "coverage": [
       "release_3_0_3",
       "open_quality",
-      "plan_query_fast_route",
+      "zhiyuan_agent_direct",
       "readonly_no_workspace_card",
       "no_pending_guard",
       "school_major_lookup"
@@ -362,7 +362,7 @@
     "coverage": [
       "release_3_0_3",
       "open_quality",
-      "plan_fast_route",
+      "zhiyuan_agent_direct",
       "sort_ordered_plan",
       "preview_confirm_boundary",
       "side_effect_explained"
@@ -841,7 +841,7 @@
       "release_3_0_3",
       "open_quality",
       "realistic_user_input",
-      "plan_query_fast_route",
+      "zhiyuan_agent_direct",
       "candidate_lookup",
       "readonly_no_workspace_card"
     ],

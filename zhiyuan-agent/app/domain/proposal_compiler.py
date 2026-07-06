@@ -14,11 +14,6 @@ from app.domain.career_slots import (
     CAREER_SYSTEM_PUBLIC_SERVICE,
     to_career_label,
 )
-from app.tools.review_issue_registry import (
-    get_review_issue_rule,
-    normalize_structured_review_issue_value,
-)
-
 logger = logging.getLogger(__name__)
 
 PENDING_PLAN_ACTION_FAMILIES = frozenset(
@@ -36,107 +31,6 @@ PENDING_PLAN_ACTION_FAMILIES = frozenset(
 )
 
 SUPPORTED_WORKSPACE_ACTION_TARGETS = frozenset({"candidate", "ordered", "review"})
-
-EXECUTE_PLAN_ACTION_REFRESH_FAMILIES = frozenset(
-    {
-        "review_plan",
-        "generate_plan",
-        "add_units",
-        "remove_units",
-        "move_unit",
-        "move_ordered_unit",
-        "remove_ordered_unit",
-        "replace_units",
-        "sort_ordered_plan",
-        "regenerate_order",
-    }
-)
-
-EXECUTE_PLAN_ACTION_VIEW_FAMILIES = frozenset(
-    {
-        "query_state",
-        "query_ordered",
-        "query_candidates",
-    }
-)
-
-EXECUTE_PLAN_ACTION_REFRESH_TARGETS_BY_FAMILY = {
-    "review_plan": [],
-    "generate_plan": ["ordered"],
-    "add_units": ["ordered"],
-    "remove_units": ["ordered"],
-    "move_unit": ["ordered"],
-    "move_ordered_unit": ["ordered", "review"],
-    "remove_ordered_unit": ["ordered", "review"],
-    "replace_units": ["ordered"],
-    "sort_ordered_plan": ["ordered", "review"],
-    "regenerate_order": ["ordered"],
-}
-
-PLAN_WORKSPACE_MUTATING_TOOL_NAMES = frozenset(
-    {
-        "select_planning_ordered_items",
-        "remove_planning_ordered_items",
-        "generate_planning_ordered_plan",
-        "generate_planning_initial_plan",
-        "move_planning_ordered_item",
-    }
-)
-
-EXPLANATION_ONLY_PLAN_RESULTS = frozenset(
-    {
-        ("analyze_adjustment", "adjustment_analysis"),
-        ("preview_fix_proposal", "fix_proposal_preview"),
-    }
-)
-
-
-@dataclass
-class FixProposalSelectionResult:
-    proposal: dict[str, Any] | None = None
-    selected_proposal_id: str = ""
-    target_strategies: list[str] = field(default_factory=list)
-    target_issue_codes: list[str] = field(default_factory=list)
-    target_match_empty: bool = False
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
-class RuntimeReviewFixCompiledSource:
-    proposal: dict[str, Any] | None = None
-    compiled: dict[str, Any] | None = None
-    selection: FixProposalSelectionResult = field(default_factory=FixProposalSelectionResult)
-    source_version_guard: int = 0
-    proposal_source: str = "review_check"
-    target_match_empty: bool = False
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
-class RuntimeReviewRefocusCompiledSource:
-    matched: bool = False
-    route: str = ""
-    side_effect: str = "readonly"
-    plan_payload: dict[str, Any] = field(default_factory=dict)
-    evidence_plan: dict[str, Any] = field(default_factory=dict)
-    target_strategies: list[str] = field(default_factory=list)
-    target_issue_codes: list[str] = field(default_factory=list)
-    confidence: float = 0.0
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
-class RuntimeReviewToFixPreviewCompiledSource:
-    matched: bool = False
-    route: str = ""
-    side_effect: str = "plan_preview"
-    plan_payload: dict[str, Any] = field(default_factory=dict)
-    target_strategies: list[str] = field(default_factory=list)
-    target_issue_codes: list[str] = field(default_factory=list)
-    target_scope_explicit: bool = False
-    confidence: float = 0.0
-    blocking_reasons: list[str] = field(default_factory=list)
-
 
 @dataclass
 class PlanConfirmationCandidateResolution:
@@ -171,18 +65,6 @@ class RuntimeLocalPlanActionSource:
 
 
 @dataclass
-class RuntimeAtomicPlanActionSource:
-    matched: bool = False
-    route: str = ""
-    action_family: str = ""
-    plan_next_action_args: dict[str, Any] = field(default_factory=dict)
-    plan_action_dsl: dict[str, Any] = field(default_factory=dict)
-    turn_decision_dsl: dict[str, Any] = field(default_factory=dict)
-    source_version_guard: int = 0
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
 class RuntimePlanQueryCompiledSource:
     matched: bool = False
     route: str = ""
@@ -190,18 +72,6 @@ class RuntimePlanQueryCompiledSource:
     action_family: str = "query_ordered"
     plan_payload: dict[str, Any] = field(default_factory=dict)
     plan_query_dsl: dict[str, Any] = field(default_factory=dict)
-    source_version_guard: int = 0
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
-class RuntimeCurrentPlanMutationCompiledSource:
-    matched: bool = False
-    route: str = ""
-    side_effect: str = "plan_preview"
-    action_family: str = ""
-    plan_payload: dict[str, Any] = field(default_factory=dict)
-    mutation_dsl: dict[str, Any] = field(default_factory=dict)
     source_version_guard: int = 0
     blocking_reasons: list[str] = field(default_factory=list)
 
@@ -222,39 +92,6 @@ class RuntimeBlockedIntentPreviewReplySource:
     route: str = ""
     side_effect: str = "reply_guard"
     primary_reply: str = ""
-    display_payload: dict[str, Any] = field(default_factory=dict)
-    reply_plan: dict[str, Any] = field(default_factory=dict)
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
-class RuntimeReadonlyWorkspaceEvidencePlanSource:
-    matched: bool = False
-    route: str = ""
-    side_effect: str = "readonly"
-    evidence_plan: dict[str, Any] = field(default_factory=dict)
-    workspace_refresh_targets: list[str] = field(default_factory=list)
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
-class RuntimeWorkspacePresentationSource:
-    matched: bool = False
-    route: str = ""
-    side_effect: str = "workspace_presentation"
-    workspace_refresh_targets: list[str] = field(default_factory=list)
-    workspace_view_targets: list[str] = field(default_factory=list)
-    evidence_plan: dict[str, Any] = field(default_factory=dict)
-    latest_result_is_explanation_only: bool = False
-    result_is_readonly_no_refresh: bool = False
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
-class RuntimeSemanticPlanDisplaySource:
-    matched: bool = False
-    route: str = ""
-    side_effect: str = "readonly"
     display_payload: dict[str, Any] = field(default_factory=dict)
     reply_plan: dict[str, Any] = field(default_factory=dict)
     blocking_reasons: list[str] = field(default_factory=list)
@@ -349,28 +186,6 @@ class UserGoalFixProposalSelection:
 
 
 @dataclass
-class StructuredUserGoalFixRequestSource:
-    matched: bool = False
-    goal: dict[str, Any] | None = None
-    goal_type: str = ""
-    source_version_guard: int = 0
-    user_goal_request: dict[str, Any] = field(default_factory=dict)
-    intent_payload: dict[str, Any] | None = None
-    summary_hint: str = ""
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
-class StructuredGoalIntentInputSource:
-    matched: bool = False
-    intent_payload: dict[str, Any] | None = None
-    selected_values: list[dict[str, Any]] = field(default_factory=list)
-    intent_mode: str = "constraint"
-    raw_constraint_intent_type: str = "default"
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
 class StructuredGoalClarificationResolution:
     needed: bool = False
     questions: list[str] = field(default_factory=list)
@@ -383,23 +198,6 @@ class IntentProposalInputResolution:
     allowed: bool = False
     intent_mode: str = "preference"
     constraint_intent_type: str = "default"
-    blocking_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
-class FixProposalTargetScope:
-    target_strategies: list[str] = field(default_factory=list)
-    target_issue_codes: list[str] = field(default_factory=list)
-    explicit: bool = False
-
-
-@dataclass
-class FixProposalTargetScopeResolution:
-    target_strategies: list[str] = field(default_factory=list)
-    target_issue_codes: list[str] = field(default_factory=list)
-    explicit: bool = False
-    needs_semantic_decision: bool = False
-    source: str = ""
     blocking_reasons: list[str] = field(default_factory=list)
 
 
@@ -1272,101 +1070,6 @@ def structured_intent_payload_from_composite_proposal(source: dict[str, Any] | N
     }
 
 
-def compile_structured_user_goal_fix_request_source(
-    *,
-    source: dict[str, Any] | None,
-    planning_version: int = 0,
-    context_source: str,
-    intent_payload_override: dict[str, Any] | None = None,
-    evidence_source: str = "structured_plan_goal",
-) -> StructuredUserGoalFixRequestSource:
-    goal = structured_goal_from_composite_proposal(source)
-    if not isinstance(goal, dict):
-        return StructuredUserGoalFixRequestSource(blocking_reasons=["missing_structured_goal"])
-    resolved_planning_version = _as_int(planning_version)
-    if resolved_planning_version <= 0:
-        resolved_planning_version = _as_int(
-            (source or {}).get("planning_version")
-            or (source or {}).get("planningVersion")
-            or (source or {}).get("source_backend_version")
-            or (source or {}).get("sourceBackendVersion")
-        )
-    if resolved_planning_version <= 0:
-        composite = (source or {}).get("composite_proposal") or (source or {}).get("compositeProposal")
-        if isinstance(composite, dict):
-            resolved_planning_version = _as_int(composite.get("source_version") or composite.get("sourceVersion"))
-    if resolved_planning_version <= 0:
-        return StructuredUserGoalFixRequestSource(
-            goal=goal,
-            goal_type=str(goal.get("goal_type") or goal.get("goalType") or "").strip(),
-            blocking_reasons=["missing_source_version_guard"],
-        )
-    user_goal_request = build_structured_user_goal_fix_proposal_request(
-        goal,
-        resolved_planning_version,
-        context={"source": context_source},
-        evidence_source=evidence_source,
-    )
-    if not user_goal_request:
-        return StructuredUserGoalFixRequestSource(
-            goal=goal,
-            goal_type=str(goal.get("goal_type") or goal.get("goalType") or "").strip(),
-            source_version_guard=resolved_planning_version,
-            blocking_reasons=["invalid_structured_user_goal_request"],
-        )
-    intent_payload = intent_payload_override or structured_intent_payload_from_composite_proposal(source)
-    summary_hint = str(
-        goal.get("user_original_text")
-        or goal.get("userOriginalText")
-        or (source or {}).get("user_goal")
-        or ""
-    ).strip()
-    return StructuredUserGoalFixRequestSource(
-        matched=True,
-        goal=goal,
-        goal_type=str(user_goal_request.get("goalType") or "").strip(),
-        source_version_guard=resolved_planning_version,
-        user_goal_request=user_goal_request,
-        intent_payload=intent_payload,
-        summary_hint=summary_hint,
-    )
-
-
-def compile_structured_goal_intent_input_source(
-    *,
-    source: dict[str, Any] | None,
-    intent_payload_override: dict[str, Any] | None = None,
-) -> StructuredGoalIntentInputSource:
-    intent_payload = intent_payload_override or structured_intent_payload_from_composite_proposal(source)
-    if not isinstance(intent_payload, dict):
-        return StructuredGoalIntentInputSource(blocking_reasons=["missing_structured_intent_payload"])
-    selected_values = [
-        item
-        for item in (intent_payload.get("selected") or [])
-        if isinstance(item, dict) and item
-    ]
-    if not selected_values:
-        return StructuredGoalIntentInputSource(
-            intent_payload=intent_payload,
-            blocking_reasons=["structured_intent_payload_requires_selected_values"],
-        )
-    intent_mode = str(intent_payload.get("intentMode") or "constraint").strip()
-    if intent_mode not in {"preference", "constraint"}:
-        intent_mode = "constraint"
-    raw_constraint_intent_type = (
-        intent_payload.get("constraintIntentType")
-        or intent_payload.get("constraint_intent_type")
-        or "default"
-    )
-    return StructuredGoalIntentInputSource(
-        matched=True,
-        intent_payload=intent_payload,
-        selected_values=selected_values,
-        intent_mode=intent_mode,
-        raw_constraint_intent_type=str(raw_constraint_intent_type or "default").strip() or "default",
-    )
-
-
 def _plan_query_profile_limit(filters: dict[str, Any], projection: dict[str, Any]) -> int:
     limit = _as_int(filters.get("limit") or projection.get("limit"), 5)
     return max(1, min(10, limit or 5))
@@ -1751,21 +1454,6 @@ def _turn_decision_is_current_plan_atomic_mutation(decision: Any) -> bool:
     return not _current_plan_mutation_gate_from_turn_decision(decision)
 
 
-def _turn_decision_atomic_mutation_dsl(decision: Any) -> dict[str, Any]:
-    if decision is None:
-        return {}
-    data = _model_or_dict(decision)
-    return {
-        "type": "TurnDecision",
-        "taskLayer": _decision_text_field(decision, "taskLayer"),
-        "sideEffect": _decision_text_field(decision, "sideEffect"),
-        "scopeAnchor": _decision_text_field(decision, "scopeAnchor"),
-        "scenario": _decision_text_field(decision, "scenario"),
-        "confidence": _decision_float_field(decision, "confidence"),
-        "targetIssue": _as_text_list(data.get("targetIssue") if "targetIssue" in data else getattr(decision, "targetIssue", [])),
-    }
-
-
 def compile_runtime_intent_preview_turn_decision_arbitration_source(
     *,
     turn_decision: Any,
@@ -1954,336 +1642,6 @@ def compile_blocked_intent_preview_for_plan_route_reply_source(
             "mode": ["readonly_boundary"],
             "focus": ["current_plan_mutation_requires_plan_preview"],
         },
-    )
-
-
-def _negative_major_scope_from_merged_intent(merged_intent: dict[str, Any] | None) -> tuple[dict[str, list[str]], list[str]]:
-    if not isinstance(merged_intent, dict):
-        return {}, []
-    major_intents = merged_intent.get("major_intents")
-    if not isinstance(major_intents, dict):
-        return {}, []
-    filters: dict[str, list[str]] = {}
-    source_major_names: list[str] = []
-    for key in ("negative_level3", "negative_level2", "negative_level1"):
-        values = _as_text_list(major_intents.get(key))
-        if not values:
-            continue
-        filters[key] = values
-        for value in values:
-            if value not in source_major_names:
-                source_major_names.append(value)
-    return filters, source_major_names
-
-
-def _review_issue_scope_from_merged_intent(merged_intent: dict[str, Any] | None) -> tuple[str, str, str]:
-    if not isinstance(merged_intent, dict):
-        return "", "", ""
-    constraints = merged_intent.get("physical_constraints")
-    if not isinstance(constraints, dict):
-        return "", "", ""
-    for value in _as_text_list(constraints.get("special_limits") or constraints.get("specialLimits")):
-        code = normalize_structured_review_issue_value(value)
-        if not code:
-            continue
-        rule = get_review_issue_rule(code)
-        if rule is None:
-            continue
-        action_family = "replace_units" if rule.scope_kind == "item_replacement" else "remove_units"
-        return code, rule.label, action_family
-    return "", "", ""
-
-
-def compile_runtime_current_plan_mutation_from_intent_preview_source(
-    *,
-    content: str | None,
-    turn_decision: Any,
-    merged_intent: dict[str, Any] | None,
-    intent_mode: str,
-    constraint_intent_type: str = "default",
-    summary: str = "",
-    planning_version: int = 0,
-) -> RuntimeCurrentPlanMutationCompiledSource:
-    """Compile structured intent-preview evidence into a current-plan mutation.
-
-    This compiler intentionally uses only framework outputs: TurnDecision and
-    merged IntentPreviewCandidate values. Raw user text is carried as display
-    goal text and is not used to infer the route or mutation scope.
-    """
-
-    blocking_reasons = _current_plan_mutation_gate_from_turn_decision(turn_decision)
-    normalized_intent_mode = str(intent_mode or "").strip()
-    if normalized_intent_mode != "constraint":
-        blocking_reasons.append("current_plan_mutation_requires_constraint_intent")
-    filters, source_major_names = _negative_major_scope_from_merged_intent(merged_intent)
-    review_issue_code, review_issue_label, review_issue_action_family = _review_issue_scope_from_merged_intent(merged_intent)
-    if not filters and not review_issue_code:
-        blocking_reasons.append("missing_current_plan_mutation_scope")
-    if blocking_reasons:
-        return RuntimeCurrentPlanMutationCompiledSource(blocking_reasons=blocking_reasons)
-
-    goal = str(summary or content or "").strip()
-    source_version_guard = int(planning_version or 0)
-    action_family = review_issue_action_family or "remove_units"
-    atomic_action: dict[str, Any] = {
-        "action_type": action_family,
-        "source_major_names": list(source_major_names),
-        "filters": dict(filters),
-    }
-    if review_issue_code:
-        atomic_action["review_issue_target"] = {
-            "code": review_issue_code,
-            "scope_mode": "full_issue",
-            "label": review_issue_label,
-        }
-    if goal:
-        atomic_action["reason"] = goal
-    mutation_dsl = {
-        "type": "CurrentPlanMutation",
-        "scopeAnchor": "current_plan",
-        "sideEffect": "plan_preview",
-        "actionFamily": action_family,
-        "intentSource": "intent_preview_payload",
-        "intentMode": normalized_intent_mode,
-        "constraintIntentType": str(constraint_intent_type or "default").strip() or "default",
-        "selector": {
-            "entityType": "review_issue" if review_issue_code else "major",
-            "polarity": "negative",
-            "sourceMajorNames": list(source_major_names),
-            "filters": dict(filters),
-            **(
-                {
-                    "reviewIssueCode": review_issue_code,
-                    "reviewIssueLabel": review_issue_label,
-                }
-                if review_issue_code
-                else {}
-            ),
-        },
-        "sourceVersionGuard": source_version_guard,
-    }
-    plan_payload: dict[str, Any] = {
-        "stage": "preview",
-        "action_family": action_family,
-        "user_goal": goal,
-        "requires_confirmation": False,
-        "should_rerun_review": True,
-        "should_refresh_workspace": True,
-        "workspace_refresh_targets": ["ordered"],
-        "atomic_actions": [atomic_action],
-        "facts": {
-            "currentPlanMutationDsl": dict(mutation_dsl),
-        },
-    }
-    if source_version_guard > 0:
-        plan_payload["planning_version"] = source_version_guard
-
-    return RuntimeCurrentPlanMutationCompiledSource(
-        matched=True,
-        route="current_plan_review_issue_preview" if review_issue_code else "current_plan_remove_preview",
-        side_effect="plan_preview",
-        action_family=action_family,
-        plan_payload=plan_payload,
-        mutation_dsl=mutation_dsl,
-        source_version_guard=source_version_guard,
-    )
-
-
-_ATOMIC_PLAN_ACTION_FAMILIES = PENDING_PLAN_ACTION_FAMILIES - {"generate_plan"}
-_ATOMIC_PLAN_ACTION_SCOPE_FIELDS = (
-    "volunteer_ids",
-    "unit_ids",
-    "source_major_names",
-    "source_position",
-    "review_issue_code",
-    "tier",
-    "province_keyword",
-    "school_keyword",
-    "major_keyword",
-    "school_tags",
-    "major_tags",
-    "min_tuition_per_year",
-    "max_tuition_per_year",
-    "preference_fit",
-)
-
-
-def _positive_optional_int(value: Any) -> int | None:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
-def _atomic_plan_action_has_scope(args: dict[str, Any]) -> bool:
-    for field_name in _ATOMIC_PLAN_ACTION_SCOPE_FIELDS:
-        value = args.get(field_name)
-        if isinstance(value, list) and value:
-            return True
-        if isinstance(value, str) and value.strip():
-            return True
-        if isinstance(value, int) and value > 0:
-            return True
-    return False
-
-
-def compile_runtime_atomic_plan_action_source(
-    *,
-    content: str | None,
-    action_family: str,
-    confidence: float,
-    turn_decision: Any | None = None,
-    require_turn_decision: bool = False,
-    volunteer_ids: list[str] | None = None,
-    unit_ids: list[str] | None = None,
-    source_major_names: list[str] | None = None,
-    source_position: int | None = None,
-    position_scope: str | None = None,
-    target_position: int | None = None,
-    sort_field: str | None = None,
-    review_issue_code: str | None = None,
-    tier: str | None = None,
-    province_keyword: str | None = None,
-    school_keyword: str | None = None,
-    major_keyword: str | None = None,
-    school_tags: list[str] | None = None,
-    major_tags: list[str] | None = None,
-    min_tuition_per_year: int | None = None,
-    max_tuition_per_year: int | None = None,
-    preference_fit: str | None = None,
-    preserve_count: bool = False,
-    limit: int = 5,
-    planning_version: int = 0,
-    allow_mutation_anchor_turn_decision_override: bool = False,
-) -> RuntimeAtomicPlanActionSource:
-    """Compile a model-produced AtomicPlanActionDsl into plan_next_action args.
-
-    The compiler validates structured DSL fields only. It does not inspect raw
-    prompt text to infer an action or scope.
-    """
-    normalized_action_family = str(action_family or "").strip()
-    try:
-        normalized_confidence = float(confidence or 0.0)
-    except (TypeError, ValueError):
-        normalized_confidence = 0.0
-    normalized_position_scope = str(position_scope or "single").strip() or "single"
-    if normalized_position_scope not in {"single", "after"}:
-        normalized_position_scope = "single"
-    normalized_sort_field = str(sort_field or "").strip()
-    if normalized_sort_field not in {"admissionRatio", "schoolRank", "finalScore"}:
-        normalized_sort_field = ""
-    normalized_preference_fit = str(preference_fit or "").strip()
-    if normalized_preference_fit not in {"aligned", "unrelated", "conflict"}:
-        normalized_preference_fit = ""
-    normalized_limit = _positive_optional_int(limit) or 5
-
-    normalized_volunteer_ids = _as_text_list(volunteer_ids)
-    normalized_source_major_names = _as_text_list(source_major_names)
-    normalized_school_keyword = str(school_keyword or "").strip() or None
-    normalized_major_keyword = str(major_keyword or "").strip() or None
-    if (
-        normalized_action_family == "move_unit"
-        and not normalized_volunteer_ids
-        and normalized_school_keyword
-        and normalized_source_major_names
-    ):
-        normalized_volunteer_ids = [
-            f"{normalized_school_keyword}的{major_name}"
-            for major_name in normalized_source_major_names
-            if str(major_name or "").strip()
-        ]
-    if (
-        normalized_action_family == "add_units"
-        and not normalized_volunteer_ids
-        and normalized_school_keyword
-        and normalized_major_keyword
-    ):
-        normalized_volunteer_ids = [f"{normalized_school_keyword}的{normalized_major_keyword}"]
-
-    args: dict[str, Any] = {
-        "user_goal": str(content or "").strip(),
-        "action_family": normalized_action_family,
-        "current_stage": "preview",
-        "volunteer_ids": normalized_volunteer_ids,
-        "unit_ids": _as_text_list(unit_ids),
-        "source_major_names": normalized_source_major_names,
-        "source_position": _positive_optional_int(source_position),
-        "position_scope": normalized_position_scope,
-        "target_position": _positive_optional_int(target_position),
-        "sort_field": normalized_sort_field or None,
-        "review_issue_code": str(review_issue_code or "").strip() or None,
-        "tier": str(tier or "").strip() or None,
-        "province_keyword": str(province_keyword or "").strip() or None,
-        "school_keyword": normalized_school_keyword,
-        "major_keyword": normalized_major_keyword,
-        "school_tags": _as_text_list(school_tags),
-        "major_tags": _as_text_list(major_tags),
-        "min_tuition_per_year": _positive_optional_int(min_tuition_per_year),
-        "max_tuition_per_year": _positive_optional_int(max_tuition_per_year),
-        "preference_fit": normalized_preference_fit or None,
-        "preserve_count": bool(preserve_count),
-        "limit": normalized_limit,
-        "user_confirmed": False,
-    }
-    blocking_reasons: list[str] = []
-    if normalized_confidence < 0.85:
-        blocking_reasons.append("low_atomic_plan_action_confidence")
-    if turn_decision is not None or require_turn_decision:
-        turn_decision_reasons = _current_plan_mutation_gate_from_turn_decision(turn_decision)
-        if not allow_mutation_anchor_turn_decision_override:
-            blocking_reasons.extend(turn_decision_reasons)
-    if normalized_action_family not in _ATOMIC_PLAN_ACTION_FAMILIES:
-        blocking_reasons.append("unsupported_atomic_plan_action_family")
-    if content_has_unsupported_pin_lock_action_anchor(content):
-        blocking_reasons.append("unsupported_atomic_plan_action_pin_or_lock")
-    if normalized_action_family in {"remove_units", "replace_units", "add_units"} and not _atomic_plan_action_has_scope(args):
-        blocking_reasons.append("missing_atomic_plan_action_scope")
-    if normalized_action_family in {"move_unit", "move_ordered_unit"} and args.get("target_position") is None:
-        blocking_reasons.append("missing_atomic_plan_action_target_position")
-    if normalized_action_family in {"move_ordered_unit", "remove_ordered_unit"} and args.get("source_position") is None and not args.get("unit_ids"):
-        blocking_reasons.append("missing_atomic_plan_action_source_position")
-    if normalized_action_family == "sort_ordered_plan" and not args.get("sort_field"):
-        blocking_reasons.append("missing_atomic_plan_action_sort_field")
-    if blocking_reasons:
-        return RuntimeAtomicPlanActionSource(
-            turn_decision_dsl=_turn_decision_atomic_mutation_dsl(turn_decision),
-            blocking_reasons=blocking_reasons,
-        )
-
-    plan_action_dsl = {
-        "type": "AtomicPlanActionDsl",
-        "scopeAnchor": "current_plan",
-        "sideEffect": "plan_preview",
-        "actionFamily": normalized_action_family,
-        "selector": {
-            key: value
-            for key, value in args.items()
-            if key
-            not in {
-                "user_goal",
-                "action_family",
-                "current_stage",
-                "user_confirmed",
-                "planning_version",
-            }
-            and value not in (None, "", [], {})
-        },
-        "sourceVersionGuard": int(planning_version or 0),
-    }
-    if allow_mutation_anchor_turn_decision_override:
-        plan_action_dsl["turnDecisionOverride"] = {
-            "reason": "current_plan_mutation_anchor_with_structured_atomic_dsl",
-            "turnDecision": _turn_decision_atomic_mutation_dsl(turn_decision),
-        }
-    return RuntimeAtomicPlanActionSource(
-        matched=True,
-        route="atomic_plan_action_preview",
-        action_family=normalized_action_family,
-        plan_next_action_args=args,
-        plan_action_dsl=plan_action_dsl,
-        turn_decision_dsl=_turn_decision_atomic_mutation_dsl(turn_decision),
-        source_version_guard=int(planning_version or 0),
     )
 
 
@@ -2494,388 +1852,6 @@ def compile_post_apply_readonly_evidence_plan(
         "noResultReason": no_result_reason,
         "mustNotAnswerWithoutEvidence": True,
     }
-
-
-def _dedupe_workspace_targets(targets: Any) -> list[str]:
-    values = targets if isinstance(targets, (list, tuple, set)) else []
-    deduped: list[str] = []
-    for target in values:
-        value = str(target or "").strip()
-        if not value or value not in SUPPORTED_WORKSPACE_ACTION_TARGETS or value in deduped:
-            continue
-        deduped.append(value)
-    return deduped
-
-
-def workspace_plan_result_is_readonly_no_refresh(action_family: str, result_kind: str) -> bool:
-    family = str(action_family or "").strip()
-    kind = str(result_kind or "").strip()
-    if family in EXECUTE_PLAN_ACTION_VIEW_FAMILIES:
-        return True
-    return (family, kind) in {
-        ("review_plan", "review_result"),
-        *EXPLANATION_ONLY_PLAN_RESULTS,
-    }
-
-
-def _workspace_result_action_family(result: dict[str, Any] | None) -> str:
-    if not isinstance(result, dict):
-        return ""
-    return str(result.get("action_family") or result.get("actionFamily") or "").strip()
-
-
-def _workspace_result_kind(result: dict[str, Any] | None) -> str:
-    if not isinstance(result, dict):
-        return ""
-    return str(result.get("result_kind") or result.get("resultKind") or "").strip()
-
-
-def _workspace_result_stage(result: dict[str, Any] | None) -> str:
-    if not isinstance(result, dict):
-        return ""
-    return str(result.get("stage") or "").strip()
-
-
-def _workspace_result_refresh_targets(result: dict[str, Any] | None) -> list[str]:
-    if not isinstance(result, dict) or not result:
-        return []
-    action_family = _workspace_result_action_family(result)
-    if action_family not in EXECUTE_PLAN_ACTION_REFRESH_FAMILIES:
-        return []
-    result_kind = _workspace_result_kind(result)
-    if workspace_plan_result_is_readonly_no_refresh(action_family, result_kind):
-        return []
-    is_successful_preview = result_kind == "preview_only" and _workspace_result_stage(result) == "preview"
-    if result.get("applied") is not True and not is_successful_preview:
-        return []
-    if result_kind == "error":
-        return []
-    return _dedupe_workspace_targets(
-        result.get("workspace_refresh_targets") or result.get("workspaceRefreshTargets")
-    )
-
-
-def _workspace_result_view_targets(result: dict[str, Any] | None) -> list[str]:
-    if not isinstance(result, dict) or not result:
-        return []
-    action_family = _workspace_result_action_family(result)
-    if action_family not in EXECUTE_PLAN_ACTION_VIEW_FAMILIES:
-        return []
-    if action_family == "query_candidates":
-        return []
-    targets = result.get("workspace_view_targets") or result.get("workspaceViewTargets")
-    if not isinstance(targets, list) and action_family != "query_state":
-        targets = result.get("workspace_refresh_targets") or result.get("workspaceRefreshTargets")
-    return _dedupe_workspace_targets(targets)
-
-
-def workspace_latest_plan_result_is_explanation_only(
-    execute_plan_results: list[dict[str, Any]] | None,
-) -> bool:
-    for result in reversed(execute_plan_results or []):
-        if not isinstance(result, dict) or not result:
-            continue
-        return (
-            _workspace_result_action_family(result),
-            _workspace_result_kind(result),
-        ) in EXPLANATION_ONLY_PLAN_RESULTS
-    return False
-
-
-def _workspace_latest_result_is_readonly_no_refresh(
-    execute_plan_results: list[dict[str, Any]] | None,
-) -> bool:
-    for result in reversed(execute_plan_results or []):
-        if not isinstance(result, dict) or not result:
-            continue
-        return workspace_plan_result_is_readonly_no_refresh(
-            _workspace_result_action_family(result),
-            _workspace_result_kind(result),
-        )
-    return False
-
-
-def _workspace_targets_from_tool_calls(
-    *,
-    tool_call_names: list[str] | None,
-    execute_plan_action_call_families: list[str] | None,
-) -> tuple[list[str], str]:
-    call_names = [str(name or "").strip() for name in (tool_call_names or []) if str(name or "").strip()]
-    family_index = 0
-    families = list(execute_plan_action_call_families or [])
-    for name in call_names:
-        if name == "run_planning_review":
-            return [], "run_planning_review_no_refresh"
-        if name == "execute_plan_action":
-            family = str(families[family_index] if family_index < len(families) else "").strip()
-            family_index += 1
-            if family:
-                return _dedupe_workspace_targets(
-                    EXECUTE_PLAN_ACTION_REFRESH_TARGETS_BY_FAMILY.get(family, [])
-                ), "execute_plan_call_family"
-        if name in PLAN_WORKSPACE_MUTATING_TOOL_NAMES:
-            return ["ordered"], "legacy_plan_workspace_mutation_tool"
-    return [], ""
-
-
-def _status_overview_supports_review_workspace(data: dict[str, Any] | None) -> bool:
-    if not isinstance(data, dict):
-        return False
-    focus = {
-        str(item or "").strip()
-        for item in (data.get("reply_focus") or data.get("replyFocus") or [])
-        if str(item or "").strip()
-    }
-    facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
-    requested_focus = facts.get("requested_reply_focus") or facts.get("requestedReplyFocus") or []
-    focus.update(str(item or "").strip() for item in requested_focus if str(item or "").strip())
-    if focus.intersection({"tier_distribution", "risk_warning", "review_result", "safety_check", "count_gap"}):
-        return True
-    return _as_int(facts.get("risk_count") or facts.get("riskCount")) > 0 or _as_int(
-        facts.get("warn_count") or facts.get("warnCount")
-    ) > 0
-
-
-def compile_runtime_readonly_workspace_evidence_plan_source(
-    *,
-    current_result: dict[str, Any] | None,
-    prior_plan_attempt_result: dict[str, Any] | None = None,
-    turn_decision: Any | None = None,
-) -> RuntimeReadonlyWorkspaceEvidencePlanSource:
-    """Resolve workspace view targets for a readonly status result.
-
-    This compiler consumes structured execution state only. It deliberately
-    does not treat `apply_pending_then_readonly` as a view shortcut: that
-    side-effect is only valid at the active-pending entrypoint where the
-    pending item can be applied and recorded.
-    """
-    current = current_result if isinstance(current_result, dict) else {}
-    current_action_family = str(current.get("action_family") or current.get("actionFamily") or "").strip()
-    current_result_kind = str(current.get("result_kind") or current.get("resultKind") or "").strip()
-    blocking_reasons: list[str] = []
-    if (current_action_family, current_result_kind) != ("query_state", "status_overview"):
-        blocking_reasons.append("current_result_not_status_overview")
-
-    turn_side_effect = _decision_text_field(turn_decision, "sideEffect") if turn_decision is not None else ""
-    turn_scenario = _decision_text_field(turn_decision, "scenario") if turn_decision is not None else ""
-    if turn_side_effect == "apply_pending_then_readonly" or turn_scenario == "apply_pending_then_readonly_query":
-        blocking_reasons.append("apply_pending_then_readonly_requires_active_pending_entrypoint")
-
-    prior = prior_plan_attempt_result if isinstance(prior_plan_attempt_result, dict) else {}
-    prior_action_family = str(prior.get("action_family") or prior.get("actionFamily") or "").strip()
-    prior_result_kind = str(prior.get("result_kind") or prior.get("resultKind") or "").strip()
-    if not prior:
-        blocking_reasons.append("missing_prior_plan_mutation_attempt")
-    elif prior_action_family not in PENDING_PLAN_ACTION_FAMILIES:
-        blocking_reasons.append("prior_attempt_not_plan_mutation")
-    elif prior_result_kind not in {"no_change", "error", "mutation_result"}:
-        blocking_reasons.append("unsupported_prior_plan_attempt_result_kind")
-
-    if blocking_reasons:
-        return RuntimeReadonlyWorkspaceEvidencePlanSource(blocking_reasons=blocking_reasons)
-
-    targets = ["ordered"]
-    target_issues = ["current_plan_state"]
-    if _status_overview_supports_review_workspace(current):
-        targets.append("review")
-        target_issues.append("risk_review")
-
-    evidence_plan = {
-        "type": "EvidencePlan",
-        "trigger": "post_plan_attempt_readonly_status_overview",
-        "scopeAnchor": "current_plan",
-        "sourceInputs": [
-            "current_execute_plan_action_result",
-            "prior_plan_mutation_attempt_result",
-        ],
-        "targetIssues": target_issues,
-        "priorAttempt": {
-            "actionFamily": prior_action_family,
-            "resultKind": prior_result_kind,
-        },
-        "currentResult": {
-            "actionFamily": current_action_family,
-            "resultKind": current_result_kind,
-        },
-        "workspaceRefreshTargets": targets,
-        "mustNotAnswerWithoutEvidence": False,
-    }
-    return RuntimeReadonlyWorkspaceEvidencePlanSource(
-        matched=True,
-        route="post_plan_attempt_readonly_workspace_evidence",
-        side_effect="readonly",
-        evidence_plan=evidence_plan,
-        workspace_refresh_targets=targets,
-    )
-
-
-def compile_runtime_workspace_presentation_source(
-    *,
-    execute_plan_results: list[dict[str, Any]] | None = None,
-    tool_call_names: list[str] | None = None,
-    execute_plan_action_call_families: list[str] | None = None,
-    initial_refresh_targets: list[str] | None = None,
-    allow_explanation_refresh: bool = False,
-    conditional_review_requested: bool = False,
-    include_call_fallback: bool = True,
-    include_result_view_targets: bool = True,
-    include_post_plan_attempt_view: bool = False,
-    current_result: dict[str, Any] | None = None,
-    prior_plan_attempt_result: dict[str, Any] | None = None,
-    turn_decision: Any | None = None,
-) -> RuntimeWorkspacePresentationSource:
-    """Compile workspace refresh/view presentation from structured runtime facts.
-
-    The service owns message parsing and WS response construction. This
-    compiler owns deterministic presentation decisions: mutation results can
-    request data refresh, readonly evidence can open panels without refresh,
-    and explanation-only results fail closed.
-    """
-    results = [result for result in (execute_plan_results or []) if isinstance(result, dict) and result]
-    refresh_targets = _dedupe_workspace_targets(initial_refresh_targets)
-    route = "initial_refresh_targets" if refresh_targets else ""
-    blocking_reasons: list[str] = []
-
-    if not refresh_targets:
-        result_targets: list[str] = []
-        for result in results:
-            result_targets.extend(_workspace_result_refresh_targets(result))
-        refresh_targets = _dedupe_workspace_targets(result_targets)
-        if refresh_targets:
-            route = "execute_plan_result_refresh"
-        elif results:
-            route = "execute_plan_result_no_refresh"
-    if not refresh_targets and not results and include_call_fallback:
-        refresh_targets, route = _workspace_targets_from_tool_calls(
-            tool_call_names=tool_call_names,
-            execute_plan_action_call_families=execute_plan_action_call_families,
-        )
-
-    latest_explanation_only = workspace_latest_plan_result_is_explanation_only(results)
-    latest_readonly_no_refresh = _workspace_latest_result_is_readonly_no_refresh(results)
-    if refresh_targets and latest_explanation_only and not allow_explanation_refresh:
-        refresh_targets = []
-        route = "explanation_only_result_no_refresh"
-    if refresh_targets and latest_readonly_no_refresh and not (
-        latest_explanation_only and allow_explanation_refresh
-    ):
-        refresh_targets = []
-        route = "readonly_result_no_refresh"
-
-    if conditional_review_requested and not latest_readonly_no_refresh:
-        refresh_targets = _dedupe_workspace_targets([*refresh_targets, "review"])
-        route = route or "conditional_review_presentation"
-
-    view_targets: list[str] = []
-    if include_result_view_targets:
-        for result in results:
-            view_targets.extend(_workspace_result_view_targets(result))
-    evidence_plan: dict[str, Any] = {}
-    if include_post_plan_attempt_view:
-        readonly_source = compile_runtime_readonly_workspace_evidence_plan_source(
-            current_result=current_result or (results[-1] if results else None),
-            prior_plan_attempt_result=prior_plan_attempt_result,
-            turn_decision=turn_decision,
-        )
-        if readonly_source.matched:
-            view_targets.extend(readonly_source.workspace_refresh_targets)
-            evidence_plan = readonly_source.evidence_plan
-            route = route or readonly_source.route
-        else:
-            blocking_reasons.extend(readonly_source.blocking_reasons)
-
-    refresh_targets = _dedupe_workspace_targets(refresh_targets)
-    view_targets = _dedupe_workspace_targets(view_targets)
-    matched = bool(refresh_targets or view_targets or route)
-    if not matched:
-        blocking_reasons.append("missing_workspace_presentation_signal")
-    return RuntimeWorkspacePresentationSource(
-        matched=matched,
-        route=route,
-        workspace_refresh_targets=refresh_targets,
-        workspace_view_targets=view_targets,
-        evidence_plan=evidence_plan,
-        latest_result_is_explanation_only=latest_explanation_only,
-        result_is_readonly_no_refresh=latest_readonly_no_refresh,
-        blocking_reasons=blocking_reasons,
-    )
-
-
-def _plan_result_has_fix_proposal_options(result: dict[str, Any] | None) -> bool:
-    if not isinstance(result, dict):
-        return False
-    facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
-    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
-    proposals = fix_facts.get("proposals")
-    if isinstance(proposals, list) and any(isinstance(proposal, dict) for proposal in proposals):
-        return True
-    return any(
-        _as_int(fix_facts.get(key)) > 0
-        for key in (
-            "ready_count",
-            "blocked_count",
-            "preview_only_count",
-            "readyCount",
-            "blockedCount",
-            "previewOnlyCount",
-        )
-    )
-
-
-def compile_runtime_semantic_plan_display_source(
-    *,
-    action_family: str,
-    result: dict[str, Any] | None,
-    pending_card_created: bool,
-    prefer_conditional_options: bool = False,
-) -> RuntimeSemanticPlanDisplaySource:
-    family = str(action_family or "").strip()
-    data = result if isinstance(result, dict) else {}
-    result_kind = _workspace_result_kind(data)
-    blocking_reasons: list[str] = []
-    if not family:
-        blocking_reasons.append("missing_action_family")
-
-    if pending_card_created:
-        presentation = "confirmation_card"
-        route = "semantic_plan_confirmation_card"
-        reply_focus = ["confirmable_plan_mutation"]
-    elif (
-        prefer_conditional_options
-        and family in {"review_plan", "analyze_adjustment", "preview_fix_proposal"}
-        and result_kind in {"review_result", "adjustment_analysis", "fix_proposal_preview", "preview_only"}
-    ):
-        presentation = "conditional_options"
-        route = "semantic_plan_conditional_options"
-        reply_focus = ["review_or_repair_options"]
-    elif (
-        family in {"analyze_adjustment", "preview_fix_proposal"}
-        and result_kind in {"adjustment_analysis", "fix_proposal_preview", "preview_only"}
-        and _plan_result_has_fix_proposal_options(data)
-    ):
-        presentation = "conditional_options"
-        route = "semantic_plan_conditional_options"
-        reply_focus = ["review_or_repair_options"]
-    else:
-        presentation = "readonly_answer"
-        route = "semantic_plan_readonly_answer"
-        reply_focus = ["readonly_plan_evidence"]
-
-    display_payload = {"presentation": presentation}
-    if presentation == "confirmation_card":
-        display_payload["pendingCardType"] = "pendingConfirmationCard"
-
-    return RuntimeSemanticPlanDisplaySource(
-        matched=not blocking_reasons,
-        route=route,
-        side_effect="plan_pending" if pending_card_created else "readonly",
-        display_payload=display_payload,
-        reply_plan={
-            "mode": [presentation],
-            "focus": reply_focus,
-        },
-        blocking_reasons=blocking_reasons,
-    )
 
 
 _RUNTIME_UNBACKED_CONFIRM_SENTENCE_RE = re.compile(r"(?:是否先确认|是否确认|确认要我.*执行)")
@@ -3407,6 +2383,19 @@ _CURRENT_PLAN_MUTATION_MARKERS = (
     "别动",
 )
 
+_CURRENT_PLAN_ADD_MUTATION_MARKERS = (
+    "加进来",
+    "加进去",
+    "放进来",
+    "放进去",
+    "加到方案",
+    "加进方案",
+    "加入方案",
+    "放到方案",
+    "放进方案",
+    "纳入方案",
+)
+
 _UNSUPPORTED_PIN_LOCK_ACTION_MARKERS = (
     "锁定",
     "固定",
@@ -3604,6 +2593,7 @@ def _append_needs_plan_first_target_issues(
     target_issues: list[str],
     compact: str,
     *,
+    has_current_plan_add: bool = False,
     has_current_plan_mutation: bool = False,
     has_current_plan_query: bool = False,
     recent_intent_summary: str = "",
@@ -3642,7 +2632,9 @@ def _append_needs_plan_first_target_issues(
         append("program_type")
     if not career_focus_labels and not has_intent_reference and any(marker in compact for marker in ("保底", "稳", "冲", "风险", "太冲")):
         append("tier_or_risk")
-    if has_current_plan_mutation:
+    if has_current_plan_add:
+        append("plan_add_without_referent")
+    elif has_current_plan_mutation:
         append("plan_mutation_without_referent")
     elif has_current_plan_query:
         append("current_plan_query_without_referent")
@@ -3713,10 +2705,13 @@ def _compile_needs_plan_first_reply(
         focus_sentence = f"你这轮关注的是{focus}；需要先有正式方案，才能检查方案内具体情况。"
     else:
         focus_sentence = ""
+    request_text = re.sub(r"\s+", " ", str(content or "").strip()).strip(" ，,。；;")
+    request_sentence = f"这轮诉求是：{request_text}。" if request_text else ""
     reply = (
         "当前还没有生成正式方案，所以没法判断或调整“刚才/当前方案”里的具体志愿。"
+        f"{request_sentence}"
         f"{focus_sentence}"
-        f"这轮不会把{focus}写成新的报考偏好，也不会改动当前方案。"
+        f"这轮不会把{focus}写成新的报考要求，也不会改动当前方案。"
         "也就是说，这轮不会改动方案。"
         "你可以先让我生成一版方案；有了正式方案后，我再按这条要求检查或调整。"
     )
@@ -3787,13 +2782,18 @@ def resolve_needs_plan_first_guard(
         return NeedsPlanFirstResolution()
     has_current_plan_reference = any(marker in compact for marker in _CURRENT_PLAN_REFERENCE_MARKERS)
     has_plan_scope = any(marker in compact for marker in _CURRENT_PLAN_SCOPE_MARKERS)
-    has_current_plan_mutation = any(marker in compact for marker in _CURRENT_PLAN_MUTATION_MARKERS)
+    has_current_plan_add = any(marker in compact for marker in _CURRENT_PLAN_ADD_MUTATION_MARKERS)
+    has_current_plan_mutation = (
+        any(marker in compact for marker in _CURRENT_PLAN_MUTATION_MARKERS)
+        or has_current_plan_add
+    )
     if not ((has_current_plan_reference and has_plan_scope) or has_current_plan_mutation):
         return NeedsPlanFirstResolution()
     target_issues: list[str] = []
     _append_needs_plan_first_target_issues(
         target_issues,
         compact,
+        has_current_plan_add=has_current_plan_add,
         has_current_plan_mutation=has_current_plan_mutation,
         recent_intent_summary=recent_intent_summary,
     )
@@ -4058,15 +3058,9 @@ def compile_runtime_pending_turn_decision_source(
 def _parse_plan_confirmation_payload(value: Any) -> tuple[dict[str, Any], str, list[str]]:
     if isinstance(value, dict):
         return dict(value), json.dumps(value, ensure_ascii=False), []
-    if not isinstance(value, str) or not value.strip():
+    if value in (None, "", [], {}):
         return {}, "", ["plan_candidate_requires_plan_payload"]
-    try:
-        parsed = json.loads(value)
-    except Exception:
-        return {}, value, ["invalid_plan_payload_json"]
-    if not isinstance(parsed, dict):
-        return {}, value, ["plan_payload_must_be_object"]
-    return parsed, value, []
+    return {}, str(value), ["plan_payload_must_be_object"]
 
 
 def _plan_payload_action_family(payload: dict[str, Any]) -> str:
@@ -4081,8 +3075,9 @@ def ensure_structured_plan_payload(
     """Normalize a Release 4.0 plan pending payload.
 
     New pending execution is driven by ``action_family`` + ``atomic_actions``.
-    This helper keeps transitional producers from storing opaque planPayload
-    while preserving concrete structured fields already resolved by preview.
+    This helper keeps transitional producers from storing opaque nested
+    payload fields while preserving concrete structured fields already
+    resolved by preview.
     """
     if not isinstance(payload, dict):
         return {}
@@ -4154,7 +3149,7 @@ def resolve_plan_confirmation_candidate(
 
     reasons: list[str] = []
     plan_payload, plan_payload_text, payload_reasons = _parse_plan_confirmation_payload(
-        confirmation_candidate.get("plan_payload") or confirmation_candidate.get("planPayload")
+        confirmation_candidate.get("plan_payload")
     )
     for reason in payload_reasons:
         _append_reason(reasons, reason)
@@ -4519,7 +3514,7 @@ def compile_plan_confirmation_proposal(
                 "type": "plan_confirmation_candidate",
                 "source": source,
                 "actionFamily": action_family,
-                "planPayload": resolution.plan_payload,
+                "plan_payload": resolution.plan_payload,
                 "sourceVersionGuard": resolution.source_version_guard,
             }
         ],
@@ -4600,7 +3595,7 @@ def compile_apply_then_generate_plan_source(
         "action_family": "generate_plan",
         "user_goal": goal,
         "summary": summary,
-        "plan_payload": json.dumps(plan_payload, ensure_ascii=False),
+        "plan_payload": plan_payload,
     }
     if source_version_guard > 0:
         confirmation_candidate["source_backend_version"] = source_version_guard
@@ -4817,7 +3812,7 @@ def plan_sink_contract(compiled: dict[str, Any]) -> tuple[bool, list[str]]:
         candidate_action_family = str(candidate.get("actionFamily") or "").strip()
         if candidate_action_family and action_family and candidate_action_family != action_family:
             _append_reason(reasons, "plan_candidate_action_family_mismatch")
-        candidate_payload = candidate.get("planPayload")
+        candidate_payload = candidate.get("plan_payload")
         if not isinstance(candidate_payload, dict) or not candidate_payload:
             _append_reason(reasons, "plan_candidate_requires_plan_payload")
             continue
@@ -4972,371 +3967,12 @@ def normalize_fix_proposal_target_issue_codes(
     return normalized
 
 
-def explicit_fix_proposal_target_scope_from_result(result: dict[str, Any] | None) -> FixProposalTargetScope:
-    if not isinstance(result, dict):
-        return FixProposalTargetScope()
-    strategies = normalize_fix_proposal_target_strategies(
-        result.get("target_strategies")
-        or result.get("targetStrategies")
-        or []
-    )
-    issue_codes = normalize_fix_proposal_target_issue_codes(
-        result.get("target_issue_codes")
-        or result.get("targetIssueCodes")
-        or []
-    )
-    return FixProposalTargetScope(
-        target_strategies=strategies,
-        target_issue_codes=issue_codes,
-        explicit=bool(strategies or issue_codes),
-    )
-
-
-def semantic_decision_fix_proposal_target_scope(
-    decision: Any,
-    *,
-    allowed_action_families: set[str],
-    confidence_threshold: float,
-) -> FixProposalTargetScope:
-    action_family = str(getattr(decision, "actionFamily", "") or "").strip()
-    if action_family not in allowed_action_families:
-        return FixProposalTargetScope()
-    try:
-        confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        confidence = 0.0
-    if confidence < confidence_threshold:
-        return FixProposalTargetScope()
-    strategies = normalize_fix_proposal_target_strategies(
-        getattr(decision, "targetStrategies", []) or []
-    )
-    issue_codes = normalize_fix_proposal_target_issue_codes(
-        getattr(decision, "targetIssueCodes", []) or []
-    )
-    return FixProposalTargetScope(
-        target_strategies=strategies,
-        target_issue_codes=issue_codes,
-        explicit=bool(strategies or issue_codes),
-    )
-
-
-def resolve_fix_proposal_target_scope_precheck(
-    latest_plan_result: dict[str, Any] | None,
-) -> FixProposalTargetScopeResolution:
-    if not isinstance(latest_plan_result, dict):
-        return FixProposalTargetScopeResolution(
-            source="missing_result",
-            blocking_reasons=["missing_latest_plan_result"],
-        )
-    explicit_scope = explicit_fix_proposal_target_scope_from_result(latest_plan_result)
-    if explicit_scope.explicit:
-        return FixProposalTargetScopeResolution(
-            target_strategies=explicit_scope.target_strategies,
-            target_issue_codes=explicit_scope.target_issue_codes,
-            explicit=True,
-            source="explicit_result_scope",
-        )
-    facts = latest_plan_result.get("facts") if isinstance(latest_plan_result.get("facts"), dict) else {}
-    if not ready_fix_proposals(facts):
-        return FixProposalTargetScopeResolution(
-            source="no_ready_fix_proposal",
-            blocking_reasons=["missing_ready_fix_proposal"],
-        )
-    if selected_fix_proposal_id(latest_plan_result, facts):
-        return FixProposalTargetScopeResolution(source="selected_proposal_id")
-    return FixProposalTargetScopeResolution(
-        needs_semantic_decision=True,
-        source="semantic_decision_required",
-    )
-
-
-def resolve_fix_proposal_target_scope_from_decision(
-    decision: Any,
-    *,
-    allowed_action_families: set[str],
-    confidence_threshold: float,
-) -> FixProposalTargetScopeResolution:
-    scope = semantic_decision_fix_proposal_target_scope(
-        decision,
-        allowed_action_families=allowed_action_families,
-        confidence_threshold=confidence_threshold,
-    )
-    if not scope.explicit:
-        return FixProposalTargetScopeResolution(source="semantic_decision_no_scope")
-    return FixProposalTargetScopeResolution(
-        target_strategies=scope.target_strategies,
-        target_issue_codes=scope.target_issue_codes,
-        explicit=True,
-        source="semantic_decision_scope",
-    )
-
-
 def _fix_proposal_source_issue_codes(proposal: dict[str, Any]) -> set[str]:
     return {
         str(code or "").strip()
         for code in (proposal.get("source_check_codes") or proposal.get("sourceCheckCodes") or [])
         if str(code or "").strip()
     }
-
-
-def filter_target_issue_codes_for_fix_proposals(
-    issue_codes: list[str],
-    context: dict[str, Any] | None,
-) -> list[str]:
-    available: set[str] = set()
-    fix_facts = {}
-    if isinstance(context, dict):
-        raw_fix_facts = context.get("fixProposals") or context.get("fix_proposals")
-        fix_facts = raw_fix_facts if isinstance(raw_fix_facts, dict) else {}
-    proposals = fix_facts.get("proposals") if isinstance(fix_facts.get("proposals"), list) else []
-    for proposal in proposals:
-        if isinstance(proposal, dict):
-            available.update(_fix_proposal_source_issue_codes(proposal))
-    if not available:
-        return normalize_fix_proposal_target_issue_codes(issue_codes)
-    result: list[str] = []
-    for code in normalize_fix_proposal_target_issue_codes(issue_codes):
-        if code in available:
-            result.append(code)
-    return result
-
-
-def semantic_decision_target_issue_codes_for_context(
-    decision: Any,
-    *,
-    allowed_action_families: set[str],
-    confidence_threshold: float,
-    target_strategies: list[str],
-    context: dict[str, Any] | None,
-) -> list[str]:
-    scope = semantic_decision_fix_proposal_target_scope(
-        decision,
-        allowed_action_families=allowed_action_families,
-        confidence_threshold=confidence_threshold,
-    )
-    if not scope.explicit:
-        return []
-    if (
-        target_strategies
-        and scope.target_strategies
-        and not (set(target_strategies) & set(scope.target_strategies))
-    ):
-        return []
-    return filter_target_issue_codes_for_fix_proposals(scope.target_issue_codes, context)
-
-
-def semantic_targeted_review_allowed(
-    decision: Any,
-    *,
-    confidence_threshold: float,
-) -> bool:
-    action_family = str(getattr(decision, "actionFamily", "") or "").strip()
-    confidence = _decision_float_field(decision, "confidence")
-    if action_family != "review_plan" or confidence < confidence_threshold:
-        return False
-    issue_codes = normalize_fix_proposal_target_issue_codes(
-        getattr(decision, "targetIssueCodes", []) or []
-    )
-    return bool(issue_codes) and "target_issue_only" in _as_text_list(getattr(decision, "replyFocus", []) or [])
-
-
-def review_context_supports_fix_preview_route(
-    decision: Any,
-    recent_plan_context: dict[str, Any] | None,
-) -> bool:
-    """Allow repair-preview reroute only when structured review proposals exist."""
-
-    if not isinstance(recent_plan_context, dict) or not recent_plan_context:
-        return False
-    last_action_family = str(recent_plan_context.get("lastActionFamily") or "").strip()
-    last_result_kind = str(recent_plan_context.get("lastResultKind") or "").strip()
-    if last_action_family not in {"review_plan", "analyze_adjustment", "preview_fix_proposal"}:
-        return False
-    if last_result_kind not in {"review_result", "adjustment_analysis", "fix_proposal_preview"}:
-        return False
-    fix_facts = recent_plan_context.get("fixProposals")
-    if not isinstance(fix_facts, dict):
-        return False
-    proposal_count = sum(
-        _as_int(fix_facts.get(key))
-        for key in ("readyCount", "blockedCount", "previewOnlyCount")
-    )
-    proposals = fix_facts.get("proposals") if isinstance(fix_facts.get("proposals"), list) else []
-    if proposal_count <= 0 and not proposals:
-        return False
-    requested_strategies = {
-        str(strategy or "").strip()
-        for strategy in getattr(decision, "targetStrategies", []) or []
-        if str(strategy or "").strip()
-    }
-    if not requested_strategies:
-        return True
-    proposal_strategies = {
-        str(proposal.get("strategy") or "").strip()
-        for proposal in proposals
-        if isinstance(proposal, dict) and str(proposal.get("strategy") or "").strip()
-    }
-    strategy_counts = fix_facts.get("strategyCounts") if isinstance(fix_facts.get("strategyCounts"), dict) else {}
-    proposal_strategies.update(
-        str(strategy or "").strip()
-        for strategy in strategy_counts
-        if str(strategy or "").strip()
-    )
-    strategies = fix_facts.get("strategies") if isinstance(fix_facts.get("strategies"), list) else []
-    proposal_strategies.update(
-        str(strategy or "").strip()
-        for strategy in strategies
-        if str(strategy or "").strip()
-    )
-    return not proposal_strategies or bool(requested_strategies & proposal_strategies)
-
-
-def semantic_decision_requests_fix_preview(
-    decision: Any,
-    *,
-    confidence_threshold: float,
-) -> bool:
-    action_family = str(getattr(decision, "actionFamily", "none") or "none").strip()
-    if action_family != "preview_fix_proposal":
-        return False
-    return _decision_float_field(decision, "confidence") >= confidence_threshold
-
-
-def compile_runtime_review_refocus_source(
-    *,
-    content: str | None,
-    latest_review_result: dict[str, Any] | None,
-    recent_plan_context: dict[str, Any] | None,
-    decision: Any,
-    planning_version: int = 0,
-    confidence_threshold: float = 0.8,
-) -> RuntimeReviewRefocusCompiledSource:
-    """Compile a targeted review rerun from structured review evidence.
-
-    The compiler consumes the existing review result and semantic target
-    decision. It does not infer target issues from the raw user prompt.
-    """
-
-    if not isinstance(latest_review_result, dict):
-        return RuntimeReviewRefocusCompiledSource(blocking_reasons=["missing_latest_review_result"])
-    if str(latest_review_result.get("action_family") or latest_review_result.get("actionFamily") or "").strip() != "review_plan":
-        return RuntimeReviewRefocusCompiledSource(blocking_reasons=["latest_result_not_review_plan"])
-    if str(latest_review_result.get("result_kind") or latest_review_result.get("resultKind") or "").strip() != "review_result":
-        return RuntimeReviewRefocusCompiledSource(blocking_reasons=["latest_result_not_review_result"])
-    facts = latest_review_result.get("facts") if isinstance(latest_review_result.get("facts"), dict) else {}
-    if facts.get("target_issue_codes") or facts.get("targetIssueCodes"):
-        return RuntimeReviewRefocusCompiledSource(blocking_reasons=["review_result_already_targeted"])
-    if not semantic_targeted_review_allowed(decision, confidence_threshold=confidence_threshold):
-        return RuntimeReviewRefocusCompiledSource(blocking_reasons=["semantic_decision_not_targeted_review"])
-
-    target_issue_codes = normalize_fix_proposal_target_issue_codes(
-        getattr(decision, "targetIssueCodes", []) or []
-    )
-    if not target_issue_codes:
-        return RuntimeReviewRefocusCompiledSource(blocking_reasons=["missing_target_issue_codes"])
-    target_strategies = normalize_fix_proposal_target_strategies(
-        getattr(decision, "targetStrategies", []) or []
-    )
-    confidence = _decision_float_field(decision, "confidence")
-    plan_payload: dict[str, Any] = {
-        "stage": "review",
-        "action_family": "review_plan",
-        "user_goal": str(content or "").strip(),
-        "requires_confirmation": False,
-        "target_issue_codes": target_issue_codes,
-        "reply_focus": ["target_issue_only"],
-    }
-    if target_strategies:
-        plan_payload["target_strategies"] = target_strategies
-    if planning_version > 0:
-        plan_payload["planning_version"] = int(planning_version)
-    evidence_plan = {
-        "type": "EvidencePlan",
-        "trigger": "review_target_refocus",
-        "scopeAnchor": "current_plan",
-        "sourceInputs": [
-            "latest_review_result",
-            "plan_semantic_action",
-        ],
-        "targetIssueCodes": target_issue_codes,
-        "targetStrategies": target_strategies,
-        "latestReview": {
-            "actionFamily": "review_plan",
-            "resultKind": "review_result",
-        },
-        "contextLastActionFamily": str((recent_plan_context or {}).get("lastActionFamily") or "").strip(),
-        "contextLastResultKind": str((recent_plan_context or {}).get("lastResultKind") or "").strip(),
-    }
-    return RuntimeReviewRefocusCompiledSource(
-        matched=True,
-        route="review_target_refocus",
-        side_effect="readonly",
-        plan_payload=plan_payload,
-        evidence_plan=evidence_plan,
-        target_strategies=target_strategies,
-        target_issue_codes=target_issue_codes,
-        confidence=confidence,
-    )
-
-
-def compile_runtime_review_to_fix_preview_source(
-    *,
-    content: str | None,
-    current_plan_context: dict[str, Any] | None,
-    decision: Any,
-    planning_version: int = 0,
-    confidence_threshold: float = 0.8,
-) -> RuntimeReviewToFixPreviewCompiledSource:
-    """Compile a review/analyze result plus semantic target into fix preview."""
-
-    if not isinstance(current_plan_context, dict) or not current_plan_context:
-        return RuntimeReviewToFixPreviewCompiledSource(blocking_reasons=["missing_review_context"])
-    last_action_family = str(current_plan_context.get("lastActionFamily") or "").strip()
-    last_result_kind = str(current_plan_context.get("lastResultKind") or "").strip()
-    if last_action_family not in {"review_plan", "analyze_adjustment"}:
-        return RuntimeReviewToFixPreviewCompiledSource(blocking_reasons=["unsupported_review_context_action_family"])
-    if last_result_kind not in {"review_result", "adjustment_analysis"}:
-        return RuntimeReviewToFixPreviewCompiledSource(blocking_reasons=["unsupported_review_context_result_kind"])
-    fix_facts = current_plan_context.get("fixProposals")
-    if not isinstance(fix_facts, dict) or not isinstance(fix_facts.get("proposals"), list):
-        return RuntimeReviewToFixPreviewCompiledSource(blocking_reasons=["missing_review_fix_proposals"])
-    if not semantic_decision_requests_fix_preview(
-        decision,
-        confidence_threshold=confidence_threshold,
-    ):
-        return RuntimeReviewToFixPreviewCompiledSource(blocking_reasons=["semantic_decision_not_fix_preview"])
-    if not review_context_supports_fix_preview_route(decision, current_plan_context):
-        return RuntimeReviewToFixPreviewCompiledSource(blocking_reasons=["review_context_does_not_support_fix_preview"])
-
-    target_scope = resolve_fix_proposal_target_scope_from_decision(
-        decision,
-        allowed_action_families={"preview_fix_proposal", "review_plan", "analyze_adjustment"},
-        confidence_threshold=confidence_threshold,
-    )
-    target_strategies = target_scope.target_strategies
-    target_issue_codes = target_scope.target_issue_codes
-    plan_payload: dict[str, Any] = {
-        "stage": "apply",
-        "action_family": "preview_fix_proposal",
-        "user_goal": str(content or "").strip(),
-        "requires_confirmation": False,
-    }
-    if target_strategies:
-        plan_payload["target_strategies"] = target_strategies
-    if target_issue_codes:
-        plan_payload["target_issue_codes"] = target_issue_codes
-    if planning_version > 0:
-        plan_payload["planning_version"] = int(planning_version)
-    return RuntimeReviewToFixPreviewCompiledSource(
-        matched=True,
-        route="post_review_fix_preview",
-        side_effect="plan_preview",
-        plan_payload=plan_payload,
-        target_strategies=target_strategies,
-        target_issue_codes=target_issue_codes,
-        target_scope_explicit=target_scope.explicit,
-        confidence=_decision_float_field(decision, "confidence"),
-    )
 
 
 def _fix_proposal_matches_target_strategies(
@@ -5416,88 +4052,6 @@ def select_ready_fix_proposal(
     return ready[0]
 
 
-def runtime_fix_proposal_confirmation_source_from_result(
-    result: dict[str, Any] | None,
-    *,
-    plan_payload: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    if not isinstance(result, dict):
-        return None
-    action_family = str(result.get("action_family") or "").strip()
-    result_kind = str(result.get("result_kind") or "").strip()
-    if action_family != "preview_fix_proposal" or result_kind != "fix_proposal_preview":
-        return None
-    payload = plan_payload if isinstance(plan_payload, dict) else {}
-    target_strategies = normalize_fix_proposal_target_strategies(
-        payload.get("target_strategies")
-        or payload.get("targetStrategies")
-        or result.get("target_strategies")
-        or result.get("targetStrategies")
-        or []
-    )
-    target_issue_codes = normalize_fix_proposal_target_issue_codes(
-        payload.get("target_issue_codes")
-        or payload.get("targetIssueCodes")
-        or result.get("target_issue_codes")
-        or result.get("targetIssueCodes")
-        or []
-    )
-    facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
-    selected_id = selected_fix_proposal_id(result, facts)
-    ready_match = select_ready_fix_proposal(
-        facts,
-        selected_proposal_id=selected_id,
-        target_strategies=target_strategies,
-        target_issue_codes=target_issue_codes,
-    )
-    if ready_match is None and not (target_strategies or target_issue_codes):
-        return None
-    normalized = result
-    if target_strategies and "target_strategies" not in normalized and "targetStrategies" not in normalized:
-        normalized = dict(normalized)
-        normalized["target_strategies"] = target_strategies
-    if target_issue_codes and "target_issue_codes" not in normalized and "targetIssueCodes" not in normalized:
-        normalized = dict(normalized)
-        normalized["target_issue_codes"] = target_issue_codes
-    if target_strategies or target_issue_codes:
-        normalized = dict(normalized)
-        normalized["target_match_empty"] = (
-            select_ready_fix_proposal(
-                facts,
-                target_strategies=target_strategies,
-                target_issue_codes=target_issue_codes,
-            )
-            is None
-        )
-    return normalized
-
-
-def select_ready_fix_proposal_for_compiled_source(
-    facts: dict[str, Any] | None,
-    *,
-    selected_proposal_id: str = "",
-    target_strategies: set[str] | list[str] | tuple[str, ...] | None = None,
-    target_issue_codes: set[str] | list[str] | tuple[str, ...] | None = None,
-) -> dict[str, Any] | None:
-    normalized_strategies = normalize_fix_proposal_target_strategies(target_strategies)
-    normalized_issue_codes = normalize_fix_proposal_target_issue_codes(target_issue_codes)
-    if selected_proposal_id:
-        return select_ready_fix_proposal(facts, selected_proposal_id=selected_proposal_id)
-    ready = ready_fix_proposals(facts)
-    if normalized_strategies or normalized_issue_codes:
-        matching = filter_ready_fix_proposals_by_target_scope(
-            ready,
-            normalized_strategies,
-            normalized_issue_codes,
-        )
-        if len(matching) == 1:
-            return matching[0]
-        return None
-    if len(ready) == 1:
-        return ready[0]
-    return None
-
-
 def ready_fix_proposal_id_for_strategies(
     facts: dict[str, Any] | None,
     target_strategies: set[str] | list[str] | tuple[str, ...] | None,
@@ -5564,134 +4118,4 @@ def select_user_goal_fix_proposal(
         source_version_guard=source_version_guard,
         goal_type=normalized_goal_type,
         blocking_reasons=reasons,
-    )
-
-
-def select_fix_proposal_candidate_for_runtime(
-    latest_plan_result: dict[str, Any],
-    *,
-    target_strategies: set[str] | list[str] | tuple[str, ...] | None = None,
-    target_issue_codes: set[str] | list[str] | tuple[str, ...] | None = None,
-    target_scope_explicit: bool = False,
-) -> FixProposalSelectionResult:
-    facts = latest_plan_result.get("facts") if isinstance(latest_plan_result.get("facts"), dict) else {}
-    selected_id = selected_fix_proposal_id(latest_plan_result, facts)
-    normalized_strategies = normalize_fix_proposal_target_strategies(target_strategies)
-    normalized_issue_codes = normalize_fix_proposal_target_issue_codes(target_issue_codes)
-    if selected_id:
-        selected_proposal = select_ready_fix_proposal(facts, selected_proposal_id=selected_id)
-        return FixProposalSelectionResult(
-            proposal=selected_proposal,
-            selected_proposal_id=selected_id,
-            target_strategies=normalized_strategies,
-            target_issue_codes=normalized_issue_codes,
-            blocking_reasons=[] if selected_proposal is not None else ["selected_fix_proposal_not_ready_or_missing"],
-        )
-    if target_scope_explicit and not normalized_strategies and not normalized_issue_codes:
-        return FixProposalSelectionResult(
-            target_match_empty=True,
-            blocking_reasons=["explicit_target_scope_without_supported_target"],
-        )
-    if normalized_strategies or normalized_issue_codes:
-        matching = filter_ready_fix_proposals_by_target_scope(
-            ready_fix_proposals(facts),
-            normalized_strategies,
-            normalized_issue_codes,
-        )
-        if not matching:
-            return FixProposalSelectionResult(
-                target_strategies=normalized_strategies,
-                target_issue_codes=normalized_issue_codes,
-                target_match_empty=True,
-                blocking_reasons=["no_ready_fix_proposal_for_target_scope"],
-            )
-        if len(matching) == 1:
-            return FixProposalSelectionResult(
-                proposal=matching[0],
-                selected_proposal_id=proposal_id(matching[0]),
-                target_strategies=normalized_strategies,
-                target_issue_codes=normalized_issue_codes,
-            )
-        return FixProposalSelectionResult(
-            target_strategies=normalized_strategies,
-            target_issue_codes=normalized_issue_codes,
-            blocking_reasons=["ambiguous_ready_fix_proposal_for_target_scope"],
-        )
-    proposal = select_ready_fix_proposal_for_compiled_source(facts)
-    if proposal is None:
-        return FixProposalSelectionResult(
-            blocking_reasons=["missing_unique_ready_fix_proposal"],
-        )
-    return FixProposalSelectionResult(
-        proposal=proposal,
-        selected_proposal_id=proposal_id(proposal),
-    )
-
-
-def compile_runtime_review_fix_source(
-    *,
-    session_id: str,
-    latest_plan_result: dict[str, Any],
-    target_strategies: set[str] | list[str] | tuple[str, ...] | None = None,
-    target_issue_codes: set[str] | list[str] | tuple[str, ...] | None = None,
-    target_scope_explicit: bool = False,
-) -> RuntimeReviewFixCompiledSource:
-    if not isinstance(latest_plan_result, dict):
-        return RuntimeReviewFixCompiledSource(
-            blocking_reasons=["missing_latest_plan_result"],
-        )
-    facts = latest_plan_result.get("facts") if isinstance(latest_plan_result.get("facts"), dict) else {}
-    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
-    selection = select_fix_proposal_candidate_for_runtime(
-        latest_plan_result,
-        target_strategies=target_strategies,
-        target_issue_codes=target_issue_codes,
-        target_scope_explicit=target_scope_explicit,
-    )
-    if selection.proposal is None:
-        return RuntimeReviewFixCompiledSource(
-            selection=selection,
-            target_match_empty=selection.target_match_empty,
-            blocking_reasons=list(selection.blocking_reasons or ["missing_review_fix_proposal"]),
-        )
-    source_version_guard = _as_int(
-        fix_facts.get("source_version_guard")
-        or fix_facts.get("sourceVersionGuard")
-        or latest_plan_result.get("source_backend_version")
-        or latest_plan_result.get("sourceBackendVersion")
-        or latest_plan_result.get("planning_version")
-        or latest_plan_result.get("planningVersion")
-    )
-    if source_version_guard <= 0:
-        return RuntimeReviewFixCompiledSource(
-            proposal=selection.proposal,
-            selection=selection,
-            target_match_empty=selection.target_match_empty,
-            blocking_reasons=["missing_source_version_guard"],
-        )
-    proposal_source = str(
-        fix_facts.get("proposal_source")
-        or fix_facts.get("proposalSource")
-        or "review_check"
-    ).strip() or "review_check"
-    summary = str(
-        selection.proposal.get("summary")
-        or selection.proposal.get("impact")
-        or selection.proposal.get("title")
-        or "确认处理这条方案提醒"
-    ).strip()
-    compiled = compile_review_fix_proposal(
-        session_id=session_id,
-        proposal=selection.proposal,
-        source_version_guard=source_version_guard,
-        proposal_source=proposal_source,
-        summary=summary,
-    )
-    return RuntimeReviewFixCompiledSource(
-        proposal=selection.proposal,
-        compiled=compiled,
-        selection=selection,
-        source_version_guard=source_version_guard,
-        proposal_source=proposal_source,
-        target_match_empty=selection.target_match_empty,
     )

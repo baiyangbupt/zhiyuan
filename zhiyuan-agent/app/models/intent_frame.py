@@ -1,12 +1,11 @@
 """结构化用户意图模型。
 
-替代现有 user_goal 字符串 + _goal_requests_* 关键词匹配，
 由 LLM 直接输出结构化 IntentFrame，ActionResolver 消费。
 
 设计原则：
 - verb 枚举直接映射到 action_family，消除二次字符串匹配
 - target 携带志愿引用、院校/专业/地域名，消除 user_goal 正则解析
-- scope 携带筛选维度，消除 PlanAtomicAction.filters 的 untyped dict
+- scope 携带筛选维度，避免从自然语言二次解析动作范围
 - review_issue_code 直接携带，消除 match_review_issue_code_from_goal
 """
 
@@ -102,10 +101,7 @@ PlanGoalConfidence = Literal["high", "medium", "low"]
 
 
 class TargetSpec(BaseModel):
-    """操作目标：指定具体的志愿、院校、专业等。
-
-    用于替代 PlanAtomicAction 中 volunteer_ids + 零散字段。
-    """
+    """操作目标：指定具体的志愿、院校、专业等。"""
 
     # 志愿引用：如 "@3", "北京工业大学-计算机"
     volunteer_refs: list[str] = Field(default_factory=list)
@@ -143,7 +139,7 @@ class TargetSpec(BaseModel):
 class ScopeSpec(BaseModel):
     """操作范围：筛选条件，用于候选查询、批量添加/替换等。
 
-    字段对齐 PlanAtomicAction.filters 中实际使用的维度。
+    字段对齐 direct plan action filters 中实际使用的维度。
     """
 
     # 档位：冲/稳/保
@@ -192,10 +188,10 @@ class IntentFrame(BaseModel):
     由 LLM 在 classify_user_intent 工具中输出，
     ActionResolver 直接消费该结构做确定性动作映射。
 
-    与现有 PlanActionPlan 的关系：
+    与 4.0 direct 动作链的关系：
     - IntentFrame 描述"用户想做什么"（输入侧）
-    - PlanActionPlan 描述"系统应该怎么做"（输出侧）
-    - ActionResolver 负责 IntentFrame → PlanActionPlan 的映射
+    - ActionResolver 输出 typed action 与确认需求
+    - direct tools 负责生成预览、pending 和确认执行
 
     兼容说明：
     - 运行时动作选择不再从 raw_utterance / user_goal 做关键词改写。
@@ -219,7 +215,7 @@ class IntentFrame(BaseModel):
 
     # 复合方案目标的结构化入口。该字段表达“用户想达成什么”，不是
     # 底层可执行 action；ActionResolver 只把它转成 PlanGoal 元数据，
-    # 具体拆解、预览和确认仍由 Plan 编排/执行层完成。
+    # 具体拆解、预览和确认仍由 4.0 direct 工具链完成。
     plan_goal_type: PlanGoalType | None = None
     plan_goal_confidence: PlanGoalConfidence = "medium"
 

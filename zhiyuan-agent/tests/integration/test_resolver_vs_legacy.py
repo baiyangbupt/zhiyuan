@@ -1,20 +1,11 @@
-"""集成测试：结构化 ActionResolver 合同。
-
-历史上该文件用于比较 ActionResolver 与旧
-``_normalize_adjustment_action_family`` 的中文关键词改写结果。
-3.0.3 起运行时不再从 ``user_goal`` 做动作归一化；同一动作必须由
-IntentFrame / tool 参数中的结构化字段决定。本文件保留原文件名，
-但测试目标改为验证新合同，避免旧字符串匹配重新回到主路径。
-"""
+"""集成测试：结构化 ActionResolver 合同。"""
 
 from __future__ import annotations
 
 import pytest
 
-from app.handlers import HANDLER_REGISTRY
 from app.models.intent_frame import IntentFrame, ScopeSpec, TargetSpec
 from app.resolver.action_resolver import ActionResolver
-from app.tools.plan_orchestration_tool import _normalize_adjustment_action_family
 from tests.factories import make_plan_context_inputs
 
 
@@ -74,26 +65,6 @@ def _frame(
         scope=ScopeSpec(**scope_kwargs),
         **frame_kwargs,
     )
-
-
-@pytest.mark.parametrize(
-    "action_family,user_goal",
-    [
-        ("generate_plan", "怎么优化当前方案"),
-        ("preview_fix_proposal", "补几个更稳的"),
-        ("regenerate_order", "保持总数不变，把保区提上来"),
-        ("regenerate_order", "按院校层次排"),
-        ("remove_units", "删掉高收费"),
-        ("replace_units", "把高收费换成正常收费"),
-    ],
-)
-@pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-def test_legacy_normalization_import_is_passthrough(
-    action_family: str,
-    user_goal: str,
-    volunteer_model: str,
-):
-    assert _normalize_adjustment_action_family(action_family, user_goal, HAS_PLAN) == action_family
 
 
 @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
@@ -261,8 +232,6 @@ def test_pin_unpin_are_removed_from_structured_intent_frame(volunteer_model: str
     for verb in ("pin", "unpin"):
         with pytest.raises(ValueError):
             _frame(verb, volunteer_refs=["v1"])
-    assert "pin_unit" not in HANDLER_REGISTRY
-    assert "unpin_unit" not in HANDLER_REGISTRY
 
 
 @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])

@@ -48,7 +48,7 @@ def test_score_case_includes_semantic_router_shadow_from_observability():
             "responseText": "这类专业可以从稳定性、考公适配和就业口径做优先级判断。",
             "elapsedMs": 900,
             "turnObservability": {
-                "routingPath": "major_compare_fast_route",
+                "routingPath": "zhiyuan_agent_direct",
                 "semanticRouterShadow": {
                     "status": "success",
                     "frame": {
@@ -64,7 +64,7 @@ def test_score_case_includes_semantic_router_shadow_from_observability():
 
     assert score["semanticRouterShadow"]["status"] == "success"
     assert score["semanticRouterShadow"]["frame"]["taskLayer"] == "explore"
-    assert score["semanticMappedRoute"] == "major_compare_fast_route"
+    assert score["semanticMappedRoute"] == "zhiyuan_agent_direct"
 
 
 def test_semantic_mapped_route_distinguishes_plan_preview_and_policy_explore():
@@ -75,7 +75,7 @@ def test_semantic_mapped_route_distinguishes_plan_preview_and_policy_explore():
             "topic": "plan",
             "sideEffect": "preview",
         }
-    ) == "plan_fast_route"
+    ) == "zhiyuan_agent_direct"
     assert report._semantic_mapped_route_from_frame(
         {
             "taskLayer": "explore",
@@ -83,7 +83,7 @@ def test_semantic_mapped_route_distinguishes_plan_preview_and_policy_explore():
             "topic": "policy",
             "sideEffect": "readonly",
         }
-    ) == "full_agent"
+    ) == "zhiyuan_agent_direct"
 
 
 def test_summarize_rows_counts_semantic_router_dimensions():
@@ -91,9 +91,9 @@ def test_summarize_rows_counts_semantic_router_dimensions():
         {
             "score": {
                 "verdict": "strong",
-                "routingPath": "major_compare_fast_route",
-                "expectedRoutingPath": "major_compare_fast_route",
-                "semanticMappedRoute": "major_compare_fast_route",
+                "routingPath": "zhiyuan_agent_direct",
+                "expectedRoutingPath": "zhiyuan_agent_direct",
+                "semanticMappedRoute": "zhiyuan_agent_direct",
                 "semanticExpectation": {"matched": True},
                 "semanticRouterShadow": {
                     "status": "success",
@@ -114,7 +114,7 @@ def test_summarize_rows_counts_semantic_router_dimensions():
     assert summary["semanticRouterSummary"]["status"] == {"success": 1}
     assert summary["semanticRouterSummary"]["taskLayer"] == {"explore": 1}
     assert summary["semanticRouterSummary"]["verb"] == {"compare": 1}
-    assert summary["semanticRouterSummary"]["mappedRoute"] == {"major_compare_fast_route": 1}
+    assert summary["semanticRouterSummary"]["mappedRoute"] == {"zhiyuan_agent_direct": 1}
     assert summary["semanticRouterSummary"]["expectedRouteComparison"] == {"match": 1}
     assert summary["semanticRouterSummary"]["currentRouteComparison"] == {"match": 1}
     assert summary["semanticRouterSummary"]["expectedFrameComparison"] == {"match": 1}
@@ -423,7 +423,7 @@ def test_score_case_marks_metrics_without_response_text_as_unscored():
             "prompt": "看看现在的方案",
             "elapsedMs": 2100,
             "turnObservability": {
-                "toolCalls": [{"name": "execute_plan_action", "actionFamily": "query_state"}],
+                "toolCalls": [{"name": "query_plan", "actionFamily": "query_state"}],
             },
         }
     )
@@ -509,7 +509,7 @@ def test_score_case_does_not_apply_distribution_gate_to_point_mutation_preview()
             "turnObservability": {
                 "toolCalls": [
                     {
-                        "name": "execute_plan_action",
+                        "name": "preview_plan_action",
                         "actionFamily": "move_unit",
                     }
                 ]
@@ -765,7 +765,7 @@ def test_case_definitions_attach_flow_coverage_and_latency_budget(tmp_path):
                     "name": "case-a",
                     "sessionId": "17",
                     "flow": ["plan"],
-                    "coverage": ["plan_fast_route", "sort_ordered_plan"],
+                    "coverage": ["zhiyuan_agent_direct", "sort_ordered_plan"],
                     "assertPlanStyle": True,
                     "prompts": [
                         {
@@ -796,7 +796,7 @@ def test_case_definitions_attach_flow_coverage_and_latency_budget(tmp_path):
             "elapsedMs": 4200,
             "turnObservability": {
                 "actionFamilies": ["sort_ordered_plan"],
-                "toolCalls": [{"name": "execute_plan_action", "actionFamily": "sort_ordered_plan"}],
+                "toolCalls": [{"name": "preview_plan_action", "actionFamily": "sort_ordered_plan"}],
             },
         },
         {},
@@ -804,7 +804,7 @@ def test_case_definitions_attach_flow_coverage_and_latency_budget(tmp_path):
     )
 
     assert merged["flow"] == ["plan"]
-    assert merged["coverage"] == ["plan_fast_route", "sort_ordered_plan"]
+    assert merged["coverage"] == ["zhiyuan_agent_direct", "sort_ordered_plan"]
     assert merged["expectedRoutingPath"] is None
     assert merged["expectedActionFamily"] == "sort_ordered_plan"
     assert merged["latencyBudget"] == {"warnElapsedMs": 3000, "maxElapsedMs": 5000}
@@ -936,24 +936,24 @@ def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path
     assert "expectedActionFamily" not in definitions["readonly-confirm#1"]
 
 
-def test_score_case_treats_legacy_fast_route_mismatch_as_warning_not_quality_failure():
+def test_score_case_treats_direct_route_mismatch_as_quality_failure():
     score = report._score_case(
         {
             "prompt": "按院校层次排序",
             "responseText": "排序预览：确认后再执行。",
             "elapsedMs": 900,
-            "expectedRoutingPath": "plan_fast_route",
+            "expectedRoutingPath": "zhiyuan_agent_direct",
             "expectedActionFamily": "sort_ordered_plan",
             "routingPath": "full_agent",
             "turnObservability": {
                 "actionFamilies": ["query_state"],
-                "toolCalls": [{"name": "plan_next_action", "actionFamily": "query_state"}],
+                "toolCalls": [{"name": "query_plan", "actionFamily": "query_state"}],
             },
         }
     )
 
-    assert "route_mismatch:plan_fast_route!=full_agent" not in score["qualityViolations"]
-    assert "optimization_route_not_matched:plan_fast_route!=full_agent" in score["evaluationWarnings"]
+    assert "route_mismatch:zhiyuan_agent_direct!=full_agent" in score["qualityViolations"]
+    assert "soft_route_not_matched:zhiyuan_agent_direct!=full_agent" not in score["evaluationWarnings"]
     assert any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
     assert score["verdict"] == "fail"
 
@@ -1160,7 +1160,7 @@ def test_score_case_accepts_expected_keypoint_aliases():
             "elapsedMs": 900,
             "turnObservability": {
                 "actionFamilies": ["sort_ordered_plan"],
-                "toolCalls": [{"name": "execute_plan_action", "actionFamily": "sort_ordered_plan"}],
+                "toolCalls": [{"name": "preview_plan_action", "actionFamily": "sort_ordered_plan"}],
             },
             "qualityExpectations": {
                 "expectedKeyPoints": ["说明导出顺序影响", "说明审查需要重新看"],
@@ -1307,7 +1307,7 @@ def test_summarize_reports_groups_quality_by_scenario_and_coverage():
         {
             "case": "case-a",
             "flow": ["plan"],
-            "coverage": ["plan_fast_route"],
+            "coverage": ["zhiyuan_agent_direct"],
             "current": {
                 "reply": "方案概况：区间分布：冲3 / 稳4 / 保3。学校层次：公办。代表样本：A大学。下一步可以审查。",
                 "elapsedMs": 1200,
@@ -1323,9 +1323,9 @@ def test_summarize_reports_groups_quality_by_scenario_and_coverage():
                     "distributionCoverage": ["tier_distribution", "school_level", "representative_samples"],
                     "qualityViolations": [],
                     "evaluationWarnings": [],
-                    "routingPath": "plan_fast_route",
+                    "routingPath": "zhiyuan_agent_direct",
                     "actionFamilies": ["query_state"],
-                    "toolNames": ["execute_plan_action"],
+                    "toolNames": ["query_plan"],
                 },
             },
             "baseline": {"score": {"verdict": "needs_review"}},
@@ -1358,7 +1358,7 @@ def test_summarize_reports_groups_quality_by_scenario_and_coverage():
     assert summary["totalCases"] == 1
     assert summary["current"]["verdicts"] == {"strong": 1}
     assert summary["scenarioSummary"]["plan"]["verdicts"] == {"strong": 1}
-    assert summary["coverageSummary"]["plan_fast_route"]["count"] == 1
+    assert summary["coverageSummary"]["zhiyuan_agent_direct"]["count"] == 1
     assert summary["candidateSummary"]["provider-a/model-a"]["verdicts"] == {"needs_review": 1}
     assert summary["baselineComparison"] == {"improved": 1, "same": 0, "regressed": 0, "incomparable": 0}
     assert summary["acceptance"]["passedHardGates"] is True
@@ -1369,10 +1369,10 @@ def test_render_markdown_detail_includes_full_reply_and_review_checklist():
         "case": "case-a",
         "stepIndex": 1,
         "flow": ["plan"],
-        "coverage": ["plan_fast_route", "preview_confirm_boundary"],
+        "coverage": ["zhiyuan_agent_direct", "preview_confirm_boundary"],
         "prompt": "把A大学的法学改到第3位",
         "sessionId": "17",
-        "expectedRoutingPath": "plan_fast_route",
+        "expectedRoutingPath": "zhiyuan_agent_direct",
         "expectedActionFamily": "move_unit",
         "latencyBudget": {"warnElapsedMs": 3000},
         "assertions": {"assertContains": ["确认"]},
@@ -1398,9 +1398,9 @@ def test_render_markdown_detail_includes_full_reply_and_review_checklist():
                 "distributionCoverage": ["quantity_space"],
                 "qualityViolations": [],
                 "evaluationWarnings": [],
-                "routingPath": "plan_fast_route",
+                "routingPath": "zhiyuan_agent_direct",
                 "actionFamilies": ["move_unit"],
-                "toolNames": ["execute_plan_action"],
+                "toolNames": ["preview_plan_action"],
             },
         },
         "baseline": {"reply": "会移动。", "score": {"verdict": "needs_review"}},
@@ -1430,7 +1430,7 @@ def test_full_agent_tool_trial_issue_detects_repeated_slow_tools():
             "elapsedMs": 62_000,
             "firstMessageMs": 15_000,
             "coverage": ["plan_review", "move_ordered_unit"],
-            "expectedRoutingPath": "plan_fast_route",
+            "expectedRoutingPath": "zhiyuan_agent_direct",
             "turnObservability": {
                 "routingPath": "full_agent",
                 "toolCallCount": 4,
@@ -1439,14 +1439,14 @@ def test_full_agent_tool_trial_issue_detects_repeated_slow_tools():
                     "toolTrial": {
                         "toolNames": [
                             "query_volunteer_plan",
-                            "plan_next_action",
+                            "preview_plan_action",
                             "query_volunteer_plan",
-                            "execute_plan_action",
+                            "review_plan",
                         ],
                         "toolNameCounts": {
                             "query_volunteer_plan": 2,
-                            "plan_next_action": 1,
-                            "execute_plan_action": 1,
+                            "preview_plan_action": 1,
+                            "review_plan": 1,
                         },
                         "repeatedToolNames": ["query_volunteer_plan"],
                         "hasRepeatedToolCalls": True,
@@ -1601,9 +1601,9 @@ def test_tool_trial_issue_detects_observed_tool_chain_without_routing_path():
         "thinkingText": "正在读取方案并处理你的请求...",
         "turnObservability": {
             "toolCalls": [
-                {"name": "plan_next_action", "actionFamily": "remove_units", "stage": "preview"},
+                {"name": "review_plan", "actionFamily": "review_plan", "stage": "review"},
                 {
-                    "name": "execute_plan_action",
+                    "name": "preview_plan_action",
                     "actionFamily": "remove_units",
                     "stage": "preview",
                     "resultKind": "error",
@@ -1639,9 +1639,9 @@ def test_markdown_summary_renders_full_agent_issue_table():
             "turnObservability": {
                 "routingPath": "full_agent",
                 "toolCalls": [
-                    {"name": "plan_next_action"},
-                    {"name": "execute_plan_action"},
-                    {"name": "execute_plan_action"},
+                    {"name": "preview_plan_action"},
+                    {"name": "review_plan"},
+                    {"name": "preview_plan_action"},
                 ],
             },
         },
@@ -1653,4 +1653,4 @@ def test_markdown_summary_renders_full_agent_issue_table():
 
     assert "## Full Agent Tool Trial Issues" in markdown
     assert "slow-plan#1" in markdown
-    assert "execute_plan_action" in markdown
+    assert "preview_plan_action" in markdown

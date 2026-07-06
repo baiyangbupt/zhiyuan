@@ -472,6 +472,23 @@
             "已直接调整",
             "没有上一轮待确认"
           ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": "招生类型:高收费"
+            }
+          ],
           "qualityFocus": [
             "short_confirmation",
             "intent_apply"
@@ -483,8 +500,9 @@
             "高收费",
             "正常收费",
             "替换",
-            "预览",
-            "确认"
+            "没有可替换",
+            "重新生成",
+            "方案"
           ],
           "assertNotContains": [
             "已直接调整",
@@ -492,12 +510,13 @@
             "没有待确认",
             "没有上一轮待确认"
           ],
-          "assertActionFamiliesContain": [
-            "replace_units"
+          "assertNoFollowups": true,
+          "expectedRoutingPathAny": [
+            "zhiyuan_agent_direct"
           ],
           "qualityFocus": [
-            "plan_action_after_intent",
-            "review_issue_high_tuition",
+            "post_intent_no_replace_target",
+            "intent_to_plan_action_boundary",
             "preview_confirm_boundary"
           ]
         }

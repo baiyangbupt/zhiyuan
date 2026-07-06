@@ -15,10 +15,7 @@ from app.agent.context import PlanningSummary, RequestContext, ScoreDetail
 from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
 from app.schemas.user_profile import UserProfile
 from app.tools.plan_orchestration_models import (
-    PlanActionPlan,
-    PlanAtomicAction,
     PlanContextInputs,
-    PlanExecutionResult,
     PlanReviewIssueTarget,
 )
 
@@ -163,74 +160,6 @@ def make_plan_context_inputs(
         review_issues=review_issues or [],
         review_issue_summary_lines=review_issue_summary_lines or [],
         summary=actual_summary,
-    )
-
-
-# ---------------------------------------------------------------------------
-# PlanActionPlan
-# ---------------------------------------------------------------------------
-
-def make_plan_action_plan(
-    *,
-    stage: str = "preview",
-    action_family: str = "query_state",
-    user_goal: str = "",
-    requires_confirmation: bool = False,
-    should_rerun_review: bool = False,
-    should_refresh_workspace: bool = False,
-    context_summary: str = "",
-    intent_relation: str = "unknown",
-    missing_inputs: list[str] | None = None,
-    rationale: list[str] | None = None,
-    atomic_actions: list[dict[str, Any]] | None = None,
-    preview_summary: str = "",
-) -> PlanActionPlan:
-    actions = []
-    if atomic_actions:
-        for a in atomic_actions:
-            actions.append(PlanAtomicAction(**a))
-    return PlanActionPlan(
-        stage=stage,  # type: ignore[arg-type]
-        action_family=action_family,  # type: ignore[arg-type]
-        user_goal=user_goal,
-        requires_confirmation=requires_confirmation,
-        should_rerun_review=should_rerun_review,
-        should_refresh_workspace=should_refresh_workspace,
-        context_summary=context_summary,
-        intent_relation=intent_relation,  # type: ignore[arg-type]
-        missing_inputs=missing_inputs or [],
-        rationale=rationale or [],
-        atomic_actions=actions,
-        preview_summary=preview_summary,
-    )
-
-
-# ---------------------------------------------------------------------------
-# PlanExecutionResult
-# ---------------------------------------------------------------------------
-
-def make_plan_execution_result(
-    *,
-    applied: bool = False,
-    action_family: str = "query_state",
-    stage: str = "apply",
-    result_kind: str = "status_overview",
-    summary: str = "",
-    facts: dict[str, Any] | None = None,
-    workspace_refresh_targets: list[str] | None = None,
-    reply_focus: list[str] | None = None,
-    next_step_hints: list[str] | None = None,
-) -> PlanExecutionResult:
-    return PlanExecutionResult(
-        applied=applied,
-        action_family=action_family,
-        stage=stage,
-        result_kind=result_kind,  # type: ignore[arg-type]
-        summary=summary,
-        facts=facts or {},
-        workspace_refresh_targets=workspace_refresh_targets or [],
-        reply_focus=reply_focus or [],
-        next_step_hints=next_step_hints or [],
     )
 
 

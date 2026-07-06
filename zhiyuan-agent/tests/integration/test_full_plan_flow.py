@@ -625,12 +625,23 @@ class TestRegistryResolverIntegration:
 
     def test_all_resolver_families_are_known(self, resolver):
         """ActionResolver 产出的所有 action_family 都是合法值。"""
-        import typing
-        from app.tools.plan_orchestration_models import PlanActionPlan
-
-        hints = typing.get_type_hints(PlanActionPlan)
-        family_type = hints["action_family"]
-        known_families = set(typing.get_args(family_type))
+        known_families = {
+            "query_state",
+            "query_ordered",
+            "query_candidates",
+            "generate_plan",
+            "analyze_adjustment",
+            "preview_fix_proposal",
+            "add_units",
+            "remove_units",
+            "move_unit",
+            "move_ordered_unit",
+            "replace_units",
+            "remove_ordered_unit",
+            "sort_ordered_plan",
+            "regenerate_order",
+            "review_plan",
+        }
         phase = _make_phase(state=PhaseState.PLAN_IDLE)
         context = make_plan_context_inputs(phase="ordered", ordered_count=30)
 

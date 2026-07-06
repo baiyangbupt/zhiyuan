@@ -146,7 +146,7 @@
       "release_3_0_3",
       "realistic_user_input",
       "school_abbreviation",
-      "plan_query_fast_route",
+      "zhiyuan_agent_direct",
       "readonly_no_workspace_card"
     ],
     "assertPlanStyle": true,
@@ -240,7 +240,7 @@
           "导出顺序",
           "待重新审查"
         ],
-        "expectedRoutingPathAny": ["direct_atomic_plan_action", "full_agent"],
+        "expectedRoutingPathAny": ["zhiyuan_agent_direct", "full_agent"],
         "assertActionFamiliesContain": ["sort_ordered_plan"],
         "assertNotContains": [
           "已直接排序",

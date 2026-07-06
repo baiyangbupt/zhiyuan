@@ -419,10 +419,11 @@
             "先"
           ],
           "assertNoFollowups": true,
-          "expectedToolNames": [
-            "query_plan"
-          ],
-          "maxToolCallCount": 1
+          "expectedRoutingPath": "needs_plan_first_guard",
+          "expectedToolCounts": {
+            "query_plan": 0
+          },
+          "maxToolCallCount": 0
         }
       ]
     },
@@ -488,8 +489,10 @@
             "选科"
           ],
           "assertNoFollowups": true,
-          "expectedToolNames": [
-            "read_state"
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action",
+            "confirm_pending"
           ],
           "maxToolCallCount": 1
         }
@@ -742,16 +745,11 @@
             "民办"
           ],
           "assertNoFollowups": true,
-          "expectedToolNames": [
-            "query_plan"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "query_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
-          ],
-          "maxToolCallCount": 1
+          "expectedRoutingPath": "needs_plan_first_guard",
+          "expectedToolCounts": {
+            "query_plan": 0
+          },
+          "maxToolCallCount": 0
         }
       ]
     }

@@ -192,8 +192,7 @@ def test_policy_keeps_plan_query_for_model_synthesis_after_prior_tools():
     class Deps:
         agent_observability = {
             "toolNameCounts": {
-                "plan_next_action": 1,
-                "execute_plan_action": 1,
+                "validate_major_subjects": 1,
                 "query_volunteer_plan": 1,
             }
         }
@@ -312,12 +311,12 @@ def test_policy_keeps_unstructured_empty_plan_query_for_model_synthesis():
     assert decision.reason == "read_only_plan_query_empty_or_failed_needs_model_synthesis"
 
 
-def test_policy_direct_returns_structured_plan_selection_block():
+def test_policy_direct_returns_structured_selection_block():
     decision = decide_tool_reply(
-        ["execute_plan_action"],
+        ["structured_action_result"],
         [
             _tool_return(
-                "execute_plan_action",
+                "structured_action_result",
                 (
                     '{"result_kind":"error","summary":"我在当前方案里还没有唯一匹配到这条志愿。",'
                     '"reply_focus":["missing_inputs","needs_volunteer_selection"]}'
@@ -333,10 +332,10 @@ def test_policy_direct_returns_structured_plan_selection_block():
 
 def test_policy_direct_returns_no_change_result_without_retry():
     decision = decide_tool_reply(
-        ["execute_plan_action"],
+        ["structured_action_result"],
         [
             _tool_return(
-                "execute_plan_action",
+                "structured_action_result",
                 '{"result_kind":"no_change","summary":"这条志愿已经在方案里，无需重复加入。"}',
             )
         ],
@@ -346,33 +345,12 @@ def test_policy_direct_returns_no_change_result_without_retry():
     assert decision.reply == "这条志愿已经在方案里，无需重复加入。"
 
 
-def test_policy_keeps_structured_status_overview_for_model_synthesis():
+def test_policy_does_not_trust_explicit_direct_reply_from_structured_payload():
     decision = decide_tool_reply(
-        ["execute_plan_action"],
+        ["structured_action_result"],
         [
             _tool_return(
-                "execute_plan_action",
-                (
-                    '{"action_family":"query_state","result_kind":"status_overview",'
-                    '"summary":"方案已经有了，目前有 45/45 个志愿。\\n- 梯度分布：冲18 / 稳13 / 保14。",'
-                    '"reply_focus":["current_state","count_target","tier_distribution"]}'
-                ),
-            )
-        ],
-    )
-
-    assert decision.strategy == "continue_model"
-    assert decision.should_return_directly is False
-    assert decision.reason == "structured_status_overview_needs_model_synthesis"
-    assert decision.reply is None
-
-
-def test_policy_keeps_status_overview_for_model_synthesis_even_with_legacy_direct_strategy():
-    decision = decide_tool_reply(
-        ["execute_plan_action"],
-        [
-            _tool_return(
-                "execute_plan_action",
+                "structured_action_result",
                 (
                     '{"action_family":"query_state","result_kind":"status_overview",'
                     '"summary":"当前方案里共命中了 7 条和青岛城市学院相关的志愿。",'
@@ -385,28 +363,6 @@ def test_policy_keeps_status_overview_for_model_synthesis_even_with_legacy_direc
 
     assert decision.strategy == "continue_model"
     assert decision.should_return_directly is False
-    assert decision.reason == "structured_status_overview_needs_model_synthesis"
-
-
-def test_policy_keeps_structured_review_result_for_model_synthesis():
-    decision = decide_tool_reply(
-        ["execute_plan_action"],
-        [
-            _tool_return(
-                "execute_plan_action",
-                (
-                    '{"action_family":"review_plan","result_kind":"review_result",'
-                    '"summary":"已完成方案审查，当前共检出 **风险 3 项、提醒 5 项**。\\n'
-                    '### 主要问题\\n1. 冲区占比过高。",'
-                    '"reply_focus":["review_result","risk_warning"]}'
-                ),
-            )
-        ],
-    )
-
-    assert decision.strategy == "continue_model"
-    assert decision.should_return_directly is False
-    assert decision.reason == "structured_review_result_needs_model_synthesis"
     assert decision.reply is None
 
 
@@ -415,15 +371,15 @@ def test_policy_keeps_plan_result_for_model_synthesis_after_explore_tool():
         agent_observability = {
             "toolNameCounts": {
                 "analyze_current_career_direction": 1,
-                "execute_plan_action": 1,
+                "structured_action_result": 1,
             }
         }
 
     decision = decide_tool_reply(
-        ["execute_plan_action"],
+        ["structured_action_result"],
         [
             _tool_return(
-                "execute_plan_action",
+                "structured_action_result",
                 (
                     '{"action_family":"review_plan","result_kind":"review_result",'
                     '"summary":"已完成方案审查，当前共检出 **风险 2 项、提醒 0 项**。",'
@@ -454,12 +410,12 @@ def test_policy_keeps_single_explore_tool_for_model_synthesis_despite_observabil
     assert decision.reason == "read_only_explore_needs_model_synthesis"
 
 
-def test_policy_keeps_normal_preview_for_model_summary():
+def test_policy_keeps_structured_preview_for_model_summary():
     decision = decide_tool_reply(
-        ["execute_plan_action"],
+        ["structured_action_result"],
         [
             _tool_return(
-                "execute_plan_action",
+                "structured_action_result",
                 (
                     '{"result_kind":"preview_only","summary":"会把这个志愿移动到第3位。",'
                     '"reply_focus":["preview_only","confirmation_required"]}'
@@ -470,118 +426,15 @@ def test_policy_keeps_normal_preview_for_model_summary():
 
     assert decision.strategy == "continue_model"
     assert decision.should_return_directly is False
-
-
-def test_policy_direct_returns_confirmation_preview():
-    decision = decide_tool_reply(
-        ["execute_plan_action"],
-        [
-            _tool_return(
-                "execute_plan_action",
-                (
-                    '{"action_family":"add_units","result_kind":"preview_only",'
-                    '"summary":"会把河南农业大学-建筑类加入当前方案。需要你确认后才会执行。",'
-                    '"reply_focus":["preview_only","confirmation_required"]}'
-                ),
-            )
-        ],
-    )
-
-    assert decision.strategy == "preview_wait_confirm"
-    assert decision.should_return_directly is True
-    assert decision.reason == "structured_add_preview"
-    assert "确认后" in (decision.reply or "")
-
-
-def test_policy_direct_returns_review_issue_batch_preview():
-    decision = decide_tool_reply(
-        ["execute_plan_action"],
-        [
-            _tool_return(
-                "execute_plan_action",
-                (
-                    '{"action_family":"remove_units","result_kind":"preview_only",'
-                    '"summary":"已定位到当前方案里当前审查命中的高收费：共 30 个专业组，涉及 76 条志愿。需要你确认后才会执行。",'
-                    '"reply_focus":["preview_only","review_issue_batch_scope"]}'
-                ),
-            )
-        ],
-    )
-
-    assert decision.strategy == "preview_wait_confirm"
-    assert decision.should_return_directly is True
-    assert decision.reason == "structured_review_issue_batch_preview"
-    assert "高收费" in (decision.reply or "")
-
-
-def test_policy_direct_returns_sort_ordered_plan_preview():
-    decision = decide_tool_reply(
-        ["execute_plan_action"],
-        [
-            _tool_return(
-                "execute_plan_action",
-                (
-                    '{"action_family":"sort_ordered_plan","result_kind":"preview_only",'
-                    '"summary":"会按推荐系数重新排序当前方案，推荐系数高的排在前面。需要你确认后才会执行。",'
-                    '"reply_focus":["preview_only","sort_preview"]}'
-                ),
-            )
-        ],
-    )
-
-    assert decision.strategy == "preview_wait_confirm"
-    assert decision.should_return_directly is True
-    assert decision.reason == "structured_sort_preview"
-    assert "推荐系数" in (decision.reply or "")
-
-
-def test_policy_direct_returns_unit_position_preview():
-    decision = decide_tool_reply(
-        ["execute_plan_action"],
-        [
-            _tool_return(
-                "execute_plan_action",
-                (
-                    '{"result_kind":"preview_only","summary":"会整体移动第 4 个专业组到第 2 个专业组位置。'
-                    '需要你确认后才会执行。",'
-                    '"reply_focus":["preview_only","confirmation_required","unit_position_preview"]}'
-                ),
-            )
-        ],
-    )
-
-    assert decision.strategy == "preview_wait_confirm"
-    assert decision.should_return_directly is True
-    assert decision.reason == "structured_position_preview"
-
-
-def test_policy_direct_returns_volunteer_position_preview():
-    decision = decide_tool_reply(
-        ["execute_plan_action"],
-        [
-            _tool_return(
-                "execute_plan_action",
-                (
-                    '{"result_kind":"preview_only","summary":"预览如下：\\n\\n- 志愿：青岛城市学院 · 国际经济与贸易\\n'
-                    '- 当前位置：当前第 36 位\\n- 目标位置：第 3 位\\n'
-                    '- 影响：确认后会调整方案顺序。需要你确认后才会执行。",'
-                    '"reply_focus":["preview_only","volunteer_position_preview"]}'
-                ),
-            )
-        ],
-    )
-
-    assert decision.strategy == "preview_wait_confirm"
-    assert decision.should_return_directly is True
-    assert decision.reason == "structured_position_preview"
+    assert decision.reply is None
 
 
 def test_policy_keeps_fix_proposal_preview_for_model_summary():
     decision = decide_tool_reply(
-        ["execute_plan_action"],
+        ["generate_planning_fix_proposals"],
         [
             _tool_return(
-                "execute_plan_action",
+                "generate_planning_fix_proposals",
                 (
                     '{"result_kind":"fix_proposal_preview",'
                     '"summary":"已生成当前方案的调整预览：可确认后执行 1 项。",'
@@ -597,10 +450,10 @@ def test_policy_keeps_fix_proposal_preview_for_model_summary():
 
 def test_policy_keeps_empty_fix_proposal_preview_for_model_summary():
     decision = decide_tool_reply(
-        ["execute_plan_action"],
+        ["generate_planning_fix_proposals"],
         [
             _tool_return(
-                "execute_plan_action",
+                "generate_planning_fix_proposals",
                 (
                     '{"result_kind":"fix_proposal_preview",'
                     '"summary":"已查看当前方案的可处理建议，暂时没有需要自动处理的项目。",'
@@ -616,10 +469,10 @@ def test_policy_keeps_empty_fix_proposal_preview_for_model_summary():
 
 def test_policy_keeps_general_error_for_model_summary():
     decision = decide_tool_reply(
-        ["execute_plan_action"],
+        ["structured_action_result"],
         [
             _tool_return(
-                "execute_plan_action",
+                "structured_action_result",
                 '{"result_kind":"error","summary":"后端临时失败，请稍后重试。","reply_focus":["mutation_failed"]}',
             )
         ],
@@ -631,10 +484,10 @@ def test_policy_keeps_general_error_for_model_summary():
 
 def test_policy_does_not_direct_return_multi_tool_turns():
     decision = decide_tool_reply(
-        ["execute_plan_action", "query_volunteer_plan"],
+        ["structured_action_result", "query_volunteer_plan"],
         [
             _tool_return(
-                "execute_plan_action",
+                "structured_action_result",
                 (
                     '{"result_kind":"error","summary":"我在当前方案里还没有唯一匹配到这条志愿。",'
                     '"reply_focus":["needs_volunteer_selection"]}'

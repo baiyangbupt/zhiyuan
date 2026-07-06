@@ -486,19 +486,18 @@
           "assertContainsAny": ["两万", "学费", "个", "条", "方案"],
           "assertNotContains": ["完整度", "前排示例", "审查：风险"],
           "assertNoFollowups": true,
-          "expectedRoutingPathAny": ["direct_readonly_plan_query", "pending_readonly_plan_query"],
-          "assertToolNamesContain": ["execute_plan_action"],
-          "assertActionFamiliesContain": ["query_ordered"],
-          "assertResultKindsContain": ["ordered_snapshot"],
+          "expectedRoutingPathAny": ["zhiyuan_agent_direct", "direct_readonly_plan_query", "pending_readonly_plan_query"],
+          "assertToolNamesContain": ["query_plan"],
           "maxToolCallCount": 1
         },
         {
           "runtimeShadowCaseId": "D-G27-tuition-preference-fit-atomic-selector-observation",
           "prompt": "那把两万以上且跟我意向不沾边的先删掉",
           "assertContainsAny": ["等待确认", "确认执行", "取消", "放弃当前", "重新提新的调整"],
-          "expectedRoutingPathAny": ["pending_conflict_new_request_guard"],
+          "expectedRoutingPathAny": ["zhiyuan_agent_direct", "pending_conflict_new_request_guard"],
+          "assertToolNamesContain": ["preview_plan_action"],
           "assertNoFollowups": true,
-          "maxToolCallCount": 0
+          "maxToolCallCount": 1
         }
       ]
     },

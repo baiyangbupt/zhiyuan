@@ -94,7 +94,6 @@ def test_intent_scenario_interest_stage_preference_returns_interest_text_with_ne
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -122,7 +121,6 @@ def test_intent_scenario_interest_stage_major_preference_also_returns_interest_t
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -147,7 +145,6 @@ def test_intent_scenario_interest_stage_major_preference_also_returns_interest_t
 def test_intent_scenario_confirmed_preference_returns_text_without_candidate_requery():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})),
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
@@ -180,7 +177,6 @@ def test_intent_scenario_confirmed_preference_returns_text_without_candidate_req
 def test_intent_scenario_confirmed_career_negative_preference_removes_latent_profile_label():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
@@ -228,7 +224,6 @@ def test_intent_scenario_confirmed_career_negative_preference_removes_latent_pro
 def test_intent_scenario_confirmed_constraint_returns_plan_check_text():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 64}})) as query_mock,
         patch(
             "app.tools.intent_state_tool.get_planning_state",
@@ -263,7 +258,6 @@ def test_intent_scenario_confirmed_constraint_returns_plan_check_text():
 def test_negative_constraint_ignores_positive_only_constraint_type():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0})) as query_mock,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})),
@@ -320,8 +314,8 @@ def test_intent_scenario_handle_select_plan_analyze_returns_confirmed_analysis_t
             "app.tools.explore_followup_tool.get_pending_confirmation",
             new=AsyncMock(return_value=_pending_intent_response({"career_intents": {"positive": ["system_public_service"]}})),
         ),
-        patch("app.tools.explore_followup_tool.plan_next_action", new=AsyncMock(return_value='{"stage":"apply","action_family":"analyze_adjustment"}')) as plan_mock,
-        patch("app.tools.explore_followup_tool.execute_plan_action", new=AsyncMock(return_value='{"summary":"当前判断：当前方案可继续优化。","state_summary":"当前判断：当前方案可继续优化。"}')) as exec_mock,
+        patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {}})),
+        patch("app.tools.explore_followup_tool.query_plan", new=AsyncMock(return_value='{"message":"当前判断：当前方案可继续优化。"}')) as query_mock,
     ):
         resp = asyncio.run(
             _render_followup(
@@ -332,8 +326,7 @@ def test_intent_scenario_handle_select_plan_analyze_returns_confirmed_analysis_t
         )
 
     assert "当前判断" in resp
-    plan_mock.assert_awaited_once()
-    exec_mock.assert_awaited_once()
+    query_mock.assert_awaited_once()
 
 
 def test_intent_scenario_handle_select_prefer_confirm_returns_confirm_text():
@@ -343,7 +336,6 @@ def test_intent_scenario_handle_select_prefer_confirm_returns_confirm_text():
             new=AsyncMock(return_value=_pending_intent_response({"city_intents": {"province": ["北京"]}})),
         ),
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
@@ -381,7 +373,6 @@ def test_intent_scenario_handle_select_constraint_returns_candidate_query_text()
             new=AsyncMock(return_value={"data": {"content": json.dumps(message_content, ensure_ascii=False)}}),
         ),
         patch("app.tools.intent_state_tool.update_message", new=AsyncMock()),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 128}})),
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
     ):

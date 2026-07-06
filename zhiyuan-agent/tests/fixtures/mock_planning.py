@@ -16,11 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 _WORKFLOW_MODULE = "app.tools.planning_workflow_tool"
-_EXECUTION_TOOL_MODULE = "app.tools.plan_execution_tool"
-_MUTATION_HANDLER_MODULE = "app.handlers.mutation_handlers"
-_QUERY_HANDLER_MODULE = "app.handlers.query_handlers"
 
-# 高层 workflow 函数（被 plan_execution_tool 调用）
 _WORKFLOW_FUNCTIONS = [
     "query_planning_state",
     "query_planning_plan_overview",
@@ -33,27 +29,6 @@ _WORKFLOW_FUNCTIONS = [
     "move_planning_ordered_item",
     "run_planning_review",
 ]
-
-_EXECUTION_TOOL_ALIASES = {
-    "query_planning_plan_overview",
-    "query_planning_candidate_pool",
-    "query_planning_ordered_plan",
-    "select_planning_ordered_items",
-    "remove_planning_ordered_items",
-    "move_planning_ordered_item",
-    "run_planning_review",
-}
-
-_MUTATION_HANDLER_ALIASES = {
-    "move_planning_ordered_item",
-    "remove_planning_ordered_items",
-    "select_planning_ordered_items",
-}
-
-_QUERY_HANDLER_ALIASES = {
-    "query_planning_candidate_pool",
-    "query_planning_ordered_plan",
-}
 
 # 只读 facts-builder 函数（同步）
 _FACTS_FUNCTIONS = [
@@ -92,12 +67,6 @@ def patch_planning():
         patcher = patch(f"{_WORKFLOW_MODULE}.{name}", mock)
         patchers.append(patcher)
         mocks[name] = mock
-        if name in _EXECUTION_TOOL_ALIASES:
-            patchers.append(patch(f"{_EXECUTION_TOOL_MODULE}.{name}", mock))
-        if name in _MUTATION_HANDLER_ALIASES:
-            patchers.append(patch(f"{_MUTATION_HANDLER_MODULE}.{name}", mock))
-        if name in _QUERY_HANDLER_ALIASES:
-            patchers.append(patch(f"{_QUERY_HANDLER_MODULE}.{name}", mock))
 
     for p in patchers:
         p.start()

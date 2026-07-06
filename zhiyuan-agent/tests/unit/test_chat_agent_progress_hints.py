@@ -5,10 +5,10 @@ from __future__ import annotations
 from app.agent.chat_agent import _TOOL_PROGRESS_HINTS
 
 
-def test_plan_progress_hints_use_user_facing_language():
-    assert _TOOL_PROGRESS_HINTS["collect_plan_context_inputs"] == "正在读取你的方案、偏好和审查结果..."
-    assert _TOOL_PROGRESS_HINTS["plan_next_action"] == "正在读取当前方案并整理这次请求..."
-    assert _TOOL_PROGRESS_HINTS["execute_plan_action"] == "正在处理你的方案，请稍等..."
+def test_legacy_plan_orchestration_progress_hints_are_not_registered():
+    assert "collect_plan_context_inputs" not in _TOOL_PROGRESS_HINTS
+    assert "plan_next_action" not in _TOOL_PROGRESS_HINTS
+    assert "execute_plan_action" not in _TOOL_PROGRESS_HINTS
 
 
 def test_progress_hints_do_not_expose_internal_terms():

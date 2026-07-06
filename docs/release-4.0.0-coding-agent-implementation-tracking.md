@@ -1,6 +1,6 @@
 # Release 4.0.0 — Coding Agent Implementation Tracking
 
-> 版本: v0.25 | 更新日期: 2026-07-02
+> 版本: v0.58 | 更新日期: 2026-07-06
 > 关联文档:
 > - [release-4.0.0-coding-agent-architecture-redesign.md](release-4.0.0-coding-agent-architecture-redesign.md)
 > - [release-4.0.0-coding-agent-poc-plan.md](release-4.0.0-coding-agent-poc-plan.md)
@@ -29,13 +29,20 @@ Release 4.0 PoC 第一阶段已落地到 `zhiyuan-agent`，并完成真实 LLM�
 | service structured pending bridge | 已落地 | 卡片/短文本确认统一执行 4.0 结构化 `intent_change` / `plan_mutation` pending；旧预览 sink 会转成扁平结构化 `executionPayload`，不再写入或确认执行旧 `executionPayload.planPayload` |
 | Phase 4 direct route | 已接入，默认关闭；真实口语 direct 已通过 | `ZHIYUAN_AGENT_ENABLED` / `ZHIYUAN_AGENT_ROLLOUT_PERCENT` 控制；无本地字符串 precheck；已按 v1.3 §9 放开 pending 下只读 direct，并增加无有效成绩回退 |
 | Phase 2 `preview_intent_change` pending + diff | 已落地 | 归一化显式"要/不要/只看/必须有"后创建结构化 `pendingConfirmation`；裸属性/标签/类别诉求和明确长期诉求走报考要求路径；专业/院校/地域/属性标签意向优先调 `simulate_plan_diff`，失败时降级本地扫描 |
-| Phase 2 `preview_plan_action` 结构化 pending | 首版已落地 | 新工具已注册；add/remove/move/replace/sort/generate/regenerate_order 只产出结构化 payload，不再生成旧 `planPayload`；已支持 `review_issue_code` 从审查 issue 解析操作范围，并兼容后端 issue code alias；当前方案锚定的筛选移出、具体项/位置/审查问题联动走方案操作 |
+| Phase 2 `preview_plan_action` 结构化 pending | 首版已落地 | 新工具已注册；add/remove/move/replace/sort/generate/regenerate_order 只产出结构化 payload，不再生成旧 `planPayload`；已支持 `review_issue_code` 从审查 issue 解析操作范围，并兼容后端 issue code alias；当前方案锚定的筛选移出、具体项/位置/审查问题联动走方案操作；工具已被调用但漏 action/selector 时可从当前用户原文恢复明确移动参数 |
 | 真实 LLM 工具选择验证 | 已通过 | 9 个 PoC/Policy/Review/Review-Action 场景全部通过 |
 | 真实 service websocket 小样本 | 已通过 | 5/5 successful，PoC shadow 5/5 success |
 | 真实口语 service direct | 已通过 4.0 direct | `examples/dialog_regression_400_realistic_user_cases.json` direct-only 最新复跑 14/14 successful，工具调用数 max=1，metrics: `/private/tmp/zhiyuan_400_realistic_direct_only_after_retry_reason_fix.json` |
-| 真实 direct 确认执行闭环 | 已通过 | `examples/dialog_regression_400_direct_confirm_execution_cases.json` 4/4 successful；已覆盖 pending applied、planningState version 增长、方案项删除和报考要求写入，不再只按出卡判断；metrics: `/private/tmp/zhiyuan_400_direct_confirm_execution_after_retry_filter_fix.json` |
-| G case direct 子集 | 已通过 | direct-only 最新复跑 8/8；G17 生成 `move_ordered_unit` 确认卡，G25 正负完整，G30/G32 均进入 `zhiyuan_agent_direct`；metrics: `/private/tmp/zhiyuan_400_g_case_direct_only_after_retry_filter_fix_rerun.json` |
+| 真实 direct 确认执行闭环 | 已通过 | 模型恢复后用 `ZHIYUAN_AGENT_POC_SHADOW=1` 复跑 `examples/dialog_regression_400_direct_confirm_execution_cases.json`，4/4 successful；删除旧执行编排并清理空间后复跑仍为 `4/4`，已覆盖 pending applied、planningState version 增长、方案项删除和报考要求写入，不再只按出卡判断；latest metrics: `/private/tmp/zhiyuan_400_confirm_after_space_cleanup_rerun.json` |
+| G case direct 子集 | 已通过 | 旧链路清理后复跑 `examples/dialog_regression_400_g_case_direct_subset.json`，8/8 successful；G17 生成 `move_ordered_unit` 确认卡，G25 正负完整，G30/G32 均进入 4.0 direct/guard 路径；latest metrics: `/private/tmp/zhiyuan_400_g_subset_full_after_runner_delete.json` |
 | 320 G1-G32 direct 完整回归 | 已完成新一轮问题归档 | 最新 `49` steps，`44` successful，`5` failed；metrics: `/private/tmp/zhiyuan_400_direct_320_g1_g32_after_retry_filter_fix_rerun.json` |
+| 清理前 G1-G32 direct-only 基线 | 已通过 | `20/20` successful；18 步 `zhiyuan_agent_direct`，2 步 `needs_plan_first_guard`；metrics: `/private/tmp/zhiyuan_400_cleanup_preflight_g1_g32_direct_20of20.json` |
+| 清理后 G1-G32 direct 主集复跑 | 三轮通过，旧 G7/G17 抖动未复现 | `examples/dialog_regression_400_g1_g32_direct_cases.json` 清理空间后多轮复跑均 `20/20`，shadow 均 `20/20 success`；latest metrics: `/private/tmp/zhiyuan_400_g1_g32_after_g17_param_recovery_full_rerun.json`。最新分布：`intent_pending=6`、`readonly=9`、`plan_preview=3`、`needs_plan_first=2` |
+| 旧执行编排孤儿清理 | 已完成代码清理 | 按 `release-4.0.0-zhiyuan-agent-implementation-design.md` §10.3 方向 A，删除 `app/domain/plan_action_execution.py`、`app/handlers/*`、旧 runner/handler/protocol 测试；`plan_orchestration_models.py` 仅保留仍被 4.0 使用的 proposal/context 模型，删除旧 execution DTO；旧 runner/handler/DTO 活跃引用扫描清零 |
+| 删除旧执行编排后真实 direct 验证 | 已通过两轮主集 + focused，记录观察项 | 确认执行闭环 `4/4`，latest metrics: `/private/tmp/zhiyuan_400_confirm_after_space_cleanup_rerun.json`；G case direct 子集 `8/8`，shadow `8/8`；focused `G7/G12/G17/G27/G31` 为 `5/5`，metrics: `/private/tmp/zhiyuan_400_focused_g7_g12_g17_g27_g31_after_runner_delete_rerun2.json`；完整 G1-G32 direct 主集两轮均 `20/20`，latest metrics: `/private/tmp/zhiyuan_400_g1_g32_direct_after_runner_delete_second_full.json`。观察项：G27 替换候选降费但仍可能为民办、G21/G31/G26 性能尾部、报考要求采纳后重算 `ordered_plan_response=404/会话不存在` |
+| G2/G8 回复展示口径 | 已修复并验证 | `review_plan` 明确返回正式方案事实，`preview_intent_change` 复用专业层级显式实体收敛并从当前用户原文兜底；真实 LLM G2/G8 direct `2/2`、shadow `2/2`，metrics: `/private/tmp/zhiyuan_400_g2_g8_after_display_fix.json`。随后补充 G1 广义专业表达保护，避免“英语相关专业”被收窄为“英语”；G1/G8 聚焦 `2/2`，metrics: `/private/tmp/zhiyuan_400_g1_g8_after_broad_major_scope_fix.json` |
+| G17 shadow 参数恢复 | 已修复并通过完整主集验证 | `preview_plan_action` 已被调用但漏 action/selector 时，从当前用户原文恢复明确移动诉求和筛选选择器；真实 LLM G17 聚焦 `1/1`、shadow `1/1`，完整 G1-G32 主集复跑 `20/20`、shadow `20/20 success`，metrics: `/private/tmp/zhiyuan_400_g1_g32_after_g17_param_recovery_full_rerun.json` |
+| 旧链路桥接清理 | 继续推进 | 已删除入口/hard-cut/profile fallback/full-agent post-processing/intent-preview-to-plan/post-query profile fallback、`plan_next_action` 未执行 preview 补 pending 桥、旧 atomic -> `plan_next_action` compiler、ChatAgent 旧 Plan 工具注册、`plan_orchestration_tool` / `plan_context_tool` 本体与专属测试资产、`plan_execution_tool` 最近旧 plan cache、recent execution timeout/interruption cache 和旧公开 `execute_plan_action` 工具入口、旧 `_execute_plan_action_model` 内部名、旧 execution regression 资产、`tool_reply_policy` 旧执行工具专属直返策略、workspace presentation 旧 call-only fallback、service 旧 plan semantic classifier 依赖、旧候选 pending helper、旧 execute workspace refresh/view 桥、旧 review-fix 反向建卡桥、`proposal_compiler` runtime review-fix selector/compile helper、旧 workspace/semantic display compiler、旧 readonly workspace evidence compiler、`plan_semantic_action_tool.py` 本体与旧 benchmark/test 资产、compiler 内部 `planPayload` 写入、service / intent tool / regression runner 旧 `planEditCache` 清理桥、regression runner 旧 `execute_plan_action` payload 解析和 fast-route 观测汇总、quality gate 旧 fast-router target、方案动作执行原语迁出并删除旧 `app/tools/plan_execution_tool.py`、dialog report/mainline/ws 中旧 fast-route 与旧执行工具测试资产、历史 live metrics 输出、运行/测试资产中的旧 `planPayload` 正常读取、303 case fast-route 命名、skills 中旧三段 Plan 工具指引；`service.py` 生产代码已清零 `plan_next_action` / `collect_plan_context_inputs` / `execute_plan_action` / `planEditCache` 引用，`app/`、runner 和 active skills 不再保留旧工具链入口 |
 
 注意：service shadow 默认关闭；开启后会后台运行，不阻塞主链路。turn event 中可能先记录 `status=running`，完整结果会在 `zhiyuan_agent_poc_shadow_event` 中落盘。
 
@@ -691,7 +698,7 @@ totalTokens:
 | Case | 用户表达 | 实际结果 | 客观问题 |
 |------|----------|----------|----------|
 | G4 | `那把网络与新媒体作为优先方向，跨境电商也可以考虑` | direct 生成 `preview_intent_change`，卡片展示“要：网络与新媒体、电子商务”，未出现“跨境” | 用户原词“跨境电商”在可见文案中被归一成“电子商务”；同时该表达含“优先/也可以考虑”，与 4.0 当前“只处理显式要/不要”的口径存在待确认空间 |
-| G17 | `帮我把保底区里录取率最高的那个调到保底的第一位` | direct 调用 `preview_plan_action`，回复“还没有唯一定位到要调整的方案项”，未生成确认卡 | 档位内按录取率选择并移动到目标位置未稳定形成 `move_ordered_unit`；同类聚焦回归曾通过，完整回归中仍有不稳定表现 |
+| G17 | `帮我把保底区里录取率最高的那个调到保底的第一位` | direct 调用 `preview_plan_action`，回复“还没有唯一定位到要调整的方案项”，未生成确认卡 | 档位内按录取率选择并移动到目标位置未稳定形成 `move_ordered_unit`；该历史问题后续已按 v0.57 工具内参数恢复修复，见最新 G17 聚焦复验记录 |
 | G25 | `把生物医学工程和智能医学工程加意向 排除临床医学和口腔` | direct 卡片只展示“要：生物医学工程、智能医学工程”，漏掉“不要：临床医学、口腔医学” | 同一句混合正向“加意向”和负向“排除”时，负向部分在本次完整回归中丢失；与此前 G case 子集通过结论不一致，需要后续用最新服务进程重跑确认稳定性 |
 
 本轮通过但需要记录的问题/观察：
@@ -823,6 +830,481 @@ totalTokens:
 - 旧链路残留观察：G21/G30 强基多轮、G23 正向意向、G29 软表达仍会走 `full_agent` 或 `runtime_intent_hard_cut`，并出现“偏好/报考想法”等旧文案。4.0 direct 子集通过的同类工具能力不代表完整历史链路已经替换完成。
 - 文案观察：G22/G31 档案 inline 修正类目前没有写系统档案，整体边界正确；但个别中间轮次出现“已更正”等措辞，容易让用户误解系统档案已更新。后续应统一改为“你刚才口头说明的是……系统档案仍未更新”。
 
+2026-07-02 G27 高收费 replace 修复与真实验证：
+
+- 修复范围：仅修改 4.0 direct route 的 `preview_plan_action(action="replace")` 工具能力和 prompt 调度规则，不修旧链路，不恢复字符串 precheck。
+- 工具层补齐：
+  - `replace` 支持用结构化 `filters` 定位旧方案项；`review_issue_code + filters` 时取交集。
+  - 当 `review_issue_code=high_tuition/cooperative_program` 的审查 affected units 失效或不存在时，回退到标准属性 selector：`program_type=["高收费"]` / `program_type=["中外合作"]`。
+  - 自动替换候选同时按 unitId 排除旧项，避免把同一个旧 unit 的候选加回来。
+  - 费用类自动替换候选必须是合理低学费候选：排除高于 20000 元/年、异常低于 1000 元/年，以及中外合作/合作办学/联合培养/学分互认/出国/国外学费等显性风险候选。
+  - 候选读取从默认 20 条扩到 `wanted * 4`、上限 200，避免前页大量旧 unit/高收费候选导致误判候选不足。
+- Prompt 调整：明确“学费贵/高收费 + 换成/换掉/替换/移出”是方案动作，直接调用 `preview_plan_action`；如果本轮会 preview，则禁止先 `review_plan`。
+- 单测：`tests/unit/test_zhiyuan_agent_poc.py -q` 为 `120 passed, 28 skipped`。新增覆盖 filters 自动替换、review issue + filters 交集、stale review issue fallback、unsafe candidate 拦截。
+- 真实验证：G27 单 case metrics `/private/tmp/zhiyuan_400_g27_after_prompt_direct_preview_rule.json`。
+  - 第 1 轮 `方案里学费贵的太多了 能不能帮我换成便宜的`：通过核心断言，`toolCallCount=1`，工具 `preview_plan_action`，`actionFamily=replace_units`，生成 `pendingConfirmationCard`；候选示例为 19800/16800/19800 元/年，未再选旧 unit、高收费候选或 50/80 元异常学费候选。
+  - 第 2 轮 `两万以上的都算贵 帮我看看有几个`：业务正确，`query_plan` 返回 37 个；失败仅因旧断言仍期望 `execute_plan_action/query_ordered` 和旧 routingPath。
+  - 第 3 轮 `那把两万以上且跟我意向不沾边的先删掉`：业务正确，active pending 下返回 pending 冲突说明；失败仅因旧断言仍期望 `pending_conflict_new_request_guard` 且 `maxToolCallCount=0`，而 4.0 direct 是通过 `preview_plan_action` 工具返回冲突。
+- 当前结论：G27 首轮 direct replace 已修复；剩余是历史回归资产的 4.0 口径更新，不是本轮工具能力失败。
+
+2026-07-03 G27 direct-only 复验：
+
+- 验证配置：`ZHIYUAN_AGENT_ENABLED=1`、`ZHIYUAN_AGENT_ROLLOUT_PERCENT=100`，本地 direct-only agent + 8080 后端，回归文件仍用 `examples/dialog_regression_320_g1_g32_shadow_cases.json` 的 G27 三步。
+- 真实验证：`/private/tmp/zhiyuan_400_g27_direct_enabled.json`，`3/3 successfulSteps`。
+- 结论：G27 在真正启用 4.0 direct 后，首轮 `preview_plan_action(replace)`、第二轮 `query_plan`、第三轮 active pending 冲突都按新协议通过；之前看到的 `direct_atomic_plan_action` 是服务没切到 direct-only 配置，不是 G27 业务能力回退。
+
+2026-07-03 focused direct 修复与清理前置项：
+
+- `confirm_pending` 终止策略修复：`confirm_pending(next_step=respond)` 现在作为 4.0 agent 终止结果直接返回，避免确认已采纳内容后同一轮继续调用 `preview_plan_action` 并覆盖 pending。
+- no-plan guard 收紧：只在后端 planning summary 明确可用且无方案时触发；不再把 sandbox 的本地 `has_plan=false` 占位当作无方案事实，避免 backend 读取失败时误拦旧模型路径。
+- no-plan guard 文案修复：回复增加“这轮诉求是：...”回显，保留用户提到的专业、院校和方向；用户侧统一说“报考要求/诉求”，不再说“报考偏好/约束”。
+- R33 资产修复：`examples/dialog_regression_320_prod_raw_framework_gap_cases.json` 的 R33 case 显式 clone `3729`，不再被 defaults 的 `17` 覆盖为有正式方案状态。验证 `/private/tmp/zhiyuan_400_r33_asset_after_clone_reply_fix.metrics.json`：`1/1`，`routingPath=needs_plan_first_guard`，`toolCallCount=0`，回复保留生物科学、化学和院校列表。
+- 高收费 intent→plan-action case 收口：确认步增加后端断言，确认 `pendingConfirmation.status=applied` 且 `constraintState.hardConstraints.mustExcludeSchools` 包含 `招生类型:高收费`；第三轮不再断言 `replace_units`，因为前一步已经采纳“不要高收费”报考要求，后续“替换高收费”应作为目标不足/候选不足边界处理。验证 `/private/tmp/zhiyuan_400_high_tuition_asset_after_confirm_terminal.metrics.json`：`3/3`。
+- G25 direct 复核：`400-g25-mixed-positive-negative-intent-polarity` 业务通过，`zhiyuan_agent_direct`、1 次 `preview_intent_change`、正负诉求完整；runner 报失败仅因 direct-only 环境没有 shadow event，而 case 仍保留 shadow 断言。metrics: `/private/tmp/zhiyuan_400_g25_direct_after_confirm_terminal.metrics.json`。
+- 清理前 direct-only 基线：`examples/dialog_regression_400_g1_g32_direct_cases.json` 去掉 shadow 断言后生成临时 case，复跑 `20/20 successfulSteps`，metrics: `/private/tmp/zhiyuan_400_cleanup_preflight_g1_g32_direct_20of20.json`。
+  - 路由分布：18 步 `zhiyuan_agent_direct`，2 步 `needs_plan_first_guard`；G19/G32 no-plan guard 为正确口径，G22 状态前置只读允许 0 工具回答，不强制 `read_state`。
+  - 工具分布：`preview_intent_change=6`、`preview_plan_action=4`、`query_plan=4`、`review_plan=3`、`confirm_pending=1`；确认/预览类共 9 张 `pendingConfirmationCard`。
+  - 性能：median `6001ms`、p95 `14891ms`、max `16667ms`；最慢为 G31/G7/G2/G26/G21 只读长回复，属于后续性能优化项。
+  - 质量观察：G7 曾出现“当前方案里还没有生成具体志愿”的回复口径，需要后续 fixture/review 质量复核；不阻塞旧链路入口清理。
+- 清理判断：旧链路清理不再等所有历史断言归零；清理前 direct-only 基线已满足启动条件，下一步开始删除旧 `runtime_intent_hard_cut`、旧 `direct_atomic_plan_action/execute_plan_action` 主路径、旧 `planPayload` 兼容桥和旧 classifier/guard 兜底。
+
+2026-07-03 旧链路入口首批清理：
+
+- service 主流程已移除旧 fast-route 调用：`runtime_intent_hard_cut`、pending 下旧 readonly plan query、`direct_atomic_plan_action`、`direct_readonly_plan_slice_query`、`direct_local_plan_action`、`semantic_plan_action` 不再作为 4.0 direct 之后的抢跑入口。
+- 删除无调用的旧 service 方法：`_maybe_handle_pending_readonly_plan_query`、`_maybe_handle_direct_readonly_plan_slice_query`、`_maybe_handle_direct_local_plan_action`、`_maybe_handle_direct_atomic_plan_action`、`_maybe_reroute_runtime_intent_profile_to_plan_response`、`_maybe_handle_semantic_plan_action`，并删除旧 PlanQuery profile helper 和未用 import/常量。
+- no-plan guard 补齐通用“加入当前方案”动作：`加进来/放进去/加到方案` 等表达在无正式方案时直接走 `needs_plan_first_guard(plan_add_without_referent)`，不再依赖旧 atomic classifier。
+- 聚焦验证：`py_compile` 通过；聚焦单测 `17 passed, 787 deselected`。
+- 测试资产观察：全量 `tests/unit/test_chat_service_history_persistence.py` 当前仍有 83 个旧路由口径失败，主要仍期望 `runtime_intent_hard_cut`、`direct_atomic_plan_action`、旧 readonly query、`semantic_plan_action` 抢跑；后续应按 4.0 direct 测试口径删除或迁移，不再为旧路由补实现。
+
+2026-07-03 旧入口清理后真实 direct-only 回归：
+
+- 验证环境：本地 direct-only service `8040`，`ZHIYUAN_AGENT_ENABLED=1`、`ZHIYUAN_AGENT_ROLLOUT_PERCENT=100`，后端 `8080`，case `/private/tmp/zhiyuan_400_g1_g32_direct_cases_direct_only_for_cleanup.json`。
+- 结果：`19/20 successfulSteps`，metrics: `/private/tmp/zhiyuan_400_cleanup_after_old_route_entry_removal_20cases.json`。
+- 唯一失败：G1 `不要英语相关专业，当前方案里有的话也删掉`。
+  - 实际工具：同一轮返回 `preview_intent_change` + `preview_plan_action`，工具数 2，违反 case 期望的单工具 `preview_intent_change`。
+  - 实际副作用：仍创建了 `intent_change` 确认卡，但最终文本被后续 `preview_plan_action(clarify)` 覆盖为“还没有唯一定位到要调整的方案项”，用户可见回复和卡片不一致。
+  - 定性：4.0 agent 同批多工具终止边界问题；不是旧链路删除导致的回退。当前按要求先不修，仅记录。
+- 其他观察：G27 清理后仍稳定为 1 次 `preview_plan_action(replace)`；G19/G32 仍为 no-plan guard 0 工具；只读长回复仍慢，最慢 G7/G26/G31/G21。
+
+2026-07-03 旧 `runtime_intent_hard_cut` 死代码第二批清理：
+
+- 生产代码删除范围：`_maybe_handle_runtime_intent_hard_cut`、`_create_runtime_intent_hard_cut_pending_from_prompt`、旧 side-effect 二次分类 `_classify_runtime_intent_profile_side_effect`、旧 atomic defer 桥 `_semantic_atomic_plan_action_should_defer_runtime_intent`、TurnDecision target issue fallback、hard-cut 专属 pending-state/allow/defer/profile helper。
+- `service.py` 不再 import `classify_plan_atomic_action_dsl`、`_classify_intent_side_effect`、`extract_intent_entity_profile`；`runtime_intent_hard_cut` 字符串已从生产 `service.py` 清空。保留的是 full-agent intent preview 的通用 compiler sink 和 TurnDecision 阻断判断，并已改为中性命名 `_turn_decision_blocks_intent_pending`。
+- 测试资产处理：移除 `test_chat_service_history_persistence.py` 顶层对已删 hard-cut helper 的 import；保留旧 hard-cut 测试作为待迁移/待删除资产，当前不恢复旧 service 符号。
+- 验证：
+  - `py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_zhiyuan_agent_poc.py tests/unit/test_proposal_compiler_runtime_selection.py` 通过。
+  - `test_chat_service_history_persistence.py -k "needs_plan_first_guard or normalize_user_facing_terms_softens"`：`10 passed, 511 deselected`。
+  - `test_zhiyuan_agent_poc.py -k "direct_tool_output_uses_next_step or replace or retries_incomplete or instructions_require_plan_action"`：`11 passed, 138 deselected`。
+  - `test_proposal_compiler_runtime_selection.py -k "needs_plan_first_guard"`：`9 passed, 125 deselected`。
+  - `test_chat_service_history_persistence.py --collect-only`：`521 tests collected`，顶层 import/语法无阻断。
+- 未处理事项：G1 同批 `preview_intent_change + preview_plan_action` 终止边界问题仍按前述记录保留，未在本次清理中修复；全量旧路由测试仍需按 4.0 口径迁移或删除。
+
+2026-07-03 profile replan 旧 semantic fallback 清理：
+
+- 删除无生产调用的 `_maybe_create_current_plan_mutation_preview_from_entity_profile`；hard-cut 删除后不再保留 entity profile -> current plan mutation 的 service 桥。
+- `_maybe_handle_profile_change_replan_state_query` 不再用旧 `classify_plan_semantic_action` 兜底识别 `profile_change_state_query`；该路径只接受 TurnDecision + ProposalCompiler 的结构化判定。
+- 测试资产同步：删除旧 `test_chat_service_semantic_route_handles_profile_change_replan_boundary`，`test_chat_service_merges_profile_replan_correction_from_structured_state` 改为断言一次 TurnDecision 且不调用旧 semantic classifier。
+- 验证：
+  - `test_chat_service_history_persistence.py -k "profile_change_state_query or turn_decision_profile_replan or merges_profile_replan_correction or profile_change_replan"`：`7 passed, 513 deselected`。
+  - `test_chat_service_history_persistence.py -k "needs_plan_first_guard or normalize_user_facing_terms_softens"`：`10 passed, 510 deselected`。
+  - `test_zhiyuan_agent_poc.py -k "direct_tool_output_uses_next_step or replace or retries_incomplete or instructions_require_plan_action"`：`11 passed, 138 deselected`。
+  - `test_proposal_compiler_runtime_selection.py -k "needs_plan_first_guard"`：`9 passed, 125 deselected`。
+  - `py_compile app/service.py tests/unit/test_chat_service_history_persistence.py` 通过；`test_chat_service_history_persistence.py --collect-only`：`520 tests collected`。
+
+2026-07-03 plan confirmation payload 内部结构化清理：
+
+- `service._build_plan_confirmation_candidate_from_payload()` 不再把内部 `confirmation_candidate["plan_payload"]` 写成 JSON 字符串，改为直接保存结构化 dict。
+- `proposal_compiler.compile_apply_then_generate_plan_source()` 同步改为 dict 型 `plan_payload`，避免新生成的 apply-then-generate plan pending 继续携带旧字符串形态。
+- service 侧 `_plan_confirmation_unit_kind`、`_plan_confirmation_candidate_unit_kind`、`_plan_confirmation_candidate_is_explicit_atomic_target` 统一走 `_plan_confirmation_candidate_payload()` 解析；该 helper 仍只作为存量/测试兼容读取旧字符串，不再作为新写入格式。
+- 边界：对外工具接口 `execute_plan_action(plan_payload=...)` 仍按当前工具 schema 使用 JSON 字符串；本次只收敛 service/proposal compiler 内部确认候选，不改变工具协议。
+- 验证：
+  - `py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_proposal_compiler_runtime_selection.py` 通过。
+  - `test_chat_service_history_persistence.py -k "extract_plan_confirmation_candidate or plan_preview_confirmation_boundary or plan_confirmation_candidate"`：`46 passed, 474 deselected`。
+  - `test_proposal_compiler_runtime_selection.py -k "apply_then_generate_plan or plan_confirmation"`：`5 passed, 129 deselected`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+
+2026-07-03 full-agent plan post-processing 旧桥清理：
+
+- 删除 service 中旧 full-agent 结果二次改写分支：
+  - `_maybe_refocus_broad_review_result`：旧模型已经做了 broad `review_plan` 后，再用 `classify_plan_semantic_action` 追加 targeted review 的桥。
+  - `_maybe_reroute_review_to_fix_preview`：旧模型返回 `review_plan/analyze_adjustment` 后，再二次调用 `execute_plan_action(preview_fix_proposal)` 补出 fix preview 的桥。
+- 删除 ProposalCompiler 中仅服务这两条桥的类型和编译函数：`RuntimeReviewRefocusCompiledSource`、`RuntimeReviewToFixPreviewCompiledSource`、`compile_runtime_review_refocus_source()`、`compile_runtime_review_to_fix_preview_source()` 及专属 helper。
+- 删除/收敛对应旧单测资产：不再验证“审查后自动补执行预览/自动转 fix preview”，后续应通过 4.0 direct `review_plan` / `preview_plan_action` / `confirm_pending` 验证真实口语路径。
+- 后续更新：该边界已在 2026-07-04 清理中继续收敛；旧 `fix_proposal_preview` / ready fix proposal 不再由 service 反向建 pending 卡，`compile_runtime_review_fix_source` 也已删除。
+- 验证：
+  - `py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_zhiyuan_agent_poc.py` 通过。
+  - `test_chat_service_history_persistence.py -k "extract_plan_confirmation_candidate or plan_preview_confirmation_boundary or plan_confirmation_candidate"`：`46 passed, 470 deselected`。
+  - `test_proposal_compiler_runtime_selection.py -k "review_fix or fix_proposal or plan_confirmation or apply_then_generate_plan"`：`15 passed, 114 deselected`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+- 客观测试资产观察：`test_chat_service_history_persistence.py -k "fix_preview or review_repair_preview or semantic_plan_route or plan_confirmation_candidate"` 当前仍有 15 个旧 semantic route 口径失败，失败点集中在期望旧 `classify_plan_semantic_action + execute_plan_action` 绕过 full-agent 或补卡；按 4.0 清理原则不恢复旧桥，后续迁移/删除这批测试资产。
+
+2026-07-03 intent preview -> current plan mutation 旧桥清理：
+
+- 删除 service 中最后一处直接 await 旧 `execute_plan_action` 的路径：`_execute_semantic_plan_payload()` 与 `_maybe_create_current_plan_mutation_preview_from_intent_payload()`。
+- 删除 full-agent intent preview 被 TurnDecision 判定为当前方案调整时的“service 后置补执行 plan preview”逻辑；后续这类口语诉求必须在 4.0 direct 中直接选择 `preview_plan_action`，旧 full-agent 不再通过 service 二次纠偏创建方案 pending。
+- 删除 ProposalCompiler 中仅服务该桥的 `RuntimeCurrentPlanMutationCompiledSource`、`compile_runtime_current_plan_mutation_from_intent_preview_source()` 及 intent preview payload -> plan payload selector helper。
+- 更新 `test_runtime_hard_cut_audit.py`：改为断言该桥不再存在，且 `service.py` 不再从 `plan_execution_tool` import `execute_plan_action`。
+- 当前边界：`service.py` 仍保留对历史/full-agent `execute_plan_action` 工具消息的解析、展示和 pending sink 兼容，但不再主动调用旧 `execute_plan_action` 工具。
+- 验证：
+  - `py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_zhiyuan_agent_poc.py` 通过。
+  - `test_runtime_hard_cut_audit.py`：`8 passed`。
+  - `test_proposal_compiler_runtime_selection.py -k "atomic_plan_action or review_fix or fix_proposal or plan_confirmation or apply_then_generate_plan"`：`18 passed, 105 deselected`。
+  - `test_chat_service_history_persistence.py -k "extract_plan_confirmation_candidate or plan_preview_confirmation_boundary or plan_confirmation_candidate"`：`46 passed, 470 deselected`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+
+2026-07-03 profile-change post-query semantic fallback 清理：
+
+- 删除旧 full-agent 后处理 fallback：当旧 `execute_plan_action(query_state)` 返回空方案 `status_overview` 时，service 不再额外调用 `classify_plan_semantic_action` 猜测“当前学生信息变化，需要重规划”。
+- 删除只服务该 fallback 的 `_latest_empty_status_overview_result()` 和 `_semantic_decision_is_current_student_profile_replan()`。
+- 边界：本轮后续已进一步清理，service 已不再 import 或调用 `classify_plan_semantic_action`；fix-proposal 目标选择只信任结构化结果里的显式 scope。
+- 验证：
+  - `py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_zhiyuan_agent_poc.py` 通过。
+  - `test_runtime_hard_cut_audit.py`：`8 passed`。
+  - `test_proposal_compiler_runtime_selection.py -k "atomic_plan_action or review_fix or fix_proposal or plan_confirmation or apply_then_generate_plan"`：`18 passed, 105 deselected`。
+  - `test_chat_service_history_persistence.py -k "extract_plan_confirmation_candidate or plan_preview_confirmation_boundary or plan_confirmation_candidate"`：`46 passed, 470 deselected`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+
+2026-07-03 `plan_next_action` 未执行 preview 桥清理：
+
+- `_extract_plan_confirmation_candidate()` 不再从 `plan_next_action` 未执行 preview 或只读 query 结果补造 plan pending candidate；只接受已有 `execute_plan_action` preview result / 结构化执行结果。
+- 删除 `_latest_plan_next_missing_inputs_payload()` 以及基于旧 `plan_next_action` missing-inputs payload 的主流程边界回复；缺参提示只来自当前有效执行结果。
+- 删除 `plan_next_action` structured goal preview 到 fix pending / intent fallback 的桥：`_latest_structured_goal_plan_preview()`、`_latest_goal_scoped_plan_preview()`、`_structured_user_goal_fix_candidate_from_source()`、`_structured_goal_intent_candidate_from_source()`、`_create_pending_intent_confirmation_from_structured_goal_candidate()`。
+- 删除 ProposalCompiler 中仅服务该旧桥的 `StructuredUserGoalFixRequestSource`、`StructuredGoalIntentInputSource`、`compile_structured_user_goal_fix_request_source()`、`compile_structured_goal_intent_input_source()`；保留 direct 诉求方案调整实际使用的 `build_structured_user_goal_fix_proposal_request()` 和 `select_user_goal_fix_proposal()`。
+- 边界：本轮后续已进一步清理，`service.py` 生产代码不再保留 `plan_next_action` 引用；历史/full-agent `execute_plan_action` 工具消息解析、展示和 pending sink 兼容暂保留。
+- 验证：
+  - `py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_chat_service_history_persistence.py` 通过。
+  - `test_runtime_hard_cut_audit.py`：`8 passed`。
+  - `test_proposal_compiler_runtime_selection.py -k "user_goal or structured_goal or review_fix or fix_proposal or plan_confirmation or apply_then_generate_plan"`：`17 passed, 104 deselected`。
+  - `test_chat_service_history_persistence.py -k "extract_plan_confirmation_candidate or plan_preview_confirmation_boundary or plan_confirmation_candidate"`：`46 passed, 470 deselected`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+
+2026-07-03 旧 atomic plan action compiler 清理：
+
+- 删除无生产调用的 `RuntimeAtomicPlanActionSource`、`compile_runtime_atomic_plan_action_source()`、`AtomicPlanActionDsl -> plan_next_action_args` 编译逻辑及其专属 helper/常量。
+- 删除对应 5 条旧单测资产；4.0 当前方案操作验证以 `preview_plan_action` 和 `confirm_pending` 为准，不再维护旧 atomic compiler 到 `plan_next_action` 的并行表达。
+- 删除旧 `classify_plan_atomic_action_dsl`、`PlanAtomicActionDslDecision`、`PlanActionDslDecision` 以及 model-node benchmark 的 `plan_atomic_action_dsl` 节点和 3 条旧 benchmark case；当前 plan semantic tool 只保留 review/fix semantic classifier 与 local 档内移动 classifier。
+- 删除 `test_chat_service_history_persistence.py` 中 9 条旧 direct atomic / runtime hard-cut 测试资产，避免继续 patch 已退役的 `app.service.classify_plan_atomic_action_dsl`。
+- 保留仍被 intent preview arbitration 使用的 `_turn_decision_is_current_plan_atomic_mutation()`，仅作为阻断错误 full-agent intent pending 的安全判断。
+- 验证：
+  - `py_compile app/domain/proposal_compiler.py app/tools/plan_semantic_action_tool.py examples/model_node_benchmark.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_plan_semantic_action_tool.py tests/unit/test_model_node_benchmark.py` 通过。
+  - `test_proposal_compiler_runtime_selection.py -k "turn_decision or user_goal or structured_goal or review_fix or fix_proposal or plan_confirmation or apply_then_generate_plan"`：`23 passed, 93 deselected`。
+  - `test_plan_semantic_action_tool.py`：`3 passed`。
+  - `test_model_node_benchmark.py`：`24 passed`。
+  - `test_chat_service_history_persistence.py -k "extract_plan_confirmation_candidate or plan_preview_confirmation_boundary or plan_confirmation_candidate"`：`46 passed, 461 deselected`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+  - `json.tool examples/model_node_benchmark_320_cases.json` 通过。
+
+2026-07-03 ChatAgent 旧 Plan 工具与 planner/context 本体清理：
+
+- `ChatAgent` 不再注册 `collect_plan_context_inputs`、`plan_next_action`、`execute_plan_action`；`planning_context` 和 `tool_dispatch_rules` 不再指导 full-agent 走旧 Plan chain。`query_volunteer_plan` 暂保留为局部只读命中查询，不承担整体方案编排或执行。
+- `tool_reply_policy` 删除旧 `execute_plan_action(preview_only)` 的 add/remove/sort/position 预览直返分支；旧执行工具返回的预览不再由 ChatAgent 当成可确认最终回复。保留的是不会主动生成新动作的错误阻断/无变化等兜底。
+- `explore_followup_tool(plan_analyze)` 不再 import/call `plan_next_action -> execute_plan_action`；改为创建 4.0 sandbox context 后调用 `query_plan(scope="plan", filters=...)` 做只读方案承接查询。
+- 删除无生产主动引用的旧工具本体：`app/tools/plan_orchestration_tool.py`、`app/tools/plan_context_tool.py`。
+- 删除或迁移直接绑定旧 planner/context 的测试资产：`test_plan_orchestration_tool.py`、`test_plan_context_tool.py`、`test_determine_stage.py`、`test_normalize_action.py`；`test_planning_plan_scenarios_sync.py` 中保留执行层用例，但改为直接传结构化 payload，不再依赖 `plan_next_action` 生成。
+- `examples/dialog_quality_gate.py` 移除已删除的旧 planner/context 测试目标；`tests/integration/test_resolver_vs_legacy.py` 删除旧 helper passthrough 对比，保留 ActionResolver 结构化合同测试。
+- 边界：本轮后续已进一步清理，`service.py` 生产代码不再保留 `plan_next_action` 引用；历史/full-agent `execute_plan_action` tool message 的解析、展示、观测和存量 pending sink 兼容暂保留，这不是主动执行旧工具。`plan_execution_tool.py` 仍被执行层 handler/service 复用，暂不删除。
+- 验证：
+  - `test_chat_agent_tools.py test_chat_agent_progress_hints.py test_chat_agent_init_profile.py test_instructions.py`：`86 passed`。
+  - `test_action_resolver.py tests/integration/test_resolver_vs_legacy.py`：`135 passed`。
+  - `test_tool_reply_policy.py test_planning_plan_scenarios_sync.py`：`46 passed`。
+  - `test_runtime_hard_cut_audit.py test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 110 deselected`。
+  - `explore_followup` plan/candidate 子集：`11 passed`。
+
+2026-07-03 旧 plan action cache 与 ChatAgent 回复策略继续清理：
+
+- `plan_execution_tool.py` 删除旧 `plan_next_action` 最近 plan cache：`_RECENT_PLAN_ACTION_PLANS`、`remember_recent_plan_action_plan()`、`_merge_recent_plan_action_plan_if_compatible()`、`_recent_plan_action_plan()` 以及 sort payload 补偿 helper。`execute_plan_action()` 不再从历史 `plan_next_action` 输出补齐缺失 payload。
+- 删除对应旧单测 `test_execute_plan_action_recovers_sort_field_from_recent_plan_next_payload`；执行层 sort/move/remove/replace 测试改为直接验证当前结构化 payload 行为。
+- `tool_reply_policy.py` 继续删除 `execute_plan_action` 专属 status/review 特判和 explicit `direct_blocking` trust 分支；ChatAgent 回复策略只保留 intent preview 直返、只读工具回模型综合、通用结构化 blocking/no_change 兜底。
+- `test_tool_reply_policy.py` / `test_chat_agent_tools.py` 收敛旧工具名样例：不再用旧 `execute_plan_action` 预览/阻断样例作为 ChatAgent 行为合同；保留“不注册旧 Plan 工具”断言。
+- `service.py` 删除无调用的 `_build_direct_plan_action_messages()`，不再保留旧 direct route 用的 synthetic `execute_plan_action` 消息构造器。
+- `service.py` 新增 `_plan_semantic_route_context_from_result()`，让 fix proposal 目标推断直接从结构化 plan result 抽取上下文；移除三处为了复用 helper 而人工包装 `ToolReturnPart(tool_name="execute_plan_action")` 的代码。
+- 边界：`service.py` 和 regression runner 中仍存在历史/full-agent `execute_plan_action` tool message 解析和观测逻辑，用于存量消息展示、pending sink 兼容和指标提取；本轮未做无差别删除。
+- 验证：
+  - `py_compile app/agent/tool_reply_policy.py tests/unit/test_tool_reply_policy.py tests/unit/test_chat_agent_tools.py` 通过。
+  - `py_compile app/service.py tests/unit/test_chat_service_history_persistence.py` 通过。
+  - `test_tool_reply_policy.py test_chat_agent_tools.py`：`60 passed`。
+  - `test_plan_execution_tool.py -k "sort_preview or move_ordered or remove_ordered or replace"`：`43 passed, 111 deselected`。
+  - `test_chat_service_history_persistence.py -k "latest_plan_semantic_route_context or plan_preview_confirmation_boundary or interruption_fallback"`：`11 passed, 496 deselected`。
+  - `test_proposal_compiler_runtime_selection.py -k "fix_proposal or review_fix or plan_confirmation"`：`15 passed, 101 deselected`。
+  - 过宽旧语义资产选择 `test_chat_service_history_persistence.py -k "fix_proposal or review_repair_preview or plan_semantic_route_context or latest_plan_semantic_route_context or interruption_fallback or plan_preview_confirmation_boundary"` 当前 `26 passed / 5 failed`；失败均为已删除旧 `execute_plan_action` / `_maybe_handle_semantic_plan_action` / `classify_local_plan_action_dsl` patch 点，不作为本轮恢复目标。
+
+2026-07-03 `service.py` 旧 planner 工具名生产引用清理：
+
+- `service.py` 生产代码已清零 `plan_next_action` / `collect_plan_context_inputs` 引用。
+- 删除 `plan_next_action` 在以下 service 边界中的残留语义：当前轮方案预览识别、readonly 判定豁免、结构化 plan result 检测、未执行 preview 缺参边界、plan mutation attempt 回看、显式只读 prompt 下的 mutating preview 改写。
+- `_tool_calls_include_plan_chain()` 和 full-agent scene 观测分类不再把 `collect_plan_context_inputs` / `plan_next_action` 视作当前 plan 链路工具；`query_volunteer_plan` 的局部只读查询和历史 `execute_plan_action` 解析暂保留。
+- 删除 `test_chat_service_history_persistence.py` 中 5 条依赖旧 `plan_next_action` 未执行 preview 修正文案的测试资产；这类缺参/确认文案边界后续只从有效 4.0 `preview_plan_action` / `confirm_pending` 或仍保留的历史 `execute_plan_action` 结果判断。
+- 验证：
+  - `rg -n "plan_next_action|collect_plan_context_inputs" app/service.py` 无结果。
+  - `py_compile app/service.py tests/unit/test_chat_service_history_persistence.py` 通过。
+  - `test_chat_service_history_persistence.py -k "extract_plan_confirmation_candidate or plan_preview_confirmation_boundary or plan_confirmation_candidate or latest_turn_looks_readonly or latest_turn_has_plan_mutation_preview"`：`41 passed, 461 deselected`。
+  - `test_runtime_hard_cut_audit.py`：`8 passed`。
+  - `test_tool_reply_policy.py test_chat_agent_tools.py test_runtime_hard_cut_audit.py`：`68 passed`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+  - `test_chat_service_history_persistence.py --collect-only -q`：`502 tests collected`。
+
+2026-07-03 旧 service patch 测试资产与无调用 helper 清理：
+
+- `service.py` 删除无调用旧 helper：`_latest_review_plan_result`、`_tool_context_has_execute_plan_return`、`_plan_result_is_readonly_workspace_no_refresh`、`_tool_calls_include_plan_execution`、`_latest_readonly_plan_query_misroute_candidate`。
+- `test_runtime_hard_cut_audit.py` 的 workspace presentation 审计锚点改到仍存在的 `_tool_returns_successful_plan_apply`，避免测试继续依赖已删除 helper 名称。
+- `test_chat_service_history_persistence.py` 删除仍 patch 已退役 `app.service.execute_plan_action`、`app.service.plan_next_action`、`app.service.classify_local_plan_action_dsl`、`ChatService._maybe_handle_semantic_plan_action` 的旧测试资产；继续删除旧 `runtime_intent_hard_cut` service patch、旧 `plan_next_action` / `collect_plan_context_inputs` 工具消息资产、旧 `_apply_selected_intents` service confirmation 资产。
+- 保留范围：仍保留从历史 `execute_plan_action` tool return 读取展示、工作台刷新、pending sink 的兼容测试；这部分不代表当前模型可调用旧工具。`plan_next_action` / `collect_plan_context_inputs` 在核心 service/agent/tool 测试里只剩 ChatAgent 不注册旧工具的断言。
+- `test_chat_service_history_persistence.py` 收集规模从 `502` 降到 `336`，全量通过：`336 passed, 1 skipped`。
+- 验证：
+  - `py_compile app/service.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_runtime_hard_cut_audit.py` 通过。
+  - `test_chat_service_history_persistence.py`：`336 passed, 1 skipped`。
+  - `test_runtime_hard_cut_audit.py`：`8 passed`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+  - `test_tool_reply_policy.py test_chat_agent_tools.py test_runtime_hard_cut_audit.py`：`68 passed`。
+  - `git diff --check` 通过。
+
+2026-07-03 workspace presentation 与内部旧字段继续清理：
+
+- `proposal_compiler.compile_runtime_workspace_presentation_source()` 不再通过当前轮旧 tool call name / action family 推断刷新目标；workspace refresh 只基于实际 plan result 编译，route reason 收敛为 `plan_result_refresh` / `plan_result_no_refresh`。
+- `service.py` 删除旧 call-only refresh 相关 helper：`_extract_execute_plan_action_family`、`_execute_plan_action_call_families`、`_tool_calls_include_plan_workspace_refresh`；`_current_turn_workspace_refresh_targets()` 只读取 `_execute_plan_action_results(tool_context_messages)`。
+- 删除旧 call-only refresh 测试资产，不再维护“只看到旧工具调用、没有结果也追加工作台刷新”的行为。
+- `proposal_compiler.compile_plan_confirmation_proposal()` 新生成的 `proposalCandidates[]` 改写 `plan_payload`，不再写 `planPayload`；`plan_sink_contract()` 优先读取 `plan_payload`，仅保留 `planPayload` 存量读取兼容。
+- 边界：`executionPayload.planPayload` 仍按 4.0 协议拒绝，POC 测试继续断言新 pending 不含该字段；service 中历史 `execute_plan_action` tool return 的展示/观测/pending sink 兼容仍暂保留，不代表当前模型可调用旧工具。
+- 验证：
+  - `py_compile app/domain/proposal_compiler.py app/service.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_runtime_hard_cut_audit.py` 通过。
+  - `test_proposal_compiler_runtime_selection.py`：`114 passed`。
+  - `test_runtime_hard_cut_audit.py`：`8 passed`。
+  - `test_chat_service_history_persistence.py`：`334 passed, 1 skipped`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+  - `git diff --check` 通过。
+
+2026-07-03 service 旧 plan semantic classifier 依赖清理：
+
+- `service.py` 不再 import 或调用 `classify_plan_semantic_action`；`test_runtime_hard_cut_audit.py` 已把该符号加入 service 禁止片段。
+- 删除 service 中无生产调用的 `_user_requested_fix_proposal_preview()`、`_infer_plan_target_issue_codes_from_context()`。
+- `_infer_fix_proposal_target_scope()` 只信任已有结构化 plan result 中的 `target_strategies` / `target_issue_codes` 或 `selected_proposal_id`；如果结果本身没有显式目标，不再由 service 调旧 semantic classifier 猜测修复目标，也不补 unrelated fix card。需要用户语义选择修复目标的场景交给 4.0 direct `preview_plan_action`。
+- `proposal_compiler` 删除只服务旧 semantic classifier 的 `semantic_decision_fix_proposal_target_scope()`、`resolve_fix_proposal_target_scope_from_decision()`、`semantic_decision_target_issue_codes_for_context()` 与对应测试；precheck 字段从 `needs_semantic_decision` 改为 `needs_explicit_scope`，source 改为 `explicit_scope_required`。
+- 测试资产同步删除对 `app.service.classify_plan_semantic_action` 的 patch 和 await 断言，保留 pending/card/文案行为断言。
+- 验证：
+  - `py_compile app/domain/proposal_compiler.py app/service.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_runtime_hard_cut_audit.py` 通过。
+  - `test_proposal_compiler_runtime_selection.py`：`109 passed`。
+  - `test_chat_service_history_persistence.py`：`334 passed, 1 skipped`。
+  - `test_runtime_hard_cut_audit.py`：`8 passed`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+  - `git diff --check` 通过。
+
+2026-07-03 `service.py` 深清理旧 runtime/profile/plan-chain helper：
+
+- `service.py` 继续删除生产无调用旧 helper：旧 semantic plan reply synthesis、旧 review readonly 判断、旧 pending semantic decision、旧 apply-then-generate pending、旧 structured major context 提取等。
+- 进一步按 `service.py` 本文件引用数扫描，删除只被旧测试资产维持的 runtime intent/profile/plan-chain helper：`_create_pending_intent_confirmation_from_entity_profile`、`_runtime_intent_entity_profile_context`、`_plan_chain_failed_without_pending_preview`、`_turn_has_structured_plan_result`、`_guard_plan_preview_reply_without_card`，并清理级联孤立的 entity context / profile selected-values 转换链。
+- `test_chat_service_history_persistence.py` 删除旧 helper-only 测试资产；runtime hard-cut audit 不再要求已删除的 preview-without-card guard 存在，继续断言 reply guard 委托到 `proposal_compiler`。
+- `runtime_pending_sink_calls_320.json` 审计基线同步删除已不存在的 runtime entity profile / structured goal intent sink 和过期 pending status entry，当前基线为 12 个现存 sink/status 调用。
+- 当前扫描结果：`service.py` 本文件无调用 helper 扫描只剩类构造 `__init__`；`plan_next_action` / `collect_plan_context_inputs` / `classify_plan_semantic_action` / 旧 runtime profile fallback helper 在 `service.py` 无生产残留。
+- 边界：历史 `execute_plan_action` tool message 的解析、展示、pending sink、工作台刷新和观测兼容仍保留；当前模型已不能主动调用旧 `execute_plan_action`。
+- 验证：
+  - `py_compile app/service.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_runtime_pending_sink_call_audit.py` 通过。
+  - `test_chat_service_history_persistence.py`：`314 passed, 1 skipped`。
+  - `test_runtime_hard_cut_audit.py`：`8 passed`。
+ - `test_runtime_pending_sink_call_audit.py`：`2 passed`。
+ - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+  - `git diff --check` 通过。
+
+2026-07-03 旧 semantic action tool 与 benchmark 资产清理：
+
+- 删除 `app/tools/plan_semantic_action_tool.py` 和 `tests/unit/test_plan_semantic_action_tool.py`；4.0 direct 语义判定不再维护旧 semantic/local DSL classifier 并行路径。
+- `tests/unit/test_runtime_hard_cut_audit.py` 改为断言旧 semantic tool 文件不存在，并继续禁止 `service.py` 重新引入旧 semantic classifier 符号。
+- `examples/model_node_benchmark.py` 删除 `plan_semantic_action` / `local_plan_action_dsl` / `proposal_selection` live adapter 分支；`examples/model_node_benchmark_320_cases.json` 删除 8 条旧节点 case，benchmark 样本从 59 条收敛为 51 条。
+- `tests/unit/test_model_node_benchmark.py` 的示例节点改为仍存在的模型节点；`test_chat_service_history_persistence.py` 删除对旧 `classify_local_plan_action_dsl` 的 no-op patch 和 helper-only 资产。
+- 当前扫描结果：`plan_semantic_action_tool` / `classify_plan_semantic_action` / `classify_local_plan_action_dsl` / `PlanSemanticActionDecision` / `LocalPlanActionDslDecision` / `plan_semantic_action` / `local_plan_action_dsl` / `proposal_selection` 在 `app/tests/examples` 中仅剩审计测试的“文件不存在/禁止片段”断言；旧 runtime review-fix selector/compile helper 已在后续清理中删除，不再作为 4.0 runtime selection helper 保留。
+- 验证：
+  - `py_compile app/service.py examples/model_node_benchmark.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_model_node_benchmark.py tests/unit/test_runtime_hard_cut_audit.py` 通过。
+  - `test_runtime_hard_cut_audit.py test_model_node_benchmark.py`：`32 passed`。
+  - `test_chat_service_history_persistence.py`：`314 passed, 1 skipped`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+
+2026-07-03 旧 `execute_plan_action` recent execution cache 清理：
+
+- 删除 `plan_execution_tool.py` 中的 `_RECENT_PLAN_EXECUTION_RESULTS`、TTL prune、`clear_recent_plan_execution_result()`、`consume_recent_plan_execution_result()`、`_remember_recent_plan_execution_result()`；`execute_plan_action()` 不再为超时/中断 fallback 写 `_pending_source_payload` 缓存。
+- `service.py` 不再 import `app.tools.plan_execution_tool`，删除 `build_timeout_fallback_from_recent_plan_execution()` / `build_interruption_fallback_from_recent_plan_execution()`，模型中断时不再从旧执行工具缓存恢复方案回复；每轮入口也不再清理旧 execution cache。
+- `server.py` 的 websocket 超时处理统一走通用安全超时回复，不再查旧 `execute_plan_action` recent cache，也不再发送由旧缓存生成的 workspace followup。
+- 删除/收敛旧缓存测试资产：`test_pending_protocol.py` 删除 recent cache 协议类，`test_plan_execution_tool.py` 删除 timeout fallback cache 断言，`test_ws_compat.py` 删除旧 fallback followup case，history 中断 case 改为只验证通用安全回复和不覆盖已有 pending。
+- hard-cut audit 收紧：`service.py` 不得再 import `app.tools.plan_execution_tool`，且不得重新引入 recent execution cache fallback 符号。
+- 验证：
+  - `py_compile app/service.py app/server.py app/tools/plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_ws_compat.py tests/unit/test_plan_execution_tool.py tests/regression/test_pending_protocol.py tests/unit/test_runtime_hard_cut_audit.py` 通过。
+  - `test_runtime_hard_cut_audit.py`：`8 passed`。
+  - `test_ws_compat.py`：`19 passed`。
+  - `test_plan_execution_tool.py -k "review_plan or timeout_fallback or regenerate_order or replace or remove_ordered or move_ordered"`：`41 passed, 112 deselected`。
+  - `test_pending_protocol.py`：`110 passed`。
+  - `test_chat_service_history_persistence.py`：`312 passed, 1 skipped`。
+  - `git diff --check` 通过。
+  - 旧 semantic/recent cache 符号扫描只剩 `test_runtime_hard_cut_audit.py` 的“文件不存在/禁止片段”断言。
+
+2026-07-03 旧 `execute_plan_action` 公开工具入口退役：
+
+- `plan_execution_tool.py` 不再暴露 `async def execute_plan_action(...)`；旧公开工具入口改名为中性的 `run_plan_action_payload(...)`，用于执行层测试直接跑结构化 payload，不再以工具名形式存在。
+- `tests/unit/test_plan_execution_tool.py`、`tests/unit/test_planning_plan_scenarios_sync.py`、`tests/unit/test_ws_compat.py` 的直接调用迁移到 `run_plan_action_payload()`；历史 tool message 兼容测试中的 `tool_name="execute_plan_action"` 暂保留，后续跟随 service 历史消息兼容清理一起删除。
+- hard-cut audit 新增断言：`plan_execution_tool.py` 不得重新定义旧 `execute_plan_action` 函数，且必须保留当前 payload runner。
+- 验证：
+  - `py_compile app/tools/plan_execution_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_planning_plan_scenarios_sync.py tests/unit/test_ws_compat.py tests/unit/test_runtime_hard_cut_audit.py` 通过。
+  - `test_plan_execution_tool.py test_planning_plan_scenarios_sync.py test_ws_compat.py test_runtime_hard_cut_audit.py`：`193 passed`。
+  - `test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+  - 可调用旧入口扫描：`def execute_plan_action` / `from app.tools.plan_execution_tool import execute_plan_action` / `execute_plan_action(` 仅剩 hard-cut audit 的禁止断言。
+- 后续处理：`tests/regression/test_execution_preview.py tests/regression/test_execution_apply.py` 已删除；这些旧回归直接调用旧 wrapper 内部原语并期望旧 apply guard / generate 行为，不再作为 4.0 验证资产维护。
+
+2026-07-03 service 旧 `execute_plan_action` preview pending sink 切断：
+
+- `service.py` 主流程不再调用 `_extract_plan_confirmation_candidate(tool_context_messages)`，旧 full-agent `execute_plan_action(preview)` 结果不再反向生成 plan pending 卡；4.0 pending 创建职责收敛到 `preview_plan_action` 工具内。
+- `_append_plan_preview_confirmation_boundary()` 不再根据旧 preview 追加“确认后执行”文案，只保留旧 plan-chain 失败、只读误确认和不可执行结果的安全边界。
+- `_latest_non_actionable_plan_mutation_result()` 不再通过 `_build_plan_confirmation_candidate_from_payload()` 过滤旧 preview，可执行预览与 pending sink 不再由 service 补造。
+- hard-cut audit 增加防回退断言：禁止主流程重新从 `tool_context_messages` 提取旧候选，禁止 `await _create_runtime_compiled_plan_pending(...)` 重新出现。
+- 边界：旧候选 helper 与其 helper-only 测试资产已在后续清理中删除；历史 `execute_plan_action` 展示/观测安全边界和 `plan_execution_tool.py` 执行原语迁移已在后续 2026-07-04 清理中完成。
+- 验证：
+  - `py_compile app/service.py tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_chat_service_history_persistence.py` 通过。
+  - `tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_runtime_pending_sink_call_audit.py`：`12 passed`。
+  - `tests/unit/test_chat_service_history_persistence.py`：`312 passed, 1 skipped`。
+  - `tests/unit/test_chat_service_history_persistence.py -k "plan_preview_confirmation_boundary or extract_plan_confirmation_candidate or runtime_compiled_plan_pending or build_plan_confirmation_candidate"`：`31 passed, 282 deselected`。
+
+2026-07-04 service 旧 execute pending/workspace/review-fix 桥继续清理：
+
+- `service.py` 删除旧候选 pending helper 和 helper-only 测试资产：`_build_plan_confirmation_candidate_from_payload`、`_extract_plan_confirmation_candidate`、`_create_runtime_compiled_plan_pending`、旧 atomic -> candidate 构造链等不再保留。
+- 删除当前轮旧 `execute_plan_action` workspace refresh/view 桥：`_current_turn_workspace_refresh_targets`、`_current_turn_workspace_view_targets`、`_execute_plan_action_results` 和旧 prior plan attempt view helper；不再因为旧 execute return 追加工作区刷新或 view action。
+- 删除旧 `execute_plan_action(preview_fix_proposal)` / ready fix proposal 到 pending card 的反向建卡桥：`_create_runtime_compiled_review_fix_pending`、`_latest_fix_proposal_confirmation_source`、service 目标推断/澄清 helper 已删除；`proposal_compiler` 同步删除 runtime review-fix selector/compile helper 与对应 helper-only 测试。
+- `runtime_pending_sink_calls_320` 审计基线从 12 个现存 sink/status 调用收敛到 9 个；保留 user-goal fix、intent preview、intent select 的 compiler sink 和状态更新调用，旧 plan/review-fix runtime sink 不再保留。
+- 验证：
+  - `tests/unit/test_chat_service_history_persistence.py`：`273 passed, 1 skipped`。
+  - `tests/unit/test_proposal_compiler_runtime_selection.py`：`90 passed`。
+  - `tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_runtime_pending_sink_call_audit.py`：`12 passed`。
+  - `tests/unit/test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+  - `py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_runtime_hard_cut_audit.py` 通过。
+
+2026-07-04 service 旧 execute 解析/展示后处理清零：
+
+- `service.py` 生产代码已无 `execute_plan_action` 字符串；旧 tool return 不再参与 plan-chain 判定、只读判定、reply boundary、profile replan payload fallback、candidate missing input fallback、review/status/fix 展示或 observability action family 解析。
+- 删除旧 helper：旧 execute payload parser、readonly execution result scanner、successful apply/mutation context 判断、fix proposal preview scanner、plan semantic route context scanner、latest execute/non-actionable/profile replan result scanner、non-actionable plan boundary、`_append_plan_preview_confirmation_boundary()` 及级联 scope-label helper。
+- `proposal_compiler` 删除无生产调用的 `RuntimeWorkspacePresentationSource` / `RuntimeSemanticPlanDisplaySource` 与 `compile_runtime_workspace_presentation_source()` / `compile_runtime_semantic_plan_display_source()`；`service.py` 不再从旧执行结果生成 full-agent display payload/reply plan。
+- `test_chat_service_history_persistence.py` 删除旧 execute helper-only 和 service 后处理断言，收集规模降到 `255 passed, 1 skipped`；hard-cut audit 新增 `service.py` 不得重新出现 `execute_plan_action` 的断言。
+- 验证：
+  - `tests/unit/test_chat_service_history_persistence.py`：`255 passed, 1 skipped`。
+  - `tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_runtime_pending_sink_call_audit.py`：`13 passed`。
+  - `tests/unit/test_proposal_compiler_runtime_selection.py`：`81 passed`。
+  - `tests/unit/test_zhiyuan_agent_poc.py -k "replace or preview_plan_action or confirm_pending"`：`47 passed, 102 deselected`。
+  - `py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_runtime_hard_cut_audit.py` 通过。
+
+2026-07-04 service/proposal compiler 旧兼容尾巴继续清理：
+
+- `service.py` 删除旧 `planEditCache` 清理桥：移除 `save_intent_change_cache` import、`_clear_legacy_plan_edit_cache_best_effort()` 和创建 intent pending 后的旧缓存清理调用。4.0 新 pending 只写 `pendingConfirmation`，不再维护旧意向缓存清理路径。
+- `service.py` 删除旧 plan pending/reroute 空变量尾巴：`compiled_plan_pending_card`、`plan_confirmation_candidate`、`structured_plan_reroute`、`compiled_plan_includes_intent_update` 和 `structuredReroute` observability 字段均不再保留。
+- `test_chat_service_history_persistence.py` 删除旧 `planEditCache` 清理断言、5 条旧 `execute_plan_action` workspace refresh 兼容测试，以及不再使用的 workspace follow-up 断言 helper。
+- `proposal_compiler` 删除旧 readonly workspace evidence compiler：`RuntimeReadonlyWorkspaceEvidencePlanSource`、`compile_runtime_readonly_workspace_evidence_plan_source()`、旧 execute workspace family 常量、旧 workspace result refresh/view helper 和 `current_execute_plan_action_result` evidence 字段均已清零。
+- hard-cut audit 增加防回退：禁止 `service.py` 重新出现 `save_intent_change_cache` / `planEditCache` 或旧 plan pending/reroute 空变量，禁止 `proposal_compiler` 重新引入旧 readonly workspace evidence compiler、旧 execute workspace family 常量和旧 execute evidence 字段。
+- 验证：
+  - `tests/unit/test_chat_service_history_persistence.py`：`249 passed, 1 skipped`。
+  - `tests/unit/test_proposal_compiler_runtime_selection.py`：`79 passed`。
+  - `tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_runtime_pending_sink_call_audit.py`：`13 passed`。
+  - `py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_runtime_hard_cut_audit.py` 通过。
+
+2026-07-04 旧执行工具测试资产继续清理：
+
+- `plan_execution_tool.py` 内部执行原语从 `_execute_plan_action_model` 改名为 `_run_plan_action_model`；`run_plan_action_payload()` 保持中性 payload runner 定位，不再暴露旧公开工具语义。
+- 删除旧 execution regression 资产：`tests/regression/test_execution_preview.py` / `tests/regression/test_execution_apply.py`；`examples/dialog_quality_gate.py` 不再把这两个旧回归纳入本地 pytest target。
+- hard-cut audit 增加防回退断言：禁止 `_execute_plan_action_model` 旧内部名回归，要求保留 `async def _run_plan_action_model`。
+- `test_chat_service_history_persistence.py` 删除旧 `execute_plan_action` tool message 夹具：旧 review-fix / legacy generate / no-change / budget review 反向建卡负向测试已移除；仍有价值的历史压缩、只读回复和 workspace 泄漏测试改为 4.0/中性工具名。当前该文件扫描已清零 `execute_plan_action` 字符串。
+- 验证：`test_chat_service_history_persistence.py`：`226 passed, 1 skipped`；`test_plan_execution_tool.py`：`153 passed`；`test_proposal_compiler_runtime_selection.py`：`79 passed`；runtime hard-cut + pending sink audit：`13 passed`；4.0 agent `replace/preview_plan_action/confirm_pending` 子集：`47 passed, 102 deselected`；`py_compile` 和 `git diff --check` 通过。
+
+2026-07-04 旧 `planEditCache` 写入/清理路径清理：
+
+- `intent_state_tool._apply_intents()` 删除旧 `save_intent_change_cache(session_id, {})` best-effort 清理调用；意向采纳后只保留 constraint state sync、tuition budget sync、planning stale mark 和 recommendation overlay refresh。
+- `internal_client.py` 删除 `save_intent_change_cache()`，不再保留 `planEditCache` 写接口；`tests/fixtures/mock_backend.py` 同步删除该 mock endpoint。
+- `examples/dialog_regression_runner.py` 的 backend pending clone/clear key 从 `pendingConfirmation + planEditCache` 收敛为只处理 `pendingConfirmation`；CLI help、runner 单测和 e2e README 同步更新。
+- `test_runtime_hard_cut_audit.py` 增加防回退：`intent_state_tool.py`、`internal_client.py` 和 `dialog_regression_runner.py` 不得重新出现 `save_intent_change_cache` / `planEditCache`。
+- 验证：`test_intent_state_tool.py`：`193 passed`；`test_planning_intent_scenarios_sync.py test_dialog_scenario_stability.py`：`44 passed`；`test_dialog_regression_runner.py`：`89 passed`；`test_chat_service_history_persistence.py`：`226 passed, 1 skipped`；`py_compile` 通过。
+
+2026-07-04 regression runner 旧观测与 fast-route 维护面清理：
+
+- `dialog_regression_runner.py` 删除旧 `execute_plan_action(plan_payload=...)` 专用解析；runner 不再理解旧 JSON 字符串 payload，只消费当前工具 args、tool return 和 route event 的结构化观测字段。
+- 删除 runner 旧 fast-route model/tool-call 前缀映射、`fastRouteArbitration` 提取和 summary 汇总；metrics 汇总保留 4.0 需要的 `routingPath`、`routeDecision`、tool calls、pending 信息和 `zhiyuanAgentPocShadow`。
+- `dialog_quality_gate.py` 移除已删除的 fast-router pytest target；runner 单测样例切到 `preview_plan_action`、`query_plan`、`compare_entities`、`confirm_pending`。
+- hard-cut audit 增加防回退：runner 不得重新出现旧 Plan 工具观测名、旧 fast-route 路由名或 `fastRouteArbitration` 字段。
+- 验证：`test_dialog_regression_runner.py test_dialog_quality_gate.py`：`96 passed`；`test_runtime_hard_cut_audit.py test_runtime_pending_sink_call_audit.py test_dialog_regression_runner.py test_dialog_quality_gate.py`：`111 passed`；`test_plan_execution_tool.py test_proposal_compiler_runtime_selection.py`：`232 passed`；相关文件 `py_compile` 通过。
+
+2026-07-04 plan action execution domain 搬迁：
+
+- 新增 `app/domain/plan_action_execution.py`，把方案动作执行原语从 `app/tools/plan_execution_tool.py` 迁出，包括 payload 解析、范围归一、后端 action/preview/review helper、handler dispatch 和 `_run_plan_action_model`。
+- `plan_execution_tool.py` 收敛为 `run_plan_action_payload()` 中性 runner，只保留结构化 payload 校验、apply guard 和调用 domain runner；不再直接 import `app.util.internal_client`，不再定义 `_run_plan_action_model`。
+- `mutation_handlers.py` 不再从 tool 模块导入执行原语，改为依赖 `app.domain.plan_action_execution`；mock backend/planning fixture 与相关单测 patch 路径同步切换。
+- hard-cut audit 增加防回退：`plan_execution_tool.py` 不得重新暴露旧 `execute_plan_action` 入口或定义 `_run_plan_action_model`，`mutation_handlers.py` 不得重新依赖 `app.tools.plan_execution_tool` 的内部 helper。
+- 验证：`test_runtime_hard_cut_audit.py test_runtime_pending_sink_call_audit.py test_plan_execution_tool.py test_pending_protocol.py test_planning_plan_scenarios_sync.py`：`291 passed`；4.0 agent `replace/preview_plan_action/confirm_pending` 子集：`47 passed, 102 deselected`；`test_dialog_regression_runner.py test_dialog_quality_gate.py test_proposal_compiler_runtime_selection.py`：`175 passed`；相关文件 `py_compile` 通过。
+
+2026-07-04 旧 `plan_execution_tool.py` 文件删除：
+
+- `run_plan_action_payload()` 从旧 tool 文件迁入 `app.domain.plan_action_execution`；payload runner 与 `_run_plan_action_model`、payload 解析、scope 归一和后端执行 helper 统一归属 domain 执行层。
+- 删除 `app/tools/plan_execution_tool.py`；`tests/unit/test_planning_plan_scenarios_sync.py`、`tests/unit/test_ws_compat.py` 和执行层单测改为直接导入 `app.domain.plan_action_execution.run_plan_action_payload()`。
+- `tests/unit/test_plan_execution_tool.py` 改名为 `tests/unit/test_plan_action_execution.py`，`examples/dialog_quality_gate.py` 同步更新 pytest target。
+- handler 注释去掉旧文件名，hard-cut audit 改为断言旧 tool 文件不存在，并继续禁止 `service.py` / `mutation_handlers.py` 重新依赖 `app.tools.plan_execution_tool`。
+- 验证：`test_runtime_hard_cut_audit.py test_runtime_pending_sink_call_audit.py test_plan_action_execution.py test_pending_protocol.py test_planning_plan_scenarios_sync.py test_ws_compat.py`：`310 passed`；4.0 agent `replace/preview_plan_action/confirm_pending` 子集：`47 passed, 102 deselected`；`test_dialog_quality_gate.py test_dialog_regression_runner.py test_proposal_compiler_runtime_selection.py`：`175 passed`；相关文件 `py_compile` 和 `git diff --check` 通过。
+
+2026-07-04 旧 fast-route/report/metrics 测试资产清理：
+
+- `examples/dialog_case_evaluation_report.py` 的 semantic frame route 映射切到 `zhiyuan_agent_direct`；旧 fast-route optimization 特判改为中性 soft expected route 机制，当前不再内置旧 route 名。
+- `test_dialog_case_evaluation_report.py` 样例统一改用 `zhiyuan_agent_direct`、`query_plan`、`review_plan`、`preview_plan_action`，不再用旧 `execute_plan_action` / `plan_next_action` / fast-route 名构造报表输入。
+- `test_mainline_dialog_scenarios.py` 删除旧 full-agent `execute_plan_action(preview)` 反向建卡并 patch `app.service.execute_plan_action` 确认执行的测试资产；只读状态和审查回复测试改用 `query_plan` / `review_plan`。
+- `test_ws_compat.py` 中 agent tool message 改用 `query_plan`；3.0.3 case coverage 里的旧 `plan_fast_route` / `plan_query_fast_route` 标签统一改为 `zhiyuan_agent_direct`。
+- 删除历史生成的 live metrics/output 文件；`tests/e2e/README.md` 示例 metrics 输出改到 `/private/tmp`，避免仓库继续携带旧链路观测结果。
+- 扫描结果：`app tests examples` 中旧执行工具名和 fast-route 名只剩防回退断言。
+- 验证：`test_dialog_case_evaluation_report.py test_mainline_dialog_scenarios.py test_ws_compat.py test_dialog_quality_gate.py test_runtime_hard_cut_audit.py`：`117 passed`；最终补充回归 `test_dialog_case_evaluation_report.py test_mainline_dialog_scenarios.py test_dialog_quality_gate.py test_chat_agent_init_profile.py test_chat_agent_progress_hints.py test_chat_agent_tools.py`：`126 passed`；相关文件 `py_compile` 和 `git diff --check` 通过。
+
+2026-07-04 模型恢复后真实 direct 复跑：
+
+- 环境：LLM 网关重新可达（`/v1/models` 快速返回 401），8080 service 与 5001 rank 健康；新起 `127.0.0.1:8039` agent，`ZHIYUAN_AGENT_ENABLED=1`、`ZHIYUAN_AGENT_ROLLOUT_PERCENT=100`、`ZHIYUAN_AGENT_POC_SHADOW=1`。
+- 确认执行闭环：`examples/dialog_regression_400_direct_confirm_execution_cases.json`，`steps=4`、`successfulSteps=4`、`failedSteps=0`，metrics: `/private/tmp/zhiyuan_400_confirm_after_model_reopen.json`。验证包含 `confirm_pending` 后端 action：`planningState.version` 增长、方案项删除、报考要求写入和 pending applied，不只是确认卡出卡。
+- G case direct 子集：`examples/dialog_regression_400_g_case_direct_subset.json`，`steps=8`、`successfulSteps=8`、`failedSteps=0`，shadow `observed=8/statuses.success=8`，metrics: `/private/tmp/zhiyuan_400_g_subset_after_model_reopen.json`。
+- G1-G32 direct 主集：`examples/dialog_regression_400_g1_g32_direct_cases.json`，`steps=20`、`successfulSteps=19`、`failedSteps=1`，shadow `observed=20/statuses.success=20`，metrics: `/private/tmp/zhiyuan_400_g1_g32_after_model_reopen.json`。
+- 唯一失败 G7：用户表达“方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动”；主集单轮实际工具为 `review_plan` + `query_plan`，违反 case 的 `expectedToolNames=['review_plan']` 和 `maxToolCallCount=1`。回复没有执行方案变更，也没有 pending/action 失败。
+- G7 稳定性复核：同一 case 用 `--session-offset 2000` 和 `--session-offset 3000` 单独复跑两次均通过，均为单 `review_plan`；metrics: `/private/tmp/zhiyuan_400_g7_rerun_offset2000_after_model_reopen.json`、`/private/tmp/zhiyuan_400_g7_rerun_offset3000_after_model_reopen.json`。当前客观定性为 LLM 在主集并发/长回归下偶发追加只读查询的工具边界抖动，后续应在 4.0 direct 工具终止策略/只读审查 stop 条件内处理，不恢复旧链路。
+
+2026-07-04 G7 工具边界问题补充分析（仅记录，暂不修复）：
+
+- 当前 `ZhiyuanAgent.should_return_directly_from_tool()` 只把 `next_step=confirm/clarify` 和 `confirm_pending(next_step=respond)` 视为直返终止；`review_plan(next_step=respond)` 与 `query_plan/answer_policy` 一样会回到模型继续综合。
+- 因此在 G7 这类“先看看/别直接动”的只读审查场景中，`review_plan` 已经给出完整只读审查结果，但模型仍可能为了补细节追加 `query_plan`。这解释了主集当轮 `review_plan -> query_plan` 的来源。
+- 直接把所有 `respond` 工具改为直返会截断 G12 这类 `query_plan -> preview_plan_action` 的复合查询+调整链路；只把 `review_plan` 改为直返则会改变现有单测 `test_zhiyuan_agent_continues_after_review_plan_tool` 的设计口径，即只读审查是否需要再经过模型自然语言综合。
+- 本轮按用户要求不改策略、不改测试，只保留问题记录。后续如果要解决，应先在 4.0 direct 框架内明确 `review_plan` 的终止语义：是统一直返完整只读结果，还是在 prompt/schema 中约束“只读审查后不追加查询工具”。
+
+2026-07-04 旧 payload / route / skill 残余继续清理：
+
+- `proposal_compiler.resolve_plan_confirmation_candidate()` 和 `plan_sink_contract()` 只接受结构化 dict 型 `plan_payload`；旧 JSON 字符串 payload 直接返回 `plan_payload_must_be_object`，不再从 `planPayload` 或字符串 payload 兼容读取。
+- `examples/compiled_pending_sink_contract.py`、`examples/compiled_pending_sink_contract_320_cases.json` 和 `test_proposal_compiler_runtime_selection.py` 的正常 fixture 统一改为 dict 型 `plan_payload`；旧 camelCase `planPayload` 只保留在拒绝非结构化 pending 的反向测试中。
+- 303 回归/模型 provider case 中的 `fast-route` 命名和 `direct_atomic_plan_action` / `runtime_intent_hard_cut` / `semantic_plan_action` 样例路由已收敛为 `zhiyuan_agent_direct`；`test_planning_plan_scenarios_sync.py` 的旧执行工具测试命名同步改为中性 plan action execution。
+- `skills/plan_chat/SKILL.md` 重写为 Release 4.0 direct 工具指引，只保留 `query_plan`、`review_plan`、`preview_plan_action`、`confirm_pending`、`preview_intent_change`；`skills/explore_chat/SKILL.md` 和 `skills/career_path_chat/SKILL.md` 删除旧 `collect_plan_context_inputs -> plan_next_action -> execute_plan_action` 引导。
+- 扫描边界：`app/examples/skills/tests` 中旧 route/tool 名只剩 hard-cut audit、防回退断言和旧 payload 拒绝测试；active code/runner/skills 不再携带旧 Plan 工具链正常路径。
+- 验证：`test_proposal_compiler_runtime_selection.py test_compiled_pending_sink_contract.py test_dialog_regression_runner.py` 为 `171 passed`；`test_runtime_hard_cut_audit.py test_runtime_pending_sink_call_audit.py test_dialog_quality_gate.py` 为 `24 passed`；`test_zhiyuan_agent_poc.py test_plan_action_execution.py` 为 `274 passed, 28 skipped`；`test_chat_agent_tools.py test_chat_agent_init_profile.py test_chat_agent_progress_hints.py` 为 `42 passed`；相关文件 `py_compile` 通过。
+
+2026-07-05 旧执行编排孤儿删除（§10.3 方向 A）：
+
+- 删除旧执行 runner 与 handler registry：`app/domain/plan_action_execution.py`、`app/handlers/__init__.py`、`analysis_handlers.py`、`fix_proposal_handlers.py`、`generate_handler.py`、`mutation_handlers.py`、`query_handlers.py`、`registry.py`、`shared.py`。
+- 删除旧 runner/handler/protocol 测试资产：`tests/unit/test_plan_action_execution.py`、`tests/unit/test_handler_registry.py`、`tests/regression/test_pending_protocol.py`；`examples/dialog_quality_gate.py` 移除这些已删除 pytest target。
+- `app/tools/plan_orchestration_models.py` 未整文件删除：保留 `PlanContextInputs`、`PlanGoal`、`CompositePlanProposal`、`PlanEntityResolution`、`PlanAtomicAction` 等仍被 4.0 生产代码或测试使用的模型；删除旧 execution DTO `PlanActionPlan`、`PlanExecutionResult` 和 `normalize_plan_action_payload()`。
+- 测试资产同步：`test_planning_plan_scenarios_sync.py` 改为当前 `planning_workflow_tool` 直接场景；`test_ws_compat.py` 的方案状态 fixture 改为 `query_plan` / 4.0 facts 形态并兼容 websocket `thinking` 进度帧；mock backend/planning fixture 删除旧 alias patch。
+- 防回退审计：`test_runtime_hard_cut_audit.py` 改为断言 `plan_action_execution.py` 不存在、`app/handlers` 下没有 Python 文件，并禁止 `service.py` 重新出现旧 runner/handler 依赖。
+- 注释口径收口：`typed_actions`、`intent_frame`、`plan_query_tool` 等去掉旧“执行层/dispatcher/flat PlanAtomicAction”描述，统一为 4.0 direct proposal/pending 元数据口径。
+- 扫描结果：`plan_action_execution|run_plan_action_payload|app.handlers|HANDLER_REGISTRY|PlanActionPlan|PlanExecutionResult|normalize_plan_action_payload` 在 `app tests examples` 中无活跃命中（hard-cut audit 禁止断言除外）；旧注释口径扫描也清零。
+- 验证：`py_compile` 通过；核心清理回归 `189 passed`；4.0 agent/service 单测 `163 passed, 28 skipped`；`test_chat_service_history_persistence.py` 为 `226 passed, 1 skipped`；`git diff --check` 通过。
+
+2026-07-05 删除旧执行编排后真实 direct 验证：
+
+- 环境：手动启动 rank `5001`、server `8080`、direct-only agent `8039`；agent 环境为 `INTERNAL_SERVICE_URL=http://127.0.0.1:8080`、`RANK_SERVICE_URL=http://127.0.0.1:5001`、`ZHIYUAN_AGENT_ENABLED=1`、`ZHIYUAN_AGENT_ROLLOUT_PERCENT=100`、`ZHIYUAN_AGENT_POC_SHADOW=1`。runner 必须显式传 `--internal-service-url http://127.0.0.1:8080`，否则默认 `18290` 会产生环境失败。
+- 确认执行闭环：`examples/dialog_regression_400_direct_confirm_execution_cases.json` 为 `4/4`，metrics: `/private/tmp/zhiyuan_400_confirm_after_runner_delete.json`；清理空间后复跑仍为 `4/4`，metrics: `/private/tmp/zhiyuan_400_confirm_after_space_cleanup_rerun.json`。验证包含 `pendingConfirmation.status=applied`、`planningState.version` 增长、方案项删除和报考要求写入。
+- G case direct 子集：`examples/dialog_regression_400_g_case_direct_subset.json` 完整复跑 `8/8`，shadow `observed=8/statuses.success=8`，metrics: `/private/tmp/zhiyuan_400_g_subset_full_after_runner_delete.json`。本轮 G7 为单 `review_plan`，未复现此前偶发追加 `query_plan`。
+- 完整 G1-G32 direct 主集：前一轮运行到 G25 时因后端 fixture clear timeout + Data 卷剩余约 `32MB` + SQLite history 打开失败中断，该轮不计为 4.0 业务失败。清理空间后复跑 `examples/dialog_regression_400_g1_g32_direct_cases.json` 为 `20/20`，`warnings=0`、`failures=0`，shadow `20/20 success`，metrics: `/private/tmp/zhiyuan_400_g1_g32_direct_after_runner_delete_rerun.json`。
+- 主集分布：18 步 `direct`，2 步 `needs_plan_first`；side effect 为 `intent_pending=6`、`readonly=9`、`plan_preview=3`、`needs_plan_first=2`；工具为 `preview_intent_change=6`、`query_plan=6`、`review_plan=3`、`preview_plan_action=3`、`confirm_pending=1`。
+- 性能：median `6862ms`、p95 `17046ms`、max `19624ms`；最慢为 G31 保底学校查询、G17 档位内移动、G3 pending 下查询、G7 只读审查、G26 保底末尾查询。
+- 客观观察项：G7 本轮完整主集未复现追加工具；G12 复合查询+替换为 `query_plan -> preview_plan_action`；G27 已生成 `replace_units` 确认卡，但候选只保证相对降费，仍可能为民办；`民办就算了` 采纳后要求写入和 version 断言通过，但重算 `ordered_plan_response` 返回 `404/会话不存在`，用户可见回复提示当前方案暂时没有重新调整成功。
+- Focused 复核：`G7/G12/G17/G27/G31` 为 `5/5`，shadow `5/5 success`，metrics: `/private/tmp/zhiyuan_400_focused_g7_g12_g17_g27_g31_after_runner_delete_rerun2.json`。G7 仍为单 `review_plan`；G12 为 `query_plan -> preview_plan_action`；G17/G27 均生成方案调整确认卡；G31 pending 下只读查询正常。
+- 第二轮完整主集：`examples/dialog_regression_400_g1_g32_direct_cases.json --session-offset 20000` 为 `20/20`，`warnings=0`、`failures=0`，shadow `20/20 success`，metrics: `/private/tmp/zhiyuan_400_g1_g32_direct_after_runner_delete_second_full.json`。
+- 第二轮分布：18 步 `direct`，2 步 `needs_plan_first`；side effect 仍为 `intent_pending=6`、`readonly=9`、`plan_preview=3`、`needs_plan_first=2`；工具为 `preview_intent_change=6`、`query_plan=6`、`review_plan=3`、`preview_plan_action=4`、`confirm_pending=1`。
+- 第二轮性能：median `6122ms`、p95 `14659ms`、max `25282ms`；最慢为 G21 强基+普通批只读审查、G31 保底学校查询、G26 保底末尾查询、G7 只读审查、G2 高收费/中外合作审查。
+- 第二轮修复前观察：G2 回复出现“还没有生成具体志愿”但同时给出冲4/稳5/保6，属于审查回复口径问题；G8 将“会计学/审计学要，土木工程不要”展示为“工商管理类/土木类”扩展，属于实体扩展过宽的用户可见展示问题。
+- G2/G8 修复后聚焦复验：`examples/dialog_regression_400_g1_g32_direct_cases.json --case-name 400-g2-review-fix-preview-boundary --case-name 400-g8-explicit-positive-negative-intent --session-offset 30000` 为 `2/2`，shadow `2/2 success`，metrics: `/private/tmp/zhiyuan_400_g2_g8_after_display_fix.json`。G2 单 `review_plan` 回复为“当前方案共15个志愿”，未再出现“还没有生成具体志愿”；G8 主回复和 pending 卡片均为“专业要求：要：会计学、审计学；不要：土木工程”。
+- G2/G8 修复后完整 G1-G32 direct 复核：`examples/dialog_regression_400_g1_g32_direct_cases.json --session-offset 40000` 为 `19/20`，metrics: `/private/tmp/zhiyuan_400_g1_g32_after_g2_g8_display_fix_full.json`。失败项只有 G17 shadow 断言：主链路单次 `preview_plan_action` 并生成 `move_ordered_unit` 确认卡；shadow 多一次 `preview_plan_action`，`nextSteps=['clarify','confirm']`，runner 期望 `['confirm']`。该失败未表现为主链路业务失败。
+- 完整复核中的新增边界：G1 “不要英语相关专业”被显式实体收敛成“不要：英语”，范围窄于“相关专业”。已补广义范围信号保护（相关/方向/这类/之类等），用户表达广义专业范围时不把模型给出的上级专业类收窄为具体专业。聚焦单测新增 3 条相关断言通过；真实 G1/G8 聚焦 `2/2`，shadow `2/2 success`，metrics: `/private/tmp/zhiyuan_400_g1_g8_after_broad_major_scope_fix.json`。G1 恢复为“专业要求：不要：外国语言文学类”，G8 保持“要：会计学、审计学；不要：土木工程”。
+- G17 shadow 参数恢复后聚焦复验：`examples/dialog_regression_400_g1_g32_direct_cases.json --case-name 400-g17-tier-local-reorder --session-offset 60000` 为 `1/1`，shadow `1/1 success`，metrics: `/private/tmp/zhiyuan_400_g17_after_missing_action_recovery.json`。主链路和 shadow 均为单次 `preview_plan_action`，生成 `move_ordered_unit` 确认卡；shadow 不再出现先 `clarify` 再 `confirm` 的 nextSteps 序列。
+- G17 参数恢复后完整 G1-G32 direct 主集复跑：`examples/dialog_regression_400_g1_g32_direct_cases.json --session-offset 80000 --internal-service-url http://127.0.0.1:8080` 为 `20/20`，shadow `20/20 success`，metrics: `/private/tmp/zhiyuan_400_g1_g32_after_g17_param_recovery_full_rerun.json`。G17 保持单次 `preview_plan_action`、`actionFamily=move_ordered_unit`、`nextSteps=['confirm']`；性能 median `6440ms`、p95 `13911ms`、max `30253ms`，最慢仍为 G31/G26/G21/G7/G16。
+- 旧链路残余复扫：`plan_next_action|execute_plan_action|planEditCache|runtime_intent_hard_cut|direct_atomic_plan_action|semantic_plan_action|plan_context_tool|plan_orchestration_tool|plan_execution_tool|planPayload|plan_action_execution|app.handlers|HANDLER_REGISTRY` 在 `app/examples/tests/skills` 中的命中仅剩防回退测试、负向断言，以及 `proposal_compiler.ensure_structured_plan_payload()` 对旧 `planPayload/plan_payload` 的拒绝保护；未发现需要立即删除的活跃旧入口。
+
 ## 4. 当前结论
 
 PoC 的核心假设在小样本中成立：
@@ -833,7 +1315,7 @@ PoC 的核心假设在小样本中成立：
 4. 双重否定问题可通过 prompt 极性规则 + schema 收窄稳定修复。
 5. 与当前主链路相比，PoC shadow 的输入 token 约 1.2K，显著低于主链路 17K-37K 量级。
 6. 真实口语 shadow 已能稳定覆盖 14 个场景，且 `query_plan` 的属性过滤、`preview_intent_change` / `preview_plan_action` 的口语化分流在真实数据上可复现。
-7. Phase 4 direct route 已按功能开关/rollout 接入 service，且不再依赖字符串 precheck；400 真实口语集合 direct-only 最新 14/14 通过，确认执行闭环 4/4 通过且已包含最终后端 action 断言。G case direct 子集 direct-only 最新 8/8 通过，G25 正负完整，G17/G30/G32 已进入 4.0 direct 并通过断言。完整 320 G1-G32 最新为 44/49，通过结果说明核心 direct 能力可用，但旧路由抢跑、G27 replace 自动候选和历史断言口径仍需收口。
+7. Phase 4 direct route 已按功能开关/rollout 接入 service，且不再依赖字符串 precheck；400 真实口语集合 direct-only 最新 14/14 通过，确认执行闭环清理空间后复跑 4/4 通过且已包含最终后端 action 断言。旧链路清理后 G case direct 子集 8/8 通过，focused `G7/G12/G17/G27/G31` 为 5/5，G1-G32 direct 主集多轮 20/20 且 shadow 20/20；历史 19/20 的 G7 偶发 `review_plan` 后追加 `query_plan` 在 focused 和后续完整主集中均未复现。G2/G8 展示口径、G1 广义专业表达和 G17 shadow 参数恢复均已完成聚焦修复验证，G17 修复后完整主集也已回到 20/20。完整 320 G1-G32 最新为 44/49；G27、R33 和高收费确认链路已完成 focused 修复；清理前 G1-G32 direct-only 基线 `20/20` 通过。旧链路清理已启动，已删除入口/hard-cut/profile fallback/full-agent plan post-processing/intent-preview-to-plan/post-query profile semantic fallback/`plan_next_action` 未执行 preview 补 pending/旧 atomic -> `plan_next_action` compiler、ChatAgent 旧 Plan 工具注册、`plan_orchestration_tool` / `plan_context_tool` 本体、`plan_execution_tool` 最近旧 plan cache、recent execution timeout/interruption cache、旧公开 `execute_plan_action` 工具入口和旧 `_execute_plan_action_model` 内部名、旧 execution regression 资产、`tool_reply_policy` 旧执行工具专属直返策略、workspace presentation 旧 call-only fallback、旧 workspace/semantic display compiler、旧 readonly workspace evidence compiler、service 旧 plan semantic classifier 依赖、service 旧 runtime/profile/plan-chain helper、service 旧 `planEditCache` 清理桥、旧候选 pending helper、旧 execute workspace refresh/view 桥、旧 review-fix 反向建卡桥、`proposal_compiler` runtime review-fix selector/compile helper、`plan_semantic_action_tool.py` 本体及旧 benchmark/test 资产，并收敛内部 plan confirmation 字符串 payload 与 `planPayload` 写入；`service.py` 生产代码已清零 `plan_next_action` / `collect_plan_context_inputs` / `execute_plan_action` / `planEditCache` 引用，不再解析旧 execute tool return，也不再从旧 preview/fix sink 生成 plan pending；旧 service patch/helper-only 测试资产已大批删除，`test_chat_service_history_persistence.py` 已清零旧 `execute_plan_action` 夹具，regression runner 也已清理旧 execute payload 解析和 fast-route 观测汇总；旧执行编排孤儿 `app/domain/plan_action_execution.py`、`app/handlers/*` 和旧 runner/handler/protocol 测试已删除，旧 execution DTO 已从 `plan_orchestration_models.py` 移除；report/mainline/ws 测试和历史 metrics 中旧 route/tool 资产已继续清理。
 
 限制：
 
@@ -843,24 +1325,24 @@ PoC 的核心假设在小样本中成立：
 - service shadow 已改为非阻塞后台 task；turn event 若早于 shadow 完成，可能只携带 `running` 占位，完整结果以独立 shadow event 为准。
 - 当前样本只有 5 个 PoC 设计场景，还需要扩展到 3.2.0 G case 和 3.0.3/3.1.1 真实用户 case。
 - `query_plan` 已能扫描方案明细，属性过滤在真实数据上已验证；但旧主链路里仍有部分展示文案和只读/调整分流需要替换。
-- `preview_plan_action` 已只产出结构化 payload；核心 review issue 删除/排序/重排联动、review issue + filters 复合范围、replace 自动候选首版、remove filters 属性定位、G16 锁定 unsupported、G17 档位内重排和 G30 强基 selector 已落地；候选选择质量评估和更多真实 shadow case 仍需扩展。
+- `preview_plan_action` 已只产出结构化 payload；核心 review issue 删除/排序/重排联动、review issue + filters 复合范围、replace 自动候选首版、remove filters 属性定位、G16 锁定 unsupported、G17 档位内重排、G17 工具内参数恢复和 G30 强基 selector 已落地；候选选择质量评估和更多真实 shadow case 仍需扩展。
 - `preview_intent_change` 已接入 `simulate_plan_diff`；真实服务稳定性仍需通过更多 shadow case 和真实 service 样本继续观察。
-- direct route 已完成 400 真实口语集合、确认执行闭环和 G case 子集复跑；确认执行闭环已断言后端真实变更。清理旧链路前仍需继续扩展到书面混合集合、320+ 历史回归和清理后回归。
+- direct route 已完成 400 真实口语集合、确认执行闭环、G case 子集、清理前 G1-G32 direct-only 基线、删除旧执行编排后的 focused 复核和两轮 G1-G32 direct 主集复跑；确认执行闭环已断言后端真实变更。旧链路入口清理后剩余主要是旧残余扫描清理、回复口径和性能观察项。
 
 ## 5. 后续推进项
 
 | 优先级 | 事项 | 目标 |
 |--------|------|------|
 | P0 | 扩展 shadow case 集合 | 覆盖 3.2.0 G1-G32 中与 intent/explore/plan query 相关的稳定 fixture，并把 400 口语集继续纳入门禁 |
-| P0 | 扩展真实 service direct 验证 | 400 口语 case、确认执行闭环和 G case 子集已复跑通过；完整 320 G1-G32 最新 44/49；确认类 case 必须断言后端 action；继续修 G27 replace、收口旧路由抢跑，并跑清理后回归 |
-| P0 | 复核 G12/G25 完整回归稳定性 | G25 最新子集已通过且正负完整；G12 单 case 达到 2/3，但仍需完整 G1-G32 direct 回归中继续观察 |
-| P0 | 扩展 G case direct 覆盖 | 子集已 8/8；继续扩展到完整 G1-G32 direct 回归和清理后回归 |
+| P0 | 扩展真实 service direct 验证 | 400 口语 case、确认执行闭环、G case 子集、清理前 G1-G32 direct-only 基线、删除旧执行编排后的确认执行闭环、focused 和多轮 G1-G32 direct 主集均已复跑通过；最新清理后主集 `20/20`、shadow `20/20`；完整 320 G1-G32 最新 44/49；确认类 case 必须持续断言后端 action；下一步补更多真实口语/指代确认执行 case |
+| P0 | 复核 G12/G25 完整回归稳定性 | G25 最新子集和第二轮完整主集均通过且正负完整；G12 在 focused 和第二轮完整主集均为 `query_plan -> preview_plan_action` 通过 |
+| P0 | 扩展 G case direct 覆盖 | 子集已 8/8；高风险 focused 已 5/5；完整 G1-G32 direct 清理后两轮均 20/20 |
 | P0 | 补齐真实分析数据 | `explore_topic` 继续接入 analyze_majors/analyze_schools、career/region 方案覆盖分析 |
 | P0 | 扩展 `preview_plan_action` 场景 | 覆盖候选选择质量评估和完整 shadow/service case |
 | P0 | 扩展真实 diff shadow 验证 | 覆盖 `simulate_plan_diff` 成功/降级/空 diff 样本，观察耗时与稳定性 |
 | P1 | 完善 9 工具正式版 | 扩展 review/plan action 联动、policy 官方来源抽取、compare/explore 个性化权重 |
 | P1 | 建立 confusion matrix 报告 | 对比主链路 route/tool 与 PoC route/tool 的一致性和差异归因 |
-| P1 | 旧链路清理计划 | direct 验证稳定后按设计文档 §6.4 删除旧规则引擎、旧工具和 service 编排分支，不再继续修补旧语义链路 |
+| P0 | 旧链路清理继续推进 | 清理前 G1-G32 direct-only 基线已通过；入口/hard-cut/profile fallback/full-agent plan post-processing/intent-preview-to-plan/post-query profile semantic fallback/`plan_next_action` 未执行 preview 补 pending/旧 atomic compiler/ChatAgent 旧 Plan 工具注册/`plan_orchestration_tool`/`plan_context_tool`/`plan_execution_tool` 最近旧 plan cache、recent execution timeout/interruption cache 和旧公开 `execute_plan_action` 工具入口/旧 `_execute_plan_action_model` 内部名/旧 execution regression 资产/`tool_reply_policy` 旧执行工具专属直返策略/workspace presentation 旧 call-only fallback/旧 workspace-semantic display compiler/旧 readonly workspace evidence compiler/service 与 intent tool 旧 `planEditCache` 清理桥/runner 旧 `planEditCache` clone-clear key/旧候选 pending helper/旧 execute workspace refresh-view 桥/旧 review-fix 反向建卡桥/`proposal_compiler` runtime review-fix selector/compile helper/`plan_semantic_action_tool.py` 与旧 benchmark/test 资产/内部 plan confirmation 字符串 payload/内部 `planPayload` 写入/旧 service patch、helper-only 测试资产和 history persistence 旧 execute 夹具已清理；`service.py` 生产代码已清零 `plan_next_action` / `collect_plan_context_inputs` / `execute_plan_action` / `planEditCache`，`app/` 与 runner 已清零 `save_intent_change_cache` / `planEditCache`；旧 `app/tools/plan_execution_tool.py`、旧 `app/domain/plan_action_execution.py`、`app/handlers/*` 和旧 runner/handler/protocol 测试已删除；report/mainline/ws 测试和历史 metrics 中旧 route/tool 资产已继续清理；删除旧执行编排后的确认执行闭环、G case 子集、focused 和两轮完整 G1-G32 direct 回归已通过，下一步继续按扫描结果处理只剩防回退断言外的残余旧资产 |
 
 ## 6. 操作备忘
 

@@ -47,9 +47,10 @@ version: 1.0.0
 ## 可用能力
 
 - `analyze_current_career_direction`
-- `collect_plan_context_inputs`
-- `plan_next_action`
-- `execute_plan_action`
+- `query_plan`
+- `review_plan`
+- `preview_plan_action`
+- `confirm_pending`
 
 必要时可组合只读主题工具：
 

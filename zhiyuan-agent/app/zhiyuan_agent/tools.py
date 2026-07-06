@@ -25,7 +25,7 @@ from app.domain.attribute_registry import (
     normalize_attribute_filter_key,
     normalize_attribute_filter_values,
 )
-from app.domain.major_entity_resolver import resolve_major_entity
+from app.domain.major_entity_resolver import canonicalize_major_intent_payload, resolve_major_entity
 from app.domain.region_entity_resolver import resolve_region_entity
 from app.domain.school_entity_resolver import resolve_school_entity
 from app.schemas.user_profile import UserProfile
@@ -78,7 +78,7 @@ ReviewIssueCode = Literal[
     "low_safety",
     "career_mismatch",
 ]
-_DEFAULT_PLAN_QUERY_LIMIT = 20
+_DEFAULT_PLAN_QUERY_LIMIT = 5
 _PERSIST_PREVIEW_PENDING = os.getenv("ZHIYUAN_AGENT_PERSIST_PREVIEW_PENDING", "1").strip().lower() not in {
     "0",
     "false",
@@ -164,6 +164,7 @@ def _active_pending_conflict_payload(
     *,
     requested_kind: str,
     requested_action_family: str,
+    requested_text: str = "",
 ) -> dict[str, Any] | None:
     pending = _turn_started_active_pending(ctx)
     if pending is None:
@@ -172,6 +173,8 @@ def _active_pending_conflict_payload(
     kind = str(getattr(pending, "kind", "") or "").strip()
     action_family = str(getattr(pending, "action_family", "") or "").strip()
     detail = f"\n待确认内容：{preview_summary}" if preview_summary else ""
+    request_text = str(requested_text or "").strip()
+    request_detail = f"\n这轮新诉求：{request_text}" if request_text else ""
     return {
         "data": {
             "reason": "active_pending_conflict",
@@ -185,6 +188,7 @@ def _active_pending_conflict_payload(
         "next_step": "clarify",
         "message": (
             f"当前已经有一项待确认操作正在等待处理。{detail}\n"
+            f"{request_detail}\n"
             "这轮新诉求不会覆盖它，也不会再生成第二张待确认卡。"
             "你可以先确认、取消这项待确认内容，或明确说要放弃当前待确认内容后再重新提出新的调整。"
         ),
@@ -220,6 +224,21 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return default
+
+
+def _latest_user_text(ctx: RunContext[RequestContext]) -> str:
+    history = getattr(ctx.deps, "chat_history", None)
+    if not isinstance(history, list):
+        return ""
+    for message in reversed(history):
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("role") or "").strip().lower() != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return ""
 
 
 def _is_success_response(response: Any) -> bool:
@@ -1558,14 +1577,16 @@ async def review_plan(
         except Exception as exc:
             fix_proposals = {"available": False, "status": "error", "error": str(exc)}
 
+    ordered_total = _as_int(plan_summary.get("ordered_total") or plan_summary.get("ordered_target_total"))
+    plan_fact = f"当前正式方案有{ordered_total}个志愿" if ordered_total else "当前正式方案已存在"
     if counts["risk_count"] or counts["warn_count"]:
-        message = f"已完成方案审查，风险{counts['risk_count']}项，提醒{counts['warn_count']}项。"
+        message = f"已完成方案审查，{plan_fact}，风险{counts['risk_count']}项，提醒{counts['warn_count']}项。"
         if filtered_issues:
             main = "；".join(issue["summary"] for issue in filtered_issues[:3] if issue.get("summary"))
             if main:
                 message += f" 这轮重点看到：{main}。"
     else:
-        message = "已完成方案审查，当前没有明显风险或提醒。"
+        message = f"已完成方案审查，{plan_fact}，当前没有明显风险或提醒。"
     if normalized_focus != "full_review":
         message += f" 已按{_review_focus_label(normalized_focus)}聚焦过滤。"
     if generate_fix_proposals and fix_proposals.get("total"):
@@ -1580,6 +1601,8 @@ async def review_plan(
                 "review_source": review_source,
                 "review_error": review_error,
                 "summary": counts,
+                "has_plan": True,
+                "ordered_total": ordered_total,
                 "issues": filtered_issues[:10],
                 "all_issue_count": len([issue for issue in issues if not issue.get("passed")]),
                 "tier_balance": tier_balance,
@@ -1828,6 +1851,45 @@ def _normalize_intent_side(
     if intent_type == "career":
         return _normalize_career_payload(payload)
     return {}, [], {}
+
+
+def _major_text_requests_broad_scope(raw_user_text: str) -> bool:
+    text = _compact_text(raw_user_text)
+    return any(marker in text for marker in ("相关", "有关", "类似", "这类", "一类", "之类", "方向", "大类"))
+
+
+def _refine_major_payload_by_user_text(
+    normalized: dict[str, Any],
+    *,
+    raw_user_text: str,
+    batch: str | None,
+) -> dict[str, Any]:
+    if not str(raw_user_text or "").strip():
+        return normalized
+    if _major_text_requests_broad_scope(raw_user_text):
+        return normalized
+    positive = normalized.get("positive") if isinstance(normalized.get("positive"), dict) else {}
+    negative = normalized.get("negative") if isinstance(normalized.get("negative"), dict) else {}
+    major_payload: dict[str, Any] = {}
+    for level in ("level1", "level2", "level3"):
+        values = _as_list(positive.get(level))
+        if values:
+            major_payload[level] = values
+        negative_values = _as_list(negative.get(level))
+        if negative_values:
+            major_payload[f"negative_{level}"] = negative_values
+    if not major_payload:
+        return normalized
+    refined = canonicalize_major_intent_payload(major_payload, raw_user_text, batch) or {}
+    refined_positive = dict(positive)
+    refined_negative = dict(negative)
+    for level in ("level1", "level2", "level3"):
+        refined_positive[level] = _as_list(refined.get(level))
+        refined_negative[level] = _as_list(refined.get(f"negative_{level}"))
+    return {
+        "positive": refined_positive,
+        "negative": refined_negative,
+    }
 
 
 def _preview_message(
@@ -3072,6 +3134,67 @@ def _plan_query_display_scope(filters: dict[str, Any], controls: dict[str, Any],
     return f"前{count}条"
 
 
+def _query_requests_school_summary(raw_user_text: str, filters: dict[str, Any]) -> bool:
+    text = _compact_text(raw_user_text)
+    if not text:
+        return False
+    if not any(marker in text for marker in ("学校", "院校")):
+        return False
+    return bool(filters.get("tier")) and not filters.get("school") and not filters.get("major")
+
+
+def _school_summary_items(items: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in _sort_plan_items(items):
+        school = str(_item_value(item, "schoolName", "school_name", "collegeName") or "").strip()
+        if not school:
+            continue
+        if school not in summary:
+            order.append(school)
+            summary[school] = {
+                "school": school,
+                "positions": [],
+                "tier": _normalize_tier(_item_value(item, "tier", "riskTier", "risk_tier")),
+                "province": str(_item_value(item, "provinceName", "province_name", "province") or "").strip(),
+                "school_nature": str(
+                    _item_value(item, "schoolNature", "school_nature", "schoolType", "school_type") or ""
+                ).strip(),
+                "tuition_min": 0,
+                "tuition_max": 0,
+                "admission_ratio_max": 0,
+            }
+        entry = summary[school]
+        position = _item_position(item)
+        if position > 0 and position not in entry["positions"]:
+            entry["positions"].append(position)
+        tuition = _item_tuition(item)
+        if tuition > 0:
+            entry["tuition_min"] = tuition if not entry["tuition_min"] else min(entry["tuition_min"], tuition)
+            entry["tuition_max"] = max(entry["tuition_max"], tuition)
+        admission_ratio = _as_int(_item_value(item, "admissionRatio", "admission_ratio", "admissionProbability"))
+        entry["admission_ratio_max"] = max(entry["admission_ratio_max"], admission_ratio)
+    return [summary[school] for school in order[:limit]]
+
+
+def _school_summary_snippet(item: dict[str, Any]) -> str:
+    positions = [int(value) for value in item.get("positions") or [] if _as_int(value) > 0]
+    position_text = ""
+    if positions:
+        position_text = f"第{min(positions)}-{max(positions)}位" if len(positions) > 1 else f"第{positions[0]}位"
+    suffixes = [value for value in (position_text, item.get("school_nature")) if value]
+    admission_ratio = _as_int(item.get("admission_ratio_max"))
+    if admission_ratio > 0:
+        suffixes.append(f"最高录取率{admission_ratio}%")
+    tuition_min = _as_int(item.get("tuition_min"))
+    tuition_max = _as_int(item.get("tuition_max"))
+    if tuition_min and tuition_max and tuition_min != tuition_max:
+        suffixes.append(f"学费{tuition_min}-{tuition_max}元/年")
+    elif tuition_max:
+        suffixes.append(f"学费{tuition_max}元/年")
+    return f"{item.get('school')}（{'，'.join(suffixes)}）" if suffixes else str(item.get("school") or "")
+
+
 def _plan_item_group_key(item: dict[str, Any], index: int) -> str:
     for value in (
         _item_unit_id(item),
@@ -3186,6 +3309,34 @@ def _candidate_replacement_score(candidate: dict[str, Any], old_items: list[dict
     return score, admission_ratio, -tuition if tuition > 0 else 0, _item_volunteer_id(candidate)
 
 
+def _replacement_candidate_block_reason(
+    candidate: dict[str, Any],
+    *,
+    old_unit_ids: set[str],
+    review_issue_code: str,
+) -> str:
+    candidate_unit_id = _item_unit_id(candidate)
+    if candidate_unit_id and candidate_unit_id in old_unit_ids:
+        return "same_old_unit"
+    if review_issue_code == "high_tuition":
+        tuition = _item_tuition(candidate)
+        if tuition <= 0 or tuition < 1000:
+            return "missing_or_invalid_tuition_candidate"
+        if tuition > 20000:
+            return "high_tuition_candidate"
+        if _has_risk_marker(
+            candidate,
+            ("中外合作", "合作办学", "cooperative", "高收费", "高学费", "联合培养", "学分互认", "出国", "国外学费"),
+        ):
+            return "risk_marker_candidate"
+    if review_issue_code == "cooperative_program" and _has_risk_marker(
+        candidate,
+        ("中外合作", "合作办学", "cooperative"),
+    ):
+        return "risk_marker_candidate"
+    return ""
+
+
 async def _auto_select_replacement_candidates(
     ctx: RunContext[RequestContext],
     old_items: list[dict[str, Any]],
@@ -3193,21 +3344,42 @@ async def _auto_select_replacement_candidates(
 ) -> tuple[list[dict[str, Any]], str]:
     if not old_items or not review_issue_code:
         return [], "missing_old_items"
-    data = await _sandbox_data(ctx, "plan/candidates.json")
+    old_unit_ids = {_item_unit_id(item) for item in old_items if _item_unit_id(item)}
+    wanted = max(1, len(old_unit_ids))
+    sandbox = getattr(ctx.deps, "sandbox", None)
+    if sandbox is None:
+        data = _sandbox_unavailable("plan/candidates.json")
+    else:
+        cached = sandbox.peek("plan/candidates.json")
+        if isinstance(cached, dict) and len(_candidate_items(cached)) >= wanted:
+            data = cached
+        else:
+            data = await sandbox.read("plan/candidates.json", query={"page_size": max(50, min(200, wanted * 4))})
+            data = data if isinstance(data, dict) else {}
     candidates = [item for item in _candidate_items(data) if _item_volunteer_id(item)]
     if not candidates:
         return [], "candidate_items_unavailable"
     old_volunteer_ids = {_item_volunteer_id(item) for item in old_items if _item_volunteer_id(item)}
-    candidates = [item for item in candidates if _item_volunteer_id(item) not in old_volunteer_ids]
+    candidates = [
+        item
+        for item in candidates
+        if _item_volunteer_id(item) not in old_volunteer_ids
+        and not _replacement_candidate_block_reason(
+            item,
+            old_unit_ids=old_unit_ids,
+            review_issue_code=review_issue_code,
+        )
+    ]
     if not candidates:
         return [], "candidate_no_match"
-    wanted = max(1, len(_dedupe_items_by_id(old_items, _item_unit_id)))
     ranked = sorted(
         candidates,
         key=lambda item: _candidate_replacement_score(item, old_items, review_issue_code),
         reverse=True,
     )
     selected = ranked[:wanted]
+    if len(selected) < wanted:
+        return [], "candidate_insufficient"
     return selected, "ok" if selected else "candidate_no_match"
 
 
@@ -3369,6 +3541,42 @@ def _fallback_target_tier_filters(raw_user_text: str, filters: dict[str, Any]) -
     patched = dict(filters)
     patched.setdefault("target_tier", [tier])
     patched.setdefault("target_ordinal", ordinal)
+    return patched
+
+
+def _fallback_plan_action_from_text(raw_user_text: str) -> str:
+    text = _compact_text(raw_user_text)
+    if not text:
+        return ""
+    if any(marker in text for marker in ("锁定", "固定", "位置不要动", "别动位置")):
+        return "pin_lock"
+    if any(marker in text for marker in ("替换", "换成", "换掉", "换一下")):
+        return "replace"
+    if any(marker in text for marker in ("移出", "删除", "去掉", "删掉", "不要了", "别要了")):
+        return "remove"
+    if any(marker in text for marker in ("移动", "移到", "挪到", "调到", "调至", "放到", "排到")):
+        return "move"
+    if any(marker in text for marker in ("排序", "重排", "重新排")):
+        return "sort"
+    if any(marker in text for marker in ("加入", "加进", "补上", "添加")):
+        return "add"
+    if any(marker in text for marker in ("生成方案", "出方案", "做方案")):
+        return "generate"
+    return ""
+
+
+def _fallback_move_filters_from_text(raw_user_text: str, filters: dict[str, Any]) -> dict[str, Any]:
+    if not str(raw_user_text or "").strip():
+        return filters
+    patched = _fallback_target_tier_filters(raw_user_text, filters)
+    tier = _target_tier_value(raw_user_text)
+    if tier and not any(key in patched for key in ("tier", "risk_tier", "riskTier")):
+        patched = {**patched, "tier": [tier]}
+    selector_sort, selector_rank = _extract_selector_from_text(raw_user_text)
+    if selector_sort and not any(key in patched for key in ("selector_sort", "selectorSort", "sort_field", "sortField")):
+        patched = {**patched, "selector_sort": selector_sort}
+    if selector_rank and not any(key in patched for key in ("selector_rank", "selectorRank", "sort_order", "sortOrder")):
+        patched = {**patched, "selector_rank": selector_rank}
     return patched
 
 
@@ -3694,6 +3902,37 @@ def _filter_resolved_plan_items(
     ]
     filtered = _dedupe_items_by_id(filtered, _item_unit_id)
     return filtered, normalized_filters, "ok" if filtered else "filter_no_match"
+
+
+def _replacement_auto_select_reason_from_filters(filters: dict[str, Any] | None) -> str:
+    normalized_filters, _ = _normalize_plan_query_filters(filters if isinstance(filters, dict) else {})
+    if _as_int(normalized_filters.get("tuition_min")) > 0:
+        return "high_tuition"
+    program_types = {_compact_text(value) for value in _as_list(normalized_filters.get("program_type"))}
+    if "高收费" in program_types:
+        return "high_tuition"
+    if "中外合作" in program_types:
+        return "cooperative_program"
+    return ""
+
+
+def _replacement_auto_select_reason_from_plan_items(items: list[dict[str, Any]]) -> str:
+    for item in items:
+        if _item_tuition(item) > 20000 or _has_risk_marker(item, ("高收费", "高学费", "学费高", "high_tuition")):
+            return "high_tuition"
+    for item in items:
+        if _has_risk_marker(item, ("中外合作", "合作办学", "cooperative")):
+            return "cooperative_program"
+    return ""
+
+
+def _review_issue_fallback_filters(review_issue_code: Any) -> dict[str, Any]:
+    code = _canonical_review_issue_code(review_issue_code)
+    if code == "high_tuition":
+        return {"program_type": ["高收费"]}
+    if code == "cooperative_program":
+        return {"program_type": ["中外合作"]}
+    return {}
 
 
 async def _review_issue_action_target(
@@ -4385,6 +4624,7 @@ async def preview_intent_change(
         ctx,
         requested_kind="intent_change",
         requested_action_family="apply_selected_intents",
+        requested_text=raw_user_text,
     )
     if active_pending_conflict is not None:
         return _json(active_pending_conflict)
@@ -4393,6 +4633,7 @@ async def preview_intent_change(
         normalized_constraint = "exclude"
 
     batch = ctx.deps.batch or "01"
+    effective_raw_user_text = str(raw_user_text or "").strip() or _latest_user_text(ctx)
     positive_payload, positive_ambiguities, positive_display_aliases = _normalize_intent_side(
         normalized_type, positive, batch=batch
     )
@@ -4404,8 +4645,16 @@ async def preview_intent_change(
         "positive": positive_payload,
         "negative": negative_payload,
     }
+    if normalized_type == "major":
+        normalized = _refine_major_payload_by_user_text(
+            normalized,
+            raw_user_text=effective_raw_user_text,
+            batch=batch,
+        )
     parameter_warnings: list[str] = []
-    if _raw_text_mentions_negative_requirement(raw_user_text) and not _intent_side_has_values(negative_payload):
+    if _raw_text_mentions_negative_requirement(effective_raw_user_text) and not _intent_side_has_values(
+        normalized.get("negative")
+    ):
         parameter_warnings.append("negative_may_be_missing")
     ambiguities = positive_ambiguities + negative_ambiguities
     if ambiguities:
@@ -4500,7 +4749,12 @@ async def preview_plan_action(
     `review_issue_code="cooperative_program"`. This tool only creates a
     confirmation preview; it does not apply the change until `confirm_pending`.
     """
+    raw_user_text = str(raw_user_text or "").strip() or _latest_user_text(ctx)
     normalized_action = str(action or "").strip().lower()
+    if normalized_action not in {"add", "remove", "move", "replace", "sort", "generate", "regenerate_order", "pin_lock"}:
+        fallback_action = _fallback_plan_action_from_text(raw_user_text)
+        if fallback_action:
+            normalized_action = fallback_action
     if normalized_action not in {"add", "remove", "move", "replace", "sort", "generate", "regenerate_order", "pin_lock"}:
         return _json(
             {
@@ -4517,12 +4771,13 @@ async def preview_plan_action(
     has_plan = bool(summary.get("has_plan"))
     normalized_filters = filters if isinstance(filters, dict) else {}
     if normalized_action == "move":
-        normalized_filters = _fallback_target_tier_filters(raw_user_text, normalized_filters)
+        normalized_filters = _fallback_move_filters_from_text(raw_user_text, normalized_filters)
     kind, action_family = _plan_action_family(normalized_action)
     active_pending_conflict = _active_pending_conflict_payload(
         ctx,
         requested_kind=kind,
         requested_action_family=action_family,
+        requested_text=raw_user_text,
     )
     if active_pending_conflict is not None:
         return _json(active_pending_conflict)
@@ -4688,24 +4943,63 @@ async def preview_plan_action(
         affected_scope = "；".join(_plan_item_snippet(item) for item in resolved[:5])
 
     elif normalized_action == "replace":
+        candidate_targets = _as_list(
+            normalized_filters.get("candidates")
+            or normalized_filters.get("candidate_targets")
+            or normalized_filters.get("candidateTargets")
+        )
+        replacement_filter_input = {
+            str(key): value
+            for key, value in normalized_filters.items()
+            if str(key or "").strip() not in {"candidates", "candidate_targets", "candidateTargets"}
+        }
+        old_filter_payload: dict[str, Any] = {}
         if not _as_list(targets) and review_issue_code:
             issue, old_resolved, old_reason = await _review_issue_action_target(ctx, review_issue_code)
             old_missing = [] if old_reason in {"ok", "review_issue_units_not_in_plan"} else [str(review_issue_code)]
             if issue:
                 review_issue_meta = _review_issue_target_meta(issue)
+            if old_reason == "ok" and replacement_filter_input:
+                old_resolved, old_filter_payload, old_reason = _filter_resolved_plan_items(
+                    ctx,
+                    old_resolved,
+                    replacement_filter_input,
+                )
+                old_missing = [] if old_reason == "ok" else [_describe_filters(old_filter_payload)]
+            elif old_reason != "ok":
+                fallback_filter_input = replacement_filter_input or _review_issue_fallback_filters(review_issue_code)
+                if fallback_filter_input:
+                    old_resolved, old_filter_payload, old_reason = await _resolve_plan_filter_targets(
+                        ctx,
+                        fallback_filter_input,
+                    )
+                    old_missing = [] if old_reason == "ok" else [_describe_filters(old_filter_payload)]
+        elif not _as_list(targets) and replacement_filter_input:
+            old_resolved, old_filter_payload, old_reason = await _resolve_plan_filter_targets(ctx, replacement_filter_input)
+            old_missing = [] if old_reason == "ok" else [_describe_filters(old_filter_payload)]
         else:
             old_resolved, old_missing, old_reason = await _resolve_plan_targets(ctx, targets, source="plan")
-        candidate_targets = _as_list(normalized_filters.get("candidates") or normalized_filters.get("candidate_targets"))
+        if old_filter_payload:
+            normalized_filters = {**old_filter_payload}
+            if candidate_targets:
+                normalized_filters["candidate_targets"] = candidate_targets
+        elif candidate_targets:
+            normalized_filters = {"candidate_targets": candidate_targets}
+        auto_select_reason = _canonical_review_issue_code(review_issue_code)
+        if not auto_select_reason:
+            auto_select_reason = _replacement_auto_select_reason_from_filters(old_filter_payload or replacement_filter_input)
+        if not auto_select_reason and old_reason == "ok" and old_resolved:
+            auto_select_reason = _replacement_auto_select_reason_from_plan_items(old_resolved)
         if candidate_targets:
             new_resolved, new_missing, new_reason = await _resolve_plan_targets(ctx, candidate_targets, source="candidates")
-        elif review_issue_code and old_reason == "ok" and old_resolved:
-            new_resolved, new_reason = await _auto_select_replacement_candidates(ctx, old_resolved, _canonical_review_issue_code(review_issue_code))
-            new_missing = [] if new_reason == "ok" else [str(review_issue_code)]
+        elif auto_select_reason and old_reason == "ok" and old_resolved:
+            new_resolved, new_reason = await _auto_select_replacement_candidates(ctx, old_resolved, auto_select_reason)
+            new_missing = [] if new_reason == "ok" else [auto_select_reason]
             if new_reason == "ok":
                 normalized_filters = {
                     **normalized_filters,
                     "auto_selected_candidates": True,
-                    "auto_select_reason": _canonical_review_issue_code(review_issue_code),
+                    "auto_select_reason": auto_select_reason,
                 }
         else:
             new_resolved, new_missing, new_reason = await _resolve_plan_targets(ctx, candidate_targets, source="candidates")
@@ -4716,6 +5010,7 @@ async def preview_plan_action(
                         "action": "replace",
                         "targets": targets or [],
                         "review_issue_code": review_issue_code or "",
+                        "filters": normalized_filters,
                         "candidate_targets": candidate_targets,
                         "missing_targets": old_missing + new_missing,
                         "reason": old_reason if old_reason != "ok" else new_reason,
@@ -4855,6 +5150,7 @@ async def query_plan(
 ) -> str:
     """Query current plan facts or a compact plan summary without changing state."""
     normalized_scope = str(scope or "plan").strip().lower() or "plan"
+    raw_user_text = _latest_user_text(ctx)
     normalized_filters, limit = _normalize_plan_query_filters(filters if isinstance(filters, dict) else {})
     query_filters, query_controls = _extract_plan_query_controls(normalized_filters)
     summary = await _plan_summary_data(ctx)
@@ -4952,12 +5248,30 @@ async def query_plan(
     include_fields = [str(item) for item in query_controls.get("include_fields") or []]
     snippet = "；".join(_plan_item_snippet(item, include_fields=include_fields) for item in examples)
     display_scope = _plan_query_display_scope(query_filters, query_controls, len(examples))
+    school_summary: list[dict[str, Any]] = []
+    school_total = 0
+    if _query_requests_school_summary(raw_user_text, query_filters):
+        school_summary = _school_summary_items(matched_items, limit=limit)
+        school_total = len(
+            {
+                str(_item_value(item, "schoolName", "school_name", "collegeName") or "").strip()
+                for item in matched_items
+                if str(_item_value(item, "schoolName", "school_name", "collegeName") or "").strip()
+            }
+        )
+        school_snippet = "；".join(_school_summary_snippet(item) for item in school_summary)
+        if school_snippet:
+            display_scope = f"前{len(school_summary)}所院校"
+            snippet = school_snippet
     if query_filters:
         matched_phrase = (
             f"命中{count_metrics['matched_plan_item_total']}个志愿，涉及{count_metrics['matched_detail_total']}条专业明细"
             if count_metrics.get("detail_granularity") and count_metrics["matched_detail_total"] != count_metrics["matched_plan_item_total"]
             else f"命中{count_metrics['matched_plan_item_total']}个志愿"
         )
+        if school_summary:
+            tier_label = _tier_display_label([str(item) for item in query_filters.get("tier") or []])
+            matched_phrase = f"{tier_label or description}共{count_metrics['matched_plan_item_total']}个志愿，涉及{school_total}所院校"
         message = (
             f"当前正式方案有{total}个志愿，按“{description}”{matched_phrase}，"
             f"展示{display_scope}：{snippet}"
@@ -4981,6 +5295,8 @@ async def query_plan(
                 **count_metrics,
                 "returned_total": len(examples),
                 "items": [_plan_item_brief(item) for item in examples],
+                "school_total": school_total,
+                "school_summary": school_summary,
                 "truncated": len(matched_items) > len(examples),
             },
             "next_step": "respond",

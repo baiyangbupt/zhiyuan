@@ -644,38 +644,6 @@ async def _run_live_node_case(case: dict[str, Any]) -> dict[str, Any]:
             "raw": raw,
         }
 
-    if node in {"plan_semantic_action", "plan_atomic_action_dsl", "local_plan_action_dsl", "proposal_selection"}:
-        from app.tools import plan_semantic_action_tool
-
-        if node == "plan_semantic_action":
-            result = await plan_semantic_action_tool.classify_plan_semantic_action(
-                prompt,
-                request_context=request_context,
-                recent_plan_context=payload.get("recentPlanContext") if isinstance(payload.get("recentPlanContext"), dict) else None,
-            )
-            return _model_to_dict(result)
-        if node == "plan_atomic_action_dsl":
-            result = await plan_semantic_action_tool.classify_plan_atomic_action_dsl(
-                prompt,
-                request_context=request_context,
-                recent_plan_context=payload.get("recentPlanContext") if isinstance(payload.get("recentPlanContext"), dict) else None,
-            )
-            return _model_to_dict(result)
-        if node == "local_plan_action_dsl":
-            result = await plan_semantic_action_tool.classify_local_plan_action_dsl(
-                prompt,
-                request_context=request_context,
-                recent_plan_context=payload.get("recentPlanContext") if isinstance(payload.get("recentPlanContext"), dict) else None,
-            )
-            return _model_to_dict(result)
-        result = await plan_semantic_action_tool.select_fix_proposal_candidate(
-            latest_utterance=prompt,
-            assistant_reply=str(payload.get("assistantReply") or ""),
-            candidates=list(payload.get("candidates") or []),
-            request_context=request_context,
-        )
-        return _model_to_dict(result)
-
     raise NotImplementedError(f"live-node adapter is not implemented for node: {node}")
 
 

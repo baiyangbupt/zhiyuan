@@ -753,14 +753,14 @@ def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candida
                 "reply": "**当前方案状态**\n\n排序总数：45/45。冲8 / 稳18 / 保19。风险0项，提醒3项。",
                 "tool_calls": [
                     _tool_call(
-                        "execute_plan_action",
-                        {"plan_payload": json.dumps({"stage": "apply", "action_family": "query_state"}, ensure_ascii=False)},
+                        "query_plan",
+                        {"scope": "plan", "query_type": "status"},
                         "plan-state-1",
                     )
                 ],
                 "tool_returns": [
                     _tool_return(
-                        "execute_plan_action",
+                        "query_plan",
                         {"action_family": "query_state", "summary": "45/45，冲8 / 稳18 / 保19"},
                         "plan-state-1",
                     )
@@ -829,153 +829,21 @@ def test_mainline_dialog_cross_border_ecommerce_uses_full_major_name_without_can
     assert agent.calls[0]["user_prompt"] == "想学跨境电商"
 
 
-def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_model_reply(tmp_path):
-    preview_payload = {
-        "stage": "preview",
-        "action_family": "replace_units",
-        "user_goal": "移出会计和审计相关志愿，补入跨境电子商务和网络与新媒体",
-        "missing_inputs": [],
-        "atomic_actions": [
-            {
-                "action_type": "replace_units",
-                "filters": {"major_keyword": "跨境电子商务 网络与新媒体"},
-            }
-        ],
-        "planning_version": 18,
-        "preview_summary": "会移出会计和审计相关志愿，再补入更匹配的新方向。",
-    }
-    agent = _ScenarioAgent(
-        [
-            {
-                "reply": "我先把“不想学会计”整理成待确认排除要求。当前方案里会计学占比较高，确认后可以继续看怎么替换。",
-                "tool_calls": [
-                    _tool_call(
-                        "preview_current_major_intent_confirmation",
-                        {"major_intents": {"remove": ["会计"]}},
-                        "intent-accounting",
-                    )
-                ],
-                "tool_returns": [
-                    _tool_return(
-                        "preview_current_major_intent_confirmation",
-                        {"status": "pending", "items": [{"content": "会计学"}]},
-                        "intent-accounting",
-                    )
-                ],
-            },
-            {
-                "reply": "**调整预览**\n\n计划移出会计学和审计学相关志愿，再优先补入跨境电子商务、网络与新媒体等方向。确认后才会改动当前方案。",
-                "tool_calls": [
-                    _tool_call(
-                        "execute_plan_action",
-                        {"plan_payload": json.dumps(preview_payload, ensure_ascii=False)},
-                        "preview-replace",
-                    )
-                ],
-                "tool_returns": [
-                    _tool_return(
-                        "execute_plan_action",
-                        {
-                            "applied": False,
-                            "action_family": "replace_units",
-                            "stage": "preview",
-                            "result_kind": "preview_only",
-                            "summary": "会移出会计和审计相关志愿，再补入更匹配的新方向。",
-                            "planning_version": 18,
-                            "facts": {
-                                "planning_version": 18,
-                                "resolved_apply_payload": {
-                                    "stage": "apply",
-                                    "action_family": "replace_units",
-                                    "atomic_actions": [
-                                        {
-                                            "action_type": "replace_units",
-                                            "volunteer_ids": ["v-accounting-1", "v-audit-1"],
-                                            "filters": {"major_keyword": "跨境电子商务 网络与新媒体"},
-                                        }
-                                    ],
-                                },
-                            },
-                        },
-                        "preview-replace",
-                    )
-                ],
-            },
-        ]
-    )
-    service = _build_service(tmp_path, agent)
-    execution_result = json.dumps(
-        {
-            "applied": True,
-            "action_family": "replace_units",
-            "stage": "apply",
-            "result_kind": "mutation_result",
-            "summary": "已移出不匹配志愿，并同步刷新排序和审查结果。新的补入方向包括跨境电子商务和网络与新媒体。",
-            "workspace_refresh_targets": ["ordered", "review"],
-        },
-        ensure_ascii=False,
-    )
-
-    pending_state: dict[str, object] = {"value": None}
-    async def save_pending_mock(session_id, pending):
-        pending_state["value"] = pending
-        return {"code": 0, "data": {"pendingConfirmation": pending}}
-
-    async def get_pending_mock(session_id):
-        return {"code": 0, "data": {"pendingConfirmation": pending_state.get("value")}}
-
-    with (
-        patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
-        patch("app.service.save_pending_confirmation", AsyncMock(side_effect=save_pending_mock)),
-        patch("app.service.get_pending_confirmation", AsyncMock(side_effect=get_pending_mock)),
-        patch("app.service.get_planning_state", AsyncMock(return_value=_planning_state_response(19))),
-        patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock,
-    ):
-        intent_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "不想学会计"))
-        preview_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "那帮我替换掉"))
-        text_confirm_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "确认"))
-        pending = pending_state["value"]
-        assert isinstance(pending, dict)
-
-    assert isinstance(intent_reply, str)
-    assert "这轮还没有生成可执行的调整内容" in intent_reply
-    assert "待确认排除要求" not in intent_reply
-    assert isinstance(preview_reply, ChatServiceResponseEnvelope)
-    assert "确认前不会改动当前方案" in preview_reply.primary
-    assert "会计" in preview_reply.primary
-    pending_cards = [item for item in preview_reply.followups if item.type == "pendingConfirmationCard"]
-    assert pending_cards
-    pending_card_payload = json.loads(pending_cards[0].content)
-    assert "确认前不会改动当前方案" in pending_card_payload["impact"]
-    assert "会计" in pending_card_payload["content"]
-    assert isinstance(text_confirm_reply, ChatServiceResponseEnvelope)
-    assert "已移出不匹配志愿" in text_confirm_reply.primary
-    assert "新的补入方向" in text_confirm_reply.primary
-    execute_mock.assert_awaited_once()
-    workspace_targets = _workspace_targets(text_confirm_reply)
-    assert "ordered" in workspace_targets
-    assert "review" in workspace_targets
-    assert len(agent.calls) == 2
-    assert agent.calls[1]["pending_confirmation"] is None
-
-
-def test_mainline_dialog_review_result_keeps_informative_summary_and_review_workspace(tmp_path):
+def test_mainline_dialog_review_result_keeps_informative_summary(tmp_path):
     agent = _ScenarioAgent(
         [
             {
                 "reply": "**审查结论**\n\n当前方案可用：45/45，冲8 / 稳18 / 保19，风险0项。\n\n主要提醒是高收费、边缘分和中外合作办学，建议先看审查页确认具体位置。",
                 "tool_calls": [
                     _tool_call(
-                        "execute_plan_action",
-                        {"plan_payload": json.dumps({"stage": "apply", "action_family": "review_plan"}, ensure_ascii=False)},
+                        "review_plan",
+                        {"focus": "overall"},
                         "review-1",
                     )
                 ],
                 "tool_returns": [
                     _tool_return(
-                        "execute_plan_action",
+                        "review_plan",
                         {
                             "applied": True,
                             "action_family": "review_plan",
@@ -997,10 +865,9 @@ def test_mainline_dialog_review_result_keeps_informative_summary_and_review_work
     ):
         reply = _run(service.handle_message("session-mainline-review", "user-57", "帮我审查一下"))
 
-    assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert "45/45" in reply.primary
-    assert "冲8 / 稳18 / 保19" in reply.primary
-    assert "风险0项" in reply.primary
-    assert "提醒" in reply.primary
-    assert len(reply.primary) > 60
-    assert _workspace_targets(reply) == ["review"]
+    assert isinstance(reply, str)
+    assert "45/45" in reply
+    assert "冲8 / 稳18 / 保19" in reply
+    assert "风险0项" in reply
+    assert "提醒" in reply
+    assert len(reply) > 60

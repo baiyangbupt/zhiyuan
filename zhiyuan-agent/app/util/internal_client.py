@@ -882,35 +882,6 @@ async def get_school_majors_recommend(
     )
 
 
-# ── 旧意向变更缓存清理 ───────────────────────────────────────────────
-
-
-async def save_intent_change_cache(
-    chat_session_id: int,
-    data_value: Dict[str, Any],
-    version: int = 0,
-) -> Dict[str, Any]:
-    """Clear legacy intent-change cache data.
-
-    New confirmation flows must use ``pendingConfirmation``. The backend key
-    remains ``planEditCache`` only so new pending/apply paths can clear stale
-    legacy data.
-    """
-    payload = {
-        "chatSessionId": chat_session_id,
-        "dataKey": "planEditCache",
-        "dataType": "JSON_OBJECT",
-        "dataValue": data_value,
-        "version": version,
-    }
-    logger.info("存储意向变更缓存: {}", payload)
-    return await http_client.post(
-        endpoint="/gaotu-assistant-bot/inner/chat/1/session/add-extra-data",
-        json_data=payload,
-        error_msg="存储意向变更缓存失败",
-    )
-
-
 # ── 待确认卡片 ────────────────────────────────────────────────────
 
 

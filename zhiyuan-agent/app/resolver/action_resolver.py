@@ -1,7 +1,7 @@
 """确定性动作映射层。
 
 用 IntentFrame + PlanContextInputs → ActionResolution
-的确定性规则，替代 plan_orchestration_tool 中 8 个 _goal_requests_* 关键词匹配函数。
+的确定性规则，替代历史 planner 里的关键词匹配动作归一化。
 
 设计原则：
 - 所有映射规则为数据表驱动，不依赖中文字符串匹配
@@ -51,7 +51,7 @@ from app.tools.review_issue_registry import (
 class ActionResolution(BaseModel):
     """ActionResolver 的完整输出。
 
-    对应现有 PlanActionPlan 的输入侧语义：
+    对应 4.0 direct 方案动作的输入侧语义：
     - action_family: 确定的动作族
     - stage: 应进入的阶段
     - requires_confirmation: 是否需要用户确认
@@ -61,7 +61,7 @@ class ActionResolution(BaseModel):
     - reply_guidance: 回复生成的辅助信息
 
     复合目标和待写入意向不放在 resolver 输出里；它们统一由
-    plan_next_action 的 composite_proposal 承载，避免两处状态不同步。
+    4.0 direct pending/proposal 链路承载，避免两处状态不同步。
     """
 
     action_family: str
@@ -515,7 +515,7 @@ class ActionResolver:
     ) -> Literal["analyze", "preview", "apply", "review", "blocked"]:
         """决定应进入的执行阶段。
 
-        对应旧 _determine_stage 的完整逻辑，但移除了 current_stage passthrough
+        对应历史 planner 的阶段判定语义，但移除了 current_stage passthrough
         （IntentFrame 不需要外部覆盖 stage）。
         """
         # 只读动作直接 apply

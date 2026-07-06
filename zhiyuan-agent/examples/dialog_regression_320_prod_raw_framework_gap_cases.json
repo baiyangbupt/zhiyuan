@@ -143,6 +143,7 @@
     {
       "name": "320-prod-raw-gap-r33-no-plan-dual-track",
       "sessionId": "99320303",
+      "cloneBackendStateFromSessionId": "3729",
       "sourceSessionId": "3729",
       "expectedRootCause": "framework_gap_r33_no_plan_dual_track",
       "flow": [

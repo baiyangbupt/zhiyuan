@@ -312,7 +312,7 @@
       "open_quality",
       "realistic_user_input",
       "school_abbreviation",
-      "plan_query_fast_route",
+      "zhiyuan_agent_direct",
       "readonly_no_workspace_card"
     ],
     "assertPlanStyle": true,
@@ -560,7 +560,7 @@
       "provider_benchmark",
       "open_quality",
       "realistic_user_input",
-      "plan_query_fast_route",
+      "zhiyuan_agent_direct",
       "negative_preference",
       "readonly_no_workspace_card"
     ],

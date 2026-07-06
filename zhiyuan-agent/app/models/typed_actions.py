@@ -1,12 +1,11 @@
-"""类型化原子动作联合体。
+"""类型化方案动作联合体。
 
-替代现有 PlanAtomicAction 的 untyped dict 方式，
 每种 action_family 一个 class，有明确的必选字段和类型校验。
 
-与现有 PlanAtomicAction 的关系：
-- PlanAtomicAction 是执行层消费的 flat 结构（保留不动）
-- typed actions 是意图层产出的强类型结构
-- ActionResolver 输出 typed action，dispatcher 转换为 PlanAtomicAction
+与 4.0 direct 动作链的关系：
+- typed actions 是结构化意图解析后的强类型动作描述
+- direct tools 可按需把它映射为 preview/pending payload 元数据
+- PlanAtomicAction 仅保留为复合 proposal 的轻量动作记录结构
 
 设计决策：
 - 使用 discriminated union（Annotated[Union, Field(discriminator)]）
@@ -64,7 +63,7 @@ class SelectionFilters(BaseModel):
     preserve_count: bool = False
 
     def to_atomic_filters(self) -> dict[str, Any]:
-        """转换为 PlanAtomicAction.filters dict（兼容现有执行层）。"""
+        """转换为 direct plan action filters dict。"""
         result: dict[str, Any] = {}
         if self.province:
             result["province_keyword"] = self.province

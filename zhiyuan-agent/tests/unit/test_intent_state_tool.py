@@ -591,7 +591,6 @@ async def test_analyze_intent_change_recovers_empty_args_via_fallback_extraction
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
         patch("app.tools.city_intent_tool.extract_city_intents_with_polarity", new=AsyncMock(return_value='{"positive": {"province": [], "city": [], "area": []}, "negative": {"province": ["上海"], "city": []}}')),
         patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock(return_value='{"positive": {"level1": [], "level2": [], "level3": []}, "negative": {"level1": [], "level2": [], "level3": []}}')),
@@ -619,7 +618,6 @@ async def test_analyze_intent_change_soft_negative_stays_preference(empty_profil
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -648,7 +646,6 @@ async def test_analyze_intent_change_explicit_preference_does_not_downgrade_hard
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state", new=AsyncMock(return_value={})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -677,11 +674,8 @@ async def test_analyze_intent_change_soft_negative_without_hit_returns_no_effect
             chat_history=[{"role": "user", "content": "不太想去北京"}],
         )
     )
-
-    save_cache_mock = AsyncMock()
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=save_cache_mock),
         patch(
             "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
             new=AsyncMock(
@@ -709,7 +703,6 @@ async def test_analyze_intent_change_soft_negative_without_hit_returns_no_effect
     assert payload["status"] == "empty"
     assert "不需要额外采纳" in payload["message"]
     assert "必须避开的报考条件" in payload["message"]
-    save_cache_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -724,7 +717,6 @@ async def test_analyze_intent_change_soft_negative_with_plan_conflict_stays_pend
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_cache_mock,
         patch(
             "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
             new=AsyncMock(
@@ -754,7 +746,6 @@ async def test_analyze_intent_change_soft_negative_with_plan_conflict_stays_pend
     assert payload["items"][0]["value"] == {"city_intents": {"negative_province": ["江苏"]}}
     assert "不优先省份" in payload["items"][0]["content"]
     assert "明确不考虑" not in payload["items"][0]["content"]
-    save_cache_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -769,7 +760,6 @@ async def test_analyze_intent_change_hard_negative_region_defaults_to_constraint
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_cache_mock,
         patch(
             "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
             new=AsyncMock(
@@ -796,7 +786,6 @@ async def test_analyze_intent_change_hard_negative_region_defaults_to_constraint
     assert payload["status"] == "ready"
     assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
     assert "明确不考虑" in payload["items"][0]["content"]
-    save_cache_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -811,7 +800,6 @@ async def test_analyze_intent_change_interest_stage_returns_structured_analysis(
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -844,7 +832,6 @@ async def test_analyze_intent_change_interest_stage_without_confirm_returns_inte
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -1292,7 +1279,6 @@ async def test_analyze_intent_change_major_fit_question_forces_read_only_interes
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_state_tool.resolve_major_names_async", new=AsyncMock(return_value=["电子信息工程"])),
         patch(
             "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
@@ -1319,7 +1305,6 @@ async def test_analyze_intent_change_major_fit_question_forces_read_only_interes
     assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
     assert "初步分析" in payload["title"]
     assert payload["items"][0]["value"] == {"major_intents": {"level3": ["电子信息工程"]}}
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1337,7 +1322,6 @@ async def test_analyze_intent_change_semantic_arbitration_downgrades_boundary_qu
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -1374,7 +1358,6 @@ async def test_analyze_intent_change_semantic_arbitration_downgrades_boundary_qu
     assert payload["items"][0]["value"] == {"major_intents": {"negative_level2": ["教育学类"]}}
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["decision"] == "analysis_only"
     classifier_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1392,7 +1375,6 @@ async def test_analyze_intent_change_semantic_arbitration_honors_high_confidence
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -1434,7 +1416,6 @@ async def test_analyze_intent_change_semantic_arbitration_honors_high_confidence
     assert payload["items"][1]["value"] == {"city_intents": {"province": ["河北"]}}
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is True
     classifier_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1452,7 +1433,6 @@ async def test_analyze_intent_change_semantic_arbitration_keeps_school_preferenc
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -1489,7 +1469,6 @@ async def test_analyze_intent_change_semantic_arbitration_keeps_school_preferenc
     assert payload["items"][0]["value"] == {"school_intents": {"colleges": ["华南理工大学"]}}
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["decision"] == "intent_preview"
     classifier_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1507,7 +1486,6 @@ async def test_analyze_intent_change_semantic_arbitration_downgrades_positive_fi
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -1549,7 +1527,6 @@ async def test_analyze_intent_change_semantic_arbitration_downgrades_positive_fi
     assert "更新为" not in json.dumps(payload["items"], ensure_ascii=False)
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is True
     classifier_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1567,7 +1544,6 @@ async def test_analyze_intent_change_semantic_arbitration_downgrades_impact_firs
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -1610,7 +1586,6 @@ async def test_analyze_intent_change_semantic_arbitration_downgrades_impact_firs
     assert "更新为" not in json.dumps(payload["items"], ensure_ascii=False)
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["decision"] == "mixed_answer_then_ask"
     classifier_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1628,7 +1603,6 @@ async def test_analyze_intent_change_semantic_arbitration_does_not_override_mixe
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -1671,7 +1645,6 @@ async def test_analyze_intent_change_semantic_arbitration_does_not_override_mixe
     assert {"major_intents": {"negative_level3": ["护理学"]}} in [item["value"] for item in payload["items"]]
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is True
     classifier_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1689,7 +1662,6 @@ async def test_analyze_intent_change_keeps_add_intent_positive_majors_with_exclu
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -1746,7 +1718,6 @@ async def test_analyze_intent_change_keeps_add_intent_positive_majors_with_exclu
     assert {"major_intents": {"negative_level3": ["生物医学工程"]}} not in values
     assert {"major_intents": {"negative_level3": ["智能医学工程"]}} not in values
     classifier_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1764,7 +1735,6 @@ async def test_analyze_intent_change_semantic_arbitration_does_not_override_anal
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -1809,7 +1779,6 @@ async def test_analyze_intent_change_semantic_arbitration_does_not_override_anal
     assert "已经记录" not in payload["items"][0]["content"]
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is True
     classifier_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1827,7 +1796,6 @@ async def test_region_intent_downgrade_keeps_preview_language_read_only(empty_pr
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -1876,7 +1844,6 @@ async def test_region_intent_downgrade_keeps_preview_language_read_only(empty_pr
     assert "后面给你看方案时会尽量往后放" not in payload_text_for_model
     assert "列出来让你采纳" in rendered
     assert "采纳前不会生效" in rendered
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1894,7 +1861,6 @@ async def test_region_intent_downgrade_ignores_recovered_entity_for_abstract_reg
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._recover_intents_from_context",
             new=AsyncMock(return_value=(None, None, {"province": ["江苏"]}, None)),
@@ -1929,7 +1895,6 @@ async def test_region_intent_downgrade_ignores_recovered_entity_for_abstract_reg
     assert "列出来让你采纳" in rendered
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is True
     recover_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1947,7 +1912,6 @@ async def test_region_intent_empty_recovery_returns_boundary_clarification(empty
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._recover_intents_from_context",
             new=AsyncMock(return_value=(None, None, None, None)),
@@ -1970,7 +1934,6 @@ async def test_region_intent_empty_recovery_returns_boundary_clarification(empty
     assert "省外" in rendered
     assert "偏远" in rendered
     recover_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 def test_analyze_intent_change_interest_stage_existing_preference_returns_analysis_preview():
@@ -1985,7 +1948,6 @@ def test_analyze_intent_change_interest_stage_existing_preference_returns_analys
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
             new=AsyncMock(
@@ -2017,7 +1979,6 @@ def test_analyze_intent_change_interest_stage_existing_preference_returns_analys
     assert "北京" in resp
     assert "当前情况" in resp
     assert "当前方案里已经有一部分在北京" in resp
-    save_mock.assert_not_awaited()
 
 
 def test_analyze_current_career_direction_wrapper_uses_career_scope():
@@ -2246,7 +2207,6 @@ async def test_analyze_intent_change_major_scope_drops_unrelated_career_payload(
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
@@ -2369,7 +2329,6 @@ async def test_analyze_intent_change_accepts_interested_and_priority_major_alias
         patch("app.tools.intent_state_tool._build_select_items", return_value=([{"content": "ok", "value": {"major_intents": {"level3": ["网络与新媒体"]}}, "selected": True}], [])),
         patch("app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state", new=AsyncMock(return_value={"summaryTitle": "", "currentPlanFit": [], "currentPlanConflict": [], "candidateOpportunity": [], "nextActionHints": []})),
         patch("app.tools.intent_state_tool._build_impact_preview_from_analysis", return_value=""),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as extract_major_mock,
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as extract_negative_mock,
     ):
@@ -2401,7 +2360,6 @@ async def test_analyze_intent_change_accepts_include_major_alias_without_fallbac
         patch("app.tools.intent_state_tool._build_select_items", return_value=([{"content": "ok", "value": {"major_intents": {"level3": ["跨境电子商务"]}}, "selected": True}], [])),
         patch("app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state", new=AsyncMock(return_value={"summaryTitle": "", "currentPlanFit": [], "currentPlanConflict": [], "candidateOpportunity": [], "nextActionHints": []})),
         patch("app.tools.intent_state_tool._build_impact_preview_from_analysis", return_value=""),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as extract_major_mock,
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as extract_negative_mock,
     ):
@@ -2427,15 +2385,12 @@ async def test_analyze_intent_change_does_not_write_legacy_cache_even_when_reque
             chat_history=[{"role": "user", "content": "不想学审计"}],
         )
     )
-
-    save_cache_mock = AsyncMock()
     with (
         patch("app.tools.intent_state_tool.ProfileManager", return_value=SimpleNamespace(get_current_profile=AsyncMock(return_value=MagicMock()))),
         patch("app.tools.intent_state_tool._build_select_items", return_value=([{"content": "ok", "value": {"major_intents": {"negative_level3": ["审计学"]}}, "selected": True}], [])),
         patch("app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state", new=AsyncMock(return_value={"summaryTitle": "", "currentPlanFit": [], "currentPlanConflict": [], "candidateOpportunity": [], "nextActionHints": []})),
         patch("app.tools.intent_state_tool._build_impact_preview_from_analysis", return_value=""),
         patch("app.tools.intent_state_tool.resolve_major_names_async", new=AsyncMock(return_value=["审计学"])),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=save_cache_mock),
     ):
         payload = await analyze_volunteer_intent_change(
             ctx,
@@ -2446,7 +2401,6 @@ async def test_analyze_intent_change_does_not_write_legacy_cache_even_when_reque
         )
 
     assert "审计学" in payload
-    save_cache_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -3071,14 +3025,12 @@ async def test_preview_current_career_intent_confirmation_negative_request_prese
                 }
             ),
         ),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=UserProfile())
         payload_text = await preview_current_career_intent_confirmation(ctx)
 
     assert "体制内/考公导向" in payload_text
-    save_mock.assert_not_awaited()
     payload = json.loads(payload_text)
     assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
     assert payload["items"][0]["value"] == {"career_intents": {"negative": ["system_public_service"]}}
@@ -3096,7 +3048,6 @@ async def test_analyze_volunteer_intent_change_returns_structured_payload(empty_
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -3383,8 +3334,8 @@ async def test_handle_intent_select_interest_plan_analyze_returns_interest_previ
             "app.tools.explore_followup_tool.get_pending_confirmation",
             new=AsyncMock(return_value=_pending_intent_response({"career_intents": {"positive": ["system_public_service"]}})),
         ),
-        patch("app.tools.explore_followup_tool.plan_next_action", new=AsyncMock(return_value='{"stage":"apply","action_family":"analyze_adjustment"}')) as plan_mock,
-        patch("app.tools.explore_followup_tool.execute_plan_action", new=AsyncMock(return_value='{"summary":"当前判断：可以继续优化方案。","state_summary":"当前判断：可以继续优化方案。"}')) as exec_mock,
+        patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {}})),
+        patch("app.tools.explore_followup_tool.query_plan", new=AsyncMock(return_value='{"message":"当前判断：可以继续优化方案。"}')) as query_mock,
     ):
         resp = await _render_followup(
             session_id="92",
@@ -3393,8 +3344,7 @@ async def test_handle_intent_select_interest_plan_analyze_returns_interest_previ
         )
 
     assert "当前判断" in resp
-    plan_mock.assert_awaited_once()
-    exec_mock.assert_awaited_once()
+    query_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -3405,7 +3355,6 @@ async def test_handle_intent_select_interest_prefer_confirm_returns_confirm_prev
             new=AsyncMock(return_value=_pending_intent_response({"city_intents": {"province": ["北京"]}})),
         ),
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -3434,7 +3383,6 @@ async def test_analyze_intent_change_existing_negative_preference_can_upgrade_to
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 88}})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -3469,7 +3417,6 @@ async def test_analyze_intent_change_hard_constraint_in_constraint_state_returns
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -3500,7 +3447,6 @@ async def test_analyze_intent_change_existing_preference_returns_helpful_text(ex
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -3693,7 +3639,6 @@ async def test_semantic_constraint_type_upgrades_positive_constraint_preview(emp
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -3735,7 +3680,6 @@ async def test_semantic_constraint_type_upgrades_positive_constraint_preview(emp
     assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
     assert payload["constraintIntentType"] == "only_keep"
     classifier_mock.assert_awaited_once()
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -3754,7 +3698,6 @@ async def test_analyze_intent_change_blocks_unstated_only_keep_for_negative_majo
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -3804,7 +3747,6 @@ async def test_analyze_intent_change_blocks_unstated_only_keep_for_negative_majo
     assert payload["items"] == []
     assert "要保留的范围" in payload["message"]
     assert "只保留专业" not in payload.get("message", "")
-    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -3822,7 +3764,6 @@ async def test_semantic_only_keep_coerces_preference_mode_to_constraint(empty_pr
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -3879,7 +3820,6 @@ async def test_semantic_only_keep_region_recovers_missing_positive_area(empty_pr
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -3946,7 +3886,6 @@ async def test_negative_only_region_constraint_not_blocked_by_semantic_only_keep
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
             new=AsyncMock(
@@ -4160,7 +4099,6 @@ async def test_analyze_intent_change_prunes_overbroad_parent_and_upgrades_existi
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.resolve_major_names_async", new=AsyncMock(side_effect=lambda names, level, batch: names)),
         patch("app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state", new=AsyncMock(return_value={})),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_cache_mock,
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=profile)
@@ -4187,7 +4125,6 @@ async def test_analyze_intent_change_prunes_overbroad_parent_and_upgrades_existi
     assert "土木工程" not in json.dumps(payload["existingItems"], ensure_ascii=False)
     assert "工学" not in json.dumps(payload, ensure_ascii=False)
     assert "土木类" not in json.dumps(payload, ensure_ascii=False)
-    save_cache_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -4214,7 +4151,6 @@ async def test_analyze_intent_change_existing_children_do_not_create_generic_par
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.resolve_major_names_async", new=AsyncMock(side_effect=lambda names, level, batch: names)),
         patch("app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state", new=AsyncMock(return_value={})),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_cache_mock,
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=profile)
@@ -4237,7 +4173,6 @@ async def test_analyze_intent_change_existing_children_do_not_create_generic_par
     assert "审计学" in existing_text
     assert "土木工程" in existing_text
     assert "会计类" not in json.dumps(payload, ensure_ascii=False)
-    save_cache_mock.assert_not_awaited()
 
 
 def test_local_major_recovery_expands_broad_alias_for_user_facing_intent_analysis():
@@ -4738,7 +4673,6 @@ async def test_analyze_intent_change_normalizes_major_add_alias_and_matches_nest
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_relation_tool.get_planning_state", new=AsyncMock(return_value=planning_state)),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -4914,7 +4848,6 @@ async def test_analyze_intent_change_normalizes_cross_border_ecommerce_alias_and
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_relation_tool.get_planning_state", new=AsyncMock(return_value=planning_state)),
         patch("app.tools.intent_state_tool.resolve_major_names_async", new=AsyncMock(return_value=["跨境电子商务"])),
     ):
@@ -4929,7 +4862,6 @@ async def test_analyze_intent_change_normalizes_cross_border_ecommerce_alias_and
 
     payload = json.loads(payload_text)
     assert payload["items"][0]["value"] == {"major_intents": {"level3": ["跨境电子商务"]}}
-    save_mock.assert_not_awaited()
     assert "跨境电商" not in payload["impactText"]
     assert "广州工商学院(201)-跨境电子商务" in payload["impactText"]
 
@@ -4970,7 +4902,6 @@ async def test_analyze_intent_change_normalizes_audit_alias_and_includes_fourth_
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_relation_tool.get_planning_state", new=AsyncMock(return_value=planning_state)),
         patch("app.tools.intent_state_tool.resolve_major_names_async", new=AsyncMock(return_value=["审计学"])),
     ):
@@ -4985,7 +4916,6 @@ async def test_analyze_intent_change_normalizes_audit_alias_and_includes_fourth_
 
     payload = json.loads(payload_text)
     assert payload["items"][0]["value"] == {"major_intents": {"negative_level3": ["审计学"]}}
-    save_mock.assert_not_awaited()
     assert "审计学" in payload["impactText"]
     assert "广东白云学院第01组-审计学" in payload["impactText"]
     assert "审计）" not in payload["impactText"]
@@ -5028,7 +4958,6 @@ async def test_analyze_intent_change_normalizes_accounting_alias_from_user_dialo
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_relation_tool.get_planning_state", new=AsyncMock(return_value=planning_state)),
         patch("app.tools.intent_state_tool.resolve_major_names_async", new=AsyncMock(return_value=["会计学"])),
     ):
@@ -5043,7 +4972,6 @@ async def test_analyze_intent_change_normalizes_accounting_alias_from_user_dialo
 
     payload = json.loads(payload_text)
     assert payload["items"][0]["value"] == {"major_intents": {"negative_level3": ["会计学"]}}
-    save_mock.assert_not_awaited()
     assert "南宁学院第01组-会计学" in payload["impactText"]
     assert "广州商学院第01组-会计学" in payload["impactText"]
 
@@ -5626,7 +5554,6 @@ async def test_handle_intent_select_constraint_applies_without_candidate_filters
     with (
         patch("app.tools.intent_state_tool.get_message_by_id", new=AsyncMock(return_value={"data": {"content": json.dumps(message_content, ensure_ascii=False)}})),
         patch("app.tools.intent_state_tool.update_message", new=AsyncMock()),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.update_planning_constraint_state", new=AsyncMock(return_value={"code": 0})) as constraint_state_mock,
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 128}})) as query_mock,
@@ -5659,7 +5586,6 @@ async def test_handle_intent_select_constraint_applies_without_candidate_filters
 async def test_apply_constraint_intents_marks_stale_without_candidate_filtering():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.update_planning_constraint_state", new=AsyncMock(return_value={"code": 0})) as constraint_state_mock,
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 64}})) as query_mock,
@@ -5700,7 +5626,6 @@ async def test_apply_constraint_intents_marks_stale_without_candidate_filtering(
 async def test_apply_mixed_constraint_intents_syncs_positive_soft_and_negative_hard():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.update_planning_constraint_state", new=AsyncMock(return_value={"code": 0})) as constraint_state_mock,
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})),
@@ -5749,7 +5674,6 @@ async def test_apply_mixed_constraint_intents_syncs_positive_soft_and_negative_h
 async def test_apply_preference_intents_refreshes_recommendation_overlay_without_candidate_regeneration():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.update_planning_constraint_state", new=AsyncMock(return_value={"code": 0})) as constraint_state_mock,
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
@@ -5799,7 +5723,6 @@ async def test_apply_preference_intents_refreshes_recommendation_overlay_without
 async def test_apply_preference_career_intent_updates_planning_latent_profile():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
         patch(
@@ -5880,7 +5803,6 @@ async def test_analyze_intent_change_builds_preview_for_career_intent_recovery()
         patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock(return_value=json.dumps({"positive": ["system_public_service"], "negative": []}, ensure_ascii=False))),
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=UserProfile())
@@ -5912,7 +5834,6 @@ async def test_analyze_intent_change_career_scope_avoids_general_extractors():
         patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock(return_value=json.dumps({"positive": ["system_public_service"], "negative": []}, ensure_ascii=False))) as career_mock,
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=UserProfile())
@@ -6014,7 +5935,6 @@ async def test_handle_intent_select_preference_does_not_regenerate_candidate_poo
     with (
         patch("app.tools.intent_state_tool.get_message_by_id", new=AsyncMock(return_value={"data": {"content": json.dumps(message_content, ensure_ascii=False)}})),
         patch("app.tools.intent_state_tool.update_message", new=AsyncMock()),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.update_planning_constraint_state", new=AsyncMock(return_value={"code": 0})) as constraint_state_mock,
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,

@@ -74,29 +74,6 @@ class TestChatAgentToolRegistration:
         assert "generate_planning_fix_proposals" in agent._registered_tool_names
         assert "apply_planning_fix_proposal" not in agent._registered_tool_names
 
-    def test_execute_plan_action_progress_hint_uses_structured_preview_args(self):
-        agent_mock = MagicMock()
-        with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
-            "app.llm.client.OpenAIProvider", return_value=MagicMock()
-        ), patch("app.agent.base_agent.Agent", return_value=agent_mock):
-            from pydantic_ai.messages import ToolCallPart
-
-            from app.agent.chat_agent import ChatAgent
-            from app.config import LLMConfig
-            from app.llm.client import LLMClient
-
-            config = LLMConfig(provider="openai", api_key="sk-test")
-            client = LLMClient(config)
-            agent = ChatAgent(client)
-
-        tool_call = ToolCallPart(
-            tool_name="execute_plan_action",
-            args={"action_family": "sort_ordered_plan", "stage": "preview"},
-            tool_call_id="sort-preview",
-        )
-
-        assert agent.get_progress_hint_for_tool_call(tool_call) == "正在生成这次调整的影响预览..."
-
     def test_chat_agent_corrects_tiny_model_tool_name_typo_before_execution(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
             from pydantic_ai.messages import ToolCallPart
@@ -475,119 +452,11 @@ class TestChatAgentToolRegistration:
             )
             is True
         )
-        assert agent.should_return_directly_from_tool(["execute_plan_action"], [], None) is False
         assert agent.should_return_directly_from_tool(
             ["preview_current_major_intent_confirmation", "query_volunteer_plan"],
             intent_returns,
             None,
         ) is False
-
-    def test_chat_agent_direct_returns_plan_selection_blocking_error(self):
-        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
-            from pydantic_ai.messages import ToolReturnPart
-
-            from app.agent.chat_agent import ChatAgent
-            from app.llm.client import LLMClient
-
-            client = MagicMock(spec=LLMClient)
-            client.model = TestModel()
-            client.model_settings = {}
-            agent = ChatAgent(client)
-
-        tool_returns = [
-            ToolReturnPart(
-                tool_name="execute_plan_action",
-                content='{"result_kind":"error","summary":"我还没有唯一定位到这个志愿，请点选或补充学校专业组。","reply_focus":["missing_inputs","needs_volunteer_selection"]}',
-                tool_call_id="call-1",
-            )
-        ]
-
-        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is True
-        assert (
-            agent.render_direct_tool_output(["execute_plan_action"], tool_returns, None)
-            == "我还没有唯一定位到这个志愿，请点选或补充学校专业组。"
-        )
-
-    def test_chat_agent_direct_returns_incomplete_plan_payload_blocking_error(self):
-        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
-            from pydantic_ai.messages import ToolReturnPart
-
-            from app.agent.chat_agent import ChatAgent
-            from app.llm.client import LLMClient
-
-            client = MagicMock(spec=LLMClient)
-            client.model = TestModel()
-            client.model_settings = {}
-            agent = ChatAgent(client)
-
-        tool_returns = [
-            ToolReturnPart(
-                tool_name="execute_plan_action",
-                content=(
-                    '{"result_kind":"error","summary":"这次还没有形成可确认的方案调整内容。",'
-                    '"reply_focus":["missing_plan_payload"]}'
-                ),
-                tool_call_id="call-1",
-            )
-        ]
-
-        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is True
-        assert (
-            agent.render_direct_tool_output(["execute_plan_action"], tool_returns, None)
-            == "这次还没有形成可确认的方案调整内容。"
-        )
-
-    def test_chat_agent_does_not_direct_return_normal_plan_preview(self):
-        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
-            from pydantic_ai.messages import ToolReturnPart
-
-            from app.agent.chat_agent import ChatAgent
-            from app.llm.client import LLMClient
-
-            client = MagicMock(spec=LLMClient)
-            client.model = TestModel()
-            client.model_settings = {}
-            agent = ChatAgent(client)
-
-        tool_returns = [
-            ToolReturnPart(
-                tool_name="execute_plan_action",
-                content='{"result_kind":"preview_only","summary":"会把这个志愿移动到第3位。","reply_focus":["preview_only","confirmation_required"]}',
-                tool_call_id="call-1",
-            )
-        ]
-
-        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is False
-
-    def test_chat_agent_direct_returns_ordered_unit_preview(self):
-        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
-            from pydantic_ai.messages import ToolReturnPart
-
-            from app.agent.chat_agent import ChatAgent
-            from app.llm.client import LLMClient
-
-            client = MagicMock(spec=LLMClient)
-            client.model = TestModel()
-            client.model_settings = {}
-            agent = ChatAgent(client)
-
-        tool_returns = [
-            ToolReturnPart(
-                tool_name="execute_plan_action",
-                content=(
-                    '{"result_kind":"preview_only","summary":"会整体移动第 4 个专业组到第 2 个专业组位置。'
-                    '需要你确认后才会执行。",'
-                    '"reply_focus":["preview_only","confirmation_required","unit_position_preview"]}'
-                ),
-                tool_call_id="call-1",
-            )
-        ]
-
-        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is True
-        assert (
-            agent.render_direct_tool_output(["execute_plan_action"], tool_returns, None)
-            == "会整体移动第 4 个专业组到第 2 个专业组位置。需要你确认后才会执行。"
-        )
 
     def test_chat_agent_keeps_read_only_plan_query_result_for_model_synthesis(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
@@ -649,7 +518,7 @@ class TestChatAgentToolRegistration:
 
         tool_returns = [
             ToolReturnPart(
-                tool_name="execute_plan_action",
+                tool_name="generate_planning_fix_proposals",
                 content=(
                     '{"action_family":"preview_fix_proposal","result_kind":"fix_proposal_preview",'
                     '"summary":"已生成当前方案的调整预览：可确认后执行 1 项。",'
@@ -659,37 +528,7 @@ class TestChatAgentToolRegistration:
             )
         ]
 
-        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is False
-
-    def test_chat_agent_direct_returns_sort_ordered_plan_preview(self):
-        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
-            from pydantic_ai.messages import ToolReturnPart
-
-            from app.agent.chat_agent import ChatAgent
-            from app.llm.client import LLMClient
-
-            client = MagicMock(spec=LLMClient)
-            client.model = TestModel()
-            client.model_settings = {}
-            agent = ChatAgent(client)
-
-        tool_returns = [
-            ToolReturnPart(
-                tool_name="execute_plan_action",
-                content=(
-                    '{"action_family":"sort_ordered_plan","result_kind":"preview_only",'
-                    '"summary":"会按推荐系数重新排序当前方案，推荐系数高的排在前面。需要你确认后才会执行。",'
-                    '"reply_focus":["preview_only","sort_preview"]}'
-                ),
-                tool_call_id="sort-preview-direct",
-            )
-        ]
-
-        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is True
-        assert (
-            agent.render_direct_tool_output(["execute_plan_action"], tool_returns, None)
-            == "会按推荐系数重新排序当前方案，推荐系数高的排在前面。需要你确认后才会执行。"
-        )
+        assert agent.should_return_directly_from_tool(["generate_planning_fix_proposals"], tool_returns, None) is False
 
     def test_chat_agent_keeps_empty_fix_proposal_preview_for_model_summary(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
@@ -705,7 +544,7 @@ class TestChatAgentToolRegistration:
 
         tool_returns = [
             ToolReturnPart(
-                tool_name="execute_plan_action",
+                tool_name="generate_planning_fix_proposals",
                 content=(
                     '{"action_family":"preview_fix_proposal","result_kind":"fix_proposal_preview",'
                     '"summary":"已查看当前方案的可处理建议，暂时没有需要自动处理的项目。",'
@@ -715,9 +554,9 @@ class TestChatAgentToolRegistration:
             )
         ]
 
-        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is False
+        assert agent.should_return_directly_from_tool(["generate_planning_fix_proposals"], tool_returns, None) is False
 
-    def test_chat_agent_registers_plan_orchestration_tools(self):
+    def test_chat_agent_does_not_register_legacy_plan_orchestration_tools(self):
         agent_mock = MagicMock()
         with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
             "app.llm.client.OpenAIProvider", return_value=MagicMock()
@@ -729,17 +568,14 @@ class TestChatAgentToolRegistration:
             client = LLMClient(config)
 
             from app.agent.chat_agent import ChatAgent
-            from app.tools.plan_context_tool import collect_plan_context_inputs
-            from app.tools.plan_execution_tool import execute_plan_action
-            from app.tools.plan_orchestration_tool import plan_next_action
 
             ChatAgent(client)
 
             registered_tools = agent_cls.call_args.kwargs["tools"]
-            assert collect_plan_context_inputs in registered_tools
-            assert plan_next_action in registered_tools
-            assert execute_plan_action in registered_tools
             registered_names = {tool.__name__ for tool in registered_tools}
+            assert "collect_plan_context_inputs" not in registered_names
+            assert "plan_next_action" not in registered_names
+            assert "execute_plan_action" not in registered_names
             assert "handle_planning_request" not in registered_names
             assert "query_planning_plan_overview" not in registered_names
             assert "run_planning_review" not in registered_names
@@ -766,325 +602,6 @@ class TestChatAgentToolRegistration:
             assert chat_agent.skills_toolset is skill_toolset
             assert agent_cls.call_args.kwargs["toolsets"] == []
             agent_mock.instructions.assert_called_once()
-
-    def test_chat_agent_model_tool_call_routes_plan_status_query_through_orchestration_chain(self):
-        recorded: list[dict] = []
-
-        async def fake_collect_plan_context_inputs(
-            ctx: RunContext,
-        ) -> str:
-            recorded.append(
-                {
-                    "sessionid": ctx.deps.sessionid,
-                    "tool": "collect_plan_context_inputs",
-                }
-            )
-            return '{"phase":"reviewed","ordered_count":45,"target_count":45}'
-
-        async def fake_plan_next_action(
-            ctx: RunContext,
-            user_goal: str,
-            action_family: str,
-            user_confirmed: bool = False,
-        ) -> str:
-            recorded.append(
-                {
-                    "sessionid": ctx.deps.sessionid,
-                    "tool": "plan_next_action",
-                    "user_goal": user_goal,
-                    "action_family": action_family,
-                    "user_confirmed": user_confirmed,
-                }
-            )
-            return '{"stage":"apply","action_family":"query_state"}'
-
-        async def fake_execute_plan_action(
-            ctx: RunContext,
-            plan_payload: str,
-        ) -> str:
-            recorded.append(
-                {
-                    "sessionid": ctx.deps.sessionid,
-                    "tool": "execute_plan_action",
-                    "plan_payload": plan_payload,
-                }
-            )
-            return '{"summary":"plan status ok"}'
-
-        with patch("app.agent.base_agent.SkillsToolset", None):
-            from app.agent.base_agent import BaseAgent
-            from app.agent.context import RequestContext
-            from app.agent.instructions.assembler import build_instructions as _build_instructions
-            from app.llm.client import LLMClient
-
-            client = LLMClient.__new__(LLMClient)
-            client.model = TestModel(
-                call_tools=[
-                    "fake_collect_plan_context_inputs",
-                    "fake_plan_next_action",
-                    "fake_execute_plan_action",
-                ]
-            )
-            client.model_settings = {}
-            client.model.gen_tool_args = MagicMock(
-                side_effect=[
-                    {},
-                    {
-                        "user_goal": "查询当前方案状态",
-                        "action_family": "query_state",
-                        "user_confirmed": False,
-                    },
-                    {
-                        "plan_payload": '{"stage":"apply","action_family":"query_state"}',
-                    },
-                ]
-            )
-
-            agent = BaseAgent(
-                llm_client=client,
-                instructions=_build_instructions,
-                output_type=str,
-                tools=[
-                    fake_collect_plan_context_inputs,
-                    fake_plan_next_action,
-                    fake_execute_plan_action,
-                ],
-                deps_type=RequestContext,
-            )
-            result = asyncio.run(
-                agent.run(
-                    "方案有了么",
-                    deps=RequestContext(userid="u1", sessionid="plan-status-1"),
-                )
-            )
-
-        assert '"fake_execute_plan_action":"{\\"summary\\":\\"plan status ok\\"}"' in result
-        assert recorded == [
-            {
-                "sessionid": "plan-status-1",
-                "tool": "collect_plan_context_inputs",
-            },
-            {
-                "sessionid": "plan-status-1",
-                "tool": "plan_next_action",
-                "user_goal": "查询当前方案状态",
-                "action_family": "query_state",
-                "user_confirmed": False,
-            },
-            {
-                "sessionid": "plan-status-1",
-                "tool": "execute_plan_action",
-                "plan_payload": '{"stage":"apply","action_family":"query_state"}',
-            },
-        ]
-
-    def test_chat_agent_model_tool_call_can_use_new_plan_orchestration_chain(self):
-        recorded: list[dict] = []
-
-        async def fake_collect_plan_context_inputs(ctx: RunContext) -> str:
-            recorded.append(
-                {
-                    "tool": "collect_plan_context_inputs",
-                    "sessionid": ctx.deps.sessionid,
-                }
-            )
-            return '{"phase":"reviewed","ordered_total":30}'
-
-        async def fake_plan_next_action(
-            ctx: RunContext,
-            user_goal: str,
-            action_family: str,
-            user_confirmed: bool = False,
-        ) -> str:
-            recorded.append(
-                {
-                    "tool": "plan_next_action",
-                    "sessionid": ctx.deps.sessionid,
-                    "user_goal": user_goal,
-                    "action_family": action_family,
-                    "user_confirmed": user_confirmed,
-                }
-            )
-            return '{"stage":"apply","action_family":"analyze_adjustment"}'
-
-        async def fake_execute_plan_action(
-            ctx: RunContext,
-            plan_payload: str,
-        ) -> str:
-            recorded.append(
-                {
-                    "tool": "execute_plan_action",
-                    "sessionid": ctx.deps.sessionid,
-                    "plan_payload": plan_payload,
-                }
-            )
-            return '{"summary":"当前方案可以先补强保区。"}'
-
-        with patch("app.agent.base_agent.SkillsToolset", None):
-            from app.agent.base_agent import BaseAgent
-            from app.agent.context import RequestContext
-            from app.agent.instructions.assembler import build_instructions as _build_instructions
-            from app.llm.client import LLMClient
-
-            client = LLMClient.__new__(LLMClient)
-            client.model = TestModel(
-                call_tools=[
-                    "fake_collect_plan_context_inputs",
-                    "fake_plan_next_action",
-                    "fake_execute_plan_action",
-                ]
-            )
-            client.model_settings = {}
-            client.model.gen_tool_args = MagicMock(
-                side_effect=[
-                    {},
-                    {
-                        "user_goal": "分析当前方案还能怎么优化",
-                        "action_family": "analyze_adjustment",
-                        "user_confirmed": True,
-                    },
-                    {
-                        "plan_payload": '{"stage":"apply","action_family":"analyze_adjustment"}',
-                    },
-                ]
-            )
-
-            agent = BaseAgent(
-                llm_client=client,
-                instructions=_build_instructions,
-                output_type=str,
-                tools=[
-                    fake_collect_plan_context_inputs,
-                    fake_plan_next_action,
-                    fake_execute_plan_action,
-                ],
-                deps_type=RequestContext,
-            )
-            result = asyncio.run(
-                agent.run(
-                    "看看现在方案还能怎么优化",
-                    deps=RequestContext(userid="u1", sessionid="plan-chain-1"),
-                )
-            )
-
-        assert '"fake_execute_plan_action":"{\\"summary\\":\\"当前方案可以先补强保区。\\"}"' in result
-        assert recorded == [
-            {
-                "tool": "collect_plan_context_inputs",
-                "sessionid": "plan-chain-1",
-            },
-            {
-                "tool": "plan_next_action",
-                "sessionid": "plan-chain-1",
-                "user_goal": "分析当前方案还能怎么优化",
-                "action_family": "analyze_adjustment",
-                "user_confirmed": True,
-            },
-            {
-                "tool": "execute_plan_action",
-                "sessionid": "plan-chain-1",
-                "plan_payload": '{"stage":"apply","action_family":"analyze_adjustment"}',
-            },
-        ]
-
-    def test_chat_agent_after_intent_confirm_followup_plan_question_stays_on_plan_chain(self):
-        recorded: list[str] = []
-
-        async def fake_collect_plan_context_inputs(ctx: RunContext) -> str:
-            recorded.append("collect_plan_context_inputs")
-            return '{"phase":"ordered","ordered_count":45,"positive_majors":["网络与新媒体"]}'
-
-        async def fake_plan_next_action(
-            ctx: RunContext,
-            user_goal: str,
-            action_family: str,
-            user_confirmed: bool = False,
-        ) -> str:
-            recorded.append(f"plan_next_action:{action_family}:{user_goal}")
-            return '{"stage":"apply","action_family":"analyze_adjustment"}'
-
-        async def fake_execute_plan_action(ctx: RunContext, plan_payload: str) -> str:
-            recorded.append("execute_plan_action")
-            return '{"summary":"当前方案对网络与新媒体承接偏弱，可以先看调整建议。"}'
-
-        async def fake_analyze_intent_change(
-            ctx: RunContext,
-            major_intents=None,
-            school_intents=None,
-            city_intents=None,
-            edit_flag=None,
-            analysis_stage="confirmed",
-            career_intents=None,
-            recovery_scope=None,
-            confirm_enabled=True,
-            intent_mode=None,
-        ) -> str:
-            recorded.append("analyze_volunteer_intent_change")
-            return "should not be called"
-
-        with patch("app.agent.base_agent.SkillsToolset", None):
-            from app.agent.base_agent import BaseAgent
-            from app.agent.context import RequestContext
-            from app.agent.instructions.assembler import build_instructions as _build_instructions
-            from app.llm.client import LLMClient
-
-            client = LLMClient.__new__(LLMClient)
-            client.model = TestModel(
-                call_tools=[
-                    "fake_collect_plan_context_inputs",
-                    "fake_plan_next_action",
-                    "fake_execute_plan_action",
-                ]
-            )
-            client.model_settings = {}
-            client.model.gen_tool_args = MagicMock(
-                side_effect=[
-                    {},
-                    {
-                        "user_goal": "结合已确认的网络与新媒体偏好分析当前方案怎么调",
-                        "action_family": "analyze_adjustment",
-                        "user_confirmed": True,
-                    },
-                    {
-                        "plan_payload": '{"stage":"apply","action_family":"analyze_adjustment"}',
-                    },
-                ]
-            )
-
-            agent = BaseAgent(
-                llm_client=client,
-                instructions=_build_instructions,
-                output_type=str,
-                tools=[
-                    fake_collect_plan_context_inputs,
-                    fake_plan_next_action,
-                    fake_execute_plan_action,
-                    fake_analyze_intent_change,
-                ],
-                deps_type=RequestContext,
-            )
-            result = asyncio.run(
-                agent.run(
-                    "那现在方案怎么调",
-                    deps=RequestContext(
-                        userid="u1",
-                        sessionid="intent-plan-1",
-                        chat_history=[
-                            {"role": "user", "content": "想学网络与新媒体"},
-                            {"role": "assistant", "content": "如果确认要把它记成偏好，可以回复确认。"},
-                            {"role": "user", "content": "确认这个偏好"},
-                            {"role": "assistant", "content": "好的，我记下来了。"},
-                        ],
-                    ),
-                )
-            )
-
-        assert "网络与新媒体承接偏弱" in result
-        assert recorded == [
-            "collect_plan_context_inputs",
-            "plan_next_action:analyze_adjustment:结合已确认的网络与新媒体偏好分析当前方案怎么调",
-            "execute_plan_action",
-        ]
 
     def test_chat_agent_explore_followup_explicit_major_preference_routes_to_intent_preview(self):
         recorded: list[dict] = []
@@ -1224,23 +741,6 @@ class TestChatAgentToolRegistration:
             recorded.append(f"intent_mode:{intent_mode}")
             return '{"status":"pending","items":[{"content":"将跨境电子商务更新为偏好方向。"}],"message":"先确认是否记成偏好。"}'
 
-        async def fake_collect_plan_context_inputs(ctx: RunContext) -> str:
-            recorded.append("collect_plan_context_inputs")
-            return "should not be called"
-
-        async def fake_plan_next_action(
-            ctx: RunContext,
-            user_goal: str,
-            action_family: str,
-            user_confirmed: bool = False,
-        ) -> str:
-            recorded.append("plan_next_action")
-            return "should not be called"
-
-        async def fake_execute_plan_action(ctx: RunContext, plan_payload: str) -> str:
-            recorded.append("execute_plan_action")
-            return "should not be called"
-
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import PlanningSummary, RequestContext
@@ -1262,9 +762,6 @@ class TestChatAgentToolRegistration:
                 output_type=str,
                 tools=[
                     fake_preview_current_major_intent_confirmation,
-                    fake_collect_plan_context_inputs,
-                    fake_plan_next_action,
-                    fake_execute_plan_action,
                 ],
                 deps_type=RequestContext,
             )
@@ -1299,23 +796,6 @@ class TestChatAgentToolRegistration:
             recorded.append(f"intent_mode:{intent_mode}")
             return '{"status":"pending","items":[{"content":"将审计学设为排除方向。"}],"message":"先确认是否记成要求。"}'
 
-        async def fake_collect_plan_context_inputs(ctx: RunContext) -> str:
-            recorded.append("collect_plan_context_inputs")
-            return "should not be called"
-
-        async def fake_plan_next_action(
-            ctx: RunContext,
-            user_goal: str,
-            action_family: str,
-            user_confirmed: bool = False,
-        ) -> str:
-            recorded.append("plan_next_action")
-            return "should not be called"
-
-        async def fake_execute_plan_action(ctx: RunContext, plan_payload: str) -> str:
-            recorded.append("execute_plan_action")
-            return "should not be called"
-
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import PlanningSummary, RequestContext
@@ -1337,9 +817,6 @@ class TestChatAgentToolRegistration:
                 output_type=str,
                 tools=[
                     fake_preview_current_major_intent_confirmation,
-                    fake_collect_plan_context_inputs,
-                    fake_plan_next_action,
-                    fake_execute_plan_action,
                 ],
                 deps_type=RequestContext,
             )
@@ -1374,23 +851,6 @@ class TestChatAgentToolRegistration:
             recorded.append(f"intent_mode:{intent_mode}")
             return '{"status":"pending","items":[{"content":"将会计学设为排除方向。"}],"message":"先确认是否记成要求。"}'
 
-        async def fake_collect_plan_context_inputs(ctx: RunContext) -> str:
-            recorded.append("collect_plan_context_inputs")
-            return "should not be called"
-
-        async def fake_plan_next_action(
-            ctx: RunContext,
-            user_goal: str,
-            action_family: str,
-            user_confirmed: bool = False,
-        ) -> str:
-            recorded.append("plan_next_action")
-            return "should not be called"
-
-        async def fake_execute_plan_action(ctx: RunContext, plan_payload: str) -> str:
-            recorded.append("execute_plan_action")
-            return "should not be called"
-
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import PlanningSummary, RequestContext
@@ -1412,9 +872,6 @@ class TestChatAgentToolRegistration:
                 output_type=str,
                 tools=[
                     fake_preview_current_major_intent_confirmation,
-                    fake_collect_plan_context_inputs,
-                    fake_plan_next_action,
-                    fake_execute_plan_action,
                 ],
                 deps_type=RequestContext,
             )
@@ -1501,183 +958,6 @@ class TestChatAgentToolRegistration:
         assert "会计学" in result
         assert "土木工程" in result
         assert recorded == ["preview_current_major_intent_confirmation"]
-
-    def test_chat_agent_confirmed_negative_career_followup_conflict_question_uses_plan_chain(self):
-        recorded: list[str] = []
-
-        async def fake_collect_plan_context_inputs(ctx: RunContext) -> str:
-            recorded.append("collect_plan_context_inputs")
-            return '{"phase":"ordered","ordered_count":45,"career_types":["不考虑体制内/考公导向"]}'
-
-        async def fake_plan_next_action(
-            ctx: RunContext,
-            user_goal: str,
-            action_family: str,
-            user_confirmed: bool = False,
-        ) -> str:
-            recorded.append(f"plan_next_action:{action_family}:{user_goal}")
-            return '{"stage":"apply","action_family":"review_plan"}'
-
-        async def fake_execute_plan_action(ctx: RunContext, plan_payload: str) -> str:
-            recorded.append("execute_plan_action")
-            return '{"summary":"当前方案里需要留意体制内导向较强的专业组，可以先做一次风险审查。"}'
-
-        async def fake_analyze_volunteer_intent_change(
-            ctx: RunContext,
-            major_intents=None,
-            school_intents=None,
-            city_intents=None,
-            edit_flag=None,
-            analysis_stage="confirmed",
-            career_intents=None,
-            recovery_scope=None,
-            confirm_enabled=True,
-            intent_mode=None,
-        ) -> str:
-            recorded.append("analyze_volunteer_intent_change")
-            return "should not be called"
-
-        with patch("app.agent.base_agent.SkillsToolset", None):
-            from app.agent.base_agent import BaseAgent
-            from app.agent.context import RequestContext
-            from app.agent.instructions.assembler import build_instructions as _build_instructions
-            from app.llm.client import LLMClient
-
-            client = LLMClient.__new__(LLMClient)
-            client.model = TestModel(
-                call_tools=[
-                    "fake_collect_plan_context_inputs",
-                    "fake_plan_next_action",
-                    "fake_execute_plan_action",
-                ]
-            )
-            client.model_settings = {}
-            client.model.gen_tool_args = MagicMock(
-                side_effect=[
-                    {},
-                    {
-                        "user_goal": "结合已确认的不考虑体制内要求审查当前方案冲突",
-                        "action_family": "review_plan",
-                        "user_confirmed": True,
-                    },
-                    {
-                        "plan_payload": '{"stage":"apply","action_family":"review_plan"}',
-                    },
-                ]
-            )
-
-            agent = BaseAgent(
-                llm_client=client,
-                instructions=_build_instructions,
-                output_type=str,
-                tools=[
-                    fake_collect_plan_context_inputs,
-                    fake_plan_next_action,
-                    fake_execute_plan_action,
-                    fake_analyze_volunteer_intent_change,
-                ],
-                deps_type=RequestContext,
-            )
-            result = asyncio.run(
-                agent.run(
-                    "那现在方案哪里冲突",
-                    deps=RequestContext(
-                        userid="u1",
-                        sessionid="intent-plan-2",
-                        chat_history=[
-                            {"role": "user", "content": "现在不想进体制内了"},
-                            {"role": "assistant", "content": "如果确认要作为要求，我会按这个方向更新。"},
-                            {"role": "user", "content": "确认"},
-                            {"role": "assistant", "content": "好的，我已经按你的要求更新好了。"},
-                        ],
-                    ),
-                )
-            )
-
-        assert "体制内导向较强" in result
-        assert recorded == [
-            "collect_plan_context_inputs",
-            "plan_next_action:review_plan:结合已确认的不考虑体制内要求审查当前方案冲突",
-            "execute_plan_action",
-        ]
-
-    def test_chat_agent_plan_status_query_should_not_need_query_volunteer_plan(self):
-        recorded: list[str] = []
-
-        async def fake_collect_plan_context_inputs(ctx: RunContext) -> str:
-            recorded.append("collect_plan_context_inputs")
-            return '{"phase":"reviewed","ordered_count":30,"target_count":30}'
-
-        async def fake_plan_next_action(
-            ctx: RunContext,
-            user_goal: str,
-            action_family: str,
-            user_confirmed: bool = False,
-        ) -> str:
-            recorded.append(f"plan_next_action:{action_family}")
-            return '{"stage":"apply","action_family":"query_state"}'
-
-        async def fake_execute_plan_action(ctx: RunContext, plan_payload: str) -> str:
-            recorded.append("execute_plan_action")
-            return '{"summary":"ok"}'
-
-        async def fake_query_volunteer_plan(ctx: RunContext, query: str, scope: str = "auto") -> str:
-            recorded.append("query_volunteer_plan")
-            return "should not be called"
-
-        with patch("app.agent.base_agent.SkillsToolset", None):
-            from app.agent.base_agent import BaseAgent
-            from app.agent.context import RequestContext
-            from app.agent.instructions.assembler import build_instructions as _build_instructions
-            from app.llm.client import LLMClient
-
-            client = LLMClient.__new__(LLMClient)
-            client.model = TestModel(
-                call_tools=[
-                    "fake_collect_plan_context_inputs",
-                    "fake_plan_next_action",
-                    "fake_execute_plan_action",
-                ]
-            )
-            client.model_settings = {}
-            client.model.gen_tool_args = MagicMock(
-                side_effect=[
-                    {},
-                    {
-                        "user_goal": "查询当前方案状态",
-                        "action_family": "query_state",
-                        "user_confirmed": False,
-                    },
-                    {
-                        "plan_payload": '{"stage":"apply","action_family":"query_state"}',
-                    },
-                ]
-            )
-
-            agent = BaseAgent(
-                llm_client=client,
-                instructions=_build_instructions,
-                output_type=str,
-                tools=[
-                    fake_collect_plan_context_inputs,
-                    fake_plan_next_action,
-                    fake_execute_plan_action,
-                    fake_query_volunteer_plan,
-                ],
-                deps_type=RequestContext,
-            )
-            asyncio.run(
-                agent.run(
-                    "方案有了么",
-                    deps=RequestContext(userid="u1", sessionid="plan-status-2"),
-                )
-            )
-
-        assert recorded == [
-            "collect_plan_context_inputs",
-            "plan_next_action:query_state",
-            "execute_plan_action",
-        ]
 
     def test_chat_agent_plan_local_lookup_can_use_query_volunteer_plan(self):
         recorded: list[str] = []

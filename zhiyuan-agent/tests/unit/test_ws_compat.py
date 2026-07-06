@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,7 +13,6 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCall
 from app.data.history_store import ChatHistoryStore
 from app.schemas.ws import WSResponse
 from app.service import ChatService, ChatServiceResponseEnvelope, _build_plan_timeout_fallback_reply
-from app.tools.plan_execution_tool import execute_plan_action
 
 _patches = []
 
@@ -68,19 +66,32 @@ class _PlanStatusToolAgent:
 
     async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
         self.calls.append({"user_prompt": user_prompt, "session_id": deps.sessionid if deps else None})
-        plan_payload = json.dumps(
-            {
-                "stage": "apply",
-                "action_family": "query_state",
-                "user_goal": user_prompt,
-                "requires_confirmation": False,
-                "context_summary": "用户通过快捷回复查看当前方案状态。",
-                "intent_relation": "mixed",
+        tool_result = {
+            "applied": True,
+            "action_family": "query_plan",
+            "stage": "apply",
+            "result_kind": "status_overview",
+            "workspace_refresh_targets": [],
+            "summary": "当前方案 45/45 个志愿，冲18 / 稳13 / 保14，风险0项，提醒2项。",
+            "facts": {
+                "current_total": 45,
+                "target_total": 45,
+                "tier_counts": {"冲": 18, "稳": 13, "保": 14},
+                "risk_count": 0,
+                "warn_count": 0,
+                "phase": "reviewed",
+                "top_items": [
+                    "北京财经学院-财政学(冲)@1",
+                    "天津财经大学-经济学(稳)@2",
+                    "河北经贸大学-法学(保)@3",
+                ],
+                "intent_relation": {
+                    "coverage": "承接情况：当前方案里较贴近的有27个，明显冲突的有0个。",
+                    "aligned_examples": "贴近偏好：北京财经学院-财政学(冲)@1",
+                },
             },
-            ensure_ascii=False,
-        )
-        tool_result_text = await execute_plan_action(SimpleNamespace(deps=deps), plan_payload)
-        tool_result = json.loads(tool_result_text)
+        }
+        tool_result_text = json.dumps(tool_result, ensure_ascii=False)
         self.tool_results.append(tool_result)
 
         reply = _build_plan_timeout_fallback_reply(tool_result) or tool_result.get("summary") or ""
@@ -89,8 +100,8 @@ class _PlanStatusToolAgent:
             ModelResponse(
                 parts=[
                     ToolCallPart(
-                        tool_name="execute_plan_action",
-                        args={"plan_payload": plan_payload},
+                        tool_name="query_plan",
+                        args={"scope": "plan", "query_type": "status"},
                         tool_call_id="query-state-status-1",
                     )
                 ],
@@ -99,7 +110,7 @@ class _PlanStatusToolAgent:
             ModelRequest(
                 parts=[
                     ToolReturnPart(
-                        tool_name="execute_plan_action",
+                        tool_name="query_plan",
                         content=tool_result_text,
                         tool_call_id="query-state-status-1",
                     )
@@ -451,21 +462,12 @@ def test_ws_compat_structured_session_query_state_returns_rich_text_without_work
     client.app.state.chat_service = service
 
     planning_state = _planning_state_for_status_overview()
-    ordered_plan = _ordered_plan_for_status_overview()
 
     with client.websocket_connect(WS_PATH) as ws:
         with patch("app.server.message_store") as mock_store, \
                 patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
                 patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-                patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 0, "data": planning_state})), \
-                patch(
-                    "app.handlers.query_handlers._get_planning_state_with_latest_profile",
-                    AsyncMock(return_value=planning_state),
-                ), \
-                patch(
-                    "app.handlers.query_handlers._get_planning_ordered_plan_request",
-                    AsyncMock(return_value={"code": 0, "data": ordered_plan}),
-                ):
+                patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 0, "data": planning_state})):
             mock_store.save_user_message = AsyncMock(return_value=1)
             mock_store.save_agent_message = AsyncMock(return_value=2)
 
@@ -476,6 +478,8 @@ def test_ws_compat_structured_session_query_state_returns_rich_text_without_work
                 "inputType": "text",
             })
             resp = ws.receive_json()
+            while resp.get("type") == "thinking":
+                resp = ws.receive_json()
 
     assert resp["type"] == "text"
     assert resp["end"] is True
@@ -852,67 +856,14 @@ def test_handler_exception_returns_error(client):
     mock_store.save_agent_message.assert_not_awaited()
 
 
-def test_ws_compat_timeout_uses_plan_execution_fallback_and_followup(client):
-    mock_service = AsyncMock()
-    mock_service.handle_message = AsyncMock(side_effect=asyncio.TimeoutError())
-    mock_service.handle_intent_select = AsyncMock()
-    client.app.state.chat_service = mock_service
-
-    fallback = ChatServiceResponseEnvelope(
-        primary="这轮审查已经执行完了，我先把核心结果直接给你：\n\n当前方案里较贴近的有14个，明显冲突的有0个。",
-        followups=[
-            WSResponse(
-                type="planningWorkspaceAction",
-                session_id="sess-timeout",
-                content=json.dumps(
-                    {
-                        "type": "planningWorkspaceAction",
-                        "targetView": "review",
-                        "refresh": True,
-                        "title": "查看方案审查结果",
-                        "actionText": "打开审查结果",
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-        ],
-    )
-
-    with client.websocket_connect(WS_PATH) as ws:
-        with patch("app.server.message_store") as mock_store, patch(
-            "app.server.build_timeout_fallback_from_recent_plan_execution",
-            return_value=fallback,
-        ) as mock_builder:
-            mock_store.save_user_message = AsyncMock(return_value=1)
-            mock_store.save_agent_message = AsyncMock(side_effect=[2, 3])
-
-            ws.send_json({
-                "sessionId": "sess-timeout",
-                "userId": "user-timeout",
-                "content": "帮我审查一下当前方案",
-                "inputType": "text",
-            })
-            primary = ws.receive_json()
-            followup = ws.receive_json()
-
-    assert primary["type"] == "text"
-    assert "当前方案里较贴近的有14个" in primary["content"]
-    assert followup["type"] == "planningWorkspaceAction"
-    assert followup["content"]["targetView"] == "review"
-    mock_builder.assert_called_once_with("sess-timeout", "帮我审查一下当前方案")
-
-
-def test_ws_compat_timeout_without_plan_execution_fallback_returns_generic_reply(client):
+def test_ws_compat_timeout_returns_generic_reply(client):
     mock_service = AsyncMock()
     mock_service.handle_message = AsyncMock(side_effect=asyncio.TimeoutError())
     mock_service.handle_intent_select = AsyncMock()
     client.app.state.chat_service = mock_service
 
     with client.websocket_connect(WS_PATH) as ws:
-        with patch("app.server.message_store") as mock_store, patch(
-            "app.server.build_timeout_fallback_from_recent_plan_execution",
-            return_value=None,
-        ) as mock_builder:
+        with patch("app.server.message_store") as mock_store:
             mock_store.save_user_message = AsyncMock(return_value=1)
             mock_store.save_agent_message = AsyncMock(return_value=2)
 
@@ -928,4 +879,3 @@ def test_ws_compat_timeout_without_plan_execution_fallback_returns_generic_reply
     assert "这次分析耗时有点长" in resp["content"]
     assert "帮我审查一下当前方案" in resp["content"]
     assert "不会自动写入偏好或改动方案" in resp["content"]
-    mock_builder.assert_called_once_with("sess-timeout-none", "帮我审查一下当前方案")

@@ -1044,7 +1044,7 @@ async def query_volunteer_plan(
     不适合回答会改变方案或规划补齐动作的问题；这类问题应由上游结构化路由走 Plan 主链路规划
     preview_fix_proposal/add_units，并在用户确认后执行。
     也不适合在移动/删除前作为“定位 ID”的前置步骤；`move_unit/remove_units/add_units`
-    的 `volunteer_ids` 可以直接填写用户原始学校+专业引用，执行层会解析真实 ID 并处理歧义。
+    的 `volunteer_ids` 可以直接填写用户原始学校+专业引用，方案动作工具会解析真实 ID 并处理歧义。
 
     当 `scope=auto` 时，兼容旧行为，仍会根据 query 做启发式判断。
     更推荐由模型显式传入：

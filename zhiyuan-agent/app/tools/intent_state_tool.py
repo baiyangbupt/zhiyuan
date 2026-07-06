@@ -76,7 +76,6 @@ from app.util.internal_client import (
     mark_planning_intent_change_stale,
     get_message_by_id,
     query_planning_candidate_pool,
-    save_intent_change_cache,
     update_planning_constraint_state,
     update_planning_physical_constraints,
     update_planning_latent_profile,
@@ -3924,12 +3923,6 @@ async def _apply_intents(
         intent_mode=intent_mode,
     )
     tuition_budget_sync = await _sync_tuition_budget_best_effort(session_id, merged)
-    try:
-        session_id_int = int(str(session_id).strip())
-    except (TypeError, ValueError):
-        session_id_int = None
-    if session_id_int is not None:
-        await save_intent_change_cache(session_id_int, {})
 
     if intent_mode == INTENT_MODE_CONSTRAINT:
         stale_mark_success = await _mark_intent_change_stale_best_effort(session_id, intent_mode)

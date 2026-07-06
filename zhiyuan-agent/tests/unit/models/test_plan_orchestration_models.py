@@ -5,47 +5,14 @@ from pydantic import ValidationError
 
 from app.tools.plan_orchestration_models import (
     CompositePlanProposal,
-    PlanActionPlan,
     PlanAtomicAction,
     PlanDecisionReference,
     PlanEntityResolution,
     PlanGoal,
-    normalize_plan_action_payload,
 )
 
 
-def test_plan_action_plan_defaults_keep_existing_single_action_shape():
-    plan = PlanActionPlan(
-        stage="preview",
-        action_family="remove_units",
-        user_goal="删掉法学",
-        atomic_actions=[
-            PlanAtomicAction(
-                action_type="remove_units",
-                source_major_names=["法学"],
-            )
-        ],
-    )
-
-    assert plan.composite_proposal is None
-    assert plan.atomic_actions[0].source_major_names == ["法学"]
-
-
-def test_plan_action_plan_normalizes_reply_focus_alias():
-    plan = PlanActionPlan.model_validate(
-        {
-            "stage": "apply",
-            "action_family": "analyze_adjustment",
-            "user_goal": "这些处理不了的提醒怎么调",
-            "replyFocus": ["unavailable_guidance", "unavailable_guidance", "shortage_boundary"],
-        }
-    )
-
-    assert plan.action_family == "analyze_adjustment"
-    assert plan.reply_focus == ["unavailable_guidance", "shortage_boundary"]
-
-
-def test_plan_action_plan_keeps_compound_goal_inside_composite_proposal():
+def test_composite_plan_proposal_keeps_compound_goal_and_actions_together():
     goal = PlanGoal(
         goal_type="only_keep_scope",
         user_original_text="只保留临床医学，其他专业先不要",
@@ -70,19 +37,12 @@ def test_plan_action_plan_keeps_compound_goal_inside_composite_proposal():
         ],
         feasibility="ready",
     )
-    plan = PlanActionPlan(
-        stage="preview",
-        action_family="remove_units",
-        user_goal=goal.user_original_text,
-        composite_proposal=proposal,
-    )
 
-    assert plan.composite_proposal is not None
-    assert plan.composite_proposal.goal is not None
-    assert plan.composite_proposal.goal.goal_type == "only_keep_scope"
-    assert plan.composite_proposal.intent_updates[0]["constraintIntentType"] == "only_keep"
-    assert plan.composite_proposal.plan_actions[0].action_type == "remove_units"
-    assert plan.model_dump()["composite_proposal"]["feasibility"] == "ready"
+    assert proposal.goal is not None
+    assert proposal.goal.goal_type == "only_keep_scope"
+    assert proposal.intent_updates[0]["constraintIntentType"] == "only_keep"
+    assert proposal.plan_actions[0].action_type == "remove_units"
+    assert proposal.model_dump()["feasibility"] == "ready"
 
 
 def test_composite_plan_proposal_groups_goal_intent_and_actions():
@@ -195,21 +155,3 @@ def test_plan_goal_clarify_forces_needs_clarification():
 def test_plan_goal_rejects_unknown_goal_type():
     with pytest.raises(ValidationError):
         PlanGoal(goal_type="keep_everything")  # type: ignore[arg-type]
-
-
-def test_legacy_top_level_compound_goal_is_ignored_by_plan_action_envelope():
-    payload = normalize_plan_action_payload(
-        {
-            "stage": "preview",
-            "action_family": "remove_units",
-            "user_goal": "只保留临床医学",
-            "goal": {
-                "goal_type": "only_keep_scope",
-                "target_scopes": [{"entityType": "major", "name": "临床医学"}],
-            },
-        }
-    )
-    plan = PlanActionPlan.model_validate(payload)
-
-    assert plan.composite_proposal is None
-    assert plan.atomic_actions == []
