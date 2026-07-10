@@ -230,6 +230,11 @@ _READONLY_BOUNDARY_REQUIRED_COVERAGE = {
     "hard_major_constraint",
     "soft_region_intent",
     "negative_region_intent",
+    "positive_major_intent",
+    "explicit_major_requirement",
+    "positive_region_intent",
+    "explicit_region_requirement",
+    "negative_region_requirement",
     "confirm_guard",
     "no_pending_guard",
     "readonly_closure_ack",
@@ -268,25 +273,30 @@ _EXPECTED_ACTIONS_BY_COVERAGE: dict[str, str] = {
     "plan_status": "query_state",
     "review_plan": "review_plan",
     "review_workspace": "review_plan",
-    "school_major_lookup": "query_volunteer_plan",
+    "school_major_lookup": "query_plan",
     "sort_ordered_plan": "sort_ordered_plan",
-    "career_explore": "analyze_current_career_direction",
-    "major_compare": "compare_majors",
-    "soft_major_intent": "preview_major_intent",
-    "hard_major_constraint": "preview_major_intent",
+    "career_explore": "explore_topic",
+    "major_compare": "compare_entities",
+    "soft_major_intent": "preview_intent_change",
+    "hard_major_constraint": "preview_intent_change",
+    "positive_major_intent": "preview_intent_change",
+    "explicit_major_requirement": "preview_intent_change",
+    "positive_region_intent": "preview_intent_change",
+    "explicit_region_requirement": "preview_intent_change",
+    "negative_region_requirement": "preview_intent_change",
 }
 
 _ACTION_TOOL_ALIASES: dict[str, tuple[str, ...]] = {
-    "analyze_current_career_direction": ("analyze_current_career_direction",),
-    "compare_majors": ("compare_majors", "compare_majors_adhoc", "compare_major_options"),
-    "preview_major_intent": ("preview_current_major_intent_confirmation",),
+    "explore_topic": ("explore_topic",),
+    "compare_entities": ("compare_entities",),
+    "preview_intent_change": ("preview_intent_change",),
     "apply_selected_intents": ("apply_selected_intents",),
-    "query_volunteer_plan": ("query_volunteer_plan",),
+    "query_plan": ("query_plan",),
 }
 
-_FULL_AGENT_SLOW_MS = 10_000
-_FULL_AGENT_VERY_SLOW_MS = 30_000
-_FULL_AGENT_MANY_TOOLS = 3
+_TOOL_CHAIN_SLOW_MS = 10_000
+_TOOL_CHAIN_VERY_SLOW_MS = 30_000
+_TOOL_CHAIN_MANY_TOOLS = 3
 
 _VERDICT_RANK = {"fail": 0, "needs_review": 1, "strong": 2}
 
@@ -413,7 +423,17 @@ _SEMANTIC_EXPECTATION_OVERRIDES: tuple[tuple[set[str], dict[str, Any]], ...] = (
         },
     ),
     (
-        {"soft_major_intent", "hard_major_constraint", "soft_region_intent", "negative_region_intent"},
+        {
+            "soft_major_intent",
+            "hard_major_constraint",
+            "soft_region_intent",
+            "negative_region_intent",
+            "positive_major_intent",
+            "explicit_major_requirement",
+            "positive_region_intent",
+            "explicit_region_requirement",
+            "negative_region_requirement",
+        },
         {
             "taskLayer": "intent",
             "topic": ["major", "region"],
@@ -423,7 +443,7 @@ _SEMANTIC_EXPECTATION_OVERRIDES: tuple[tuple[set[str], dict[str, Any]], ...] = (
         },
     ),
     (
-        {"hard_major_constraint"},
+        {"hard_major_constraint", "explicit_major_requirement"},
         {
             "taskLayer": "intent",
             "topic": "major",
@@ -669,7 +689,18 @@ def _expected_route_from_metadata(step_coverage: list[str], prompt_text: str) ->
     if "readonly_closure_ack" in step_coverage:
         return "readonly_closure_ack"
     if prompt_text in {"确认", "确认执行", "确认这个偏好", "确认这个要求"}:
-        if "soft_major_intent" in step_coverage or "hard_major_constraint" in step_coverage:
+        if any(
+            tag in step_coverage
+            for tag in (
+                "soft_major_intent",
+                "hard_major_constraint",
+                "positive_major_intent",
+                "explicit_major_requirement",
+                "positive_region_intent",
+                "explicit_region_requirement",
+                "negative_region_requirement",
+            )
+        ):
             return "direct_pending_intent_confirm"
         if "preview_confirm_boundary" in step_coverage or "preview_confirm_apply" in step_coverage:
             return "direct_pending_plan_confirm"
@@ -687,7 +718,10 @@ def _expected_action_from_metadata(step_coverage: list[str], prompt_text: str) -
     ):
         return None
     if prompt_text in {"确认这个偏好", "确认这个要求"} and (
-        "soft_major_intent" in step_coverage or "hard_major_constraint" in step_coverage
+        "soft_major_intent" in step_coverage
+        or "hard_major_constraint" in step_coverage
+        or "positive_major_intent" in step_coverage
+        or "explicit_major_requirement" in step_coverage
     ):
         return "apply_selected_intents"
     if prompt_text == "确认" and "no_pending_guard" in step_coverage:
@@ -840,31 +874,31 @@ def _turn_observability(record: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _extract_semantic_router_shadow(record: dict[str, Any]) -> dict[str, Any]:
-    direct = record.get("semanticRouterShadow")
+def _extract_semantic_frame_observation(record: dict[str, Any]) -> dict[str, Any]:
+    direct = record.get("semanticFrameObservation")
     if isinstance(direct, dict):
         return direct
     observability = _turn_observability(record)
-    value = observability.get("semanticRouterShadow")
+    value = observability.get("semanticFrameObservation")
     if isinstance(value, dict):
         return value
     route_decision = record.get("routeDecision") or observability.get("routeDecision")
     if isinstance(route_decision, dict):
-        value = route_decision.get("semanticRouterShadow")
+        value = route_decision.get("semanticFrameObservation")
         if isinstance(value, dict):
             return value
     return {}
 
 
-def _semantic_frame_from_shadow(shadow: dict[str, Any]) -> dict[str, Any]:
-    frame = shadow.get("frame")
+def _semantic_frame_from_observation(observation: dict[str, Any]) -> dict[str, Any]:
+    frame = observation.get("frame")
     return frame if isinstance(frame, dict) else {}
 
 
 def _semantic_mapped_route_from_frame(frame: dict[str, Any]) -> str | None:
     """Map a SemanticIntentFrame to the nearest current routing path.
 
-    This is intentionally report-only.  It lets shadow evaluations build a
+    This is intentionally report-only.  It lets semantic frame evaluations build a
     confusion matrix without changing ChatService routing behavior.
     """
     if not frame:
@@ -875,14 +909,14 @@ def _semantic_mapped_route_from_frame(frame: dict[str, Any]) -> str | None:
     side_effect = _normalize_text(frame.get("sideEffect"))
 
     if layer == "general":
-        return "full_agent"
+        return None
 
     if side_effect == "apply" or verb == "confirm":
         if layer == "intent":
             return "direct_pending_intent_confirm"
         if layer == "plan":
             return "direct_pending_plan_confirm"
-        return "full_agent"
+        return None
 
     if layer == "intent":
         if side_effect == "readonly":
@@ -907,10 +941,10 @@ def _semantic_mapped_route_from_frame(frame: dict[str, Any]) -> str | None:
 
 
 def _semantic_mapped_route(record: dict[str, Any]) -> str | None:
-    shadow = _extract_semantic_router_shadow(record)
-    if shadow.get("status") != "success":
+    observation = _extract_semantic_frame_observation(record)
+    if observation.get("status") != "success":
         return None
-    return _semantic_mapped_route_from_frame(_semantic_frame_from_shadow(shadow))
+    return _semantic_mapped_route_from_frame(_semantic_frame_from_observation(observation))
 
 
 def _expected_semantic_frame(record: dict[str, Any]) -> dict[str, Any]:
@@ -955,8 +989,8 @@ def _semantic_expectation_result(record: dict[str, Any]) -> dict[str, Any]:
     expected = _expected_semantic_frame(record)
     if not expected:
         return {}
-    shadow = _extract_semantic_router_shadow(record)
-    status = _normalize_text(shadow.get("status"))
+    observation = _extract_semantic_frame_observation(record)
+    status = _normalize_text(observation.get("status"))
     if status != "success":
         return {
             "expected": expected,
@@ -964,7 +998,7 @@ def _semantic_expectation_result(record: dict[str, Any]) -> dict[str, Any]:
             "matched": None,
             "mismatches": [],
         }
-    frame = _semantic_frame_from_shadow(shadow)
+    frame = _semantic_frame_from_observation(observation)
     matched, mismatches = _semantic_frame_matches_expected(frame, expected)
     return {
         "expected": expected,
@@ -1132,7 +1166,17 @@ def _infer_problem_type(record: dict[str, Any]) -> str:
         return "专业信息/学习要求咨询"
     if tags & {"major_compare", "major_preference"}:
         return "专业简称/懒输入比较"
-    if tags & {"soft_major_intent", "hard_major_constraint", "soft_region_intent", "negative_region_intent"}:
+    if tags & {
+        "soft_major_intent",
+        "hard_major_constraint",
+        "soft_region_intent",
+        "negative_region_intent",
+        "positive_major_intent",
+        "explicit_major_requirement",
+        "positive_region_intent",
+        "explicit_region_requirement",
+        "negative_region_requirement",
+    }:
         return "意向影响预览"
     if tags & {"career_explore", "career_direction"}:
         return "职业方向承接"
@@ -1166,14 +1210,19 @@ def _infer_expected_scene(record: dict[str, Any]) -> str:
         "add_units",
     } or any(tag.startswith("plan") or tag in {"sort_ordered_plan", "move_ordered_unit", "remove_units", "add_units"} for tag in tags):
         return "plan"
-    if "intent" in expected_route or expected_action == "preview_major_intent" or tags & {
+    if "intent" in expected_route or expected_action == "preview_intent_change" or tags & {
         "soft_major_intent",
         "hard_major_constraint",
         "soft_region_intent",
         "negative_region_intent",
+        "positive_major_intent",
+        "explicit_major_requirement",
+        "positive_region_intent",
+        "explicit_region_requirement",
+        "negative_region_requirement",
     }:
         return "intent"
-    if expected_action in {"compare_majors", "analyze_current_career_direction"} or tags & {
+    if expected_action in {"compare_entities", "explore_topic"} or tags & {
         "career_explore",
         "career_direction",
         "major_compare",
@@ -1192,9 +1241,9 @@ def _record_result_label(record: dict[str, Any], issue_types: list[str]) -> str:
     elapsed_ms = _as_int_ms(record.get("elapsedMs"))
     if "timeout_or_error" in issue_types:
         return "timeout_or_error"
-    if isinstance(elapsed_ms, int) and elapsed_ms >= _FULL_AGENT_VERY_SLOW_MS:
+    if isinstance(elapsed_ms, int) and elapsed_ms >= _TOOL_CHAIN_VERY_SLOW_MS:
         return "very_slow"
-    if isinstance(elapsed_ms, int) and elapsed_ms >= _FULL_AGENT_SLOW_MS:
+    if isinstance(elapsed_ms, int) and elapsed_ms >= _TOOL_CHAIN_SLOW_MS:
         return "slow"
     return "completed"
 
@@ -1240,7 +1289,6 @@ def _llm_request_count(record: dict[str, Any]) -> int | None:
 
 def _classify_bad_tool_trial(record: dict[str, Any], tool_trial: dict[str, Any]) -> list[str]:
     issue_types: list[str] = []
-    route = _normalize_text(_extract_routing_path(record))
     elapsed_ms = _as_int_ms(record.get("elapsedMs"))
     first_hint_ms = _as_int_ms(record.get("firstMessageMs"))
     tool_call_count = _tool_call_count(record, tool_trial)
@@ -1265,42 +1313,41 @@ def _classify_bad_tool_trial(record: dict[str, Any], tool_trial: dict[str, Any])
         add("tool_result_error")
     if tool_trial.get("repeatedToolNames"):
         add("repeated_tool_calls")
-    if has_tools and tool_call_count >= _FULL_AGENT_MANY_TOOLS:
+    if has_tools and tool_call_count >= _TOOL_CHAIN_MANY_TOOLS:
         add("many_tool_calls")
-    if route == "full_agent" and tool_call_count >= _FULL_AGENT_MANY_TOOLS:
-        add("full_agent_with_many_tools")
-    if has_tools and isinstance(elapsed_ms, int) and elapsed_ms >= _FULL_AGENT_SLOW_MS:
+    if has_tools and isinstance(elapsed_ms, int) and elapsed_ms >= _TOOL_CHAIN_SLOW_MS:
         add("slow_tool_chain")
-    if route == "full_agent" and isinstance(elapsed_ms, int) and elapsed_ms >= _FULL_AGENT_SLOW_MS:
-        add("slow_full_agent")
-        if elapsed_ms >= _FULL_AGENT_VERY_SLOW_MS:
-            add("very_slow_full_agent")
-        if slowest_node:
-            add("slow_agent_node")
-        if not has_tools and not first_tool_call_ms:
-            add("slow_before_first_tool_or_final_generation")
-    elif has_tools and isinstance(elapsed_ms, int) and elapsed_ms >= _FULL_AGENT_VERY_SLOW_MS:
+    if has_tools and isinstance(elapsed_ms, int) and elapsed_ms >= _TOOL_CHAIN_VERY_SLOW_MS:
         add("very_slow_tool_chain")
-    if isinstance(first_tool_call_ms, int) and first_tool_call_ms >= _FULL_AGENT_SLOW_MS:
+    if not has_tools and isinstance(elapsed_ms, int) and elapsed_ms >= _TOOL_CHAIN_SLOW_MS:
+        add("slow_agent_run")
+        if elapsed_ms >= _TOOL_CHAIN_VERY_SLOW_MS:
+            add("very_slow_agent_run")
+        if not first_tool_call_ms:
+            add("slow_before_first_tool_or_final_generation")
+    if slowest_node and isinstance(elapsed_ms, int) and elapsed_ms >= _TOOL_CHAIN_SLOW_MS:
+        add("slow_agent_node")
+    if isinstance(first_tool_call_ms, int) and first_tool_call_ms >= _TOOL_CHAIN_SLOW_MS:
         add("late_first_tool_call")
-    if isinstance(slowest_node_ms, int) and slowest_node_ms >= _FULL_AGENT_SLOW_MS:
+    if isinstance(slowest_node_ms, int) and slowest_node_ms >= _TOOL_CHAIN_SLOW_MS:
         add("very_slow_agent_node")
-    if has_tools and isinstance(elapsed_ms, int) and elapsed_ms >= _FULL_AGENT_SLOW_MS and not _extract_thinking(record):
+    if has_tools and isinstance(elapsed_ms, int) and elapsed_ms >= _TOOL_CHAIN_SLOW_MS and not _extract_thinking(record):
         add("missing_progress_for_long_task")
-    if has_tools and isinstance(first_hint_ms, int) and first_hint_ms >= _FULL_AGENT_SLOW_MS:
+    if has_tools and isinstance(first_hint_ms, int) and first_hint_ms >= _TOOL_CHAIN_SLOW_MS:
         add("late_first_hint")
     expected_route = _normalize_text(record.get("expectedRoutingPath"))
-    if route == "full_agent" and expected_route and expected_route != route:
-        add("expected_route_mismatch_full_agent")
+    route = _normalize_text(_extract_routing_path(record))
+    if route and expected_route and expected_route != route:
+        add("expected_route_mismatch")
     return issue_types
 
 
-def _build_full_agent_tool_trial_issue(record: dict[str, Any]) -> dict[str, Any] | None:
+def _build_tool_chain_issue(record: dict[str, Any]) -> dict[str, Any] | None:
     route = _normalize_text(_extract_routing_path(record))
     tool_trial = _extract_tool_trial(record)
     issue_types = _classify_bad_tool_trial(record, tool_trial)
     has_tool_observability = bool(tool_trial.get("hasToolCalls") or tool_trial.get("toolNames"))
-    if route != "full_agent" and not _extract_error_text(record) and not has_tool_observability:
+    if not route and not _extract_error_text(record) and not has_tool_observability:
         return None
     if not issue_types:
         return None
@@ -1721,7 +1768,7 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
             "qualityViolations": [],
             "evaluationWarnings": warnings + ["missing_response_text:run_with_keep_response_text"],
             "routingPath": _extract_routing_path(record),
-            "semanticRouterShadow": _extract_semantic_router_shadow(record),
+            "semanticFrameObservation": _extract_semantic_frame_observation(record),
             "semanticMappedRoute": _semantic_mapped_route(record),
             "semanticExpectation": _semantic_expectation_result(record),
             "actionFamilies": _extract_action_families(record),
@@ -1742,7 +1789,7 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
             "qualityViolations": violations or (["ws_error:" + error_text] if error_text else ["empty_response"]),
             "evaluationWarnings": warnings,
             "routingPath": _extract_routing_path(record),
-            "semanticRouterShadow": _extract_semantic_router_shadow(record),
+            "semanticFrameObservation": _extract_semantic_frame_observation(record),
             "semanticMappedRoute": _semantic_mapped_route(record),
             "semanticExpectation": _semantic_expectation_result(record),
             "actionFamilies": _extract_action_families(record),
@@ -1828,7 +1875,7 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     scored["qualityViolations"] = violations
     scored["evaluationWarnings"] = warnings
     scored["routingPath"] = _extract_routing_path(record)
-    scored["semanticRouterShadow"] = _extract_semantic_router_shadow(record)
+    scored["semanticFrameObservation"] = _extract_semantic_frame_observation(record)
     scored["semanticMappedRoute"] = _semantic_mapped_route(record)
     scored["semanticExpectation"] = _semantic_expectation_result(record)
     scored["actionFamilies"] = _extract_action_families(record)
@@ -2076,9 +2123,9 @@ def _build_case_report(
         report["baseline"]["score"] = _score_case(baseline_row)
     if current_row:
         report["current"]["score"] = _score_case(current_row)
-        issue = _build_full_agent_tool_trial_issue(current_row)
+        issue = _build_tool_chain_issue(current_row)
         if issue:
-            report["current"]["fullAgentToolTrialIssue"] = issue
+            report["current"]["toolChainIssue"] = issue
     for name, candidate in candidates.items():
         candidate_row = _merge_record_metadata(candidate, metadata)
         candidate_payload = {
@@ -2091,9 +2138,9 @@ def _build_case_report(
             "finalMessageMs": candidate_row.get("finalMessageMs"),
             "score": _score_case(candidate_row),
         }
-        issue = _build_full_agent_tool_trial_issue(candidate_row)
+        issue = _build_tool_chain_issue(candidate_row)
         if issue:
-            candidate_payload["fullAgentToolTrialIssue"] = issue
+            candidate_payload["toolChainIssue"] = issue
         report["candidates"].append(candidate_payload)
     return report
 
@@ -2193,10 +2240,10 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for value in score.get("distributionCoverage") or []:
             _increment(distribution_counts, value)
         _increment(route_counts, score.get("routingPath"))
-        shadow = score.get("semanticRouterShadow")
-        if isinstance(shadow, dict):
-            _increment(semantic_status_counts, shadow.get("status"))
-            frame = shadow.get("frame")
+        observation = score.get("semanticFrameObservation")
+        if isinstance(observation, dict):
+            _increment(semantic_status_counts, observation.get("status"))
+            frame = observation.get("frame")
             if isinstance(frame, dict):
                 _increment(semantic_layer_counts, frame.get("taskLayer"))
                 _increment(semantic_topic_counts, frame.get("topic"))
@@ -2248,7 +2295,7 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "evaluationWarningsByType": warning_counts,
         "distributionCoverage": distribution_counts,
         "routeSummary": route_counts,
-        "semanticRouterSummary": {
+        "semanticFrameSummary": {
             "status": semantic_status_counts,
             "taskLayer": semantic_layer_counts,
             "topic": semantic_topic_counts,
@@ -2307,18 +2354,18 @@ def _issue_rows_for_reports(reports: list[dict[str, Any]], bucket: str = "curren
     for report in reports:
         if bucket == "current":
             current = report.get("current")
-            if isinstance(current, dict) and isinstance(current.get("fullAgentToolTrialIssue"), dict):
-                rows.append(current["fullAgentToolTrialIssue"])
+            if isinstance(current, dict) and isinstance(current.get("toolChainIssue"), dict):
+                rows.append(current["toolChainIssue"])
             continue
         for candidate in report.get("candidates") or []:
-            if isinstance(candidate, dict) and isinstance(candidate.get("fullAgentToolTrialIssue"), dict):
-                row = dict(candidate["fullAgentToolTrialIssue"])
+            if isinstance(candidate, dict) and isinstance(candidate.get("toolChainIssue"), dict):
+                row = dict(candidate["toolChainIssue"])
                 row["candidate"] = _provider_model_key(candidate)
                 rows.append(row)
     return rows
 
 
-def _summarize_full_agent_tool_trial_issues(reports: list[dict[str, Any]]) -> dict[str, Any]:
+def _summarize_tool_chain_issues(reports: list[dict[str, Any]]) -> dict[str, Any]:
     current_issues = _issue_rows_for_reports(reports, "current")
     candidate_issues = _issue_rows_for_reports(reports, "candidates")
     issue_type_counts: dict[str, int] = {}
@@ -2406,7 +2453,7 @@ def _summarize_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
         "coverageSummary": _summarize_by_coverage(reports),
         "candidateSummary": _summarize_candidates(reports),
         "candidateOverall": _summarize_rows(candidate_rows),
-        "fullAgentToolTrialIssues": _summarize_full_agent_tool_trial_issues(reports),
+        "toolChainIssues": _summarize_tool_chain_issues(reports),
         "baselineComparison": _comparison_summary(reports),
         "acceptance": {
             "passedHardGates": not current_summary["qualityViolationsByType"],
@@ -2504,9 +2551,9 @@ def _manual_review_items(item: dict[str, Any]) -> list[str]:
 def _render_markdown_summary(summary: dict[str, Any]) -> list[str]:
     current_summary = summary.get("current", {}) if isinstance(summary.get("current"), dict) else {}
     candidate_summary = summary.get("candidateSummary", {}) if isinstance(summary.get("candidateSummary"), dict) else {}
-    full_agent_issues = (
-        summary.get("fullAgentToolTrialIssues", {})
-        if isinstance(summary.get("fullAgentToolTrialIssues"), dict)
+    tool_chain_issues = (
+        summary.get("toolChainIssues", {})
+        if isinstance(summary.get("toolChainIssues"), dict)
         else {}
     )
     lines = [
@@ -2519,7 +2566,7 @@ def _render_markdown_summary(summary: dict[str, Any]) -> list[str]:
         f"- quality violations: {current_summary.get('qualityViolationsByType', {})}",
         f"- evaluation warnings: {current_summary.get('evaluationWarningsByType', {})}",
         f"- latency: {current_summary.get('latency', {})}",
-        f"- semantic router: {current_summary.get('semanticRouterSummary', {})}",
+        f"- semantic frame: {current_summary.get('semanticFrameSummary', {})}",
         f"- acceptance: {summary.get('acceptance', {})}",
         "",
         "## Scenario Summary",
@@ -2537,24 +2584,24 @@ def _render_markdown_summary(summary: dict[str, Any]) -> list[str]:
             lines.append(
                 f"| {_markdown_escape_table(name)} | {value.get('count', 0)} | {_markdown_escape_table(value.get('verdicts', {}))} | {_markdown_escape_table(value.get('latency', {}))} |"
             )
-    if full_agent_issues:
+    if tool_chain_issues:
         lines.extend(
             [
                 "",
-                "## Full Agent Tool Trial Issues",
+                "## Tool Chain Issues",
                 "",
-                f"- count: {full_agent_issues.get('count', 0)}",
-                f"- slowOrTimeoutCount: {full_agent_issues.get('slowOrTimeoutCount', 0)}",
-                f"- missingProgressCount: {full_agent_issues.get('missingProgressCount', 0)}",
-                f"- byProblemType: {full_agent_issues.get('byProblemType', {})}",
-                f"- byIssueType: {full_agent_issues.get('byIssueType', {})}",
-                f"- byRepeatedTool: {full_agent_issues.get('byRepeatedTool', {})}",
+                f"- count: {tool_chain_issues.get('count', 0)}",
+                f"- slowOrTimeoutCount: {tool_chain_issues.get('slowOrTimeoutCount', 0)}",
+                f"- missingProgressCount: {tool_chain_issues.get('missingProgressCount', 0)}",
+                f"- byProblemType: {tool_chain_issues.get('byProblemType', {})}",
+                f"- byIssueType: {tool_chain_issues.get('byIssueType', {})}",
+                f"- byRepeatedTool: {tool_chain_issues.get('byRepeatedTool', {})}",
                 "",
                 "| case | prompt | problem | route | elapsed | tools | repeated | issueTypes |",
                 "|---|---|---|---|---:|---|---|---|",
             ]
         )
-        for issue in (full_agent_issues.get("issues") or [])[:20]:
+        for issue in (tool_chain_issues.get("issues") or [])[:20]:
             lines.append(
                 "| "
                 + " | ".join(
@@ -2594,9 +2641,9 @@ def _render_case_detail(item: dict[str, Any]) -> list[str]:
     current = item.get("current", {}) if isinstance(item.get("current"), dict) else {}
     baseline = item.get("baseline", {}) if isinstance(item.get("baseline"), dict) else {}
     score = current.get("score") if isinstance(current.get("score"), dict) else {}
-    full_agent_issue = (
-        current.get("fullAgentToolTrialIssue")
-        if isinstance(current.get("fullAgentToolTrialIssue"), dict)
+    tool_chain_issue = (
+        current.get("toolChainIssue")
+        if isinstance(current.get("toolChainIssue"), dict)
         else {}
     )
     lines = [
@@ -2614,8 +2661,8 @@ def _render_case_detail(item: dict[str, Any]) -> list[str]:
         f"- distribution coverage: {_format_list_for_markdown(score.get('distributionCoverage') if isinstance(score, dict) else [])}",
         f"- routing/action/tool: {_normalize_text(score.get('routingPath') if isinstance(score, dict) else None) or '-'} / {_format_list_for_markdown(score.get('actionFamilies') if isinstance(score, dict) else [])} / {_format_list_for_markdown(score.get('toolNames') if isinstance(score, dict) else [])}",
         f"- semantic mapped route: {_normalize_text(score.get('semanticMappedRoute') if isinstance(score, dict) else None) or '-'}",
-        f"- semantic router: {_format_list_for_markdown(score.get('semanticRouterShadow') if isinstance(score, dict) else {})}",
-        f"- full-agent tool trial issue: {_format_list_for_markdown(full_agent_issue)}",
+        f"- semantic frame: {_format_list_for_markdown(score.get('semanticFrameObservation') if isinstance(score, dict) else {})}",
+        f"- tool chain issue: {_format_list_for_markdown(tool_chain_issue)}",
         "",
         "**用户输入**",
         "",

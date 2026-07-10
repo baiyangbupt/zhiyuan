@@ -1,0 +1,210 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Career-direction 4.0 direct-chain quality and latency evaluation cases.",
+    "notes": "These cases verify rich user-facing replies while keeping runtime on the 4.0 direct-chain path, without keyword fast routes."
+  },
+  "defaults": {
+    "flow": [
+      "explore"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "career_direction",
+      "realistic_user_input",
+      "zhiyuan_agent_direct"
+    ],
+    "assertPlanStyle": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "pending_intent_change",
+        "pending_plan_action",
+        "level1",
+        "level2",
+        "level3",
+        "increasingly",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "qualityFocus": [
+        "rich_decision_basis",
+        "actionable_next_step",
+        "user_language"
+      ],
+      "warnElapsedSeconds": 30,
+      "maxElapsedSeconds": 120,
+      "minTextLengthWarn": 220
+    }
+  },
+  "cases": [
+    {
+      "name": "400-career-market-vs-public-service",
+      "sessionId": "990434",
+      "prompts": [
+        {
+          "prompt": "大城市就业和考编哪个更现实",
+          "assertContainsAny": [
+            "市场化就业",
+            "大城市",
+            "企业就业",
+            "考编",
+            "体制内"
+          ],
+          "expectedActionFamily": "analyze_current_career_direction",
+          "expectedKeyPoints": [
+            "市场化就业",
+            "考公",
+            "就业路径",
+            "下一步"
+          ],
+          "expectedKeyPointGroups": [
+            {
+              "label": "市场就业依据",
+              "any": [
+                "城市产业",
+                "实习机会",
+                "技能",
+                "行业机会",
+                "岗位面"
+              ]
+            },
+            {
+              "label": "考编依据",
+              "any": [
+                "专业对口",
+                "应届生",
+                "考试能力",
+                "岗位口径"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-career-further-study-vs-stable-employment",
+      "sessionId": "990435",
+      "prompts": [
+        {
+          "prompt": "我到底更适合读研还是稳定就业",
+          "assertContainsAny": [
+            "读研",
+            "深造",
+            "稳定就业",
+            "就业"
+          ],
+          "expectedActionFamily": "analyze_current_career_direction",
+          "expectedKeyPoints": [
+            "读研",
+            "稳定就业",
+            "就业路径",
+            "下一步"
+          ],
+          "expectedKeyPointGroups": [
+            {
+              "label": "读研依据",
+              "any": [
+                "英语",
+                "数学",
+                "保研",
+                "考研",
+                "培养平台"
+              ]
+            },
+            {
+              "label": "稳定就业依据",
+              "any": [
+                "专业对口",
+                "就业确定性",
+                "岗位稳定性",
+                "路径清晰度"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-career-public-service-stable-readonly-plan-fit",
+      "sessionId": "990436",
+      "coverage": [
+        "plan_analysis",
+        "readonly_boundary"
+      ],
+      "prompts": [
+        {
+          "prompt": "体制内稳定就业承接怎么样，先不要改方案",
+          "assertContainsAny": [
+            "体制内",
+            "稳定就业",
+            "方案",
+            "承接"
+          ],
+          "expectedActionFamily": "analyze_current_career_direction",
+          "expectedKeyPoints": [
+            "体制内",
+            "稳定就业",
+            "当前方案",
+            "不会改"
+          ],
+          "qualityFocus": [
+            "readonly_boundary",
+            "rich_decision_basis",
+            "actionable_next_step",
+            "user_language"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-career-pre-score-general-direction",
+      "sessionId": "990437",
+      "coverage": [
+        "pre_score_consult",
+        "career_direction"
+      ],
+      "prompts": [
+        {
+          "prompt": "等成绩出来再定，今天先看大方向",
+          "assertContainsAny": [
+            "方向",
+            "出分",
+            "成绩",
+            "体制内",
+            "就业",
+            "读研"
+          ],
+          "expectedKeyPoints": [
+            "体制内",
+            "市场化就业",
+            "读研",
+            "下一步"
+          ],
+          "expectedKeyPointGroups": [
+            {
+              "label": "出分前行动",
+              "any": [
+                "成绩出来",
+                "出分后",
+                "先想清楚",
+                "继续深入"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

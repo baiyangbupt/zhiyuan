@@ -39,6 +39,7 @@ from app.domain.major_entity_resolver import (
     resolve_major_mentions_from_text,
 )
 from app.domain.intent_polarity import parse_constraint_polarity_operation
+from app.domain.intent_reversal import negative_constraint_reversal_targets
 from app.domain.region_entity_resolver import (
     REGION_AREA_PROVINCES,
     compact_region_text,
@@ -62,7 +63,6 @@ from app.tools.intent_response_tool import (
     serialize_intent_analysis_payload,
     serialize_intent_state_update_result,
 )
-from app.tools.intent_entity_profile_tool import _negative_constraint_reversal_targets
 from app.tools.extraction_json import parse_extraction_json
 from app.llm.client import LLMClient
 from app.util.code_enrichment import (
@@ -198,7 +198,7 @@ def _get_intent_side_effect_agent() -> Agent[None, str]:
                 "这是只读候选或学校查询；即使 structuredIntents 里抽到了地域，也应判为 analysis_only 或 mixed_answer_then_ask，"
                 "不能直接把地域写成待采纳偏好。"
                 "只有用户明确说加入、记下、优先、以后推荐、作为偏好或后续参考时，才把这类地域/学校表达判为 intent_preview。"
-                "同时给出 3.2.0 profile 字段：preferenceStrength、preferenceScope、entityPolaritySpans、admissionPath。"
+                "同时给出结构化意向字段：preferenceStrength、preferenceScope、entityPolaritySpans、admissionPath。"
                 "preferenceStrength 必须是“强度 -> 实体列表”的对象，禁止输出“实体 -> 强度列表”。"
                 "正确示例：{\"primary\":[\"网络与新媒体\"],\"acceptable\":[\"跨境电子商务\"]}；"
                 "错误示例：{\"网络与新媒体\":[\"primary\"],\"跨境电子商务\":[\"acceptable\"]}。"
@@ -2619,7 +2619,7 @@ def _apply_negative_constraint_reversal_to_intent_payloads(
     latest_utterance: str,
     batch: str,
 ) -> tuple[dict | None, dict | None, dict | None, dict | None]:
-    targets = _negative_constraint_reversal_targets(latest_utterance, batch)
+    targets = negative_constraint_reversal_targets(latest_utterance, batch)
     if not targets:
         return major_intents, school_intents, city_intents, career_intents
 

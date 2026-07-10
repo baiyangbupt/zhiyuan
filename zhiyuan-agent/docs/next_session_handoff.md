@@ -21,12 +21,12 @@
 - 这轮验证：
   - `tests/unit/test_intent_state_tool.py` 相关最小回归：`5 passed`
   - `tests/unit/test_chat_service_history_persistence.py` 相关最小回归：`2 passed`
-  - `examples/dialog_regression_runner.py --cases examples/dialog_regression_303_dialogue_derived_cases.json --case-name 303-dialogue-region-south-only --case-name 303-dialogue-region-beijing-tianjin-safety --case-name 303-dialogue-career-civil-service-major --case-name 303-dialogue-career-stability-vs-interest --response-timeout 120 --clear-history-per-case --clear-backend-pending-per-case --assert-plan-style`
+  - `examples/dialog_regression_runner.py --cases examples/dialog_regression_400_dialogue_derived_cases.json --case-name 400-dialogue-region-south-only --case-name 400-dialogue-region-beijing-tianjin-safety --case-name 400-dialogue-career-civil-service-major --case-name 400-dialogue-career-stability-vs-interest --response-timeout 120 --clear-history-per-case --clear-backend-pending-per-case --assert-plan-style`
     - 4/4 通过
-  - `examples/dialog_regression_runner.py --cases examples/dialog_regression_310_constraint_plan_action_cases.json --case-name 310-constraint-only-keep-major-preview-and-apply --case-name 310-constraint-tuition-budget-preview --response-timeout 120 --clear-history-per-case --clear-backend-pending-per-case --assert-plan-style`
+  - `examples/dialog_regression_runner.py --cases examples/dialog_regression_400_requirement_plan_action_cases.json --case-name 400-requirement-only-keep-major-preview-boundary --case-name 400-requirement-tuition-budget-preview --response-timeout 120 --clear-history-per-case --clear-backend-pending-per-case --assert-plan-style`
     - 2/2 通过
 - 真实回归里顺带确认：
-  - `only_keep_constraint` 仍能稳定生成并应用确认卡
+  - `only_keep_requirement` 仍能稳定生成并应用确认卡
   - `tuition_budget` 仍能稳定生成预算调整预览
   - 本轮改动没有打散现有 plan / intent 主协议
 

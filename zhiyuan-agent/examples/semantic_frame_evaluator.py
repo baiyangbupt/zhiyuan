@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate SemanticIntentFrame shadow output against case expectations.
+"""Evaluate SemanticIntentFrame observation output against case expectations.
 
 This is an offline report tool.  It does not start services, call LLMs, mutate
 sessions, or change routing behavior.
@@ -54,7 +54,7 @@ def _case_rows(
         expected = item.get("expectedSemanticFrame") or {}
         score = item.get("current", {}).get("score") if isinstance(item.get("current"), dict) else {}
         semantic_expectation = score.get("semanticExpectation") if isinstance(score, dict) else {}
-        shadow = score.get("semanticRouterShadow") if isinstance(score, dict) else {}
+        observation = score.get("semanticFrameObservation") if isinstance(score, dict) else {}
         rows.append(
             {
                 "case": item.get("case"),
@@ -64,7 +64,7 @@ def _case_rows(
                 "flow": item.get("flow") or [],
                 "coverage": item.get("coverage") or [],
                 "expectedSemanticFrame": expected,
-                "semanticRouterShadow": shadow if isinstance(shadow, dict) else {},
+                "semanticFrameObservation": observation if isinstance(observation, dict) else {},
                 "semanticExpectation": semantic_expectation if isinstance(semantic_expectation, dict) else {},
             }
         )
@@ -138,7 +138,7 @@ def _examples(rows: list[dict[str, Any]], *, status_prefix: str, limit: int) -> 
                 "prompt": row.get("prompt"),
                 "status": status,
                 "expected": row.get("expectedSemanticFrame") or {},
-                "actual": (row.get("semanticRouterShadow") or {}).get("frame") or {},
+                "actual": (row.get("semanticFrameObservation") or {}).get("frame") or {},
                 "mismatches": semantic_expectation.get("mismatches") or [],
             }
         )
@@ -170,10 +170,10 @@ def _latency_summary(values: list[int]) -> dict[str, int | None]:
 
 
 def _duration_ms(row: dict[str, Any]) -> int | None:
-    shadow = row.get("semanticRouterShadow")
-    if not isinstance(shadow, dict):
+    observation = row.get("semanticFrameObservation")
+    if not isinstance(observation, dict):
         return None
-    value = shadow.get("durationMs")
+    value = observation.get("durationMs")
     return value if isinstance(value, int) else None
 
 
@@ -226,9 +226,9 @@ def build_report(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate SemanticIntentFrame shadow coverage and match quality.")
+    parser = argparse.ArgumentParser(description="Evaluate SemanticIntentFrame observation coverage and match quality.")
     parser.add_argument("--case-definitions", action="append", required=True, help="case definition JSON; can be repeated")
-    parser.add_argument("--current", help="optional dialog regression metrics/report JSON containing semanticRouterShadow")
+    parser.add_argument("--current", help="optional dialog regression metrics/report JSON containing semanticFrameObservation")
     parser.add_argument("--sample-limit", type=int, default=10)
     parser.add_argument("--output", help="write JSON report to this path")
     args = parser.parse_args()

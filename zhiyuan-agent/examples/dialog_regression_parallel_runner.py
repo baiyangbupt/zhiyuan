@@ -25,6 +25,15 @@ PYTHON = str(ROOT / ".venv" / "bin" / "python") if (ROOT / ".venv" / "bin" / "py
 DEFAULT_URL = os.environ.get("ZHIYUAN_REGRESSION_AGENT_URL") or os.environ.get("AGENT_DIALOG_E2E_URL") or "ws://127.0.0.1:18291/gaotu-assistant-agent/plus/chat/1/bot/test/do"
 DEFAULT_INTERNAL_URL = os.environ.get("ZHIYUAN_REGRESSION_BACKEND_URL") or os.environ.get("INTERNAL_SERVICE_URL") or "http://127.0.0.1:18290"
 DEFAULT_OUTPUT_DIR = Path("/private/tmp/zhiyuan-agent-parallel-regression")
+DEFAULT_BACKEND_DB_HOST = os.environ.get("ZHIYUAN_REGRESSION_DB_HOST") or "127.0.0.1"
+DEFAULT_BACKEND_DB_PORT = os.environ.get("ZHIYUAN_REGRESSION_DB_PORT") or "3306"
+DEFAULT_BACKEND_DB_USER = os.environ.get("ZHIYUAN_REGRESSION_DB_USER") or "root"
+DEFAULT_BACKEND_DB_NAME = os.environ.get("ZHIYUAN_REGRESSION_DB_NAME") or "sales_bot"
+DEFAULT_BACKEND_DB_PASSWORD = os.environ.get("ZHIYUAN_REGRESSION_DB_PASSWORD") or os.environ.get("MYSQL_PWD") or ""
+DEFAULT_BACKEND_VOLUNTEER_DATA_DIR = (
+    os.environ.get("ZHIYUAN_REGRESSION_VOLUNTEER_DATA_DIR")
+    or str(ROOT.parent / "zhiyuan-server" / "data" / "tmp")
+)
 
 
 def _load_json(path: str) -> Any:
@@ -103,8 +112,16 @@ def _run_one(
     clear_backend_planning_intent_per_case: bool,
     keep_response_text: bool,
     assert_plan_style: bool,
+    ignore_thinking_assertions: bool = False,
     response_timeout: int,
     open_timeout: int,
+    clone_backend_chat_session: bool = False,
+    backend_db_host: str = DEFAULT_BACKEND_DB_HOST,
+    backend_db_port: str = DEFAULT_BACKEND_DB_PORT,
+    backend_db_user: str = DEFAULT_BACKEND_DB_USER,
+    backend_db_password: str = DEFAULT_BACKEND_DB_PASSWORD,
+    backend_db_name: str = DEFAULT_BACKEND_DB_NAME,
+    backend_volunteer_data_dir: str = DEFAULT_BACKEND_VOLUNTEER_DATA_DIR,
 ) -> JobResult:
     stem = _case_name(case_file)
     case_dir = output_dir / "_cases"
@@ -141,8 +158,18 @@ def _run_one(
         cmd.append("--clear-backend-planning-intent-per-case")
     if keep_response_text:
         cmd.append("--keep-response-text")
+    if ignore_thinking_assertions:
+        cmd.append("--ignore-thinking-assertions")
     if assert_plan_style:
         cmd.append("--assert-plan-style")
+    if clone_backend_chat_session:
+        cmd.append("--clone-backend-chat-session")
+        cmd.extend(["--backend-db-host", backend_db_host])
+        cmd.extend(["--backend-db-port", backend_db_port])
+        cmd.extend(["--backend-db-user", backend_db_user])
+        cmd.extend(["--backend-db-password", backend_db_password])
+        cmd.extend(["--backend-db-name", backend_db_name])
+        cmd.extend(["--backend-volunteer-data-dir", backend_volunteer_data_dir])
 
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=ROOT)
     log.write_text(proc.stdout or "", encoding="utf-8")
@@ -198,9 +225,29 @@ def main() -> None:
     parser.add_argument("--response-timeout", type=int, default=180)
     parser.add_argument("--keep-response-text", action="store_true")
     parser.add_argument("--assert-plan-style", action="store_true")
+    parser.add_argument(
+        "--ignore-thinking-assertions",
+        action="store_true",
+        help="forward --ignore-thinking-assertions to each dialog_regression_runner child",
+    )
     parser.add_argument("--clear-history-per-case", action="store_true")
     parser.add_argument("--clear-backend-pending-per-case", action="store_true")
     parser.add_argument("--clear-backend-planning-intent-per-case", action="store_true")
+    parser.add_argument(
+        "--clone-backend-chat-session",
+        action="store_true",
+        help="when a case clones backend extra-data, also clone assistant_chat_session row through MySQL",
+    )
+    parser.add_argument("--backend-db-host", default=DEFAULT_BACKEND_DB_HOST)
+    parser.add_argument("--backend-db-port", default=DEFAULT_BACKEND_DB_PORT)
+    parser.add_argument("--backend-db-user", default=DEFAULT_BACKEND_DB_USER)
+    parser.add_argument("--backend-db-password", default=DEFAULT_BACKEND_DB_PASSWORD)
+    parser.add_argument("--backend-db-name", default=DEFAULT_BACKEND_DB_NAME)
+    parser.add_argument(
+        "--backend-volunteer-data-dir",
+        default=DEFAULT_BACKEND_VOLUNTEER_DATA_DIR,
+        help="local zhiyuan-server data/tmp directory used with --clone-backend-chat-session",
+    )
     parser.add_argument("--reuse-output-dir", action="store_true", help="allow writing into a directory with previous regression artifacts")
     args = parser.parse_args()
 
@@ -239,8 +286,16 @@ def main() -> None:
                     clear_backend_planning_intent_per_case=args.clear_backend_planning_intent_per_case,
                     keep_response_text=args.keep_response_text,
                     assert_plan_style=args.assert_plan_style,
+                    ignore_thinking_assertions=args.ignore_thinking_assertions,
                     response_timeout=args.response_timeout,
                     open_timeout=args.open_timeout,
+                    clone_backend_chat_session=args.clone_backend_chat_session,
+                    backend_db_host=args.backend_db_host,
+                    backend_db_port=args.backend_db_port,
+                    backend_db_user=args.backend_db_user,
+                    backend_db_password=args.backend_db_password,
+                    backend_db_name=args.backend_db_name,
+                    backend_volunteer_data_dir=args.backend_volunteer_data_dir,
                 )
             )
         for future in concurrent.futures.as_completed(futures):

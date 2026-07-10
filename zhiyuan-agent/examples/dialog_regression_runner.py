@@ -180,7 +180,7 @@ PLAN_STYLE_BANNED_SUBSTRINGS = [
 PLAN_STYLE_BANNED_EXACT_LINES = {"你。", "只有。", "请。"}
 
 ROUTING_PATH_BY_HISTORY_MODEL_NAME = {
-    "semantic-router-shadow": "",
+    "semantic-frame-observation": "",
     "direct-pending-plan-confirmation": "direct_pending_plan_confirm",
     "direct-pending-intent-confirmation": "direct_pending_intent_confirm",
     "direct-plan-confirmation-guard": "plan_confirmation_guard_no_pending",
@@ -367,7 +367,12 @@ def _offset_session_id(session_id: Any, session_offset: int) -> str:
     return str(shifted)
 
 
-def _apply_session_offset(cases: list[dict[str, Any]], session_offset: int) -> list[dict[str, Any]]:
+def _apply_session_offset(
+    cases: list[dict[str, Any]],
+    session_offset: int,
+    *,
+    clone_backend_state_from_offset: bool = False,
+) -> list[dict[str, Any]]:
     if session_offset == 0:
         return cases
     adjusted = deepcopy(cases)
@@ -377,6 +382,8 @@ def _apply_session_offset(cases: list[dict[str, Any]], session_offset: int) -> l
         original_session_id = case["sessionId"]
         case["sessionId"] = _offset_session_id(original_session_id, session_offset)
         case["baseSessionId"] = str(original_session_id)
+        if "cloneBackendStateFromSessionId" not in case and clone_backend_state_from_offset:
+            case["cloneBackendStateFromSessionId"] = str(case.get("sourceSessionId") or original_session_id)
         if "cloneBackendStateFromSessionId" not in case and case.get("sourceSessionId"):
             case["cloneBackendStateFromSessionId"] = str(case["sourceSessionId"])
         if "cloneBackendStateFromSessionId" not in case and _case_requires_backend_state_clone(case):
@@ -419,6 +426,28 @@ def _case_requires_active_pending(case: dict[str, Any]) -> bool:
         if str(item or "").strip()
     }
     return "activePending" in required_state
+
+
+def _case_requires_backend_volunteer_data_clone(case: dict[str, Any]) -> bool:
+    flow_tokens = [
+        str(item or "").strip()
+        for key in ("flow", "coverage")
+        for item in (case.get(key) or [])
+    ]
+    if any("final_action" in item for item in flow_tokens):
+        return True
+    for step in case.get("prompts") or []:
+        if not isinstance(step, dict):
+            continue
+        for assertion in _backend_extra_data_assertions(step):
+            key = str(assertion.get("key") or assertion.get("dataKey") or "").strip()
+            path = str(assertion.get("path") or "").strip()
+            if key == "planningState" and any(
+                state_key in path
+                for state_key in ("orderedPlanState", "workingPlanState", "reviewState")
+            ):
+                return True
+    return False
 
 
 def _case_requires_backend_state_clone(case: dict[str, Any]) -> bool:
@@ -771,6 +800,24 @@ def _json_value_length(value: Any) -> int | None:
     return None
 
 
+def _collect_numeric_field_values(value: Any, field_name: str) -> list[float]:
+    if value is _JSON_PATH_MISSING or not field_name:
+        return []
+    values: list[float] = []
+    if isinstance(value, dict):
+        if field_name in value:
+            numeric = _as_comparable_number(value.get(field_name))
+            if numeric is not None:
+                values.append(numeric)
+        for item in value.values():
+            values.extend(_collect_numeric_field_values(item, field_name))
+        return values
+    if isinstance(value, list):
+        for item in value:
+            values.extend(_collect_numeric_field_values(item, field_name))
+    return values
+
+
 def _json_value_empty(value: Any) -> bool:
     return value is _JSON_PATH_MISSING or value is None or value == "" or value == [] or value == {}
 
@@ -821,6 +868,21 @@ def _check_single_backend_assertion(
         failures.append(f"contains expected {assertion.get('contains')!r} got {_format_json_assert_value(actual)}")
     if "notContains" in assertion and _json_value_contains(actual, assertion.get("notContains")):
         failures.append(f"notContains forbidden {assertion.get('notContains')!r} found in {_format_json_assert_value(actual)}")
+
+    if "maxNumericFieldLessThanOrEqual" in assertion:
+        spec = assertion.get("maxNumericFieldLessThanOrEqual")
+        spec = spec if isinstance(spec, dict) else {}
+        field_name = str(spec.get("field") or "").strip()
+        limit = _as_comparable_number(spec.get("value"))
+        numbers = _collect_numeric_field_values(actual, field_name)
+        if not field_name or limit is None:
+            failures.append("maxNumericFieldLessThanOrEqual requires field and numeric value")
+        elif not numbers:
+            failures.append(f"maxNumericFieldLessThanOrEqual found no numeric field {field_name!r}")
+        elif max(numbers) > limit:
+            failures.append(
+                f"maxNumericFieldLessThanOrEqual expected {field_name}<={limit:g} got max={max(numbers):g}"
+            )
 
     actual_length = _json_value_length(actual)
     before_length = _json_value_length(before)
@@ -1080,6 +1142,7 @@ def _clone_backend_chat_session_row(
     db_password: str,
     db_name: str,
     timeout_seconds: float = 5,
+    max_attempts: int = 3,
 ) -> dict[str, Any]:
     """Clone assistant_chat_session row for live destructive regression sessions.
 
@@ -1121,18 +1184,33 @@ def _clone_backend_chat_session_row(
     env = os.environ.copy()
     if db_password:
         env["MYSQL_PWD"] = db_password
-    try:
-        proc = subprocess.run(
-            cmd,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
-        result["error"] = f"{type(exc).__name__}: {exc}"
+    proc = None
+    attempts = max(1, int(max_attempts or 1))
+    for attempt in range(1, attempts + 1):
+        result["attempts"] = attempt
+        try:
+            proc = subprocess.run(
+                cmd,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            return result
+        stderr = proc.stderr.strip()
+        if proc.returncode == 0:
+            break
+        lowered = stderr.lower()
+        retryable = "deadlock" in lowered or "lock wait timeout" in lowered
+        if not retryable or attempt >= attempts:
+            break
+        time.sleep(0.2 * attempt)
+    if proc is None:
+        result["error"] = "mysql command did not run"
         return result
     result["returnCode"] = proc.returncode
     if proc.stderr.strip():
@@ -1179,6 +1257,11 @@ def _clone_backend_volunteer_data_files(
     }
     if not str(source_session_id).isdigit() or not str(target_session_id).isdigit():
         result["error"] = "source and target session ids must be numeric"
+        return result
+    if str(source_session_id) == str(target_session_id):
+        result["ok"] = True
+        result["skipped"] = "same_session"
+        result["copiedFiles"] = 0
         return result
 
     root = Path(data_dir)
@@ -1271,46 +1354,6 @@ def _latest_turn_messages(history: list[dict[str, Any]], prompt: str) -> list[di
     return history[start_index:]
 
 
-def _latest_shadow_status(history: list[dict[str, Any]], prompt: str) -> str:
-    shadow = _summarize_turn_observability(_latest_turn_messages(history, prompt)).get("zhiyuanAgentPocShadow")
-    if not isinstance(shadow, dict):
-        return ""
-    return str(shadow.get("status") or "").strip()
-
-
-def _load_history_json_waiting_for_shadow(
-    db_path: Path,
-    session_id: str,
-    prompt: str,
-    *,
-    attempts: int = 10,
-    interval_seconds: float = 0.5,
-) -> list[dict[str, Any]]:
-    history = _load_history_json(db_path, session_id)
-    for _ in range(max(0, attempts - 1)):
-        status = _latest_shadow_status(history, prompt)
-        if status and status != "running":
-            break
-        time.sleep(interval_seconds)
-        latest = _load_history_json(db_path, session_id)
-        if latest:
-            history = latest
-    return history
-
-
-def _step_requires_zhiyuan_agent_poc_shadow(step: dict[str, Any]) -> bool:
-    return any(
-        step.get(key) is not None
-        for key in (
-            "expectedZhiyuanAgentPocStatus",
-            "expectedZhiyuanAgentPocFirstToolNames",
-            "expectedZhiyuanAgentPocToolNames",
-            "expectedZhiyuanAgentPocNextSteps",
-            "maxZhiyuanAgentPocToolCallCount",
-        )
-    )
-
-
 def _add_unique(target: list[str], value: Any) -> None:
     text = str(value or "").strip()
     if text and text not in target:
@@ -1339,8 +1382,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
     action_families: list[str] = []
     result_kinds: list[str] = []
     routing_paths: list[str] = []
-    semantic_router_shadow: dict[str, Any] | None = None
-    zhiyuan_agent_poc_shadow: dict[str, Any] | None = None
+    semantic_frame_observation: dict[str, Any] | None = None
     route_decision: dict[str, Any] | None = None
     event_timings: dict[str, Any] = {}
 
@@ -1375,11 +1417,11 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                 if call_id and data:
                     returns_by_call_id[call_id] = data
                 continue
-            if kind == "text" and message.get("model_name") == "semantic-router-shadow":
+            if kind == "text" and message.get("model_name") == "semantic-frame-observation":
                 data = _parse_json_object(part.get("content"))
-                shadow = data.get("semanticRouterShadow") if isinstance(data, dict) else None
-                if isinstance(shadow, dict):
-                    semantic_router_shadow = shadow
+                observation = data.get("semanticFrameObservation") if isinstance(data, dict) else None
+                if isinstance(observation, dict):
+                    semantic_frame_observation = observation
                 continue
             if kind == "text":
                 data = _parse_json_object(part.get("content"))
@@ -1395,16 +1437,12 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                     raw_route_decision = data.get("routeDecision")
                     if isinstance(raw_route_decision, dict):
                         route_decision = raw_route_decision
-                    raw_poc_shadow = data.get("zhiyuanAgentPocShadow")
-                    if isinstance(raw_poc_shadow, dict):
-                        zhiyuan_agent_poc_shadow = raw_poc_shadow
                     for key in (
                         "totalDurationMs",
                         "llmDurationMs",
                         "toolDurationMs",
                         "classificationDurationMs",
                         "preSemanticRouteDurationMs",
-                        "preFullAgentDurationMs",
                         "historyLoadDurationMs",
                         "pendingLoadDurationMs",
                         "initialStateLoadDurationMs",
@@ -1416,16 +1454,11 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                         "turnDecisionCacheHitCount",
                         "intentEntityProfileDurationMs",
                         "intentSideEffectDurationMs",
-                        "postFullAgentDurationMs",
                         "unattributedDurationMs",
                         "toolCallCount",
                     ):
                         if data.get(key) is not None:
                             event_timings[key] = data.get(key)
-                elif data.get("event") == "zhiyuan_agent_poc_shadow_event":
-                    raw_poc_shadow = data.get("zhiyuanAgentPocShadow") or data.get("shadow")
-                    if isinstance(raw_poc_shadow, dict):
-                        zhiyuan_agent_poc_shadow = raw_poc_shadow
 
     for item in tool_calls:
         call_id = str(item.get("toolCallId") or "")
@@ -1461,10 +1494,8 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
         summary["routingPath"] = routing_paths[0]
         if len(routing_paths) > 1:
             summary["routingPathCandidates"] = routing_paths
-    if semantic_router_shadow:
-        summary["semanticRouterShadow"] = semantic_router_shadow
-    if zhiyuan_agent_poc_shadow:
-        summary["zhiyuanAgentPocShadow"] = zhiyuan_agent_poc_shadow
+    if semantic_frame_observation:
+        summary["semanticFrameObservation"] = semantic_frame_observation
     if event_timings:
         summary["eventTimings"] = event_timings
     if route_decision:
@@ -1533,14 +1564,14 @@ def _followup_type(followup: dict[str, Any]) -> str:
     return str(followup.get("type") or content.get("type") or "").strip()
 
 
-def _runtime_shadow_case_id(case: dict[str, Any], step: dict[str, Any], step_count: int) -> str:
+def _runtime_observation_case_id(case: dict[str, Any], step: dict[str, Any], step_count: int) -> str:
     for source in (step,):
-        for key in ("profileCaseId", "shadowCaseId", "runtimeShadowCaseId", "caseId", "goldenCaseId"):
+        for key in ("profileCaseId", "runtimeObservationCaseId", "caseId", "goldenCaseId"):
             value = str(source.get(key) or "").strip()
             if value:
                 return value
     if step_count == 1:
-        for key in ("profileCaseId", "shadowCaseId", "runtimeShadowCaseId", "caseId", "goldenCaseId"):
+        for key in ("profileCaseId", "runtimeObservationCaseId", "caseId", "goldenCaseId"):
             value = str(case.get(key) or "").strip()
             if value:
                 return value
@@ -1708,7 +1739,6 @@ def _runtime_latency_profile_payload(record: dict[str, Any], turn_observability:
         "llmDurationMs": route_decision.get("llmDurationMs") or event_timings.get("llmDurationMs"),
         "classificationDurationMs": route_decision.get("classificationDurationMs") or event_timings.get("classificationDurationMs"),
         "preSemanticRouteDurationMs": route_decision.get("preSemanticRouteDurationMs") or event_timings.get("preSemanticRouteDurationMs"),
-        "preFullAgentDurationMs": route_decision.get("preFullAgentDurationMs") or event_timings.get("preFullAgentDurationMs"),
         "historyLoadDurationMs": route_decision.get("historyLoadDurationMs") or event_timings.get("historyLoadDurationMs"),
         "pendingLoadDurationMs": route_decision.get("pendingLoadDurationMs") or event_timings.get("pendingLoadDurationMs"),
         "initialStateLoadDurationMs": route_decision.get("initialStateLoadDurationMs") or event_timings.get("initialStateLoadDurationMs"),
@@ -1720,7 +1750,6 @@ def _runtime_latency_profile_payload(record: dict[str, Any], turn_observability:
         "turnDecisionCacheHitCount": route_decision.get("turnDecisionCacheHitCount") or event_timings.get("turnDecisionCacheHitCount"),
         "intentEntityProfileDurationMs": route_decision.get("intentEntityProfileDurationMs") or event_timings.get("intentEntityProfileDurationMs"),
         "intentSideEffectDurationMs": route_decision.get("intentSideEffectDurationMs") or event_timings.get("intentSideEffectDurationMs"),
-        "postFullAgentDurationMs": route_decision.get("postFullAgentDurationMs") or event_timings.get("postFullAgentDurationMs"),
         "unattributedDurationMs": route_decision.get("unattributedDurationMs") or event_timings.get("unattributedDurationMs"),
         "routeTotalDurationMs": route_decision.get("totalDurationMs") or event_timings.get("totalDurationMs"),
         "modelNodeCount": model_node_count or None,
@@ -1807,14 +1836,14 @@ def _runtime_side_effect_and_output(
     return "readonly", "readonly", "none", ""
 
 
-def _build_runtime_shadow_observation(
+def _build_runtime_observation(
     case: dict[str, Any],
     step: dict[str, Any],
     record: dict[str, Any],
     followups: list[dict[str, Any]],
     step_count: int,
 ) -> dict[str, Any] | None:
-    case_id = _runtime_shadow_case_id(case, step, step_count)
+    case_id = _runtime_observation_case_id(case, step, step_count)
     if not case_id:
         return None
     turn_observability = record.get("turnObservability")
@@ -1889,7 +1918,6 @@ def _build_runtime_shadow_observation(
                 "postApplyEvidencePlan",
                 "routeDecision",
                 "eventTimings",
-                "zhiyuanAgentPocShadow",
             )
             if key in turn_observability
         }
@@ -1917,7 +1945,7 @@ def _build_runtime_shadow_observation(
     }
 
 
-def _build_runtime_shadow_summary(observations: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_runtime_observation_summary(observations: list[dict[str, Any]]) -> dict[str, Any]:
     by_side_effect: dict[str, int] = {}
     by_pending_type: dict[str, int] = {}
     for observation in observations:
@@ -2000,6 +2028,7 @@ def _check_content_assertions(
     case_name: str,
     session_id: str,
     thinking_text: str = "",
+    ignore_thinking_assertions: bool = False,
 ) -> list[str]:
     """Check per-prompt content assertions from the case step definition."""
     violations: list[str] = []
@@ -2007,9 +2036,9 @@ def _check_content_assertions(
     assert_contains = step.get("assertContains") or []
     assert_contains_any = step.get("assertContainsAny") or []
     assert_not_contains = step.get("assertNotContains") or []
-    assert_thinking_contains = step.get("assertThinkingContains") or []
-    assert_thinking_contains_any = step.get("assertThinkingContainsAny") or []
-    assert_thinking_not_contains = step.get("assertThinkingNotContains") or []
+    assert_thinking_contains = [] if ignore_thinking_assertions else (step.get("assertThinkingContains") or [])
+    assert_thinking_contains_any = [] if ignore_thinking_assertions else (step.get("assertThinkingContainsAny") or [])
+    assert_thinking_not_contains = [] if ignore_thinking_assertions else (step.get("assertThinkingNotContains") or [])
     assert_followup_target = step.get("assertFollowupTarget")
     assert_followup_refresh = step.get("assertFollowupRefresh")
     assert_followup_type = step.get("assertFollowupType")
@@ -2145,89 +2174,6 @@ def _tool_names_from_observability(turn_observability: dict[str, Any] | None) ->
     return names
 
 
-def _zhiyuan_agent_poc_shadow(turn_observability: dict[str, Any]) -> dict[str, Any]:
-    shadow = turn_observability.get("zhiyuanAgentPocShadow")
-    return shadow if isinstance(shadow, dict) else {}
-
-
-def _check_zhiyuan_agent_poc_shadow_assertions(
-    turn_observability: dict[str, Any],
-    step: dict[str, Any],
-    case_name: str,
-    session_id: str,
-) -> list[str]:
-    violations: list[str] = []
-    prompt_label = step.get("prompt") or step.get("text") or ""
-    shadow = _zhiyuan_agent_poc_shadow(turn_observability)
-
-    expected_status = str(step.get("expectedZhiyuanAgentPocStatus") or "").strip()
-    expected_first_tool_names = _as_string_list(step.get("expectedZhiyuanAgentPocFirstToolNames"))
-    expected_tool_names = _as_string_list(step.get("expectedZhiyuanAgentPocToolNames"))
-    expected_next_steps = _as_string_list(step.get("expectedZhiyuanAgentPocNextSteps"))
-    max_tool_call_count = step.get("maxZhiyuanAgentPocToolCallCount")
-    if not any(
-        [
-            expected_status,
-            expected_first_tool_names,
-            expected_tool_names,
-            expected_next_steps,
-            max_tool_call_count is not None,
-        ]
-    ):
-        return violations
-
-    if not shadow:
-        return [
-            f"{case_name} session={session_id} prompt={prompt_label}: "
-            "zhiyuanAgentPocShadow FAILED — no shadow result in turn observability"
-        ]
-
-    if expected_status:
-        actual_status = str(shadow.get("status") or "").strip()
-        if actual_status != expected_status:
-            violations.append(
-                f"{case_name} session={session_id} prompt={prompt_label}: "
-                f"expectedZhiyuanAgentPocStatus FAILED — expected {expected_status} got {actual_status}"
-            )
-
-    actual_first_tool_names = [str(item) for item in shadow.get("firstToolNames") or []]
-    if expected_first_tool_names and actual_first_tool_names != expected_first_tool_names:
-        violations.append(
-            f"{case_name} session={session_id} prompt={prompt_label}: "
-            f"expectedZhiyuanAgentPocFirstToolNames FAILED — expected {expected_first_tool_names} got {actual_first_tool_names}"
-        )
-
-    actual_tool_names = [str(item) for item in shadow.get("toolCallNames") or []]
-    if expected_tool_names and actual_tool_names != expected_tool_names:
-        violations.append(
-            f"{case_name} session={session_id} prompt={prompt_label}: "
-            f"expectedZhiyuanAgentPocToolNames FAILED — expected {expected_tool_names} got {actual_tool_names}"
-        )
-
-    actual_next_steps = [str(item) for item in shadow.get("nextSteps") or []]
-    if expected_next_steps and actual_next_steps != expected_next_steps:
-        violations.append(
-            f"{case_name} session={session_id} prompt={prompt_label}: "
-            f"expectedZhiyuanAgentPocNextSteps FAILED — expected {expected_next_steps} got {actual_next_steps}"
-        )
-
-    if max_tool_call_count is not None:
-        try:
-            max_count = int(max_tool_call_count)
-        except (TypeError, ValueError):
-            max_count = None
-        actual_count = _shadow_int(shadow.get("toolCallCount"))
-        if actual_count is None:
-            actual_count = len(actual_tool_names)
-        if max_count is not None and actual_count > max_count:
-            violations.append(
-                f"{case_name} session={session_id} prompt={prompt_label}: "
-                f"maxZhiyuanAgentPocToolCallCount FAILED — toolCallCount={actual_count} > {max_count}"
-            )
-
-    return violations
-
-
 def _check_tool_assertions(
     turn_observability: dict[str, Any] | None,
     step: dict[str, Any],
@@ -2239,7 +2185,6 @@ def _check_tool_assertions(
     prompt_label = step.get("prompt") or step.get("text") or ""
     turn_observability = turn_observability if isinstance(turn_observability, dict) else {}
     tool_names = _tool_names_from_observability(turn_observability)
-    violations.extend(_check_zhiyuan_agent_poc_shadow_assertions(turn_observability, step, case_name, session_id))
 
     expected_routing_path = str(step.get("expectedRoutingPath") or "").strip()
     if expected_routing_path:
@@ -2510,7 +2455,6 @@ def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
             }
             for record in slowest
         ],
-        "zhiyuanAgentPocShadow": _build_zhiyuan_agent_poc_shadow_summary(records),
     }
 
 
@@ -2519,80 +2463,6 @@ def _bump(counter: dict[str, int], key: Any) -> None:
     if not text:
         return
     counter[text] = counter.get(text, 0) + 1
-
-
-def _shadow_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return int(value)
-    return None
-
-
-def _build_zhiyuan_agent_poc_shadow_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
-    observed = 0
-    statuses: dict[str, int] = {}
-    first_tools: dict[str, int] = {}
-    tool_names: dict[str, int] = {}
-    next_steps: dict[str, int] = {}
-    durations: list[int] = []
-    total_tokens: list[int] = []
-    tool_counts: list[int] = []
-    error_examples: list[dict[str, Any]] = []
-
-    for record in records:
-        turn = record.get("turnObservability")
-        if not isinstance(turn, dict):
-            continue
-        shadow = turn.get("zhiyuanAgentPocShadow")
-        if not isinstance(shadow, dict):
-            continue
-        observed += 1
-        status = str(shadow.get("status") or "").strip() or "unknown"
-        _bump(statuses, status)
-        for item in shadow.get("firstToolNames") or []:
-            _bump(first_tools, item)
-        for item in shadow.get("toolCallNames") or []:
-            _bump(tool_names, item)
-        for item in shadow.get("nextSteps") or []:
-            _bump(next_steps, item)
-
-        duration = _shadow_int(shadow.get("durationMs"))
-        if duration is not None:
-            durations.append(duration)
-        tokens = _shadow_int(shadow.get("totalTokens"))
-        if tokens is not None:
-            total_tokens.append(tokens)
-        tool_count = _shadow_int(shadow.get("toolCallCount"))
-        if tool_count is None:
-            names = shadow.get("toolCallNames")
-            tool_count = len(names) if isinstance(names, list) else None
-        if tool_count is not None:
-            tool_counts.append(tool_count)
-
-        if status != "success" and len(error_examples) < 10:
-            error_examples.append(
-                {
-                    "case": record.get("case"),
-                    "sessionId": record.get("sessionId"),
-                    "prompt": record.get("prompt"),
-                    "status": status,
-                    "errorType": shadow.get("errorType"),
-                    "errorMessage": shadow.get("errorMessage"),
-                }
-            )
-
-    return {
-        "observed": observed,
-        "statuses": statuses,
-        "firstTools": first_tools,
-        "toolNames": tool_names,
-        "nextSteps": next_steps,
-        "duration": _duration_summary(durations),
-        "toolCallCount": _duration_summary(tool_counts),
-        "totalTokens": _duration_summary(total_tokens),
-        "errorExamples": error_examples,
-    }
 
 
 async def _run_cases(
@@ -2617,13 +2487,13 @@ async def _run_cases(
     backend_db_password: str = DEFAULT_BACKEND_DB_PASSWORD,
     backend_db_name: str = DEFAULT_BACKEND_DB_NAME,
     backend_volunteer_data_dir: str = DEFAULT_BACKEND_VOLUNTEER_DATA_DIR,
-    runtime_shadow_output: str | None = None,
-    poc_shadow_wait_seconds: float = 25.0,
+    runtime_observation_output: str | None = None,
+    ignore_thinking_assertions: bool = False,
 ) -> None:
     failures: list[str] = []
     warnings: list[str] = []
     metrics_records: list[dict[str, Any]] = []
-    runtime_shadow_observations: list[dict[str, Any]] = []
+    runtime_observations: list[dict[str, Any]] = []
     for case in cases:
         name = str(case.get("name") or f"session-{case.get('sessionId')}")
         session_id = str(case["sessionId"])
@@ -2657,10 +2527,12 @@ async def _run_cases(
                     )
                 )
                 if not session_clone_result.get("ok"):
-                    warnings.append(
-                        f"{name} session={session_id}: backend chat session clone failed: "
+                    clone_failure = (
+                        "backend chat session clone failed: "
                         + json.dumps(session_clone_result, ensure_ascii=False)
                     )
+                    warnings.append(f"{name} session={session_id}: {clone_failure}")
+                    case_env_failures.append(clone_failure)
                 volunteer_file_clone_result = _clone_backend_volunteer_data_files(
                     source_session_id=clone_source_session_id,
                     target_session_id=session_id,
@@ -2679,10 +2551,13 @@ async def _run_cases(
                     )
                 )
                 if not volunteer_file_clone_result.get("ok"):
-                    warnings.append(
-                        f"{name} session={session_id}: backend volunteer data clone failed: "
+                    clone_failure = (
+                        "backend volunteer data clone failed: "
                         + json.dumps(volunteer_file_clone_result, ensure_ascii=False)
                     )
+                    warnings.append(f"{name} session={session_id}: {clone_failure}")
+                    if _case_requires_backend_volunteer_data_clone(case):
+                        case_env_failures.append(clone_failure)
             clone_results = _clone_backend_session_state(
                 internal_service_url,
                 source_session_id=clone_source_session_id,
@@ -2895,31 +2770,22 @@ async def _run_cases(
                 }
                 _add_fixture_and_root_cause_fields(error_record, case, step)
                 if history_db:
-                    if _step_requires_zhiyuan_agent_poc_shadow(step):
-                        history = _load_history_json_waiting_for_shadow(
-                            Path(history_db),
-                            session_id,
-                            prompt,
-                            attempts=max(1, int(poc_shadow_wait_seconds / 0.5)),
-                            interval_seconds=0.5,
-                        )
-                    else:
-                        history = _load_history_json(Path(history_db), session_id)
+                    history = _load_history_json(Path(history_db), session_id)
                     turn_observability = _summarize_turn_observability(
                         _latest_turn_messages(history, prompt)
                     )
                     if turn_observability.get("historyMessages"):
                         error_record["turnObservability"] = turn_observability
-                shadow_observation = _build_runtime_shadow_observation(
+                runtime_observation = _build_runtime_observation(
                     case,
                     step,
                     error_record,
                     [],
                     step_count,
                 )
-                if shadow_observation:
-                    error_record["runtimeShadowCaseId"] = shadow_observation["caseId"]
-                    runtime_shadow_observations.append(shadow_observation)
+                if runtime_observation:
+                    error_record["runtimeObservationCaseId"] = runtime_observation["caseId"]
+                    runtime_observations.append(runtime_observation)
                 metrics_records.append(error_record)
                 print(f"error={type(exc).__name__}: {exc} elapsedMs={elapsed_ms}")
                 continue
@@ -2944,16 +2810,7 @@ async def _run_cases(
             if error_text:
                 record["wsError"] = error_text
             if history_db:
-                if _step_requires_zhiyuan_agent_poc_shadow(step):
-                    history = _load_history_json_waiting_for_shadow(
-                        Path(history_db),
-                        session_id,
-                        prompt,
-                        attempts=max(1, int(poc_shadow_wait_seconds / 0.5)),
-                        interval_seconds=0.5,
-                    )
-                else:
-                    history = _load_history_json(Path(history_db), session_id)
+                history = _load_history_json(Path(history_db), session_id)
                 turn_observability = _summarize_turn_observability(
                     _latest_turn_messages(history, prompt)
                 )
@@ -2978,6 +2835,7 @@ async def _run_cases(
                 name,
                 session_id,
                 thinking_text=_extract_thinking(primary),
+                ignore_thinking_assertions=ignore_thinking_assertions,
             )
             if content_violations:
                 for v in content_violations:
@@ -3022,16 +2880,16 @@ async def _run_cases(
                 record["performanceViolations"] = perf_failures
             if perf_warnings:
                 record["performanceWarnings"] = perf_warnings
-            shadow_observation = _build_runtime_shadow_observation(
+            runtime_observation = _build_runtime_observation(
                 case,
                 step,
                 record,
                 followups,
                 step_count,
             )
-            if shadow_observation:
-                record["runtimeShadowCaseId"] = shadow_observation["caseId"]
-                runtime_shadow_observations.append(shadow_observation)
+            if runtime_observation:
+                record["runtimeObservationCaseId"] = runtime_observation["caseId"]
+                runtime_observations.append(runtime_observation)
             metrics_records.append(record)
             print(
                 "metrics="
@@ -3045,12 +2903,12 @@ async def _run_cases(
                 print("followups=" + json.dumps(followups, ensure_ascii=False))
         print()
     summary = _build_metrics_summary(metrics_records)
-    runtime_shadow_summary = _build_runtime_shadow_summary(runtime_shadow_observations)
+    runtime_observation_summary = _build_runtime_observation_summary(runtime_observations)
     print("=== METRICS SUMMARY ===")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    if runtime_shadow_observations:
-        print("=== RUNTIME SHADOW SUMMARY ===")
-        print(json.dumps(runtime_shadow_summary, ensure_ascii=False, indent=2))
+    if runtime_observations:
+        print("=== RUNTIME OBSERVATION SUMMARY ===")
+        print(json.dumps(runtime_observation_summary, ensure_ascii=False, indent=2))
     if warnings:
         print("=== WARNINGS ===")
         for warning in warnings:
@@ -3061,7 +2919,7 @@ async def _run_cases(
                 {
                     "records": metrics_records,
                     "summary": summary,
-                    "runtimeShadowSummary": runtime_shadow_summary,
+                    "runtimeObservationSummary": runtime_observation_summary,
                     "warnings": warnings,
                     "failures": failures,
                 },
@@ -3071,12 +2929,12 @@ async def _run_cases(
             + "\n",
             encoding="utf-8",
         )
-    if runtime_shadow_output:
-        Path(runtime_shadow_output).write_text(
+    if runtime_observation_output:
+        Path(runtime_observation_output).write_text(
             json.dumps(
                 {
-                    "observations": runtime_shadow_observations,
-                    "summary": runtime_shadow_summary,
+                    "observations": runtime_observations,
+                    "summary": runtime_observation_summary,
                     "source": "dialog_regression_runner",
                 },
                 ensure_ascii=False,
@@ -3105,14 +2963,8 @@ def main() -> None:
     parser.add_argument("--response-timeout", type=float, default=120, help="timeout in seconds while waiting for each prompt response")
     parser.add_argument("--metrics-output", help="write per-step latency and assertion summary to JSON")
     parser.add_argument(
-        "--runtime-shadow-output",
-        help="write readonly runtime observations for runtime_shadow_diff.py; does not change dialog behavior",
-    )
-    parser.add_argument(
-        "--poc-shadow-wait-seconds",
-        type=float,
-        default=25.0,
-        help="wait this long for zhiyuanAgentPocShadow completion on shadow-asserted steps before reading history",
+        "--runtime-observation-output",
+        help="write readonly runtime observations JSON; does not change dialog behavior",
     )
     parser.add_argument(
         "--session-offset",
@@ -3134,6 +2986,11 @@ def main() -> None:
         "--keep-response-text",
         action="store_true",
         help="store the full response text and thinking text in metrics-output for case-level evaluation",
+    )
+    parser.add_argument(
+        "--ignore-thinking-assertions",
+        action="store_true",
+        help="ignore assertThinking* checks while keeping response, followup, tool, and backend assertions",
     )
     parser.add_argument(
         "--clear-history-per-case",
@@ -3183,7 +3040,11 @@ def main() -> None:
     else:
         cases = _load_cases(args.cases)
     cases = _filter_cases_by_name(cases, args.case_name)
-    cases = _apply_session_offset(cases, args.session_offset)
+    cases = _apply_session_offset(
+        cases,
+        args.session_offset,
+        clone_backend_state_from_offset=args.clone_backend_chat_session,
+    )
     if args.clear_history:
         session_ids = _case_session_ids(cases)
         deleted = _clear_history(Path(args.history_db), session_ids)
@@ -3235,8 +3096,8 @@ def main() -> None:
             backend_db_password=args.backend_db_password,
             backend_db_name=args.backend_db_name,
             backend_volunteer_data_dir=args.backend_volunteer_data_dir,
-            runtime_shadow_output=args.runtime_shadow_output,
-            poc_shadow_wait_seconds=args.poc_shadow_wait_seconds,
+            runtime_observation_output=args.runtime_observation_output,
+            ignore_thinking_assertions=args.ignore_thinking_assertions,
         )
     )
 

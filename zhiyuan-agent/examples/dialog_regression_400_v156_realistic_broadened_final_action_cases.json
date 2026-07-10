@@ -1,0 +1,438 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v1.56 broadened realistic spoken final-action checks.",
+    "notes": "Run with --clone-backend-chat-session. These cases broaden everyday short utterances across include, exclude, taxonomy, tag, and deferred apply-to-current-plan semantics, verifying final backend changes after confirmation."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "confirm_pending",
+      "realistic_user_input",
+      "final_action"
+    ],
+    "coverage": [
+      "spoken_style",
+      "ellipsis",
+      "attribute_requirement",
+      "major_requirement",
+      "tag_requirement",
+      "deferred_current_plan_apply",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v156-spoken-only-public-final-action",
+      "sessionId": "9904561",
+      "coverage": [
+        "only_keep",
+        "school_nature",
+        "short_positive_expression",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "就看公办吧",
+          "assertContainsAny": [
+            "公办",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 2
+        },
+        {
+          "prompt": "行，采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "公办",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustIncludeSchools",
+              "contains": "院校性质:公办"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "民办"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthLessThanBefore": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v156-spoken-cooperative-exclude-final-action",
+      "sessionId": "9904562",
+      "coverage": [
+        "exclude",
+        "program_type",
+        "short_negative_expression",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "中外合作算了吧",
+          "assertContainsAny": [
+            "中外合作",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已采纳",
+            "中外合作",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": "招生类型:中外合作"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "中外合作"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "中外合作"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v156-spoken-major-discipline-final-action",
+      "sessionId": "9904563",
+      "coverage": [
+        "exclude",
+        "major_taxonomy",
+        "short_negative_expression",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "管理学也别要了",
+          "assertContainsAny": [
+            "管理学",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认吧",
+          "assertContainsAny": [
+            "已采纳",
+            "管理学",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeMajors",
+              "contains": "管理学"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "37020261000315_37020262005917_845"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261000315_37020262005917_845"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v156-spoken-major-tag-final-action",
+      "sessionId": "9904564",
+      "coverage": [
+        "exclude",
+        "major_tag",
+        "short_negative_expression",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "五年制的也别要",
+          "assertContainsAny": [
+            "五年",
+            "5年",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "五年",
+            "5年",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeMajors",
+              "contains": "专业标签:学制：5年"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "学制：5年"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261001095_37020262020504_709"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v156-deferred-region-no-plan-change",
+      "sessionId": "9904565",
+      "coverage": [
+        "intent_change",
+        "region",
+        "deferred_current_plan_apply",
+        "short_negative_expression",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "山东别去了，先记下，当前方案先别动",
+          "assertContainsAny": [
+            "山东",
+            "先不改",
+            "当前方案",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "山东",
+            "这次先不改当前方案",
+            "后续生成",
+            "报考要求"
+          ],
+          "assertNoFollowups": true,
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "candidateViewState.filters.negativeProvinceNames",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "unchangedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "unchangedFromBefore": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

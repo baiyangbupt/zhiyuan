@@ -86,7 +86,7 @@ def test_evaluator_counts_match_and_mismatch_from_runner_output(tmp_path):
                         "prompt": "一模二模差挺多，这个成绩波动填志愿咋看",
                         "responseText": "先看成绩波动和位次，再看方案风险。",
                         "turnObservability": {
-                            "semanticRouterShadow": {
+                            "semanticFrameObservation": {
                                 "status": "success",
                                 "durationMs": 1200,
                                 "frame": {
@@ -104,7 +104,7 @@ def test_evaluator_counts_match_and_mismatch_from_runner_output(tmp_path):
                         "prompt": "会计审计还行，土木别要",
                         "responseText": "确认前不会写入后续参考。",
                         "turnObservability": {
-                            "semanticRouterShadow": {
+                            "semanticFrameObservation": {
                                 "status": "success",
                                 "durationMs": 2400,
                                 "frame": {
@@ -139,7 +139,7 @@ def test_evaluator_counts_match_and_mismatch_from_runner_output(tmp_path):
     assert "taskLayer" in ",".join(payload["mismatchExamples"][0]["mismatches"])
 
 
-def test_evaluator_reports_unverified_shadow_status(tmp_path):
+def test_evaluator_reports_unverified_observation_status(tmp_path):
     case_file = tmp_path / "cases.json"
     current_file = tmp_path / "current.json"
     _write_case_file(case_file)
@@ -151,7 +151,7 @@ def test_evaluator_reports_unverified_shadow_status(tmp_path):
                         "case": "score-case",
                         "prompt": "一模二模差挺多，这个成绩波动填志愿咋看",
                         "responseText": "先看成绩波动和位次，再看方案风险。",
-                        "semanticRouterShadow": {"status": "timeout"},
+                        "semanticFrameObservation": {"status": "timeout"},
                     }
                 ]
             },

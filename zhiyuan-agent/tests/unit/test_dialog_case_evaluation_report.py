@@ -41,7 +41,7 @@ def test_score_case_rewards_text_and_latency():
     assert score["latency"] >= 1
 
 
-def test_score_case_includes_semantic_router_shadow_from_observability():
+def test_score_case_includes_semantic_frame_observation_from_observability():
     score = report._score_case(
         {
             "prompt": "财管会计审计怎么排优先级",
@@ -49,7 +49,7 @@ def test_score_case_includes_semantic_router_shadow_from_observability():
             "elapsedMs": 900,
             "turnObservability": {
                 "routingPath": "zhiyuan_agent_direct",
-                "semanticRouterShadow": {
+                "semanticFrameObservation": {
                     "status": "success",
                     "frame": {
                         "taskLayer": "explore",
@@ -62,8 +62,8 @@ def test_score_case_includes_semantic_router_shadow_from_observability():
         }
     )
 
-    assert score["semanticRouterShadow"]["status"] == "success"
-    assert score["semanticRouterShadow"]["frame"]["taskLayer"] == "explore"
+    assert score["semanticFrameObservation"]["status"] == "success"
+    assert score["semanticFrameObservation"]["frame"]["taskLayer"] == "explore"
     assert score["semanticMappedRoute"] == "zhiyuan_agent_direct"
 
 
@@ -95,7 +95,7 @@ def test_summarize_rows_counts_semantic_router_dimensions():
                 "expectedRoutingPath": "zhiyuan_agent_direct",
                 "semanticMappedRoute": "zhiyuan_agent_direct",
                 "semanticExpectation": {"matched": True},
-                "semanticRouterShadow": {
+                "semanticFrameObservation": {
                     "status": "success",
                     "frame": {
                         "taskLayer": "explore",
@@ -111,13 +111,13 @@ def test_summarize_rows_counts_semantic_router_dimensions():
 
     summary = report._summarize_rows(rows)
 
-    assert summary["semanticRouterSummary"]["status"] == {"success": 1}
-    assert summary["semanticRouterSummary"]["taskLayer"] == {"explore": 1}
-    assert summary["semanticRouterSummary"]["verb"] == {"compare": 1}
-    assert summary["semanticRouterSummary"]["mappedRoute"] == {"zhiyuan_agent_direct": 1}
-    assert summary["semanticRouterSummary"]["expectedRouteComparison"] == {"match": 1}
-    assert summary["semanticRouterSummary"]["currentRouteComparison"] == {"match": 1}
-    assert summary["semanticRouterSummary"]["expectedFrameComparison"] == {"match": 1}
+    assert summary["semanticFrameSummary"]["status"] == {"success": 1}
+    assert summary["semanticFrameSummary"]["taskLayer"] == {"explore": 1}
+    assert summary["semanticFrameSummary"]["verb"] == {"compare": 1}
+    assert summary["semanticFrameSummary"]["mappedRoute"] == {"zhiyuan_agent_direct": 1}
+    assert summary["semanticFrameSummary"]["expectedRouteComparison"] == {"match": 1}
+    assert summary["semanticFrameSummary"]["currentRouteComparison"] == {"match": 1}
+    assert summary["semanticFrameSummary"]["expectedFrameComparison"] == {"match": 1}
 
 
 def test_score_case_marks_semantic_frame_mismatch():
@@ -132,7 +132,7 @@ def test_score_case_marks_semantic_frame_mismatch():
                 "sideEffect": "readonly",
                 "minConfidence": 0.85,
             },
-            "semanticRouterShadow": {
+            "semanticFrameObservation": {
                 "status": "success",
                 "frame": {
                     "taskLayer": "explore",
@@ -162,7 +162,7 @@ def test_score_case_warns_without_failing_when_expected_semantic_frame_is_unveri
                 "minConfidence": 0.85,
             },
             "expectedSemanticFrameSource": "explicit",
-            "semanticRouterShadow": {"status": "disabled"},
+            "semanticFrameObservation": {"status": "disabled"},
         }
     )
 
@@ -183,7 +183,7 @@ def test_score_case_accepts_expected_semantic_frame_value_sets():
                 "sideEffect": "readonly",
                 "minConfidence": 0.85,
             },
-            "semanticRouterShadow": {
+            "semanticFrameObservation": {
                 "status": "success",
                 "frame": {
                     "taskLayer": "explore",
@@ -228,7 +228,7 @@ def test_build_case_report_infers_semantic_expectation_from_score_profile_covera
             "prompt": "一模二模差挺多，这个成绩波动填志愿咋看",
             "responseText": "先看成绩波动、位次稳定性和志愿风险。",
             "coverage": ["release_3_0_3", "dialogue_derived", "score_profile"],
-            "semanticRouterShadow": {
+            "semanticFrameObservation": {
                 "status": "success",
                 "frame": {
                     "taskLayer": "explore",
@@ -257,7 +257,7 @@ def test_score_profile_semantic_expectation_takes_priority_over_risk_summary_cov
             "prompt": "分数刚压本科线，别给我画大饼",
             "responseText": "这类压线情况要先看位次、批次线和保底空间。",
             "coverage": ["release_3_0_3", "dialogue_derived", "score_profile", "batch_line", "risk_summary"],
-            "semanticRouterShadow": {
+            "semanticFrameObservation": {
                 "status": "success",
                 "frame": {
                     "taskLayer": "explore",
@@ -286,7 +286,7 @@ def test_special_plan_semantic_expectation_accepts_policy_query():
             "prompt": "四川那种专项批，如果没资格是不是就不能放",
             "responseText": "先按政策资格判断，没有资格就不应放进可报范围。",
             "coverage": ["release_3_0_3", "dialogue_derived", "eligibility_constraints", "special_plan", "plan_review"],
-            "semanticRouterShadow": {
+            "semanticFrameObservation": {
                 "status": "success",
                 "frame": {
                     "taskLayer": "explore",
@@ -322,7 +322,7 @@ def test_subject_combination_employment_semantic_expectation_accepts_career_topi
                 "subject_combination",
                 "liberal_arts_employment",
             ],
-            "semanticRouterShadow": {
+            "semanticFrameObservation": {
                 "status": "success",
                 "frame": {
                     "taskLayer": "explore",
@@ -356,7 +356,7 @@ def test_build_case_report_infers_intent_preview_semantic_expectation_from_cover
                 "soft_major_intent",
                 "hard_major_constraint",
             ],
-            "semanticRouterShadow": {
+            "semanticFrameObservation": {
                 "status": "success",
                 "frame": {
                     "taskLayer": "intent",
@@ -385,7 +385,7 @@ def test_build_case_report_infers_plan_operation_semantic_expectation_from_cover
             "prompt": "按录取率从低到高排下，先看预览",
             "responseText": "这是排序预览，确认后才会更新导出顺序。",
             "coverage": ["release_3_0_3", "dialogue_derived", "plan_operations", "sort_ordered_plan"],
-            "semanticRouterShadow": {
+            "semanticFrameObservation": {
                 "status": "success",
                 "frame": {
                     "taskLayer": "plan",
@@ -944,7 +944,7 @@ def test_score_case_treats_direct_route_mismatch_as_quality_failure():
             "elapsedMs": 900,
             "expectedRoutingPath": "zhiyuan_agent_direct",
             "expectedActionFamily": "sort_ordered_plan",
-            "routingPath": "full_agent",
+            "routingPath": "legacy_agent",
             "turnObservability": {
                 "actionFamilies": ["query_state"],
                 "toolCalls": [{"name": "query_plan", "actionFamily": "query_state"}],
@@ -952,8 +952,8 @@ def test_score_case_treats_direct_route_mismatch_as_quality_failure():
         }
     )
 
-    assert "route_mismatch:zhiyuan_agent_direct!=full_agent" in score["qualityViolations"]
-    assert "soft_route_not_matched:zhiyuan_agent_direct!=full_agent" not in score["evaluationWarnings"]
+    assert "route_mismatch:zhiyuan_agent_direct!=legacy_agent" in score["qualityViolations"]
+    assert "soft_route_not_matched:zhiyuan_agent_direct!=legacy_agent" not in score["evaluationWarnings"]
     assert any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
     assert score["verdict"] == "fail"
 
@@ -965,7 +965,7 @@ def test_score_case_allows_no_pending_confirm_to_flow_through_agent_when_no_acti
             "responseText": "这轮没有待确认的偏好或方案动作，我不会改动方案。",
             "elapsedMs": 900,
             "expectedNoAction": True,
-            "routingPath": "full_agent",
+            "routingPath": "zhiyuan_agent_direct",
             "turnObservability": {"actionFamilies": [], "toolCalls": []},
         }
     )
@@ -981,15 +981,15 @@ def test_score_case_flags_unexpected_action_when_none_expected():
             "responseText": "这轮没有待确认的偏好或方案动作，我不会改动方案。",
             "elapsedMs": 900,
             "expectedNoAction": True,
-            "routingPath": "full_agent",
+            "routingPath": "zhiyuan_agent_direct",
             "turnObservability": {
-                "actionFamilies": ["compare_majors"],
-                "toolCalls": [{"name": "compare_majors", "actionFamily": "compare_majors"}],
+                "actionFamilies": ["compare_entities"],
+                "toolCalls": [{"name": "compare_entities", "actionFamily": "compare_entities"}],
             },
         }
     )
 
-    assert "unexpected_action:compare_majors" in score["qualityViolations"]
+    assert "unexpected_action:compare_entities" in score["qualityViolations"]
     assert score["verdict"] == "fail"
 
 
@@ -1019,14 +1019,14 @@ def test_score_case_uses_tool_name_as_action_observability_alias():
             "prompt": "当前方案对体制内方向承接怎么样",
             "responseText": "分析结论：当前方案承接偏弱，方案内约有2个相关志愿。下一步可以继续展开。",
             "elapsedMs": 900,
-            "expectedActionFamily": "analyze_current_career_direction",
+            "expectedActionFamily": "explore_topic",
             "turnObservability": {
-                "toolCalls": [{"name": "analyze_current_career_direction"}],
+                "toolCalls": [{"name": "explore_topic"}],
             },
         }
     )
 
-    assert "missing_action_observability:analyze_current_career_direction" not in score["evaluationWarnings"]
+    assert "missing_action_observability:explore_topic" not in score["evaluationWarnings"]
     assert not any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
     assert score["route"] >= 4
 
@@ -1042,9 +1042,9 @@ def test_score_case_accepts_multi_major_tool_as_major_compare_observability_alia
                 "如果你更看重稳定和考公，可以先会计，再财管，最后审计；愿意补充分数和就业倾向后，我可以继续细化。"
             ),
             "elapsedMs": 900,
-            "expectedActionFamily": "compare_majors",
+            "expectedActionFamily": "compare_entities",
             "turnObservability": {
-                "toolCalls": [{"name": "compare_major_options"}],
+                "toolCalls": [{"name": "compare_entities"}],
             },
             "qualityExpectations": {
                 "expectedKeyPoints": ["财务管理", "会计", "审计", "就业路径", "排序建议"],
@@ -1053,7 +1053,7 @@ def test_score_case_accepts_multi_major_tool_as_major_compare_observability_alia
         }
     )
 
-    assert "missing_action_observability:compare_majors" not in score["evaluationWarnings"]
+    assert "missing_action_observability:compare_entities" not in score["evaluationWarnings"]
     assert not any(item.startswith("missing_expected_keypoint:") for item in score["evaluationWarnings"])
     assert not any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
     assert score["route"] >= 4
@@ -1418,7 +1418,7 @@ def test_render_markdown_detail_includes_full_reply_and_review_checklist():
     assert "expectedKeyPoints" in markdown
 
 
-def test_full_agent_tool_trial_issue_detects_repeated_slow_tools():
+def test_tool_chain_issue_detects_repeated_slow_tools():
     item = report._build_case_report(
         "slow-plan#1",
         None,
@@ -1432,23 +1432,23 @@ def test_full_agent_tool_trial_issue_detects_repeated_slow_tools():
             "coverage": ["plan_review", "move_ordered_unit"],
             "expectedRoutingPath": "zhiyuan_agent_direct",
             "turnObservability": {
-                "routingPath": "full_agent",
+                "routingPath": "legacy_agent",
                 "toolCallCount": 4,
                 "routeDecision": {
                     "route": "plan",
                     "toolTrial": {
                         "toolNames": [
-                            "query_volunteer_plan",
+                            "query_plan",
                             "preview_plan_action",
-                            "query_volunteer_plan",
+                            "query_plan",
                             "review_plan",
                         ],
                         "toolNameCounts": {
-                            "query_volunteer_plan": 2,
+                            "query_plan": 2,
                             "preview_plan_action": 1,
                             "review_plan": 1,
                         },
-                        "repeatedToolNames": ["query_volunteer_plan"],
+                        "repeatedToolNames": ["query_plan"],
                         "hasRepeatedToolCalls": True,
                         "hasToolCalls": True,
                     },
@@ -1458,23 +1458,23 @@ def test_full_agent_tool_trial_issue_detects_repeated_slow_tools():
         {},
     )
 
-    issue = item["current"]["fullAgentToolTrialIssue"]
+    issue = item["current"]["toolChainIssue"]
     summary = report._summarize_reports([item])
 
     assert issue["caseId"] == "slow-plan#1"
-    assert issue["actualRoutingPath"] == "full_agent"
-    assert issue["repeatedToolNames"] == ["query_volunteer_plan"]
+    assert issue["actualRoutingPath"] == "legacy_agent"
+    assert issue["repeatedToolNames"] == ["query_plan"]
     assert "repeated_tool_calls" in issue["issueTypes"]
-    assert "very_slow_full_agent" in issue["issueTypes"]
+    assert "very_slow_tool_chain" in issue["issueTypes"]
     assert "missing_progress_for_long_task" in issue["issueTypes"]
-    assert "expected_route_mismatch_full_agent" in issue["issueTypes"]
-    assert summary["fullAgentToolTrialIssues"]["count"] == 1
-    assert summary["fullAgentToolTrialIssues"]["slowOrTimeoutCount"] == 1
-    assert summary["fullAgentToolTrialIssues"]["missingProgressCount"] == 1
-    assert summary["fullAgentToolTrialIssues"]["byRepeatedTool"] == {"query_volunteer_plan": 1}
+    assert "expected_route_mismatch" in issue["issueTypes"]
+    assert summary["toolChainIssues"]["count"] == 1
+    assert summary["toolChainIssues"]["slowOrTimeoutCount"] == 1
+    assert summary["toolChainIssues"]["missingProgressCount"] == 1
+    assert summary["toolChainIssues"]["byRepeatedTool"] == {"query_plan": 1}
 
 
-def test_full_agent_tool_trial_issue_reports_interrupted_agent_node():
+def test_tool_chain_issue_reports_interrupted_agent_node():
     item = report._build_case_report(
         "timeout-intent#1",
         None,
@@ -1486,7 +1486,7 @@ def test_full_agent_tool_trial_issue_reports_interrupted_agent_node():
             "elapsedMs": 180_000,
             "firstMessageMs": 3_000,
             "turnObservability": {
-                "routingPath": "full_agent",
+                "routingPath": "legacy_agent",
                 "routeDecision": {
                     "fallbackReason": "agent_run_interrupted",
                     "agentRun": {
@@ -1507,15 +1507,15 @@ def test_full_agent_tool_trial_issue_reports_interrupted_agent_node():
         {},
     )
 
-    issue = item["current"]["fullAgentToolTrialIssue"]
+    issue = item["current"]["toolChainIssue"]
 
     assert issue["agentRun"]["failedNode"] == "ModelRequestNode"
     assert "agent_run_interrupted" in issue["issueTypes"]
     assert "first_model_request_or_final_generation_interrupted" in issue["issueTypes"]
-    assert "very_slow_full_agent" in issue["issueTypes"]
+    assert "very_slow_agent_run" in issue["issueTypes"]
 
 
-def test_full_agent_tool_trial_issue_reports_slow_successful_agent_node():
+def test_tool_chain_issue_reports_slow_successful_agent_node():
     item = report._build_case_report(
         "slow-model#1",
         None,
@@ -1527,7 +1527,7 @@ def test_full_agent_tool_trial_issue_reports_slow_successful_agent_node():
             "elapsedMs": 95_000,
             "firstMessageMs": 3_000,
             "turnObservability": {
-                "routingPath": "full_agent",
+                "routingPath": "legacy_agent",
                 "routeDecision": {
                     "agentRun": {
                         "completed": True,
@@ -1553,7 +1553,7 @@ def test_full_agent_tool_trial_issue_reports_slow_successful_agent_node():
         {},
     )
 
-    issue = item["current"]["fullAgentToolTrialIssue"]
+    issue = item["current"]["toolChainIssue"]
 
     assert issue["slowestAgentNode"]["node"] == "ModelRequestNode"
     assert "slow_agent_node" in issue["issueTypes"]
@@ -1561,7 +1561,7 @@ def test_full_agent_tool_trial_issue_reports_slow_successful_agent_node():
     assert "slow_before_first_tool_or_final_generation" in issue["issueTypes"]
 
 
-def test_full_agent_tool_trial_issue_synthesizes_tool_sequence_from_observability():
+def test_tool_chain_issue_synthesizes_tool_sequence_from_observability():
     record = {
         "case": "tool-sequence",
         "stepIndex": 1,
@@ -1570,24 +1570,24 @@ def test_full_agent_tool_trial_issue_synthesizes_tool_sequence_from_observabilit
         "elapsedMs": 12_000,
         "thinkingText": "正在读取方案并整理职业方向承接...",
         "turnObservability": {
-            "routingPath": "full_agent",
+            "routingPath": "zhiyuan_agent_direct",
             "toolCalls": [
-                {"name": "analyze_current_career_direction"},
-                {"name": "query_volunteer_plan"},
-                {"name": "query_volunteer_plan"},
+                {"name": "explore_topic"},
+                {"name": "query_plan"},
+                {"name": "query_plan"},
             ],
         },
     }
 
-    issue = report._build_full_agent_tool_trial_issue(record)
+    issue = report._build_tool_chain_issue(record)
 
     assert issue is not None
     assert issue["toolNames"] == [
-        "analyze_current_career_direction",
-        "query_volunteer_plan",
-        "query_volunteer_plan",
+        "explore_topic",
+        "query_plan",
+        "query_plan",
     ]
-    assert issue["repeatedToolNames"] == ["query_volunteer_plan"]
+    assert issue["repeatedToolNames"] == ["query_plan"]
     assert "missing_progress_for_long_task" not in issue["issueTypes"]
 
 
@@ -1609,24 +1609,24 @@ def test_tool_trial_issue_detects_observed_tool_chain_without_routing_path():
                     "resultKind": "error",
                     "success": False,
                 },
-                {"name": "query_volunteer_plan"},
-                {"name": "query_volunteer_plan"},
+                {"name": "query_plan"},
+                {"name": "query_plan"},
             ],
         },
     }
 
-    issue = report._build_full_agent_tool_trial_issue(record)
+    issue = report._build_tool_chain_issue(record)
 
     assert issue is not None
     assert issue["actualRoutingPath"] is None
-    assert issue["repeatedToolNames"] == ["query_volunteer_plan"]
+    assert issue["repeatedToolNames"] == ["query_plan"]
     assert "tool_result_error" in issue["issueTypes"]
     assert "repeated_tool_calls" in issue["issueTypes"]
     assert "many_tool_calls" in issue["issueTypes"]
     assert "very_slow_tool_chain" in issue["issueTypes"]
 
 
-def test_markdown_summary_renders_full_agent_issue_table():
+def test_markdown_summary_renders_tool_chain_issue_table():
     item = report._build_case_report(
         "slow-plan#1",
         None,
@@ -1637,7 +1637,7 @@ def test_markdown_summary_renders_full_agent_issue_table():
             "responseText": "我先看当前方案。",
             "elapsedMs": 31_000,
             "turnObservability": {
-                "routingPath": "full_agent",
+                "routingPath": "zhiyuan_agent_direct",
                 "toolCalls": [
                     {"name": "preview_plan_action"},
                     {"name": "review_plan"},
@@ -1651,6 +1651,6 @@ def test_markdown_summary_renders_full_agent_issue_table():
 
     markdown = "\n".join(report._render_markdown_summary(summary))
 
-    assert "## Full Agent Tool Trial Issues" in markdown
+    assert "## Tool Chain Issues" in markdown
     assert "slow-plan#1" in markdown
     assert "preview_plan_action" in markdown

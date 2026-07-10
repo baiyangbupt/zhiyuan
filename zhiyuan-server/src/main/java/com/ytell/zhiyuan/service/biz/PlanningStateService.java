@@ -186,6 +186,8 @@ public class PlanningStateService {
     public PlanningStateDTO getPlanningState(Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         state.setSessionId(chatSessionId);
+        enrichCandidateMajorTaxonomyFields(state.getCandidatePoolState() == null
+                ? null : state.getCandidatePoolState().getItems());
         normalizeMajorGroupUnitMetadata(state);
         enrichReviewMetadata(state.getReviewState());
         normalizeReviewReasonCodes(buildReviewReasonAnalysisState(state), state.getReviewState());
@@ -440,8 +442,15 @@ public class PlanningStateService {
 
     public PlanningStateDTO updateCandidateViewState(Long chatSessionId, CandidateViewStateDTO req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
-        state.setCandidateViewState(normalizeCandidateViewState(req));
-        ReviewInvalidationPolicy.markCandidateViewStale(state);
+        CandidateViewStateDTO previous = normalizeCandidateViewState(state.getCandidateViewState());
+        CandidateViewStateDTO next = normalizeCandidateViewState(req);
+        state.setCandidateViewState(next);
+        boolean hardRegionChanged = syncHardRegionRequirementsFromCandidateViewChange(state, previous, next);
+        if (hardRegionChanged) {
+            ReviewInvalidationPolicy.markConstraintIntentStale(state);
+        } else {
+            ReviewInvalidationPolicy.markCandidateViewStale(state);
+        }
         state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         savePlanningState(chatSessionId, state);
@@ -900,6 +909,9 @@ public class PlanningStateService {
                     hardMode
             );
         }
+        if (hardMode) {
+            syncCandidateViewStateWithHardRegionRequirements(state);
+        }
 
         return hardMode ? touchAndSaveConstraint(chatSessionId, state) : touchAndSavePreference(chatSessionId, state);
     }
@@ -1095,7 +1107,8 @@ public class PlanningStateService {
         items.addAll(flattenCandidates(response.getSprints(), "冲"));
         items.addAll(flattenCandidates(response.getSafes(), "稳"));
         items.addAll(flattenCandidates(response.getProtects(), "保"));
-        List<CandidateItemDTO> normalizedItems = normalizeCandidateIdentities(candidatePoolState, items);
+        List<CandidateItemDTO> normalizedItems = enrichCandidateMajorTaxonomyFields(
+                normalizeCandidateIdentities(candidatePoolState, items));
         candidatePoolState.setItems(normalizedItems);
         recalculateCandidatePoolSummary(candidatePoolState);
         populateCandidatePoolSourceSummary(candidatePoolState, items, normalizedItems);
@@ -1157,6 +1170,60 @@ public class PlanningStateService {
             safe.getSort().setOrder("desc");
         }
         return safe;
+    }
+
+    private void syncCandidateViewStateWithHardRegionRequirements(PlanningStateDTO state) {
+        if (state == null || state.getConstraintState() == null
+                || state.getConstraintState().getHardConstraints() == null) {
+            return;
+        }
+        CandidateViewStateDTO viewState = normalizeCandidateViewState(state.getCandidateViewState());
+        state.setCandidateViewState(viewState);
+        CandidateViewStateDTO.Filters filters = viewState.getFilters();
+        HardConstraintsDTO hard = state.getConstraintState().getHardConstraints();
+        List<String> includeRegions = normalizeIntentStateValues(hard.getMustIncludeRegions());
+        List<String> excludeRegions = normalizeIntentStateValues(hard.getMustExcludeRegions());
+        addUniqueValues(filters.getProvinceNames(), includeRegions);
+        addUniqueValues(filters.getNegativeProvinceNames(), excludeRegions);
+        removeValues(filters.getNegativeProvinceNames(), includeRegions);
+        removeValues(filters.getProvinceNames(), excludeRegions);
+    }
+
+    private boolean syncHardRegionRequirementsFromCandidateViewChange(PlanningStateDTO state,
+                                                                      CandidateViewStateDTO previous,
+                                                                      CandidateViewStateDTO next) {
+        if (state == null || state.getConstraintState() == null
+                || state.getConstraintState().getHardConstraints() == null) {
+            return false;
+        }
+        HardConstraintsDTO hard = state.getConstraintState().getHardConstraints();
+        CandidateViewStateDTO.Filters previousFilters = normalizeCandidateViewState(previous).getFilters();
+        CandidateViewStateDTO.Filters nextFilters = normalizeCandidateViewState(next).getFilters();
+        boolean changed = removeHardRegionsNoLongerVisible(
+                hard.getMustIncludeRegions(),
+                previousFilters.getProvinceNames(),
+                nextFilters.getProvinceNames());
+        changed = removeHardRegionsNoLongerVisible(
+                hard.getMustExcludeRegions(),
+                previousFilters.getNegativeProvinceNames(),
+                nextFilters.getNegativeProvinceNames()) || changed;
+        return changed;
+    }
+
+    private boolean removeHardRegionsNoLongerVisible(List<String> hardRegions,
+                                                     List<String> previousVisible,
+                                                     List<String> nextVisible) {
+        List<String> previous = normalizeIntentStateValues(previousVisible);
+        List<String> next = normalizeIntentStateValues(nextVisible);
+        if (hardRegions == null || hardRegions.isEmpty() || previous.isEmpty()) {
+            return false;
+        }
+        List<String> removed = previous.stream()
+                .filter(value -> !next.contains(value))
+                .collect(Collectors.toList());
+        int before = hardRegions.size();
+        removeValues(hardRegions, removed);
+        return hardRegions.size() != before;
     }
 
     private Map<String, Integer> buildRequiredTierCounts(Long chatSessionId, VolunteerRecommendListResponse response) {
@@ -1354,6 +1421,7 @@ public class PlanningStateService {
     }
 
     public CandidatePoolQueryRes queryCandidatePool(Long tenantId, Long chatSessionId, CandidatePoolQueryReq req) {
+        CandidatePoolQueryReq safeReq = req == null ? new CandidatePoolQueryReq() : req;
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         if (state.getCandidateViewState() == null) {
             state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
@@ -1363,26 +1431,27 @@ public class PlanningStateService {
                 state.getCandidatePoolState(),
                 mergeOverlayIntoCandidates(
                         state.getCandidatePoolState().getItems(),
-                        state.getRecommendationOverlayState()));
+                        state.getRecommendationOverlayState(),
+                        state));
         List<CandidateItemDTO> filtered = items.stream()
-                .filter(item -> matchesTier(item, req))
-                .filter(item -> matchesProvince(item, req))
-                .filter(item -> matchesCity(item, req))
-                .filter(item -> matchesSchoolKeyword(item, req))
-                .filter(item -> matchesMajorKeyword(item, req))
-                .filter(item -> matchesSchoolTags(item, req))
-                .filter(item -> matchesMajorTags(item, req))
+                .filter(item -> matchesTier(item, safeReq))
+                .filter(item -> matchesProvince(item, safeReq))
+                .filter(item -> matchesCity(item, safeReq))
+                .filter(item -> matchesSchoolKeyword(item, safeReq))
+                .filter(item -> matchesMajorKeyword(item, safeReq))
+                .filter(item -> matchesSchoolTags(item, safeReq))
+                .filter(item -> matchesMajorTags(item, safeReq))
                 .collect(Collectors.toList());
 
-        Comparator<CandidateItemDTO> comparator = buildComparator(req.getSort() != null ? req.getSort().getField() : "finalScore");
-        if ("asc".equalsIgnoreCase(req.getSort() != null ? req.getSort().getOrder() : "desc")) {
+        Comparator<CandidateItemDTO> comparator = buildComparator(safeReq.getSort() != null ? safeReq.getSort().getField() : "finalScore");
+        if ("asc".equalsIgnoreCase(safeReq.getSort() != null ? safeReq.getSort().getOrder() : "desc")) {
             filtered = filtered.stream().sorted(comparator).collect(Collectors.toList());
         } else {
             filtered = filtered.stream().sorted(comparator.reversed()).collect(Collectors.toList());
         }
 
-        int page = req.getPage() == null || req.getPage() < 1 ? 1 : req.getPage();
-        int pageSize = req.getPageSize() == null || req.getPageSize() < 1 ? 20 : req.getPageSize();
+        int page = safeReq.getPage() == null || safeReq.getPage() < 1 ? 1 : safeReq.getPage();
+        int pageSize = safeReq.getPageSize() == null || safeReq.getPageSize() < 1 ? 20 : safeReq.getPageSize();
         int fromIndex = Math.min((page - 1) * pageSize, filtered.size());
         int toIndex = Math.min(fromIndex + pageSize, filtered.size());
 
@@ -1602,12 +1671,14 @@ public class PlanningStateService {
         Map<String, OrderedItemDTO> existing = orderedPlanState.getItems().stream()
                 .collect(Collectors.toMap(OrderedItemDTO::getVolunteerId, item -> item, (left, right) -> left, LinkedHashMap::new));
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+        syncWorkingPlanWithEffectiveCandidatesForConfirmedRequirements(state, effectiveCandidates);
         List<OrderedItemDTO> items = buildOrderedItemsFromWorkingPlan(state.getDraftPlanState(), state.getCandidatePoolState(), effectiveCandidates, existing,
                 Boolean.TRUE.equals(safeReq.getRegroupByTier()));
         orderedPlanState.setItems(items);
         if (isMajorGroupMode(state.getCandidatePoolState())) {
             orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(items, state.getDraftPlanState(), effectiveCandidates));
         }
+        syncOrderedPlanWithEffectiveCandidatesForConfirmedRequirements(state, effectiveCandidates);
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
         return saveOrderedState(chatSessionId, state);
@@ -2004,6 +2075,7 @@ public class PlanningStateService {
                 state.getCandidatePoolState().getItems(),
                 state.getRecommendationOverlayState(),
                 state);
+        candidates = applyConfirmedPlanRequirements(candidates, state.getSessionId(), state);
         InitialRecommendationSelectionState selectionState = buildInitialRecommendationSelectionState(state, candidates);
         recommendationState.getSummary().setTotal(selectionState.selected.size());
         recommendationState.getSummary().setLocalProtectCount(countLocalProtectCandidates(selectionState.selected,
@@ -2045,6 +2117,7 @@ public class PlanningStateService {
                 state.getCandidatePoolState().getItems(),
                 state.getRecommendationOverlayState(),
                 state);
+        candidates = applyConfirmedPlanRequirements(candidates, state.getSessionId(), state);
         MajorGroupInitialRecommendationSelection selection = buildMajorGroupInitialRecommendationSelection(state, candidates);
         recommendationState.setUnits(Lists.newArrayList(selection.selectedUnits));
 
@@ -7467,7 +7540,8 @@ public class PlanningStateService {
             items.addAll(flattenCandidates(response.getSafes(), "稳"));
             items.addAll(flattenCandidates(response.getProtects(), "保"));
         }
-        overlayCandidatePoolState.setItems(normalizeCandidateIdentities(overlayCandidatePoolState, items));
+        overlayCandidatePoolState.setItems(enrichCandidateMajorTaxonomyFields(
+                normalizeCandidateIdentities(overlayCandidatePoolState, items)));
         state.setRecommendationOverlayState(buildRecommendationOverlayState(overlayCandidatePoolState, state.getVersion()));
         state.getStaleFlags().setRecommendationOverlay(false);
         savePlanningState(chatSessionId, state);
@@ -7494,12 +7568,13 @@ public class PlanningStateService {
         if (refreshOverlayIfNeeded && tenantId != null && shouldRefreshRecommendationOverlay(state)) {
             refreshRecommendationOverlay(tenantId, chatSessionId, state);
         }
-        return normalizeCandidateIdentities(
+        List<CandidateItemDTO> candidates = enrichCandidateMajorTaxonomyFields(normalizeCandidateIdentities(
                 state.getCandidatePoolState(),
                 mergeOverlayIntoCandidates(
                         state.getCandidatePoolState().getItems(),
                         state.getRecommendationOverlayState(),
-                        state));
+                        state)));
+        return applyConfirmedPlanRequirements(candidates, chatSessionId, state);
     }
 
     private List<CandidateItemDTO> mergeOverlayIntoCandidates(List<CandidateItemDTO> candidates,
@@ -7541,6 +7616,162 @@ public class PlanningStateService {
             merged.add(item);
         }
         return applyFutureDevelopmentScores(merged, state);
+    }
+
+    private List<CandidateItemDTO> applyConfirmedPlanRequirements(List<CandidateItemDTO> candidates,
+                                                                  Long chatSessionId,
+                                                                  PlanningStateDTO state) {
+        List<CandidateItemDTO> source = candidates == null ? Lists.newArrayList() : candidates;
+        boolean hasHardConstraints = RepairCandidateEligibility.hasConfirmedHardConstraints(state);
+        CreateSessionReq.TuitionRange tuitionRange = loadSessionTuitionRange(chatSessionId);
+        if (!hasHardConstraints && !hasActiveTuitionRange(tuitionRange)) {
+            return source;
+        }
+        return source.stream()
+                .filter(candidate -> !hasHardConstraints
+                        || RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
+                .filter(candidate -> isEligibleForTuitionRange(candidate, tuitionRange))
+                .collect(Collectors.toList());
+    }
+
+    private CreateSessionReq.TuitionRange loadSessionTuitionRange(Long chatSessionId) {
+        if (chatSessionId == null) {
+            return null;
+        }
+        ChatSessionExtraData userScoreData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                chatSessionId,
+                ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        if (userScoreData == null || Strings.isNullOrEmpty(userScoreData.getDataValue())) {
+            return null;
+        }
+        try {
+            CreateSessionReq scoreDetail = JSONObject.parseObject(userScoreData.getDataValue(), CreateSessionReq.class);
+            return scoreDetail == null ? null : scoreDetail.getTuitionRange();
+        } catch (Exception e) {
+            log.warn("Skip session tuition range for planning effective candidates: chatSessionId={}", chatSessionId, e);
+            return null;
+        }
+    }
+
+    private boolean hasActiveTuitionRange(CreateSessionReq.TuitionRange tuitionRange) {
+        if (tuitionRange == null) {
+            return false;
+        }
+        Integer min = tuitionRange.getMin();
+        Integer max = tuitionRange.getMax();
+        return (min != null && min > 0) || (max != null && max > 0);
+    }
+
+    private boolean isEligibleForTuitionRange(CandidateItemDTO candidate,
+                                              CreateSessionReq.TuitionRange tuitionRange) {
+        if (!hasActiveTuitionRange(tuitionRange) || candidate == null) {
+            return true;
+        }
+        Integer tuition = candidate.getTuitionPerYear();
+        if (tuition == null || tuition <= 0) {
+            return true;
+        }
+        Integer min = tuitionRange.getMin();
+        Integer max = tuitionRange.getMax();
+        return (min == null || min <= 0 || tuition >= min)
+                && (max == null || max <= 0 || tuition <= max);
+    }
+
+    private void syncWorkingPlanWithEffectiveCandidatesForConfirmedRequirements(PlanningStateDTO state,
+                                                                                List<CandidateItemDTO> effectiveCandidates) {
+        if (state == null
+                || state.getDraftPlanState() == null
+                || !hasConfirmedPlanRequirements(state)) {
+            return;
+        }
+        Set<String> effectiveVolunteerIds = defaultCandidates(effectiveCandidates).stream()
+                .map(CandidateItemDTO::getVolunteerId)
+                .filter(id -> !Strings.isNullOrEmpty(id))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        DraftPlanStateDTO draft = state.getDraftPlanState();
+        draft.setItems(defaultDraftItems(draft.getItems()).stream()
+                .filter(item -> item != null
+                        && !Strings.isNullOrEmpty(item.getVolunteerId())
+                        && effectiveVolunteerIds.contains(item.getVolunteerId()))
+                .collect(Collectors.toList()));
+        syncWorkingPlanUnitsWithItems(draft, effectiveCandidates, state.getCandidatePoolState());
+        recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
+    }
+
+    private void syncOrderedPlanWithEffectiveCandidatesForConfirmedRequirements(PlanningStateDTO state,
+                                                                                List<CandidateItemDTO> effectiveCandidates) {
+        if (state == null
+                || state.getOrderedPlanState() == null
+                || !hasConfirmedPlanRequirements(state)) {
+            return;
+        }
+        Set<String> effectiveVolunteerIds = defaultCandidates(effectiveCandidates).stream()
+                .map(CandidateItemDTO::getVolunteerId)
+                .filter(id -> !Strings.isNullOrEmpty(id))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        OrderedPlanStateDTO orderedPlanState = state.getOrderedPlanState();
+        orderedPlanState.setItems(OrderedPlanPositioningSupport.rebuildItems(defaultOrderedItems(orderedPlanState.getItems()).stream()
+                .filter(item -> item != null
+                        && !Strings.isNullOrEmpty(item.getVolunteerId())
+                        && effectiveVolunteerIds.contains(item.getVolunteerId()))
+                .collect(Collectors.toList())));
+        orderedPlanState.setUnits(defaultOrderedUnits(orderedPlanState.getUnits()).stream()
+                .map(unit -> syncOrderedUnitWithEffectiveVolunteerIds(unit, effectiveVolunteerIds))
+                .filter(Objects::nonNull)
+                .filter(unit -> isOrderedUnitEligibleForConfirmedRequirements(unit, state))
+                .collect(Collectors.toList()));
+    }
+
+    private boolean hasConfirmedPlanRequirements(PlanningStateDTO state) {
+        return RepairCandidateEligibility.hasConfirmedHardConstraints(state)
+                || hasActiveTuitionRange(loadSessionTuitionRange(state == null ? null : state.getSessionId()));
+    }
+
+    private OrderedUnitDTO syncOrderedUnitWithEffectiveVolunteerIds(OrderedUnitDTO unit,
+                                                                    Set<String> effectiveVolunteerIds) {
+        if (unit == null || effectiveVolunteerIds == null || effectiveVolunteerIds.isEmpty()) {
+            return unit;
+        }
+        List<PlanningUnitMajorDTO> majors = defaultPlanningUnitMajors(unit.getMajorItems());
+        if (majors.isEmpty()) {
+            return unit;
+        }
+        List<PlanningUnitMajorDTO> filteredMajors = majors.stream()
+                .filter(major -> major != null
+                        && !Strings.isNullOrEmpty(major.getVolunteerId())
+                        && effectiveVolunteerIds.contains(major.getVolunteerId()))
+                .collect(Collectors.toList());
+        if (filteredMajors.isEmpty()) {
+            return null;
+        }
+        unit.setMajorItems(filteredMajors);
+        unit.setTotalMajorCount(filteredMajors.size());
+        return unit;
+    }
+
+    private boolean isOrderedUnitEligibleForConfirmedRequirements(OrderedUnitDTO unit,
+                                                                  PlanningStateDTO state) {
+        if (unit == null) {
+            return false;
+        }
+        PlanningUnitDTO planningUnit = new PlanningUnitDTO();
+        planningUnit.setUnitId(unit.getUnitId());
+        planningUnit.setPlanSchoolDataId(unit.getPlanSchoolDataId());
+        planningUnit.setSchoolId(unit.getSchoolId());
+        planningUnit.setSchoolName(unit.getSchoolName());
+        planningUnit.setProvinceName(unit.getProvinceName());
+        planningUnit.setCityName(unit.getCityName());
+        planningUnit.setSchoolLevel(unit.getSchoolLevel());
+        planningUnit.setSchoolNature(unit.getSchoolNature());
+        planningUnit.setSchoolCategory(unit.getSchoolCategory());
+        planningUnit.setTier(unit.getTier());
+        planningUnit.setSchoolEnrollRatio(unit.getSchoolEnrollRatio());
+        planningUnit.setFinalScore(unit.getFinalScore());
+        planningUnit.setAdmissionRatio(unit.getAdmissionRatio());
+        planningUnit.setTotalMajorCount(unit.getTotalMajorCount());
+        planningUnit.setSelectedMajors(defaultPlanningUnitMajors(unit.getMajorItems()));
+        planningUnit.setAllMajors(defaultPlanningUnitMajors(unit.getMajorItems()));
+        return RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(planningUnit, state);
     }
 
     private List<CandidateItemDTO> applyFutureDevelopmentScores(List<CandidateItemDTO> candidates,
@@ -8058,8 +8289,16 @@ public class PlanningStateService {
         return null;
     }
 
+    private List<CandidateItemDTO> enrichCandidateMajorTaxonomyFields(List<CandidateItemDTO> candidates) {
+        for (CandidateItemDTO item : defaultCandidates(candidates)) {
+            resolveMajorDiscipline(item);
+            resolveMajorCategory(item);
+        }
+        return candidates;
+    }
+
     private MajorExtraDataVO resolveMajorExtraData(CandidateItemDTO item) {
-        if (item == null) {
+        if (item == null || majorExtraDataManager == null) {
             return null;
         }
         Integer secondCategoryId = parseInteger(item.getMajorSubCategoryId());

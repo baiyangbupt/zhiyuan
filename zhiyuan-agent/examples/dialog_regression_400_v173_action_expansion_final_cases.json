@@ -1,0 +1,452 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v1.73 action expansion final-action checks.",
+    "notes": "Run with --clone-backend-chat-session. These cases expand current-plan action coverage with spoken/deictic remove, replace, move, sort, and review-followup replacement, and verify backend mutation after confirmation."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "preview_plan_action",
+      "confirm_pending",
+      "realistic_user_input",
+      "final_action"
+    ],
+    "coverage": [
+      "spoken_style",
+      "ellipsis",
+      "current_plan_action",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v173-position-unit-remove-final-action",
+      "sessionId": "9904731",
+      "coverage": [
+        "remove_units",
+        "position_reference",
+        "major_group_operation",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "第三个专业组先不要了，拿掉看看",
+          "assertContainsAny": [
+            "第3",
+            "第三",
+            "专业组",
+            "移出",
+            "拿掉",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "preview_plan_action"
+          ],
+          "assertActionFamiliesContain": [
+            "remove_units"
+          ],
+          "maxToolCallCount": 2
+        },
+        {
+          "prompt": "确认拿掉",
+          "assertContainsAny": [
+            "已移出",
+            "已执行",
+            "已更新",
+            "刷新"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261000573"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v173-targeted-high-tuition-replace-final-action",
+      "sessionId": "9904732",
+      "coverage": [
+        "replace_units",
+        "targeted_current_plan_item",
+        "high_tuition",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "青岛理工那个中外合作建筑太贵了，换个便宜点的先看看",
+          "assertContainsAny": [
+            "青岛理工",
+            "中外合作",
+            "便宜",
+            "替换",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "preview_plan_action"
+          ],
+          "assertActionFamiliesContain": [
+            "replace_units"
+          ],
+          "maxToolCallCount": 2
+        },
+        {
+          "prompt": "就这么换吧",
+          "assertContainsAny": [
+            "已替换",
+            "已完成替换",
+            "已更新",
+            "刷新"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "changedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261001095"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v173-position-unit-move-final-action",
+      "sessionId": "9904733",
+      "coverage": [
+        "move_ordered_unit",
+        "position_reference",
+        "major_group_operation",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "把第三个专业组挪到最前面",
+          "assertContainsAny": [
+            "第3",
+            "第三",
+            "最前",
+            "移动",
+            "挪到",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "preview_plan_action"
+          ],
+          "assertActionFamiliesContain": [
+            "move_ordered_unit"
+          ],
+          "maxToolCallCount": 2
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已移动",
+            "已更新",
+            "第1",
+            "第一",
+            "刷新"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units.0.unitId",
+              "changedFromBefore": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v173-school-level-sort-final-action",
+      "sessionId": "9904734",
+      "coverage": [
+        "sort_ordered_plan",
+        "school_level",
+        "spoken_sort",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "按好学校优先排一下，先给我看",
+          "assertContainsAny": [
+            "院校",
+            "学校",
+            "排序",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "preview_plan_action"
+          ],
+          "assertActionFamiliesContain": [
+            "sort_ordered_plan"
+          ],
+          "maxToolCallCount": 2
+        },
+        {
+          "prompt": "采纳这个排序",
+          "assertContainsAny": [
+            "已排序",
+            "已按要求",
+            "已更新",
+            "刷新"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "changedFromBefore": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v173-review-followup-high-tuition-replace-final-action",
+      "sessionId": "9904735",
+      "coverage": [
+        "review_then_plan_action",
+        "replace_units",
+        "short_followup_reference",
+        "high_tuition",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "这版方案哪些地方要处理下",
+          "assertContainsAny": [
+            "问题",
+            "风险",
+            "处理",
+            "高收费",
+            "中外合作"
+          ],
+          "assertNoFollowups": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "那高收费的换便宜点",
+          "assertContainsAny": [
+            "高收费",
+            "便宜",
+            "替换",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "preview_plan_action"
+          ],
+          "assertActionFamiliesContain": [
+            "replace_units"
+          ],
+          "maxToolCallCount": 2
+        },
+        {
+          "prompt": "执行",
+          "assertContainsAny": [
+            "已替换",
+            "已完成替换",
+            "已更新",
+            "刷新"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "changedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261001095"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

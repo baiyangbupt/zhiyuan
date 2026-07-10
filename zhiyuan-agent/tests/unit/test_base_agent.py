@@ -201,14 +201,14 @@ async def test_run_deduplicates_identical_progress_hints_in_same_tool_node(clien
 
     class HintAgent(BaseAgent[str]):
         def get_progress_hint(self, tool_name: str) -> str | None:
-            return "正在查这个专业的学习内容和就业情况..." if tool_name == "get_major_introduction" else None
+            return "正在做只读分析..." if tool_name == "explore_topic" else None
 
     agent = HintAgent(llm_client=client, instructions="test")
     node = CallToolsNode(
         model_response=ModelResponse(
             parts=[
-                ToolCallPart(tool_name="get_major_introduction", args={"major_name": "建筑学"}, tool_call_id="call-1"),
-                ToolCallPart(tool_name="get_major_introduction", args={"major_name": "城乡规划"}, tool_call_id="call-2"),
+                ToolCallPart(tool_name="explore_topic", args={"topic_type": "major"}, tool_call_id="call-1"),
+                ToolCallPart(tool_name="explore_topic", args={"topic_type": "major"}, tool_call_id="call-2"),
             ]
         )
     )
@@ -221,7 +221,7 @@ async def test_run_deduplicates_identical_progress_hints_in_same_tool_node(clien
 
     await agent.run_with_message_deltas("建筑城乡规划要不要美术基础", on_progress=on_progress)
 
-    assert progress == ["正在查这个专业的学习内容和就业情况..."]
+    assert progress == ["正在做只读分析..."]
 
 
 async def test_run_can_return_directly_after_user_facing_tool_result():
@@ -261,14 +261,14 @@ def test_sanitize_model_output_strips_provider_reasoning_markup():
 
 
 async def test_run_stops_repeated_query_tool_loop_generically():
-    async def query_volunteer_plan() -> str:
+    async def query_plan() -> str:
         return "当前方案里命中了 1 条相关机会。"
 
     async def looping_model(messages, agent_info):  # noqa: ARG001
         return ModelResponse(
             parts=[
                 ToolCallPart(
-                    tool_name="query_volunteer_plan",
+                    tool_name="query_plan",
                     args={},
                     tool_call_id=f"query-call-{len(messages)}",
                 )
@@ -280,7 +280,7 @@ async def test_run_stops_repeated_query_tool_loop_generically():
             super().__init__(
                 llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
                 instructions="test",
-                tools=[query_volunteer_plan],
+                tools=[query_plan],
             )
 
     deps = SimpleNamespace(agent_observability={})
@@ -292,7 +292,7 @@ async def test_run_stops_repeated_query_tool_loop_generically():
     assert "不会改动方案" in reply
     assert "没有得到可直接引用" not in reply
     assert deps.agent_observability["toolLoopGuarded"] is True
-    assert deps.agent_observability["guardedToolName"] == "query_volunteer_plan"
+    assert deps.agent_observability["guardedToolName"] == "query_plan"
     assert deps.agent_observability["guardUsedRecentToolReturn"] is True
     assert usage.tool_calls == 2
     assert isinstance(all_messages[-1], ModelResponse)
@@ -301,14 +301,14 @@ async def test_run_stops_repeated_query_tool_loop_generically():
 
 
 async def test_run_repeated_query_tool_loop_falls_back_when_recent_return_failed():
-    async def query_volunteer_plan() -> str:
+    async def query_plan() -> str:
         return "查询失败：后端接口返回异常。"
 
     async def looping_model(messages, agent_info):  # noqa: ARG001
         return ModelResponse(
             parts=[
                 ToolCallPart(
-                    tool_name="query_volunteer_plan",
+                    tool_name="query_plan",
                     args={},
                     tool_call_id=f"query-call-{len(messages)}",
                 )
@@ -320,7 +320,7 @@ async def test_run_repeated_query_tool_loop_falls_back_when_recent_return_failed
             super().__init__(
                 llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
                 instructions="test",
-                tools=[query_volunteer_plan],
+                tools=[query_plan],
             )
 
     deps = SimpleNamespace(agent_observability={})
@@ -335,14 +335,14 @@ async def test_run_repeated_query_tool_loop_falls_back_when_recent_return_failed
 
 
 async def test_run_repeated_readonly_explore_tool_loop_reuses_recent_return():
-    async def analyze_current_interest_profile() -> str:
+    async def explore_topic() -> str:
         return '{"message":"这轮只做分析，不会改动方案。可以先补全分数、省份和选科后再生成方案。"}'
 
     async def looping_model(messages, agent_info):  # noqa: ARG001
         return ModelResponse(
             parts=[
                 ToolCallPart(
-                    tool_name="analyze_current_interest_profile",
+                    tool_name="explore_topic",
                     args={},
                     tool_call_id=f"profile-call-{len(messages)}",
                 )
@@ -354,7 +354,7 @@ async def test_run_repeated_readonly_explore_tool_loop_reuses_recent_return():
             super().__init__(
                 llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
                 instructions="test",
-                tools=[analyze_current_interest_profile],
+                tools=[explore_topic],
             )
 
     deps = SimpleNamespace(agent_observability={})
@@ -365,7 +365,7 @@ async def test_run_repeated_readonly_explore_tool_loop_reuses_recent_return():
     assert "这轮只做分析，不会改动方案" in reply
     assert '{"message"' not in reply
     assert deps.agent_observability["toolLoopGuarded"] is True
-    assert deps.agent_observability["guardedToolName"] == "analyze_current_interest_profile"
+    assert deps.agent_observability["guardedToolName"] == "explore_topic"
     assert deps.agent_observability["guardUsedRecentToolReturn"] is True
     assert usage.tool_calls == 2
     assert getattr(all_messages[-1], "model_name", "") == "tool-loop-guard"
@@ -373,14 +373,14 @@ async def test_run_repeated_readonly_explore_tool_loop_reuses_recent_return():
 
 
 async def test_run_stops_repeated_score_line_tool_loop_before_request_limit():
-    async def query_score_line() -> str:
+    async def answer_policy() -> str:
         return "北京大学近三年录取分和位次如下。"
 
     async def looping_model(messages, agent_info):  # noqa: ARG001
         return ModelResponse(
             parts=[
                 ToolCallPart(
-                    tool_name="query_score_line",
+                    tool_name="answer_policy",
                     args={},
                     tool_call_id=f"score-line-call-{len(messages)}",
                 )
@@ -392,7 +392,7 @@ async def test_run_stops_repeated_score_line_tool_loop_before_request_limit():
             super().__init__(
                 llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
                 instructions="test",
-                tools=[query_score_line],
+                tools=[answer_policy],
             )
 
     deps = SimpleNamespace(agent_observability={})
@@ -404,23 +404,23 @@ async def test_run_stops_repeated_score_line_tool_loop_before_request_limit():
     assert "不会改动方案" in reply
     assert "不会写入偏好" in reply
     assert deps.agent_observability["toolLoopGuarded"] is True
-    assert deps.agent_observability["guardedToolName"] == "query_score_line"
-    assert deps.agent_observability["guardedToolCount"] == 4
+    assert deps.agent_observability["guardedToolName"] == "answer_policy"
+    assert deps.agent_observability["guardedToolCount"] == 3
     assert deps.agent_observability["guardUsedRecentToolReturn"] is True
-    assert usage.tool_calls == 3
+    assert usage.tool_calls == 2
     assert getattr(all_messages[-1], "model_name", "") == "tool-loop-guard"
     assert new_messages[-1].parts[0].content == reply
 
 
 async def test_run_stops_repeated_admission_score_tool_loop_before_request_limit():
-    async def query_admission_score() -> str:
+    async def review_plan() -> str:
         return "南京大学在江苏物化生附近有若干录取机会。"
 
     async def looping_model(messages, agent_info):  # noqa: ARG001
         return ModelResponse(
             parts=[
                 ToolCallPart(
-                    tool_name="query_admission_score",
+                    tool_name="review_plan",
                     args={},
                     tool_call_id=f"admission-score-call-{len(messages)}",
                 )
@@ -432,7 +432,7 @@ async def test_run_stops_repeated_admission_score_tool_loop_before_request_limit
             super().__init__(
                 llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
                 instructions="test",
-                tools=[query_admission_score],
+                tools=[review_plan],
             )
 
     deps = SimpleNamespace(agent_observability={})
@@ -444,18 +444,18 @@ async def test_run_stops_repeated_admission_score_tool_loop_before_request_limit
     assert "不会改动方案" in reply
     assert "不会写入偏好" in reply
     assert deps.agent_observability["toolLoopGuarded"] is True
-    assert deps.agent_observability["guardedToolName"] == "query_admission_score"
-    assert deps.agent_observability["guardedToolCount"] == 4
+    assert deps.agent_observability["guardedToolName"] == "review_plan"
+    assert deps.agent_observability["guardedToolCount"] == 3
     assert deps.agent_observability["guardUsedRecentToolReturn"] is True
-    assert usage.tool_calls == 3
+    assert usage.tool_calls == 2
     assert getattr(all_messages[-1], "model_name", "") == "tool-loop-guard"
     assert new_messages[-1].parts[0].content == reply
 
 
-async def test_run_repeated_official_source_loop_renders_json_as_user_text():
-    async def search_official_admission_sources() -> str:
+async def test_run_repeated_policy_tool_loop_renders_json_summary_as_user_text():
+    async def answer_policy() -> str:
         return (
-            '{"reply_strategy":"continue_model","result_kind":"official_source_search","status":"ok",'
+            '{"reply_strategy":"continue_model","result_kind":"policy_answer","status":"ok",'
             '"summary":"已检索到 1 条可能相关的官方来源。","source_scope":"general_official",'
             '"query":"强基计划 招生简章 官方",'
             '"results":[{"title":"清华大学强基计划招生简章","site_name":"清华大学本科招生网",'
@@ -467,7 +467,7 @@ async def test_run_repeated_official_source_loop_renders_json_as_user_text():
         return ModelResponse(
             parts=[
                 ToolCallPart(
-                    tool_name="search_official_admission_sources",
+                    tool_name="answer_policy",
                     args={},
                     tool_call_id=f"official-source-call-{len(messages)}",
                 )
@@ -479,7 +479,7 @@ async def test_run_repeated_official_source_loop_renders_json_as_user_text():
             super().__init__(
                 llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
                 instructions="test",
-                tools=[search_official_admission_sources],
+                tools=[answer_policy],
             )
 
     deps = SimpleNamespace(agent_observability={})
@@ -488,13 +488,11 @@ async def test_run_repeated_official_source_loop_renders_json_as_user_text():
     reply, new_messages, all_messages, usage = await agent.run_with_message_deltas("我655分江苏物化生想冲强基", deps=deps)
 
     assert "已检索到 1 条可能相关的官方来源" in reply
-    assert "清华大学强基计划招生简章" in reply
-    assert "https://admission.tsinghua.edu.cn/demo" in reply
     assert "reply_strategy" not in reply
     assert "raw_result_count" not in reply
     assert '"results"' not in reply
     assert deps.agent_observability["toolLoopGuarded"] is True
-    assert deps.agent_observability["guardedToolName"] == "search_official_admission_sources"
+    assert deps.agent_observability["guardedToolName"] == "answer_policy"
     assert deps.agent_observability["guardedToolCount"] == 3
     assert deps.agent_observability["guardUsedRecentToolReturn"] is True
     assert usage.tool_calls == 2

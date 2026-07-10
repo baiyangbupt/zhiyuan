@@ -457,7 +457,7 @@ def test_ws_compat_structured_session_query_state_returns_rich_text_without_work
     llm_client.model = MagicMock()
     llm_client.model_settings = {}
     fake_agent = _PlanStatusToolAgent()
-    with patch("app.service.ChatAgent", return_value=fake_agent):
+    with patch("app.service.ZhiyuanAgent", return_value=fake_agent):
         service = ChatService(llm_client, ChatHistoryStore(str(tmp_path / "history.db")))
     client.app.state.chat_service = service
 

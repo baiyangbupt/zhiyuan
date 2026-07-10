@@ -1,8 +1,8 @@
 {
   "metadata": {
     "release": "4.0.0",
-    "purpose": "Realistic spoken/elliptical user style cases for ZhiyuanAgent shadow validation.",
-    "notes": "Keep formal written cases, but validate everyday short utterances, references, and abbreviated follow-ups. Run with ZHIYUAN_AGENT_POC_SHADOW=1 to assert the 4.0 agent shadow tool choice."
+    "purpose": "Realistic spoken/elliptical user style cases for ZhiyuanAgent direct-chain validation.",
+    "notes": "Keep formal written cases, but validate everyday short utterances, references, and abbreviated follow-ups against the primary 4.0 direct chain."
   },
   "defaults": {
     "flow": [
@@ -15,7 +15,7 @@
       "realistic_user_input",
       "spoken_style",
       "ellipsis",
-      "zhiyuan_agent_shadow"
+      "zhiyuan_agent_direct"
     ],
     "assertPlanStyle": true,
     "cloneBackendStateFromSessionId": "26",
@@ -50,8 +50,8 @@
       ],
       "warnElapsedSeconds": 60,
       "maxElapsedSeconds": 180,
-      "expectedZhiyuanAgentPocStatus": "success",
-      "maxZhiyuanAgentPocToolCallCount": 2
+      "maxToolCallCount": 2,
+      "expectedRoutingPath": "zhiyuan_agent_direct"
     }
   },
   "cases": [
@@ -74,11 +74,8 @@
             "建议"
           ],
           "assertNoFollowups": true,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "review_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ]
         }
       ]
@@ -102,11 +99,8 @@
             "处理"
           ],
           "assertNoFollowups": true,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "review_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ]
         },
         {
@@ -118,13 +112,7 @@
             "采纳"
           ],
           "assertFollowupType": "pendingConfirmationCard",
-          "assertFollowupCount": 1,
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
-          ]
+          "assertFollowupCount": 1
         }
       ]
     },
@@ -149,11 +137,8 @@
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ]
         }
       ]
@@ -164,6 +149,8 @@
       "coverage": [
         "plan_action",
         "attribute_filter_remove",
+        "no_formal_plan",
+        "requirement_fallback",
         "school_nature",
         "current_plan_adjustment",
         "current_plan_anchor",
@@ -181,11 +168,8 @@
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ]
         }
       ]
@@ -208,11 +192,8 @@
             "没有"
           ],
           "assertNoFollowups": true,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "query_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ]
         }
       ]
@@ -236,11 +217,8 @@
             "先"
           ],
           "assertNoFollowups": true,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "review_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ]
         }
       ]
@@ -267,11 +245,8 @@
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ]
         }
       ]
@@ -282,6 +257,8 @@
       "coverage": [
         "plan_action",
         "attribute_filter_remove",
+        "no_formal_plan",
+        "requirement_fallback",
         "program_type",
         "cooperative_program",
         "current_plan_adjustment",
@@ -300,11 +277,8 @@
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ]
         }
       ]
@@ -324,16 +298,13 @@
           "assertContainsAny": [
             "第3",
             "移出",
-            "确认",
-            "采纳"
+            "正式方案",
+            "不能",
+            "生成方案"
           ],
-          "assertFollowupType": "pendingConfirmationCard",
-          "assertFollowupCount": 1,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "assertNoFollowups": true,
+          "expectedToolNames": [
             "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ]
         }
       ]
@@ -359,11 +330,8 @@
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ]
         }
       ]
@@ -387,11 +355,8 @@
             "取舍"
           ],
           "assertNoFollowups": true,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "answer_policy"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ]
         }
       ]
@@ -419,11 +384,8 @@
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ]
         }
       ]
@@ -446,11 +408,8 @@
             "适合"
           ],
           "assertNoFollowups": true,
-          "expectedZhiyuanAgentPocFirstToolNames": [
+          "expectedToolNames": [
             "explore_topic"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ]
         }
       ]

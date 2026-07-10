@@ -1,0 +1,116 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v1.50 visible candidate-view and final action checks for explicit region requirements.",
+    "notes": "The base candidate pool must remain recoverable while candidateViewState exposes the visible filter and ordered plan generation applies the confirmed requirement. Run with --clone-backend-chat-session when using cloned sessions, otherwise ordered-plan/generate can fail with backend 404 because only extra-data was cloned."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "confirm_pending",
+      "candidate_view_state",
+      "final_action"
+    ],
+    "coverage": [
+      "explicit_requirement",
+      "visible_candidate_filter",
+      "base_candidate_pool_recoverable",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v150-exclude-shandong-visible-filter-final-action",
+      "sessionId": "9904501",
+      "prompts": [
+        {
+          "prompt": "山东的不要",
+          "assertContainsAny": [
+            "山东",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "山东",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "candidateViewState.filters.negativeProvinceNames",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "山东"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

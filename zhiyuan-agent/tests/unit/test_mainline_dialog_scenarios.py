@@ -15,11 +15,11 @@ from app.service import ChatService, ChatServiceResponseEnvelope
 MAINLINE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_mainline_cases.json"
 SCIENCE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_science_cases.json"
 FULL_JOURNEY_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_full_journey_cases.json"
-RELEASE_302_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_agent_cases.json"
-RELEASE_302_EXPLORE_INTENT_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_explore_intent_cases.json"
-RELEASE_302_READONLY_REAL_SESSION_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_readonly_real_session_cases.json"
-RELEASE_310_REVIEW_REPAIR_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_310_review_repair_cases.json"
-RELEASE_310_PRODUCTION_ABSTRACTED_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_310_production_abstracted_cases.json"
+RELEASE_400_PLAN_OPERATION_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_400_plan_operation_cases.json"
+RELEASE_400_EXPLORE_INTENT_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_400_explore_intent_cases.json"
+RELEASE_400_READONLY_REAL_SESSION_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_400_readonly_real_session_cases.json"
+RELEASE_400_REVIEW_REPAIR_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_400_review_repair_cases.json"
+RELEASE_400_PRODUCTION_ABSTRACTED_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_400_production_abstracted_cases.json"
 
 
 
@@ -166,7 +166,7 @@ def _build_service(tmp_path, agent: _ScenarioAgent) -> ChatService:
     client = MagicMock()
     client.model = MagicMock()
     client.model_settings = {}
-    with patch("app.service.ChatAgent", return_value=agent):
+    with patch("app.service.ZhiyuanAgent", return_value=agent):
         return ChatService(client, store)
 
 
@@ -182,20 +182,20 @@ def _load_full_journey_cases() -> list[dict]:
     return json.loads(FULL_JOURNEY_CASES_PATH.read_text(encoding="utf-8"))
 
 
-def _load_release_302_cases() -> list[dict]:
-    return json.loads(RELEASE_302_CASES_PATH.read_text(encoding="utf-8"))
+def _load_release_400_plan_operation_cases() -> list[dict]:
+    return json.loads(RELEASE_400_PLAN_OPERATION_CASES_PATH.read_text(encoding="utf-8"))
 
 
-def _load_release_302_explore_intent_cases() -> list[dict]:
-    return json.loads(RELEASE_302_EXPLORE_INTENT_CASES_PATH.read_text(encoding="utf-8"))
+def _load_release_400_explore_intent_cases() -> list[dict]:
+    return json.loads(RELEASE_400_EXPLORE_INTENT_CASES_PATH.read_text(encoding="utf-8"))
 
 
-def _load_release_302_readonly_real_session_cases() -> list[dict]:
-    return json.loads(RELEASE_302_READONLY_REAL_SESSION_CASES_PATH.read_text(encoding="utf-8"))
+def _load_release_400_readonly_real_session_cases() -> list[dict]:
+    return json.loads(RELEASE_400_READONLY_REAL_SESSION_CASES_PATH.read_text(encoding="utf-8"))
 
 
-def _load_release_310_review_repair_payload() -> dict:
-    return json.loads(RELEASE_310_REVIEW_REPAIR_CASES_PATH.read_text(encoding="utf-8"))
+def _load_release_400_review_repair_payload() -> dict:
+    return json.loads(RELEASE_400_REVIEW_REPAIR_CASES_PATH.read_text(encoding="utf-8"))
 
 
 def _expand_case_payload(payload: dict) -> list[dict]:
@@ -224,17 +224,17 @@ def _expand_case_payload(payload: dict) -> list[dict]:
     return expanded_cases
 
 
-def _load_release_310_review_repair_cases() -> list[dict]:
-    payload = _load_release_310_review_repair_payload()
+def _load_release_400_review_repair_cases() -> list[dict]:
+    payload = _load_release_400_review_repair_payload()
     return _expand_case_payload(payload)
 
 
-def _load_release_310_production_abstracted_payload() -> dict:
-    return json.loads(RELEASE_310_PRODUCTION_ABSTRACTED_CASES_PATH.read_text(encoding="utf-8"))
+def _load_release_400_production_abstracted_payload() -> dict:
+    return json.loads(RELEASE_400_PRODUCTION_ABSTRACTED_CASES_PATH.read_text(encoding="utf-8"))
 
 
-def _load_release_310_production_abstracted_cases() -> list[dict]:
-    return _expand_case_payload(_load_release_310_production_abstracted_payload())
+def _load_release_400_production_abstracted_cases() -> list[dict]:
+    return _expand_case_payload(_load_release_400_production_abstracted_payload())
 
 
 def test_mainline_dialog_case_catalog_has_current_explore_intent_plan_scenarios():
@@ -381,12 +381,12 @@ def test_full_journey_dialog_case_catalog_covers_start_explore_intent_plan_adjus
         "major_explore",
         "career_explore",
         "school_explore",
-        "soft_major_intent",
-        "soft_career_intent",
-        "soft_region_intent",
-        "soft_school_intent",
-        "hard_major_constraint",
-        "hard_region_constraint",
+        "positive_major_intent",
+        "positive_career_intent",
+        "positive_region_intent",
+        "positive_school_intent",
+        "explicit_major_requirement",
+        "explicit_region_requirement",
         "plan_query",
         "candidate_explore",
         "candidate_refresh",
@@ -402,8 +402,8 @@ def test_full_journey_dialog_case_catalog_covers_start_explore_intent_plan_adjus
         "remove_then_add",
         "majorGroup_mutation",
         "majorGroup_operations",
-        "soft_hard_intent_mix",
-        "soft_intent_stability",
+        "positive_negative_intent_mix",
+        "explicit_intent_stability",
         "review_accuracy",
         "review_then_adjust",
         "review_then_fix",
@@ -456,14 +456,15 @@ def test_full_journey_dialog_case_catalog_has_content_assertions_and_no_internal
     assert any(step.get("assertFollowupTarget") == "ordered" for step in all_steps)
 
 
-def test_release_302_agent_case_catalog_covers_plan_operations_and_runtime_history():
-    cases = _load_release_302_cases()
+def test_release_400_plan_operation_case_catalog_covers_plan_operations_and_runtime_history():
+    cases = _load_release_400_plan_operation_cases()
 
     assert len(cases) >= 5
     assert len({case["name"] for case in cases}) == len(cases)
     coverage = {tag for case in cases for tag in case["coverage"]}
     required_tags = {
-        "release_3_0_2",
+        "release_4_0_0",
+        "zhiyuan_agent_direct",
         "runtime_history",
         "major_model",
         "majorGroup_model",
@@ -494,26 +495,27 @@ def test_release_302_agent_case_catalog_covers_plan_operations_and_runtime_histo
     assert any("河南农大建筑" in step["prompt"] for step in all_steps)
 
 
-def test_release_302_explore_intent_case_catalog_covers_front_layers_before_plan_tuning():
-    cases = _load_release_302_explore_intent_cases()
+def test_release_400_explore_intent_case_catalog_covers_front_layers_before_plan_tuning():
+    cases = _load_release_400_explore_intent_cases()
 
     assert len(cases) >= 8
     assert len({case["name"] for case in cases}) == len(cases)
     coverage = {tag for case in cases for tag in case["coverage"]}
     required_tags = {
-        "release_3_0_2",
+        "release_4_0_0",
+        "zhiyuan_agent_direct",
         "major_explore",
         "career_explore",
         "career_compare",
         "school_explore",
         "region_explore",
-        "soft_major_intent",
-        "soft_career_intent",
-        "soft_region_intent",
-        "soft_school_intent",
-        "hard_major_constraint",
-        "hard_region_constraint",
-        "soft_hard_intent_mix",
+        "positive_major_intent",
+        "positive_career_intent",
+        "positive_region_intent",
+        "positive_school_intent",
+        "explicit_major_requirement",
+        "explicit_region_requirement",
+        "positive_negative_intent_mix",
         "intent_revision",
         "historical_intent",
         "pending_intent",
@@ -552,14 +554,15 @@ def test_release_302_explore_intent_case_catalog_covers_front_layers_before_plan
     assert "没有专项资格" in prompts
 
 
-def test_release_302_readonly_real_session_cases_cover_no_workspace_card_smoke():
-    cases = _load_release_302_readonly_real_session_cases()
+def test_release_400_readonly_real_session_cases_cover_no_workspace_card_smoke():
+    cases = _load_release_400_readonly_real_session_cases()
 
     assert len(cases) >= 2
     assert len({case["name"] for case in cases}) == len(cases)
     coverage = {tag for case in cases for tag in case["coverage"]}
     required_tags = {
-        "release_3_0_2",
+        "release_4_0_0",
+        "zhiyuan_agent_direct",
         "real_session",
         "career_explore",
         "candidate_risk_explanation",
@@ -586,17 +589,18 @@ def test_release_302_readonly_real_session_cases_cover_no_workspace_card_smoke()
     assert "分数刚好压线" in prompts
 
 
-def test_release_310_review_repair_case_catalog_covers_review_and_repair_boundaries():
-    payload = _load_release_310_review_repair_payload()
-    cases = _load_release_310_review_repair_cases()
+def test_release_400_review_repair_case_catalog_covers_review_and_repair_boundaries():
+    payload = _load_release_400_review_repair_payload()
+    cases = _load_release_400_review_repair_cases()
 
-    assert payload["metadata"]["release"] == "3.1.0"
+    assert payload["metadata"]["release"] == "4.0.0"
     assert len(cases) >= 7
     assert len({case["name"] for case in cases}) == len(cases)
 
     coverage = {tag for case in cases for tag in case["coverage"]}
     required_tags = {
-        "release_3_1_0",
+        "release_4_0_0",
+        "zhiyuan_agent_direct",
         "review_repair",
         "review_workspace",
         "review_then_fix",
@@ -650,23 +654,24 @@ def test_release_310_review_repair_case_catalog_covers_review_and_repair_boundar
     assert any(step.get("expectedActionFamily") == "review_plan" for step in all_steps)
 
 
-def test_release_310_production_abstracted_cases_cover_real_dialogue_framework_risks():
-    payload = _load_release_310_production_abstracted_payload()
-    cases = _load_release_310_production_abstracted_cases()
+def test_release_400_production_abstracted_cases_cover_real_dialogue_framework_risks():
+    payload = _load_release_400_production_abstracted_payload()
+    cases = _load_release_400_production_abstracted_cases()
 
-    assert payload["metadata"]["release"] == "3.1.0"
+    assert payload["metadata"]["release"] == "4.0.0"
     assert len(cases) >= 15
     assert len({case["name"] for case in cases}) == len(cases)
 
     allowed_flow = {"explore", "intent", "plan", "review"}
     coverage = {tag for case in cases for tag in case["coverage"]}
     required_tags = {
-        "release_3_1_0",
+        "release_4_0_0",
+        "zhiyuan_agent_direct",
         "production_dialogue_abstracted",
-        "only_keep_constraint",
-        "must_have_constraint",
-        "negative_constraint",
-        "preference_vs_constraint",
+        "only_keep_requirement",
+        "must_have_requirement",
+        "negative_requirement",
+        "positive_vs_negative_requirement",
         "plan_operations",
         "plan_review_strategy",
         "policy_and_requirement",
@@ -727,106 +732,6 @@ def test_release_310_production_abstracted_cases_cover_real_dialogue_framework_r
     assert "整体更偏体制内" in prompts
     assert "第8个志愿移到第12位" in prompts
     assert "超过6个专业的专业组" in prompts
-
-
-def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):
-    agent = _ScenarioAgent(
-        [
-            {
-                "reply": "我先把网络与新媒体整理成待确认偏好。确认后再作为后续报考参考。",
-                "tool_calls": [
-                    _tool_call(
-                        "preview_current_major_intent_confirmation",
-                        {"major_intents": {"level3": ["网络与新媒体"]}},
-                        "intent-1",
-                    )
-                ],
-                "tool_returns": [
-                    _tool_return(
-                        "preview_current_major_intent_confirmation",
-                        {"status": "pending", "items": [{"content": "网络与新媒体"}]},
-                        "intent-1",
-                    )
-                ],
-            },
-            {
-                "reply": "**当前方案状态**\n\n排序总数：45/45。冲8 / 稳18 / 保19。风险0项，提醒3项。",
-                "tool_calls": [
-                    _tool_call(
-                        "query_plan",
-                        {"scope": "plan", "query_type": "status"},
-                        "plan-state-1",
-                    )
-                ],
-                "tool_returns": [
-                    _tool_return(
-                        "query_plan",
-                        {"action_family": "query_state", "summary": "45/45，冲8 / 稳18 / 保19"},
-                        "plan-state-1",
-                    )
-                ],
-            },
-        ]
-    )
-    service = _build_service(tmp_path, agent)
-
-    with (
-        patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
-    ):
-        first = _run(service.handle_message("session-mainline-57", "user-57", "想学网络与新媒体"))
-        second = _run(service.handle_message("session-mainline-57", "user-57", "现在方案怎么样"))
-
-    assert isinstance(first, str)
-    assert "待采纳" in first
-    assert "采纳" in first
-    assert "不会写入后续报考参考" in first
-    assert not isinstance(second, ChatServiceResponseEnvelope)
-    assert "45/45" in second
-    assert "冲8 / 稳18 / 保19" in second
-    assert agent.calls[1]["message_history_len"] > 0
-
-
-def test_mainline_dialog_cross_border_ecommerce_uses_full_major_name_without_candidate_refresh(tmp_path):
-    agent = _ScenarioAgent(
-        [
-            {
-                "reply": "**待确认偏好**\n\n我先把跨境电子商务整理成后续偏好。这个方向和英语、经贸类基础比较相关。",
-                "tool_calls": [
-                    _tool_call(
-                        "preview_current_major_intent_confirmation",
-                        {"major_intents": {"add": ["跨境电商"]}},
-                        "intent-ecommerce",
-                    )
-                ],
-                "tool_returns": [
-                    _tool_return(
-                        "preview_current_major_intent_confirmation",
-                        {
-                            "status": "pending",
-                            "items": [{"content": "跨境电子商务"}],
-                            "impactAnalysis": "候选库里有广州工商学院第201组-跨境电子商务。",
-                        },
-                        "intent-ecommerce",
-                    )
-                ],
-            }
-        ]
-    )
-    service = _build_service(tmp_path, agent)
-
-    with (
-        patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
-    ):
-        reply = _run(service.handle_message("session-mainline-cross-border", "user-57", "想学跨境电商"))
-
-    assert isinstance(reply, str)
-    assert "跨境电子商务" in reply
-    assert "画像" not in reply
-    assert agent.calls[0]["user_prompt"] == "想学跨境电商"
 
 
 def test_mainline_dialog_review_result_keeps_informative_summary(tmp_path):

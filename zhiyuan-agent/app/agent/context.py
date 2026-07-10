@@ -162,6 +162,7 @@ class RequestContext:
     userid: str
     sessionid: str
     chat_history: list[dict] | None = None  # 完整对话历史
+    current_user_text: str = ""  # 本轮用户原话，供工具在模型漏传 raw_user_text 时稳定取用
     batch: str | None = None  # "01"=本科, 其他=专科
     score_detail: ScoreDetail | None = None  # 学生高考成绩详情
     init_profile: UserProfile | None = None  # flowconfig 预填的意向数据
@@ -172,7 +173,6 @@ class RequestContext:
     allow_explore_inner_llm: bool = True  # 正式聊天主链路可关闭 Explore 工具内二次生成，由主模型统一组织最终回复
     enable_intent_side_effect_arbitration: bool = False  # 主链路用于拦截误触发的意向待确认副作用
     recent_intent_analysis: dict[str, Any] | None = None  # 最近一次 Intent 工具结构化结果，供指代追问恢复上下文
-    latest_profile_change_replan_dsl: dict[str, Any] | None = None  # 最近一次结构化资料重规划 DSL，供多轮纠错合并使用
     agent_observability: dict[str, Any] = field(default_factory=dict)  # 本轮 Agent 节点耗时与失败定位信息
     confirmed_via_card: bool = False  # 服务端确认卡片点击链路，方案 apply 只能由该结构化上下文放行
     confirmed_via_pending: bool = False  # 服务端统一 pending 确认链路，包含卡片点击和短文本兜底

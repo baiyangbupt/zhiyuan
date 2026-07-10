@@ -60,6 +60,7 @@ import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewWorkflowRunRes;
 import com.ytell.zhiyuan.model.dto.planning.StaleFlagsDTO;
+import com.ytell.zhiyuan.model.dto.planning.UpdateConstraintStateReq;
 import com.ytell.zhiyuan.model.dto.planning.UpdateLatentProfileReq;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 import com.ytell.zhiyuan.model.dto.planning.InitialRecommendationGenerateReq;
@@ -167,6 +168,23 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldEnrichMajorTaxonomyWhenReturningPlanningState() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        CandidateItemDTO item = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "医学院", "稳", "护理学", 55D, 80D, 55D, false);
+        item.setMajorSubCategoryId("89");
+        initial.getCandidatePoolState().getItems().add(item);
+        saveStateToStore(1L, initial);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        CandidateItemDTO enriched = state.getCandidatePoolState().getItems().get(0);
+        assertEquals("医学", enriched.getMajorDiscipline());
+        assertEquals("护理学类", enriched.getMajorCategory());
+    }
+
+    @Test
     void shouldMarkPreferenceIntentChangeStaleWithoutCandidatePool() {
         bindPlanningStateStore();
         PlanningStateDTO initial = planningStateService.getPlanningState(1L);
@@ -193,7 +211,7 @@ public class PlanningStateServiceTest {
     }
 
     @Test
-    void shouldMarkConstraintIntentChangeStaleWithCandidatePool() {
+    void shouldMarkConstraintIntentChangeStaleWithoutCandidatePool() {
         bindPlanningStateStore();
         PlanningStateDTO initial = planningStateService.getPlanningState(1L);
         initial.getStaleFlags().setCandidatePool(false);
@@ -209,7 +227,7 @@ public class PlanningStateServiceTest {
         PlanningStateVersionDTO version = planningStateService.markIntentChangeStale(1L, req);
 
         assertEquals(Integer.valueOf(1), version.getVersion());
-        assertTrue(staleCandidatePool(version.getStaleFlags()));
+        assertFalse(staleCandidatePool(version.getStaleFlags()));
         assertTrue(staleRecommendationOverlay(version.getStaleFlags()));
         assertTrue(staleInitialRecommendation(version.getStaleFlags()));
         assertTrue(staleOrderedPlan(version.getStaleFlags()));
@@ -2135,6 +2153,52 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldExposeConfirmedRegionRequirementInCandidateViewState() {
+        bindPlanningStateStore();
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setCandidateViewState(new CandidateViewStateDTO());
+        state.getCandidateViewState().getFilters().setProvinceNames(java.util.Arrays.asList("山东"));
+        saveStateToStore(1L, state);
+
+        UpdateConstraintStateReq req = new UpdateConstraintStateReq();
+        req.setIntentMode("constraint");
+        UpdateConstraintStateReq.PreferenceGroup region = new UpdateConstraintStateReq.PreferenceGroup();
+        region.setNegative(java.util.Arrays.asList("山东"));
+        req.setRegionPreferences(region);
+
+        planningStateService.updateConstraintState(1L, req);
+        PlanningStateDTO updated = planningStateService.getPlanningState(1L);
+
+        assertTrue(updated.getConstraintState().getHardConstraints().getMustExcludeRegions().contains("山东"));
+        assertTrue(updated.getCandidateViewState().getFilters().getNegativeProvinceNames().contains("山东"));
+        assertFalse(updated.getCandidateViewState().getFilters().getProvinceNames().contains("山东"));
+        assertFalse(Boolean.TRUE.equals(updated.getStaleFlags().getCandidatePool()));
+        assertTrue(Boolean.TRUE.equals(updated.getStaleFlags().getOrderedPlan()));
+    }
+
+    @Test
+    void shouldRemoveConfirmedRegionRequirementWhenVisibleCandidateFilterIsRemoved() {
+        bindPlanningStateStore();
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setCandidateViewState(new CandidateViewStateDTO());
+        state.getConstraintState().getHardConstraints().getMustExcludeRegions().add("山东");
+        state.getCandidateViewState().getFilters().getNegativeProvinceNames().add("山东");
+        state.getStaleFlags().setCandidatePool(false);
+        saveStateToStore(1L, state);
+
+        CandidateViewStateDTO req = new CandidateViewStateDTO();
+        req.getFilters().setNegativeProvinceNames(java.util.Collections.emptyList());
+        PlanningStateDTO updated = planningStateService.updateCandidateViewState(1L, req);
+
+        assertFalse(updated.getConstraintState().getHardConstraints().getMustExcludeRegions().contains("山东"));
+        assertFalse(updated.getCandidateViewState().getFilters().getNegativeProvinceNames().contains("山东"));
+        assertFalse(Boolean.TRUE.equals(updated.getStaleFlags().getCandidatePool()));
+        assertTrue(Boolean.TRUE.equals(updated.getStaleFlags().getOrderedPlan()));
+        assertTrue(Boolean.TRUE.equals(updated.getStaleFlags().getReview()));
+        assertEquals("constraint_intent_changed", updated.getStaleFlags().getReasonCode());
+    }
+
+    @Test
     void shouldKeepReviewedWorkspaceCurrentWhenCandidateViewChanges() {
         bindPlanningStateStore();
         PlanningStateDTO state = new PlanningStateDTO();
@@ -3288,6 +3352,95 @@ public class PlanningStateServiceTest {
         assertFalse(draftIds.contains("ps1_m1"));
         assertTrue(draftIds.contains("ps2_m2"));
         assertTrue(draftIds.contains("ps3_m3"));
+    }
+
+    @Test
+    void shouldApplySessionTuitionRangeWhenRegeneratingOrderedPlan() {
+        bindPlanningStateStore();
+        bindUserScoreDetailWithTuitionRange(1L, 0, 20000);
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(3);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        CandidateItemDTO expensive = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "金融学", 55D, 80D, 55D, false);
+        expensive.setTuitionPerYear(60000);
+        CandidateItemDTO affordable = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false);
+        affordable.setTuitionPerYear(12000);
+        state.getCandidatePoolState().getItems().add(expensive);
+        state.getCandidatePoolState().getItems().add(affordable);
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "学校A", "金融学", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps2_m2", "学校B", "汉语言文学", "稳"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "金融学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setForceRegenerate(true);
+        generateReq.setRegroupByTier(true);
+        PlanningStateDTO regenerated = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        Set<String> orderedIds = regenerated.getOrderedPlanState().getItems().stream()
+                .map(OrderedItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertFalse(orderedIds.contains("ps1_m1"));
+        assertTrue(orderedIds.contains("ps2_m2"));
+        assertTrue(regenerated.getCandidatePoolState().getItems().stream()
+                .anyMatch(item -> "ps1_m1".equals(item.getVolunteerId())
+                        && Integer.valueOf(60000).equals(item.getTuitionPerYear())));
+    }
+
+    @Test
+    void shouldApplySessionTuitionRangeToOrderedUnitsWhenRegeneratingMajorGroupPlan() {
+        bindPlanningStateStore();
+        bindUserScoreDetailWithTuitionRange(1L, 0, 20000);
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(3);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.majorGroup.name());
+        state.getCandidatePoolState().setRequiredCount(1);
+        CandidateItemDTO expensive = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A第101组", "稳", "金融学", 55D, 80D, 55D, false);
+        expensive.setTuitionPerYear(60000);
+        CandidateItemDTO affordable = buildCandidateItem(
+                "ps1_m2", "ps1", "s1", "学校A第101组", "稳", "汉语言文学", 58D, 75D, 55D, false);
+        affordable.setTuitionPerYear(12000);
+        state.getCandidatePoolState().getItems().add(expensive);
+        state.getCandidatePoolState().getItems().add(affordable);
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "学校A第101组", "金融学", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m2", "学校A第101组", "汉语言文学", "稳"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A第101组", "金融学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m2", "学校A第101组", "汉语言文学", "稳", 2));
+        OrderedUnitDTO unit = new OrderedUnitDTO();
+        unit.setUnitId("ps1");
+        unit.setSchoolName("学校A第101组");
+        PlanningUnitMajorDTO expensiveMajor = new PlanningUnitMajorDTO();
+        expensiveMajor.setVolunteerId("ps1_m1");
+        expensiveMajor.setMajorName("金融学");
+        expensiveMajor.setTuitionPerYear(60000);
+        PlanningUnitMajorDTO affordableMajor = new PlanningUnitMajorDTO();
+        affordableMajor.setVolunteerId("ps1_m2");
+        affordableMajor.setMajorName("汉语言文学");
+        affordableMajor.setTuitionPerYear(12000);
+        unit.getMajorItems().add(expensiveMajor);
+        unit.getMajorItems().add(affordableMajor);
+        state.getOrderedPlanState().getUnits().add(unit);
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setForceRegenerate(true);
+        generateReq.setRegroupByTier(true);
+        PlanningStateDTO regenerated = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        List<PlanningUnitMajorDTO> majors = regenerated.getOrderedPlanState().getUnits().get(0).getMajorItems();
+        assertEquals(1, majors.size());
+        assertEquals("ps1_m2", majors.get(0).getVolunteerId());
+        assertTrue(regenerated.getCandidatePoolState().getItems().stream()
+                .anyMatch(item -> "ps1_m1".equals(item.getVolunteerId())
+                        && Integer.valueOf(60000).equals(item.getTuitionPerYear())));
     }
 
     @Test
@@ -5367,6 +5520,460 @@ public class PlanningStateServiceTest {
 
         assertEquals(Integer.valueOf(1), queryRes.getTotal());
         assertEquals("学校B", queryRes.getItems().get(0).getSchoolName());
+    }
+
+    @Test
+    void shouldKeepBaseCandidatePoolWhenConfirmedHardConstraintsExist() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().getMustExcludeRegions().add("山东");
+        state.getConstraintState().getHardConstraints().getMustExcludeSchools().add("院校性质:民办");
+        state.getConstraintState().getHardConstraints().getMustExcludeSchools().add("招生类型:中外合作");
+        saveStateToStore(1L, state);
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        VolunteerRecommendListResponse.VolunteerSchool publicSchool = buildSchool(
+                "ps1", "s1", "北京工业大学", "北京", 1, buildMajor("m1", "自动化"));
+        publicSchool.setSchool_nature("公办");
+        VolunteerRecommendListResponse.VolunteerSchool privateSchool = buildSchool(
+                "ps2", "s2", "北京城市学院", "北京", 2, buildMajor("m2", "软件工程"));
+        privateSchool.setSchool_nature("民办");
+        VolunteerRecommendListResponse.VolunteerSchool shandongSchool = buildSchool(
+                "ps3", "s3", "山东大学", "山东", 3, buildMajor("m3", "计算机科学与技术"));
+        shandongSchool.setSchool_nature("公办");
+        VolunteerRecommendListResponse.VolunteerSchool cooperativeSchool = buildSchool(
+                "ps4", "s4", "国际学院", "北京", 4, buildMajor("m4", "自动化（中外合作办学）"));
+        cooperativeSchool.setSchool_nature("公办");
+        response.setSafes(java.util.Arrays.asList(publicSchool, privateSchool, shandongSchool, cooperativeSchool));
+        response.setSprints(java.util.Collections.emptyList());
+        response.setProtects(java.util.Collections.emptyList());
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        CandidatePoolGenerateReq req = new CandidatePoolGenerateReq();
+        req.setForceRegenerate(true);
+        PlanningStateDTO generated = planningStateService.generateCandidatePool(1L, 1L, req);
+
+        assertEquals(Integer.valueOf(4), generated.getCandidatePoolState().getSummary().getTotal());
+        assertTrue(generated.getCandidatePoolState().getItems().stream().anyMatch(item -> "民办".equals(item.getSchoolNature())));
+        assertTrue(generated.getCandidatePoolState().getItems().stream().anyMatch(item -> "山东".equals(item.getProvinceName())));
+        assertTrue(generated.getCandidatePoolState().getItems().stream().anyMatch(item -> item.getMajorName().contains("中外合作")));
+    }
+
+    @Test
+    void shouldQueryBaseCandidatePoolWithoutHiddenConfirmedHardConstraints() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().getMustExcludeRegions().add("山东");
+        state.getConstraintState().getHardConstraints().getMustExcludeSchools().add("院校性质:民办");
+        state.getConstraintState().getHardConstraints().getMustExcludeSchools().add("招生类型:中外合作");
+        CandidateItemDTO publicItem = buildCandidateItem("ps1_m1", "ps1", "s1", "北京工业大学", "稳", "自动化", 55D, 80D, 55D, false);
+        publicItem.setProvinceName("北京");
+        publicItem.setSchoolNature("公办");
+        CandidateItemDTO privateItem = buildCandidateItem("ps2_m2", "ps2", "s2", "北京城市学院", "稳", "软件工程", 56D, 79D, 56D, false);
+        privateItem.setProvinceName("北京");
+        privateItem.setSchoolNature("民办");
+        CandidateItemDTO shandongItem = buildCandidateItem("ps3_m3", "ps3", "s3", "山东大学", "稳", "计算机科学与技术", 57D, 78D, 57D, false);
+        shandongItem.setProvinceName("山东");
+        shandongItem.setSchoolNature("公办");
+        CandidateItemDTO cooperativeItem = buildCandidateItem("ps4_m4", "ps4", "s4", "国际学院", "稳", "自动化（中外合作办学）", 58D, 77D, 58D, false);
+        cooperativeItem.setProvinceName("北京");
+        cooperativeItem.setSchoolNature("公办");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(publicItem, privateItem, shandongItem, cooperativeItem));
+        saveStateToStore(1L, state);
+
+        CandidatePoolQueryRes queryRes = planningStateService.queryCandidatePool(1L, 1L, new CandidatePoolQueryReq());
+
+        assertEquals(Integer.valueOf(4), queryRes.getTotal());
+        assertEquals(Integer.valueOf(4), queryRes.getViewSummary().getPoolEntryTotal());
+
+        CandidatePoolQueryReq visibleFilterReq = new CandidatePoolQueryReq();
+        visibleFilterReq.getFilters().setNegativeProvinceNames(java.util.Arrays.asList("山东"));
+        CandidatePoolQueryRes filteredRes = planningStateService.queryCandidatePool(1L, 1L, visibleFilterReq);
+        assertEquals(Integer.valueOf(3), filteredRes.getTotal());
+        assertTrue(filteredRes.getItems().stream().noneMatch(item -> "山东".equals(item.getProvinceName())));
+    }
+
+    @Test
+    void shouldKeepCandidateFilterOptionsRecoverableWhenRegionRequirementFiltersVisibleView() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        CandidateItemDTO beijingItem = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "北京工业大学", "稳", "自动化", 55D, 80D, 55D, false);
+        beijingItem.setProvinceName("北京");
+        CandidateItemDTO shandongItem = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "山东大学", "稳", "计算机科学与技术", 57D, 78D, 57D, false);
+        shandongItem.setProvinceName("山东");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(beijingItem, shandongItem));
+        saveStateToStore(1L, state);
+
+        UpdateConstraintStateReq req = new UpdateConstraintStateReq();
+        req.setIntentMode("constraint");
+        UpdateConstraintStateReq.PreferenceGroup region = new UpdateConstraintStateReq.PreferenceGroup();
+        region.setNegative(java.util.Arrays.asList("山东"));
+        req.setRegionPreferences(region);
+
+        planningStateService.updateConstraintState(1L, req);
+        PlanningStateDTO updated = planningStateService.getPlanningState(1L);
+
+        assertTrue(updated.getCandidatePoolState().getItems().stream()
+                .anyMatch(item -> "山东".equals(item.getProvinceName())));
+        assertTrue(updated.getCandidateViewState().getFilters().getNegativeProvinceNames().contains("山东"));
+
+        CandidateFilterOptionsDTO options = planningStateService.getCandidateFilterOptions(1L, 1L);
+        assertTrue(options.getProvinceNames().contains("北京"));
+        assertTrue(options.getProvinceNames().contains("山东"));
+
+        CandidatePoolQueryReq visibleFilterReq = new CandidatePoolQueryReq();
+        visibleFilterReq.getFilters().setNegativeProvinceNames(
+                updated.getCandidateViewState().getFilters().getNegativeProvinceNames());
+        CandidatePoolQueryRes filteredRes = planningStateService.queryCandidatePool(1L, 1L, visibleFilterReq);
+
+        assertEquals(Integer.valueOf(1), filteredRes.getTotal());
+        assertEquals("北京", filteredRes.getItems().get(0).getProvinceName());
+        assertTrue(filteredRes.getItems().stream().noneMatch(item -> "山东".equals(item.getProvinceName())));
+    }
+
+
+    @Test
+    void shouldMatchRemoteRegionScope() {
+        assertTrue(RegionScopeSupport.matchesRegionScope("偏远地区", "新疆", "乌鲁木齐"));
+        assertTrue(RegionScopeSupport.matchesRegionScope("偏远", "青海", "西宁"));
+        assertTrue(RegionScopeSupport.matchesRegionScope("边远地区", "内蒙古", "呼和浩特"));
+        assertFalse(RegionScopeSupport.matchesRegionScope("偏远地区", "山东", "济南"));
+        assertTrue(RegionScopeSupport.provincesForArea("偏远").contains("甘肃"));
+    }
+
+    @Test
+    void shouldApplyRegionAreaRequirementWhenGeneratingOrderedPlan() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().getMustIncludeRegions().add("南方");
+        state.getConstraintState().getHardConstraints().getMustExcludeRegions().add("北方");
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+
+        CandidateItemDTO shanghaiItem = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "上海大学", "稳", "计算机科学与技术", 55D, 82D, 55D, false);
+        shanghaiItem.setProvinceName("上海");
+        shanghaiItem.setCityName("上海");
+        CandidateItemDTO guangdongItem = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "广东工业大学", "稳", "自动化", 56D, 81D, 56D, false);
+        guangdongItem.setProvinceName("广东");
+        guangdongItem.setCityName("广州");
+        CandidateItemDTO beijingItem = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "北京工业大学", "稳", "软件工程", 57D, 80D, 57D, false);
+        beijingItem.setProvinceName("北京");
+        beijingItem.setCityName("北京");
+        CandidateItemDTO shandongItem = buildCandidateItem(
+                "ps4_m4", "ps4", "s4", "山东大学", "稳", "电子信息工程", 58D, 79D, 58D, false);
+        shandongItem.setProvinceName("山东");
+        shandongItem.setCityName("济南");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(
+                shanghaiItem, guangdongItem, beijingItem, shandongItem));
+
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "上海大学", "计算机科学与技术", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps2_m2", "广东工业大学", "自动化", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps3_m3", "北京工业大学", "软件工程", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps4_m4", "山东大学", "电子信息工程", "稳"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "上海大学", "计算机科学与技术", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "广东工业大学", "自动化", "稳", 2));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps3_m3", "北京工业大学", "软件工程", "稳", 3));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps4_m4", "山东大学", "电子信息工程", "稳", 4));
+
+        OrderedUnitDTO shanghaiUnit = new OrderedUnitDTO();
+        shanghaiUnit.setUnitId("ps1");
+        shanghaiUnit.setTier("稳");
+        shanghaiUnit.setSchoolName("上海大学");
+        shanghaiUnit.setProvinceName("上海");
+        shanghaiUnit.setCityName("上海");
+        PlanningUnitMajorDTO shanghaiMajor = new PlanningUnitMajorDTO();
+        shanghaiMajor.setVolunteerId("ps1_m1");
+        shanghaiMajor.setMajorName("计算机科学与技术");
+        shanghaiUnit.getMajorItems().add(shanghaiMajor);
+
+        OrderedUnitDTO guangdongUnit = new OrderedUnitDTO();
+        guangdongUnit.setUnitId("ps2");
+        guangdongUnit.setTier("稳");
+        guangdongUnit.setSchoolName("广东工业大学");
+        guangdongUnit.setProvinceName("广东");
+        guangdongUnit.setCityName("广州");
+        PlanningUnitMajorDTO guangdongMajor = new PlanningUnitMajorDTO();
+        guangdongMajor.setVolunteerId("ps2_m2");
+        guangdongMajor.setMajorName("自动化");
+        guangdongUnit.getMajorItems().add(guangdongMajor);
+
+        OrderedUnitDTO beijingUnit = new OrderedUnitDTO();
+        beijingUnit.setUnitId("ps3");
+        beijingUnit.setTier("稳");
+        beijingUnit.setSchoolName("北京工业大学");
+        beijingUnit.setProvinceName("北京");
+        beijingUnit.setCityName("北京");
+        PlanningUnitMajorDTO beijingMajor = new PlanningUnitMajorDTO();
+        beijingMajor.setVolunteerId("ps3_m3");
+        beijingMajor.setMajorName("软件工程");
+        beijingUnit.getMajorItems().add(beijingMajor);
+
+        OrderedUnitDTO shandongUnit = new OrderedUnitDTO();
+        shandongUnit.setUnitId("ps4");
+        shandongUnit.setTier("稳");
+        shandongUnit.setSchoolName("山东大学");
+        shandongUnit.setProvinceName("山东");
+        shandongUnit.setCityName("济南");
+        PlanningUnitMajorDTO shandongMajor = new PlanningUnitMajorDTO();
+        shandongMajor.setVolunteerId("ps4_m4");
+        shandongMajor.setMajorName("电子信息工程");
+        shandongUnit.getMajorItems().add(shandongMajor);
+        state.getOrderedPlanState().getUnits().addAll(java.util.Arrays.asList(
+                shanghaiUnit, guangdongUnit, beijingUnit, shandongUnit));
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setForceRegenerate(true);
+        PlanningStateDTO ordered = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        assertEquals(4, ordered.getCandidatePoolState().getItems().size());
+        assertTrue(ordered.getCandidatePoolState().getItems().stream()
+                .anyMatch(item -> "北京".equals(item.getProvinceName())));
+        assertEquals(2, ordered.getDraftPlanState().getItems().size());
+        assertFalse(ordered.getOrderedPlanState().getItems().isEmpty());
+        assertEquals(2, ordered.getOrderedPlanState().getItems().size());
+        assertTrue(ordered.getOrderedPlanState().getItems().stream()
+                .noneMatch(item -> "北京工业大学".equals(item.getSchoolName()) || "山东大学".equals(item.getSchoolName())));
+        assertEquals(2, ordered.getOrderedPlanState().getUnits().size());
+        assertTrue(ordered.getOrderedPlanState().getUnits().stream()
+                .allMatch(unit -> "上海".equals(unit.getProvinceName()) || "广东".equals(unit.getProvinceName())));
+        assertTrue(ordered.getOrderedPlanState().getUnits().stream()
+                .noneMatch(unit -> "北京".equals(unit.getProvinceName()) || "山东".equals(unit.getProvinceName())));
+    }
+
+    @Test
+    void shouldPruneWorkingPlanWhenGeneratingOrderedPlanWithConfirmedHardConstraints() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().getMustExcludeRegions().add("山东");
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        CandidateItemDTO publicItem = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "北京工业大学", "稳", "自动化", 55D, 80D, 55D, false);
+        publicItem.setProvinceName("北京");
+        publicItem.setSchoolNature("公办");
+        state.getCandidatePoolState().getItems().add(publicItem);
+        CandidateItemDTO shandongCandidate = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "山东大学", "稳", "计算机科学与技术", 57D, 78D, 57D, false);
+        shandongCandidate.setProvinceName("山东");
+        shandongCandidate.setSchoolNature("公办");
+        state.getCandidatePoolState().getItems().add(shandongCandidate);
+
+        DraftItemDTO allowedDraft = new DraftItemDTO();
+        allowedDraft.setVolunteerId("ps1_m1");
+        allowedDraft.setTier("稳");
+        allowedDraft.setSchoolName("北京工业大学");
+        allowedDraft.setMajorName("自动化");
+        DraftItemDTO excludedDraft = new DraftItemDTO();
+        excludedDraft.setVolunteerId("ps3_m3");
+        excludedDraft.setTier("稳");
+        excludedDraft.setSchoolName("山东大学");
+        excludedDraft.setMajorName("计算机科学与技术");
+        state.getDraftPlanState().getItems().addAll(java.util.Arrays.asList(allowedDraft, excludedDraft));
+
+        OrderedItemDTO staleOrdered = new OrderedItemDTO();
+        staleOrdered.setVolunteerId("ps3_m3");
+        staleOrdered.setTier("稳");
+        staleOrdered.setSchoolName("山东大学");
+        staleOrdered.setMajorName("计算机科学与技术");
+        state.getOrderedPlanState().getItems().add(staleOrdered);
+        OrderedUnitDTO allowedUnit = new OrderedUnitDTO();
+        allowedUnit.setUnitId("ps1");
+        allowedUnit.setTier("稳");
+        allowedUnit.setSchoolName("北京工业大学");
+        allowedUnit.setProvinceName("北京");
+        PlanningUnitMajorDTO allowedMajor = new PlanningUnitMajorDTO();
+        allowedMajor.setVolunteerId("ps1_m1");
+        allowedMajor.setMajorName("自动化");
+        allowedUnit.getMajorItems().add(allowedMajor);
+        OrderedUnitDTO staleUnit = new OrderedUnitDTO();
+        staleUnit.setUnitId("ps3");
+        staleUnit.setTier("稳");
+        staleUnit.setSchoolName("山东大学");
+        staleUnit.setProvinceName("山东");
+        PlanningUnitMajorDTO staleMajor = new PlanningUnitMajorDTO();
+        staleMajor.setVolunteerId("ps3_m3");
+        staleMajor.setMajorName("计算机科学与技术");
+        staleUnit.getMajorItems().add(staleMajor);
+        state.getOrderedPlanState().getUnits().addAll(java.util.Arrays.asList(allowedUnit, staleUnit));
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setForceRegenerate(true);
+        PlanningStateDTO ordered = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        assertTrue(ordered.getCandidatePoolState().getItems().stream()
+                .anyMatch(item -> "山东".equals(item.getProvinceName())));
+        assertEquals(1, ordered.getDraftPlanState().getItems().size());
+        assertEquals("ps1_m1", ordered.getDraftPlanState().getItems().get(0).getVolunteerId());
+        assertEquals(1, ordered.getOrderedPlanState().getItems().size());
+        assertEquals("ps1_m1", ordered.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertTrue(ordered.getOrderedPlanState().getItems().stream()
+                .noneMatch(item -> "山东大学".equals(item.getSchoolName())));
+        assertEquals(1, ordered.getOrderedPlanState().getUnits().size());
+        assertEquals("ps1", ordered.getOrderedPlanState().getUnits().get(0).getUnitId());
+        assertTrue(ordered.getOrderedPlanState().getUnits().stream()
+                .noneMatch(unit -> "山东".equals(unit.getProvinceName())
+                        || "山东大学".equals(unit.getSchoolName())));
+    }
+
+    @Test
+    void shouldPruneOrderedUnitMajorsByEffectiveVolunteerIdsWhenUnitSchoolNatureMissing() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().getMustExcludeSchools().add("院校性质:民办");
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        CandidateItemDTO publicItem = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "北京工业大学", "稳", "自动化", 55D, 80D, 55D, false);
+        publicItem.setSchoolNature("公办");
+        CandidateItemDTO privateItem = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "北京城市学院", "稳", "软件工程", 56D, 79D, 56D, false);
+        privateItem.setSchoolNature("民办");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(publicItem, privateItem));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "北京工业大学", "自动化", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps2_m2", "北京城市学院", "软件工程", "稳"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "北京工业大学", "自动化", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "北京城市学院", "软件工程", "稳", 2));
+
+        OrderedUnitDTO staleUnit = new OrderedUnitDTO();
+        staleUnit.setUnitId("mixed");
+        staleUnit.setTier("稳");
+        staleUnit.setSchoolName("旧专业组");
+        PlanningUnitMajorDTO publicMajor = new PlanningUnitMajorDTO();
+        publicMajor.setVolunteerId("ps1_m1");
+        publicMajor.setMajorName("自动化");
+        PlanningUnitMajorDTO privateMajor = new PlanningUnitMajorDTO();
+        privateMajor.setVolunteerId("ps2_m2");
+        privateMajor.setMajorName("软件工程");
+        staleUnit.getMajorItems().addAll(java.util.Arrays.asList(publicMajor, privateMajor));
+        state.getOrderedPlanState().getUnits().add(staleUnit);
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setForceRegenerate(true);
+        PlanningStateDTO ordered = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        assertEquals(1, ordered.getOrderedPlanState().getItems().size());
+        assertEquals("ps1_m1", ordered.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals(1, ordered.getOrderedPlanState().getUnits().size());
+        assertEquals(1, ordered.getOrderedPlanState().getUnits().get(0).getMajorItems().size());
+        assertEquals("ps1_m1", ordered.getOrderedPlanState().getUnits().get(0).getMajorItems().get(0).getVolunteerId());
+    }
+
+    @Test
+    void shouldTreatHighTuitionScopeAsTuitionYearWhenGeneratingOrderedPlan() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().getMustExcludeSchools().add("招生类型:高收费");
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        CandidateItemDTO expensiveItem = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "高收费学院", "稳", "软件工程", 55D, 80D, 55D, false);
+        expensiveItem.setTuitionPerYear(60000);
+        CandidateItemDTO normalItem = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "普通学院", "稳", "计算机科学与技术", 56D, 79D, 56D, false);
+        normalItem.setTuitionPerYear(12000);
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(expensiveItem, normalItem));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "高收费学院", "软件工程", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps2_m2", "普通学院", "计算机科学与技术", "稳"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "高收费学院", "软件工程", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "普通学院", "计算机科学与技术", "稳", 2));
+
+        OrderedUnitDTO expensiveUnit = new OrderedUnitDTO();
+        expensiveUnit.setUnitId("ps1");
+        expensiveUnit.setTier("稳");
+        expensiveUnit.setSchoolName("高收费学院");
+        PlanningUnitMajorDTO expensiveMajor = new PlanningUnitMajorDTO();
+        expensiveMajor.setVolunteerId("ps1_m1");
+        expensiveMajor.setMajorName("软件工程");
+        expensiveMajor.setTuitionPerYear(60000);
+        expensiveUnit.getMajorItems().add(expensiveMajor);
+        OrderedUnitDTO normalUnit = new OrderedUnitDTO();
+        normalUnit.setUnitId("ps2");
+        normalUnit.setTier("稳");
+        normalUnit.setSchoolName("普通学院");
+        PlanningUnitMajorDTO normalMajor = new PlanningUnitMajorDTO();
+        normalMajor.setVolunteerId("ps2_m2");
+        normalMajor.setMajorName("计算机科学与技术");
+        normalMajor.setTuitionPerYear(12000);
+        normalUnit.getMajorItems().add(normalMajor);
+        state.getOrderedPlanState().getUnits().addAll(java.util.Arrays.asList(expensiveUnit, normalUnit));
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setForceRegenerate(true);
+        PlanningStateDTO ordered = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        assertEquals(1, ordered.getOrderedPlanState().getItems().size());
+        assertEquals("ps2_m2", ordered.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals(1, ordered.getOrderedPlanState().getUnits().size());
+        assertTrue(ordered.getOrderedPlanState().getUnits().get(0).getMajorItems().stream()
+                .allMatch(major -> major.getTuitionPerYear() == null || major.getTuitionPerYear() <= 20000));
+    }
+
+    @Test
+    void shouldApplyMajorDisciplineRequirementFromSubCategoryIdWhenGeneratingOrderedPlan() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().getMustExcludeMajors().add("专业门类:医学");
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        CandidateItemDTO medicalItem = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "医学院", "稳", "护理学", 55D, 80D, 55D, false);
+        medicalItem.setMajorSubCategoryId("89");
+        CandidateItemDTO managementItem = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "管理学院", "稳", "工程管理", 56D, 79D, 56D, false);
+        managementItem.setMajorSubCategoryId("91");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(medicalItem, managementItem));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "医学院", "护理学", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps2_m2", "管理学院", "工程管理", "稳"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "医学院", "护理学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "管理学院", "工程管理", "稳", 2));
+
+        OrderedUnitDTO medicalUnit = new OrderedUnitDTO();
+        medicalUnit.setUnitId("ps1");
+        medicalUnit.setTier("稳");
+        medicalUnit.setSchoolName("医学院");
+        PlanningUnitMajorDTO medicalMajor = new PlanningUnitMajorDTO();
+        medicalMajor.setVolunteerId("ps1_m1");
+        medicalMajor.setMajorName("护理学");
+        medicalMajor.setMajorSubCategoryId("89");
+        medicalUnit.getMajorItems().add(medicalMajor);
+        OrderedUnitDTO managementUnit = new OrderedUnitDTO();
+        managementUnit.setUnitId("ps2");
+        managementUnit.setTier("稳");
+        managementUnit.setSchoolName("管理学院");
+        PlanningUnitMajorDTO managementMajor = new PlanningUnitMajorDTO();
+        managementMajor.setVolunteerId("ps2_m2");
+        managementMajor.setMajorName("工程管理");
+        managementMajor.setMajorSubCategoryId("91");
+        managementUnit.getMajorItems().add(managementMajor);
+        state.getOrderedPlanState().getUnits().addAll(java.util.Arrays.asList(medicalUnit, managementUnit));
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setForceRegenerate(true);
+        PlanningStateDTO ordered = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        assertTrue(ordered.getCandidatePoolState().getItems().stream()
+                .anyMatch(item -> "ps1_m1".equals(item.getVolunteerId())
+                        && "医学".equals(item.getMajorDiscipline())
+                        && "护理学类".equals(item.getMajorCategory())));
+        assertEquals(1, ordered.getOrderedPlanState().getItems().size());
+        assertEquals("ps2_m2", ordered.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals(1, ordered.getOrderedPlanState().getUnits().size());
+        assertEquals("ps2", ordered.getOrderedPlanState().getUnits().get(0).getUnitId());
+        assertTrue(ordered.getOrderedPlanState().getUnits().get(0).getMajorItems().stream()
+                .noneMatch(major -> "ps1_m1".equals(major.getVolunteerId())));
     }
 
     @Test
@@ -7805,6 +8412,17 @@ public class PlanningStateServiceTest {
             return true;
         }).when(chatSessionExtraDataSharedService).updateById(any(ChatSessionExtraData.class));
         return planningStateRef;
+    }
+
+    private void bindUserScoreDetailWithTuitionRange(Long chatSessionId, Integer min, Integer max) {
+        CreateSessionReq scoreDetail = buildScoreDetail();
+        scoreDetail.setTuitionRange(new CreateSessionReq.TuitionRange(min, max));
+        ChatSessionExtraData scoreData = new ChatSessionExtraData();
+        scoreData.setChatSessionId(chatSessionId);
+        scoreData.setDataKey(ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        scoreData.setDataValue(JSONObject.toJSONString(scoreDetail));
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(chatSessionId), eq(ChatSessionExtraDataConstants.USER_SCORE_KEY)))
+                .thenReturn(scoreData);
     }
 
     private void saveStateToStore(Long chatSessionId, PlanningStateDTO state) {

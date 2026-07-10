@@ -73,7 +73,7 @@ async def test_run_probe_outputs_runner_compatible_records(tmp_path, monkeypatch
     case_file = tmp_path / "cases.json"
     _write_case_file(case_file)
 
-    class _Shadow:
+    class _Observation:
         def event_payload(self):
             return {
                 "status": "success",
@@ -88,7 +88,7 @@ async def test_run_probe_outputs_runner_compatible_records(tmp_path, monkeypatch
 
     class _Router:
         async def route_shadow(self, prompt, *, request_context, active_pending):
-            return _Shadow()
+            return _Observation()
 
     monkeypatch.setattr(probe, "_build_router", lambda **kwargs: _Router())
 
@@ -102,7 +102,7 @@ async def test_run_probe_outputs_runner_compatible_records(tmp_path, monkeypatch
     assert len(payload["records"]) == 1
     record = payload["records"][0]
     assert record["case"] == "score-case"
-    assert record["turnObservability"]["semanticRouterShadow"]["status"] == "success"
+    assert record["turnObservability"]["semanticFrameObservation"]["status"] == "success"
 
 
 @pytest.mark.asyncio
@@ -110,13 +110,13 @@ async def test_run_probe_marks_disabled_timeout_mode(tmp_path, monkeypatch):
     case_file = tmp_path / "cases.json"
     _write_case_file(case_file)
 
-    class _Shadow:
+    class _Observation:
         def event_payload(self):
             return {"status": "success", "durationMs": 123}
 
     class _Router:
         async def route_shadow(self, prompt, *, request_context, active_pending):
-            return _Shadow()
+            return _Observation()
 
     monkeypatch.setattr(probe, "_build_router", lambda **kwargs: _Router())
 

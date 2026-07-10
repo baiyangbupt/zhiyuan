@@ -72,43 +72,6 @@ def test_plan_reply_style_rejects_dangling_exact_line():
     assert any("dangling line" in item for item in violations)
 
 
-def test_turn_observability_merges_late_zhiyuan_agent_shadow_event():
-    running_event = {
-        "type": "routeObservability",
-        "event": "conversation_turn_event",
-        "routingPath": "zhiyuan_agent_direct",
-        "zhiyuanAgentPocShadow": {
-            "enabled": True,
-            "status": "running",
-            "routingPath": "zhiyuan_agent_poc",
-        },
-    }
-    completed_event = {
-        "type": "routeObservability",
-        "event": "zhiyuan_agent_poc_shadow_event",
-        "shadow": {
-            "enabled": True,
-            "status": "success",
-            "routingPath": "zhiyuan_agent_poc",
-            "firstToolNames": ["preview_plan_action"],
-            "toolCallNames": ["preview_plan_action"],
-            "nextSteps": ["confirm"],
-        },
-    }
-    turn_messages = [
-        {"parts": [{"part_kind": "user-prompt", "content": "那高收费的别要了"}]},
-        {"model_name": "route-observability", "parts": [{"part_kind": "text", "content": json.dumps(running_event)}]},
-        {"model_name": "zhiyuan-agent-direct", "parts": [{"part_kind": "text", "content": "已列出预览"}]},
-        {"model_name": "route-observability", "parts": [{"part_kind": "text", "content": json.dumps(completed_event)}]},
-    ]
-
-    summary = runner._summarize_turn_observability(turn_messages)
-
-    assert summary["zhiyuanAgentPocShadow"]["status"] == "success"
-    assert summary["zhiyuanAgentPocShadow"]["firstToolNames"] == ["preview_plan_action"]
-    assert summary["zhiyuanAgentPocShadow"]["nextSteps"] == ["confirm"]
-
-
 def test_apply_session_offset_maps_numeric_case_sessions_without_mutating_original():
     cases = [
         {"name": "case-a", "sessionId": "5736", "prompts": ["确认"]},
@@ -161,6 +124,27 @@ def test_apply_session_offset_clones_formal_plan_fixture_from_base_session():
     assert adjusted[0]["sessionId"] == "22400026"
     assert adjusted[0]["baseSessionId"] == "26"
     assert adjusted[0]["cloneBackendStateFromSessionId"] == "26"
+    assert "cloneBackendStateFromSessionId" not in cases[0]
+
+
+def test_apply_session_offset_can_clone_backend_state_for_offset_cases():
+    cases = [
+        {
+            "name": "quality-case-without-fixture-contract",
+            "sessionId": "17",
+            "prompts": ["这方案咋样"],
+        }
+    ]
+
+    adjusted = runner._apply_session_offset(
+        cases,
+        10000000,
+        clone_backend_state_from_offset=True,
+    )
+
+    assert adjusted[0]["sessionId"] == "10000017"
+    assert adjusted[0]["baseSessionId"] == "17"
+    assert adjusted[0]["cloneBackendStateFromSessionId"] == "17"
     assert "cloneBackendStateFromSessionId" not in cases[0]
 
 
@@ -322,6 +306,36 @@ def test_backend_extra_data_assertions_compare_after_with_before():
     )[0]
 
 
+def test_backend_extra_data_assertions_support_nested_numeric_field_max():
+    state = {
+        "orderedPlanState": {
+            "units": [
+                {"majorItems": [{"majorName": "软件工程", "tuitionPerYear": 18000}]},
+                {"majorItems": [{"majorName": "计算机", "tuitionPerYear": 20000}]},
+            ]
+        }
+    }
+
+    assert runner._check_single_backend_assertion(
+        {
+            "path": "orderedPlanState.units",
+            "maxNumericFieldLessThanOrEqual": {"field": "tuitionPerYear", "value": 20000},
+        },
+        actual_root=state,
+        before_root=None,
+    )[0]
+    passed, failures = runner._check_single_backend_assertion(
+        {
+            "path": "orderedPlanState.units",
+            "maxNumericFieldLessThanOrEqual": {"field": "tuitionPerYear", "value": 10000},
+        },
+        actual_root=state,
+        before_root=None,
+    )
+    assert not passed
+    assert any("tuitionPerYear<=10000" in item for item in failures)
+
+
 def test_run_cases_supports_backend_extra_data_assertions(monkeypatch, tmp_path):
     metrics_path = tmp_path / "metrics.json"
     backend_state = {
@@ -444,8 +458,8 @@ def test_case_session_ids_deduplicates_in_order():
     assert runner._case_session_ids(cases) == ["17", "16"]
 
 
-def test_runtime_shadow_observation_preserves_unsupported_local_action_route():
-    observation = runner._build_runtime_shadow_observation(
+def test_runtime_observation_preserves_unsupported_local_action_route():
+    observation = runner._build_runtime_observation(
         {
             "name": "pin-lock",
             "sessionId": "26",
@@ -499,8 +513,8 @@ def test_runtime_shadow_observation_preserves_unsupported_local_action_route():
     assert runtime["executionPayload"]["kind"] == "conditional_plan_mutation"
 
 
-def test_runtime_shadow_observation_uses_route_display_payload_for_conditional_options():
-    observation = runner._build_runtime_shadow_observation(
+def test_runtime_observation_uses_route_display_payload_for_conditional_options():
+    observation = runner._build_runtime_observation(
         {
             "name": "fee-options",
             "sessionId": "130",
@@ -605,6 +619,38 @@ def test_clone_backend_chat_session_row_uses_mysql_insert_select(monkeypatch):
     assert "dst.id = 9903101" in cmd[-1]
 
 
+def test_clone_backend_chat_session_row_retries_mysql_deadlock(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                stdout="",
+                stderr="ERROR 1213 (40001): Deadlock found when trying to get lock",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+
+    result = runner._clone_backend_chat_session_row(
+        source_session_id="17",
+        target_session_id="9903101",
+        db_host="127.0.0.1",
+        db_port="3306",
+        db_user="root",
+        db_password="secret",
+        db_name="sales_bot",
+    )
+
+    assert result["ok"] is True
+    assert result["attempts"] == 2
+    assert len(calls) == 2
+
+
 def test_clone_backend_chat_session_row_rejects_non_numeric_ids():
     result = runner._clone_backend_chat_session_row(
         source_session_id="base",
@@ -634,6 +680,20 @@ def test_clone_backend_volunteer_data_files_copies_local_source_files(tmp_path):
     assert result["copiedFiles"] == 2
     assert (tmp_path / "session_volunteer_9903101.json").read_text(encoding="utf-8") == '{"detailList":[]}'
     assert (tmp_path / "session_volunteer_9903101_temp.json").read_text(encoding="utf-8") == '{"temp":true}'
+
+
+def test_clone_backend_volunteer_data_files_skips_same_session(tmp_path):
+    (tmp_path / "session_volunteer_17.json").write_text('{"detailList":[]}', encoding="utf-8")
+
+    result = runner._clone_backend_volunteer_data_files(
+        source_session_id="17",
+        target_session_id="17",
+        data_dir=tmp_path,
+    )
+
+    assert result["ok"] is True
+    assert result["skipped"] == "same_session"
+    assert result["copiedFiles"] == 0
 
 
 def test_clone_backend_volunteer_data_files_requires_original_source(tmp_path):
@@ -874,8 +934,179 @@ def test_run_cases_fails_fast_when_backend_clone_fails(monkeypatch, tmp_path):
     assert "backend state clone had failures" in record["error"]
 
 
-def test_run_cases_writes_runtime_shadow_output(monkeypatch, tmp_path):
-    shadow_path = tmp_path / "runtime-shadow.json"
+def test_run_cases_fails_fast_when_backend_chat_session_clone_fails(monkeypatch, tmp_path):
+    metrics_path = tmp_path / "metrics.json"
+    ask_calls = []
+
+    async def fake_ask_once(*args, **kwargs):
+        ask_calls.append(args)
+        return ([{"type": "text", "content": "不应该进入 websocket"}], [], {"firstMessageMs": 1, "finalMessageMs": 1})
+
+    def fake_clone_backend_chat_session_row(**kwargs):
+        return {
+            "sourceSession": kwargs["source_session_id"],
+            "targetSession": kwargs["target_session_id"],
+            "table": "assistant_chat_session",
+            "ok": False,
+            "error": "ERROR 1045 access denied",
+        }
+
+    def fake_clone_backend_volunteer_data_files(**kwargs):
+        return {"ok": True, "copiedFiles": 2}
+
+    def fake_clone_backend_session_state(base_url, *, source_session_id, target_session_id, keys):
+        return [{"sourceSession": source_session_id, "targetSession": target_session_id, "key": key, "ok": True} for key in keys]
+
+    monkeypatch.setattr(runner, "_ask_once", fake_ask_once)
+    monkeypatch.setattr(runner, "_clone_backend_chat_session_row", fake_clone_backend_chat_session_row)
+    monkeypatch.setattr(runner, "_clone_backend_volunteer_data_files", fake_clone_backend_volunteer_data_files)
+    monkeypatch.setattr(runner, "_clone_backend_session_state", fake_clone_backend_session_state)
+
+    with pytest.raises(SystemExit) as exc_info:
+        asyncio.run(
+            runner._run_cases(
+                "ws://test",
+                "user",
+                [
+                    {
+                        "name": "case-chat-clone",
+                        "sessionId": "9903235",
+                        "cloneBackendStateFromSessionId": "35",
+                        "fixtureContract": {"type": "formal_plan_present"},
+                        "prompts": [{"prompt": "确认"}],
+                    }
+                ],
+                history_db=str(tmp_path / "missing.db"),
+                metrics_output=str(metrics_path),
+                internal_service_url="http://backend.test",
+                clone_backend_chat_session=True,
+            )
+        )
+
+    assert exc_info.value.code == 1
+    assert ask_calls == []
+    payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["failedByReason"] == {"environment": 1}
+    record = payload["records"][0]
+    assert record["failureReason"] == "environment"
+    assert "backend chat session clone failed" in record["error"]
+
+
+def test_run_cases_fails_fast_when_backend_volunteer_clone_fails(monkeypatch, tmp_path):
+    metrics_path = tmp_path / "metrics.json"
+    ask_calls = []
+
+    async def fake_ask_once(*args, **kwargs):
+        ask_calls.append(args)
+        return ([{"type": "text", "content": "不应该进入 websocket"}], [], {"firstMessageMs": 1, "finalMessageMs": 1})
+
+    def fake_clone_backend_chat_session_row(**kwargs):
+        return {
+            "sourceSession": kwargs["source_session_id"],
+            "targetSession": kwargs["target_session_id"],
+            "table": "assistant_chat_session",
+            "ok": True,
+            "insertedRows": 1,
+        }
+
+    def fake_clone_backend_volunteer_data_files(**kwargs):
+        return {"ok": False, "error": "required original session_volunteer file is missing"}
+
+    def fake_clone_backend_session_state(base_url, *, source_session_id, target_session_id, keys):
+        return [{"sourceSession": source_session_id, "targetSession": target_session_id, "key": key, "ok": True} for key in keys]
+
+    monkeypatch.setattr(runner, "_ask_once", fake_ask_once)
+    monkeypatch.setattr(runner, "_clone_backend_chat_session_row", fake_clone_backend_chat_session_row)
+    monkeypatch.setattr(runner, "_clone_backend_volunteer_data_files", fake_clone_backend_volunteer_data_files)
+    monkeypatch.setattr(runner, "_clone_backend_session_state", fake_clone_backend_session_state)
+
+    with pytest.raises(SystemExit) as exc_info:
+        asyncio.run(
+            runner._run_cases(
+                "ws://test",
+                "user",
+                [
+                    {
+                        "name": "case-volunteer-clone",
+                        "sessionId": "9903235",
+                        "cloneBackendStateFromSessionId": "35",
+                        "fixtureContract": {"type": "formal_plan_present"},
+                        "flow": ["final_action"],
+                        "prompts": [{"prompt": "确认"}],
+                    }
+                ],
+                history_db=str(tmp_path / "missing.db"),
+                metrics_output=str(metrics_path),
+                internal_service_url="http://backend.test",
+                clone_backend_chat_session=True,
+            )
+        )
+
+    assert exc_info.value.code == 1
+    assert ask_calls == []
+    payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["failedByReason"] == {"environment": 1}
+    record = payload["records"][0]
+    assert record["failureReason"] == "environment"
+    assert "backend volunteer data clone failed" in record["error"]
+
+
+def test_run_cases_allows_missing_volunteer_clone_for_non_final_action_case(monkeypatch, tmp_path):
+    metrics_path = tmp_path / "metrics.json"
+    ask_calls = []
+
+    async def fake_ask_once(*args, **kwargs):
+        ask_calls.append(args)
+        return ([{"type": "text", "content": "已记录这次要求。"}], [], {"firstMessageMs": 1, "finalMessageMs": 1})
+
+    def fake_clone_backend_chat_session_row(**kwargs):
+        return {
+            "sourceSession": kwargs["source_session_id"],
+            "targetSession": kwargs["target_session_id"],
+            "table": "assistant_chat_session",
+            "ok": True,
+            "insertedRows": 1,
+        }
+
+    def fake_clone_backend_volunteer_data_files(**kwargs):
+        return {"ok": False, "error": "required original session_volunteer file is missing"}
+
+    def fake_clone_backend_session_state(base_url, *, source_session_id, target_session_id, keys):
+        return [{"sourceSession": source_session_id, "targetSession": target_session_id, "key": key, "ok": True} for key in keys]
+
+    monkeypatch.setattr(runner, "_ask_once", fake_ask_once)
+    monkeypatch.setattr(runner, "_clone_backend_chat_session_row", fake_clone_backend_chat_session_row)
+    monkeypatch.setattr(runner, "_clone_backend_volunteer_data_files", fake_clone_backend_volunteer_data_files)
+    monkeypatch.setattr(runner, "_clone_backend_session_state", fake_clone_backend_session_state)
+
+    asyncio.run(
+        runner._run_cases(
+            "ws://test",
+            "user",
+            [
+                {
+                    "name": "case-observation-clone",
+                    "sessionId": "9903235",
+                    "cloneBackendStateFromSessionId": "35",
+                    "prompts": [{"prompt": "法学可以重点看看"}],
+                }
+            ],
+            history_db=str(tmp_path / "missing.db"),
+            metrics_output=str(metrics_path),
+            internal_service_url="http://backend.test",
+            clone_backend_chat_session=True,
+        )
+    )
+
+    assert len(ask_calls) == 1
+    payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["successfulSteps"] == 1
+    assert payload["warnings"]
+    assert "backend volunteer data clone failed" in payload["warnings"][0]
+
+
+def test_run_cases_writes_runtime_observation_output(monkeypatch, tmp_path):
+    observation_path = tmp_path / "runtime-observation.json"
     metrics_path = tmp_path / "metrics.json"
 
     async def fake_ask_once(*args, **kwargs):
@@ -912,18 +1143,18 @@ def test_run_cases_writes_runtime_shadow_output(monkeypatch, tmp_path):
             ],
             history_db=str(tmp_path / "missing.db"),
             metrics_output=str(metrics_path),
-            runtime_shadow_output=str(shadow_path),
+            runtime_observation_output=str(observation_path),
         )
     )
 
-    shadow_payload = json.loads(shadow_path.read_text(encoding="utf-8"))
-    assert shadow_payload["summary"]["observations"] == 1
-    observation = shadow_payload["observations"][0]
+    observation_payload = json.loads(observation_path.read_text(encoding="utf-8"))
+    assert observation_payload["summary"]["observations"] == 1
+    observation = observation_payload["observations"][0]
     assert observation["caseId"] == "G1-exclude-current-plan-english-major"
     assert observation["runtime"]["pendingType"] == "plan_mutation"
     metrics_payload = json.loads(metrics_path.read_text(encoding="utf-8"))
-    assert metrics_payload["records"][0]["runtimeShadowCaseId"] == "G1-exclude-current-plan-english-major"
-    assert metrics_payload["runtimeShadowSummary"]["byPendingType"] == {"plan_mutation": 1}
+    assert metrics_payload["records"][0]["runtimeObservationCaseId"] == "G1-exclude-current-plan-english-major"
+    assert metrics_payload["runtimeObservationSummary"]["byPendingType"] == {"plan_mutation": 1}
 
 
 def test_run_cases_keeps_observability_when_request_fails(monkeypatch, tmp_path):
@@ -1121,8 +1352,8 @@ def test_summarize_turn_observability_infers_readonly_closure_ack_route_from_mod
     assert observed["toolCallCount"] == 0
 
 
-def test_summarize_turn_observability_extracts_semantic_router_shadow():
-    shadow = {
+def test_summarize_turn_observability_extracts_semantic_frame_observation():
+    observation = {
         "status": "success",
         "durationMs": 321,
         "frame": {
@@ -1151,12 +1382,12 @@ def test_summarize_turn_observability_extracts_semantic_router_shadow():
             ],
         },
         {
-            "model_name": "semantic-router-shadow",
+            "model_name": "semantic-frame-observation",
             "parts": [
                 {
                     "part_kind": "text",
                     "content": json.dumps(
-                        {"type": "semanticRouterShadow", "semanticRouterShadow": shadow},
+                        {"type": "semanticFrameObservation", "semanticFrameObservation": observation},
                         ensure_ascii=False,
                     ),
                 }
@@ -1167,8 +1398,8 @@ def test_summarize_turn_observability_extracts_semantic_router_shadow():
     observed = runner._summarize_turn_observability(turn_messages)
 
     assert observed["routingPath"] == "zhiyuan_agent_direct"
-    assert observed["semanticRouterShadow"]["status"] == "success"
-    assert observed["semanticRouterShadow"]["frame"]["taskLayer"] == "explore"
+    assert observed["semanticFrameObservation"]["status"] == "success"
+    assert observed["semanticFrameObservation"]["frame"]["taskLayer"] == "explore"
 
 
 def test_summarize_turn_observability_does_not_infer_route_from_plain_tool_name():
@@ -1274,7 +1505,6 @@ def test_summarize_turn_observability_extracts_route_event_timings():
                             "toolDurationMs": 900,
                             "classificationDurationMs": 12000,
                             "preSemanticRouteDurationMs": 14000,
-                            "preFullAgentDurationMs": 9000,
                             "historyLoadDurationMs": 110,
                             "pendingLoadDurationMs": 70,
                             "initialStateLoadDurationMs": 130,
@@ -1286,7 +1516,6 @@ def test_summarize_turn_observability_extracts_route_event_timings():
                             "turnDecisionCacheHitCount": 1,
                             "intentEntityProfileDurationMs": 1700,
                             "intentSideEffectDurationMs": 900,
-                            "postFullAgentDurationMs": 1900,
                             "unattributedDurationMs": 10900,
                             "toolCallCount": 1,
                         },
@@ -1306,7 +1535,6 @@ def test_summarize_turn_observability_extracts_route_event_timings():
         "toolDurationMs": 900,
         "classificationDurationMs": 12000,
         "preSemanticRouteDurationMs": 14000,
-        "preFullAgentDurationMs": 9000,
         "historyLoadDurationMs": 110,
         "pendingLoadDurationMs": 70,
         "initialStateLoadDurationMs": 130,
@@ -1318,57 +1546,9 @@ def test_summarize_turn_observability_extracts_route_event_timings():
         "turnDecisionCacheHitCount": 1,
         "intentEntityProfileDurationMs": 1700,
         "intentSideEffectDurationMs": 900,
-        "postFullAgentDurationMs": 1900,
         "unattributedDurationMs": 10900,
         "toolCallCount": 1,
     }
-
-
-def test_summarize_turn_observability_extracts_zhiyuan_agent_poc_shadow():
-    shadow = {
-        "enabled": True,
-        "status": "success",
-        "routingPath": "zhiyuan_agent_poc",
-        "firstToolNames": ["preview_intent_change"],
-        "toolCallNames": ["preview_intent_change"],
-        "nextSteps": ["confirm"],
-        "durationMs": 1200,
-        "toolCallCount": 1,
-        "totalTokens": 860,
-        "replyPreview": "我先整理成待确认预览。",
-    }
-    turn_messages = [
-        {"parts": [{"part_kind": "user-prompt", "content": "不要医学类"}]},
-        {
-            "model_name": "route-observability",
-            "parts": [
-                {
-                    "part_kind": "text",
-                    "content": json.dumps(
-                        {
-                            "type": "routeObservability",
-                            "event": "conversation_turn_event",
-                            "routingPath": "zhiyuan_agent_direct",
-                            "zhiyuanAgentPocShadow": shadow,
-                        },
-                        ensure_ascii=False,
-                    ),
-                }
-            ],
-        },
-    ]
-
-    observed = runner._summarize_turn_observability(turn_messages)
-
-    assert observed["zhiyuanAgentPocShadow"] == shadow
-
-
-def test_step_requires_zhiyuan_agent_poc_shadow_only_for_shadow_assertions():
-    assert runner._step_requires_zhiyuan_agent_poc_shadow(
-        {"expectedZhiyuanAgentPocFirstToolNames": ["preview_plan_action"]}
-    )
-    assert runner._step_requires_zhiyuan_agent_poc_shadow({"maxZhiyuanAgentPocToolCallCount": 1})
-    assert not runner._step_requires_zhiyuan_agent_poc_shadow({"prompt": "普通用例"})
 
 
 def test_summarize_turn_observability_extracts_action_family_from_route_event_tool_calls():
@@ -1432,7 +1612,7 @@ def test_followup_summary_extracts_targets_and_refresh_flags():
     assert types == ["planningWorkspaceAction", "pendingConfirmationCard"]
 
 
-def test_runtime_shadow_observation_extracts_plan_pending_card_and_workspace_target():
+def test_runtime_observation_extracts_plan_pending_card_and_workspace_target():
     record = {
         "case": "case-a",
         "stepIndex": 1,
@@ -1470,7 +1650,7 @@ def test_runtime_shadow_observation_extracts_plan_pending_card_and_workspace_tar
         },
     ]
 
-    observation = runner._build_runtime_shadow_observation(
+    observation = runner._build_runtime_observation(
         {"name": "case-a", "caseId": "G17-tier-local-reorder"},
         {"prompt": "把第4个专业组移到第2位"},
         record,
@@ -1490,8 +1670,8 @@ def test_runtime_shadow_observation_extracts_plan_pending_card_and_workspace_tar
     assert runtime["replyFocus"] == ["major_group_order"]
 
 
-def test_runtime_shadow_observation_builds_latency_profile_diagnostic():
-    observation = runner._build_runtime_shadow_observation(
+def test_runtime_observation_builds_latency_profile_diagnostic():
+    observation = runner._build_runtime_observation(
         {
             "name": "case-a",
             "planningStateProfile": {"formalPlanPresent": True, "pendingExists": False},
@@ -1526,7 +1706,6 @@ def test_runtime_shadow_observation_builds_latency_profile_diagnostic():
                     "toolDurationMs": 900,
                     "classificationDurationMs": 12000,
                     "preSemanticRouteDurationMs": 14000,
-                    "preFullAgentDurationMs": 9000,
                     "historyLoadDurationMs": 110,
                     "pendingLoadDurationMs": 70,
                     "initialStateLoadDurationMs": 130,
@@ -1538,7 +1717,6 @@ def test_runtime_shadow_observation_builds_latency_profile_diagnostic():
                     "turnDecisionCacheHitCount": 1,
                     "intentEntityProfileDurationMs": 1700,
                     "intentSideEffectDurationMs": 900,
-                    "postFullAgentDurationMs": 1900,
                     "unattributedDurationMs": 10900,
                     "agentRun": {
                         "completed": True,
@@ -1579,7 +1757,6 @@ def test_runtime_shadow_observation_builds_latency_profile_diagnostic():
     assert runtime["diagnosticPayload"]["toolCallCount"] == 1
     assert runtime["diagnosticPayload"]["classificationDurationMs"] == 12000
     assert runtime["diagnosticPayload"]["preSemanticRouteDurationMs"] == 14000
-    assert runtime["diagnosticPayload"]["preFullAgentDurationMs"] == 9000
     assert runtime["diagnosticPayload"]["historyLoadDurationMs"] == 110
     assert runtime["diagnosticPayload"]["pendingLoadDurationMs"] == 70
     assert runtime["diagnosticPayload"]["initialStateLoadDurationMs"] == 130
@@ -1591,19 +1768,18 @@ def test_runtime_shadow_observation_builds_latency_profile_diagnostic():
     assert runtime["diagnosticPayload"]["turnDecisionCacheHitCount"] == 1
     assert runtime["diagnosticPayload"]["intentEntityProfileDurationMs"] == 1700
     assert runtime["diagnosticPayload"]["intentSideEffectDurationMs"] == 900
-    assert runtime["diagnosticPayload"]["postFullAgentDurationMs"] == 1900
     assert runtime["diagnosticPayload"]["unattributedDurationMs"] == 10900
     assert runtime["evidenceContract"]["toolBudget"] == {"maxToolCalls": 8, "batchPreferred": True}
 
 
-def test_runtime_shadow_observation_detects_multiple_pending_cards():
+def test_runtime_observation_detects_multiple_pending_cards():
     record = {"case": "case-a", "stepIndex": 1, "sessionId": "17", "prompt": "改一下"}
     followups = [
         {"type": "pendingConfirmationCard", "content": {"kind": "intent_change"}},
         {"type": "pendingConfirmationCard", "content": {"kind": "plan_mutation"}},
     ]
 
-    observation = runner._build_runtime_shadow_observation(
+    observation = runner._build_runtime_observation(
         {"name": "case-a", "caseId": "G24-pending-stack-conflict-and-replacement"},
         {"prompt": "改一下"},
         record,
@@ -1619,8 +1795,8 @@ def test_runtime_shadow_observation_detects_multiple_pending_cards():
     assert [card["kind"] for card in runtime["pendingCards"]] == ["intent_change", "plan_mutation"]
 
 
-def test_runtime_shadow_observation_marks_readonly_while_pending_from_case_profile():
-    observation = runner._build_runtime_shadow_observation(
+def test_runtime_observation_marks_readonly_while_pending_from_case_profile():
+    observation = runner._build_runtime_observation(
         {
             "name": "case-a",
             "planningStateProfile": {"pendingExists": True},
@@ -1647,8 +1823,8 @@ def test_runtime_shadow_observation_marks_readonly_while_pending_from_case_profi
     assert runtime["pendingType"] == "unchanged_existing_pending"
 
 
-def test_runtime_shadow_observation_does_not_treat_readonly_tool_applied_as_pending_apply():
-    observation = runner._build_runtime_shadow_observation(
+def test_runtime_observation_does_not_treat_readonly_tool_applied_as_pending_apply():
+    observation = runner._build_runtime_observation(
         {"name": "case-a", "planningStateProfile": {"pendingExists": False}},
         {"prompt": "方案里有没有民办的", "profileCaseId": "G32-no-plan-referenced-plan-defensive-reply"},
         {
@@ -1680,8 +1856,8 @@ def test_runtime_shadow_observation_does_not_treat_readonly_tool_applied_as_pend
     assert runtime["pendingType"] == "none"
 
 
-def test_runtime_shadow_observation_marks_needs_plan_first_route():
-    observation = runner._build_runtime_shadow_observation(
+def test_runtime_observation_marks_needs_plan_first_route():
+    observation = runner._build_runtime_observation(
         {"name": "case-a", "planningStateProfile": {"pendingExists": False}},
         {"prompt": "方案里有没有民办的", "profileCaseId": "G32-no-plan-referenced-plan-defensive-reply"},
         {
@@ -1709,8 +1885,8 @@ def test_runtime_shadow_observation_marks_needs_plan_first_route():
     assert runtime["pendingType"] == "none"
 
 
-def test_runtime_shadow_observation_marks_direct_pending_route_as_apply_existing_pending():
-    observation = runner._build_runtime_shadow_observation(
+def test_runtime_observation_marks_direct_pending_route_as_apply_existing_pending():
+    observation = runner._build_runtime_observation(
         {"name": "case-a", "planningStateProfile": {"pendingExists": True}},
         {"prompt": "确认执行", "profileCaseId": "G27-apply-pending-then-readonly-followup"},
         {
@@ -1731,7 +1907,7 @@ def test_runtime_shadow_observation_marks_direct_pending_route_as_apply_existing
     assert runtime["executionPayload"] == {"kind": "apply_existing_pending_then_readonly"}
 
 
-def test_runtime_shadow_observation_preserves_post_apply_evidence_plan():
+def test_runtime_observation_preserves_post_apply_evidence_plan():
     evidence_plan = {
         "trigger": "apply_pending_then_readonly",
         "requiredInputs": ["active_pending", "formal_ordered_plan_after_apply"],
@@ -1742,7 +1918,7 @@ def test_runtime_shadow_observation_preserves_post_apply_evidence_plan():
         ],
         "targetIssues": ["remaining_count", "tier_distribution"],
     }
-    observation = runner._build_runtime_shadow_observation(
+    observation = runner._build_runtime_observation(
         {"name": "case-a", "planningStateProfile": {"pendingExists": True}},
         {"prompt": "删完了再看还剩多少", "profileCaseId": "G27-apply-pending-then-readonly-followup"},
         {
@@ -1767,8 +1943,8 @@ def test_runtime_shadow_observation_preserves_post_apply_evidence_plan():
     assert runtime["turnObservability"]["postApplyEvidencePlan"] == evidence_plan
 
 
-def test_runtime_shadow_observation_preserves_apply_then_new_request_route():
-    observation = runner._build_runtime_shadow_observation(
+def test_runtime_observation_preserves_apply_then_new_request_route():
+    observation = runner._build_runtime_observation(
         {"name": "case-a", "planningStateProfile": {"pendingExists": True}},
         {"prompt": "现在基于这些出方案", "profileCaseId": "G14-apply-pending-then-plan-request"},
         {
@@ -1806,8 +1982,8 @@ def test_runtime_shadow_observation_preserves_apply_then_new_request_route():
     assert runtime["pendingCards"][0]["actionFamily"] == "generate_plan"
 
 
-def test_runtime_shadow_observation_marks_intent_apply_message_code_as_apply_existing_pending():
-    observation = runner._build_runtime_shadow_observation(
+def test_runtime_observation_marks_intent_apply_message_code_as_apply_existing_pending():
+    observation = runner._build_runtime_observation(
         {"name": "case-a", "planningStateProfile": {"pendingExists": True}},
         {"prompt": "采纳", "profileCaseId": "G6-apply-intent-pending"},
         {
@@ -1837,8 +2013,8 @@ def test_runtime_shadow_observation_marks_intent_apply_message_code_as_apply_exi
     assert runtime["pendingType"] == "none"
 
 
-def test_runtime_shadow_observation_requires_explicit_step_case_id_for_multi_step_cases():
-    observation = runner._build_runtime_shadow_observation(
+def test_runtime_observation_requires_explicit_step_case_id_for_multi_step_cases():
+    observation = runner._build_runtime_observation(
         {"name": "case-a", "caseId": "G1-exclude-current-plan-english-major"},
         {"prompt": "确认"},
         {"case": "case-a", "stepIndex": 2, "sessionId": "17", "prompt": "确认"},
@@ -2106,6 +2282,24 @@ def test_content_assertions_report_missing_thinking_message():
     assert any("assertThinkingContains FAILED" in item for item in violations)
 
 
+def test_content_assertions_can_ignore_thinking_messages():
+    violations = runner._check_content_assertions(
+        "会把第2个志愿移动到第4位。需要你确认后才会执行。",
+        [],
+        {
+            "prompt": "把第2个志愿移到第4位",
+            "assertContains": ["第2个志愿"],
+            "assertThinkingContains": ["正在生成这次调整的影响预览"],
+        },
+        "case-progress",
+        "17",
+        thinking_text="正在读取当前方案并整理这次请求...",
+        ignore_thinking_assertions=True,
+    )
+
+    assert violations == []
+
+
 def test_tool_assertions_can_require_exact_tool_sequence():
     violations = runner._check_tool_assertions(
         {
@@ -2131,74 +2325,6 @@ def test_tool_assertions_can_require_exact_tool_sequence():
     )
 
     assert violations == []
-
-
-def test_tool_assertions_can_require_zhiyuan_agent_poc_shadow_tools():
-    violations = runner._check_tool_assertions(
-        {
-            "routingPath": "full_agent",
-            "zhiyuanAgentPocShadow": {
-                "status": "success",
-                "firstToolNames": ["preview_plan_action"],
-                "toolCallNames": ["preview_plan_action"],
-                "nextSteps": ["confirm"],
-                "toolCallCount": 1,
-            },
-        },
-        {
-            "prompt": "高收费的别要了",
-            "expectedZhiyuanAgentPocStatus": "success",
-            "expectedZhiyuanAgentPocFirstToolNames": ["preview_plan_action"],
-            "expectedZhiyuanAgentPocToolNames": ["preview_plan_action"],
-            "expectedZhiyuanAgentPocNextSteps": ["confirm"],
-            "maxZhiyuanAgentPocToolCallCount": 1,
-        },
-        "case-shadow",
-        "9904011",
-    )
-
-    assert violations == []
-
-
-def test_tool_assertions_report_missing_zhiyuan_agent_poc_shadow():
-    violations = runner._check_tool_assertions(
-        {"routingPath": "full_agent"},
-        {
-            "prompt": "有啥问题咋弄",
-            "expectedZhiyuanAgentPocFirstToolNames": ["review_plan"],
-        },
-        "case-shadow",
-        "9904012",
-    )
-
-    assert any("zhiyuanAgentPocShadow FAILED" in item for item in violations)
-
-
-def test_tool_assertions_report_zhiyuan_agent_poc_shadow_mismatch():
-    violations = runner._check_tool_assertions(
-        {
-            "routingPath": "full_agent",
-            "zhiyuanAgentPocShadow": {
-                "status": "success",
-                "firstToolNames": ["review_plan"],
-                "toolCallNames": ["review_plan"],
-                "nextSteps": ["respond"],
-                "toolCallCount": 2,
-            },
-        },
-        {
-            "prompt": "不要高收费的",
-            "expectedZhiyuanAgentPocFirstToolNames": ["preview_plan_action"],
-            "expectedZhiyuanAgentPocNextSteps": ["confirm"],
-            "maxZhiyuanAgentPocToolCallCount": 1,
-        },
-        "case-shadow",
-        "9904013",
-    )
-
-    assert any("expectedZhiyuanAgentPocFirstToolNames FAILED" in item for item in violations)
-    assert any("expectedZhiyuanAgentPocNextSteps FAILED" in item for item in violations)
-    assert any("maxZhiyuanAgentPocToolCallCount FAILED" in item for item in violations)
 
 
 def test_tool_assertions_report_repeated_or_forbidden_tools():
@@ -2400,67 +2526,3 @@ def test_fixture_and_root_cause_fields_accept_case_and_step_overrides():
     assert record["fixtureType"] == "empty_plan"
     assert record["fixtureContract"] == {"type": "empty_plan", "requiredState": []}
     assert record["expectedRootCause"] == "assertion_noise"
-
-
-def test_metrics_summary_reports_zhiyuan_agent_poc_shadow_distribution():
-    summary = runner._build_metrics_summary(
-        [
-            {
-                "case": "intent",
-                "sessionId": "17",
-                "prompt": "不要医学类",
-                "elapsedMs": 1000,
-                "turnObservability": {
-                    "zhiyuanAgentPocShadow": {
-                        "status": "success",
-                        "firstToolNames": ["preview_intent_change"],
-                        "toolCallNames": ["preview_intent_change"],
-                        "nextSteps": ["confirm"],
-                        "durationMs": 1200,
-                        "toolCallCount": 1,
-                        "totalTokens": 860,
-                    }
-                },
-            },
-            {
-                "case": "query",
-                "sessionId": "17",
-                "prompt": "方案里有没有民办",
-                "elapsedMs": 2000,
-                "turnObservability": {
-                    "zhiyuanAgentPocShadow": {
-                        "status": "success",
-                        "firstToolNames": ["query_plan"],
-                        "toolCallNames": ["query_plan"],
-                        "nextSteps": ["respond"],
-                        "durationMs": 900,
-                        "toolCallCount": 1,
-                        "totalTokens": 740,
-                    }
-                },
-            },
-            {
-                "case": "error",
-                "sessionId": "18",
-                "prompt": "看看方案",
-                "elapsedMs": 3000,
-                "turnObservability": {
-                    "zhiyuanAgentPocShadow": {
-                        "status": "error",
-                        "durationMs": 30000,
-                        "errorType": "TimeoutError",
-                    }
-                },
-            },
-        ]
-    )
-
-    shadow = summary["zhiyuanAgentPocShadow"]
-    assert shadow["observed"] == 3
-    assert shadow["statuses"] == {"success": 2, "error": 1}
-    assert shadow["firstTools"] == {"preview_intent_change": 1, "query_plan": 1}
-    assert shadow["nextSteps"] == {"confirm": 1, "respond": 1}
-    assert shadow["duration"]["medianMs"] == 1200
-    assert shadow["toolCallCount"]["medianMs"] == 1
-    assert shadow["totalTokens"]["count"] == 2
-    assert shadow["errorExamples"][0]["case"] == "error"

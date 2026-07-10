@@ -273,6 +273,8 @@ const createDefaultFilters = () => ({
   sortOrder: 'desc' as CandidateSortOrder,
 });
 
+type CandidateFilterState = ReturnType<typeof createDefaultFilters>;
+
 const TIER_OPTIONS = [
   { label: '全部', value: '' },
   { label: '冲', value: '冲' },
@@ -395,6 +397,55 @@ const parseFilterTokenValue = (
 
 const uniqueStrings = (values: Array<string | null | undefined>) =>
   Array.from(new Set(values.map(item => (item || '').trim()).filter(Boolean)));
+
+const buildCandidateViewStateFromFilters = (filters: CandidateFilterState): PlanningCandidateViewState => ({
+  filters: {
+    tiers: filters.tier ? [filters.tier] : [],
+    provinceNames: filters.provinceNames,
+    negativeProvinceNames: filters.negativeProvinceNames,
+    cityNames: filters.cityNames,
+    negativeCityNames: filters.negativeCityNames,
+    schoolKeywords: filters.schoolKeywords,
+    negativeSchoolKeywords: filters.negativeSchoolKeywords,
+    majorKeywords: filters.majorKeywords,
+    negativeMajorKeywords: filters.negativeMajorKeywords,
+    schoolTags: filters.schoolTags,
+    negativeSchoolTags: filters.negativeSchoolTags,
+    majorTags: filters.majorTags,
+    negativeMajorTags: filters.negativeMajorTags,
+  },
+  sort: {
+    field: filters.sortField,
+    order: filters.sortOrder,
+  },
+  expertPreferredOnly: filters.expertPreferredOnly,
+});
+
+const buildFiltersFromCandidateViewState = (candidateViewState?: PlanningCandidateViewState): CandidateFilterState => {
+  const defaults = createDefaultFilters();
+  return {
+    ...defaults,
+    tier: (candidateViewState?.filters?.tiers?.[0] as CandidateTier) || '',
+    provinceNames: uniqueStrings(candidateViewState?.filters?.provinceNames || []),
+    negativeProvinceNames: uniqueStrings(candidateViewState?.filters?.negativeProvinceNames || []),
+    cityNames: uniqueStrings(candidateViewState?.filters?.cityNames || []),
+    negativeCityNames: uniqueStrings(candidateViewState?.filters?.negativeCityNames || []),
+    schoolKeywords: uniqueStrings(candidateViewState?.filters?.schoolKeywords || []),
+    negativeSchoolKeywords: uniqueStrings(candidateViewState?.filters?.negativeSchoolKeywords || []),
+    majorKeywords: uniqueStrings(candidateViewState?.filters?.majorKeywords || []),
+    negativeMajorKeywords: uniqueStrings(candidateViewState?.filters?.negativeMajorKeywords || []),
+    schoolTags: uniqueStrings(candidateViewState?.filters?.schoolTags || []),
+    negativeSchoolTags: uniqueStrings(candidateViewState?.filters?.negativeSchoolTags || []),
+    majorTags: uniqueStrings(candidateViewState?.filters?.majorTags || []),
+    negativeMajorTags: uniqueStrings(candidateViewState?.filters?.negativeMajorTags || []),
+    expertPreferredOnly: Boolean(candidateViewState?.expertPreferredOnly),
+    sortField: (candidateViewState?.sort?.field as CandidateSortField) || defaults.sortField,
+    sortOrder: candidateViewState?.sort?.order || defaults.sortOrder,
+  };
+};
+
+const buildCandidateViewStateSignature = (candidateViewState?: PlanningCandidateViewState) =>
+  JSON.stringify(buildCandidateViewStateFromFilters(buildFiltersFromCandidateViewState(candidateViewState)));
 
 const getVolunteerLegacyPrefix = (volunteerId?: string) => {
   const parts = (volunteerId || '').trim().split('_').filter(Boolean);
@@ -648,8 +699,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const candidateSourceRefreshKeyRef = useRef('');
   const suppressNextCandidateRefreshRef = useRef(false);
   const previousWorkspaceViewKeyRef = useRef(`${routerParams.chatSessionId}:${initialActiveView}`);
-  const initialFiltersAppliedRef = useRef(false);
   const candidateViewStateHydratedRef = useRef(false);
+  const lastAppliedCandidateViewStateRef = useRef('');
   const lastSavedCandidateViewStateRef = useRef('');
   const initialPlanRequestedRef = useRef(false);
   const orderedCollapseInitializedRef = useRef(false);
@@ -1454,28 +1505,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     };
   };
 
-  const buildCandidateViewStatePayload = (): PlanningCandidateViewState => ({
-    filters: {
-      tiers: filters.tier ? [filters.tier] : [],
-      provinceNames: filters.provinceNames,
-      negativeProvinceNames: filters.negativeProvinceNames,
-      cityNames: filters.cityNames,
-      negativeCityNames: filters.negativeCityNames,
-      schoolKeywords: filters.schoolKeywords,
-      negativeSchoolKeywords: filters.negativeSchoolKeywords,
-      majorKeywords: filters.majorKeywords,
-      negativeMajorKeywords: filters.negativeMajorKeywords,
-      schoolTags: filters.schoolTags,
-      negativeSchoolTags: filters.negativeSchoolTags,
-      majorTags: filters.majorTags,
-      negativeMajorTags: filters.negativeMajorTags,
-    },
-    sort: {
-      field: filters.sortField,
-      order: filters.sortOrder,
-    },
-    expertPreferredOnly: filters.expertPreferredOnly,
-  });
+  const buildCandidateViewStatePayload = (): PlanningCandidateViewState =>
+    buildCandidateViewStateFromFilters(filters);
 
   const resetCandidateFilters = () => {
     setFilters(prev => ({
@@ -2408,8 +2439,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   ]);
 
   useEffect(() => {
-    initialFiltersAppliedRef.current = false;
     candidateViewStateHydratedRef.current = false;
+    lastAppliedCandidateViewStateRef.current = '';
     lastSavedCandidateViewStateRef.current = '';
     initialPlanRequestedRef.current = false;
     orderedCollapseInitializedRef.current = false;
@@ -2540,32 +2571,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   ]);
 
   useEffect(() => {
-    if (!planningState || initialFiltersAppliedRef.current) {
+    if (!planningState) {
       return;
     }
     const candidateViewState = planningState.candidateViewState;
-    setFilters(prev => ({
-      ...prev,
-      tier: (candidateViewState?.filters?.tiers?.[0] as CandidateTier) || '',
-      provinceNames: uniqueStrings(candidateViewState?.filters?.provinceNames || []),
-      negativeProvinceNames: uniqueStrings(candidateViewState?.filters?.negativeProvinceNames || []),
-      cityNames: uniqueStrings(candidateViewState?.filters?.cityNames || []),
-      negativeCityNames: uniqueStrings(candidateViewState?.filters?.negativeCityNames || []),
-      schoolKeywords: uniqueStrings(candidateViewState?.filters?.schoolKeywords || []),
-      negativeSchoolKeywords: uniqueStrings(candidateViewState?.filters?.negativeSchoolKeywords || []),
-      majorKeywords: uniqueStrings(candidateViewState?.filters?.majorKeywords || []),
-      negativeMajorKeywords: uniqueStrings(candidateViewState?.filters?.negativeMajorKeywords || []),
-      schoolTags: uniqueStrings(candidateViewState?.filters?.schoolTags || []),
-      negativeSchoolTags: uniqueStrings(candidateViewState?.filters?.negativeSchoolTags || []),
-      majorTags: uniqueStrings(candidateViewState?.filters?.majorTags || []),
-      negativeMajorTags: uniqueStrings(candidateViewState?.filters?.negativeMajorTags || []),
-      expertPreferredOnly: Boolean(candidateViewState?.expertPreferredOnly),
-      sortField: (candidateViewState?.sort?.field as CandidateSortField) || 'finalScore',
-      sortOrder: candidateViewState?.sort?.order || 'desc',
-    }));
-    initialFiltersAppliedRef.current = true;
+    const candidateViewStateSignature = buildCandidateViewStateSignature(candidateViewState);
+    if (candidateViewStateSignature === lastAppliedCandidateViewStateRef.current) {
+      return;
+    }
+    setFilters(buildFiltersFromCandidateViewState(candidateViewState));
     candidateViewStateHydratedRef.current = true;
-    lastSavedCandidateViewStateRef.current = JSON.stringify(candidateViewState || {});
+    lastAppliedCandidateViewStateRef.current = candidateViewStateSignature;
+    lastSavedCandidateViewStateRef.current = candidateViewStateSignature;
   }, [planningState?.sessionId, planningState?.candidateViewState]);
 
   useEffect(() => {

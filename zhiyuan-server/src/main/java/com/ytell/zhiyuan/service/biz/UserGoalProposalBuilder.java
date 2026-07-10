@@ -19,9 +19,6 @@ import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -37,8 +34,6 @@ final class UserGoalProposalBuilder {
     private static final String REASON_GOAL_UNCLEAR = "user_goal_unclear";
     private static final String REASON_TARGET_NOT_FOUND = "user_goal_target_not_found";
     private static final String REASON_ENTITY_NEEDS_CLARIFICATION = "user_goal_entity_needs_clarification";
-    private static final Map<String, List<String>> REGION_AREA_PROVINCES = buildRegionAreaProvinces();
-
     private UserGoalProposalBuilder() {
     }
 
@@ -1090,17 +1085,6 @@ final class UserGoalProposalBuilder {
         return "ugp_" + UUID.nameUUIDFromBytes(raw.getBytes(StandardCharsets.UTF_8)).toString().replace("-", "").substring(0, 16);
     }
 
-    private static Map<String, List<String>> buildRegionAreaProvinces() {
-        java.util.Map<String, List<String>> map = new java.util.LinkedHashMap<String, List<String>>();
-        map.put("南方", Arrays.asList(
-                "浙江", "上海", "湖南", "湖北", "江西", "福建", "云南", "贵州",
-                "四川", "重庆", "广东", "广西", "海南", "江苏", "安徽"));
-        map.put("北方", Arrays.asList(
-                "黑龙江", "吉林", "辽宁", "内蒙古", "新疆", "西藏", "青海", "甘肃",
-                "宁夏", "陕西", "山西", "山东", "河北", "北京", "天津"));
-        return Collections.unmodifiableMap(map);
-    }
-
     private static <T> List<T> defaultList(List<T> values) {
         return values == null ? Lists.newArrayList() : values;
     }
@@ -1262,12 +1246,11 @@ final class UserGoalProposalBuilder {
                 return false;
             }
             if ("area".equals(scopeLevel)) {
-                List<String> provinces = REGION_AREA_PROVINCES.get(value);
-                if (provinces == null || provinces.isEmpty()) {
-                    return containsLoose(candidate.getProvinceName(), value)
-                            || containsLoose(candidate.getCityName(), value);
+                if (RegionScopeSupport.matchesRegionScope(value, candidate.getProvinceName(), candidate.getCityName())) {
+                    return true;
                 }
-                return containsAny(provinces, candidate.getProvinceName());
+                return containsLoose(candidate.getProvinceName(), value)
+                        || containsLoose(candidate.getCityName(), value);
             }
             if ("province".equals(scopeLevel)) {
                 return containsLoose(candidate.getProvinceName(), value);

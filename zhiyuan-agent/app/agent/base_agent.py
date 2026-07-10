@@ -30,33 +30,21 @@ ProgressCallback = Callable[[str], Awaitable[None]]
 DepsT = TypeVar("DepsT")
 
 _TOOL_REPEAT_LIMITS = {
-    "query_volunteer_plan": 2,
-    "query_score_line": 3,
-    "query_admission_score": 3,
-    "search_official_admission_sources": 2,
-    "get_school_introduction": 2,
-    "analyze_current_interest": 2,
-    "analyze_current_interest_profile": 2,
-    "analyze_current_school_interest": 2,
-    "analyze_current_major_interest": 2,
-    "analyze_current_region_interest": 2,
-    "analyze_current_career_direction": 2,
+    "query_plan": 2,
+    "review_plan": 2,
+    "explore_topic": 2,
+    "compare_entities": 2,
+    "answer_policy": 2,
 }
 
 _READONLY_EXPLORE_REPEAT_GUARD_TOOL_NAMES = {
-    "analyze_current_interest",
-    "analyze_current_interest_profile",
-    "analyze_current_school_interest",
-    "analyze_current_major_interest",
-    "analyze_current_region_interest",
-    "analyze_current_career_direction",
+    "explore_topic",
+    "compare_entities",
 }
 
 _READONLY_EVIDENCE_REPEAT_GUARD_TOOL_NAMES = {
-    "query_score_line",
-    "query_admission_score",
-    "search_official_admission_sources",
-    "get_school_introduction",
+    "answer_policy",
+    "review_plan",
 }
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -599,34 +587,19 @@ class BaseAgent(Generic[T]):
         return matches[0]
 
     def render_tool_loop_guard_output(self, tool_name: str, count: int) -> str:
-        if tool_name == "query_volunteer_plan":
+        if tool_name == "query_plan":
             return (
                 "我已经查过当前方案和候选里的相关机会，但这轮没有得到可直接引用的稳定结果，先不继续重复查询。"
                 "这轮不会改动方案；你可以换一个更具体的条件，比如学校全称、专业、城市、冲稳保层级，或者让我基于当前候选先做整体梳理。"
             )
-        if tool_name == "query_score_line":
-            return (
-                "这轮已经查过多组录取分数线，但没有得到可直接引用的稳定结果，我先停止继续逐条查分。"
-                "这轮不会改动方案，也不会写入偏好；你可以指定一两所学校继续查，或让我先按已查到的信息做概括判断。"
-            )
-        if tool_name == "search_official_admission_sources":
-            return (
-                "这轮已经检索过官方来源，但没有得到可直接引用的稳定结果，我先停止重复检索。"
-                "这轮不会改动方案，也不会写入偏好；你可以指定学校、省份或政策条款继续核验。"
-            )
-        if tool_name == "query_admission_score":
-            return (
-                "这轮已经查过多组录取机会，但没有得到可直接引用的稳定结果，我先停止继续逐条查。"
-                "这轮不会改动方案，也不会写入偏好；你可以指定学校或专业继续查，或让我先按已查到的信息做概括判断。"
-            )
-        if tool_name == "get_school_introduction":
-            return (
-                "这轮已经查过院校基础信息，但没有得到可直接引用的稳定结果，我先停止重复查询。"
-                "这轮不会改动方案，也不会写入偏好；你可以指定一所学校继续深挖。"
-            )
         if tool_name in _READONLY_EXPLORE_REPEAT_GUARD_TOOL_NAMES:
             return (
                 "这轮只读分析已经完成过一次，但没有得到更稳定的新结论，我先停止重复分析。"
+                "这轮不会改动方案，也不会写入偏好；你可以换一个更具体的问题继续。"
+            )
+        if tool_name in _READONLY_EVIDENCE_REPEAT_GUARD_TOOL_NAMES:
+            return (
+                "这轮已经完成过一次只读核对，但没有得到更稳定的新结论，我先停止重复查询。"
                 "这轮不会改动方案，也不会写入偏好；你可以换一个更具体的问题继续。"
             )
         return "这轮工具调用没有得到可直接引用的稳定结果，我先停止重复查询。你可以换一个更具体的问题继续。"
@@ -638,7 +611,7 @@ class BaseAgent(Generic[T]):
         messages: list[Any],
     ) -> str | None:
         if (
-            tool_name != "query_volunteer_plan"
+            tool_name != "query_plan"
             and tool_name not in _READONLY_EXPLORE_REPEAT_GUARD_TOOL_NAMES
             and tool_name not in _READONLY_EVIDENCE_REPEAT_GUARD_TOOL_NAMES
         ):
@@ -694,10 +667,6 @@ class BaseAgent(Generic[T]):
 
     @staticmethod
     def _tool_return_user_text(tool_name: str, text: str) -> str:
-        if tool_name == "search_official_admission_sources":
-            return BaseAgent._official_source_search_user_text(text)
-        if tool_name not in _READONLY_EXPLORE_REPEAT_GUARD_TOOL_NAMES:
-            return text
         stripped = text.strip()
         if not (stripped.startswith("{") and stripped.endswith("}")):
             return stripped
@@ -709,61 +678,6 @@ class BaseAgent(Generic[T]):
                     if value:
                         return value
         return stripped
-
-    @staticmethod
-    def _official_source_search_user_text(text: str) -> str:
-        stripped = text.strip()
-        if not (stripped.startswith("{") and stripped.endswith("}")):
-            return stripped
-        with contextlib.suppress(Exception):
-            parsed = json.loads(stripped)
-            if isinstance(parsed, dict) and parsed.get("result_kind") == "official_source_search":
-                return BaseAgent._render_official_source_search_summary(parsed)
-        return stripped
-
-    @staticmethod
-    def _render_official_source_search_summary(payload: dict[str, Any]) -> str:
-        summary = str(payload.get("summary") or "").strip()
-        status = str(payload.get("status") or "").strip()
-        query = str(payload.get("query") or "").strip()
-        results = payload.get("results")
-        if not isinstance(results, list):
-            results = []
-
-        lines: list[str] = []
-        if summary:
-            lines.append(summary)
-        elif status:
-            lines.append("已完成一轮官方来源检索。")
-        if query:
-            lines.append(f"检索词：{query}")
-
-        rendered_results: list[str] = []
-        for index, raw_item in enumerate(results[:5], start=1):
-            if not isinstance(raw_item, dict):
-                continue
-            title = str(raw_item.get("title") or "").strip()
-            site_name = str(raw_item.get("site_name") or "").strip()
-            url = str(raw_item.get("url") or "").strip()
-            detail = str(raw_item.get("summary") or raw_item.get("snippet") or "").strip()
-            heading_parts = [part for part in (title, site_name) if part]
-            heading = " / ".join(heading_parts) or url
-            if not heading:
-                continue
-            line = f"{index}. {heading}"
-            if url:
-                line += f"\n   {url}"
-            if detail:
-                line += f"\n   要点：{BaseAgent._compact_error_text(detail, limit=180)}"
-            rendered_results.append(line)
-
-        if rendered_results:
-            lines.append("可参考的官方来源：")
-            lines.extend(rendered_results)
-        elif status and status != "ok":
-            lines.append("这轮没有可直接引用的官方来源，不能据此下最终结论。")
-
-        return "\n".join(lines).strip() or "已完成一轮官方来源检索；这轮不会改动方案，也不会写入偏好。"
 
     def _drop_trailing_tool_call_response(self, messages: list[Any], tool_names: list[str]) -> list[Any]:
         if not messages:

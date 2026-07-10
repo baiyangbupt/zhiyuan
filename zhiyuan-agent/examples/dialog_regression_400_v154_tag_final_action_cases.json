@@ -1,0 +1,187 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v1.54 final-action checks for explicit school/major tag requirements.",
+    "notes": "Run with --clone-backend-chat-session. These cases verify tag requirements are recorded and applied to the final ordered plan, not only rendered as confirmation cards."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "confirm_pending",
+      "tag_requirement",
+      "final_action"
+    ],
+    "coverage": [
+      "explicit_requirement",
+      "school_tag",
+      "major_tag",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v154-exclude-school-tag-final-action",
+      "sessionId": "9904541",
+      "prompts": [
+        {
+          "prompt": "博士点的不要了",
+          "assertContainsAny": [
+            "博士点",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "博士点",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": "院校标签:博士点"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "博士点"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261001095_37020262020504_709"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v154-exclude-major-tag-final-action",
+      "sessionId": "9904542",
+      "prompts": [
+        {
+          "prompt": "五年制的不要了",
+          "assertContainsAny": [
+            "五年",
+            "5年",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "五年",
+            "5年",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeMajors",
+              "contains": "专业标签:学制：5年"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "学制：5年"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261001095_37020262020504_709"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

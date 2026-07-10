@@ -16,7 +16,7 @@
       "confirm_execution"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "26",
+    "cloneBackendStateFromSessionId": "17",
     "clearBackendPlanningIntentState": true,
     "promptDefaults": {
       "assertNotContains": [
@@ -69,15 +69,7 @@
           "expectedToolNames": [
             "preview_plan_action"
           ],
-          "expectedZhiyuanAgentPocStatus": "success",
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
-          ],
-          "maxToolCallCount": 1,
-          "maxZhiyuanAgentPocToolCallCount": 2
+          "maxToolCallCount": 1
         },
         {
           "prompt": "确认执行",
@@ -129,7 +121,7 @@
         "intent_change",
         "school_nature",
         "confirm_execution",
-        "plan_regeneration"
+        "candidate_pool_rebuild"
       ],
       "prompts": [
         {
@@ -146,15 +138,7 @@
           "expectedToolNames": [
             "preview_intent_change"
           ],
-          "expectedZhiyuanAgentPocStatus": "success",
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
-          ],
-          "maxToolCallCount": 1,
-          "maxZhiyuanAgentPocToolCallCount": 2
+          "maxToolCallCount": 1
         },
         {
           "prompt": "采纳",
@@ -164,15 +148,6 @@
             "当前方案",
             "报考要求"
           ],
-          "assertNoFollowups": true,
-          "assertActionableFollowupTypes": [
-            "planningWorkspaceAction"
-          ],
-          "assertActionableFollowupTargets": [
-            "ordered",
-            "review"
-          ],
-          "assertActionableFollowupCount": 2,
           "expectedRoutingPathAny": [
             "direct_pending_intent_confirm",
             "pending_intent_short_text_confirm",

@@ -1,0 +1,816 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Stable abstracted regression cases derived from production dialogue candidates. These cases keep the production intent patterns while removing session-specific private details.",
+    "source": "Migrated from 3.1.0 abstracted production dialogue cases; raw production candidate export removed from 4.0 release gate.",
+    "privacy": "Synthetic prompts only; do not copy exact personal identifiers, exact scores, exact ranks, or family details from production transcripts."
+  },
+  "defaults": {
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "coverage": [
+      "release_4_0_0",
+      "production_dialogue_abstracted",
+      "realistic_user_input",
+      "zhiyuan_agent_direct"
+    ],
+    "assertPlanStyle": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "确认卡片",
+        "硬要求",
+        "硬约束",
+        "软偏好",
+        "候选池会变小",
+        "不会再进入候选",
+        "已直接调整",
+        "已直接删除",
+        "已直接记录",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "forbiddenPatterns": [
+        "payload",
+        "action_family",
+        "volunteerId",
+        "确认卡片",
+        "硬要求",
+        "硬约束",
+        "软偏好",
+        "候选池会变小",
+        "不会再进入候选",
+        "已直接调整",
+        "已直接删除",
+        "已直接记录"
+      ],
+      "qualityFocus": [
+        "real_user_language",
+        "rich_decision_basis",
+        "actionable_next_step"
+      ],
+      "warnElapsedSeconds": 45,
+      "maxElapsedSeconds": 180,
+      "minTextLengthWarn": 120
+    }
+  },
+  "coverageMatrix": {
+    "only_keep_requirement": 4,
+    "must_have_requirement": 1,
+    "negative_requirement": 4,
+    "positive_vs_negative_requirement": 3,
+    "plan_operations": 6,
+    "plan_review_strategy": 3,
+    "policy_and_requirement": 2,
+    "school_compare": 2,
+    "open_explore": 3,
+    "score_profile": 1,
+    "candidate_shortage": 2,
+    "majorGroup_model": 1,
+    "high_level_scenario": 1,
+    "scenario_to_goal_layering": 1,
+    "career_plan_scenario": 1,
+    "plan_strategy": 1,
+    "public_service_orientation": 1,
+    "no_direct_mutation": 1
+  },
+  "cases": [
+    {
+      "name": "400-prod-only-keep-clinical-medicine",
+      "sessionId": "5901",
+      "flow": [
+        "intent",
+        "plan"
+      ],
+      "coverage": [
+        "major_preference",
+        "explicit_major_requirement",
+        "only_keep_requirement",
+        "plan_operations",
+        "no_reverse_delete"
+      ],
+      "prompts": [
+        {
+          "prompt": "我只想学临床医学，其他专业先不要",
+          "assertContainsAny": [
+            "临床医学",
+            "只保留",
+            "采纳",
+            "报考条件"
+          ],
+          "assertNotContains": [
+            "排除临床医学",
+            "移除临床医学",
+            "删掉临床医学"
+          ],
+          "expectedKeyPoints": [
+            "临床医学",
+            "只保留",
+            "采纳前不生效"
+          ],
+          "qualityFocus": [
+            "preview_confirm_boundary",
+            "real_user_language"
+          ]
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "临床医学",
+            "已确认",
+            "采纳",
+            "报考条件",
+            "后续参考"
+          ],
+          "expectedKeyPoints": [
+            "已确认",
+            "临床医学",
+            "后续参考"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-only-keep-medical-not-engineering",
+      "sessionId": "5902",
+      "flow": [
+        "intent",
+        "plan"
+      ],
+      "coverage": [
+        "major_preference",
+        "explicit_major_requirement",
+        "only_keep_requirement",
+        "repeated_requirement",
+        "plan_operations"
+      ],
+      "prompts": [
+        {
+          "prompt": "不考虑工科，只考虑医学类",
+          "assertContainsAny": [
+            "医学",
+            "工科",
+            "采纳",
+            "报考条件"
+          ],
+          "assertNotContains": [
+            "排除医学",
+            "医学类不要"
+          ],
+          "expectedKeyPoints": [
+            "医学类",
+            "工科",
+            "采纳前不生效"
+          ]
+        },
+        {
+          "prompt": "这个方案还是不行，只要医学",
+          "assertContainsAny": [
+            "医学",
+            "只保留",
+            "方案",
+            "预览",
+            "采纳"
+          ],
+          "assertNotContains": [
+            "已直接重做",
+            "已直接删除",
+            "其他专业类将不再进入你的候选范围",
+            "请点\"采纳\"",
+            "请点“采纳”"
+          ],
+          "expectedKeyPoints": [
+            "只保留医学",
+            "当前方案",
+            "确认前不改"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-only-keep-multiple-majors",
+      "sessionId": "5903",
+      "flow": [
+        "intent",
+        "plan"
+      ],
+      "coverage": [
+        "major_preference",
+        "explicit_major_requirement",
+        "only_keep_requirement",
+        "multi_entity_requirement"
+      ],
+      "prompts": [
+        {
+          "prompt": "只要电气和气象，其他方向都不要",
+          "assertContains": [
+            "电气",
+            "气象"
+          ],
+          "assertContainsAny": [
+            "只保留",
+            "采纳"
+          ],
+          "assertNotContains": [
+            "排除电气",
+            "排除气象",
+            "排除专业门类：哲学",
+            "排除专业门类：工学",
+            "哲学、经济学、法学",
+            "医学、管理学、艺术学"
+          ],
+          "expectedKeyPoints": [
+            "电气",
+            "气象",
+            "只保留",
+            "采纳前不生效"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-must-have-clinical-medicine",
+      "sessionId": "5916",
+      "flow": [
+        "intent",
+        "plan"
+      ],
+      "coverage": [
+        "major_preference",
+        "explicit_major_requirement",
+        "must_have_requirement",
+        "plan_operations"
+      ],
+      "prompts": [
+        {
+          "prompt": "方案里必须有临床医学，其他专业可以先保留",
+          "assertContainsAny": [
+            "临床医学",
+            "至少",
+            "保留",
+            "采纳",
+            "报考条件"
+          ],
+          "assertNotContains": [
+            "只保留临床医学",
+            "排除其他专业",
+            "删掉其他专业"
+          ],
+          "expectedKeyPoints": [
+            "临床医学",
+            "至少保留",
+            "其他方向可以保留",
+            "采纳前不生效"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-only-keep-region",
+      "sessionId": "5904",
+      "flow": [
+        "intent",
+        "plan"
+      ],
+      "coverage": [
+        "region_preference",
+        "explicit_region_requirement",
+        "only_keep_requirement",
+        "plan_operations"
+      ],
+      "prompts": [
+        {
+          "prompt": "仅保留江苏的学校",
+          "assertContainsAny": [
+            "江苏",
+            "只保留",
+            "学校",
+            "采纳",
+            "报考条件"
+          ],
+          "assertNotContains": [
+            "排除江苏"
+          ],
+          "expectedKeyPoints": [
+            "江苏",
+            "只保留",
+            "采纳前不生效"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-negative-major-then-fill",
+      "sessionId": "5905",
+      "flow": [
+        "intent",
+        "plan"
+      ],
+      "coverage": [
+        "major_preference",
+        "negative_requirement",
+        "candidate_shortage",
+        "plan_operations",
+        "remove_then_add"
+      ],
+      "prompts": [
+        {
+          "prompt": "不要医学类的",
+          "assertContainsAny": [
+            "医学",
+            "避开",
+            "采纳",
+            "报考条件"
+          ],
+          "expectedKeyPoints": [
+            "医学类",
+            "采纳前不生效"
+          ]
+        },
+        {
+          "prompt": "从候选中选择7所放入方案里，先补齐志愿数量",
+          "assertContainsAny": [
+            "候选",
+            "补",
+            "方案",
+            "预览",
+            "确认"
+          ],
+          "assertNotContains": [
+            "一定能补齐",
+            "保证补齐"
+          ],
+          "expectedKeyPoints": [
+            "候选",
+            "数量",
+            "确认前不改"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-budget-remove-then-fill",
+      "sessionId": "5906",
+      "flow": [
+        "intent",
+        "plan"
+      ],
+      "coverage": [
+        "budget_tuition",
+        "negative_requirement",
+        "plan_operations",
+        "remove_then_add"
+      ],
+      "prompts": [
+        {
+          "prompt": "预算上限20000元，超过的先移除再补充",
+          "assertContainsAny": [
+            "20000",
+            "学费",
+            "移除",
+            "补",
+            "预览",
+            "确认"
+          ],
+          "assertNotContains": [
+            "已直接移除",
+            "已直接补充"
+          ],
+          "expectedKeyPoints": [
+            "学费",
+            "移除",
+            "补充",
+            "确认前不改"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-positive-vs-negative--elimination",
+      "sessionId": "5907",
+      "flow": [
+        "explore",
+        "intent",
+        "plan"
+      ],
+      "coverage": [
+        "positive_vs_negative_requirement",
+        "negative_requirement",
+        "major_preference",
+        "plan_analysis"
+      ],
+      "prompts": [
+        {
+          "prompt": "我不是要挑唯一想要的专业，是要淘汰掉不能要的专业",
+          "assertContainsAny": [
+            "不能要",
+            "不能接受",
+            "绝对不能接受",
+            "避开",
+            "筛掉",
+            "排除",
+            "不等于只保留",
+            "不是现在就要确定唯一目标专业",
+            "方案"
+          ],
+          "expectedKeyPoints": [
+            "排除不可接受方向",
+            "不是唯一专业",
+            "下一步"
+          ],
+          "qualityFocus": [
+            "rich_decision_basis",
+            "user_language"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-policy-special-plan-query",
+      "sessionId": "5908",
+      "flow": [
+        "explore",
+        "plan"
+      ],
+      "coverage": [
+        "policy_and_requirement",
+        "special_plan",
+        "school_major_lookup",
+        "readonly_boundary"
+      ],
+      "prompts": [
+        {
+          "prompt": "高校专项招生的计划有吗",
+          "assertContainsAny": [
+            "高校专项",
+            "招生计划",
+            "资格",
+            "招生简章",
+            "需要核实"
+          ],
+          "assertNoFollowups": true,
+          "expectedKeyPoints": [
+            "高校专项",
+            "资格",
+            "官方信息",
+            "下一步"
+          ]
+        },
+        {
+          "prompt": "中国海洋大学第005组是不是高校专项",
+          "assertContainsAny": [
+            "中国海洋大学",
+            "第005组",
+            "高校专项",
+            "招生计划",
+            "核实"
+          ],
+          "assertNoFollowups": true,
+          "expectedKeyPoints": [
+            "学校",
+            "专业组",
+            "高校专项",
+            "官方依据"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-plan-science-review",
+      "sessionId": "5909",
+      "flow": [
+        "plan",
+        "review"
+      ],
+      "coverage": [
+        "plan_review_strategy",
+        "review_workspace",
+        "readonly_boundary",
+        "risk_summary"
+      ],
+      "prompts": [
+        {
+          "prompt": "说下这个方案的科学性",
+          "assertContainsAny": [
+            "方案",
+            "冲稳保",
+            "风险",
+            "录取率",
+            "建议"
+          ],
+          "assertNoFollowups": true,
+          "expectedKeyPoints": [
+            "当前方案",
+            "冲稳保",
+            "风险",
+            "下一步"
+          ],
+          "qualityFocus": [
+            "rich_decision_basis",
+            "multi_distribution"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-open-career-long-input",
+      "sessionId": "5910",
+      "flow": [
+        "explore",
+        "intent"
+      ],
+      "coverage": [
+        "open_explore",
+        "career_direction",
+        "major_preference",
+        "complex_profile",
+        "readonly_boundary"
+      ],
+      "prompts": [
+        {
+          "prompt": "我对医学有些排斥，但对航天、能源、心理学都感兴趣，想要工资高一点、和人交流少一点的工作",
+          "assertContainsAny": [
+            "航天",
+            "能源",
+            "心理",
+            "高薪",
+            "交流",
+            "专业"
+          ],
+          "expectedKeyPoints": [
+            "医学",
+            "航天",
+            "能源",
+            "心理",
+            "确认前不生效"
+          ],
+          "qualityFocus": [
+            "preview_confirm_boundary",
+            "career_path",
+            "user_language"
+          ],
+          "minTextLengthWarn": 220,
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1
+        }
+      ]
+    },
+    {
+      "name": "400-prod-scenario-public-service-oriented-plan",
+      "sessionId": "5917",
+      "flow": [
+        "explore",
+        "plan"
+      ],
+      "coverage": [
+        "high_level_scenario",
+        "scenario_to_goal_layering",
+        "career_plan_scenario",
+        "public_service_orientation",
+        "plan_strategy",
+        "plan_operations",
+        "no_direct_mutation"
+      ],
+      "prompts": [
+        {
+          "prompt": "我想让这版方案整体更偏体制内和考公考编，先看看应该怎么调整，不要直接改",
+          "assertContainsAny": [
+            "体制内",
+            "考公",
+            "考编",
+            "方案",
+            "院校层次",
+            "专业方向",
+            "预览",
+            "不会直接改"
+          ],
+          "assertNotContains": [
+            "删除所有非体制",
+            "已直接调整",
+            "已直接删除",
+            "已直接记录"
+          ],
+          "expectedKeyPoints": [
+            "高层情景",
+            "当前方案承接",
+            "取舍依据",
+            "确认前不改"
+          ],
+          "qualityFocus": [
+            "scenario_layering",
+            "rich_decision_basis",
+            "preview_confirm_boundary"
+          ],
+          "minTextLengthWarn": 180
+        },
+        {
+          "prompt": "具体一点，先把第8个志愿移到第12位，只给我预览",
+          "assertContainsAny": [
+            "第8",
+            "第12",
+            "移动",
+            "预览",
+            "确认"
+          ],
+          "assertNotContains": [
+            "已直接移动",
+            "已直接调整"
+          ],
+          "expectedKeyPoints": [
+            "具体原子动作",
+            "移动预览",
+            "确认前不改"
+          ],
+          "qualityFocus": [
+            "scenario_layering",
+            "preview_confirm_boundary"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-score-change-replan",
+      "sessionId": "5911",
+      "flow": [
+        "explore",
+        "plan"
+      ],
+      "coverage": [
+        "score_profile",
+        "plan_generate",
+        "confirmation_followup",
+        "replan_boundary"
+      ],
+      "prompts": [
+        {
+          "prompt": "如果总分改成515，再按这个分数重新规划，应该怎么处理",
+          "assertContainsAny": [
+            "515",
+            "分数",
+            "重新规划",
+            "方案",
+            "确认"
+          ],
+          "assertNotContains": [
+            "已直接重做",
+            "已直接生成"
+          ],
+          "expectedKeyPoints": [
+            "分数变化",
+            "重新规划",
+            "确认前不改"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-plan-range-remove-safe-zone",
+      "sessionId": "5912",
+      "flow": [
+        "plan"
+      ],
+      "coverage": [
+        "plan_operations",
+        "remove_ordered_unit",
+        "range_operation",
+        "safe_zone"
+      ],
+      "prompts": [
+        {
+          "prompt": "删掉第40位之后的几个保的学校",
+          "assertContainsAny": [
+            "第40",
+            "保",
+            "删除",
+            "移除",
+            "预览",
+            "确认"
+          ],
+          "assertNotContains": [
+            "已直接删除"
+          ],
+          "expectedKeyPoints": [
+            "位置范围",
+            "保区",
+            "确认前不改"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-major-group-too-many-majors",
+      "sessionId": "5913",
+      "flow": [
+        "plan",
+        "review"
+      ],
+      "coverage": [
+        "majorGroup_model",
+        "plan_review_strategy",
+        "major_group_risk",
+        "readonly_boundary"
+      ],
+      "prompts": [
+        {
+          "prompt": "超过6个专业的专业组有什么风险",
+          "assertContainsAny": [
+            "专业组",
+            "6个",
+            "调剂",
+            "风险",
+            "建议"
+          ],
+          "assertNoFollowups": true,
+          "expectedKeyPoints": [
+            "专业组",
+            "调剂风险",
+            "处理方向"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-school-compare-short-question",
+      "sessionId": "5914",
+      "flow": [
+        "explore"
+      ],
+      "coverage": [
+        "school_compare",
+        "school_explore",
+        "readonly_boundary"
+      ],
+      "prompts": [
+        {
+          "prompt": "长春理工大学和重庆理工大学哪个更好",
+          "assertContainsAny": [
+            "长春理工",
+            "重庆理工",
+            "对比",
+            "专业",
+            "城市",
+            "建议"
+          ],
+          "assertNoFollowups": true,
+          "expectedKeyPoints": [
+            "学校对比",
+            "优势方向",
+            "选择建议"
+          ],
+          "qualityFocus": [
+            "rich_decision_basis",
+            "user_language"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-prod-junior-college-correction",
+      "sessionId": "5915",
+      "flow": [
+        "plan"
+      ],
+      "coverage": [
+        "plan_operations",
+        "education_level_boundary",
+        "correction",
+        "candidate_shortage"
+      ],
+      "prompts": [
+        {
+          "prompt": "我现在这个成绩能上大专，加入的16个志愿是本科啊，你是不是搞错了",
+          "assertContainsAny": [
+            "大专",
+            "本科",
+            "核对",
+            "方案",
+            "调整"
+          ],
+          "assertNotContains": [
+            "没搞错",
+            "不用管"
+          ],
+          "expectedKeyPoints": [
+            "本专科边界",
+            "当前方案",
+            "下一步"
+          ]
+        }
+      ]
+    }
+  ]
+}

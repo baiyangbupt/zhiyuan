@@ -1,0 +1,123 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v1.53 final-action checks for explicit major taxonomy requirements.",
+    "notes": "Run with --clone-backend-chat-session. These cases verify that natural explicit major discipline/category requirements are recorded and applied to the final ordered plan, not only rendered as confirmation cards."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "confirm_pending",
+      "major_requirement",
+      "final_action"
+    ],
+    "coverage": [
+      "explicit_requirement",
+      "major_taxonomy",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v153-exclude-major-discipline-final-action",
+      "sessionId": "9904531",
+      "prompts": [
+        {
+          "prompt": "管理学的不要了",
+          "assertContains": [
+            "相关志愿"
+          ],
+          "assertContainsAny": [
+            "管理学",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "管理学",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeMajors",
+              "contains": "管理学"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "37020261000315_37020262005917_845"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261000315_37020262005917_845"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

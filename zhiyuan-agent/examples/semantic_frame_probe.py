@@ -85,7 +85,7 @@ def _build_router(
         raise RuntimeError(
             "Semantic frame probe requires the 3.0.3 semantic router runtime. "
             "The probe file is kept for evaluation, but the current runtime may "
-            "be the prod-3.0.2 full-agent baseline."
+            "be an older legacy-agent baseline."
         ) from exc
 
     llm_config = LLMConfig()
@@ -108,7 +108,7 @@ async def _probe_row(router: "SemanticIntentRouter", row: dict[str, Any]) -> dic
         userid="semantic-frame-probe",
         sessionid=str(row.get("sessionId") or ""),
     )
-    shadow = await router.route_shadow(
+    observation = await router.route_shadow(
         str(row.get("prompt") or ""),
         request_context=context,
         active_pending=None,
@@ -117,7 +117,7 @@ async def _probe_row(router: "SemanticIntentRouter", row: dict[str, Any]) -> dic
         **row,
         "responseText": "",
         "turnObservability": {
-            "semanticRouterShadow": shadow.event_payload(),
+            "semanticFrameObservation": observation.event_payload(),
         },
     }
 

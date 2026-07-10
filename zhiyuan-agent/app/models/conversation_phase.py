@@ -80,7 +80,7 @@ class PendingConfirmation(BaseModel):
     一次只能有一个 pending，新 pending 会覆盖旧 pending。
     """
 
-    kind: Literal["intent_change", "plan_mutation"]
+    kind: Literal["intent_change", "plan_mutation", "plan_generation"]
 
     # 对应的 action_family
     # Intent: "set_preference" / "set_constraint" / "remove_preference"
@@ -145,7 +145,7 @@ class ConversationPhase(BaseModel):
         self.pending = pending
         if pending.kind == "intent_change":
             self.state = PhaseState.INTENT_PREVIEWING
-        elif pending.kind == "plan_mutation":
+        elif pending.kind in {"plan_mutation", "plan_generation"}:
             self.state = PhaseState.PLAN_PREVIEWING
 
     def clear_pending(self) -> PendingConfirmation | None:

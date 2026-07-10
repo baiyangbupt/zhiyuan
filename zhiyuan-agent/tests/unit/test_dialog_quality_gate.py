@@ -13,7 +13,7 @@ sys.modules[SPEC.name] = gate
 SPEC.loader.exec_module(gate)
 
 
-def test_gate_plan_covers_release_and_historical_dialog_cases(tmp_path):
+def test_gate_plan_covers_release_and_current_dialog_cases(tmp_path):
     commands = gate.build_gate_plan(metrics_dir=tmp_path)
     live_case_args = [
         command.command[command.command.index("--cases") + 1]
@@ -21,22 +21,27 @@ def test_gate_plan_covers_release_and_historical_dialog_cases(tmp_path):
         if command.category == "live"
     ]
 
-    assert "examples/dialog_regression_301_agent_smoke_cases.json" in live_case_args
-    assert "examples/dialog_regression_302_agent_cases.json" in live_case_args
-    assert "examples/dialog_regression_303_effect_perf_cases.json" in live_case_args
-    assert "examples/dialog_regression_303_open_quality_cases.json" in live_case_args
-    assert "examples/dialog_regression_303_realistic_user_cases.json" in live_case_args
-    assert "examples/dialog_regression_303_dialogue_derived_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_agent_smoke_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_plan_operation_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_explore_intent_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_readonly_real_session_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_core_effect_perf_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_effect_perf_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_open_quality_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_quality_realistic_user_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_dialogue_derived_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_career_direction_cases.json" in live_case_args
     assert "examples/dialog_regression_plan_correctness_cases.json" in live_case_args
     assert "examples/dialog_regression_comprehensive_cases.json" in live_case_args
-    assert "examples/dialog_regression_310_review_repair_cases.json" in live_case_args
-    assert "examples/dialog_regression_310_production_abstracted_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_review_repair_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_production_abstracted_cases.json" in live_case_args
+    assert "examples/dialog_regression_400_requirement_plan_action_cases.json" in live_case_args
     assert len(live_case_args) >= 20
 
 
-def test_gate_plan_covers_310_review_repair_live_report_and_semantic(tmp_path):
+def test_gate_plan_covers_400_review_repair_live_report_and_semantic(tmp_path):
     commands = gate.build_gate_plan(metrics_dir=tmp_path)
-    expected_stem = "dialog_regression_310_review_repair_cases"
+    expected_stem = "dialog_regression_400_review_repair_cases"
     command_by_name = {command.name: command for command in commands}
 
     live = command_by_name[f"live-{expected_stem}"]
@@ -55,7 +60,7 @@ def test_dialogue_derived_gate_uses_per_case_history_clear(tmp_path):
     command = next(
         item
         for item in commands
-        if item.name == "live-dialog_regression_303_dialogue_derived_cases"
+        if item.name == "live-dialog_regression_400_dialogue_derived_cases"
     )
 
     assert "--clear-history-per-case" in command.command
@@ -87,12 +92,12 @@ def test_gate_plan_adds_semantic_frame_report_for_each_live_case(tmp_path):
     sample = next(
         command
         for command in commands
-        if command.name == "semantic-frame-dialog_regression_303_dialogue_derived_cases"
+        if command.name == "semantic-frame-dialog_regression_400_dialogue_derived_cases"
     )
 
     assert live_names == semantic_names
     assert "examples/semantic_frame_evaluator.py" in sample.command
-    assert sample.depends_on == ["live-dialog_regression_303_dialogue_derived_cases"]
+    assert sample.depends_on == ["live-dialog_regression_400_dialogue_derived_cases"]
 
 
 def test_gate_plan_covers_model_provider_quality_sets(tmp_path):
@@ -108,8 +113,8 @@ def test_gate_plan_covers_model_provider_quality_sets(tmp_path):
     ]
 
     assert "examples/model_provider_benchmark_e2e_cases.json" in model_case_args
-    assert "examples/model_provider_303_quality_readonly_cases.json" in model_case_args
-    assert "examples/model_provider_303_open_quality_realistic_cases.json" in model_case_args
+    assert "examples/model_provider_400_quality_readonly_cases.json" in model_case_args
+    assert "examples/model_provider_400_open_quality_realistic_cases.json" in model_case_args
     for command in model_commands:
         assert "--provider" in command.command
         assert "kimi" in command.command

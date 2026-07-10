@@ -1,0 +1,484 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v1.79 focused realistic pending rewrite/append, no-pending execute guard, and replacement quality checks.",
+    "notes": "Run with --clone-backend-chat-session. These cases extend v1.78 follow-up coverage with spoken active-pending changes and final backend assertions."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "confirm_pending",
+      "realistic_user_input",
+      "pending_rewrite",
+      "pending_append",
+      "review_boundary",
+      "replacement_quality",
+      "final_action"
+    ],
+    "coverage": [
+      "spoken_style",
+      "active_pending",
+      "same_turn_rewrite",
+      "append_requirement",
+      "no_pending_execute_guard",
+      "replacement_spec",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v179-active-pending-append-region-and-private-final-action",
+      "sessionId": "9904791",
+      "coverage": [
+        "active_pending",
+        "append_requirement",
+        "region",
+        "school_nature",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "山东别去了",
+          "assertContainsAny": [
+            "山东",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "再把民办也算了吧，一起记上",
+          "assertContainsAny": [
+            "山东",
+            "民办",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 2,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "active"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "summary",
+              "contains": [
+                "山东",
+                "民办"
+              ]
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "unchangedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "notContains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "notContains": "院校性质:民办"
+            }
+          ]
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "山东",
+            "民办",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": "院校性质:民办"
+            },
+            {
+              "key": "planningState",
+              "path": "candidateViewState.filters.negativeProvinceNames",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": [
+                "山东",
+                "民办"
+              ]
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "民办"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v179-active-pending-replace-current-requirement-final-action",
+      "sessionId": "9904792",
+      "coverage": [
+        "active_pending",
+        "same_turn_rewrite",
+        "only_keep",
+        "region",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "民办的不要",
+          "assertContainsAny": [
+            "民办",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "等下，别按这个了，改成只看公办，山东也别去",
+          "assertContainsAny": [
+            "公办",
+            "山东",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "active"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "summary",
+              "contains": [
+                "公办",
+                "山东"
+              ]
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "unchangedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "notContains": "院校性质:民办"
+            }
+          ]
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "公办",
+            "山东",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustIncludeSchools",
+              "contains": "院校性质:公办"
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "notContains": "院校性质:民办"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "民办"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v179-review-then-execute-without-pending-guard",
+      "sessionId": "9904793",
+      "coverage": [
+        "review_readonly",
+        "no_pending_execute_guard",
+        "no_side_effect"
+      ],
+      "prompts": [
+        {
+          "prompt": "这版高收费和中外合作咋处理，先别动",
+          "assertContainsAny": [
+            "高收费",
+            "中外合作",
+            "处理",
+            "风险",
+            "学费"
+          ],
+          "assertNoFollowups": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "执行",
+          "assertContainsAny": [
+            "没有待确认",
+            "没有可确认",
+            "不会执行",
+            "不会改动"
+          ],
+          "assertNoFollowups": true,
+          "expectedRoutingPathAny": [
+            "direct_no_pending_short_text_confirm",
+            "zhiyuan_agent_direct"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "planningState",
+              "path": "version",
+              "unchangedFromBefore": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "$",
+              "isEmpty": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v179-targeted-replace-cheaper-non-cooperative-final-action",
+      "sessionId": "9904794",
+      "coverage": [
+        "replace_units",
+        "replacement_spec",
+        "high_tuition",
+        "cooperative_program",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "青岛理工那个中外合作建筑太贵了，换个正常收费的，最好不是中外合作",
+          "assertContainsAny": [
+            "青岛理工",
+            "中外合作",
+            "正常收费",
+            "便宜",
+            "替换",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "preview_plan_action"
+          ],
+          "assertActionFamiliesContain": [
+            "replace_units"
+          ],
+          "maxToolCallCount": 2,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "active"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.atomic_actions.0.filters.replacement_spec.improve_dims",
+              "contains": "tuition_decrease"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.atomic_actions.0.filters.replacement_spec.exclude_markers",
+              "contains": "cooperative"
+            }
+          ]
+        },
+        {
+          "prompt": "就这样换",
+          "assertContainsAny": [
+            "已替换",
+            "已完成替换",
+            "已更新",
+            "刷新"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "changedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261001095"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -2,13 +2,19 @@
   {
     "name": "full-journey-major-soft-hard-adjust-review",
     "sessionId": "5741",
-    "flow": ["start", "explore", "intent", "plan", "review"],
+    "flow": [
+      "start",
+      "explore",
+      "intent",
+      "plan",
+      "review"
+    ],
     "coverage": [
       "full_journey",
       "opening_context",
       "major_explore",
-      "soft_major_intent",
-      "hard_major_constraint",
+      "positive_major_intent",
+      "explicit_major_requirement",
       "plan_query",
       "replace_units",
       "preview_confirm_apply",
@@ -18,68 +24,182 @@
     "prompts": [
       {
         "prompt": "我是山东450分，物理历史地理，想先看看适合什么方向",
-        "assertContainsAny": ["方向", "专业", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "方向",
+          "专业",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "网络与新媒体和跨境电子商务哪个更适合我",
-        "assertContainsAny": ["网络与新媒体", "跨境电子商务", "跨境电商"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "网络与新媒体",
+          "跨境电子商务",
+          "跨境电商"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "那把网络与新媒体作为优先方向，跨境电商也可以考虑",
-        "assertContainsAny": ["确认", "网络与新媒体", "跨境"],
-        "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "确认",
+          "网络与新媒体",
+          "跨境"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "记录", "偏好", "意向"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "已",
+          "记录",
+          "偏好",
+          "意向"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "但会计审计不要，必须避开",
-        "assertContainsAny": ["确认", "会计", "审计", "排除", "报考条件"],
-        "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "确认",
+          "会计",
+          "审计",
+          "排除",
+          "报考条件"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "排除", "要求"],
+        "assertContainsAny": [
+          "已",
+          "排除",
+          "要求"
+        ],
         "assertFollowupTarget": "ordered",
         "assertFollowupRefresh": true,
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "现在方案里和这些要求冲突的有哪些",
-        "assertContainsAny": ["方案", "会计", "审计", "冲突", "匹配"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "方案",
+          "会计",
+          "审计",
+          "冲突",
+          "匹配"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "把会计审计相关替换成新媒体或跨境电商相关",
-        "assertContainsAny": ["当前还没有生成正式方案", "不会改动方案", "生成一版方案"],
-        "assertNotContains": ["已直接替换", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "当前还没有生成正式方案",
+          "不会改动方案",
+          "生成一版方案"
+        ],
+        "assertNotContains": [
+          "已直接替换",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮", "待确认", "不会改方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮",
+          "待确认",
+          "不会改方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "调整后再帮我审查一下",
-        "assertContainsAny": ["审查", "风险", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "审查",
+          "风险",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       }
     ]
   },
   {
     "name": "full-journey-career-soft-region-hard-fix-proposal",
     "sessionId": "5742",
-    "flow": ["start", "explore", "intent", "plan", "review"],
+    "flow": [
+      "start",
+      "explore",
+      "intent",
+      "plan",
+      "review"
+    ],
     "coverage": [
       "full_journey",
       "career_explore",
-      "soft_career_intent",
-      "soft_region_intent",
-      "hard_region_constraint",
+      "positive_career_intent",
+      "positive_region_intent",
+      "explicit_region_requirement",
       "candidate_match",
       "fix_proposal_preview",
       "fix_proposal_apply",
@@ -90,62 +210,167 @@
     "prompts": [
       {
         "prompt": "我以后想稳定一点，体制内和读研哪个更适合我",
-        "assertContainsAny": ["体制内", "读研", "稳定"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "体制内",
+          "读研",
+          "稳定"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "先把体制内稳定就业作为参考方向",
-        "assertContainsAny": ["确认", "体制内", "稳定"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "确认",
+          "体制内",
+          "稳定"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "记录", "方向", "意向"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "已",
+          "记录",
+          "方向",
+          "意向"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "地域上优先江苏浙江上海，但太远的东北西北不要",
-        "assertContainsAny": ["确认", "江苏", "浙江", "上海", "东北", "西北"],
-        "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "确认",
+          "江苏",
+          "浙江",
+          "上海",
+          "东北",
+          "西北"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "地域", "偏好", "排除"],
+        "assertContainsAny": [
+          "已",
+          "地域",
+          "偏好",
+          "排除"
+        ],
         "assertFollowupTarget": "ordered",
         "assertFollowupRefresh": true,
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "当前方案对稳定就业和地域要求承接得怎么样",
-        "assertContainsAny": ["方案", "稳定", "地域", "承接"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "方案",
+          "稳定",
+          "地域",
+          "承接"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "现在少的这些怎么补，优先按这些要求来",
-        "assertContainsAny": ["补", "候选", "建议", "确认"],
-        "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "补",
+          "候选",
+          "建议",
+          "确认"
+        ],
+        "assertNotContains": [
+          "已直接加入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "补完后再审查风险",
-        "assertContainsAny": ["审查", "风险", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "审查",
+          "风险",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       }
     ]
   },
   {
     "name": "full-journey-school-region-major-group-unit-adjust",
     "sessionId": "5743",
-    "flow": ["start", "explore", "intent", "plan", "review"],
+    "flow": [
+      "start",
+      "explore",
+      "intent",
+      "plan",
+      "review"
+    ],
     "coverage": [
       "full_journey",
       "school_explore",
-      "soft_school_intent",
-      "soft_region_intent",
+      "positive_school_intent",
+      "positive_region_intent",
       "majorGroup_model",
       "move_ordered_unit",
       "remove_ordered_unit",
@@ -156,60 +381,167 @@
     "prompts": [
       {
         "prompt": "河南物化生464分，先看看郑州和洛阳的学校有没有合适的",
-        "assertContainsAny": ["郑州", "洛阳", "学校", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "郑州",
+          "洛阳",
+          "学校",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "河南大学和郑州轻工业大学可以重点关注",
-        "assertContainsAny": ["确认", "河南大学", "郑州轻工业"],
-        "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "确认",
+          "河南大学",
+          "郑州轻工业"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "关注", "意向"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "已",
+          "关注",
+          "意向"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "当前方案里专业组顺序合理吗",
-        "assertContainsAny": ["专业组", "顺序", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "专业组",
+          "顺序",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "把第3个专业组移到第5位",
-        "assertContainsAny": ["没有可移动", "没有唯一定位", "缺少目标位置", "不能预览", "需要先生成", "还没有生成正式方案", "不能移动专业组", "没有任何专业组可以调整顺序", "不能执行移动操作"],
-        "assertNotContains": ["已直接移动", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有可移动",
+          "没有唯一定位",
+          "缺少目标位置",
+          "不能预览",
+          "需要先生成",
+          "还没有生成正式方案",
+          "不能移动专业组",
+          "没有任何专业组可以调整顺序",
+          "不能执行移动操作"
+        ],
+        "assertNotContains": [
+          "已直接移动",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "删除第5个专业组",
-        "assertContainsAny": ["没有可删除", "不能按位置删除", "信息还不够完整", "不会改动方案", "需要先生成"],
-        "assertNotContains": ["已直接删除", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有可删除",
+          "不能按位置删除",
+          "信息还不够完整",
+          "不会改动方案",
+          "需要先生成"
+        ],
+        "assertNotContains": [
+          "已直接删除",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "调整后重新审查一下",
-        "assertContainsAny": ["审查", "风险", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "审查",
+          "风险",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       }
     ]
   },
   {
     "name": "full-journey-ambiguous-intent-confirmation-boundary",
     "sessionId": "5744",
-    "flow": ["start", "explore", "intent", "plan"],
+    "flow": [
+      "start",
+      "explore",
+      "intent",
+      "plan"
+    ],
     "coverage": [
       "full_journey",
       "ambiguous_goal",
-      "soft_major_intent",
-      "hard_major_constraint",
+      "positive_major_intent",
+      "explicit_major_requirement",
       "confirmation_boundary",
       "no_premature_plan_apply",
       "plan_query"
@@ -218,40 +550,103 @@
     "prompts": [
       {
         "prompt": "我不太确定，金融、法学、新媒体都可以，先帮我分析下",
-        "assertContainsAny": ["金融", "法学", "新媒体", "分析"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "金融",
+          "法学",
+          "新媒体",
+          "分析"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "金融可以优先考虑，但护理和中医学不要",
-        "assertContainsAny": ["确认", "金融", "护理", "中医学"],
-        "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "确认",
+          "金融",
+          "护理",
+          "中医学"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "先不确认，当前方案里有没有护理或者中医学",
-        "assertContainsAny": ["方案", "护理", "中医学"],
-        "assertNotContains": ["已记录", "已调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "方案",
+          "护理",
+          "中医学"
+        ],
+        "assertNotContains": [
+          "已记录",
+          "已调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认刚才的偏好和排除要求",
-        "assertContainsAny": ["已", "金融", "护理", "中医学"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "已",
+          "金融",
+          "护理",
+          "中医学"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "现在再看方案怎么处理这些冲突",
-        "assertContainsAny": ["方案", "冲突", "处理", "调整"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "方案",
+          "冲突",
+          "处理",
+          "调整"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       }
     ]
   },
   {
     "name": "full-journey-career-stable-region-fix-boundary",
     "sessionId": "5745",
-    "flow": ["start", "explore", "intent", "plan", "review"],
+    "flow": [
+      "start",
+      "explore",
+      "intent",
+      "plan",
+      "review"
+    ],
     "coverage": [
       "full_journey",
       "career_explore",
-      "soft_career_intent",
-      "hard_region_constraint",
+      "positive_career_intent",
+      "explicit_region_requirement",
       "no_premature_plan_apply",
       "plan_query",
       "candidate_match",
@@ -262,62 +657,176 @@
     "prompts": [
       {
         "prompt": "我先想看看体制内和读研哪个更适合我，别急着给我改方案",
-        "assertContainsAny": ["体制内", "读研", "适合", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "体制内",
+          "读研",
+          "适合",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "先把体制内稳定就业当成优先参考",
-        "assertContainsAny": ["确认", "体制内", "稳定"],
-        "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "确认",
+          "体制内",
+          "稳定"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "记录", "方向", "意向"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "已",
+          "记录",
+          "方向",
+          "意向"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "地域上只考虑江苏浙江，东北西北都先排除",
-        "assertContainsAny": ["确认", "江苏", "浙江", "东北", "西北"],
-        "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "确认",
+          "江苏",
+          "浙江",
+          "东北",
+          "西北"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "地域", "偏好", "排除"],
+        "assertContainsAny": [
+          "已",
+          "地域",
+          "偏好",
+          "排除"
+        ],
         "assertFollowupTarget": "ordered",
         "assertFollowupRefresh": true,
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "当前方案对这个要求承接得怎么样",
-        "assertContainsAny": ["方案", "承接", "稳定", "地域"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "方案",
+          "承接",
+          "稳定",
+          "地域"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "先看看少的这些怎么补，别急着直接改",
-        "assertContainsAny": ["没有方案可分析", "方案还是空的", "方案为空", "可选范围也尚未生成", "基础报考信息", "高考省份", "生成一版", "直接生成", "生成候选", "没有形成可确认的调整预览", "不会因为这轮回复而改变", "不会改动方案"],
-        "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有方案可分析",
+          "方案还是空的",
+          "方案为空",
+          "可选范围也尚未生成",
+          "基础报考信息",
+          "高考省份",
+          "生成一版",
+          "直接生成",
+          "生成候选",
+          "没有形成可确认的调整预览",
+          "不会因为这轮回复而改变",
+          "不会改动方案"
+        ],
+        "assertNotContains": [
+          "已直接加入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "补完后再看审查结果",
-        "assertContainsAny": ["审查", "风险", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "审查",
+          "风险",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       }
     ]
   },
   {
     "name": "full-journey-alias-candidate-add-replace-review",
     "sessionId": "5746",
-    "flow": ["start", "explore", "intent", "plan", "review"],
+    "flow": [
+      "start",
+      "explore",
+      "intent",
+      "plan",
+      "review"
+    ],
     "coverage": [
       "full_journey",
       "school_explore",
       "candidate_school_major_alias_ref",
-      "soft_school_intent",
+      "positive_school_intent",
       "plan_query",
       "replace_units",
       "candidate_search_add",
@@ -328,45 +837,135 @@
     "prompts": [
       {
         "prompt": "我想先看看广西师大统计这种方向有没有机会",
-        "assertContainsAny": ["广西师大统计", "机会", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "广西师大统计",
+          "机会",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "如果合适就把广西师大统计加进来，学校也可以先看看",
-        "assertContainsAny": ["广西师范大学", "统计学", "没有生成可执行的调整内容", "不会改动当前方案", "重新定位影响范围", "省份", "分数"],
-        "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "广西师范大学",
+          "统计学",
+          "没有生成可执行的调整内容",
+          "不会改动当前方案",
+          "重新定位影响范围",
+          "省份",
+          "分数"
+        ],
+        "assertNotContains": [
+          "已直接加入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "当前方案里和这个方向冲突的先处理一下",
-        "assertContainsAny": ["方案", "冲突", "处理", "替换"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "方案",
+          "冲突",
+          "处理",
+          "替换"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "把会计审计相关换掉，优先保留广西师大统计",
-        "assertContainsAny": ["还没有正式方案", "还没有生成正式方案", "尚未生成方案", "没有会计审计相关", "没有广西师大统计可以保留", "广西师范大学", "统计学", "没有生成可执行的调整内容", "不会改动当前方案", "重新定位影响范围"],
-        "assertNotContains": ["已直接替换", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "还没有正式方案",
+          "还没有生成正式方案",
+          "尚未生成方案",
+          "没有会计审计相关",
+          "没有广西师大统计可以保留",
+          "广西师范大学",
+          "统计学",
+          "没有生成可执行的调整内容",
+          "不会改动当前方案",
+          "重新定位影响范围"
+        ],
+        "assertNotContains": [
+          "已直接替换",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "再帮我审查一下",
-        "assertContainsAny": ["审查", "风险", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "审查",
+          "风险",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       }
     ]
   },
   {
     "name": "full-journey-candidate-refresh-results-add-apply",
     "sessionId": "5747",
-    "flow": ["start", "explore", "intent", "plan", "review"],
+    "flow": [
+      "start",
+      "explore",
+      "intent",
+      "plan",
+      "review"
+    ],
     "coverage": [
       "full_journey",
       "candidate_explore",
@@ -383,35 +982,97 @@
     "prompts": [
       {
         "prompt": "我是湖北物化生，想看看候选里计算机和数据科学方向多不多",
-        "assertContainsAny": ["候选", "计算机", "数据科学", "方向"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "候选",
+          "计算机",
+          "数据科学",
+          "方向"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "候选列表按计算机方向刷新一下，先看当前能选的结果",
-        "assertContainsAny": ["候选", "刷新", "计算机", "结果"],
-        "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "候选",
+          "刷新",
+          "计算机",
+          "结果"
+        ],
+        "assertNotContains": [
+          "已直接加入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "湖北工程学院的计算机科学与技术如果在候选里，就加入方案",
-        "assertContainsAny": ["湖北工程学院", "计算机科学与技术", "候选里暂时没有", "分数"],
-        "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "湖北工程学院",
+          "计算机科学与技术",
+          "候选里暂时没有",
+          "分数"
+        ],
+        "assertNotContains": [
+          "已直接加入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "加完后再看一下方案还缺什么",
-        "assertContainsAny": ["方案", "缺", "补", "建议"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "方案",
+          "缺",
+          "补",
+          "建议"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       }
     ]
   },
   {
     "name": "full-journey-review-accuracy-then-fix",
     "sessionId": "5748",
-    "flow": ["start", "explore", "intent", "plan", "review"],
+    "flow": [
+      "start",
+      "explore",
+      "intent",
+      "plan",
+      "review"
+    ],
     "coverage": [
       "full_journey",
       "review_accuracy",
@@ -428,47 +1089,121 @@
     "prompts": [
       {
         "prompt": "先完整审查一下这版方案，重点看概率倒挂和高收费风险",
-        "assertContainsAny": ["审查", "概率", "高收费", "风险"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "审查",
+          "概率",
+          "高收费",
+          "风险"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "把风险最大的两个先处理掉，再补更稳的志愿",
-        "assertContainsAny": ["没有任何正式志愿", "还没有正式方案", "不存在需要移除", "不存在概率倒挂", "高收费风险", "已加入方案的志愿数", "先生成一版方案"],
-        "assertNotContains": ["已直接删除", "已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有任何正式志愿",
+          "还没有正式方案",
+          "不存在需要移除",
+          "不存在概率倒挂",
+          "高收费风险",
+          "已加入方案的志愿数",
+          "先生成一版方案"
+        ],
+        "assertNotContains": [
+          "已直接删除",
+          "已直接加入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "现在把录取率太低但排在前面的往后顺一下",
-        "assertContainsAny": ["还没有正式志愿", "没有可以调整", "先有一版方案"],
-        "assertNotContains": ["已直接移动", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "还没有正式志愿",
+          "没有可以调整",
+          "先有一版方案"
+        ],
+        "assertNotContains": [
+          "已直接移动",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "修完以后重新审查，看看风险还有没有",
-        "assertContainsAny": ["审查", "风险", "方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "审查",
+          "风险",
+          "方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       }
     ]
   },
   {
     "name": "full-journey-soft-hard-mix-major-group-remove-add",
     "sessionId": "5749",
-    "flow": ["start", "explore", "intent", "plan", "review"],
+    "flow": [
+      "start",
+      "explore",
+      "intent",
+      "plan",
+      "review"
+    ],
     "coverage": [
       "full_journey",
       "soft_intent",
-      "soft_intent_stability",
-      "soft_hard_intent_mix",
-      "soft_major_intent",
-      "hard_region_constraint",
+      "explicit_intent_stability",
+      "positive_negative_intent_mix",
+      "positive_major_intent",
+      "explicit_region_requirement",
       "majorGroup_model",
       "majorGroup_mutation",
       "majorGroup_operations",
@@ -482,50 +1217,152 @@
     "prompts": [
       {
         "prompt": "我想以电气自动化为主，但也能接受计算机，省份上别去太远",
-        "assertContainsAny": ["电气", "自动化", "计算机", "确认"],
-        "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "电气",
+          "自动化",
+          "计算机",
+          "确认"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "记录", "意向"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "已",
+          "记录",
+          "意向"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "东北西北都不要，必须避开",
-        "assertContainsAny": ["确认", "东北", "西北", "报考条件", "排除"],
-        "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "确认",
+          "东北",
+          "西北",
+          "报考条件",
+          "排除"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "地域", "排除", "要求"],
+        "assertContainsAny": [
+          "已",
+          "地域",
+          "排除",
+          "要求"
+        ],
         "assertFollowupTarget": "ordered",
         "assertFollowupRefresh": true,
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "专业组方案里第4个专业组如果不符合这些要求就删掉",
-        "assertContainsAny": ["还没有生成正式方案", "没法判断或调整", "不会改动方案"],
-        "assertNotContains": ["已直接删除", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "还没有生成正式方案",
+          "没法判断或调整",
+          "不会改动方案"
+        ],
+        "assertNotContains": [
+          "已直接删除",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "再从候选里补一个更贴近电气自动化或计算机的专业组",
-        "assertContainsAny": ["基础信息", "电气", "计算机", "生成方案", "没有定位到要加入方案的具体候选志愿", "不会改动方案", "先在候选里选中目标"],
-        "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "基础信息",
+          "电气",
+          "计算机",
+          "生成方案",
+          "没有定位到要加入方案的具体候选志愿",
+          "不会改动方案",
+          "先在候选里选中目标"
+        ],
+        "assertNotContains": [
+          "已直接加入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "没有上一轮正在等待采纳或执行的内容",
+          "没有待确认的方案调整或报考想法",
+          "直接说想审查方案"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       },
       {
         "prompt": "最后确认这版是否需要重新审查",
-        "assertContainsAny": ["重新审查", "方案", "风险"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": [
+          "重新审查",
+          "方案",
+          "风险"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ]
       }
     ]
   }

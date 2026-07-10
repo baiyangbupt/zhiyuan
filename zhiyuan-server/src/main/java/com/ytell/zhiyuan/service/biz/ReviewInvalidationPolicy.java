@@ -74,13 +74,12 @@ public final class ReviewInvalidationPolicy {
         if (state == null || state.getStaleFlags() == null) {
             return;
         }
-        state.getStaleFlags().setCandidatePool(true);
         state.getStaleFlags().setRecommendationOverlay(true);
         state.getStaleFlags().setInitialRecommendation(true);
         state.getStaleFlags().setOrderedPlan(true);
         state.getStaleFlags().setPlanAdjustment(true);
         state.getStaleFlags().setReview(true);
-        markReason(state, "constraint_intent_changed", "报考要求已调整，候选池、推荐、方案和审查需要重新计算。", CONSTRAINT_REVIEW_CODES);
+        markReason(state, "constraint_intent_changed", "报考要求已调整，推荐、方案和审查需要重新计算。", CONSTRAINT_REVIEW_CODES);
     }
 
     public static void markCandidateViewStale(PlanningStateDTO state) {

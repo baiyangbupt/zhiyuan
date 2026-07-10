@@ -1,7 +1,70 @@
 # Release 4.0.0 — Zhiyuan Agent 实施设计
 
-> 版本: v1.42 | 日期: 2026-07-06
-> 变更: v1.42 完成 G17 参数恢复后的完整 G1-G32 direct 主集复跑：20/20 successful，shadow 20/20 success；G17 在完整主集中单次 `preview_plan_action` 并生成 `move_ordered_unit` 确认卡，metrics: `/private/tmp/zhiyuan_400_g1_g32_after_g17_param_recovery_full_rerun.json`
+> 版本: v2.18 | 日期: 2026-07-11
+> v2.18 在 v2.17 后继续跑高信号主链路 + 地域集合并发回归，并完成失败分层收敛。首轮使用 backend `18081` + agent `8039` + 并发 3 跑 72 条，结果 `62/72`，目录 `/private/tmp/zhiyuan_400_v217_mainline_region_parallel`；地域 v212/v213/v216 继续通过。10 个失败分层：6 个是 runner 志愿文件 clone fail-fast 过严导致的环境假失败，已把 volunteer data 缺失只在 final-action/ordered/review 后端断言 case 中作为 environment failure，普通观察 case 只保留 warning；`tests/unit/test_dialog_regression_runner.py -q` 更新为 `89 passed`。失败子集复跑 `/private/tmp/zhiyuan_400_v217_failed_subset_after_runner_gate` 为 `6/10`，剩余 G30 重复调用、v153 数字文案断言、v173 固定 unitId 断言、v183 active pending 改口。v183 用 prompt-only 补齐“算了不是这个，改成山东别去，民办也不要”组合改写示例，不做工具层字符串匹配；新版 agent `8040` focused 复跑 `1/1`，目录 `/private/tmp/zhiyuan_400_v217_v183_rewrite_after_prompt_fix.json`，第二轮正确替换旧 pending，第三轮确认后山东/民办要求落库并刷新 ordered/review。随后 10 条失败子集复跑 `/private/tmp/zhiyuan_400_v217_failed_subset_after_v183_prompt_fix` 为 `8/10`，G30 与 v183 转绿；v153 断言从固定“20个相关志愿”改为“相关志愿”，v173 从固定老 unitId 改为首位 unitId changedFromBefore，剩余两条 `/private/tmp/zhiyuan_400_v217_remaining_two_after_assertion_fix` 为 `2/2`。当前结论：本轮没有新增确定业务执行缺口；主链路失败已按环境、低优先级重复调用、资产断言和 v183 prompt-only 语义缺口完成收敛。
+> v2.17 继续验证 v2.16 后的地域 final-action 链路，并校准并发回归运行条件。先用 backend `18081` + agent `8039` 并发跑 v212/v213/v216 地域集合共 11 条时出现 `0/11`，复核后确认是无效环境运行：offset 会话没有带 `--backend-db-password 12345678`，`assistant_chat_session` 主表未克隆完整，后端能写入 `pendingConfirmation=applied` 和 `constraintState`，但 ordered-plan 刷新失败并返回“当前方案暂时没有重新调整成功”。同一 v216 case 在原始 session 17 串行复核 `1/1` 通过。随后使用新的 session offset、完整 chat-session clone、`--backend-db-password 12345678` 和并发 2 复跑 v212/v213/v216 共 11 条，结果 `11/11`，目录 `/private/tmp/zhiyuan_400_v216_region_expanded_clone_db`，确认后后端断言覆盖 pending applied、planningState version 增长、地域要求落库、ordered units 非空、代表性地域剔除以及 ordered/review 刷新。结论：v2.16 修复未破坏已有地域集合/城市圈 final-action；后续所有 offset final-action 回归必须显式带 DB 密码，否则按验证环境问题记录，不计为业务链路失败。同时收敛回归 runner：`--clone-backend-chat-session` 下主表或志愿文件克隆失败会直接标记 environment setup failure，不再进入 websocket 产生误导性业务断言；同源同目标 session 的志愿文件克隆视为 no-op。验证 `tests/unit/test_dialog_regression_runner.py -q` 为 `88 passed`。
+> v2.16 修复 v2.15 暴露的“省外可以，但太偏的地方不想去”稳定缺口，并补齐最终 action 验证。修复保持 4.0 结构化语义边界：不新增工具层原话字符串扫描；prompt 要求模型把“省外可以/不排斥省外”作为 reference 或背景，不单独写成必须省外，把“太偏/偏远/太远的地方不想去/别考虑”压成 `negative={"area":["偏远地区"]}`；Agent 和后端地域 catalog 增加 `偏远地区` area，按新疆、西藏、宁夏、甘肃、青海、内蒙古展开。新增长期回归资产 `examples/dialog_regression_400_v216_region_remote_final_cases.json`，覆盖首轮 pending card 和确认后的 backend final-action。验证：`py_compile app/domain/region_entity_resolver.py app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；focused Python 单测 3 条通过；后端 `mvn -q -Dtest=PlanningStateServiceTest#shouldMatchRemoteRegionScope test` 通过；使用新版 backend `18081` + agent `8039` 跑真实 LLM focused final-action `1/1`，目录 `/private/tmp/zhiyuan_400_v216_remote_region_focused`，确认后 `pendingConfirmation.status=applied`、`planningState.version` 增长、`mustExcludeRegions` 包含“偏远地区”、`orderedPlanState.units minLength>=1` 且 ordered/review 刷新。
+> v2.15 继续扩大 4.0 quality observation 验证，不新增生产代码改动。使用 backend `18080` + agent `8038` + 真实 LLM + 完整 chat-session clone + 并发 4 跑 dialogue-derived、open-quality、quality-realistic-user、career、explore、readonly-real-session 共 131 条，首轮 `102/131`，目录 `/private/tmp/zhiyuan_400_v215_quality_observation_expanded`。29 个失败子集单并发顺序复跑仍 `0/29`，目录 `/private/tmp/zhiyuan_400_v215_quality_failed_subset_sequential`；分层后 2 个是旧工具名断言（`get_major_introductions/compare_major_options` vs 4.0 的 `explore_topic/compare_entities`），24 个是纯 `thinkingText` 断言口径，3 个需要继续记录：`省外可以，但太偏的地方不想去` 未形成可执行地域要求；`新媒体/跨电` 对比澄清后用户说“嗯那就这样”仍继续追问，属于自然接续质量问题；`会计审计可以 土木别要` 在顺序复跑出现一次 `UnexpectedModelBehavior` 无 pending，但单独复测 `/private/tmp/zhiyuan_400_v215_intent_short_reprobe` 已能正确生成 `preview_intent_change` 和 pending card，降级为模型波动 + `thinkingText` 断言问题。当前结论：quality 池没有暴露新的 final-action 或 pending 执行错误；后续若修，优先处理“可接受省外 + 排除偏远/太远”这类显式地域诉求的结构化表达，不使用工具层中文字符串匹配。
+> v2.14 在 v2.13 地域结构化归一修复后继续扩大 4.0 broader 回归验证，不新增生产代码改动。第一次在沙箱内启动 77 条回归全部失败，原因是本地 backend/DB 访问被拦截，报 `URLError: Operation not permitted` 和 MySQL 连接失败，按无效环境运行处理。授权访问本机服务后，使用 backend `18080` + agent `8038` + 真实 LLM + 完整 chat-session clone + 并发 4 跑 G1-G32、production、realistic、review/repair、v179、v183、v212、v213 共 77 条，首轮结果 `73/77`，目录 `/private/tmp/zhiyuan_400_v214_broader_after_v213_region_fix_escalated`。4 个失败为：`G4` 明确专业意向首轮无工具无 pending；`G30` 明确强基意向重复调用两次 `preview_intent_change` 超过严格工具次数；`realistic-readonly-fix-options-short` 和 `realistic-policy-vs-mutation-short` 首轮无工具导致工具名断言失败。失败子集按单并发顺序复跑 `4/4`，目录 `/private/tmp/zhiyuan_400_v214_failed_subset_sequential`：G4/G30 均正确调用 `preview_intent_change` 并生成 pending card，两个 realistic case 分别走 `review_plan`/`answer_policy` 只读路径。当前结论：v2.13 地域 final-action 在 broader 集内保持通过，v212/v213 地域集合/城市圈确认后后端断言均通过；本轮没有发现新的稳定业务执行缺口，剩余仍按并发模型波动、少量重复工具调用和只读断言口径观察。
+> v2.13 扩展地域集合/城市圈口语最终 action 回归，并修复同类结构化地域别名缺口。新增 `examples/dialog_regression_400_v213_region_area_quality_final_cases.json`，覆盖“江浙沪就行，其他地方先别看了”“北上广深就行，不往其他城市放了”“东北和西北都先别考虑”“西北西南都不去，太远了”“上海南京杭州这一片可以，北方先不看”。初始 focused run 为 `10/10`，metrics `/private/tmp/zhiyuan_400_v213_region_area_quality_final.json`；扩大到 77 条 broader 回归为 `73/77`，失败子集顺序复核 `3/4`，唯一稳定问题是“江浙沪就行”首轮调用 `preview_intent_change` 但未形成 pending，确认轮无可执行对象。复核 chat history 后确认根因不是 final action，而是模型/工具结构化契约漂移：模型会传 `area_region` 或 `area=["江浙沪"]`，semantic completion 用原值与 canonical `长三角` 比较并把“其他地方”当成伪 negative area，Python resolver 也缺 `北上广深` area。修复保持 4.0 边界：prompt 明确 “X 就行/其他地方先别看” 只生成 positive area + only_keep，不把“其他地方/非X地区”写成 negative；direct 工具兼容 `area_region/region_area` 字段；region semantic completion 对地域值做 canonical 对齐并跳过无法解析的泛化 area；Python region resolver 补齐 `北上广深` 与后端 `RegionScopeSupport` catalog 对齐。验证：`py_compile app/domain/region_entity_resolver.py app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；focused 单测 4 条通过；真实 focused `江浙沪` final-action `2/2`，metrics `/private/tmp/zhiyuan_400_v213_jiangzhehu_after_region_semantic_fix.json`；完整 v2.13 复跑 `10/10`，metrics `/private/tmp/zhiyuan_400_v213_region_area_quality_after_first_tier_fix.json`；broader 失败子集复跑 `4/4`，目录 `/private/tmp/zhiyuan_400_v213_failed_subset_after_region_fix`。
+> v2.12 补齐地域集合/城市圈长期最终 action 回归资产。新增 `examples/dialog_regression_400_v212_region_area_expanded_final_cases.json`，覆盖“孩子就想去南方，北方先别考虑”“那就只看长三角吧”“华南的不要了”“珠三角先不考虑了”“只看西南吧”五类口语表达，每条均验证出 pending card、确认后 `confirm_pending`、`pendingConfirmation=applied`、`planningState.version` 增长、结构化地域要求落库以及 `orderedPlanState.units minLength>=1` 和代表性地域剔除。有效真实 LLM 回归使用 backend `18080` + agent `8038` + 完整 chat-session clone + `--backend-db-password 12345678`：首轮业务链路 `9/10`，唯一失败为“华南的不要了”首轮两次 `preview_intent_change`，确认后最终后端断言全过，归为少量重复工具调用效率观察；资产随后移除首轮工具次数硬断言、保留确认轮单工具与最终状态断言，复跑 `10/10`，metrics `/private/tmp/zhiyuan_400_v212_region_area_expanded_final_action_green.json`。抽查最终 session `5094217`：`mustIncludeRegions=["西南"]`、`candidatePoolState.items=402`、`orderedPlanState.units=2/items=2`、`staleFlags.orderedPlan=false`，说明已确认要求只影响派生排序方案，候选池仍保持全量可恢复。
+> v2.11 修复 v2.10 稳定语义缺口：地域集合表达没有落成有效报考要求，并补齐确认后最终方案真实生效验证。实现仍遵守 4.0 结构化语义边界，不新增工具层中文字符串扫描：prompt 明确“南方/北方/长三角/珠三角/华东/华南/东北/西北/西南/北上广深/江浙沪”等地域集合应作为 region requirement 写入 `area`/`region_group`，且必须进入 positive/negative payload 与 semantic_requirements；Agent 工具层只处理模型已经结构化的 `area`，不读取原话补语义；后端新增 `RegionScopeSupport`，让确认后的 `mustIncludeRegions=["南方"]` / `mustExcludeRegions=["北方"]` 在 ordered-plan 生成时按结构化地域集合展开，同时保持 `candidatePoolState.items` 全量可恢复。新增回归资产 `examples/dialog_regression_400_v211_region_area_final_cases.json` 并补上 `orderedPlanState.units minLength>=1`，避免空数组下 `notContains` 误通过。验证：`tests/unit/test_zhiyuan_agent_direct.py -q` 为 `175 passed, 29 skipped`；后端 `mvn -q -Dtest=PlanningStateServiceTest test` 通过；有效真实 LLM 最终动作回归使用新 backend `18080` + agent `8038` + 完整 chat-session clone，`2/2` 通过，metrics `/private/tmp/zhiyuan_400_v211_region_area_final_action_after_backend_fix_valid.json`，最终状态 `orderedPlanState.units=12/items=33`，北方省份计数 0，`orderedPlan=false`。验证环境记录：未带 `--backend-db-password` 的 offset run 会导致 chat-session 主表未克隆，`generate_planning_ordered_plan` 返回 `404 会话不存在`，该结果不计为业务失败。
+> v2.10 继续扩大 dialogue-derived 真实口语/指代质量池验证。本轮使用 fresh agent `8037`、backend `8080`、真实 LLM、backend state/chat-session clone、并发 4 跑 `examples/dialog_regression_400_dialogue_derived_cases.json` 共 88 条，首轮 `83/88`，metrics `/private/tmp/zhiyuan_400_v210_dialogue_derived_observation`；5 个失败子集单并发复跑 `1/5`，metrics `/private/tmp/zhiyuan_400_v210_dialogue_failed_subset_sequential`。转绿项 `400-dialogue-archive-library-cold-major` 为首轮 timeout fallback，不计为稳定缺口。稳定 4 项分层：1）`400-dialogue-region-south-only` 模型调用了 `preview_intent_change`，但没有把“想去南方、北方先别考虑”压成有效地域要求，工具返回“没有识别到明确的报考要求”，这是需要后续 prompt/结构化地域表达修复的语义缺口；2）`400-dialogue-architecture-art-foundation` 使用 `explore_topic` 回答建筑/城乡规划美术基础问题，内容质量可接受，但 case 期待旧工具 `get_major_introductions`，属于工具名资产口径；3）`400-dialogue-accounting-finance-audit-priority` 使用通用 `compare_entities` 完成财管/会计/审计排序建议，case 期待 `compare_major_options`，同属工具名资产口径；4）`400-dialogue-followup-readonly-boundary` 回复“好的，你先问，我不做任何改动”，实际无工具无副作用，失败只是断言没覆盖“不做任何改动”。本轮仍不新增工具层中文字符串匹配；后续若修，应优先补模型语义边界：把“南方/北方/北上广深/长三角/珠三角”等地域集合表达输出为结构化 region requirement 或可执行澄清。
+> v2.09 继续扩大 4.0 direct 真实验证，不做生产代码修复。使用 fresh agent `8037`、backend `8080`、真实 LLM、backend state/chat-session clone 和并发 runner：hard candidate 扩展集 `33/33`，metrics `/private/tmp/zhiyuan_400_v209_expanded_hard_candidates`；quality observation 扩展集 `47/57`，metrics `/private/tmp/zhiyuan_400_v209_expanded_quality_observation`。10 个失败子集单并发复跑为 `4/10` 通过，metrics `/private/tmp/zhiyuan_400_v209_quality_failed_subset_sequential_valid`；转绿项包括三条原并发 timeout/无工具调用问题和“青城”简称查询，说明这几项不是稳定链路缺陷。剩余 6 条均未暴露最终 action 数据错误：1）只读审查后“确认”兜底回复通过无副作用，但断言文案过窄；2）专业组移动预览和确认均正确执行并刷新工作台，但回复缺少“专业组/组内/方案顺序”等质量提示；3）青岛城市学院只读查询正确返回 1 个志愿、7 条专业明细，但断言没有覆盖“7条”；4）“把华中农业大学的建筑类加进来”仍不能定位可添加候选，属于命名加项候选检索/澄清能力缺口；5）“按院校层次排序”正确生成排序 pending，但缺少“实际改变/待重新审查”副作用说明；6）专业对比澄清后用户说“嗯那就这样”，模型继续追问“新媒体”歧义，属于自然接续质量/断言边界问题。当前不修低优先级文案和验证资产断言，继续按“高信号主链路 + 质量观察池”双轨推进；后续优先扩大质量池和真实 final-action，再决定是否修命名加项候选检索与排序/专业组说明文案。
+> v2.08 完成 v2.07 后高信号主链路回归、稳定问题修复与复核。第一次主线运行因漏传 `--backend-db-password` 导致 `assistant_chat_session` MySQL clone 使用空密码失败，结果 `38/72` 判为无效环境运行，metrics `/private/tmp/zhiyuan_400_v208_mainline_after_v207_prompt_fixes`。带 `--backend-db-password 12345678` 的有效首轮为 `65/72`，metrics `/private/tmp/zhiyuan_400_v208_mainline_after_v207_prompt_fixes_with_db_clone`；7 个失败经顺序复跑后 `6/7` 通过，重复 `preview_intent_change`、G26 只读回复、V156 后端断言均未稳定复现，稳定问题只剩 `400-review-shortage-honesty`：用户条件式询问“如果稳和保不够，能不能补齐，候选不够也要说”，模型误建 `preview_plan_action(regenerate_order)` pending。修复为 prompt-only：区分条件式可行性/候选不足诚实边界请求与明确“先给我看预览/现在帮我补/直接调整”的方案动作，不在工具层增加中文字符串匹配。验证：`py_compile app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py`、静态单测和 `git diff --check` 通过；focused 对照 `2/2`，metrics `/private/tmp/zhiyuan_400_v208_review_shortage_prompt_fix_focused`；原 7 失败子集复跑 `7/7`，metrics `/private/tmp/zhiyuan_400_v208_failed_subset_after_review_shortage_fix`。随后用 fresh agent `8037` 并发 4 复跑 72 条高信号主链路，首轮 `70/72`，metrics `/private/tmp/zhiyuan_400_v208_mainline_after_review_shortage_fix`；两处失败为 G21 并发 `TimeoutError` 和 G26 “录取概率/录取率”低风险措辞断言，失败子集顺序复跑 `2/2`，metrics `/private/tmp/zhiyuan_400_v208_mainline_failure_subset_sequential_after_fix`。当前未发现新的稳定业务执行缺口；剩余为并发 LLM 超时、少量重复工具调用效率观察和只读回复文案断言口径。
+> v2.07 继续扩大 4.0 direct 质量观察池验证并补齐两个稳定语义质量缺口。使用 fresh agent `8000`、backend `8080`、真实 LLM、backend state clone、并发 4 复跑 `open_quality`、`quality_realistic_user`、`production_abstracted` 共 46 个质量/生产式 case，首轮 `44/46`，metrics `/private/tmp/zhiyuan_400_v207_quality_observation_parallel`。失败分类：1）`400-prod-open-career-long-input` 中用户明确说“医学有些排斥”，模型只口头总结没有调用 `preview_intent_change` 出确认卡；按 4.0 语义框架做 prompt-only 修复，把“排斥/对X排斥/不想学X”纳入显式负向报考要求，并要求长句中工资、沟通强度等职业取向可作为 reference，但显式专业要/不要必须形成待确认预览。focused 复跑通过，metrics `/private/tmp/zhiyuan_400_v207_open_career_long_after_prompt_fix.json`；`production_abstracted` 全组 `17/17`，metrics `/private/tmp/zhiyuan_400_v207_production_abstracted_after_prompt_fix`。2）`400-open-quality-sort-score-preview-rich-boundary` 能出排序 pending，但把“推荐系数”误压成“录取率”；工具层已有 `推荐系数/final_score -> finalScore` 归一，修复为 prompt-only，要求推荐系数/推荐分/综合分使用 `sort_field=final_score/comprehensive`，focused 复跑通过，metrics `/private/tmp/zhiyuan_400_v207_sort_score_after_prompt_fix.json`。修复后 46 条总集首轮仍为 `44/46`，metrics `/private/tmp/zhiyuan_400_v207_quality_observation_after_prompt_fix`；剩余两项中排序字段已 focused 通过，`400-real-user-lazy-plan-risk` 为并发 `TimeoutError`，顺序复跑通过，metrics `/private/tmp/zhiyuan_400_v207_quality_failure_subset_sequential_after_fix`。单元验证：`tests/unit/test_zhiyuan_agent_direct.py -q` 为 `173 passed, 29 skipped`。本轮没有新增工具层字符串语义匹配；剩余观察项仍是并发 LLM 超时、质量池回复信息密度和 MySQL chat-session clone 空密码 warning。
+> v2.06 完成修正后高信号主链路 baseline 复跑。使用真实 LLM、backend clone、最终 action 后端断言和并发 4，15 组 4.0 主链路 case 共 72 个，原始结果 `70/72`，metrics 目录 `/private/tmp/zhiyuan_400_v206_mainline_high_signal_parallel`。两处失败均已复核为非业务执行缺口：`400-v179-active-pending-append-region-and-private-final-action` 第二步重复调用两次 `preview_intent_change`，但待确认预览合并了山东+民办，确认后报考要求落库、candidate pool 保持全量、ordered units 裁剪等后端断言全部通过；已按少量重复调用观察口径把该步改为包含目标工具且最多 2 次，失败子集复跑 `3/3`，metrics `/private/tmp/zhiyuan_400_v206_v179_append_duplicate_assertion_rerun.json`。`400-v183-review-advice-then-vague-execute-no-pending-guard` 并发中模型直接回复“这轮还没有生成可确认的调整预览，所以不会改动当前方案”，无 followup、planningState 未变化、pending 为空；已补充“没有生成可确认/不会改动”文案断言并移除必须调用 `confirm_pending` 的旧要求，失败子集复跑 `2/2`，metrics `/private/tmp/zhiyuan_400_v206_v183_no_pending_guard_assertion_rerun.json`。结论：修正后高信号主链路没有新的确定业务执行问题；剩余为重复工具调用效率观察和并发验证口径收敛。
+> v2.05 完成 v2.04 后高信号主链路并发回归与问题分层。真实 LLM + backend clone 并发跑 15 组 4.0 主链路 case 共 72 个，首轮 `69/72`，metrics 目录 `/private/tmp/zhiyuan_400_v204_mainline_high_signal_parallel`。三处失败分层如下：1）`400-v156-deferred-region-no-plan-change` 首轮重复调用两次 `preview_intent_change`，但 pending 与确认后的后端状态全部正确，按“少量重复调用先观察”降级为效率观察，回归断言改为要求包含目标工具且最多 2 次；2）`400-v157-combo-school-attribute-exclude-final-action` 首轮为模型请求 `TimeoutError` 未进入工具链，单独复跑通过，metrics `/private/tmp/zhiyuan_400_v204_v157_combo_attribute_rerun.json`，确认后民办/中外合作要求落库且 ordered/review 刷新、后端最终 action 断言通过；3）`400-v183-review-advice-then-vague-execute-no-pending-guard` 当前回复明确“没有待确认操作、不会执行”，且 planningState/pending 均无副作用，符合 no-pending 防护边界，回归断言取消必须调用 `confirm_pending` 的旧要求。断言调整后 v156/v183 失败子集复跑均 `2/2`，metrics 分别为 `/private/tmp/zhiyuan_400_v205_v156_deferred_region_assertion_rerun.json`、`/private/tmp/zhiyuan_400_v205_v183_no_pending_guard_assertion_rerun.json`。结论：未发现新的 4.0 direct 业务执行缺口；剩余主要是并发模型超时和少量重复调用效率观察。
+> v2.04 修复学费预算确认后的最终方案生效缺口。v2.03 全量 requirement/action 回归新增最终 action 后端断言后暴露：`tuition_budget` pending 已采纳、session 学费范围已写入、`planningState.version` 增长，但 `orderedPlanState.units` 仍存在 `tuitionPerYear=60000`，说明 ordered-plan 生成没有消费会话学费预算。修复方式保持 4.0 设计边界：基础 `candidatePoolState.items` 继续保留全量候选，不新增持久化 `effectiveCandidates` 缓存；`PlanningStateService.resolveEffectiveCandidates()` 在方案生成/审查/修复等派生动作中读取 `USER_SCORE_KEY.tuitionRange`，与 `constraintState.hardConstraints` 一起生成运行时有效候选，并扩展 working/ordered 裁剪 guard 到“已确认要求或学费预算”。新增后端单测覆盖专业模式和专业组模式下预算重排会裁剪超预算 ordered items/units，同时断言基础候选池仍保留超预算候选。验证：后端 focused 单测通过；`mvn -q -Dtest=PlanningStateServiceTest test` 通过；`zhiyuan-agent/tests/unit/test_zhiyuan_agent_direct.py -q` 为 `170 passed, 29 skipped`；真实 LLM + backend clone 复跑 `dialog_regression_400_requirement_plan_action_cases.json` 为 `10/10`，metrics `/private/tmp/zhiyuan_400_v204_requirement_plan_action_after_tuition_effective_fix.json`，其中 `400-requirement-tuition-budget-preview` 确认后 `pendingConfirmation.status`、`planningState.version` 和 `orderedPlanState.units tuitionPerYear<=20000` 后端断言均通过。
+> v1.93 修复 G1 报考要求与当前方案同步处理的语义优先级。旧链路清理复扫结果：`tests/unit/test_runtime_hard_cut_audit.py -q` 为 `25 passed`，生产 `app/` 中 `ChatAgent/turn_decision/planning_workflow_tool/execute_plan_action/planEditCache/ZHIYUAN_AGENT_POC/runtime_shadow/full_agent/fast_route` 等旧入口命名无命中。真实 G1-G32 首轮复跑 `19/20`，metrics `/private/tmp/zhiyuan_400_v193_g1_g32_direct_guard_followup.json`，唯一失败为 G1：用户说“不要英语相关专业，当前方案里有的话也删掉”时模型走 `preview_plan_action(remove_units)`，只表达当前方案移出，可能漏掉“以后也不要英语相关专业”的报考要求。修复方式为 prompt-only：明确“显式报考要求 + 当前方案同步处理”优先走 `preview_intent_change(apply_to_current_plan=True)`，纯“方案里的X不要/移出”仍走 `preview_plan_action`。验证：`py_compile app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；prompt 静态断言与 `test_preview_intent_keeps_broad_major_scope_when_user_says_related` 均 `1 passed`；G1 focused 真实复跑 `1/1`，metrics `/private/tmp/zhiyuan_400_v193_g1_after_prompt_fix.json`；完整 G1-G32 复跑 `20/20`，metrics `/private/tmp/zhiyuan_400_v193_g1_g32_direct_after_requirement_plan_priority_fix.json`，分布为 intent pending 6、readonly 9、plan preview 3、needs-plan-first 2。剩余观察：G2/G7 费用/中外合作只读审查回复仍偏弱，G12/G27 替换预览文案仍露出 `high_tuition` 这类内部 code，G19/G32 no-plan 边界偏长，后续归入回复质量优化，不影响本轮链路闭环。
+> v1.92 补齐 direct route 无工具假预览防护并完成 final-action 并发复核。问题来源是 v1.91 后继续跑 v155/v156/v157/v158/v173 final-action 并发集时曾出现 1 个模型直答“待确认预览/是否确认”但没有调用 `preview_intent_change`、也没有生成 `pendingConfirmationCard` 的波动；顺序复跑该 case 可通过，但服务层确实缺少无依据确认文案兜底。实现：`service.py` 在 direct route 后处理阶段，当本轮没有 pending card 且没有 workspace refresh 时，调用 `_guard_unbacked_plan_confirmation_reply()` 拦截看起来要求用户确认方案调整/预览的无依据回复，替换为“本轮没有生成可确认调整预览，不会改动当前方案”的边界回复；正常 `preview_intent_change/preview_plan_action/confirm_pending` 出卡或执行路径不受影响。验证：`py_compile app/service.py tests/unit/test_zhiyuan_agent_direct.py examples/dialog_regression_parallel_runner.py tests/unit/test_dialog_regression_parallel_runner.py` 通过；guard 聚焦单测 `1 passed`，parallel runner 单测 `4 passed`，`git diff --check` 通过。真实复核使用最新 agent `18321`：v156 聚焦 case `400-v156-spoken-only-public-final-action` 为 `2/2`，metrics `/private/tmp/zhiyuan_400_v192_v156_only_public_guard_rerun.json`，首轮正常生成 `intent_change` 待确认卡，确认轮 `confirm_pending` 后端断言覆盖 pending applied、version 增长、要求写入、ordered items/units 裁剪和 ordered/review 刷新。随后带完整 backend chat session clone 并发跑 v155/v156/v157/v158/v173 final-action 集合 `21/21`，metrics 目录 `/private/tmp/zhiyuan_400_v192_final_action_parallel_clone`，未出现失败子集；说明当前 4.0 direct final-action 链路在该并发口语集下闭环。
+> v1.90 修复 v1.88 真实回归剩余两项回复质量问题：`query_plan + review_plan` 组合直返不再固定使用“下面是这次待确认预览”，只有 `preview_intent_change/preview_plan_action` 且 `next_step=confirm` 时才使用待确认预览标题，review 组合结果改为“继续看审查结果”；prompt 明确“重新审查/再审一遍/重新看一下/再看一遍/重新检查”即使上一轮刚审查过，也必须再次调用 `review_plan`。验证：`py_compile app/zhiyuan_agent/agent.py app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；focused 单测 `3 passed`；`tests/unit/test_zhiyuan_agent_direct.py -q` 为 `160 passed, 29 skipped`；`git diff --check` 通过。真实 focused：`400-review-shortage-honesty` 已无“待确认预览”标题，metrics `/private/tmp/zhiyuan_400_v190_review_repair_two_focused.json`（第二个 case 因 backend 清理超时未进入业务链路）；`400-review-repair-after-manual-move-stale` 单独复跑 `2/2`，metrics `/private/tmp/zhiyuan_400_v190_review_repair_rereview_focus.json`，第二轮“那重新审查一下”调用 `review_plan`。完整 review/repair 克隆集复跑 `9/9`，metrics `/private/tmp/zhiyuan_400_v190_review_repair_clone_full.json`，未再出现“待确认预览”误标题或 `ready` 泄漏。
+> v1.89 修复 v1.88 真实回归观察到的内部状态词泄漏：用户可见术语归一化新增独立英文单词 `ready` -> “可以先看调整预览”，避免 review/repair 处理方向分层中出现英文状态值。该修复仍只改回复文案，不改变工具调用、pending 或后端 action。验证：`py_compile app/service.py tests/unit/test_chat_service_history_persistence.py` 通过；focused 单测 `1 passed`；`tests/unit/test_chat_service_history_persistence.py -q` 为 `110 passed`；`tests/unit/test_zhiyuan_agent_direct.py -q` 为 `159 passed, 29 skipped`；`git diff --check` 通过；真实单 case `400-review-fix-explain-hierarchy` 为 `1/1`，metrics `/private/tmp/zhiyuan_400_v189_review_fix_explain_hierarchy_ready_copy.json`，回复中 `ready` 已变为“可以先看调整预览”。
+> v1.88 清理审查兜底回复里的内部状态文案：`blocked/系统阻塞` 统一转成“需要你先确认是否接受这类调整或放宽报考条件”，无真实 pending 的边界回复改为“还没有生成可确认的调整预览”，`fix_proposal_preview` 兜底不再露出“可执行预览”。本次只改用户可见措辞和 reply guard 兼容 marker，不改 direct 路由、pending、确认执行或后端 action。验证：`py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_proposal_compiler_runtime_selection.py` 通过；`tests/unit/test_chat_service_history_persistence.py -q` 为 `110 passed`；`tests/unit/test_proposal_compiler_runtime_selection.py -q` 为 `36 passed`；`tests/unit/test_zhiyuan_agent_direct.py -q` 为 `159 passed, 29 skipped`；`git diff --check` 通过。真实 review/repair 克隆集 `9/9`，metrics `/private/tmp/zhiyuan_400_v188_review_repair_clone_copy.json`；客观观察：只读审查个别回复混入“待确认预览”，处理方向分层个别项仍漏出 `ready`，连续“重新审查一下”未再次调用工具。
+> v1.87 按产品决策调整 `plan_generation/regenerate_order` 确认后的 review followup 文案，不自动触发 review workflow。方案重排确认后仍刷新 ordered，并保留 review 入口，但 review 卡片改为“需要重新审查方案 / 方案排序已更新，原审查结果可能不再完全准确。请重新审查后再看最新风险和提醒。/ 重新审查”，避免暗示后端已完成最新审查。实现仅改服务层 followup copy helper，不新增后端 `runReviewWorkflow` 调用。验证：`py_compile app/service.py tests/unit/test_zhiyuan_agent_direct.py`、`tests/unit/test_zhiyuan_agent_direct.py::test_service_pending_confirmation_executes_plan_generation_bridge`、完整 `tests/unit/test_zhiyuan_agent_direct.py -q`（`159 passed, 29 skipped`）和 `git diff --check` 均通过；真实 focused 预览 metrics `/private/tmp/zhiyuan_400_v187_review_major_group_inner_safety_preview.json`，确认文案 metrics `/private/tmp/zhiyuan_400_v187_review_major_group_inner_safety_confirm_copy.json`，确认后 review followup title 为“需要重新审查方案”。
+> v1.86 落地 review+方案动作复合诉求修复：prompt 将“补一个/加一个/加入/补稳/补保/补安全一点”纳入明确方案动作，用户说“专业组里面有没有录取率太悬的？能不能补一个安全一点的专业，先给我看预览”时走 `preview_plan_action(action="regenerate_order", review_issue_code="probability_gap")`。同时修复服务层 `plan_generation` pending 漏接：`PendingConfirmation` 允许 `plan_generation`，`service.py` 统一把 `plan_mutation/plan_generation` 作为方案类 pending 处理，覆盖后端 active pending 恢复、pending card 渲染、短文本确认、卡片确认、路由观测和过期清理；pending card 保留真实 `kind=plan_generation`，不伪装为 `plan_mutation`。验证：`py_compile` 与 `git diff --check` 通过；`tests/unit/test_zhiyuan_agent_direct.py` 为 `159 passed, 29 skipped`；focused 单 case 出卡通过，metrics `/private/tmp/zhiyuan_400_v186_review_major_group_inner_safety_after_plan_generation_card_fix.json`；同 session “确认执行”通过 `confirm_pending` 执行，metrics `/private/tmp/zhiyuan_400_v186_review_major_group_inner_safety_confirm_after_card_fix.json`，后端 latest pending 为 `status=applied/kind=plan_generation/actionFamily=regenerate_order`，工作台版本从 `461` 增至 `462`；review/repair 克隆完整复跑 `9/9`，metrics `/private/tmp/zhiyuan_400_v186_review_repair_clone_after_plan_generation_card_fix.json`。剩余观察点：`regenerate_order` 执行后当前方案已刷新，但 review 会被后端标记为 stale，需要后续确认 review 刷新/重审的产品链路或由 plan_generation 确认后触发审查 workflow。
+> v1.85 验证-only：继续扩大 4.0 direct 真实口语 final-action 回归，不新增实现改动。v1.55 realistic final-action 复跑 `7/7`，metrics `/private/tmp/zhiyuan_400_v184_v155_realistic_final_action_rerun.json`；v1.56 broadened final-action 复跑 `8/10`，两处失败为严格工具次数断言，实际均生成正确 pending 且确认后后端断言通过，metrics `/private/tmp/zhiyuan_400_v184_v156_realistic_broadened_final_action_rerun.json`。新增 v157/v158/v173 扩展集在三组并发首轮分别为 `7/11`、`6/9`、`8/11`，失败集中为 `TimeoutError/ModelAPIError` 未进入工具链，以及一次 `preview_intent_change` 重复调用严格断言；按失败子集顺序复核后分别为 `4/4`、`5/5`、`4/4` 通过。综合真实口语集 `dialog_regression_400_realistic_user_cases.json` 首轮 `12/14`，两处失败同为 `ModelAPIError`，失败子集顺序复核 `2/2`。review/repair 克隆复跑 `8/9`，剩余问题是“补一个安全一点的专业，先给我看预览”只走 `review_plan`、未生成待确认预览或可执行澄清。客观结论：本轮未确认新的业务链路 final-action 错误；但记录 1 个 review+方案动作复合诉求缺口，并发真实 LLM 回归下模型服务波动会放大失败率，后续并发跑法需要失败子集顺序复核或 runner/service 层重试策略。
+> v1.84 补齐 active pending 下“选择当前预览”的短句确认边界：v1.83 扩展回归发现“青岛理工那个建筑太贵了，换个便宜点正常收费的”已生成 `replace_units` 待确认后，用户说“就换这个”时模型曾直接口头回复已执行，但没有调用 `confirm_pending`，导致后端 `pendingConfirmation.status` 仍为 `active`、`planningState.version` 不变。已按 4.0 方向做 prompt-only 修复：状态摘要显示“待确认：有”时，用户用“就这个/就换这个/按这个来/这个可以/行/可以”等短句选择当前预览，且没有提出新的报考要求或新的方案调整诉求，必须调用 `confirm_pending(action="confirm")`；没有 `confirm_pending` 工具结果前不得口头说“已替换/已完成替换/已更新”。不增加工具层字符串语义匹配。验证：单 case `2/2`，metrics `/private/tmp/zhiyuan_400_v184_v183_targeted_replace_after_confirm_prompt_fix.json`；v1.83 整组首轮 `9/13`，失败均为到 `llm.baijia.com` 的 `TimeoutError/ModelAPIError` 导致未进入工具链，失败子集复跑 `5/5`，metrics `/private/tmp/zhiyuan_400_v184_v183_failed_subset_rerun_after_llm_timeout.json`；v1.79 focused `10/10`，metrics `/private/tmp/zhiyuan_400_v184_v179_focused_after_confirm_prompt_fix.json`；G1-G32 direct 主集 `20/20`，metrics `/private/tmp/zhiyuan_400_v184_g1_g32_direct_after_confirm_prompt_fix.json`，分布为 intent pending 6、readonly 9、plan preview 3、needs-plan-first 2。
+> v1.83 继续扩展真实口语/指代/多轮 focused 回归：新增 `examples/dialog_regression_400_v183_realistic_followup_quality_cases.json`，覆盖 active pending 下“山东先别去了→再加个只看公办”、active pending 下“中外合作先不要→算了改成山东别去+民办不要”、更简略的 targeted replace“青岛理工那个建筑太贵了，换个便宜点正常收费的”、只读审查后模糊“那就照你说的处理吧”的 no-pending 防护，以及只读审查后明确“高收费这些换便宜点，不是直接删”的 replace + confirm final-action。首轮真实 LLM `12/13`，metrics: `/private/tmp/zhiyuan_400_v183_realistic_followup_quality_initial.json`，唯一问题为只读审查后模糊“照你说的处理”被模型自动转成 `preview_plan_action(replace_units)` 并创建待确认卡。已按 4.0 方向做 prompt-only 修复：当前状态摘要里的待确认状态作为本轮判断依据；只读审查/处理方向之后，如果本轮没有明确动作对象和动作类型，模糊“照你说的处理/就这么办/按你说的来/执行/采纳”必须调用 `confirm_pending`，没有待确认时只回复不会执行；明确“高收费这些换便宜点”仍走 `preview_plan_action(replace)`。验证注意：需重启 agent 或使用新端口加载 prompt 修改，并用 fresh session offset 避免旧 pending/history 污染。最终在新 agent `18292` + session offset `200` 复跑 `13/13`，metrics: `/private/tmp/zhiyuan_400_v183_realistic_followup_quality_after_prompt_fix.json`；`py_compile app/zhiyuan_agent/prompt.py` 与 `git diff --check` 通过。
+> v1.82 落地 v1.79 剩余 targeted replace 稳定性修复：`preview_plan_action(action="replace")` 在缺少或未能唯一定位旧方案项时返回 `plan_action_requires_replace_target` + `next_step=continue`，要求主模型基于当前问/上下文补齐结构化 `targets/filters/review_issue_code/selector/replacement_spec` 后重试；每轮只给一次结构化 retry 预算，耗尽后返回可执行澄清，不从工具层做用户原文关键词解析。同步补齐 plan filter alias 归一，`school_name/schoolName/school_names/schools/collegeName` 统一进入 `school`，`major_name/majorName/major_names/majors` 统一进入 `major`，修复模型用 `filters.school_name` 定位当前方案项时的 false negative。`only_keep` 场景增加结构化意向 canonicalize：当模型同时给出 `positive.school_nature=["公办"]` 与冗余 `negative.school_nature=["民办"]` 时，只保留“只看公办”诉求，避免同时落库为“要公办+不要民办”。验证：`py_compile app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py` 通过；focused 单测 `17 passed, 169 deselected`；完整 direct 单测 `157 passed, 29 skipped`；真实 LLM focused 回归 `examples/dialog_regression_400_v179_pending_replace_review_quality_cases.json` 最终 `10/10`，metrics: `/private/tmp/zhiyuan_400_v182_intent_canonicalize_real.json`，覆盖 active pending 追加/改写、只读审查后无 pending “执行”防护、targeted replace 生成 `replace_units` pending 并在确认后真实修改 ordered plan。
+> v1.79 继续扩展真实口语 focused 回归：新增 `examples/dialog_regression_400_v179_pending_replace_review_quality_cases.json`，覆盖 active pending 追加、active pending 改写、只读审查后无 pending 的“执行”防护，以及“便宜+非中外合作”替换候选质量，并继续包含最终确认后的后端数据断言。首轮真实 LLM `8/10`，metrics: `/private/tmp/zhiyuan_400_v179_pending_replace_review_quality_real.json`，问题为 active pending 改写句“等下，别按这个了，改成只看公办，山东也别去”漏掉“山东也别去”。已按 4.0 方向做 prompt-only 修复：要求 active pending 改写/追加时完整抽取同一句所有显式要/不要项，跨地域+院校属性时优先用 `intent_type="region"` 承载地域项，并补充 append/replace 示例；不增加工具层字符串兜底。验证：`py_compile app/zhiyuan_agent/prompt.py` 与 `git diff --check` 通过。复跑后 active pending 追加、active pending 改写、只读审查后“执行”防护均通过，metrics: `/private/tmp/zhiyuan_400_v179_pending_replace_review_quality_after_append_prompt_fix.json`；剩余失败转移到 targeted replace 稳定性：同一句“青岛理工那个中外合作建筑太贵了，换个正常收费的，最好不是中外合作”在前两轮能生成替换预览并通过后端确认，第三轮未稳定定位当前方案项，返回“没找到”，未创建 pending。后续方向：针对 replace 目标定位失败建立结构化 retry/澄清协议，避免依赖单次模型参数稳定性；active pending 合并语义目前按 prompt 修复继续观察。
+> v1.78 验证-only：完成 `examples/dialog_regression_400_g1_g32_direct_cases.json` 隔离端口真实 LLM 复跑，20 步全部通过，metrics: `/private/tmp/zhiyuan_400_v178_g1_g32_direct_full.json`。本轮用于验证 4.0 direct 主链路在 G1-G32 主集上的路由稳定性和回复边界，不新增实现改动；结果为 intent pending 6、plan mutation 预览 3、readonly 9、needs-plan-first 2，`failures=[]`、`warnings=[]`。耗时 median `4988ms`、p95 `7247ms`、max `11251ms`，最慢为 G31 pending 下只读保底查询、G12 查询+替换复合诉求、G26 保底切片查询、G3 active pending 下只读查询、G16 不支持锁定动作边界。客观观察：G2/G7 只读审查能保持不改方案但回复信息偏弱，后续应让审查结果更明确地展示命中数量/预算影响/处理方向；G19/G32 no-plan 防护正确但文案偏长；G16 通过代表不支持锁定时安全拦截，不代表锁定动作已落地。最终 action 数据变化仍以 v1.77 的 action expansion 与属性类 final-action 回归为准。
+> 变更: v1.77 补齐 §12.1/§12.6 的最终 action 闭环：生产 `confirm_pending` 已对 plan mutation 增加 ordered-plan 前后快照 diff，remove 校验目标 unit 消失，move 校验目标 unit 位置变化，sort 对顺序未变据实回复，replace 校验旧 unit 消失且新候选 volunteerId 出现在确认后的 `orderedPlanState`。本轮修复 replace diff 误判：`_ordered_plan_snapshot()` 在 `orderedPlanState.units` 存在时仍合并 `orderedPlanState.items` 的 volunteerId，避免后端把新候选先写入 items 但 unit.majorItems 未同步时误报 `missing_selected_volunteer_ids`。同时补齐 `preview_plan_action(remove, filters={"position_group":3})` 的结构化位置 selector，`positionGroup/unitPosition/unit_position/orderedPosition/ordered_position` 统一归一为 `position_group`，按 ordered unit/专业组序号解析，不读取用户原文、不做字符串语义匹配；与其它 filter 组合时只把剩余 filter 作为属性条件继续过滤。验证：`py_compile app/zhiyuan_agent/tools.py` 通过；`tests/unit/test_zhiyuan_agent_direct.py -q -k 'position_group or position_targets or confirm_pending and replace or sort_maps_school_rank'` 为 `7 passed, 174 deselected`；真实 LLM `examples/dialog_regression_400_v173_action_expansion_final_cases.json` 隔离端口复跑 `11/11` 通过，metrics: `/private/tmp/zhiyuan_400_v177_action_expansion_after_position_group_fix.json`，覆盖位置移出/移动、替换、排序和审查承接高收费替换，确认轮均通过 `pendingConfirmation.status=applied` 与 ordered-plan 后端断言；属性类最终 action 复跑 `examples/dialog_regression_400_v151_attribute_final_action_cases.json` 为 `8/8`，metrics: `/private/tmp/zhiyuan_400_v177_attribute_final_action_with_position_group_fix.json`，覆盖“民办的不要/只看公办学校/不要中外合作/不要高收费的”确认后真实方案变化。验证环境记录：沙箱内访问本地 backend 会被拦截，真实回归需用 4.0 隔离端口 Backend `18290`、Agent `18291`，并授权访问本地服务。
+> 变更: v1.76 落地 §12.1/§12.3 的 v1.73 action expansion 修复：位置语义从 ordered item 明细行收敛为 ordered unit/专业组序号，新增 unit 聚合代表项解析，"第三个专业组/第3个专业组"优先按第 3 个 unit 定位，只有测试或稀疏缓存中序号超过已加载 unit 数时才按后端 position 回退；移除 `_match_item_by_target` 中按单条 item.position 命中的兜底，避免绕回明细行误删/误移。排序动作新增 agent 侧 `PLAN_SORT_FIELDS`，preview 阶段只允许 `admission_ratio -> admissionRatio`、`school_rank -> schoolRank`、`comprehensive -> finalScore`，不支持的 `school_level` 直接澄清且不创建 pending；prompt 明确"好学校优先/院校层次高优先"传 `school_rank`，不要传 `school_level`。单测新增 expanded ordered unit 夹具覆盖 remove/move 的 item-vs-unit 分叉、school_rank 后端字段映射和 school_level 拦截；验证：`py_compile app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py app/zhiyuan_agent/sandbox.py` 通过，`tests/unit/test_zhiyuan_agent_direct.py -q` 为 `146 passed, 29 skipped`，`git diff --check` 通过。真实 LLM 全量复跑 `examples/dialog_regression_400_v173_action_expansion_final_cases.json` 为 `11/11` 通过，metrics: `/private/tmp/zhiyuan_400_v176_action_expansion_after_position_sort.json`；覆盖位置移出、位置移动、明确目标替换、好学校优先排序、审查承接高收费替换，确认轮均通过 `pendingConfirmation.status=applied`、`planningState.version` 增长和 ordered units/首位 unit 变化等后端断言。遗留：§12.6 的生产 confirm 后通用 ordered-plan diff 校验仍待单独落地，目前真实 runner 已覆盖回归断言，生产 `confirm_pending` 仍主要依赖后端 success 与刷新。
+> 变更: v1.75 落地 §12.2 replace 候选选择结构化修复：新增 `ReplacementSpec` 作为 `preview_plan_action(action="replace")` 的独立结构化替换方向输入，候选选择只消费 spec，不再从 `raw_user_text` 做“便宜/非合作/好点”等关键词抽取；spec 来源按显式 `replacement_spec`、`review_issue_code`、结构化 `filters`、旧项结构化属性兜底归并。`plan/candidates.json` 查询透传 `school_tags/negative_school_tags/major_tags/negative_major_tags/sort_field/sort_order`，replace 自动查询按同档位、排序方向、排除 marker 和已确认要求过滤候选；候选打分改为由 `improve_dims/exclude_markers` 驱动，方向缺失返回“更便宜/层次更高/换城市”等可执行澄清，方向明确但无候选返回放宽档位或换专业方向，不再静默不出 pending。同步 prompt 要求模型把口语替换方向压缩为 `replacement_spec`，并对结构化 marker 做 `cooperative_program -> cooperative`、`high_fee -> high_tuition` 等枚举归一；单测新增无 `review_issue_code` 但显式 spec 的成功替换、缺 spec 澄清、结构化候选池 query 参数断言。验证：`py_compile app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py app/zhiyuan_agent/sandbox.py` 通过；`tests/unit/test_zhiyuan_agent_direct.py -q -k 'replace'` 为 `11/11`；`tests/unit/test_zhiyuan_agent_direct.py -q` 为 `142 passed, 29 skipped`；真实 LLM focused 复跑 `400-v173-targeted-high-tuition-replace-final-action` 与 `400-v173-review-followup-high-tuition-replace-final-action` 为 `5/5`，metrics: `/private/tmp/zhiyuan_400_v175_replace_spec_focused.json`，两条 replace 均生成 `replace_units` 确认卡，确认后后端断言 pending applied、planningState version 增长、ordered units 变化通过。遗留：v1.73 action 扩展全量仍有位置 item/unit 与排序字段问题未修；`review_plan` 只读 focus 仍有既有关键词判断，已确认不在 replace 替换方向链路，本轮不混改。
+> 变更: v1.74 新增 §12 当前方案 action final-action 落地缺口：把 v1.73 回归的 4 个失败归为两类系统性缺陷——(A) Agent/数据层/后端三处枚举语义契约未对齐（位置 item vs unit、排序字段三套命名、replace 口语方向 vs 候选池查询）、(B) 确认执行后不校验真实变化导致谎报成功（与 §11.1 exclude 落地盲区同源）；给出以"确认后 ordered-plan diff 校验"为通用地基的阶段 1-4 落地计划，并更新放量门槛。
+> v1.73 验证-only：新增 `examples/dialog_regression_400_v173_action_expansion_final_cases.json`，扩展当前方案 action final-action 覆盖，包含位置移出、明确目标替换、位置移动、院校层次排序、审查承接后高收费替换 5 个真实口语 case。首次运行因 runner 默认 `--internal-service-url` 指向 `18290` 导致环境失败，已改用 `http://127.0.0.1:8080`、带 `--clone-backend-chat-session --backend-db-password 12345678` 复跑；业务链路 `11` 步中 `4` 步通过、`7` 步失败，metrics: `/private/tmp/zhiyuan_400_v173_action_expansion_current.json`。客观问题：1）“第三个专业组”按第 3 个 ordered item 定位，预览和确认均操作喀什大学建筑学所在 unit，而非第 3 个 ordered unit，新旧数据层位置口径不一致；2）“青岛理工那个中外合作建筑太贵了，换个便宜点的”能定位旧项但没有自动选出可替换候选，未创建 pending；3）`sort_ordered_plan(sort_field=school_level)` 确认返回成功且 version 增长，但 source17 与 target 9904734 的 ordered items/units 顺序完全一致，后端排序字段契约实际只支持 `admissionRatio/schoolRank/finalScore`，`school_level` 被归到默认排序；4）审查后“那高收费的换便宜点”两次调用 `preview_plan_action` 仍无 pending，只给出三种处理选项，随后“执行”在无 active pending 下又生成新的移出预览而不是确认/澄清。对应方案方向：收敛 ordered item/unit 的位置语义和 UI 文案；replace 自动候选选择改为结构化候选查询/低学费筛选或返回可执行的候选不足原因；排序字段建立 agent 与后端共享枚举并在确认后校验 ordered 实际变化；无 active pending 的“执行/采纳”必须先确认是否已有待确认操作，不能从多选建议中隐式发起新动作。
+> 变更: v1.72 修复 4.0 真实口语回归中的 no-plan 属性方案动作链路：当用户说“方案里的民办不要了 / 当前这些中外合作都移出去 / 那高收费的别要了”但当前没有正式方案时，`preview_plan_action(remove, filters=...)` 不再依赖模型二次调用 `preview_intent_change`，而是只基于模型已传入的结构化 `filters` 显式映射为报考要求待确认卡，复用 `preview_intent_change` 的 pending 创建与确认执行链路。该 fallback 不从用户原文做字符串补参；`school/region/major` 只由 `_intent_fallback_from_plan_filters()` 的字段映射决定，已移除默认 `or "school"` 兜底，未知 filter 不会误归为院校要求。同步修复无正式方案审查省略问句“有啥问题，咋弄”必须走 `review_plan` 并返回只读边界；修复“中外合作都不要了”误走 `confirm_pending(cancel)` 的取消边界。验证：`dialog_regression_400_realistic_user_cases.json` 真实 LLM 全量 `14/14` 通过（metrics: `/private/tmp/zhiyuan_400_realistic_user_cases_v4.json`），移除默认 `school` 后 focused 真实 LLM `2/2` 通过（metrics: `/private/tmp/zhiyuan_400_current_plan_anchor_fallback_no_default_school_v5.json`），聚焦单测 `5 passed, 1 skipped`，`git diff --check` 通过。
+> v1.71 验证-only：复跑 4.0 真实 LLM 口语/指代/简略对话回归，不做修复。`dialog_regression_400_v155_realistic_final_action_cases.json` 为 `7/7` 通过，`dialog_regression_400_v156_realistic_broadened_final_action_cases.json` 为 `10/10` 通过，确认轮均校验到 `pendingConfirmation.status=applied`、`planningState.version` 增长、ordered plan 裁剪或不裁剪语义。`dialog_regression_400_realistic_user_cases.json` 全量为 `8/14` 通过，失败集中在默认 source session 26 无正式方案但 case 仍期望待确认卡的场景；另记录无正式方案查询回复过度肯定、以及一次“报考偏好”用户侧措辞问题。
+> v1.70 继续 Phase 3 质量门禁资产硬切：将剩余 `301/302/310` gate/catalog case 迁移为 400 命名资产（agent smoke、plan operation、explore intent、readonly real session、core effect/perf、review repair、production abstracted、requirement plan action），删除旧 `dialog_regression_301/302/310*` case、302 输出 JSON 和 310 raw production candidate export；`dialog_quality_gate.py` 的 live/model plan 已无 301/302/303/310/320 路径；`test_mainline_dialog_scenarios.py` 和 `next_session_handoff.md` 同步切到 400；4.0 gate case 中旧 `soft_* / hard_*_constraint / *_constraint` coverage tag 收敛为显式 positive/negative/requirement 口径，report 增加新旧 tag 兼容识别。`py_compile` 通过，10 个触达 JSON 可加载，聚焦单测 `110 passed`，unit collect `1499 tests collected`，quality gate dry-run 为 `live=37/model=3/legacy=[]`，`git diff --check` 通过。
+> v1.69 继续 Phase 3 质量门禁资产迁移：将仍被 `dialog_quality_gate.py` / e2e 默认路径 / model-provider gate 引用的 303 质量回归集迁移为 400 命名资产（`dialog_regression_400_effect_perf/open_quality/quality_realistic_user/dialogue_derived/career_direction_cases.json`、`model_provider_400_*`），删除旧 303 case 与 phase2 输出 JSON；e2e README 和 handoff 命令同步切到 400；hard-cut audit 增加 303 gate 资产防回退。`py_compile` 通过，7 个新 400 case 文件可加载，`test_dialog_quality_gate + hard-cut` 为 `33 passed`，unit collect `1499 tests collected`，e2e collect `1 test collected`，quality gate dry-run 确认 live/model plan 只引用 400 质量资产，`git diff --check` 通过。
+> v1.68 继续 Phase 3 历史 fixture 清理：删除未被当前质量门禁引用的 320 prod/raw/fastpath dialog regression JSON（`dialog_regression_320_prod_*`、`dialog_regression_320_prod_raw_framework_gap_cases.json`、`dialog_regression_320_career_region_fastpath_probe.json`），保留仍被 quality gate/e2e 引用的 303 case 待后续迁移到 4.0 case 集；hard-cut audit 增加 320 历史 JSON 防回退。`py_compile` 通过，`test_intent_state_tool + hard-cut` 为 `185 passed`，unit collect `1498 tests collected`，`git diff --check` 通过。
+> v1.67 继续 Phase 3 旧离线资产清理：删除 3.2 model-node/profile live-node 工具与 benchmark（`intent_entity_profile_tool.py`、`plan_query_profile_tool.py`、`reply_profile_tool.py`、`model_node_benchmark.py` 及 320 case/tests）；将生产仍需的“撤销不要/别排除”反向要求识别迁入 domain helper `app/domain/intent_reversal.py`；删除 runtime pending entrypoint/sink audit、intent compiler adapter、compiled pending sink contract 等 3.2 切换期离线脚本/fixtures/tests；hard-cut audit 增加防回退。`py_compile` 通过，`test_intent_state_tool + hard-cut` 为 `184 passed`，unit collect `1498 tests collected`，`git diff --check` 通过。
+> v1.66 继续 Phase 3 评估协议清理：保留 semantic frame 离线评估能力，但输出字段从 `semanticRouterShadow/semanticRouterSummary` 收敛为 `semanticFrameObservation/semanticFrameSummary`；runner 的 `semantic-router-shadow` 历史模型名改为 `semantic-frame-observation`；删除 runner/report 中 `preFullAgentDurationMs/postFullAgentDurationMs` 与 `fullAgentToolTrial*` 旧全量 agent 专属观测，改为中性的 `toolChainIssue/toolChainIssues`。`py_compile`、聚焦单测 + hard-cut audit `174 passed`、`git diff --check` 通过。
+> v1.65 继续 Phase 3 runner 命名清理：`dialog_regression_runner.py` 的运行期观测输出从 `runtime_shadow` 收敛为 `runtime_observation`，CLI 改为 `--runtime-observation-output`，metrics 字段改为 `runtimeObservationCaseId/runtimeObservationSummary`；删除 `shadowCaseId/runtimeShadowCaseId` case id 兼容键；hard-cut audit 禁止旧 runtime shadow 命名回流。`py_compile` 通过，runner + hard-cut 单测 `103 passed`。
+> v1.64 按 Phase 3 继续切主后清理：删除 4.0 direct/PoC shadow 后台执行、history shadow event、runner shadow 等待/断言/metrics 汇总；4.0 回归 case 从 `expectedZhiyuanAgentPoc*` 迁移到主链路 `expectedToolNames/maxToolCallCount/expectedRoutingPath`；生产包和 direct agent 单测中的 PoC 命名改为 direct-chain；hard-cut audit 增加 PoC/direct shadow 禁止列表。`py_compile`、聚焦单测 `240 passed, 28 skipped`、unit collect `1554 tests collected`、`git diff --check` 通过。
+> v1.63 按 Phase 3 继续旧链路清理：删除 `turn_decision_tool.py` 生产残留、`service` 中 TurnDecision/profile-replan bridge、`proposal_compiler.py` 中 3.2 pending turn / plan query / local action / profile replan / plan confirmation compiler，删除 3.2 TurnDecision golden、runtime shadow diff、downstreamPolicy 离线 POC 工具和对应 fixtures/tests；hard-cut audit 增加旧 compiler 禁止列表。`py_compile`、聚焦单测 `252 passed`、unit collect `1563 tests collected` 通过。
+> v1.62 补齐复合只读查询后继续方案动作与锁定动作边界：`query_plan` 工具返回 `current_user_text` 与 `post_query_instruction`，让模型在“占比多少，能不能换成便宜的”这类同轮查询+替换诉求中继续调用 `preview_plan_action`；prompt 明确“能不能/可不可以/帮我 + 换成/替换/移出/去掉”不是权限询问而是方案动作，同时补齐“锁定/固定位置”进入 `preview_plan_action(pin_lock)` 的路由要求。G12、G16 聚焦真实 LLM 通过后，完整 G1-G32 direct-only 主集复跑 `20/20`，metrics: `/private/tmp/zhiyuan_400_v162_g1_g32_direct_full_no_shadow_after_g16.json`。
+> v1.61 收口 no-pending 与 review 边界：无 active pending 时，窄口径“确认/采纳/执行/取消/暂不执行”等短文本直接走 4.0 `confirm_pending` 并返回无待确认操作的安全 no-op，不回退旧模型路径；`review_plan(next_step=respond)` 在 direct agent 中作为终止工具直接返回，避免 G2/G7 只读审查后追加 `query_plan`。聚焦单测、py_compile、G2/G7/G12 focused 真实 LLM 验证通过。
+> v1.60 将 `preview_intent_change` 的组合属性漏传处理从工具层自动补齐改为模型重试协议：删除 raw text 补写 pending 的路径，保留 `ATTRIBUTE_REGISTRY` 作为结构化归一/枚举 alias 能力；当同一句显式诉求里属性/标签没有进入 `positive/negative` 结构化参数时，返回 `intent_change_requires_attribute_completion` + `next_step=continue`，由主模型基于当前问和工具返回重试补齐。同轮跨领域诉求支持在一次 `positive/negative` payload 中保留跨领域字段，例如 `negative={"province":["山东"],"school_nature":["民办"]}`。聚焦单测、PoC 全量、py_compile、diff check 和两条真实 LLM final-action 回归通过；无 MySQL 会话行克隆时 `ordered-plan/generate` 会返回 404，已记录为验证环境注意项。
+> v1.59 撤销 `preview_plan_action` 的 G17 工具层字符串补参：删除从原文判断 action、move selector、目标档位的 fallback，`_resolve_plan_filter_selector_target` 只消费模型传入的结构化字段；缺 action、缺 move selector、缺目标位置时返回 `plan_action_requires_*` + `next_step=continue`，由主模型基于当前问和工具返回重试补齐。聚焦单测、PoC 全量、py_compile 和 source35 G17 真实 LLM 主链路验证通过；原 G17 source session 26 当前本地 ordered/working 为 0，已记录为夹具状态漂移。
+> v1.58 将 active pending 下的“放弃当前待确认并改成新诉求/追加到当前待确认/暂缓新诉求”从工具层短语判断改为模型语义仲裁：`RequestContext` 增加 `current_user_text`，`build_turn_context` 压缩注入待确认摘要、影响范围和 `pending_resolution` 选择要求；`preview_intent_change` / `preview_plan_action` 增加 `pending_resolution`，缺失时返回 `next_step=continue` 让主模型重试，明确 `replace_active_pending` 时取消旧 pending 后创建新预览，intent 的 `append_to_active_pending` 会合并旧执行 payload 后重建单张待确认卡；聚焦单测、PoC 全量和 v1.58 真实 LLM final-action 回归通过。
+> v1.57 补齐取消/改口、多要求组合和长上下文指代验证：新增 `dialog_regression_400_v157_realistic_cancel_combo_cases.json`，覆盖“民办的不要→先不采纳了→那就只看公办吧→采纳”“民办和中外合作都算了吧→确认”“管理学和五年制的都别要了→采纳”“这版方案有啥问题，怎么处理，先别直接改→你说的高收费这类先去掉吧→执行”；首轮 `7/11` 暴露两个真实问题：模型口头取消但未调用 `confirm_pending(cancel)`，以及专业门类+专业标签组合时漏掉 `major_tag`；修复为 direct active-pending 短文本确认/取消桥继续调用 4.0 `confirm_pending`，并由属性注册表从原文补齐显式属性/标签；真实 LLM 复跑 `11/11` 通过。
+> v1.56 扩大真实口语 final-action 覆盖：新增 `dialog_regression_400_v156_realistic_broadened_final_action_cases.json`，覆盖“就看公办吧”“中外合作算了吧”“管理学也别要了”“五年制的也别要”“山东别去了，先记下，当前方案先别动”；真实 LLM 带克隆会话复跑 `10/10` 通过，确认后要求写入与 ordered plan 裁剪/不裁剪语义均通过后端断言，其中 `apply_to_current_plan=false` 场景确认后无工作台刷新且 ordered items/units 保持不变。
+> v1.55 补齐真实口语/指代/简略对话 final-action 覆盖：新增 `dialog_regression_400_v155_realistic_final_action_cases.json`，覆盖“有啥问题，咋弄→那高收费的别要了→确认执行”“方案里的民办不要了→采纳”“山东别去了→采纳”；真实 LLM 带克隆会话复跑 `7/7` 通过，确认后后端 ordered plan 中高收费 `30 -> 0`、民办 `37 -> 0`、山东 `14 -> 0`，基础候选池仍按 v1.49 口径保持可恢复。
+> v1.54 补齐院校标签/专业标签报考要求 final-action：新增 `dialog_regression_400_v154_tag_final_action_cases.json` 覆盖“博士点的不要了→采纳”“五年制的不要了→采纳”；首轮发现“省重点”可合理归入院校层次、`duration=["五年制"]` 未被 schema alias 消费且会生成空 pending；修复为 prompt 明确非固定枚举标签走 `school_tag/major_tag`、属性注册表将学制口语归一到 `学制：5年`、工具层消费 `duration` 为 `major_tag` 并拒绝空 pending；复跑真实 LLM 4/4 通过，确认后 ordered plan 中博士点 `4 -> 0`、五年制 `6 -> 0`。
+> v1.53 补齐专业门类报考要求 final-action：新增 `dialog_regression_400_v153_major_final_action_cases.json` 覆盖“管理学的不要了→采纳”；首轮验证 final action 已正确把 ordered-plan 中管理学 major 从 20 个裁到 0，但预览影响数因旧状态只有 `majorSubCategoryId` 和 agent 未读取 direct `majorDiscipline/majorCategory` 而显示 1；修复为后端读取 planningState 时统一补齐专业门类/专业大类，agent 本地影响计数读取 direct 和 nested taxonomy 字段；复跑真实 LLM 2/2 通过，预览断言 `20个相关志愿`，确认后 ordered items/units 均裁剪。
+> v1.52 补齐属性类报考要求 final-action：新增 `dialog_regression_400_v151_attribute_final_action_cases.json` 覆盖“民办的不要/只看公办学校/不要中外合作/不要高收费的”；首轮发现 ordered units 对缺失 `schoolNature` 的旧 unit 裁剪不足，以及 `招生类型:高收费` 未按 `tuitionPerYear > 20000` 生效；后端改为 ordered units 先按有效 major volunteerId 裁剪、再做结构化资格判断，并让高收费 scope 消费学费数值；复跑真实 LLM 8/8 通过，后端全量 `PlanningStateServiceTest` 通过。
+> v1.51 补齐 v1.50 真实 final-action 验证：`dialog_regression_400_v150_candidate_view_cases.json` 带 `--clone-backend-chat-session` 复跑通过，确认“山东的不要→采纳”后 `pendingConfirmation.status=applied`、`constraintState.hardConstraints.mustExcludeRegions` 与 `candidateViewState.filters.negativeProvinceNames` 均写入山东，基础 `candidatePoolState.items` 仍保留山东，最终 `orderedPlanState.units` 不再包含山东；未克隆 `assistant_chat_session` 时的 404 “会话不存在”记录为验证夹具缺口。
+> v1.50 补齐 v1.49 的前端工作台状态一致性缺口：`sessionDetailV2` 不再只首次水合 `candidateViewState`，当对话确认后的候选视图状态从工作台状态刷新回来时，会按签名变化同步筛选栏并触发可见筛选查询；后端补充回归，确认已排除地域仍保留在基础候选池和 `filter-options` 中，只有可见筛选入参进入 `candidate-pool/query` 时才影响候选展示。
+> v1.49 修正 v1.47/v1.48 的候选池隐式裁剪副作用：`candidatePoolState.items` 回归基础全量候选，`candidate-pool/query` 只执行显式筛选，已确认报考要求只在初始推荐/有序方案/审查/修复等方案派生链路通过 `resolveEffectiveCandidates()` 临时生效；地域类报考要求同步到可见 `candidateViewState`，用户在候选筛选栏删除对应筛选时撤销该地域要求；`_apply_intent_pending` 不再为 exclude/only_keep 重建基础候选池，确认后直接写要求并重排方案；补充后端与 agent 聚焦测试
+> v1.48 补齐 v1.43 后端方向 1 的 ordered-plan 同步缺口：`generateOrderedPlan()` 在已确认报考要求存在时按 `resolveEffectiveCandidates()` 裁剪 working plan 并同步 units/summary，同时按 ordered unit 自身结构化字段过滤已不符合要求的正式方案 unit，修复真实 session 26 “排除山东”后 candidate 已清零但 ordered 仍保留山东项的问题；新增后端复现单测；继续清理 `proposal_compiler.py` 中未被 4.0 生产链路调用的旧 full-agent intent arbitration / blocked reply helper 和专属测试
+> v1.47 落地 v1.43 后端方向 1：`candidate-pool/generate` 与 `queryCandidatePool` 统一读取 `constraintState.hardConstraints`，候选池生成、查询、初始推荐、有序方案生成共享已确认报考要求；新增后端单测覆盖“不要民办/排除山东/不要中外合作”；真实 session 35 验证“民办就算了→采纳”后 ordered/candidate 民办项清零。该方向已在 v1.49 调整为“基础候选池全量 + 方案链路临时过滤 + 候选视图显式筛选”
+> v1.46 修复 v1.43 真实回归发现的误刷新：候选池重建失败或只记录要求时，direct confirm 不再发送 ordered/review 刷新 followup；新增 `dialog_regression_400_v143_constraint_apply_cases.json`，并清理 confirm execution case 的旧 shadow 预期
+> v1.45 落地 §11 的 Agent 侧阶段 1/2：exclude/only_keep 与负向要求确认后先重建候选池再生成有序方案；支持 `apply_to_current_plan=false` 只记录要求不改当前方案；同时删除旧 `planning_workflow_tool.py` 生产依赖和专属测试资产
+> v1.44 补充 §10.3/§10.4/§10.5 旧工具栈清理进度：删除 ChatAgent/instructions/tool_reply_policy、旧 plan_query/official_source/intent_preview wrapper，评估脚本切到 4.0 工具名，并记录静态扫描与单测结果
+> v1.43 新增 §11 约束落地链路修复：定位"排除山东确认后方案不变"根因为 preview(simulate_plan_diff 尊重约束)/execute(ordered-plan 重排不尊重约束)契约分叉 + 后端候选池不 merge constraintState + 语义无法表达"先不替换"；给出"约束状态即单一事实源"核心方向与阶段 0-4 前后端协同推进计划
+> v1.42 完成 G17 参数恢复后的完整 G1-G32 direct 主集复跑：20/20 successful，shadow 20/20 success；G17 在完整主集中单次 `preview_plan_action` 并生成 `move_ordered_unit` 确认卡，metrics: `/private/tmp/zhiyuan_400_g1_g32_after_g17_param_recovery_full_rerun.json`
 > v1.41 落地 G17 shadow 参数恢复：`preview_plan_action` 在工具已被调用但漏 action/selector 时，从当前用户原文补齐明确移动诉求和筛选选择器；G17 聚焦真实 LLM 1/1、shadow 1/1，metrics: `/private/tmp/zhiyuan_400_g17_after_missing_action_recovery.json`
 > v1.40 补充 G2/G8 修复后完整 G1-G32 direct 复核 19/20，失败为 G17 shadow nextSteps 断言（主链路已出移动确认卡）；修复 G1“英语相关专业”被过度收窄为“英语”的广义专业表达边界，并完成 G1/G8 聚焦复验 2/2
 > v1.39 落地 G2/G8 回复展示口径修复：review_plan 返回明确正式方案事实，preview_intent_change 复用专业层级显式实体收敛；补充聚焦单测与真实 LLM G2/G8 direct 验证 2/2 通过
@@ -74,8 +137,8 @@ Phase 1 ────────────────────────
   ZhiyuanAgent 升级                           扩展 Case 集合
   ───────────────────────────────────────────────────────────
 Phase 3 ──────────────────────────────────── Phase 4
-  Shadow Diff 大规模验证                       功能开关 + 渐进放量
-  Confusion Matrix                            监控仪表盘 + 回滚
+  Shadow Diff 大规模验证                       4.0 direct 默认主链路
+  Confusion Matrix                            监控仪表盘
   320+ 用例跑新系统                            旧代码清理
 ```
 
@@ -346,16 +409,22 @@ PoC 已有实体解析和归一化。正式版增加方案影响分析和 pendin
 
 **正式版签名（约束简化后）：**
 ```python
+PendingResolution = Literal["none", "replace_active_pending", "append_to_active_pending", "hold_new_request"]
+
 async def preview_intent_change(
     ctx: RunContext[RequestContext],
     intent_type: Literal["major", "school", "region", "career"],
     positive: dict[str, Any] | None = None,
     negative: dict[str, Any] | None = None,
     constraint_type: Literal["exclude", "only_keep", "must_have"] = "exclude",
+    apply_to_current_plan: bool = True,
+    pending_resolution: PendingResolution = "none",
+    raw_user_text: str = "",
 ) -> str
 ```
 
 > 注：`preference` 已从 `constraint_type` 移除。用户对话仅处理硬约束（exclude/only_keep/must_have）。软性推荐系数调整不暴露给用户交互界面，后续从系统隐性角度运行。详见 §3.6。
+> 注：已有 active pending 且本轮仍要新建预览时，必须由主模型基于压缩上下文显式填写 `pending_resolution`。工具只执行结构化状态处理，不在后端用短语表猜测“放弃/追加/暂缓”语义。
 
 **返回数据结构（正式版）：**
 ```json
@@ -395,10 +464,11 @@ async def preview_intent_change(
 ```python
 async def preview_plan_action(
     ctx: RunContext[RequestContext],
-    action: Literal["add", "remove", "move", "replace", "sort", "generate", "regenerate_order"],
+    action: Literal["add", "remove", "move", "replace", "sort", "generate", "regenerate_order", "pin_lock"],
     targets: list[str] | None = None,
     target_position: int | None = None,
     filters: dict[str, Any] | None = None,
+    pending_resolution: PendingResolution = "none",
     review_issue_code: Literal[
         "high_tuition",
         "cooperative_program",
@@ -534,7 +604,7 @@ async def answer_policy(
 - 如有 `school_name`，先走 `school_entity_resolver` 归一化
 - 默认离线优先：学校规则类问题读取 `get_school_profile_by_name(...)` 的招生政策字段
 - 对明确学校/专业/省份目标，先保留标准名称用于返回，再转后端编码调 `check_plan_param_availability(...)` 校验可用性
-- `use_official_search=True` 时调 `search_official_admission_sources(...)` 补充官方来源
+- `use_official_search=True` 时在 `answer_policy` 内部执行轻量官方来源检索，不再依赖独立旧工具
 - 结果结构化为 `{policy_facts, student_eligibility, source_references}`
 - 只读操作，`next_step: "respond"`
 
@@ -542,7 +612,7 @@ async def answer_policy(
 - 已注册 `answer_policy` 到 `ZhiyuanAgent`
 - 已覆盖 `score_batch`、`transfer_major`、`subject_requirement`、`tuition_budget` 等只读规则域
 - 已接 school profile 招生政策字段、参数可用性校验和 opt-in 官方来源检索
-- 不调用旧 `admission_policy_tool` / `admission_fit_match_tool`；旧 `official_source_search_tool` 仅作为 opt-in 底层检索能力复用
+- 不调用旧 `admission_policy_tool` / `admission_fit_match_tool`；`official_source_search_tool.py` 已删除，官方来源检索已内聚到 4.0 `answer_policy`
 - 返回 `policy_facts`、`student_eligibility`、`source_references`、`source_lookup`，并固定 `state_mutation=false`
 - 限制：官方来源网页事实抽取和自动适配匹配尚未接入，后续继续扩展
 
@@ -785,6 +855,7 @@ def match_item(key: str, item: dict, target_values: list[str]) -> bool:
 
 ```python
 ConstraintType = Literal["exclude", "only_keep", "must_have"]
+PendingResolution = Literal["none", "replace_active_pending", "append_to_active_pending", "hold_new_request"]
 
 async def preview_intent_change(
     ctx: RunContext[RequestContext],
@@ -792,6 +863,9 @@ async def preview_intent_change(
     positive: dict[str, Any] | None = None,
     negative: dict[str, Any] | None = None,
     constraint_type: Literal["exclude", "only_keep", "must_have"] = "exclude",
+    apply_to_current_plan: bool = True,
+    pending_resolution: PendingResolution = "none",
+    raw_user_text: str = "",
 ) -> str
 ```
 
@@ -799,6 +873,7 @@ async def preview_intent_change(
 - `constraint_type` 从 `Literal["preference", "only_keep", "must_have", "exclude"]` 改为 `Literal["exclude", "only_keep", "must_have"]`
 - 默认值从 `"preference"` 改为 `"exclude"`（最常见的硬约束场景）
 - 移除 `preference` 选项——用户不再通过此工具设置软偏好
+- active pending 下的新预览关系改由 `pending_resolution` 表达；缺失时工具返回 `continue` 让模型基于压缩上下文重试，不在工具层做短语匹配兜底
 
 #### 约束操作语义
 
@@ -1058,34 +1133,24 @@ answer_admission_policy_question           → policy
 
 ## 6. Phase 4: 生产切换要点
 
-### 6.1 功能开关
+### 6.1 主链路切换
 
-```python
-# 会话级开关
-ZHIYUAN_AGENT_ENABLED=false          # 默认关闭
-ZHIYUAN_AGENT_ROLLOUT_PERCENT=0      # 渐进放量百分比（0-100）
-```
-
-开关判断顺序：
-1. 会话级 `ZHIYUAN_AGENT_ENABLED=true` → 强制使用新系统
-2. `ZHIYUAN_AGENT_ROLLOUT_PERCENT` → 按 session_id hash 决定
-3. 都未命中 → 使用旧系统
+当前决策：4.0 `ZhiyuanAgent` direct route 是默认主链路，不再依赖会话级 enable 开关或 rollout 百分比。`ChatService` 初始化时直接构造 `ZhiyuanAgent`，普通 `handle_message` 在 no-plan 边界保护后进入 direct route；direct route 异常时返回安全提示并保留“不确认不改动”的语义，不把请求回落给旧 full-agent 链路。
 
 direct route 接管原则：
 
 - 不增加基于用户原文字符串匹配的前置语义闸门。
-- 是否接管只由功能开关/rollout、当前是否存在 active pending、4.0 agent 的结构化工具返回决定。
+- 是否出确认卡、只读回复或确认执行，只由 4.0 agent 的结构化工具返回、当前 active pending 状态、后端 pending/方案状态决定。
 - `next_step=confirm` 且后端已创建 active pending 时，由 service 构造确认卡；没有确认前不改动报考要求或方案。
 - 已存在 active pending 的会话继续走统一 pending 确认流程，由 `confirm_pending` 执行确认/取消。
 
-### 6.2 渐进放量
+### 6.2 切换后验证与清理节奏
 
 ```
-Week 1:  1% （约 50-100 会话/天）→ 观察核心指标
-Week 2:  5% → 确认无回归后提速
-Week 3: 20% → 覆盖更多场景类型
-Week 4: 50% → 大规模验证
-Week 5: 100% → 全量切换
+阶段 1: direct 默认入口聚焦验证 → G1-G32、真实口语、确认执行闭环
+阶段 2: 并发真实 LLM 回归 → 记录工具边界、pending、最终 action 问题
+阶段 3: 清理旧 full-agent 残留 → 删除不可达 fallback、旧测试资产、旧编排依赖
+阶段 4: 监控和性能基线 → 观察工具成功率、延迟、确认成功率
 ```
 
 ### 6.3 核心监控指标
@@ -1105,8 +1170,8 @@ Week 5: 100% → 全量切换
 | `app/tools/` 目录（37个文件） | ~28,000 | 旧工具实现 |
 | `app/domain/proposal_compiler.py` | 5,650 | 规则引擎 |
 | `app/tools/turn_decision_tool.py` | 514 | 预路由分类器 |
-| `app/agent/instructions/tool_dispatch_rules.py` | 117 | 路由规则 |
-| `app/agent/tool_reply_policy.py` | 396 | 外部终止判断 |
+| `app/agent/instructions/tool_dispatch_rules.py` | 117 | 已删除旧路由规则 |
+| `app/agent/tool_reply_policy.py` | 396 | 已删除旧外部终止判断 |
 | service.py 中的旧编排逻辑 | ~15,000 | 单体编排层 |
 | **合计** | **~50,000** | |
 
@@ -1169,24 +1234,25 @@ Week 5: 100% → 全量切换
 - [x] §9.1 复合诉求 next_step 策略调整（respond 软停已落地）
 - [x] §9.2 pending 下只读查询路由放开（G21/G27 性能修复已落地）
 - [x] §9.3 正向意向边界 prompt 调整（"想学X" → must_have 已落地）
-- [x] §9.4 direct route 入口增加成绩可用性前置检查（已落地）
-- [x] §9.5 G17 selector 归一化三层防护（已落地，direct 已通过，LLM 可靠性为观察项）
+- [x] §9.4 direct route 成绩可用性前置回退已删除；无有效成绩时由 4.0 direct 按已有信息回应
+- [x] §9.5 G17 selector/action 缺参改为模型重试协议（已落地，direct 已通过）
 - [x] §9.6 G4 实体归一化展示保真（display_aliases 已落地）
 - [x] §9.7 G3 查询计数粒度口径（志愿为主粒度已落地）
 - [x] §9.8 G32 无方案探索降级内容策略（维度模板已落地）
-- [ ] §9.9 G25 路由抢跑排障（确认 direct route 可命中 G25）
-- [ ] §9.9 G25 schema alias 兼容（major_name → level2 fallback）
-- [ ] §9.9 G25 混合正负 Prompt 加固（positive+negative 同传示例）
-- [ ] §9.10 respond 软停真实 LLM 效果验证（G12 复合诉求 + 单意图不多调）
-- [ ] §9.12 阶段 D 完整 G1-G32 direct 回归 × 2 次（通过率 ≥ 43/49）
-- [ ] 全量 G1-G32 case 通过（≥20/21）
+- [x] §9.9 G25 路由抢跑排障（G25 已稳定 direct 命中 `preview_intent_change`）
+- [x] §9.9 G25 schema alias 兼容（结构化 positive/negative 与跨领域字段已落地）
+- [x] §9.9 G25 混合正负 Prompt 加固（positive+negative 同传与真实 case 已通过）
+- [x] §9.10 respond/continue 真实 LLM 效果验证（G12 复合查询后继续方案动作、单意图不多调已通过）
+- [x] §9.12 阶段 D 完整 G1-G32 direct 回归 × 2 次（通过率 ≥ 43/49）
+- [x] 全量 G1-G32 direct 主集通过（最新 `20/20`，metrics: `/private/tmp/zhiyuan_400_v162_g1_g32_direct_full_no_shadow_after_g16.json`）
 - [ ] Confusion matrix 报告生成
 - [ ] 320+ 历史回归 case 跑新系统（方向一致率 > 85%）
 - [ ] 性能基线：P95 延迟 < 8s
 
 ### Phase 4 检查项
-- [x] 功能开关 + 放量逻辑
-- [x] direct route 接入 service 主流程，默认关闭
+- [x] direct route 接入 service 主流程，默认作为 4.0 主链路
+- [x] 移除 `ZHIYUAN_AGENT_ENABLED` / rollout direct 入口分流；不设置环境变量也进入 4.0 direct
+- [x] direct route 移除成绩可用性前置回退；无有效成绩时由 4.0 direct 按已有信息回应或提示正式录入
 - [x] direct route 移除字符串 precheck，按结构化工具返回和 active pending 状态接管
 - [x] direct route 真实口语集合、G case 子集、确认执行闭环首轮验证通过
 - [x] 确认执行闭环覆盖最终后端 action 断言：pending applied、planningState version 增长、方案项/报考要求真实变化
@@ -1199,8 +1265,8 @@ Week 5: 100% → 全量切换
 - [x] 清理前 G1-G32 direct-only 基线复跑 20/20，metrics: `/private/tmp/zhiyuan_400_cleanup_preflight_g1_g32_direct_20of20.json`
 - [ ] 监控仪表盘
 - [ ] 回滚流程验证
-- [ ] 1% → 100% 渐进放量
-- [ ] 旧代码清理（~50K 行）
+- [x] direct 默认主链路替代 1% → 100% 渐进放量；旧 enable/rollout 分流已删除
+- [ ] 旧代码清理（大块旧 full-agent 与旧工具 wrapper 已删，剩余 history fixture / `proposal_compiler.py` / `turn_decision_tool.py` 继续分批评估）
 
 ---
 
@@ -1524,48 +1590,50 @@ direct route 适用条件：
 - 真实场景中，绝大多数用户通过问卷或前端表单完成成绩录入，oral inline 提取是少数情况
 - 在 9 个工具中加入 `update_profile` 会引入状态写入 + 错误纠正复杂度
 
-**过渡方案：**
-1. **direct route 入口增加成绩可用性前置检查**：如果 `score.json` 没有有效成绩（`available=false`），直接回退到旧链路的 intake 流程，不进入 direct agent
-2. **Prompt 调整**：在行动原则中增加边界说明——当用户提供新的成绩/省份/选科信息但系统无法更新时，告知用户通过正式渠道录入，不假装已记录
-3. **后续独立扩展**：成绩提取作为 Phase 5 独立能力，不阻塞当前 9 工具方案规划链路
+**当前方案：**
+1. **direct route 不再因成绩缺失回退旧链路**：如果 `score.json` 没有有效成绩（`available=false`），仍进入 4.0 direct，由 agent 基于已有信息回答或提示用户通过正式渠道补录。
+2. **Prompt 边界说明**：当用户提供新的成绩/省份/选科信息但系统无法更新时，告知用户通过正式渠道录入，不假装已记录。
+3. **后续独立扩展**：成绩提取作为 Phase 5 独立能力，不阻塞当前 9 工具方案规划链路。
 
 **direct route 入口条件更新：**
 
 ```
 direct route 前置条件：
-  原有：ZHIYUAN_AGENT_ENABLED + rollout_percent + 非 intake 阶段
-  新增：score.json.available == true（无有效成绩时回退旧链路 intake）
+  当前：ChatService 默认进入 4.0 ZhiyuanAgent direct route
+  不再包含：ZHIYUAN_AGENT_ENABLED、rollout_percent、score.json.available gate
 ```
 
-### 9.5 G17 — 档位内移动 selector 字段归一化与 raw_user_text 补偿
+### 9.5 G17 — 档位内移动 selector 字段归一化与模型重试协议
 
 **触发 case：** G17 `帮我把保底区里录取率最高的那个调到保底的第一位`
 
 **现象与演进：**
 - 子集回归曾通过，完整 G1-G32 回归中出现 "还没有唯一定位到要调整的方案项"
-- v1.4 落地三层防护后，主 4.0 direct 已能稳定生成 `move_ordered_unit` 确认卡
-- 但 shadow 仍观察到模型有时只调用 `preview_plan_action`，不传 `filters` 也不传 `raw_user_text`，导致工具直接返回 `clarify`
+- v1.41 曾在工具层加入三段 raw_user_text 补偿：缺 action 时从中文动词恢复 action，缺 move selector/目标档位时从原文恢复 filters
+- v1.59 按 4.0 统一方向撤销这类字符串补参：工具不再从整句中文里猜语义，而是返回结构化 `continue`，让主模型基于当前问和工具返回重试补齐参数
+- 原 G17 回归源 session 26 在当前本地后端中 `orderedPlanState`/`workingPlanState` 已为 0，不再适合作为该 case 的真实验证源；source35 当前有冲4/稳5/保6，可用于验证保底档移动
 
 **当前处理：**
 
-核心边界仍然是 4.0 工具层内的参数恢复，而不是恢复旧路由 precheck。模型已经选择 `preview_plan_action` 时，如果漏传 `action` 或 move 所需 selector，工具可以基于当前用户原文恢复明确诉求；如果原文里没有清晰动作或选择目标，仍返回澄清，避免静默误改。
+核心边界是 4.0 direct 的“模型语义仲裁 + 工具结构化校验”。模型已经选择 `preview_plan_action` 时，工具只校验参数是否足够执行；如果缺 `action`、move selector 或目标位置，返回 `next_step=continue`，并把当前用户原话、已收到的 targets/filters、缺失字段和允许动作带回模型。模型下一步要么补齐结构化参数重试，要么在原话确实不清时向用户追问。
 
 | 防护层 | 状态 | 覆盖场景 |
 |--------|------|---------|
 | 层 1 Prompt 示例 | 已落地 | 模型传正确字段名 → 正常工作 |
-| 层 2 当前用户原文补偿 | 已扩展 | 模型已调用工具但漏 `action` / selector → 从本轮用户原文恢复明确 move/filter 参数 |
-| 层 3 ambiguous_selector 澄清 | 已落地 | 原文也无法唯一定位 → 返回 clarify 而非静默选错 |
+| 层 2 工具参数校验 | v1.59 已调整 | 模型已调用工具但漏 `action` / selector / 目标位置 → 返回 `plan_action_requires_*` + `continue` |
+| 层 3 模型重试或澄清 | v1.59 已调整 | 当前问可判定则补齐结构化参数重试；当前问不清则向用户追问 |
 
 **落地范围：**
-- `preview_plan_action` 起始处补 `raw_user_text = raw_user_text or _latest_user_text(ctx)`。
-- 当 `action` 缺失/非法且用户原文明示“调到/移到/放到/排到/挪到”等移动诉求时，恢复为 `move`。
-- 当 move filters 缺少档位、选择器或目标序号时，从“保底区里录取率最高的那个调到保底的第一位”这类表达恢复 `tier`、`selector_sort`、`selector_rank`、`target_tier`、`target_ordinal`。
-- 不做全局字符串前置闸门，不在 route 层抢跑，只在工具已被调用后补齐工具参数。
+- 删除 `_fallback_plan_action_from_text`、`_fallback_move_filters_from_text`、`_fallback_target_tier_filters` 和 `_extract_selector_from_text`。
+- `preview_plan_action` action 缺失/非法时返回 `plan_action_requires_explicit_action`；仍保留 `_effective_raw_user_text()` 只用于把当前问传给模型，不用于工具层字符串判定。
+- `_resolve_plan_filter_selector_target()` 只消费 `filters.selector_sort` / `selector_rank` / `selector_ordinal` 等结构化字段，不再从 `raw_user_text` 抽“录取率最高/学费最低/最后一个”。
+- move 缺 selector 时返回 `plan_action_requires_move_selector`；已定位待移动项但缺目标位置时返回 `plan_action_requires_move_target_position`。
+- prompt 第 22 条补充这三类 reason：如果当前问已有动作、选择器或位置，模型补齐 `action/targets/filters/target_position` 后重试一次；否则向用户追问。
 
 **验证：**
-- 单测新增 `test_preview_plan_action_move_recovers_missing_action_from_latest_user_text`。
-- 聚焦单测：`preview_plan_action_move / preview_plan_action_pin_lock / preview_intent_refines_broad_major_display / preview_intent_keeps_broad_major_scope / review_plan_no_issue` 为 `11 passed, 142 deselected`。
-- 真实 LLM G17 聚焦：`examples/dialog_regression_400_g1_g32_direct_cases.json --case-name 400-g17-tier-local-reorder` 为 `1/1`，shadow `1/1`；shadow 现在单次 `preview_plan_action` 且 `nextSteps=['confirm']`，metrics: `/private/tmp/zhiyuan_400_g17_after_missing_action_recovery.json`。
+- v1.59 聚焦单测：`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q -k 'move_requires_model_retry or move_supports_tier_local_reorder_filters or move_requires_target_position or active_pending'` 为 `8 passed, 159 deselected`。
+- v1.59 PoC 全量：`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q` 为 `139 passed, 28 skipped`；`py_compile app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py` 通过。
+- v1.59 真实 LLM G17 主链路：使用临时 case `/private/tmp/zhiyuan_400_v159_g17_source17_case.json`（实际 source35）和临时 agent `8040` 复跑 `1/1`，metrics: `/private/tmp/zhiyuan_400_v159_g17_model_retry_source35_clean.json`。主链路单次 `preview_plan_action`，`actionFamilies=["move_ordered_unit"]`，生成 `pendingConfirmationCard`；本次模型首轮已传完整结构化参数，因此没有触发 `continue` 重试。环境警告：`assistant_chat_session` MySQL 克隆因 root 无密码失败，但 extra-data 状态和志愿数据克隆成功，业务验证通过。
 
 ### 9.6 G4 — 实体归一化展示保真
 
@@ -1749,21 +1817,18 @@ Message 调整：从"暂时没有拿到完整资料"改为"按以下维度整理
 1. `_maybe_handle_zhiyuan_agent_direct_route` — 如果返回 None，继续
 2. 旧 `runtime_intent_profile_plan_reroute` — 含 `runtime_intent_hard_cut` 判断
 
-direct route 返回 None 的原因可能是：
-- `_score_available_for_zhiyuan_agent_direct` 检查不通过（成绩前置条件）
-- `ZHIYUAN_AGENT_ENABLED` 未开启
-- 或 G25 测试环境中 rollout bucket 未命中
+direct route 旧实现曾可能返回 None，导致继续进入旧 intent pipeline。当前要求是 direct route 默认主链路，不再因开关、rollout 或成绩可用性返回 None；agent 异常时也返回安全提示并记录观测，不交给旧链路继续处理。
 
 但即使 direct route 开启，当前 `runtime_intent_hard_cut` 的判断条件（`service.py:5207-5226`）也会在 confidence ≥ 0.65 + side_effect=intent_pending + scope_anchor=future_reference 时抢先拦截。"把X加意向 排除Y" 这类表达恰好会被旧 `turn_decision` 分类器识别为 intent_update + future_reference，即使 direct route 已开启。
 
-**修复方向：direct route 优先级高于 runtime_intent_hard_cut**
+**修复方向：direct route 优先级高于 runtime_intent_hard_cut，且不再保留旧入口 gate**
 
 当前架构中 direct route 已在旧 intent pipeline 之前执行（line 15993 先于 16008），所以只要 direct route 成功返回非 None，就不会走旧链路。G25 的问题是 direct route 本身返回了 None。
 
 需要确认并修复：
-1. **测试环境配置**：确认 G25 复跑时 `ZHIYUAN_AGENT_ENABLED=1` + rollout 100%
-2. **成绩前置条件**：确认 G25 的 fixture 有有效成绩（`score.json.available=true`）
-3. **如果确认配置正确但仍走旧链路**：检查 direct route 是否因 agent 内部错误而 catch-and-return-None
+1. **入口默认 direct**：`ChatService` 初始化默认构造 `ZhiyuanAgent`，不再读取 direct enable / rollout。
+2. **去掉成绩前置回退**：无有效成绩时也由 direct agent 处理边界，不回退旧 intake。
+3. **去掉 return None 回退口**：`_maybe_handle_zhiyuan_agent_direct_route` 不再通过 None 把请求交给旧 full-agent。
 
 **问题 2：Schema 字段 alias 兼容**
 
@@ -1865,9 +1930,9 @@ c. **回退方案**：如果防护无效且多余调用严重，将 `respond` �
 
 ```
 §9.9-问题1 G25 路由抢跑 ─────────────────────────────────────────── P0（阻塞 4.0 验证）
-  确认测试环境 ZHIYUAN_AGENT_ENABLED=1 + rollout 100%
-  确认 G25 fixture 有有效成绩
-  如果配置正确仍走旧链路，排查 direct route 内部错误
+  确认不设置 direct enable / rollout 时仍进入 zhiyuan_agent_direct
+  确认无成绩 fixture 不回退旧 intake/full-agent
+  确认 direct agent 内部错误返回安全提示，不进入旧 runtime_intent_hard_cut
 
 §9.9-问题2 G25 schema alias ──────────────────────────────────────── P1
   _normalize_major_payload fallback keys 追加 major/majorList
@@ -1894,9 +1959,9 @@ c. **回退方案**：如果防护无效且多余调用严重，将 `respond` �
 
 | 步骤 | 动作 | 验证标准 |
 |------|------|---------|
-| A1 | 确认测试环境 `ZHIYUAN_AGENT_ENABLED=1` + rollout = 100，G25 fixture 有有效成绩 | G25 进入 direct route |
-| A2 | 如 A1 配置正确但 G25 仍未进 direct，在 `_maybe_handle_zhiyuan_agent_direct_route` 入口加 debug log，定位 return None 的具体分支 | 找到 direct route 拒绝原因 |
-| A3 | 修复 direct route 拒绝原因后，单跑 G25 × 3 次确认 direct 路由命中 | 3/3 进入 direct route |
+| A1 | 不设置 direct enable / rollout，单跑 G25 与无成绩 fixture | 均进入 `zhiyuan_agent_direct` |
+| A2 | 触发 direct agent 异常模拟 | 返回安全提示并保存 direct error event，不进入旧 full-agent |
+| A3 | 单跑 G25 × 3 次确认 direct 路由命中 | 3/3 进入 direct route |
 
 **阶段 B：schema 兼容与 Prompt 加固（1-2 天）**
 
@@ -2457,7 +2522,7 @@ confirm_pending → _apply_plan_pending / _apply_intent_pending   (tools.py)
 
 **同步改动：**
 
-- `tests/unit/test_planning_plan_scenarios_sync.py` 改为验证当前 `planning_workflow_tool` 直接场景，不再调用旧 payload runner。
+- `tests/unit/test_planning_plan_scenarios_sync.py` 曾作为旧 planning workflow 直接场景过渡测试；后续旧 `planning_workflow_tool.py` 删除时已一并删除。
 - `tests/unit/test_ws_compat.py` 的状态查询 fixture 改为 `query_plan` / 4.0 facts 形态，并兼容当前 websocket `thinking` 进度帧。
 - `tests/unit/test_runtime_hard_cut_audit.py` 改为断言 `plan_action_execution.py` 不存在、`app/handlers` 下没有 Python 文件，并禁止 `service.py` 重新依赖旧 runner/handler。
 - `app/models/typed_actions.py`、`app/models/intent_frame.py` 等注释收口为 4.0 direct proposal/pending 口径，不再描述旧执行层/dispatcher 语义。
@@ -2503,18 +2568,64 @@ confirm_pending → _apply_plan_pending / _apply_intent_pending   (tools.py)
 - 本轮环境状态：清理后复跑开始时 `/Users/baiyang/git/zhiyuan` 可用空间约 `9.8Gi`，收尾约 `12Gi`；复跑期间未再触发磁盘/SQLite 类失败。
 - 旧链路残余复扫：`plan_next_action|execute_plan_action|planEditCache|runtime_intent_hard_cut|direct_atomic_plan_action|semantic_plan_action|plan_context_tool|plan_orchestration_tool|plan_execution_tool|planPayload|plan_action_execution|app.handlers|HANDLER_REGISTRY` 在 `app/examples/tests/skills` 中的命中仅剩防回退测试、负向断言，以及 `ensure_structured_plan_payload()` 对 `planPayload/plan_payload` 的拒绝保护；未发现需要立即删除的活跃旧入口。
 
+**2026-07-06 direct 默认主链路切换：**
+
+- `ChatService` 不再读取 `ZHIYUAN_AGENT_ENABLED` / `ZHIYUAN_AGENT_ROLLOUT_PERCENT`，初始化时默认构造 `ZhiyuanAgent`。
+- `service.py` 已移除 `ChatAgent` import 和默认构造，不再为普通会话初始化旧模型路径。
+- 删除 direct route 的 rollout bucket、成绩可用性 gate、`_should_use_zhiyuan_agent_direct()`；不设置环境变量、无有效成绩时也进入 4.0 direct。
+- `_maybe_handle_zhiyuan_agent_direct_route()` 不再通过 `None` 把请求交给旧 full-agent；direct agent 异常时返回安全提示并记录 direct error event，保持没有明确确认前不改动报考要求或方案。
+- 删除 `handle_message` 中 direct route 后不可达的旧 guard/full-agent fallback 大块；删除旧 full-agent intent arbitration helper、blocked wrapper、tool trial summary、profile replan 旧 guard 方法。
+- hard-cut audit 新增防回退断言，禁止 `service.py` 重新出现 direct enable / rollout / score gate / `ChatAgent` 默认构造 / full-agent intent arbitration helper。
+- 验证：
+  - `tests/unit/test_zhiyuan_agent_poc.py -k "direct or initializes_zhiyuan"`：`16 passed, 141 deselected`。覆盖默认 direct 初始化、不设置环境变量仍调用 direct、无成绩仍调用 direct、direct 异常不回退旧 agent。
+  - `tests/unit/test_runtime_hard_cut_audit.py`：`17 passed`。
+  - `tests/unit/test_chat_service_history_persistence.py -k "needs_plan_first_guard_runs_before_zhiyuan_direct"`：`1 passed, 225 deselected`。
+  - `py_compile` 和 `git diff --check` 通过。
+- 生产代码扫描：`service.py` 中 `full_agent` / `self.agent` / `ChatAgent(` / direct enable / rollout / score gate 无命中。
+- 客观问题记录：完整 `tests/unit/test_chat_service_history_persistence.py` 仍保留大量旧 full-agent 用例，后续按 4.0 direct 口径分批删除或迁移；不按旧链路修复。
+
+**2026-07-06 旧 ChatAgent / 旧工具 wrapper 清理：**
+
+- 删除旧主对话 Agent 栈：`app/agent/chat_agent.py`、`app/agent/instructions/*`、`app/agent/tool_reply_policy.py` 及对应 ChatAgent/instructions/tool policy 测试，不再维护旧 full-agent prompt 与回复策略。
+- 删除旧只读/检索工具文件：`app/tools/plan_query_tool.py`、`app/tools/official_source_search_tool.py`；`answer_policy` 的官方来源检索改为 4.0 工具内部 helper，`query_plan` 是当前唯一方案查询入口。
+- 删除旧 `app/tools/intent_preview_tool.py` wrapper；`preview_current_*`、`analyze_current_*`、`preview_interest_analysis_from_request` 不再作为可维护入口。保留 `intent_state_tool` 的底层意向分析/应用能力和 `explore_direction_tool` 的方向分析能力。
+- `service.py` 的运行时工具名收敛为 4.0 名称：`preview_intent_change`、`preview_plan_action`、`query_plan`、`review_plan`、`explore_topic`、`compare_entities`、`answer_policy`、`confirm_pending`、`read_state`。
+- `BaseAgent` 重复工具调用保护切到 4.0 工具名；评估脚本 `dialog_case_evaluation_report.py` 的 action alias 同步改为 `query_plan`、`explore_topic`、`compare_entities`、`preview_intent_change`。
+- 测试资产清理：删除 `test_dialog_scenario_stability.py` 等旧 wrapper 专属测试；`test_intent_state_tool.py` 保留底层意向状态覆盖，`test_explore_direction_scenarios_sync.py` 保留方向分析领域覆盖，不再导入旧 preview wrapper。
+- 静态扫描结果：`intent_preview_tool|preview_current_|analyze_current_|query_volunteer_plan|plan_query_tool|official_source_search_tool|ChatAgent|tool_reply_policy` 在 `app/tests/examples` 中只剩 hard-cut 防回退断言、底层专业对比 helper、历史 3.0.3 JSON 输出和说明性注释；无运行时旧入口。
+- 验证：
+  - `tests/unit/test_runtime_hard_cut_audit.py`：通过，新增 `intent_preview_tool.py` 不存在断言。
+  - `tests/unit/test_intent_state_tool.py tests/unit/test_explore_direction_scenarios_sync.py`：`178 passed`。
+  - `tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_chat_service_history_persistence.py`：`170 passed, 1 skipped`。
+  - 触达文件 `py_compile` 通过。
+
+**2026-07-06 旧 planning workflow 工具清理：**
+
+- `service.py` 不再从 `app/tools/planning_workflow_tool.py` 引用 `_format_fix_proposal_apply_result` / `_fix_proposal_facts`。
+- 将当前仍被 4.0 service 使用的处理建议结果格式化能力迁到 `app/domain/fix_proposal_formatter.py`，只保留 facts/apply-result 两个实际调用点，不迁移旧 preview/query/generate 工具入口。
+- 删除旧工具文件 `app/tools/planning_workflow_tool.py`，以及专属旧测试资产 `tests/unit/test_planning_workflow_tool.py`、`tests/unit/test_planning_plan_scenarios_sync.py`、`tests/fixtures/mock_planning.py`；`tests/conftest.py` 同步移除共享 fixture 暴露。
+- hard-cut audit 新增 `planning_workflow_tool.py` 不存在断言，防止旧模型工具栈回流。
+- 静态扫描：`planning_workflow_tool|mock_planning|patch_planning` 在 `app/tests/examples` 中只剩 hard-cut audit 的负向断言；生产 `app/` 零引用。
+- 验证：
+  - `py_compile app/domain/fix_proposal_formatter.py app/service.py tests/unit/test_runtime_hard_cut_audit.py`：通过。
+  - `tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_zhiyuan_agent_poc.py tests/unit/test_chat_service_history_persistence.py`：`257 passed, 29 skipped`。
+
 ### 10.4 其余观察项（不阻塞主线）
 
 | 项 | 状态 | 处理 |
 |----|------|------|
-| G7 只读审查后追加 query_plan | 偶发工具边界抖动，无后端副作用 | §9 已记录；决定 `review_plan` 是否作为完整只读终止工具后统一落地 |
-| G17 shadow nextSteps 多一步 clarify | 已修复并通过聚焦 + 完整主集复验 | 在 `preview_plan_action` 工具层从当前用户原文恢复缺失 action/selector；不恢复旧路由 precheck。完整 G1-G32 direct 主集已复跑 `20/20`，shadow `20/20 success` |
+| G7 只读审查后追加 query_plan | 已修复并通过 focused + 完整主集复验 | `review_plan(next_step=respond)` 已作为 direct 终止工具直接返回；不再追加只读查询 |
+| G17 shadow nextSteps 多一步 clarify | 已修复并通过聚焦 + 完整主集复验 | 缺 action/selector/目标位置改为工具返回 `next_step=continue` 让模型补齐结构化参数；不恢复旧路由 precheck，也不在工具层从中文原文补参 |
 | G27 高收费替换候选仍可能为民办 | 本轮已出 `replace_units` 确认卡，替换项学费降低但仍是民办院校 | 当前自动替换理由只围绕学费；若用户同时要求公办/不要民办，需要进入多目标候选排序，不在本轮修 |
-| 报考要求采纳后的重算文案 | `民办就算了` 确认后要求写入与 `planningState.version` 断言通过；随后 `ordered_plan_response` 返回 `404/会话不存在`，回复提示“当前方案暂时没有重新调整成功” | 记录为要求写入成功后方案重算接口/会话映射问题，不影响本轮 action 写入断言结论 |
+| 报考要求采纳后的候选重建 | v1.49 已确认基础候选池不应因报考要求被系统隐藏；候选重建不再是采纳要求的默认动作 | Agent 改为写入报考要求后直接重排方案；候选区通过可见 `candidateViewState` 展示筛选，最终是否生效以 ordered/review 等方案派生数据为准 |
 | G2 审查回复口径 | 已修复并通过真实 direct 聚焦复验 | `review_plan` 返回补充 `has_plan/ordered_total` 和“当前正式方案有 N 个志愿”消息；真实 G2 回复不再出现无方案口径 |
 | G8 专业实体扩展口径 | 已修复并通过真实 direct 聚焦复验 | `preview_intent_change` 使用当前用户原文复用官方专业层级显式实体收敛；用户可见回复和 pending 卡片只展示显式专业 |
-| G21/G31/G26 性能尾部 | 第二轮完整主集 max `25282ms`，p95 `14659ms`；G21/G31/G26 排在最慢前三 | 继续从长列表回复压缩、审查结果直返/摘要化和只读结果渲染做性能优化 |
-| `planning_workflow_tool` 仍被 service/chat_agent（intake）引用 | intake ChatAgent 仍在用 | 属旧 intake 链路，随 §9.4 成绩提取独立扩展一并评估，不在本轮删除 |
+| G12 复合查询后方案动作 | 已修复并通过 focused + 完整主集复验 | `query_plan` 返回当前问与后续动作提示，模型可继续调用 `preview_plan_action`；不使用 service precheck |
+| G16 锁定/固定位置动作 | 已修复并通过 focused + 完整主集复验 | Prompt 明确“锁定/固定位置/位置不要动”进入 `preview_plan_action(pin_lock)`；无可锁定方案时由工具给出安全回应 |
+| G21/G31/G26 性能尾部 | 最新完整主集 max `12726ms`，p95 `11077ms`；最慢为 G31/G12/G27/G16/G26 | 继续从长列表回复压缩、审查结果直返/摘要化和只读结果渲染做性能优化 |
+| `planning_workflow_tool` 仍被 service 引用 | 已清理 | service 改用 `app/domain/fix_proposal_formatter.py`，旧 `app/tools/planning_workflow_tool.py` 和专属测试资产已删除，hard-cut audit 防回退 |
+| `proposal_compiler.py` 旧 full-agent arbitration helper | 已清理 | 删除未被 4.0 生产链路调用的 `RuntimeIntentPreviewTurnDecisionArbitrationSource`、`RuntimeBlockedIntentPreviewReplySource`、`compile_runtime_intent_preview_turn_decision_arbitration_source()`、`compile_blocked_intent_preview_for_plan_route_reply_source()`、`full_agent_intent_pending_requires_turn_decision()` 及专属测试；hard-cut audit 覆盖防回退 |
+| 旧 full-agent history 测试资产仍存在 | 已删除 ChatAgent/tool policy/旧 wrapper 专属测试，`history_persistence` 仍保留部分历史消息压缩兼容用例 | 下一步继续按 4.0 direct 口径删除或迁移剩余 history fixture，不按旧链路修复 |
 | 完整 320 G1-G32 = 44/49 | 剩余为验证资产口径/性能观察 | 继续按 case 归因，非旧链路回归 |
 
 ### 10.5 推进计划
@@ -2525,10 +2636,711 @@ confirm_pending → _apply_plan_pending / _apply_intent_pending   (tools.py)
 - hard-cut audit 已改为断言旧执行编排文件不存在。
 - 已完成静态扫描、编译、核心单测和 service history 回归；真实 service direct 回归放入阶段 2。
 
-**阶段 2（真实验证收口，已完成两轮主集 + focused）：** 删除旧执行编排后的确认执行闭环 4/4、G case 子集 8/8、focused 5/5、完整 G1-G32 direct 主集两轮均 20/20。G7 工具边界抖动在 focused 与第二轮完整主集中均未复现；§9.10 respond 软停和 G12 复合链路在真实主集中继续通过。
+**阶段 2（真实验证收口，已完成多轮主集 + focused）：** 删除旧执行编排后的确认执行闭环 4/4、G case 子集 8/8、focused 5/5、完整 G1-G32 direct 主集多轮通过；最新 v1.62 主集 `20/20`。G7 工具边界抖动已通过 `review_plan` 终止边界修复，G12 复合查询后继续方案动作、G16 锁定动作均在真实 focused 与完整主集中通过。
 
-**阶段 3（§6.4 剩余大块，评估后分批）：** `proposal_compiler.py`（5650 行规则引擎）、`turn_decision_tool.py`、`tool_dispatch_rules.py`、`tool_reply_policy.py`、service.py 旧编排残余——这些仍服务 full-agent/intake；当前旧入口关键字复扫未发现活跃旧执行入口，下一步按更细粒度扫描区分防回退断言、intake 必需路径和可删除旧残余，避免恢复旧链路。
+**阶段 3（§6.4 剩余大块，进行中）：** direct route 已是默认主链路，`ChatAgent` 默认构造、`handle_message` 旧 full-agent fallback、旧 instructions、`tool_reply_policy.py`、`plan_query_tool.py`、`official_source_search_tool.py`、`intent_preview_tool.py`、`planning_workflow_tool.py`、`turn_decision_tool.py` 均已删除；`service` 不再引用 TurnDecision classifier/profile-replan bridge；`proposal_compiler.py` 已删除 3.2 pending turn / plan query / local action / profile replan / plan confirmation compiler，只保留 4.0 仍用的 sink contract、reply guard、no-plan guard、intent/fix proposal 选择与结构化 payload helper；3.2 golden/shadow/downstreamPolicy 离线 POC 资产已删除；4.0 direct/PoC shadow 后台执行与 runner shadow 断言/指标已删除，回归 case 改为主链路工具断言；runner 运行期观测输出已从 `runtime_shadow` 改名为 `runtime_observation`；semantic frame 离线评估字段已从 shadow/router 命名收敛为 observation/frame 命名，旧 full-agent 专属 issue 报告改为中性 tool-chain issue；3.2 model-node/profile live-node、runtime pending/adapter 离线资产和未引用 320 dialog regression fixtures 已删除，生产仍需的反向要求识别迁入 domain；quality gate/e2e/model-provider/mainline catalog 中的 301/302/303/310 历史质量资产已迁移为 400 命名资产并删除旧文件，gate dry-run 已无 301/302/303/310/320 路径。下一步继续扫描非 gate 的旧探索/输出资产和测试样例中是否还有可清理历史口径。
 
-**阶段 4（Phase 4 放量）：** 监控仪表盘 + 回滚流程 + 1%→100% 渐进放量。
+**阶段 4（默认 direct 后监控）：** 监控仪表盘 + 性能基线 + 确认执行闭环巡检；不再以 direct enable / rollout 作为主切换机制。
 
 实施顺序：阶段 1 → 阶段 2 →（阶段 3 评估）→ 阶段 4
+
+---
+
+## 11. 约束落地链路修复：Preview/Execute 契约分叉（2026-07-06）
+
+本地环境实测暴露的核心问题：有山东志愿的方案，用户"不去山东"→系统提示确认+替换意向→用户"排除山东，先不替换"→**过后方案没有任何变化**。追踪后发现这不是单点 bug，而是约束落地链路的结构性缺口。
+
+### 11.1 根因：预览和执行走了两套后端契约
+
+`preview_intent_change` 和 `confirm_pending` 对"排除某地域"用的是**完全不同的后端机制**，只有预览那套真正尊重排除：
+
+| 阶段 | 调用 | 后端行为 | 是否尊重排除 |
+|------|------|---------|------------|
+| **预览** | `simulate_plan_diff(proposedProfile)`（`internal_client.py:1144`） | 后端用拟变更画像**在内存里重跑完整推荐流水线**，与当前方案 diff | ✅ 是 |
+| **执行** | `update_planning_constraint_state` + `generate_planning_ordered_plan`（`tools.py:4391/4402`） | 写约束状态；`ordered-plan/generate` 只**对现有候选池重排/重组** | ❌ 否 |
+
+分叉后果：
+- 预览通过 `simulate_plan_diff` 跑真实推荐流水线，能算出"排除山东影响 N 个志愿"，**卡片承诺了影响**。
+- 执行只写 `constraintState.mustExcludeRegions` + 重排现有候选池。候选池里山东项还在，重排不会移除它们。
+- 后端 `queryCandidatePool` / 候选池生成只认请求里的 `filters.negativeProvinceNames`，**不合并 `constraintState.mustExcludeRegions`**。
+- 结果：约束是一个**只写不读的死胡同**——写进去了，但没有任何下游环节消费它。用户看到"会影响 5 个"，确认后方案纹丝不动。
+
+### 11.2 三道缝隙
+
+约束从"用户说出"到"方案落地"要跨三道缝，当前三道都没接好：
+
+```
+用户"排除山东"
+   │
+   ├─缝隙C(语义): "先不替换" = 记录约束但现在别动 → §3.7 无条件 regen，无法表达"记录但延后"
+   │
+   ▼ confirm → 写 constraintState.mustExcludeRegions ✅
+   │
+   ├─缝隙A(执行粒度): confirm 只调 ordered-plan/generate，但 ordered-plan 当时没有消费报考要求
+   │                  重排 ≠ 重建，排除项永远留在池里
+   │
+   ▼ 候选池生成/查询(当时未明确区分基础池与方案有效候选)
+   │
+   └─缝隙B(后端契约): candidate-pool 生成/查询只认请求 filters，不 merge constraintState
+                      → 持久约束无法在"下一次"重建时自动生效
+```
+
+- **缝隙 A（方案生成消费缺口）**：`_apply_intent_pending` 只 `generate_planning_ordered_plan`，但当时 ordered-plan 没有按已确认报考要求过滤候选。v1.49 结论是修 ordered-plan/initial/review 的 `effectiveCandidates` 消费，而不是重建基础候选池。
+- **缝隙 B（后端约束→过滤合并）**：候选池生成/查询不 merge `constraintState`。这决定了"先不替换"延后的约束能否在**下一次**方案生成时自动生效——不 merge 就永远不生效。
+- **缝隙 C（语义：记录 vs 立即调整）**：`preview_intent_change`→`confirm` 目前把"记录约束"和"立即 regen"绑死（§3.7 has_plan 就 regen）。用户明确说"先不替换"时无法表达"只记录、暂不动方案"。
+
+### 11.3 这是一类 bug，不止山东
+
+地域只是最先暴露的维度。**所有 exclude 类约束都走同一条死胡同**：办学性质（不要民办）、招生类型（不要中外合作）、学费（不要高收费）、院校标签、专业门类——只要靠 `constraintState.mustExclude*` 落地，而后端候选池不 merge 约束状态，确认后就都是静默 no-op。
+
+§9.5-§9.9 记过的部分"确认后方案没变"现象，很可能同源于此，而非各自独立的工具 bug。这解释了为什么 shadow 里 preview 看起来对（simulate 尊重约束）但真实确认无效（execute 不尊重约束）。
+
+### 11.4 核心设计方向：约束状态即单一事实源
+
+要让"排除山东"真正落地，且不让用户在候选页面看见一层无法操作的隐藏状态，必须把三层状态边界拆清楚：
+
+**方向 1（候选基础池）：`candidatePoolState.items` 保持基础全量候选。**
+`candidate-pool/generate` 只负责从推荐源生成基础候选池，不按已确认报考要求裁剪明细；`candidate-pool/query` 只执行请求里显式传入的筛选条件。这样页面候选区始终是“基础候选池 + 可见筛选状态”的结果，用户删掉筛选条件后能重新看到对应候选，不会被系统在后端基础池里悄悄隐藏。
+
+**方向 2（页面可见筛选）：对话确认的地域类报考要求同步到 `candidateViewState`。**
+用户通过对话确认"不要山东"后，后端同步把 `山东` 放入 `candidateViewState.filters.negativeProvinceNames`，前端候选筛选栏能直接展示这条筛选；用户在筛选栏手动删除该值时，后端撤销对应的 `mustExcludeRegions` 并让方案/审查重新计算。当前先覆盖地域类要求；院校属性/招生类型/专业标签到筛选栏的完整映射后续应接属性注册表统一完成，避免新增字符串特化。
+
+**前端同步边界（v1.50）：** `sessionDetailV2` 的候选筛选栏必须响应后端 `candidateViewState` 的后续变化，而不是只在首次进入页面时水合。对话确认要求后，工作台刷新拿到新的 `candidateViewState`，前端按候选视图签名变化更新本地筛选栏，再由 `buildCandidateQuery()` 把这条可见筛选传给 `candidate-pool/query`。这不是后端隐式过滤，也不是新增缓存层；用户能在筛选栏看到并删除该条件。
+
+**方向 3（方案派生链路）：`constraintState -> effectiveCandidates` 临时生效。**
+已确认报考要求仍是方案生成、方案调整、审查和修复建议的权威输入，但不写回基础候选池。`resolveEffectiveCandidates()` 每次从基础候选池读取候选，叠加推荐承接分，再按 `constraintState.hardConstraints` 过滤，生成本次方案派生动作的临时有效候选。该列表不持久化。
+
+**方向 4（Agent，执行粒度）：立即调整时写要求后重排方案，不重建基础候选池。**
+当用户确实要立即调整（非"先不替换"）时，`_apply_intent_pending` 对 exclude/only_keep 类要求的执行序列为：
+```
+写 constraintState
+  → 同步可见 candidateViewState（地域类已落地）
+  → generate_planning_ordered_plan()     # 通过 resolveEffectiveCandidates 临时过滤后再排序
+```
+这一步让执行不再依赖基础候选池重建，也避免候选页面和方案页面使用不同的隐藏候选集合。
+
+**方向 3（语义，记录 vs 立即调整解耦）：支持"先不替换/先记下"。**
+`preview_intent_change` / `confirm_pending` 增加 `apply_to_current_plan: bool` 语义（从用户话里的"先不替换/先别动/以后""立即改/现在换"判定）：
+- `apply_to_current_plan=false`（"先不替换"）：写入报考要求并同步可见候选筛选，但不重排当前方案；回复"已记下这次报考要求，后续生成或调整方案会按这个要求处理；这次先不改当前方案"。
+- `apply_to_current_plan=true`（默认，或"帮我换掉"）：写入报考要求 + 同步可见筛选 + 重排当前方案。
+- 两种情况要求都持久，差别只在"现在动不动当前方案"。未来任何方案派生动作都通过 `resolveEffectiveCandidates()` 读取最新要求。
+
+**为什么不持久化 `effectiveCandidates`**：它会形成第三份候选状态，既不是用户看到的基础候选池，也不是前端可删改的筛选状态；一旦用户在页面删掉筛选或调整条件，就容易出现基础池、有效池、页面筛选三者不一致。因此 `effectiveCandidates` 必须保持为后端动作内的临时派生结果。
+
+### 11.5 "整体链路是否走通"与"能否切换到新框架"
+
+**当前结论：Agent/工具层已就绪且框架兼容（见 §10.1）；后端已改为“基础候选池全量、候选视图显式筛选、方案链路临时有效候选”。地域类、核心属性类、专业门类、院校标签和专业标签报考要求均已验证到最终 ordered-plan 数据变化；真实口语/指代/简略对话 final-action 已连续三轮通过，并覆盖立即调整、“先记下不改当前方案”、取消后重新提出、多要求组合和长上下文承接。后续继续扩大真实回归并推进旧链路清理。**
+
+- 走通的部分：读状态、只读查询/审查/政策/探索、具体项方案操作（remove/move/replace 具体志愿）、确认执行闭环的后端 action（version 增长、删项）——这些 §10.2 已验证真实生效。
+- 已修正 Agent 侧执行粒度：**exclude/only_keep 类属性/地域要求 → 写入要求 → 有序方案生成**，不再重建基础候选池；方案生成时由 `resolveEffectiveCandidates()` 临时过滤。
+- 已修正后端候选池语义：`candidate-pool/generate` 保存基础全量候选；`queryCandidatePool` 只执行显式 filters；`filter-options` 继续来自基础候选池，避免用户在页面上看不到可恢复的候选条件。
+- 已补齐可见筛选联动：地域类硬性报考要求同步到 `candidateViewState.filters.negativeProvinceNames/provinceNames`；用户在候选筛选栏删除对应值时，后端撤销对应地域要求并标记方案/审查需重算。
+- 已补齐前端工作台水合：`sessionDetailV2` 按后端 `candidateViewState` 签名变化同步筛选栏；对话确认后已打开的工作台也能展示新增筛选，并通过现有显式 query 入参影响候选视图。
+- 已补齐有序方案生成的 working/ordered 同步：即使基础候选池仍保留山东项，`generateOrderedPlan()` 也会按 `effectiveCandidates` 裁剪 draft/ordered；ordered units 先按有效 major volunteerId 裁剪/丢弃，再按自身结构化字段过滤已不符合要求的正式方案 unit，避免 candidate id 不对齐导致误清空非命中 unit，也避免旧 unit 字段缺失时残留。
+- 历史 session 35 “民办就算了”验证中的 candidate 民办清零不再作为 v1.49 成功标准；后续真实闭环应断言：基础候选池可恢复、候选筛选栏可见、ordered/review 方案派生结果不含已排除项。
+- 已补齐地域真实闭环：对“排除山东→采纳”复跑时，确认后基础候选池仍保留山东，候选筛选栏显示山东排除项，最终 ordered-plan 不含山东。
+- 已补齐核心属性真实闭环：对“民办的不要/只看公办学校/不要中外合作/不要高收费的”复跑时，确认后基础候选池仍可恢复，最终 ordered-plan items/units 均按报考要求裁剪。
+- 已补齐专业门类真实闭环：对“管理学的不要了→采纳”复跑时，预览能按专业门类统计当前方案影响范围，确认后基础候选池仍可恢复，最终 ordered-plan 不含管理学项。
+- 已补齐标签真实闭环：对“博士点的不要了/五年制的不要了”复跑时，确认后基础候选池仍可恢复，最终 ordered-plan 不含对应院校标签/专业标签项。
+- 已补齐首轮真实口语/指代/简略对话闭环：对“有啥问题，咋弄→那高收费的别要了→确认执行”“方案里的民办不要了→采纳”“山东别去了→采纳”复跑时，均验证到确认后的后端方案数据变化，不只校验待确认卡展示。
+- 已补齐真实口语扩展闭环：对“就看公办吧”“中外合作算了吧”“管理学也别要了”“五年制的也别要”复跑时，确认后要求写入并触发 ordered/review 刷新；对“山东别去了，先记下，当前方案先别动”复跑时，确认后只写入要求并同步可见筛选，不触发当前方案重排。
+- 已补齐取消/改口与组合诉求闭环：对“先不采纳了”确认后真实 pending status 变为 `cancelled` 且 planningState 不变；随后重新提出“只看公办”可正常建卡并采纳；“民办+中外合作”“管理学+五年制”均能在同一次待采纳内容里同时写入；长上下文审查后的“你说的高收费这类先去掉吧”走方案调整并确认后真实移出。
+
+### 11.6 推进计划
+
+**阶段 0（契约对齐，最高优先，需前后端协同）：**
+1. 后端确认 `candidatePoolState` 是基础全量候选池，不持久化按报考要求裁剪后的 effective pool。已落地。
+2. 后端确认 `candidateViewState` 是页面可见筛选状态，对话确认后的地域类要求会同步到这里，用户删除筛选时撤销对应地域要求。地域已落地；属性/标签维度后续接属性注册表。
+3. 方案派生链路统一读取 `constraintState.hardConstraints` 并通过 `resolveEffectiveCandidates()` 临时过滤。已落地。
+4. 前端工作台确认 `candidateViewState` 后续变化会重新水合本地筛选栏，避免已打开页面继续停留在旧筛选状态。已落地。
+
+**阶段 1（Agent 执行粒度修复，1-2 天）：**
+- `_apply_intent_pending` 对 exclude/only_keep 要求：立即调整时只写入报考要求并触发 ordered-plan 重排，不再重建基础候选池。已落地。
+- 加真实回归：有山东志愿方案 →"不去山东"→确认→断言后端 ordered-plan 中山东项消失、`planningState.version` 增长。已用克隆真实 chat_session 的回归会话补齐，见 §11.7 v1.51 验证记录。
+
+**阶段 2（语义解耦，1-2 天）：**
+- `preview_intent_change` / `confirm_pending` 支持 `apply_to_current_plan`；Prompt 增加"先不替换/先记下"→ 只记录不动方案 的判定与示例。
+- 回归："排除山东，先不替换"→ 断言约束已写入 + 当前方案不变 + 回复明确说明延后生效。
+
+**阶段 3（一类约束回归收口，2-3 天）：**
+- 对 exclude 全维度（地域/性质/招生类型/学费/标签/门类）各补一条"确认后方案真实变化"回归，确认 §11.3 的一类 bug 全部闭合，而非只修地域。地域、院校性质、招生类型、高收费、专业门类、院校标签、专业标签已落地。
+- 增加真实用户表达风格覆盖：保留书面 case，同时加入口语化、指代、省略、多轮承接的 final-action 验证；v1.55 首轮已覆盖高收费、当前方案民办、裸地域排除，v1.56 已扩展到只看公办、中外合作、专业门类、专业标签和“先记下不改当前方案”，v1.57 已扩展到取消后改口、多要求组合和长上下文审查承接。
+- 复核 §9.5-§9.9 中"确认后无变化"现象是否随本修复一并消失。
+
+**阶段 4（受控放量）：**
+- 属性/地域约束场景通过 §11.6 阶段 1-3 回归后，纳入放量范围；在此之前放量集合限定只读 + 具体项操作。
+
+实施顺序：阶段 0（阻塞，前后端拉通）→ 阶段 1 → 阶段 2 → 阶段 3 → 阶段 4
+
+### 11.7 当前落地状态（2026-07-07）
+
+**已落地：**
+- `_apply_intent_pending()` 读取 pending 内的 `constraint_type` 与 `applyToCurrentPlan`。
+- `exclude` / `only_keep`，以及包含负向项的报考要求确认后，不再重建基础候选池；当前有方案且需要立即调整时，写入报考要求后直接 `generate_planning_ordered_plan()`，由后端 `resolveEffectiveCandidates()` 临时过滤候选。
+- `must_have` 且无负向项的纯正向要求保持有序方案生成路径，同样不强制重建候选池。
+- `preview_intent_change()` / `confirm_pending()` 支持 `apply_to_current_plan=false`：确认后只写入报考要求并同步可见候选筛选，跳过有序方案生成，回复明确说明“这次先不改当前方案”。
+- pending 的 `executionPayload` 和 `selectedData` 均保存 `applyToCurrentPlan`，避免确认阶段丢失“先不替换”语义。
+- Prompt 已补充“先看看怎么处理/先别动”与“先记下/先不替换/先不改当前方案”的边界：前者走只读 `review_plan(generate_fix_proposals=True)`，后者在有显式要/不要/只看诉求时走 `preview_intent_change(..., apply_to_current_plan=False)`。
+- `service._direct_confirm_workspace_refresh_targets()` 改为只有 `intent_change` 的 `plan_regenerated=true` 才发送 ordered/review 刷新；`apply_to_current_plan=false` 时不再给用户发方案已刷新的 followup。
+- `service` 增加 direct active-pending 短文本确认/取消桥：仅当本轮开始已有 active pending，且用户文本是窄口径“采纳/确认/执行/取消/先不采纳/暂不执行”等待确认操作词时，直接调用 4.0 `confirm_pending` 工具；避免模型口头说“已取消/已采纳”但后端 pending 未变化。该桥不恢复旧 full-agent 路径，也不处理新的报考语义。
+- 后端 `PlanningStateService` 已把 `constraintState.hardConstraints` 接入方案派生链路：`resolveEffectiveCandidates` 让初始推荐、有序方案、审查和修复共享过滤后的临时候选集合；`generateCandidatePool` 和 `queryCandidatePool` 不再隐式裁剪基础候选。
+- 地域类已确认报考要求已与 `candidateViewState` 联动：写入要求时更新候选筛选栏；用户删除候选筛选栏里的对应地域值时撤销该地域要求，并让方案/审查失效。
+- 后端 `generateOrderedPlan()` 已在存在已确认报考要求时同步 working/ordered state：working plan 按过滤后的 `effectiveCandidates` 移除无效 draft items，随后同步 units/summary；ordered items 按有效 volunteerId 裁剪；ordered units 先按有效 major volunteerId 裁剪/丢弃，再按自身结构化字段复用 `RepairCandidateEligibility` 判断。该修复覆盖基础候选池仍保留被排除项但旧 draft/ordered 残留不符合要求项的情况，同时避免只按 candidate id 过滤导致非命中 unit 被误删。
+- 后端 `RepairCandidateEligibility` 已让 `招生类型:高收费` 消费 `tuitionPerYear > 20000`，覆盖“不要高收费的”这类没有显式“高收费”标签、但学费数值超限的方案项。
+- 后端 `getPlanningState()` / 候选生成 / effective candidates 解析已统一补齐候选项 `majorDiscipline/majorCategory`，让旧状态里只有 `majorSubCategoryId` 的专业类数据也能被方案派生链路和 agent 预览消费。
+- Agent 本地影响计数已把 direct 与 nested 的 `majorDiscipline/majorCategory` 纳入专业匹配，避免专业门类预览只按专业名误报影响范围。
+- Agent prompt 已明确非固定枚举标签走 `school_tag/major_tag`；属性注册表将“五年制/5年制”等口语值归一到 `学制：5年`；`preview_intent_change()` 消费 `duration` 作为 `major_tag` 的 schema alias，并在规范化后没有任何可执行报考要求时拒绝保存空 pending。
+- `preview_intent_change` 的组合属性漏传处理已改为模型重试协议：工具不再把 raw text 中识别到的属性/标签自动补写进 pending；当同一句显式诉求里还有属性/标签未进入结构化 `positive/negative` 参数时，返回 `intent_change_requires_attribute_completion` + `next_step=continue`，要求主模型基于当前问和工具返回补齐后重试。`ATTRIBUTE_REGISTRY` 继续用于结构化字段归一、schema alias（如 `duration -> major_tag`）和枚举/标签规范化，不承担 raw text 自动落库。
+- `preview_intent_change` 支持同轮跨领域显式诉求保留在同一次结构化 payload 中：例如用户说“山东别去，民办也算了”时，模型可调用 `intent_type="region"` 且 `negative={"province":["山东"],"school_nature":["民办"]}`，工具会合并成 `city_intents + school_intents` 的单张待确认卡；如果模型只传了山东而漏掉民办，工具返回 `continue` 要求补齐。
+- active pending 下的新预览关系改为模型语义仲裁：`current_user_text` 和待确认摘要注入 `build_turn_context`；`preview_intent_change` / `preview_plan_action` 均要求模型传 `pending_resolution`。缺失时工具返回 `active_pending_requires_resolution` + `next_step=continue`，由主模型重试；明确替换时取消旧 pending 后创建新 pending；intent 追加时先合并旧 pending 执行 payload，再取消旧 pending 并创建单张合并预览卡。该设计不在工具层用短语表判断“放弃/追加/暂缓”。
+- `preview_plan_action` 的缺参恢复已从工具层字符串补参调整为模型重试协议：缺 action、move selector 或目标位置时返回 `plan_action_requires_explicit_action` / `plan_action_requires_move_selector` / `plan_action_requires_move_target_position` + `next_step=continue`；工具只回传当前用户原话和缺失字段，不再从整句中文里匹配动词、选择器或目标档位。
+- no-pending 短文本确认/取消边界收口到 4.0 `confirm_pending`：无 active pending 时，窄口径“确认/采纳/执行/取消/暂不执行”等只会返回“当前没有待确认操作，不会执行任何变更”，不再进入旧模型路径，也不把这类短文本误解成新报考要求。
+- `review_plan(next_step=respond)` 在 direct agent 内作为终止工具直接返回，避免只读审查场景在拿到审查/处理建议后追加 `query_plan`，同时保留无副作用边界。
+- `query_plan` 的工具返回新增 `current_user_text` 与 `post_query_instruction`：当用户同轮同时表达“查询当前方案事实 + 调整方案”的诉求，模型可在读到查询结果后继续调用 `preview_plan_action`，而不是停在只读回复。
+- Prompt 明确“能不能/可不可以/帮我 + 换成/替换/移出/去掉”按方案动作理解；“锁定/固定位置/位置不要动”按方案操作进入 `preview_plan_action(pin_lock)`。该修复仅调整模型工具选择协议，没有恢复 service 层字符串 precheck。
+- 旧 3.2 TurnDecision/ProposalCompiler 兼容层继续硬切：删除 `turn_decision_tool.py` 及 service TurnDecision/profile-replan bridge；删除 `proposal_compiler.py` 中 pending turn、PlanQueryProfile、local plan action、profile replan、plan confirmation、apply-then-generate 等旧 compiler 类型与函数；删除 3.2 TurnDecision golden、runtime shadow diff、downstreamPolicy replay/java-request/adapter gate 等离线 POC 工具、fixtures 和对应 unit tests。当前 `proposal_compiler.py` 只保留 4.0 direct 仍用的结构化 payload、sink contract、intent/fix proposal、reply guard 和 no-plan guard。
+- 4.0 direct 已不再需要后台 shadow 自比：`service.py` 删除 shadow task、shadow event、shadow history、shadow timeout/sample env 和 timing 汇总；`dialog_regression_runner.py` 删除 shadow 等待、`expectedZhiyuanAgentPoc*` 断言、shadow metrics 汇总；4.0 direct/G/realistic 回归 JSON 改用主链路 `expectedToolNames` / `maxToolCallCount` / `expectedRoutingPath`。
+- 生产包与单测命名从 PoC 收敛为 direct-chain：`app/zhiyuan_agent` docstring、direct agent 工具集合/近期工具返回 helper、direct agent 单测文件和 helper 均已去 PoC 命名；保留的旧字符串只在 hard-cut audit 禁止列表中出现，用于防止回流。
+- runner 只读运行期观测命名从 shadow 改为 observation：`_build_runtime_observation()`、`runtimeObservationCaseId`、`runtimeObservationSummary`、`--runtime-observation-output`；不再接受 `shadowCaseId/runtimeShadowCaseId` 作为新 case id 字段，避免验证协议继续携带旧 shadow 语义。
+- semantic frame 离线评估继续保留，但从旧 shadow/router 命名收敛为 observation/frame 命名：`semanticFrameObservation/semanticFrameSummary` 替代 `semanticRouterShadow/semanticRouterSummary`，runner 历史模型名改为 `semantic-frame-observation`；dialog report 删除 `preFullAgentDurationMs/postFullAgentDurationMs` 和 `fullAgentToolTrial*` 输出，改用中性 `toolChainIssue/toolChainIssues`，只记录工具链质量问题，不再维护旧 full-agent 专属分类。
+- 旧 3.2 model-node/profile live-node 与 pending adapter 离线资产继续硬切：删除 `intent_entity_profile_tool.py`、`plan_query_profile_tool.py`、`reply_profile_tool.py`、`model_node_benchmark.py`、runtime pending entrypoint/sink audit、intent preview/select compiler adapter、compiled pending sink contract 以及对应 320 fixtures/tests；`intent_state_tool` 仍需要的反向要求识别从旧 profile node 迁到 `app/domain/intent_reversal.py`。
+- 未被当前 quality gate/e2e 引用的 320 历史回归 JSON 已删除，避免继续维护 3.2 路由/断言口径；仍被 `dialog_quality_gate.py`、e2e 默认路径、model-provider gate 和 mainline catalog 引用的 301/302/303/310 质量资产已迁移为 400 命名 case 集，旧 301/302/303/310 case、输出 JSON 和 raw production candidate export 已删除并加入 hard-cut audit 防回退。
+
+**验证：**
+- v1.71 真实 LLM 验证-only 记录：本轮未修改实现，只补充验证与问题归类。`examples/dialog_regression_400_v155_realistic_final_action_cases.json` 复跑 `7/7` 通过，metrics: `/private/tmp/zhiyuan_400_analysis_v155_final_action.json`；覆盖“有啥问题，咋弄 → 那高收费的别要了 → 确认执行”“方案里的民办不要了 → 采纳”“山东别去了 → 采纳”，确认后均走 `confirm_pending`，并通过 `pendingConfirmation.status=applied`、`planningState.version` 增长、`orderedPlanState.units` 变短或目标项消失等后端断言。`examples/dialog_regression_400_v156_realistic_broadened_final_action_cases.json` 复跑 `10/10` 通过，metrics: `/private/tmp/zhiyuan_400_analysis_v156_broadened_final_action.json`；覆盖“就看公办吧”“中外合作算了吧”“管理学也别要了”“五年制的也别要”“山东别去了，先记下，当前方案先别动”，确认后要求写入、方案裁剪和 `apply_to_current_plan=false` 不刷新工作台/ordered 不变语义均通过后端断言。
+- v1.71 真实口语全量问题记录：`examples/dialog_regression_400_realistic_user_cases.json` 全量复跑 `8/14` 通过，metrics: `/private/tmp/zhiyuan_400_analysis_realistic_full.json`。失败 6 步都来自 `assertFollowupType/assertFollowupCount`，其中仅“那高收费的别要了”同时有工具断言差异（case 期望 `preview_plan_action`，实际无正式方案状态下走 `preview_intent_change` 记录报考要求）。失败集中在默认克隆 `sourceSession=26` 的无正式方案基线：裸“民办的不要/中外合作都不要了”已识别为 `preview_intent_change` 但没有 followup 卡；“方案里的民办不要了/当前这些中外合作都移出去/第3个不要了”走 `preview_plan_action` 后因无正式方案无法形成方案调整卡。该组需先区分 case 预期是否应改为“无正式方案安全提示/记录要求”，还是源会话应切到有正式方案的 `sourceSession=17/35` 来验证出卡。
+- v1.71 回复口径问题记录：无正式方案查询“里面有民办没”有一轮回复为“目前还没有生成正式方案，所以方案里没有民办院校”，这比“没有正式方案，暂时无法查看方案里是否有民办”更容易误导用户；另“方案里的民办不要了”无正式方案场景出现“报考偏好”措辞，后续用户侧回复应继续统一用“报考要求/诉求”。
+- v1.70 301/302/310 质量门禁资产硬切验证：`py_compile examples/dialog_quality_gate.py examples/dialog_case_evaluation_report.py tests/unit/test_dialog_quality_gate.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_runtime_hard_cut_audit.py` 通过；10 个触达 JSON 可加载；`.venv/bin/python -m pytest tests/unit/test_dialog_quality_gate.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_semantic_frame_evaluator.py -q` 为 `110 passed`；`.venv/bin/python -m pytest --collect-only -q tests/unit` 为 `1499 tests collected`；`examples/dialog_quality_gate.py --mode live --mode model` dry-run 输出 `live=37`、`model=3`、`legacy=[]`；`dialog_regression_301/302/310*` 活跃引用清零（除 hard-cut 禁止列表和 changelog 历史记录）；`git diff --check` 通过。
+- v1.69 303 质量门禁资产迁移验证：`py_compile examples/dialog_quality_gate.py tests/e2e/test_agent_dialog_effect_perf.py tests/unit/test_dialog_quality_gate.py tests/unit/test_runtime_hard_cut_audit.py` 通过；7 个新 400 case/model-provider JSON 可加载；`.venv/bin/python -m pytest tests/unit/test_dialog_quality_gate.py tests/unit/test_runtime_hard_cut_audit.py -q` 为 `33 passed`；`.venv/bin/python -m pytest --collect-only -q tests/unit` 为 `1499 tests collected`；`.venv/bin/python -m pytest --collect-only -q tests/e2e/test_agent_dialog_effect_perf.py` 为 `1 test collected`；`examples/dialog_quality_gate.py --mode live --mode model` dry-run 确认 live/model plan 生成 `dialog_regression_400_*` 和 `model_provider_400_*` 路径；`dialog_regression_303* / model_provider_303*` 活跃引用清零（除 changelog 历史记录和 hard-cut 禁止列表）；`git diff --check` 通过。
+- v1.68 320 历史 fixture 清理验证：`.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py tests/unit/test_runtime_hard_cut_audit.py -q` 为 `185 passed`；`.venv/bin/python -m pytest --collect-only -q tests/unit` 为 `1498 tests collected`；`py_compile app/domain/intent_reversal.py app/tools/intent_state_tool.py tests/unit/test_runtime_hard_cut_audit.py` 和 `git diff --check` 通过；`dialog_regression_320_prod* / dialog_regression_320_career_region_fastpath` 活跃引用清零。
+- v1.67 profile/model-node 与 pending adapter 离线资产清理验证：`py_compile app/domain/intent_reversal.py app/tools/intent_state_tool.py tests/unit/test_runtime_hard_cut_audit.py` 通过；`.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py tests/unit/test_runtime_hard_cut_audit.py -q` 为 `184 passed`；`.venv/bin/python -m pytest --collect-only -q tests/unit` 为 `1498 tests collected`；`git diff --check` 通过；`intent_entity_profile_tool/plan_query_profile_tool/reply_profile_tool/model_node_benchmark/runtime_pending_*_audit/intent_*_compiler_adapter/compiled_pending_sink_contract` 在活跃代码中仅 hard-cut audit 禁止列表保留。
+- v1.66 semantic frame / report 评估协议清理验证：`py_compile examples/dialog_regression_runner.py examples/dialog_case_evaluation_report.py examples/semantic_frame_evaluator.py examples/semantic_frame_probe.py tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_semantic_frame_evaluator.py tests/unit/test_semantic_frame_probe.py tests/unit/test_runtime_hard_cut_audit.py` 通过；`.venv/bin/python -m pytest tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_semantic_frame_evaluator.py tests/unit/test_semantic_frame_probe.py tests/unit/test_runtime_hard_cut_audit.py -q` 为 `174 passed`；`git diff --check` 通过；旧 `semanticRouterShadow/semantic-router-shadow/semanticRouterSummary/preFullAgentDurationMs/postFullAgentDurationMs/fullAgentToolTrial*` 在 `app/examples/tests` 活跃代码中已清零。
+- v1.65 runner runtime observation 命名清理验证：`py_compile examples/dialog_regression_runner.py tests/unit/test_dialog_regression_runner.py tests/unit/test_runtime_hard_cut_audit.py` 通过；`.venv/bin/python -m pytest tests/unit/test_dialog_regression_runner.py tests/unit/test_runtime_hard_cut_audit.py -q` 为 `103 passed`；`runtime_shadow/runtime-shadow/runtimeShadow/shadowCaseId` 在 runner 和 runner 单测中已无命中。
+- v1.64 direct shadow/PoC 命名清理验证：`py_compile app/service.py app/zhiyuan_agent/agent.py app/zhiyuan_agent/prompt.py examples/dialog_regression_runner.py tests/unit/test_zhiyuan_agent_direct.py tests/unit/test_dialog_regression_runner.py tests/unit/test_runtime_hard_cut_audit.py` 通过；`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_direct.py tests/unit/test_dialog_regression_runner.py tests/unit/test_runtime_hard_cut_audit.py -q` 为 `240 passed, 28 skipped`；`.venv/bin/python -m pytest --collect-only -q tests/unit` 为 `1554 tests collected`；`git diff --check` 通过。旧 `zhiyuanAgentPocShadow/zhiyuanAgentDirectShadow/expectedZhiyuanAgentPoc*` 等符号在生产、runner 和 case 中已清零，仅 hard-cut audit 禁止列表保留。
+- v1.63 旧链路清理验证：`py_compile app/domain/proposal_compiler.py app/service.py app/agent/context.py examples/dialog_regression_runner.py examples/model_node_benchmark.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_model_node_benchmark.py tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_dialog_regression_runner.py` 通过；`.venv/bin/python -m pytest tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_dialog_regression_runner.py -q` 为 `252 passed`；`.venv/bin/python -m pytest --collect-only -q tests/unit` 为 `1563 tests collected`。残留扫描中旧 TurnDecision/3.2 compiler/downstreamPolicy 符号只剩 hard-cut audit 禁止列表。
+- v1.62 完整 G1-G32 direct 主集：`examples/dialog_regression_400_g1_g32_direct_cases.json` 复跑 `20/20`，metrics: `/private/tmp/zhiyuan_400_v162_g1_g32_direct_full_no_shadow_after_g16.json`。本轮 shadow 关闭，全部走 `zhiyuan_agent_direct`；pending 夹具 3 个；失败 0。耗时 median `5451ms`、p95 `11077ms`、max `12726ms`，最慢为 G31 pending 下只读保底查询、G12 查询+替换复合诉求、G27 学费替换预览、G16 锁定动作和 G26 保底切片查询。警告均为部分 no-plan/intent-only 夹具的志愿文件源缺失，不计为业务失败。
+- v1.62 focused 真实 LLM：G12 单独复跑 `1/1`，metrics: `/private/tmp/zhiyuan_400_v162_g12_post_query_instruction.json`；G2/G7/G12 focused `3/3`，metrics: `/private/tmp/zhiyuan_400_v162_g2_g7_g12_review_direct_and_query_continue.json`；G16 focused `1/1`，metrics: `/private/tmp/zhiyuan_400_v162_g16_pin_lock_prompt_fix.json`。
+- v1.61 聚焦单测：`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q -k 'query_plan or review_plan or direct_tool_output_uses_next_step or returns_directly_after_review_plan_tool'` 为 `53 passed, 1 skipped`；`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q -k 'pin_lock or prompt_mentions_preview_plan_action_for_plan_mutations or direct_tool_output_uses_next_step or query_plan'` 为 `11 passed, 2 skipped`；`.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q -k 'pending_short_text_action or no_pending_short_text_action'` 为 `2 passed`；`py_compile app/zhiyuan_agent/agent.py app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py app/service.py` 通过。
+- v1.60 聚焦单测与 PoC 全量：`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q -k 'duration_as_tag_alias or requires_model_retry_for_missing_major_tag or requires_model_retry_for_missing_cross_domain_school_attribute or accepts_structured_cross_domain_school_attribute or does_not_duplicate_shared_program_type'` 为 `5 passed, 163 deselected`；`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q` 为 `140 passed, 28 skipped`；`.venv/bin/python -m py_compile app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py` 和 `git diff --check` 通过。
+- v1.60 真实 LLM final-action 回归：使用临时 agent `8041`、后端 `8080`、MySQL 会话行克隆密码 `--backend-db-password 12345678` 复跑两条聚焦 case 均通过。`400-v157-combo-major-taxonomy-and-tag-final-action` 覆盖“管理学和五年制的都别要了→采纳”，metrics: `/private/tmp/zhiyuan_400_v160_major_tag_combo_real_dbclone.json`，2/2 通过，预览一步 `preview_intent_change` 一次传全，确认后 `confirm_pending` 触发 ordered/review 刷新，后端断言覆盖 `mustExcludeMajors` 同含管理学与 `专业标签:学制：5年`，最终 ordered items/units 裁剪。`400-v158-region-and-school-attribute-combo-final-action` 覆盖“山东别去，民办也算了→确认”，metrics: `/private/tmp/zhiyuan_400_v160_region_school_combo_real_dbclone.json`，2/2 通过，确认后 `mustExcludeRegions`、`mustExcludeSchools`、`candidateViewState.filters.negativeProvinceNames` 写入，基础候选池保留可恢复项，最终 ordered items/units 不含山东和民办。
+- v1.60 验证环境注意：同两条 case 在未成功克隆 `assistant_chat_session` 行时，pending 和报考要求写入成功，但 `ordered-plan/generate` 返回 `ordered_plan_response={"code":404,"msg":"会话不存在"}`，导致最终 ordered 不变；带 MySQL 密码克隆会话行后复跑通过。因此后续 final-action 回归必须确认 extra-data、志愿数据和 MySQL 会话行三者均克隆成功，否则只能记为环境失败。
+- v1.59 聚焦单测与 PoC 全量：`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q -k 'move_requires_model_retry or move_supports_tier_local_reorder_filters or move_requires_target_position or active_pending'` 为 `8 passed, 159 deselected`；`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q` 为 `139 passed, 28 skipped`；`.venv/bin/python -m py_compile app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py` 和 `git diff --check` 通过。
+- v1.59 真实 LLM G17 主链路：原 `400-g17-tier-local-reorder` source session 26 当前本地后端 `orderedPlanState/workingPlanState` 均为 0，复跑失败原因是夹具源状态漂移；改用有保底档的 source35 临时 case `/private/tmp/zhiyuan_400_v159_g17_source17_case.json`，临时 agent `8040` 复跑 `1/1` 通过，metrics: `/private/tmp/zhiyuan_400_v159_g17_model_retry_source35_clean.json`。结果为单次 `preview_plan_action`、`move_ordered_unit`、1 张 `pendingConfirmationCard`，耗时 `5059ms`。环境警告：`assistant_chat_session` MySQL 克隆因 root 无密码失败，但 extra-data 状态和志愿数据克隆成功。
+- v1.58 聚焦单测与 PoC 全量：`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q -k 'build_turn_context_injects_core_state or active_pending or append_to_active_intent_pending'` 为 `4 passed, 163 deselected`；`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q` 为 `139 passed, 28 skipped`；`.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q -k 'pending_short_text_action or direct_pending'` 为 `1 passed, 109 deselected`；`py_compile app/agent/context.py app/service.py app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py` 通过。
+- v1.58 真实 LLM final-action 回归：`examples/dialog_regression_400_v158_pending_combo_negation_cases.json` 使用临时 agent `8039`、后端 `--internal-service-url http://127.0.0.1:8080` 复跑 `9/9` 通过，metrics: `/private/tmp/zhiyuan_400_v158_pending_resolution_after_fix_backend8080.json`。覆盖“民办的不要→这个先算了，改成山东别去了→采纳”，确认后只写入山东且 `mustExcludeSchools` 不含民办；“山东别去，民办也算了→确认”同卡写入地域+院校属性并最终裁剪 ordered plan；“确认不要民办”在无 active pending 时创建新报考要求而非误 confirm；“不要确认，先别采纳”取消 active pending 且方案/要求不变。环境警告：runner 的 `assistant_chat_session` MySQL 克隆因 root 无密码失败，但 extra-data 状态和志愿数据克隆成功，业务步骤与后端断言均通过。
+- v1.57 真实取消/改口/组合/长上下文 final-action：新增 `examples/dialog_regression_400_v157_realistic_cancel_combo_cases.json`。首轮真实 LLM `7/11`，metrics: `/private/tmp/zhiyuan_400_v157_realistic_cancel_combo_initial.json`；失败 1 为“先不采纳了”模型无工具直答“已取消”，后端 `pendingConfirmation.status` 仍为 `active`，导致下一轮“那就只看公办吧”被旧 pending 阻塞且最终误采纳旧“不要民办”；失败 2 为“管理学和五年制的都别要了”只写入 `mustExcludeMajors=["管理学"]`，漏掉 `专业标签:学制：5年`。修复后真实 LLM 复跑 `11/11`，metrics: `/private/tmp/zhiyuan_400_v157_realistic_cancel_combo_after_fix.json`；后端断言覆盖 cancel 后 `pendingConfirmation.status=cancelled`、planningState version/items/units 不变，重新提出并采纳“只看公办”后写入 `mustIncludeSchools` 并刷新 ordered/review，“民办+中外合作”和“管理学+五年制”组合均同时写入，长上下文高收费移出确认后 ordered units 变短且 `tuitionPerYear <= 20000`。
+- v1.57 聚焦单测：`tests/unit/test_zhiyuan_agent_poc.py -q -k 'major_duration_as_tag_alias or supplements_major_tag_from_raw_combo_text or rejects_empty_payload_without_pending'` 为 `3 passed, 160 deselected`；`tests/unit/test_chat_service_history_persistence.py -q -k 'pending_short_text_action'` 为 `1 passed, 109 deselected`；`py_compile app/service.py app/zhiyuan_agent/tools.py` 与 `git diff --check` 通过。
+- v1.56 真实口语扩展 final-action：新增 `examples/dialog_regression_400_v156_realistic_broadened_final_action_cases.json`，带 `--clone-backend-chat-session` 复跑通过 `10/10`，metrics: `/private/tmp/zhiyuan_400_v156_realistic_broadened_final_action_initial.json`。覆盖“就看公办吧→行，采纳”“中外合作算了吧→确认”“管理学也别要了→确认吧”“五年制的也别要→采纳”“山东别去了，先记下，当前方案先别动→采纳”。前四类均走 `zhiyuan_agent_direct` + `preview_intent_change`，确认走 `direct_pending_intent_confirm` + `confirm_pending`，后端断言覆盖 pending applied、planningState version 增长、`mustIncludeSchools/mustExcludeSchools/mustExcludeMajors` 写入、基础候选池保留可恢复项、最终 ordered items/units 裁剪或不含被排除项；最后一类 `apply_to_current_plan=false` 确认后 `followupMessages=0`，`candidateViewState.filters.negativeProvinceNames` 写入山东，ordered items/units `unchangedFromBefore=true`。
+- v1.55 真实口语/指代/简略对话 final-action：新增 `examples/dialog_regression_400_v155_realistic_final_action_cases.json`，带 `--clone-backend-chat-session` 复跑通过 `7/7`，metrics: `/private/tmp/zhiyuan_400_v155_realistic_final_action_initial.json`。覆盖“有啥问题，咋弄→那高收费的别要了→确认执行”（review 引用后的口语后续调整）、“方案里的民办不要了→采纳”（当前方案锚定的 plan action）、“山东别去了→采纳”（裸口语地域要求）。后端断言覆盖确认后 pending applied、planningState version 增长、要求/方案动作真实生效、最终 ordered items/units 裁剪；后验统计为高收费 `30/93 -> 0/63`、民办 `37/93 -> 0/56`、山东 `14/93 -> 0/79`，units 分别 `45 -> 15`、`45 -> 8`、`45 -> 31`。
+- v1.54 agent 聚焦验证：`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q -k 'major_duration_as_tag_alias or rejects_empty_payload_without_pending or accepts_major_field_aliases'` 为 `3 passed, 159 deselected`，固定 `duration -> major_tag` 与空 pending 防护；全量 `.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q` 为 `134 passed, 28 skipped`。
+- v1.54 真实 local 标签 final-action：`examples/dialog_regression_400_v154_tag_final_action_cases.json` 带 `--clone-backend-chat-session` 复跑通过 `4/4`，metrics: `/private/tmp/zhiyuan_400_v154_tag_final_action_after_alias_fix.json`。步骤“博士点的不要了/五年制的不要了”均走 `zhiyuan_agent_direct` + `preview_intent_change`，确认均走 `direct_pending_intent_confirm` + `confirm_pending`；后端断言覆盖 `pendingConfirmation.status=applied`、`planningState.version` 增长、`mustExcludeSchools` 包含 `院校标签:博士点`、`mustExcludeMajors` 包含 `专业标签:学制：5年`、基础候选池仍保留标签项、最终 ordered items/units 裁剪并不含被排除 volunteerId。按 ordered unit volunteerId 回连基础候选池的后验统计：博士点 `4/93 -> 0/89`、五年制 `6/93 -> 0/87`，units 分别 `45 -> 41`、`45 -> 42`。
+- v1.54 首轮问题记录：`/private/tmp/zhiyuan_400_v154_tag_final_action_initial.json` 中“省重点的不要了”走通 final action，但模型把 `省重点` 归入 `school_level`，不适合作为通用 `school_tag` 覆盖；“五年制的不要了”传入 `negative.duration=["五年制"]`，旧工具未消费该 schema alias 并生成空 pending，确认后 `missing_intent_payload`、方案无变化。修复后不再允许空 pending 保存。
+- v1.54 兼容复跑专业门类：`examples/dialog_regression_400_v153_major_final_action_cases.json` 在标签修复后复跑通过 `2/2`，metrics: `/private/tmp/zhiyuan_400_v153_major_final_action_after_v154_tag_fix.json`。
+- v1.54 兼容复跑核心属性：`examples/dialog_regression_400_v151_attribute_final_action_cases.json` 在标签修复后复跑通过 `8/8`，metrics: `/private/tmp/zhiyuan_400_v151_attribute_final_action_after_v154_tag_fix.json`。
+- v1.53 后端聚焦验证：`mvn -q -Dtest=PlanningStateServiceTest#shouldEnrichMajorTaxonomyWhenReturningPlanningState+shouldApplyMajorDisciplineRequirementFromSubCategoryIdWhenGeneratingOrderedPlan+shouldPruneOrderedUnitMajorsByEffectiveVolunteerIdsWhenUnitSchoolNatureMissing+shouldTreatHighTuitionScopeAsTuitionYearWhenGeneratingOrderedPlan test` 通过，固定旧状态专业类补齐、专业门类 final-action、高收费和 ordered unit 裁剪。
+- v1.53 agent 聚焦验证：`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q` 为 `132 passed, 28 skipped`，新增 direct/nested 专业分类字段参与本地影响计数的断言。
+- v1.53 真实 local 专业门类 final-action：`examples/dialog_regression_400_v153_major_final_action_cases.json` 带 `--clone-backend-chat-session` 复跑通过 `2/2`，metrics: `/private/tmp/zhiyuan_400_v153_major_final_action_after_preview_count_fix.json`。步骤 1 “管理学的不要了”走 `zhiyuan_agent_direct` + `preview_intent_change`，预览文案断言 `20个相关志愿`；步骤 2 “采纳”走 `direct_pending_intent_confirm` + `confirm_pending`，后端断言 `pendingConfirmation.status=applied`、`planningState.version` 增长、`mustExcludeMajors` 包含管理学、基础候选池仍保留被排除 volunteerId、最终 ordered items/units 变短且 ordered units 不含该 volunteerId。后验统计：确认前 ordered major 明细中管理学 `20/94`，确认后 `0/73`，units `45 -> 40`。
+- v1.52 真实 local 属性 final-action 兼容复跑：`examples/dialog_regression_400_v151_attribute_final_action_cases.json` 在 v1.53 改动后复跑通过 `8/8`，metrics: `/private/tmp/zhiyuan_400_v151_attribute_final_action_after_major_taxonomy_fix.json`。
+- `tests/unit/test_zhiyuan_agent_poc.py`：`131 passed, 28 skipped`。
+- `tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_base_agent.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_ws_compat.py`：`73 passed`。
+- 清理后组合回归 `tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_zhiyuan_agent_poc.py tests/unit/test_chat_service_history_persistence.py`：`257 passed, 29 skipped`。
+- Runner/report 单测：`tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_dialog_regression_runner.py`：`150 passed`。
+- 真实 local focused：`examples/dialog_regression_400_v143_constraint_apply_cases.json` 通过 `2/2`，metrics: `/private/tmp/zhiyuan_400_v143_constraint_apply_cases.json`。第二步 `followupMessages=0`，后端断言 `pendingConfirmation.status=applied`、`planningState.version` 增长、`constraintState.hardConstraints.mustExcludeSchools` 包含 `院校性质:民办` 均通过。
+- 真实 local 确认执行集：`examples/dialog_regression_400_direct_confirm_execution_cases.json` 通过 `4/4`，metrics: `/private/tmp/zhiyuan_400_direct_confirm_execution_after_v143.json`。具体项移出确认仍发 ordered/review 刷新；民办要求确认在克隆会话候选重建 404 时不发刷新。
+- `py_compile` 覆盖 `app/zhiyuan_agent/tools.py`、`app/zhiyuan_agent/prompt.py`、`app/service.py`、`app/domain/fix_proposal_formatter.py` 等触达文件。
+- 后端 PlanningStateService 全量单测：`mvn -q -Dtest=PlanningStateServiceTest test` 通过。
+- v1.52 后端聚焦验证：`mvn -q -Dtest=PlanningStateServiceTest#shouldPruneWorkingPlanWhenGeneratingOrderedPlanWithConfirmedHardConstraints+shouldPruneOrderedUnitMajorsByEffectiveVolunteerIdsWhenUnitSchoolNatureMissing+shouldTreatHighTuitionScopeAsTuitionYearWhenGeneratingOrderedPlan test` 通过，固定 ordered units 的 effective volunteerId 裁剪，以及 `招生类型:高收费` 对 `tuitionPerYear` 的数值消费。
+- v1.52 后端全量验证：`mvn -q -Dtest=PlanningStateServiceTest test` 通过。
+- v1.52 runner 单测：`.venv/bin/python -m pytest tests/unit/test_dialog_regression_runner.py -q` 为 `89 passed`，新增 `maxNumericFieldLessThanOrEqual` 后端断言，避免“不要高收费的”只看文案或标签而漏掉学费数值残留。
+- v1.52 真实 local 属性 final-action 首轮验证：`examples/dialog_regression_400_v151_attribute_final_action_cases.json` 首轮 `7/8`，metrics: `/private/tmp/zhiyuan_400_v151_attribute_final_action_real.json`。通过项为“民办的不要/只看公办学校/不要中外合作”的 direct intent 与确认写入；失败项为“不要高收费的→采纳”，虽然写入 `constraintState.hardConstraints.mustExcludeSchools=["招生类型:高收费"]` 且发送 ordered/review 刷新，但最终 `orderedPlanState.units` 仍存在 `tuitionPerYear=60000`。后验统计还发现“民办的不要”当时只裁剪了 `orderedPlanState.items`，部分旧 `orderedPlanState.units` 因 `schoolNature` 为空仍可能残留。这两个问题同属 ordered units 最终数据闭环缺口。
+- v1.52 真实 local 属性 final-action 修复后复跑：同一 case 带 `--clone-backend-chat-session` 复跑通过 `8/8`，metrics: `/private/tmp/zhiyuan_400_v151_attribute_final_action_after_fix.json`。覆盖口语化显式诉求“民办的不要”“只看公办学校”“不要中外合作”“不要高收费的”，全部走 `zhiyuan_agent_direct` + `preview_intent_change`，确认走 `direct_pending_intent_confirm` + `confirm_pending`；后端断言覆盖 pending applied、version 增长、`mustExcludeSchools/mustIncludeSchools` 写入、基础候选池仍可恢复、最终 ordered items/units 裁剪，以及高收费 `tuitionPerYear <= 20000`。
+- v1.51 真实 local final-action 验证：`examples/dialog_regression_400_v150_candidate_view_cases.json` 带 `--clone-backend-chat-session`、`--clear-backend-pending-per-case`、`--clear-backend-planning-intent-per-case` 复跑通过 `2/2`，metrics: `/private/tmp/zhiyuan_400_v150_candidate_view_real_with_session_clone.json`。步骤 1 “山东的不要”走 `zhiyuan_agent_direct` + `preview_intent_change`，生成待确认卡；步骤 2 “采纳”走 `direct_pending_intent_confirm` + `confirm_pending`，后端断言全部通过：`pendingConfirmation.status=applied`、`planningState.version` 增长、`constraintState.hardConstraints.mustExcludeRegions` 包含山东、`candidateViewState.filters.negativeProvinceNames` 包含山东、基础 `candidatePoolState.items` 仍包含山东、最终 `orderedPlanState.units` 不包含山东。confirm 后发送 ordered/review 刷新 followup，说明最终方案动作已触发。
+- v1.50 真实 local 首轮失败复盘：同一 case 未带 `--clone-backend-chat-session` 时，pending 和报考要求写入均成功，但 `_apply_intent_pending` 调用 `generate_planning_ordered_plan()` 收到 `ordered_plan_response={"code":404,"msg":"会话不存在"}`，导致 `orderedPlanState.units` 仍含山东，metrics: `/private/tmp/zhiyuan_400_v150_candidate_view_real_after_agent_restart.json`。根因是 runner 只克隆 extra-data，没有克隆 `assistant_chat_session` 行；这属于最终 action 验证夹具缺口，不是 direct intent/confirm_pending 语义分流错误。
+- v1.50 后端聚焦验证补充：`mvn -q -Dtest=PlanningStateServiceTest#shouldExposeConfirmedRegionRequirementInCandidateViewState+shouldRemoveConfirmedRegionRequirementWhenVisibleCandidateFilterIsRemoved+shouldKeepBaseCandidatePoolWhenConfirmedHardConstraintsExist+shouldQueryBaseCandidatePoolWithoutHiddenConfirmedHardConstraints+shouldKeepCandidateFilterOptionsRecoverableWhenRegionRequirementFiltersVisibleView+shouldPruneWorkingPlanWhenGeneratingOrderedPlanWithConfirmedHardConstraints test` 通过，固定“基础候选池和筛选选项仍保留山东、可见筛选入参才过滤展示”的页面一致性契约。
+- v1.50 后端全量验证：`mvn -q -Dtest=PlanningStateServiceTest test` 通过；`git diff --check` 通过。
+- v1.50 前端验证边界：`npx tsc --noEmit --pretty false` 当前失败在既有 `session/ModalForm`、`session/subjectScores`、`userCenter`、`service/request` 等非本次改动文件；`npx eslint src/pageComponents/sessionDetailV2/WorkspacePanel/index.tsx` 受 ESLint 9 flat config 缺失阻塞，未得到有效结果。
+- v1.49 后端聚焦验证：`mvn -q -Dtest=PlanningStateServiceTest#shouldMarkConstraintIntentChangeStaleWithoutCandidatePool+shouldExposeConfirmedRegionRequirementInCandidateViewState+shouldRemoveConfirmedRegionRequirementWhenVisibleCandidateFilterIsRemoved+shouldKeepBaseCandidatePoolWhenConfirmedHardConstraintsExist+shouldQueryBaseCandidatePoolWithoutHiddenConfirmedHardConstraints+shouldPruneWorkingPlanWhenGeneratingOrderedPlanWithConfirmedHardConstraints test` 通过。
+- v1.49 agent 聚焦验证：`.venv/bin/python -m pytest tests/unit/test_zhiyuan_agent_poc.py -q` 为 `131 passed, 28 skipped`。
+- 真实 session 35 final-action 历史验证：`/private/tmp/zhiyuan_400_v143_real_session_private_case.json` 通过 `2/2`，确认前 ordered 民办 `6/15`、candidate 民办 `342/757`，确认后 ordered 民办 `0/15`、candidate 民办 `0/415`。v1.49 后 candidate 清零不再是目标，需按新口径复跑：基础候选池保留、可见筛选同步、ordered 不含已排除项。
+- 真实 session 26 问题复现记录：`/private/tmp/zhiyuan_400_v143_real_session_region_case.json` runner 通过 `2/2`，但确认后只看到 candidate pool 山东项 `0/1558`，ordered plan 仍为山东 `20/54`；该结果不再按 runner 成功计为链路闭合。随后直接调用 ordered-plan generate 验证时曾发现按 candidate id 裁剪 ordered units 会把非山东也清空，该过度裁剪风险已改为 ordered unit 结构化资格判断。新增后端复现单测 `shouldPruneWorkingPlanWhenGeneratingOrderedPlanWithConfirmedHardConstraints` 覆盖基础候选池仍保留山东项时，ordered/draft/unit 仍按临时有效候选移除山东并保留非山东项。
+- 清理验证：`tests/unit/test_proposal_compiler_runtime_selection.py tests/unit/test_runtime_hard_cut_audit.py` 为 `91 passed`，并新增 hard-cut audit 防止旧 full-agent arbitration / blocked reply helper 回流。
+
+**仍需真实闭环验证：**
+- 地域类、核心属性类、专业门类、院校标签、专业标签和跨领域组合 final-action 已用克隆真实 chat_session 的回归会话验证到最终 ordered-plan 数据变化；真实口语/指代/简略对话已完成多轮覆盖，并验证 `apply_to_current_plan=false`、“取消后重新提出”、同轮组合要求、跨领域组合和长上下文承接。接下来继续扩大完整 G1-G32 direct 回归、同轮“放弃当前待确认并改成新要求”的更多口语样本、取消/确认否定歧义样本，以及能稳定触发 `continue` 模型重试的真实对话样本；保持新口径：基础候选池可恢复、候选筛选或方案派生状态可解释、最终 ordered/review 不含已排除项。
+
+---
+
+## 12. 当前方案 action final-action 落地缺口（2026-07-07，v1.73 回归）
+
+`examples/dialog_regression_400_v173_action_expansion_final_cases.json`（11 步，4 通过/7 失败）暴露的问题集中在**当前方案具体项操作**（remove/replace/move/sort），与 §11 的约束落地是不同轴：§11 是"属性/地域约束→方案"，本节是"指代/位置/替换/排序→后端真实变化"。四个问题有一个共同底层特征——**Agent 层与后端/数据层之间的"契约"在多个维度上没有对齐**，工具返回 success 但方案实际没动。
+
+### 12.1 问题一：ordered item / ordered unit 位置语义分叉
+
+**现象：** "第三个专业组"预览和确认都操作了喀什大学建筑学所在 unit，而不是第 3 个 ordered unit。
+
+**根因：**
+`_items_by_positions`（`tools.py:4245`）按 item 的 `position` 字段匹配，`plan/items.json` 经 enrichment 后是**明细行（ordered item）粒度**——一个 unit（志愿组/专业组）可能展开成多行 item。用户说"第三个专业组"指的是**第 3 个 unit**，但代码把它解析成 `position==3` 的明细行。当明细行的 position 与 unit 序号不是 1:1（多专业组展开）时，第 3 行明细可能落在第 1 或第 2 个 unit 内部，于是定位到喀什大学建筑学而非第 3 个 unit。
+
+`_plan_item_group_key`（`tools.py:3906`）已经能按 unit_id/groupId 聚合，但位置解析路径没用它——位置匹配走的是扁平 item.position。
+
+**修复方向：位置语义按 unit 聚合，明细行位置只作为 unit 内二级定位。**
+- 新增 unit 级序号：先用 `_plan_item_group_key` 把 items 聚合成有序 unit 列表，"第 N 个/第 N 个专业组/第 N 个志愿"解析为第 N 个 unit（该 unit 的全部明细行一起作为操作目标）。
+- 保留明细级定位仅用于"第 N 个志愿里的第 M 个专业"这类二级引用。
+- UI 文案统一：预览卡展示"第 N 个志愿组（学校·专业组）"，避免明细行序号和 unit 序号混用（与 §9.7 计数口径同源，应共用 unit 聚合工具）。
+
+### 12.2 问题二：replace 定位到旧项但不自动选候选 → 不出 pending
+
+**现象：** "青岛理工那个中外合作建筑太贵了，换个便宜点的"能定位旧项，但没自动选出可替换候选，未创建 pending。
+
+**根因：**
+`_auto_select_replacement_candidates`（`tools.py:4048`）当前主要覆盖 review_issue_code 驱动的替换（高收费等），对**口语化"换个便宜点的"**这类无 review_issue、只有"便宜"这一软性方向的替换，候选查询/打分没有命中路径——既没有从候选池按"同档位+更低学费"结构化筛选，也没有返回"候选不足"的明确原因，直接静默不建 pending。
+
+**修复方向：replace 候选选择结构化 + 失败可解释。**
+- 主模型把当前问/上下文中的替换方向压缩为结构化 `ReplacementSpec`（如 `improve_dims=["tuition_decrease"]`、`exclude_markers=["high_tuition","cooperative"]`），工具不从 `raw_user_text` 做关键词抽取；`review_issue_code`、结构化 `filters` 和旧项结构化属性只是 spec 的其他来源。
+- 用 spec 映射候选池查询条件（同 tier + 学费方向排序/学费上限 + 排除当前 issue marker + 已确认要求 carryover），调 `query_planning_candidate_pool` 结构化取候选。
+- 有候选 → 建 replace pending（remove 旧 unit + select 新候选）；无候选 → 返回 `clarify` 且给出可执行原因（"候选池里同档位没有更便宜的建筑类志愿，可以放宽到相邻档位或换个方向"），不静默 no-op。
+- 与 §11.4 方向 2 一致：replace 的候选来源必须是"尊重当前约束的候选池查询"，而非本地扫描。
+
+### 12.3 问题三：排序字段 Agent/后端枚举不共享，确认后不校验实际变化
+
+**现象：** `sort_ordered_plan(sort_field=school_level)` 确认返回成功且 version 增长，但 source17 与 target 9904734 的 ordered 顺序完全一致——后端排序只支持 `admissionRatio/schoolRank/finalScore`，`school_level` 被归到默认排序。
+
+**根因（双重）：**
+1. `_plan_sort_field`（`tools.py:5139`）把 payload 里的 `sort_field` 原样透传给 `sort_planning_ordered_plan`，**不校验是否后端支持**。`_normalize_plan_query_sort_field`（`tools.py:3589`）的枚举是 position/admission_probability/tuition——与后端 `admissionRatio/schoolRank/finalScore` 又是**第三套不一致的命名**。三处枚举（模型输出、query 归一、后端契约）互不对齐。
+2. 确认执行后只看 `version 增长 + success`，不校验 ordered 顺序是否真的变了——version 增长是"重排请求被受理"，不等于"按目标字段排了"。这是 §10.2 确认闭环断言的又一盲区（和 §11.1 exclude 落地盲区同类）。
+
+**修复方向：建立共享排序枚举 + 确认后变化校验。**
+- 定义单一 `PLAN_SORT_FIELDS` 枚举（agent 侧），显式映射到后端支持字段：`admission_ratio→admissionRatio`、`school_rank→schoolRank`、`comprehensive→finalScore`；不在映射内的字段（如 school_level）在 **preview 阶段**就返回 `clarify`（"目前支持按录取率/院校排名/综合分排序，学校层次暂不支持单独排序"），不生成 pending。
+- Prompt 工具示例只暴露受支持的排序字段。
+- 确认执行后，对比 ordered unit 顺序 hash（排序前/后），若无变化则回复"这次排序后顺序没有变化"而非"已按要求重新排序"，避免谎报。
+
+### 12.4 问题四：无 active pending 时"执行/采纳"隐式发起新动作
+
+**现象：** 审查后"那高收费的换便宜点"两次 `preview_plan_action` 仍无 pending，只给三种处理选项；随后用户"执行"在无 active pending 下又生成新的移出预览，而不是确认或澄清。
+
+**根因（两段）：**
+1. 前半段是 §12.2 的 replace 不出候选 → 只能退化成"给你三种处理选项"的只读建议，没有落成可确认 pending。
+2. 后半段更严重：用户"执行/采纳"本意是确认前面那个（并不存在的）pending，但因为没有 active pending，`preview_plan_action` 被再次触发生成**新的移出预览**——把"确认既有操作"误当成"发起新操作"。`confirm_pending` 有 no-active-pending 防护，但这轮根本没走到 confirm_pending，模型直接又调了 preview_plan_action。
+
+**修复方向：确认类意图在无 pending 时必须澄清，不能隐式发起新动作。**
+- Prompt 强化：用户说"执行/采纳/就这么办/确认"时，一律先走 `confirm_pending`；`confirm_pending` 在无 active pending 时返回明确澄清（"现在没有待确认的调整，你是想让我把刚才说的高收费替换整理成具体方案吗？"），不生成新预览。
+- 工具边界：`preview_plan_action` 增加防护——当本轮用户消息是纯确认词（无新操作描述）且无 active pending 时，不创建预览，返回 `clarify` 引导重新表达诉求。
+- 根治依赖 §12.2：只要"换便宜点"能稳定出 replace pending，用户随后的"执行"就有 active pending 可确认，这条链自然闭合。
+
+### 12.5 共同底层：三处"契约对齐"缺口 + 确认后校验缺失
+
+四个问题归结为两类系统性缺陷：
+
+| 类别 | 表现 | 涉及问题 |
+|------|------|---------|
+| **枚举/语义契约未对齐** | 位置（item vs unit）、排序字段（模型/query/后端三套命名）、替换方向（口语 vs 候选池查询）在 Agent 与数据层/后端之间没有统一映射 | §12.1 §12.2 §12.3 |
+| **确认执行后不校验真实变化** | version 增长/success ≠ 方案真的变了；exclude 不落地（§11.1）、排序不生效（§12.3）都被谎报为成功 | §12.3 §11.1 |
+
+这与 §10.2 的判断一致：`confirm_pending` 的后端 action 闭环**只断言了 remove 具体项这类"强变化"**，对"重排、排除、替换"这类"可能 no-op 的变化"缺少"确认后真实 diff 校验"。这是切换到新框架前必须补的通用能力。
+
+### 12.6 落地计划
+
+**阶段 1（确认后变化校验，通用能力，最高优先，1-2 天）：**
+- `confirm_pending` 执行后统一增加"操作前/后 ordered-plan 快照 diff"：remove 校验目标 unit 消失、move 校验位置变化、sort 校验顺序变化、replace 校验旧 unit 消失+新 unit 出现、intent-exclude（§11.1）校验被排除项消失。
+- 任一操作 diff 为空 → 回复据实说明"这次没有产生变化"及可能原因，不谎报成功。
+- 这一步同时覆盖 §11.1 exclude 落地盲区和 §12.3 排序盲区，是共用地基。
+
+**阶段 2（枚举/语义契约对齐，2-3 天）：**
+- §12.1 位置按 unit 聚合（复用 `_plan_item_group_key`，与 §9.7 共用 unit 计数工具）。
+- §12.3 建立共享 `PLAN_SORT_FIELDS` 枚举，preview 阶段拦截不支持字段，Prompt 只暴露受支持字段。
+- §12.2 replace 候选改结构化候选池查询（同档位+学费上限+规避 issue 标签），无候选返回可执行原因。
+
+**阶段 3（确认语义收口，1 天）：**
+- §12.4 纯确认词在无 active pending 时强制走 confirm_pending 澄清；preview_plan_action 拒绝把确认词当新动作。
+- Prompt 增加"执行/采纳→confirm_pending，无待确认则澄清"示例。
+
+**阶段 4（回归收口，2 天）：**
+- 用克隆真实 chat_session 重跑 v1.73 的 11 步，断言：第 N 个志愿组定位到正确 unit、replace 出候选 pending 或可执行原因、排序真实改变顺序或据实说明、"执行"在无 pending 时澄清。
+- 把"确认后真实 diff 校验"纳入所有 final-action 回归的通用断言（不再只看 success/version）。
+- 与 §11 exclude 落地回归合并跑一轮，确认两轴问题同时闭合。
+
+**放量门槛更新（叠加 §11.5）：** 当前方案 action 场景（remove/replace/move/sort）在阶段 1-4 回归通过前，不纳入属性/地域约束之外的全量放量；可先放量只读 + 具体项 remove（已验证强变化）。
+
+实施顺序：阶段 1（通用校验地基）→ 阶段 2（契约对齐）→ 阶段 3（确认语义）→ 阶段 4（回归收口）
+
+### 12.7 v1.77 落地状态
+
+- 阶段 1 已进入生产链路：`confirm_pending` 对 `remove_units / move_ordered_unit / sort_ordered_plan / replace_units` 增加 ordered-plan 前后快照 diff。remove 校验目标专业组消失，move 校验位置变化，sort 顺序未变时据实说明，replace 校验旧专业组消失并校验新候选 volunteerId 出现在确认后的 `orderedPlanState`。
+- replace diff 快照口径修正：`orderedPlanState.units` 仍作为 unit 顺序和位置来源，但 `orderedPlanState.items` 始终参与 volunteerId 汇总，避免新候选已进入 items、但 units.majorItems 尚未完整同步时被误判为未加入。
+- 阶段 2 的位置契约继续收口：除 `targets=["第三个专业组"]` 外，`filters.position_group=3` 及 `positionGroup/unitPosition/unit_position/orderedPosition/ordered_position` 别名也按第 3 个 ordered unit/专业组定位。该 selector 是模型输出的结构化字段，不从用户原文做语义匹配。
+- 本轮验证结果：focused 单测 `7 passed, 174 deselected`；v1.73 action expansion 真实 LLM 回归 `11/11`；v1.51 属性类最终 action 真实 LLM 回归 `8/8`。两组真实回归都包含最终确认动作和后端 ordered-plan 断言，不只检查出卡。
+- 当前剩余方向：继续扩大真实口语回归，优先观察回复整体质量、active pending 下改口/追加语义、无 pending 确认边界，以及 replacement spec 候选质量；旧链路继续按 Phase 3 清理，不再为旧模型路径补兼容。
+
+### 12.8 v1.78 G1-G32 direct 主集复核
+
+- 本轮不修改实现，只复跑 4.0 direct 主集：`examples/dialog_regression_400_g1_g32_direct_cases.json`，隔离端口 Backend `18290`、Agent `18291`，metrics: `/private/tmp/zhiyuan_400_v178_g1_g32_direct_full.json`。
+- 结果：20 步全部通过，`failures=[]`、`warnings=[]`。运行期观察为 intent pending 6、plan mutation 预览 3、readonly 9、needs-plan-first 2；pending 类型为 intent change 6、plan mutation 3、none 11。
+- direct 链路覆盖：G1/G4/G8/G23/G25/G30 进入 `preview_intent_change`；G12/G17/G27 进入 `preview_plan_action` 并生成方案调整预览；G2/G3/G7/G21/G26/G31 只读查询/审查不产生待确认卡；G10 无待确认时确认走 `confirm_pending` 防护；G19/G32 无正式方案时走 needs-plan-first 防护。
+- 性能：median `4988ms`、p95 `7247ms`、max `11251ms`。尾部集中在需要二次模型总结的只读查询或复合诉求：G31 pending 下保底查询、G12 查询+替换、G26 保底切片、G3 pending 下只读查询。
+- 客观观察项：G2/G7 审查能保持只读边界，但“当前没有明显风险或提醒”对“高收费/中外合作/预算一般”这类问题的信息量偏弱，后续应补充命中数量、占比、预算影响和可执行处理方向；G19/G32 无方案防护正确但回复偏长，可压缩；G16 是不支持锁定动作的安全拦截验证，不是锁定动作落地验证。
+- 结论：G1-G32 主集的 direct 路由、pending 边界和 no-plan 防护稳定；最终 action 数据变化仍以 v1.77 的 v1.73 action expansion `11/11` 与 v1.51 属性类 final-action `8/8` 为闭环依据。下一步继续补真实口语/指代/多轮 case，优先覆盖同轮改口、active pending 下追加诉求、以及 replace 候选质量。
+
+### 12.9 v1.79 active pending 与 replace focused 回归
+
+- 新增回归资产：`examples/dialog_regression_400_v179_pending_replace_review_quality_cases.json`。覆盖四类真实口语链路：
+  - active pending 下追加新要求：“山东别去了”后“再把民办也算了吧，一起记上”，确认后要求同时写入，最终 ordered 不含山东/民办。
+  - active pending 下放弃当前待确认并改成新要求：“民办的不要”后“等下，别按这个了，改成只看公办，山东也别去”，确认后写入“公办”和“不要山东”，旧“不要民办”不单独落库。
+  - 只读审查后直接说“执行”时必须无 pending no-op，不隐式创建方案调整。
+  - targeted replace：“青岛理工那个中外合作建筑太贵了，换个正常收费的，最好不是中外合作”，检查 replacement spec 与确认后 ordered 变化。
+- 首轮真实 LLM：`8/10`，metrics: `/private/tmp/zhiyuan_400_v179_pending_replace_review_quality_real.json`。active pending append 通过，replace_active_pending 漏掉“山东也别去”，导致确认后只采纳“公办”，ordered 仍保留山东项。
+- 修复方式：只改 prompt，不改工具语义、不加工具层字符串兜底。补充规则：active pending 改写/追加时必须完整抽取当前用户这句话中所有显式要/不要项；“再/也/一起/加上/顺便/补一个”作为追加语义交给模型判断；地域+院校属性同句时优先用 `intent_type="region"` 承载地域项，并在同一 positive/negative payload 中保留院校属性。
+- 修复验证：`py_compile app/zhiyuan_agent/prompt.py` 通过，`git diff --check` 通过。第二轮 metrics `/private/tmp/zhiyuan_400_v179_pending_replace_review_quality_after_prompt_fix.json` 显示 replace_active_pending 通过，但 append 变成只保留“民办”而漏掉旧 pending 的“山东”。继续补 append 示例后，第三轮 metrics `/private/tmp/zhiyuan_400_v179_pending_replace_review_quality_after_append_prompt_fix.json` 中 active pending append、active pending replace、只读审查后无 pending “执行”均通过。
+- 剩余问题：targeted replace 非稳定。同一句“青岛理工那个中外合作建筑太贵了，换个正常收费的，最好不是中外合作”在前两轮能生成替换预览并完成确认；第三轮未稳定定位当前方案项，回复“当前方案里没有找到”，没有创建 pending，后续“就这样换”也只能变成只读查询。这说明 replace 的目标定位仍依赖单次模型参数质量，和 §12.2 的 replacement spec 候选方向不是同一个问题。
+- 后续方向：为 `preview_plan_action(action="replace")` 增加结构化 retry 协议。当模型已经表达 replace，但工具缺少或没能唯一定位旧项时，返回 `next_step=continue` 并要求模型补齐 targets/filters/review_issue_code/selector，而不是直接向用户说没找到；若重试后仍不能定位，再返回可执行澄清。该方案仍由模型基于压缩上下文补结构化参数，不引入工具层原文字符串匹配。
+
+### 12.10 v1.82 targeted replace 与 active pending 修复落地
+
+- `preview_plan_action(action="replace")` 已增加旧项定位结构化 retry 协议：当 action 已明确是 replace，但旧项缺失或当前结构化参数无法唯一定位当前方案项时，工具返回 `next_step=continue`、`reason=plan_action_requires_replace_target`、`current_user_text` 和 `retry_required_fields`，要求主模型补齐 `targets/filters/review_issue_code/selector/replacement_spec` 后重试。每轮只允许一次 retry；第二次仍无法定位时返回用户可执行澄清，避免无限继续。
+- 该修复仍遵守 4.0 原则：工具只消费模型传入的结构化参数和已压缩上下文，不在工具层解析“青岛理工/中外合作/太贵/正常收费”等用户原文关键词；替换方向仍走 `ReplacementSpec`，旧项定位由模型把上下文压缩成 `targets` 或 `filters`。
+- 补齐结构化 filter alias：`school_name/schoolName/school_names/schools/collegeName` 归一为 `school`，`major_name/majorName/major_names/majors` 归一为 `major`。这解决了真实回归中模型重试传 `filters={"school_name":"青岛理工大学"}` 但 `query_plan`/`preview_plan_action` 无法命中的问题。
+- 补齐 `only_keep` 意向 canonicalize：当模型对“只看公办，山东也别去”同时输出 `positive.school_nature=["公办"]` 和冗余 `negative.school_nature=["民办"]` 时，工具在结构化合并阶段移除冗余 `negative_school_nature=民办`，最终只表达用户当前诉求“只看公办 + 不去山东”，不把旧待确认的“不要民办”单独保留为新诉求。
+- 验证结果：`py_compile app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py` 通过；focused 单测 `17 passed, 169 deselected`；完整 direct 单测 `157 passed, 29 skipped`；`git diff --check` 通过。
+- 真实 LLM focused 结果：`examples/dialog_regression_400_v179_pending_replace_review_quality_cases.json` 最终 `10/10`，metrics: `/private/tmp/zhiyuan_400_v182_intent_canonicalize_real.json`。覆盖 active pending 追加、active pending 改写、只读审查后无 pending 的“执行”防护，以及 targeted replace 生成 `replace_units` pending 后通过 `confirm_pending` 真实修改 ordered plan。
+- 当前观察：v1.82 已闭合 v1.79 focused 集暴露的两个业务问题。后续应继续扩大真实口语/指代/多轮回归，重点看 replacement spec 候选质量、active pending 改口/追加的更多表达、以及只读回复的信息密度；旧链路清理继续按 Phase 3 执行，不再为旧模型路径补兼容。
+
+### 12.11 v1.83 真实口语 follow-up 扩展与 no-pending 边界
+
+- 新增回归资产：`examples/dialog_regression_400_v183_realistic_followup_quality_cases.json`，覆盖 5 类更口语的多轮链路：
+  - active pending 追加：“山东先别去了”后“再加个只看公办，一起记上”，确认后同时写入不要山东 + 只看公办，ordered 不含山东/民办。
+  - active pending 改写：“中外合作先不要”后“算了不是这个，改成山东别去，民办也不要”，确认后只采纳新诉求，不保留旧“不要中外合作”。
+  - targeted replace 简略表达：“青岛理工那个建筑太贵了，换个便宜点正常收费的”生成 `replace_units`，确认后 ordered 真实变化。
+  - 只读审查后模糊采纳：“这版高收费中外合作这些咋整，先别动”后“那就照你说的处理吧”，无 active pending 时必须走 `confirm_pending` no-op，不自动创建方案调整。
+  - 只读审查后明确动作：“那高收费这些换便宜点，不是直接删”生成 `replace_units`，后续“执行”通过 `confirm_pending` 真实修改 ordered plan。
+- 初始真实 LLM 结果：`12/13`，metrics: `/private/tmp/zhiyuan_400_v183_realistic_followup_quality_initial.json`。唯一失败为“那就照你说的处理吧”被模型从上一轮只读审查建议自动转成 `preview_plan_action(replace_units)`，创建了替换待确认卡；后端 `planningState.version` 未变，但 `pendingConfirmation` 不为空，违反 no-pending 防护。
+- 修复方向与实现：不在工具层增加用户原文字符串匹配，只补主模型判决规则。当前状态摘要里的待确认状态作为本轮依据；只读审查/处理方向之后，若本轮只表达“照你说的处理/就这么办/按你说的来/执行/采纳”且没有明确动作对象与动作类型，必须调用 `confirm_pending`；没有待确认时由工具返回“当前没有待确认操作，不会执行任何变更”。明确“高收费这些换便宜点/不是直接删”仍走 `preview_plan_action(replace)`。
+- 复验注意：prompt 修改后必须重启 agent 或使用新端口，否则旧进程不会加载修改；重复使用失败 session 会受到旧 pending/history 残留影响。最终使用新 agent `18292` 与 `--session-offset 200` 复跑整组。
+- 最终验证：`py_compile app/zhiyuan_agent/prompt.py` 通过，`git diff --check` 通过；focused 失败 case 复跑 `2/2`，metrics: `/private/tmp/zhiyuan_400_v183_no_pending_vague_execute_after_prompt_fix_current_agent.json`；整组 v1.83 真实 LLM `13/13`，metrics: `/private/tmp/zhiyuan_400_v183_realistic_followup_quality_after_prompt_fix.json`。
+- 当前观察：replace 候选仍倾向选择更低学费但民办的山东候选，这是当前 `ReplacementSpec` 只表达学费下降时的合理结果；如果用户同时要求公办/不要民办，需要由模型把该诉求一并压入结构化条件。审查回复的信息量已比 v1.78 更明确，但“需要你先取舍后再处理”等表达仍偏机械，后续可作为回复质量优化项。
+
+### 12.12 v1.84 active pending 短句确认与主集复核
+
+- 问题来源：v1.83 扩展回归在 fresh agent 上重跑时发现 targeted replace 的确认轮不稳定。第一轮“青岛理工那个建筑太贵了，换个便宜点正常收费的”已生成 `replace_units` 待确认卡，但第二轮“就换这个”时模型没有调用 `confirm_pending`，而是直接口头回复已确认执行。后端实际仍为 `pendingConfirmation.status=active`、`planningState.version` 未增长、ordered 仍包含旧的青岛理工 unit。
+- 修复方式：prompt-only，不在工具层增加用户原文字符串语义匹配。当前状态摘要显示“待确认：有”时，如果用户短句表达是在选择当前预览、确认当前预览，且没有提出新的报考要求或新的方案调整诉求，必须调用 `confirm_pending(action="confirm")`；没有 `confirm_pending` 工具结果前，回复层不得说“已替换/已完成替换/已更新”。该规则同时保留 v1.83 的 no-pending 边界：只读审查后无 active pending 的“照你说的处理/执行”仍走 `confirm_pending` no-op，不隐式创建方案调整。
+- 聚焦验证：单 case `400-v183-terse-targeted-replace-cheaper-final-action` 复跑 `2/2`，metrics: `/private/tmp/zhiyuan_400_v184_v183_targeted_replace_after_confirm_prompt_fix.json`。确认轮“就换这个”调用 `confirm_pending`，routingPath=`direct_pending_plan_confirm`，后端断言覆盖 `pendingConfirmation.status=applied`、`planningState.version` 增长、ordered units 变化和旧 unit 消失。
+- v1.83 整组验证：首轮 `/private/tmp/zhiyuan_400_v184_v183_focused_after_confirm_prompt_fix.json` 为 `9/13`，4 个失败均来自模型服务连接问题（`TimeoutError/ModelAPIError`，日志显示请求 `llm.baijia.com` 超时，未进入工具链），不是 direct 语义或后端 action 错误。按失败子集用 fresh session 复跑 `5/5`，metrics: `/private/tmp/zhiyuan_400_v184_v183_failed_subset_rerun_after_llm_timeout.json`；覆盖只读审查后模糊“那就照你说的处理吧”走 `confirm_pending` no-op，以及明确“那高收费这些换便宜点，不是直接删”生成 replace pending 后“执行”真实修改 ordered 并刷新 ordered/review。
+- 防回归验证：v1.79 focused 复跑 `10/10`，metrics: `/private/tmp/zhiyuan_400_v184_v179_focused_after_confirm_prompt_fix.json`。active pending 追加、active pending 改写、只读后无 pending 执行防护、targeted replace + final action 均通过。
+- 主集验证：`examples/dialog_regression_400_g1_g32_direct_cases.json` 真实 LLM 主集 `20/20`，metrics: `/private/tmp/zhiyuan_400_v184_g1_g32_direct_after_confirm_prompt_fix.json`。运行期观察为 intent pending 6、readonly 9、plan preview 3、needs-plan-first 2；pending 类型为 intent_change 6、plan_mutation 3、none 11。G4/G10/G19/G23/G30/G32 有源志愿文件缺失 warning，但对应 case 只依赖后端状态或无方案边界，业务断言均通过。
+- 当前结论：4.0 direct 对话与后续执行链路在 focused 口语集和 G1-G32 主集上已保持稳定；本轮新增问题已收敛到 prompt 层确认边界，最终 action 验证覆盖到后端 `pendingConfirmation`、`planningState.version` 和 ordered-plan 真实变化。下一步继续扩大真实口语 final-action 回归，并单独看只读审查回复质量、无方案边界文案压缩、以及模型服务超时下是否需要 runner/服务层重试策略。
+
+### 12.13 v1.85 final-action 扩展回归与并发波动复核
+
+- 本轮范围：不改实现，只验证 v1.84 后 4.0 direct 在真实口语、指代、多轮、取消改口、组合诉求和当前方案 action 上的最终动作闭环。所有确认类 case 均要求覆盖 `pendingConfirmation.status=applied`、`planningState.version` 增长、ordered-plan 真实变化或按 `apply_to_current_plan=false` 保持不变，并要求 ordered/review 刷新跟随实际方案变化。
+- 已完成基线复跑：`examples/dialog_regression_400_v155_realistic_final_action_cases.json` 为 `7/7`，metrics: `/private/tmp/zhiyuan_400_v184_v155_realistic_final_action_rerun.json`。覆盖“有啥问题，咋弄→那高收费的别要了→确认执行”“方案里的民办不要了→采纳”“山东别去了→采纳”，最终动作均正确触发。
+- 已完成扩展复跑：`examples/dialog_regression_400_v156_realistic_broadened_final_action_cases.json` 首轮为 `8/10`，metrics: `/private/tmp/zhiyuan_400_v184_v156_realistic_broadened_final_action_rerun.json`。两个失败均是严格工具调用次数断言：`中外合作算了吧` 与 `五年制的也别要` 各出现两次 `preview_intent_change`，但第二次生成正确 pending，确认轮 `confirm_pending` 后后端断言通过。按当前口径记录为重复调用观察项，不作为业务错例优先修复。
+- v157 并发首轮：`examples/dialog_regression_400_v157_realistic_cancel_combo_cases.json` 三组并发跑时为 `7/11`，metrics: `/private/tmp/zhiyuan_400_v184_v157_realistic_cancel_combo_rerun.json`。失败集中在 `民办和中外合作都算了吧`、`管理学和五年制的都别要了` 两个首轮请求触发 `ModelAPIError`，未进入工具链，导致下一轮“确认/采纳”没有 active pending 可执行。失败子集顺序复核 `4/4`，metrics: `/private/tmp/zhiyuan_400_v184_v157_failed_subset_sequential_rerun.json`；两条组合诉求均一次 `preview_intent_change` 生成 pending，确认后要求写入并重排方案。
+- v158 并发首轮：`examples/dialog_regression_400_v158_pending_combo_negation_cases.json` 三组并发跑时为 `6/9`，metrics: `/private/tmp/zhiyuan_400_v184_v158_pending_combo_negation_rerun.json`。主要失败为 `这个先算了，改成山东别去了` 触发 `ModelAPIError`，于是后续“采纳”仍确认旧 pending；另有 `确认不要民办` 出现两次 `preview_intent_change` 的严格次数失败。失败子集顺序复核 `5/5`，metrics: `/private/tmp/zhiyuan_400_v184_v158_failed_subset_sequential_rerun.json`；同轮“取消当前待确认并改成山东别去”能替换 active pending，确认后只写入山东，不保留旧“不要民办”。
+- v173 并发首轮：`examples/dialog_regression_400_v173_action_expansion_final_cases.json` 三组并发跑时为 `8/11`，metrics: `/private/tmp/zhiyuan_400_v184_v173_action_expansion_final_rerun.json`。失败为 `就这么换吧` 与 `把第三个专业组挪到最前面` 触发 `ModelAPIError` 未进入工具链，导致确认/移动后端断言失败。失败子集顺序复核 `4/4`，metrics: `/private/tmp/zhiyuan_400_v184_v173_failed_subset_sequential_rerun.json`；targeted replace 确认后旧青岛理工 unit 消失、替换项写入 ordered，位置移动确认后目标 unit 到第 1 位。
+- 综合真实口语集：`examples/dialog_regression_400_realistic_user_cases.json` 使用当前 agent `18293`、backend `18290` 复跑为 `12/14`，metrics: `/private/tmp/zhiyuan_400_v185_realistic_user_full_rerun.json`。两处失败均为 `ModelAPIError` 未进入工具链：`里面有民办没` 未调用 `query_plan`，`方案里的民办不要了` 未生成 pending。失败子集顺序复核 `2/2`，metrics: `/private/tmp/zhiyuan_400_v185_realistic_user_failed_subset_rerun.json`；前者正确走 `query_plan` 并说明当前无正式方案，后者在无正式方案场景下走 `preview_plan_action` 的 no-plan attribute fallback，生成“不要民办”的待确认报考要求卡。
+- review/repair 首轮：直接对 `examples/dialog_regression_400_review_repair_cases.json` 加 `--session-offset 3100` 复跑为 `6/9`，metrics: `/private/tmp/zhiyuan_400_v185_review_repair_rerun.json`。这组 case 文件没有声明 `cloneBackendStateFromSessionId`，offset 后的 3230/3231/3232 没有正式方案，因此“稳保不足/专业组安全垫/提醒分层”只能返回无方案边界；该轮记为 fixture 运行方式问题，不作为业务回归失败。
+- review/repair 克隆复跑：生成临时 case `/private/tmp/zhiyuan_400_review_repair_cases_with_clone.json`，为每个 case 加 `cloneBackendStateFromSessionId/sourceSessionId`，再用 `--session-offset 3200` 克隆 130/131/132 到隔离 session。结果 `8/9`，metrics: `/private/tmp/zhiyuan_400_v185_review_repair_clone_rerun.json`。通过项包括审查摘要、稳保候选不足说明、高收费/中外合作处理方向、专业模式导出边界、提醒分层、手动移动后重新审查。
+- review/repair 剩余问题：`400-review-major-group-inner-safety` 中用户说“专业组里面有没有录取率太悬的？能不能补一个安全一点的专业，先给我看预览”，模型只调用 `review_plan`，回复审查和处理方向，没有生成 `pendingConfirmationCard`。这不是模型服务错误，也不是空会话 fixture 问题；属于 review+方案动作复合诉求缺口。当前 prompt 的“明确方案动作优先 `preview_plan_action`”覆盖了移出/替换/排序/重排等，但没有把“补一个/加一个/加入/补安全专业”纳入方案动作；同时 `preview_plan_action(action="add")` 当前需要唯一候选目标，不能直接从“安全一点”自动选候选。
+- review/repair 修复方向（待单独落地）：把“补一个/加一个/加入/补稳/补保/补安全一点”纳入模型侧方案动作判决；当用户要求“先给我看预览”时，不应停在 `review_plan`。如果能定位到具体候选，走 `preview_plan_action(action="add", targets=[...])`；如果只是围绕安全垫/录取率梯度的结构性问题，应走 `preview_plan_action(action="regenerate_order", review_issue_code="group_inner_safety_guard" 或 "safety_guard"/"probability_gap")` 创建可确认的重排预览；如果候选不足或 issue 不支持自动处理，必须明确回复“当前缺少可加入的安全候选/需要先放宽范围或指定候选”，而不是泛泛列处理方向。该方向仍由模型把上下文压缩成结构化 action/review_issue，不在工具层做原文字符串匹配。
+- 客观归类：本轮没有确认新的 4.0 direct 最终执行错误。并发模式下真实 LLM 服务不稳定会把 `ModelAPIError/TimeoutError` 放大为后续断言失败；失败子集顺序复核全部通过，说明现有 prompt/tool/backend 链路在这些 final-action case 上可闭环。重复调用 `preview_intent_change` 目前是小规模观察项，未导致最终动作错误，后续只有出现大面积重复或明显性能退化时再优先处理。review/repair 复合诉求剩余 1 个待修问题，归入回复/路由质量和结构性方案动作预览补齐。
+- 后续建议：继续扩大真实口语 final-action 回归时保留并发跑法提高效率，但报告口径应固定为“并发首轮 + 失败子集顺序复核”。若模型服务波动继续影响判断，再考虑在 regression runner 或 service 层增加只针对 `ModelAPIError/TimeoutError` 的测试重试策略；不要用字符串语义兜底掩盖模型调用失败。
+
+### 12.14 v1.86 review+方案动作复合诉求与 plan_generation pending 修复
+
+- 问题拆解：v1.85 剩余 case `400-review-major-group-inner-safety` 的原话同时包含审查问题和明确方案动作：“专业组里面有没有录取率太悬的？能不能补一个安全一点的专业，先给我看预览”。第一层缺口是模型未把“补一个安全一点”识别为方案动作，停在 `review_plan`；prompt 修复后模型已正确调用 `preview_plan_action(action="regenerate_order", review_issue_code="probability_gap")`，但仍没有展示 `pendingConfirmationCard`。第二层缺口在服务层：`preview_plan_action(regenerate_order)` 生成的是 `kind=plan_generation`，而 `service.py` 多处只把 `plan_mutation` 当作方案类 pending，导致卡片渲染、active pending 恢复和短文本确认链路不完整。
+- 实现调整：`PendingConfirmation.kind` 放开 `plan_generation`；`service.py` 增加统一 `_PLAN_PENDING_KINDS={"plan_mutation","plan_generation"}` 和 `_pending_type_from_kind()`，替换散落的 `kind=="plan_mutation"` 判断。覆盖范围包括 `_pending_confirmation_from_state()`、`_direct_confirm_routing_path()`、pending readonly/冲突文案、短文本一致性检查、`_build_structured_plan_pending_card()`、`_build_structured_pending_card()`、direct route 观测字段、stale pending 清理、结构化卡片确认入口。卡片 payload 保留真实 `kind=plan_generation`，避免点击确认时与后端 pending kind 不一致。
+- prompt 调整：明确方案动作规则增加“加入/加进/补入/补一个/补稳/补保/补安全一点”，并补充示例把“补一个安全一点的专业，先给我看预览”映射到 `preview_plan_action(action="regenerate_order", review_issue_code="probability_gap", raw_user_text=...)`。该修复仍由模型把上下文压缩成结构化 action/review_issue，不在工具层做用户原文字符串兜底。
+- 单测验证：`py_compile app/service.py app/models/conversation_phase.py tests/unit/test_zhiyuan_agent_direct.py tests/unit/test_chat_service_history_persistence.py` 通过；`git diff --check` 通过；新增/相关单测覆盖 `plan_generation` 路由 helper、direct 出卡、结构化确认执行和后端 pending 恢复。完整 `tests/unit/test_zhiyuan_agent_direct.py -q` 为 `159 passed, 29 skipped`；`tests/unit/test_chat_service_history_persistence.py::test_pending_confirmation_from_state_accepts_plan_generation` 通过。
+- 真实 focused 验证：使用新 agent `18295`、backend `18290`、rank `5001`，复跑 `400-review-major-group-inner-safety` 通过，metrics `/private/tmp/zhiyuan_400_v186_review_major_group_inner_safety_after_plan_generation_card_fix.json`。结果：单轮调用 `preview_plan_action`，followup 包含 `pendingConfirmationCard`，payload 为 `kind=plan_generation/actionFamily=regenerate_order/title=确认重排方案`。
+- 最终 action 验证：同 session 继续发送“确认执行”，metrics `/private/tmp/zhiyuan_400_v186_review_major_group_inner_safety_confirm_after_card_fix.json`。结果：`confirm_pending` 被调用，routingPath=`direct_pending_plan_confirm`，回复“已按当前候选重新生成排序方案。”，followups 刷新 `ordered/review`。后端 latest pending 为 `status=applied`、`kind=plan_generation`、`actionFamily=regenerate_order`、`resultCode=applied`，工作台版本从 `sourceBackendVersion=461` 增长到 `version=462`，确认不是只出卡或只回文案。
+- 完整 review/repair 复跑：克隆版 `/private/tmp/zhiyuan_400_review_repair_cases_with_clone.json` 在 session offset `3600` 复跑 `9/9`，metrics `/private/tmp/zhiyuan_400_v186_review_repair_clone_after_plan_generation_card_fix.json`。v1.85 的 `8/9` 缺口已闭合。
+- 剩余观察点：`regenerate_order` 确认后方案已刷新，但后端 `staleFlags.review=true`，说明审查结果需要重新跑或由前端 review 视图触发刷新。当前返回 `review` refresh followup 可以让用户进入审查视图，但“最新审查结果”的文案和实际 stale 状态需要继续核对；下一步可选择在 plan_generation 确认后触发 `run_review`/review workflow，或调整 followup 文案为“方案已更新，需要重新审查”。该问题不影响本轮出卡和最终方案重排 action 的闭环。
+
+### 12.15 v1.87 plan_generation 确认后 review 入口文案调整
+
+- 产品决策：先不在 agent 确认链路里自动触发 `runReviewWorkflow`。`regenerate_order` 的职责保持为确认后重新生成排序方案；审查刷新由后续用户进入 review 视图或显式重新审查触发。
+- 实现方式：新增 `_build_pending_apply_workspace_refresh_response()`，仅当 `pending_kind=plan_generation` 且 `action_family=regenerate_order` 且目标为 `review` 时覆盖 workspace action 文案。短文本确认和卡片确认统一走该 helper。
+- 文案结果：review followup 不再说“查看最新审查结果 / 已刷新方案审查结果”，改为“需要重新审查方案 / 方案排序已更新，原审查结果可能不再完全准确。请重新审查后再看最新风险和提醒。/ 重新审查”。
+- 验证：`py_compile app/service.py tests/unit/test_zhiyuan_agent_direct.py` 通过；`tests/unit/test_zhiyuan_agent_direct.py::test_service_pending_confirmation_executes_plan_generation_bridge` 通过并断言 review payload 文案；完整 `tests/unit/test_zhiyuan_agent_direct.py -q` 为 `159 passed, 29 skipped`；`git diff --check` 通过。真实 focused 验证使用新 agent `18296`：预览出卡通过，metrics `/private/tmp/zhiyuan_400_v187_review_major_group_inner_safety_preview.json`；同 session “确认执行”通过，metrics `/private/tmp/zhiyuan_400_v187_review_major_group_inner_safety_confirm_copy.json`，followup 仍有 `ordered/review` 两个入口，其中 review payload 为 `title=需要重新审查方案`、`actionText=重新审查`。
+
+### 12.16 v1.88 审查兜底回复文案清理
+
+- 范围：只清理用户可见文案，不改变 direct 路由、pending、确认执行或后端 action。重点处理 review/repair 兜底回复里残留的内部状态表达。
+- 实现：`_normalize_user_facing_terms()` 将 `blocked/系统阻塞` 统一改写为“需要你先确认是否接受这类调整或放宽报考条件”，避免出现“阻塞/调整范围变化”等系统用语；未生成真实 pending 的边界回复从“可执行的调整内容”改为“可确认的调整预览”；`fix_proposal_preview` 兜底文案去掉“可执行预览”。
+- 兼容：reply guard 继续识别旧的“可执行调整内容”文案，同时补充识别新的“可确认的调整预览”，防止模型旧输出漏过无 pending 保护。
+- 验证：`py_compile app/service.py app/domain/proposal_compiler.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_proposal_compiler_runtime_selection.py` 通过；`tests/unit/test_chat_service_history_persistence.py -q` 为 `110 passed`；`tests/unit/test_proposal_compiler_runtime_selection.py -q` 为 `36 passed`；`tests/unit/test_zhiyuan_agent_direct.py -q` 为 `159 passed, 29 skipped`；`git diff --check` 通过。
+- 真实回归：使用最新代码临时 agent `18310`、backend `8080`、rank `5001` 跑 `/private/tmp/zhiyuan_400_review_repair_cases_with_clone.json`，session offset `4200`，结果 `9/9`，metrics `/private/tmp/zhiyuan_400_v188_review_repair_clone_copy.json`。`400-review-major-group-inner-safety` 仍正确进入 `preview_plan_action(regenerate_order)` 并生成 `kind=plan_generation` 待确认卡，说明 v1.87 出卡链路未被文案清理影响。
+- 客观观察（本轮只记录，不修）：1）`400-review-shortage-honesty` 只读审查回复里混入“下面是这次待确认预览”，但没有 followup/pending；2）`400-review-fix-explain-hierarchy` 与手动移动后审查回复中，ready 状态有一处漏成英文 `ready`；3）`400-review-repair-after-manual-move-stale` 第二轮“那重新审查一下”没有再次调用 `review_plan`，而是基于历史结果直接总结。三者归入后续回复质量/连续审查语义优化，不影响本轮 v1.88 的 copy-only 目标。
+
+### 12.17 v1.89 内部 `ready` 状态词泄漏修复
+
+- 问题来源：v1.88 真实 review/repair 回归中，`400-review-fix-explain-hierarchy` 的回复里出现“调整录取率顺序（...，ready）”。这是工具事实里的处理方向状态值进入最终回复，属于内部状态词泄漏。
+- 实现：在 `_normalize_user_facing_terms()` 中只匹配独立英文单词 `ready`，替换为“可以先看调整预览”。不使用宽泛字符串替换，避免影响其它英文片段；不改 prompt/tool/pending/backend action。
+- 验证：`py_compile app/service.py tests/unit/test_chat_service_history_persistence.py` 通过；focused 单测 `test_normalize_user_facing_terms_removes_internal_review_repair_words` 为 `1 passed`；`tests/unit/test_chat_service_history_persistence.py -q` 为 `110 passed`；`tests/unit/test_zhiyuan_agent_direct.py -q` 为 `159 passed, 29 skipped`；`git diff --check` 通过。
+- 真实回归：使用最新代码临时 agent `18311` 跑 `400-review-fix-explain-hierarchy` 单 case，结果 `1/1`，metrics `/private/tmp/zhiyuan_400_v189_review_fix_explain_hierarchy_ready_copy.json`。回复中原先的 `ready` 已替换为“可以先看调整预览”。临时 agent 已停止，端口 `18311` 不再响应。
+
+### 12.18 v1.90 组合只读标题与连续重新审查修复
+
+- 问题 1：`400-review-shortage-honesty` 的工具链为 `query_plan -> review_plan`，没有 pending/followup，但 direct renderer 因“最后一个 terminal 工具前有只读上下文”统一拼接“下面是这次待确认预览”，导致只读审查回复看起来像生成了待确认卡。
+- 修复 1：`ZhiyuanAgent.render_direct_tool_output()` 增加 `_compound_result_header()`，只有最后一个 terminal 工具是 `preview_intent_change` 或 `preview_plan_action` 且 `next_step=confirm` 时才使用“下面是这次待确认预览”；`review_plan` 组合结果使用“继续看审查结果”，`confirm_pending` 使用“继续看处理结果”，其它结果使用中性“继续看结果”。
+- 问题 2：`400-review-repair-after-manual-move-stale` 第二轮“那重新审查一下”曾直接基于历史审查总结，没有再次调用工具。
+- 修复 2：prompt 行动原则和示例补充：用户明确说“重新审查/再审一遍/重新看一下/再看一遍/重新检查”时，即使上一轮刚审查过，也必须再次调用 `review_plan`，不要只基于历史审查结果回答。
+- 验证：`py_compile app/zhiyuan_agent/agent.py app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；focused 单测 `test_zhiyuan_agent_direct_tool_output_combines_readonly_before_preview`、`test_zhiyuan_agent_direct_tool_output_combines_readonly_before_review_without_preview_heading`、`test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_followups` 为 `3 passed`；完整 `tests/unit/test_zhiyuan_agent_direct.py -q` 为 `160 passed, 29 skipped`；`git diff --check` 通过。
+- 真实 focused：临时 agent `18312` 跑 `400-review-shortage-honesty`，回复已从“下面是这次待确认预览”改为“继续看审查结果”，metrics `/private/tmp/zhiyuan_400_v190_review_repair_two_focused.json`；同轮第二个 case 因 backend planning intent clear 超时未进入业务链路，单独用 offset `4500` 复跑 `400-review-repair-after-manual-move-stale` 为 `2/2`，metrics `/private/tmp/zhiyuan_400_v190_review_repair_rereview_focus.json`，两轮均调用 `review_plan`。临时 agent 已停止，端口 `18312` 不再响应。
+- 完整回归：临时 agent `18313` 跑 `/private/tmp/zhiyuan_400_review_repair_cases_with_clone.json`，session offset `4600`，结果 `9/9`，metrics `/private/tmp/zhiyuan_400_v190_review_repair_clone_full.json`。指标检查未再出现“下面是这次待确认预览”误标题，也未再出现 `ready` 状态词泄漏；`400-review-major-group-inner-safety` 仍能生成 `kind=plan_generation` 待确认卡。临时 agent 已停止，端口 `18313` 不再响应。
+
+### 12.19 v1.91 并发回归克隆参数补齐与口语 follow-up 复核
+
+- 问题来源：继续扩大 v179/v183 真实口语回归时，直接用 `examples/dialog_regression_parallel_runner.py` 并发跑 `examples/dialog_regression_400_v179_pending_replace_review_quality_cases.json` 与 `examples/dialog_regression_400_v183_realistic_followup_quality_cases.json`，初始结果为 `1/9`，metrics 目录 `/private/tmp/zhiyuan_400_v191_pending_followup_parallel`。失败集中在确认后后端 ordered 仍包含山东/民办、replace pending 变 `failed`、no-pending “照你说的处理”没有按预期工具路径统计。
+- 客观定位：这些 case 明确需要克隆真实后端 chat session，但 parallel runner 只透传了 state clone 相关 case payload，没有把单 runner 的 `--clone-backend-chat-session`、DB 参数和 volunteer data 目录透传给子进程。用单 runner 带完整克隆参数顺序复跑后，v183 为 `13/13`，metrics `/private/tmp/zhiyuan_400_v191_v183_clone_sequential.json`；v179 为 `10/10`，metrics `/private/tmp/zhiyuan_400_v191_v179_clone_sequential.json`。因此初始 `1/9` 不能作为 4.0 链路失败结论，属于验证基础设施运行方式问题。
+- 实现修复：`examples/dialog_regression_parallel_runner.py` 增加与单 runner 对齐的参数：`--clone-backend-chat-session`、`--backend-db-host/port/user/password/name`、`--backend-volunteer-data-dir`，并在每个子 runner 命令中透传。新增单测 `test_parallel_runner_passes_backend_chat_clone_options_to_child_runner` 防止后续遗漏。
+- 修复后并发复跑：使用临时 agent `18320`、backend `8080`、rank `5001`，parallelism=2，带完整克隆参数复跑 v179/v183，结果 `8/9`，metrics 目录 `/private/tmp/zhiyuan_400_v191_pending_followup_parallel_clone_fixed`。通过项覆盖 active pending 改写/追加、只读后无待确认确认边界、targeted replace、review follow-up replace 以及最终 `confirm_pending` 后 ordered/review 刷新。
+- 剩余 1 个并发失败：`400-v179-active-pending-append-region-and-private-final-action` 在并发首轮中确认后报“当前方案暂时没有重新调整成功”，后端 `pendingConfirmation.status=applied`、`planningState.version` 增长、`candidateViewState/candidatePoolState` 已写入要求，但 `orderedPlanState.units` 仍包含山东/民办。该同 case 用完整克隆参数顺序复核为 `3/3`，metrics `/private/tmp/zhiyuan_400_v191_v179_append_failed_parallel_sequential_rerun.json`，确认 pending、版本增长、ordered 移除山东/民办、ordered/review followup 都通过。
+- 结论：当前 v179/v183 口语 follow-up 与最终动作链路在顺序真实回归下保持闭环；并发模式下仍可能触发后端重排/刷新一次性波动，报告口径继续使用“并发首轮 + 失败子集顺序复核”。这不是新的模型语义错误，也不是 direct route 旧链路残留问题，但后续大规模并发 final-action 验证要单独统计这种后端并发波动，避免和 agent 语义缺陷混在一起。
+- 验证：`py_compile examples/dialog_regression_parallel_runner.py tests/unit/test_dialog_regression_parallel_runner.py` 通过；`tests/unit/test_dialog_regression_parallel_runner.py -q` 为 `4 passed`；`git diff --check` 通过。
+
+### 12.20 v1.92 direct 无工具假预览防护与 final-action 并发复核
+
+- 问题来源：v1.91 后继续跑 v155/v156/v157/v158/v173 final-action 并发集时，曾出现 1 个 `400-v156-spoken-only-public-final-action` 波动：模型回复形态像“待确认预览/是否确认”，但本轮没有调用 `preview_intent_change`，也没有生成 `pendingConfirmationCard`。同 case 顺序复跑能正常出卡并确认通过，说明不是稳定语义缺口；但服务层缺少“无工具、无卡、无刷新”情况下的假预览兜底，属于 direct route 输出安全边界问题。
+- 实现修复：`service.py` 在 direct route 后处理阶段增加 guard：当本轮没有 pending card 且没有 workspace refresh 时，对最终回复调用 `_guard_unbacked_plan_confirmation_reply()`。如果回复看起来在要求用户确认方案调整/调整预览，但没有任何真实待确认内容支撑，就替换为“这轮还没有生成可确认的调整预览，所以不会改动当前方案”的边界回复，并记录 `post_processing_applied=unbacked_plan_confirmation_reply_guard`。正常 `preview_intent_change`、`preview_plan_action`、`confirm_pending` 的出卡或执行路径不进入该 guard。
+- 单元验证：`py_compile app/service.py tests/unit/test_zhiyuan_agent_direct.py examples/dialog_regression_parallel_runner.py tests/unit/test_dialog_regression_parallel_runner.py` 通过；`tests/unit/test_zhiyuan_agent_direct.py::test_service_zhiyuan_agent_direct_guards_unbacked_confirmation_preview -q` 为 `1 passed`；`tests/unit/test_dialog_regression_parallel_runner.py -q` 为 `4 passed`；`git diff --check` 通过。
+- 真实 focused 复核：使用最新代码 agent `18321`、backend `8080`、rank `5001`，复跑 `examples/dialog_regression_400_v156_realistic_broadened_final_action_cases.json` 中 `400-v156-spoken-only-public-final-action`，结果 `2/2`，metrics `/private/tmp/zhiyuan_400_v192_v156_only_public_guard_rerun.json`。首轮“就看公办吧”正常调用 `preview_intent_change` 并生成 `kind=intent_change/actionFamily=apply_selected_intents` 待确认卡；第二轮“行，采纳”调用 `confirm_pending`，后端断言覆盖 `pendingConfirmation.status=applied`、`planningState.version` 增长、`mustIncludeSchools` 写入、基础候选池保留、公办要求生效后的 ordered items/units 裁剪，以及 ordered/review followup 刷新。
+- 真实并发复核：使用同一最新 agent，带完整 `--clone-backend-chat-session`、DB 参数、后端 extra-data 克隆和 volunteer data 克隆，并发跑 `examples/dialog_regression_400_v155_realistic_final_action_cases.json`、`examples/dialog_regression_400_v156_realistic_broadened_final_action_cases.json`、`examples/dialog_regression_400_v157_realistic_cancel_combo_cases.json`、`examples/dialog_regression_400_v158_pending_combo_negation_cases.json`、`examples/dialog_regression_400_v173_action_expansion_final_cases.json`，parallelism=3，结果 `21/21`，metrics 目录 `/private/tmp/zhiyuan_400_v192_final_action_parallel_clone`。本轮没有失败子集需要顺序复核。
+- 当前结论：4.0 direct 在该组真实口语 final-action 并发验证中已闭环：报考要求预览、当前方案移出/替换/排序、active pending 取消/改口/组合诉求、短句确认和最终后端 ordered-plan 真实变化均通过。无工具假预览目前由服务层兜底 guard 覆盖，后续继续扩大回归时仍按“并发首轮 + 失败子集顺序复核”记录模型服务波动和后端并发波动。
+
+### 12.21 v1.93 报考要求与当前方案同步处理优先级修复
+
+- 旧链路清理复扫：生产 `app/` 中 `ChatAgent`、`turn_decision`、`planning_workflow_tool`、`intent_preview_tool`、`official_source_search_tool`、`plan_query_tool`、`execute_plan_action`、`planEditCache`、`ZHIYUAN_AGENT_POC`、`runtime_shadow`、`full_agent`、`fast_route` 等旧入口命名无命中；`tests/unit/test_runtime_hard_cut_audit.py -q` 为 `25 passed`。本轮未发现需要继续从生产代码删除的旧链路入口。
+- 主集首轮验证：使用最新 agent `18322` 跑 `examples/dialog_regression_400_g1_g32_direct_cases.json`，结果 `19/20`，metrics `/private/tmp/zhiyuan_400_v193_g1_g32_direct_guard_followup.json`。唯一失败是 `400-g1-exclude-current-plan-english-major` 的工具类型断言：用户说“不要英语相关专业，当前方案里有的话也删掉”，模型走 `preview_plan_action(remove_units)`，生成当前方案移出卡。
+- 问题判断：这不是执行链路崩溃，但语义有风险。该句先表达“不要英语相关专业”的报考要求，后半句“当前方案里有的话也删掉”是把这条要求同步应用到当前方案；如果只走 `preview_plan_action(remove_units)`，容易只移出当前方案项而不把“以后也不要英语相关专业”写入报考要求。旧期望 `preview_intent_change` 是合理的。
+- 修复方式：prompt-only，不增加工具层字符串匹配。`prompt.py` 明确：纯“方案里的 X 不要/移出去”仍走 `preview_plan_action`；但“显式报考要求 + 当前方案同步处理”必须优先走 `preview_intent_change(apply_to_current_plan=True)`，让确认后同时写入报考要求并同步调整当前方案。补充示例：“不要英语相关专业，当前方案里有的话也删掉” -> `preview_intent_change(intent_type="major", negative={"level2":["外国语言文学类"]}, constraint_type="exclude", apply_to_current_plan=True, ...)`。
+- 单元验证：`py_compile app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；`tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_followups -q` 为 `1 passed`；`tests/unit/test_zhiyuan_agent_direct.py::test_preview_intent_keeps_broad_major_scope_when_user_says_related -q` 为 `1 passed`。
+- 真实 focused 验证：使用新 agent `18323` 复跑 G1 单 case，结果 `1/1`，metrics `/private/tmp/zhiyuan_400_v193_g1_after_prompt_fix.json`。结果为 `preview_intent_change`、`kind=intent_change/actionFamily=apply_selected_intents`，回复和卡片均展示“专业要求：不要：外国语言文学类”，没有退化成只移出当前方案。
+- 完整主集复跑：同一 agent `18323` 复跑 G1-G32，结果 `20/20`，metrics `/private/tmp/zhiyuan_400_v193_g1_g32_direct_after_requirement_plan_priority_fix.json`。运行分布：`intent_pending=6`、`readonly=9`、`plan_preview=3`、`needs_plan_first=2`；pending 类型为 `intent_change=6`、`plan_mutation=3`、`none=11`。性能 median `5802ms`、p95 `12534ms`、max `13077ms`；最慢为 G31 保底学校查询、G12 查询+替换、G16 无方案锁定边界、G3 active pending 下只读查询、G23 正向专业意向。
+- 观察项（记录，不在本轮修）：G2/G7 费用和中外合作只读审查仍回复“当前没有明显风险或提醒”，信息密度偏弱；G12/G27 替换预览文案会露出 `审查问题 high_tuition` 这类内部 code；G19/G32 no-plan 边界回复偏长。三者属于回复质量问题，不影响本轮 direct 路由、pending 边界和最终 action 链路。
+
+### 12.22 v1.94 扩展整体效果检验与失败项客观分类
+
+- 本轮目标：不修低优先级回复质量问题，继续扩大 4.0 direct 整体效果检验；重点观察真实口语、指代、多轮 pending、当前方案 action、review repair、最终确认和后端状态变化。初次运行因沙箱拦截本机 `8080` 清理/克隆接口，151 个 case 全部为环境失败，不计入效果结论。
+- 有效扩展批次：使用当前 agent `18324`、backend `8080`、rank `5001`，带 `--clone-backend-chat-session`、DB 参数、`--clear-history-per-case`、`--clear-backend-pending-per-case`、`--clear-backend-planning-intent-per-case`，并发 `4` 跑 25 个 4.0 case 文件。结果 `96/151`，metrics 目录 `/private/tmp/zhiyuan_400_v194_expanded_effect_parallel_elevated`。
+- 高信号通过项：v143/v150/v151/v153/v154/v155/v156/v157/v158/v173/v179/v183 全部通过；`dialog_regression_400_readonly_real_session_cases.json` 为 `2/2`；`dialog_regression_400_realistic_user_cases.json` 为 `12/13`。这说明近期重点修复的 active pending 追加/改写、组合诉求、取消改口、替换、排序、移出、短句确认和最终 action 落库在扩展批次中保持闭环。
+- 失败分类：55 个失败中，约 26 个是 fixture/no-plan 边界问题，主要来自早期 smoke/plan_operation/open_quality 用例没有正式方案却断言“冲稳保/移动/确认执行”；约 16 个是 `thinking` 文案断言过窄；约 9 个是内容质量断言；3 个是 pending/action 期望需要单独复核；1 个是简称语义质量问题（“青城”被理解为内蒙古青城/呼和浩特，而不是用例期望的青岛城市学院）。
+- 重要客观问题：`400-direct-confirm-plan-remove-position` 首轮“第3个不要了”返回无正式方案边界，没有生成 pending；下一轮“确认执行”因此走 no-pending confirm，后端 `pendingConfirmation.status` 未变、`planningState.version` 未增长、ordered 长度未变。该 case 的 source session 克隆成功，但当前运行状态仍判断无正式方案，优先按 fixture/运行前置不一致记录，不直接算作 4.0 final-action 链路缺陷。
+- 口径修正：`400-realistic-remove-expensive-after-review-reference` 在无正式方案边界下第二轮“那高收费的别要了”走 `preview_intent_change`，用例期望 `preview_plan_action`。按当前设计，这类没有正式方案时把“不要高收费”记成报考要求是合理行为，暂不作为错误修复。
+- 当前结论：可以继续扩大整体效果检验，但报告口径应分为两层：1）主链路健康度只统计带正确 fixture/克隆和最终 action 断言的高信号 case；2）open_quality/quality_realistic/smoke 作为回复质量和 fixture 维护池，不直接拉低 4.0 direct 主链路通过率。
+- 下一步建议：继续跑生产式真实口语大集时，优先补齐或过滤没有正式方案前置的旧 case；对最终 action 类 case 必须保留后端断言（pending applied、planningState version 增长、ordered/candidate/review 状态变化）；低优先级的 thinking 文案、no-plan 边界长短、内部 code 泄漏和简称歧义先记录观察，不阻塞 Phase 1 主链路推进。
+
+### 12.23 v1.95 主链路高信号集并发验证
+
+- 本轮目标：在 v1.94 混合批次之后，单独抽取更能代表 4.0 direct 主链路健康度的高信号 case，排除早期 fixture/no-plan 噪音；继续使用真实 LLM、真实 backend clone 和最终 action 后端断言。
+- 运行范围：G1-G32 主集、v143/v150/v151/v153/v154/v155/v156/v157/v158/v173/v179/v183、review/repair 克隆集 `/private/tmp/zhiyuan_400_review_repair_cases_with_clone.json`。使用 agent `18324`、backend `8080`、rank `5001`，并发 `4`，带 `--clone-backend-chat-session`、DB 参数、清理 history/pending/planning intent。
+- 验证结果：`67/67` 全通过，metrics 目录 `/private/tmp/zhiyuan_400_v195_mainline_high_signal_parallel`。分布：G1-G32 `20/20`；review/repair clone `8/8`；v143 `1/1`；v150 `1/1`；v151 `4/4`；v153 `1/1`；v154 `2/2`；v155 `3/3`；v156 `5/5`；v157 `4/4`；v158 `4/4`；v173 `5/5`；v179 `4/4`；v183 `5/5`。
+- 覆盖能力：本轮覆盖报考要求预览、显式“不要/要”要求、当前方案同步处理、active pending 追加/改写/取消、短句确认、当前方案移出/替换/排序、review follow-up replace、plan_generation 出卡与确认、只读后无 pending 的确认防护、review/ordered 刷新和最终后端状态变化。
+- 关键回归点：v1.93 的“不要英语相关专业，当前方案里有的话也删掉”继续走 `preview_intent_change`，保留未来报考要求并同步影响当前方案；v1.86-v1.90 的 review+方案动作复合诉求、重新审查、review 文案边界在克隆集仍通过；v1.79-v1.83 的 pending 改写/追加与 targeted replace 最终动作在并发下通过。
+- 当前结论：按高信号主链路口径，4.0 direct 的 Phase 1 核心对话、预览、确认和执行闭环处于稳定状态。后续扩大验证应继续采用“高信号主链路集 + 质量观察池”双轨报告，避免把旧 fixture 维护问题误判为 agent 主链路缺陷。
+
+### 12.24 v1.96 验证资产分层与后续回归口径
+
+- 目的：在不修低优先级文案问题的前提下，把 v1.94 混合批次中的 case 文件按用途重新分层，避免后续继续把 fixture/no-plan 噪音和 4.0 主链路健康度混在一起。
+- 主链路基准集：`dialog_regression_400_g1_g32_direct_cases.json`、`dialog_regression_400_readonly_real_session_cases.json`、`dialog_regression_400_v143_constraint_apply_cases.json`、`dialog_regression_400_v150_candidate_view_cases.json`、`dialog_regression_400_v151_attribute_final_action_cases.json`、`dialog_regression_400_v153_major_final_action_cases.json`、`dialog_regression_400_v154_tag_final_action_cases.json`、`dialog_regression_400_v155_realistic_final_action_cases.json`、`dialog_regression_400_v156_realistic_broadened_final_action_cases.json`、`dialog_regression_400_v157_realistic_cancel_combo_cases.json`、`dialog_regression_400_v158_pending_combo_negation_cases.json`、`dialog_regression_400_v173_action_expansion_final_cases.json`、`dialog_regression_400_v179_pending_replace_review_quality_cases.json`、`dialog_regression_400_v183_realistic_followup_quality_cases.json`，以及克隆版 `/private/tmp/zhiyuan_400_review_repair_cases_with_clone.json`。这些可以继续作为 Phase 1 主链路硬回归。
+- 需要 fixture 修复后再进入硬回归：`dialog_regression_400_agent_smoke_cases.json`、`dialog_regression_400_plan_operation_cases.json`、`dialog_regression_400_effect_perf_cases.json`、`dialog_regression_400_core_effect_perf_cases.json`、`dialog_regression_400_explore_intent_cases.json`、`dialog_regression_400_direct_confirm_execution_cases.json`、`dialog_regression_400_realistic_user_cases.json`、原始 `dialog_regression_400_review_repair_cases.json`。这些文件里存在无正式方案却断言方案内容/方案动作/确认执行的 case，应先补 `cloneBackendStateFromSessionId`、明确 source session，或改成 no-plan 边界期望。
+- 质量观察池：`dialog_regression_400_open_quality_cases.json`、`dialog_regression_400_quality_realistic_user_cases.json`。这两组更适合观察回复信息密度、口语解释、thinking 文案和简称理解，不应直接纳入主链路通过率；若要纳入硬回归，需要先把 `thinking` 文案断言从强精确匹配降级为更稳定的行为断言，或拆分为单独质量报告。
+- 混合待复核：`dialog_regression_400_production_abstracted_cases.json` 在 v1.94 为 `14/17`，失败集中在内容质量；`dialog_regression_400_requirement_plan_action_cases.json` 为 `4/5`，剩余 1 个 pending/action 期望需单独复核。这两组可作为下一轮 targeted 分析对象，但暂不阻塞主链路。
+- 后续回归口径：主链路报告只统计“带正确 fixture/clone + 行为断言 + 最终后端状态断言”的 case；质量池报告只记录客观问题，不直接修低优先级文案；fixture 修复应优先处理会影响最终 action 真实性的 case，例如 direct confirm、plan operation、review repair 原文件。
+
+### 12.25 v1.97 direct/plan/review 验证 fixture 修复
+
+- 范围：只修回归资产，不改 agent/service 业务实现。目标是把 v1.96 中会影响最终 action 真实性判断的 fixture/no-plan 噪音先清掉。
+- `dialog_regression_400_direct_confirm_execution_cases.json`：默认 `cloneBackendStateFromSessionId` 从 `26` 改为已在 v155-v183 多轮 final-action 中验证稳定的 `17`。修复前“第3个不要了”在 offset 会话里被判断为无正式方案；修复后能生成 `remove_units` pending，并通过“确认执行”真实执行。
+- `dialog_regression_400_plan_operation_cases.json`：为状态查询、排序确认、专业组移动等需要正式方案的 case 补 `fixtureContract=formal_plan_present`，让 runner 在 session offset 模式下自动克隆原 session 的 `planningState/userprofile/userScoreDetail`；同时把“河南农大建筑去掉”的负向定位 case 断言调整为行为边界优先，接受“没有唯一定位/未生成可确认预览/确认后 no-op”等安全回复，不强依赖单一句式。
+- `dialog_regression_400_review_repair_cases.json`：把之前临时克隆版中的 `sourceSessionId` 与 `cloneBackendStateFromSessionId` 落回仓库文件，分别使用 `130/131/132` 作为不同 review/repair 场景的正式方案 source，避免原始文件 offset 后落到空会话。
+- 验证：JSON 格式校验与 `git diff --check` 通过。focused 三组并发首轮 `14/15`，metrics `/private/tmp/zhiyuan_400_v197_fixture_repair_focused`；其中 direct confirm `2/2`、原始 review repair `8/8` 已通过，剩余 1 个为 plan operation 负向定位 case 的断言文案过窄。补充断言后单 case 通过，metrics `/private/tmp/zhiyuan_400_v197_plan_operation_negative_case_after_confirm_assert_fix.json`；完整 `plan_operation` 复跑 `5/5`，metrics `/private/tmp/zhiyuan_400_v197_plan_operation_full_after_assert_fix`。
+- 当前结论：`direct_confirm_execution`、`plan_operation`、原始 `review_repair` 已从 fixture/no-plan 噪音池进入可用硬回归候选。后续主链路基准集可以纳入这三组；仍需单独处理的验证资产主要是 `agent_smoke`、`effect_perf/core_effect_perf/explore_intent` 的旧 fixture，以及 `open_quality/quality_realistic` 的质量断言口径。
+
+### 12.26 v1.98 smoke/core-effect fixture 修复与 effect 质量池保留
+
+- 范围：继续只修回归资产，不改业务实现。目标是清理 `agent_smoke`、`core_effect_perf` 中的无正式方案噪音，并客观判断 `effect_perf` 是否可以进入硬回归。
+- `dialog_regression_400_agent_smoke_cases.json`：四条 case 均依赖正式方案，补 `fixtureContract=formal_plan_present`。修复后 offset 运行会自动克隆原 session 的方案状态，不再出现“按院校层次排序/专业组移动”落到 no-plan guard 的问题。
+- `dialog_regression_400_core_effect_perf_cases.json`：为方案状态查询、体制内稳定就业承接分析、专业组移动、青岛城市学院查询等依赖正式方案的 case 补 `fixtureContract=formal_plan_present`。已有 fixture 的单条志愿移动保持不变。
+- `dialog_regression_400_effect_perf_cases.json`：为缺少正式方案前置的本地查询、排序预览、职业方向承接分析补 `fixtureContract=formal_plan_present`。本轮没有为了全绿放宽高质量文案断言或业务能力断言。
+- 验证：JSON 格式校验与 `git diff --check` 通过。focused 并发跑三组，结果 `19/23`，metrics `/private/tmp/zhiyuan_400_v198_smoke_effect_fixture_focused`。分布：`agent_smoke` `4/4`，`core_effect_perf` `8/8`，`effect_perf` `7/11`。
+- `effect_perf` 剩余 4 个问题客观分类：1）`400-quality-plan-named-add-preview-direct` 中“把华中农业大学的建筑类加进来”无法唯一定位具体专业，未生成 `add_units` pending；2）`400-quality-sort-preview-explains-side-effect` 已正确生成排序 pending，但回复没有解释“导出顺序/待重新审查”等影响；3）`400-quality-career-fit-readonly-no-workspace` 正确只读审查且确认 no-op，但回复缺少“体制内/稳定/承接”关键词，确认边界文案也与断言不完全一致；4）`400-quality-major-group-preview-confirm-boundary` 正确生成并确认 `move_ordered_unit`，但预览/确认文案没有展开“专业组顺序/组内专业不变”等质量说明。
+- 当前结论：`agent_smoke` 和 `core_effect_perf` 可进入硬回归候选；`effect_perf` 仍保留在质量/能力观察池，不纳入主链路通过率。若后续要纳入硬回归，应先拆分为行为硬断言和回复质量断言两层，而不是把信息密度要求混入主链路健康度。
+
+### 12.27 v1.99/v2.00 explore intent 语义框架与 payload 完整性修复
+
+- 问题来源：`dialog_regression_400_explore_intent_cases.json` 扩展验证中暴露两类语义边界问题。第一类是“财经类可以优先，但是护理和中西医结合不要”这类表达里，工具层不能从用户原话扫描属性并把“财经”误补成院校类型；第二类是“北京先不要了，只看天津和河北”里，模型已经给出 `semantic_requirements`（北京 negative、天津/河北 positive），但漏填 `positive/negative` payload 时，工具没有把地域字段纳入 semantic 完整性校验，直接落到“没有识别到明确要求”的澄清。
+- 修复原则：继续坚持 4.0 direct 的模型语义判定边界。工具只校验模型给出的 `semantic_requirements` 与结构化 payload 是否一致，不从 `raw_user_text` 做中文 token 扫描，不为“财经/北京/天津/不要”等具体词增加特化分支。
+- 已落地实现：`preview_intent_change` 支持 `semantic_requirements`，要求模型标明 `domain/side/strength/key/values/raw_span`。`strength=reference` 只作为参考回复，不创建 pending；`explicit/confirmable` 必须进入 `positive/negative` payload；缺 semantic frame 或 semantic 已明确但 payload 漏项时，工具返回 `next_step=continue` 要求模型补齐结构化参数。
+- 本轮补齐：semantic 完整性校验从专业/院校属性扩展到地域字段 `province/city/area`，并补充专业实体和院校实体的 semantic key 校验（如 `major`、`schools`）。同时移除旧的 `_raw_text_mentions_negative_requirement` 与 `negative_may_be_missing` 分支，避免工具层基于原话判断“不要/排除”。
+- 真实问题复现与修复：修复前 `400-region-priority-reference-then-explicit-requirement` 第三步“北京先不要了，只看天津和河北”返回“没有识别到具体要排除的对象”，但下一轮查询又按“只看天津和河北”组织回答，说明待确认状态和只读回复不一致。修复后同 case 第三步生成待确认卡“地域要求：要：天津、河北；不要：北京”，第四步确认后正式采纳，后续只读回答只引用已确认的新要求。
+- 验证结果：`py_compile app/zhiyuan_agent/tools.py tests/unit/test_zhiyuan_agent_direct.py` 通过；focused semantic 单测 `7 passed, 187 deselected`；完整 direct 单测 `165 passed, 29 skipped`。真实 LLM 单 case `5/5`，metrics `/private/tmp/zhiyuan_400_v200_region_semantic_payload_retry_single.json`；完整 explore intent 回归 `8/8`，metrics 目录 `/private/tmp/zhiyuan_400_v200_explore_intent_semantic_payload_retry`。
+- 当前口径：`优先/倾向/重点关注` 不做过强规则化要求，可由模型结合上下文判为参考方向、confirmable 待确认方向或用户想记录的要求；工具层只负责校验模型结构化语义与 payload 的一致性。`dialog_regression_400_explore_intent_cases.json` 已可作为 4.0 direct 语义边界回归集继续使用，后续仍应关注回复质量和无方案场景下的表达压缩。
+
+### 12.28 v2.01-v2.03 requirement/action 结构化语义补齐
+
+- 问题来源：`dialog_regression_400_requirement_plan_action_cases.json` 暴露两个 direct requirement 缺口。第一，`方案里必须有法学，其他专业可以先保留` 中模型可能把“法学”写成 `level2=法学类`，工具会根据原话精炼到具体专业 `level3=法学`，但 semantic completion 仍要求补回 `level2=法学类`，导致重复调用并触发工具上限。第二，`太贵的学校别放了，学费最好控制在两万以内` 不应再编码成 `school.negative.tuition_max`，应作为独立的显式学费预算要求。
+- 修复原则：仍然坚持 4.0 direct 的结构化语义边界，不从用户原话做中文 token 扫描。工具层只做实体/层级归一化、父子层级覆盖校验和底层执行适配；模型负责把用户诉求写成 `semantic_requirements` 与 `positive/negative` payload。
+- 已落地实现：`preview_intent_change` 的 `IntentType` 增加 `tuition_budget`，支持 `max_tuition_per_year/min_tuition_per_year` 及结构化字段别名；pending `merged` 使用独立 `{"tuition_budget":{"max_tuition_per_year":[20000]}}`，摘要显示“学费预算：每年不超过 20000 元”，不再塞入院校属性。确认执行时 direct confirm 调用底层 `update_session_tuition_range` 同步 session 学费范围；若当前有正式方案且 `apply_to_current_plan=True`，继续触发 ordered plan 重排，并在确认后校验 ordered 中是否仍有超预算项。
+- 专业层级修复：`_resolve_major_name(expected_level=...)` 真正按结构字段过滤候选；`major/major_name/majorList` 等字段按具体专业 `level3` 处理，`level1/level2/level3` 保持对应层级语义。semantic completion 对 major 复用 `canonicalize_major_intent_payload`，允许工具把模型的上层类精炼成当前原话指向的具体专业；同时增加 major 父子层级覆盖判断，已存在 `level2=外国语言文学类` 时，不再要求额外补 `level3=英语`。
+- Prompt 更新：明确 `preview_intent_change` 可用 `intent_type="tuition_budget"`；学费预算上限使用 `positive={"max_tuition_per_year":20000}` 和 `semantic_requirements domain="tuition_budget"/key="max_tuition_per_year"`，不要写成 `school.negative.tuition_max`。补充“太贵的学校别放了，学费最好控制在两万以内”的示例。
+- 单元验证：`py_compile app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；focused semantic/budget 单测通过；完整 direct 单测从 `165 passed, 29 skipped` 更新到 `170 passed, 29 skipped`。新增覆盖：`major` key 解析到 `level3=法学`；`level2=法学类` 被原话精炼到 `level3=法学` 后不触发补全循环；`level2=外国语言文学类` 覆盖子项“英语”后不触发补全循环；`tuition_budget` 独立出卡；预算 pending 确认时同步 `update_session_tuition_range` 且不走旧 constraint state。
+- 真实验证：使用临时 agent `18329`、backend `8080`、rank `5001`，真实 LLM + backend clone 复跑 focused：`400-requirement-must-have-major-preview-boundary` 为 `2/2`，metrics `/private/tmp/zhiyuan_400_v202_requirement_major_must_have_fix.json`；`400-requirement-exclude-major-preview-and-apply` 为 `2/2`，metrics `/private/tmp/zhiyuan_400_v203_requirement_exclude_major_semantic_cover.json`。完整 `dialog_regression_400_requirement_plan_action_cases.json` 为 `8/9`，metrics `/private/tmp/zhiyuan_400_v203_requirement_plan_action_after_semantic_cover.json`。
+- 剩余观察项：唯一失败是 `400-requirement-only-keep-major-preview-boundary` 的确认后 followup 断言仍期待 `candidate`，实际 direct confirm 返回 `ordered/review` 刷新。按前面候选池设计，base candidate pool 保持全量，不因“只想学临床医学”这类报考要求隐式隐藏候选视图；只有可见 candidate view 状态真实变化时才应刷新 candidate。因此该失败暂按验证资产/产品边界记录，不作为 4.0 direct 链路缺陷。
+
+### 12.29 v2.04 学费预算 final-action 生效缺口修复
+
+- 问题来源：v2.03 后把 `400-requirement-tuition-budget-preview` 的确认步骤补上最终后端断言，真实回归发现 `pendingConfirmation.status=applied`、`planningState.version` 增长，但确认后 `orderedPlanState.units` 仍存在 `tuitionPerYear=60000`。Agent 侧已经正确把预算写成独立 `tuition_budget` pending，并调用 `update_session_tuition_range` 写入 session 学费范围；缺口在后端 ordered-plan 生成没有消费这份会话预算。
+- 设计边界：继续沿用 §11.4 的状态设计，基础 `candidatePoolState.items` 保持全量候选，不因为报考要求或预算被系统隐藏；候选页面是否过滤只由可见筛选状态决定；方案生成、审查和修复建议等派生动作使用运行时 `effectiveCandidates`。本轮不新增持久化有效候选缓存，也不在 agent 工具层做中文字符串匹配。
+- 实现：`PlanningStateService.resolveEffectiveCandidates()` 改为在合并推荐 overlay 与 taxonomy 字段后调用 `applyConfirmedPlanRequirements()`；该 helper 同时消费 `constraintState.hardConstraints` 和 `USER_SCORE_KEY` 里的 `CreateSessionReq.tuitionRange`。学费过滤只作用于运行时有效候选，缺失学费时不误伤。`syncWorkingPlanWithEffectiveCandidatesForConfirmedRequirements()` 与 `syncOrderedPlanWithEffectiveCandidatesForConfirmedRequirements()` 的 guard 扩展为“存在已确认报考要求或存在有效学费范围”，修复 budget-only 场景没有裁剪 ordered/draft 的问题。
+- 后端测试：新增 `shouldApplySessionTuitionRangeWhenRegeneratingOrderedPlan` 覆盖普通专业模式，确认预算 20000 后 `orderedPlanState.items` 裁掉 60000 项，同时 `candidatePoolState.items` 仍保留原候选；新增 `shouldApplySessionTuitionRangeToOrderedUnitsWhenRegeneratingMajorGroupPlan` 覆盖专业组模式，确认 `orderedPlanState.units.majorItems` 只保留预算内专业。`mvn -q -Dtest=PlanningStateServiceTest test` 通过。
+- Agent 测试：`zhiyuan-agent/tests/unit/test_zhiyuan_agent_direct.py -q` 为 `170 passed, 29 skipped`，说明 direct 语义、pending、confirm 路径没有被后端预算生效修复破坏。
+- 真实回归：使用新后端进程和临时 agent `18329` 复跑 `examples/dialog_regression_400_requirement_plan_action_cases.json`，结果 `10/10`，metrics `/private/tmp/zhiyuan_400_v204_requirement_plan_action_after_tuition_effective_fix.json`。其中预算确认 case 的三条后端断言全部通过：pending 已采纳、planningState version 增长、`orderedPlanState.units` 最大 `tuitionPerYear <= 20000`。
+- 当前结论：v2.03 的语义补齐和 v2.04 的执行生效已形成闭环。学费预算现在和其它显式报考要求一样，在确认后能影响当前正式方案，但不隐式改变基础候选池。下一步继续复跑高信号主链路集，确认预算过滤接入 `effectiveCandidates` 后没有影响地域/院校属性/专业门类/标签/方案动作等既有 final-action。
+
+### 12.30 v2.05 高信号主链路并发回归复核
+
+- 回归范围：使用真实 LLM、临时 agent `18329`、backend `8080`、backend session clone 和最终 action 后端断言，并发跑 15 组 4.0 主链路 case：G1-G32 direct、v143/v150/v151/v153/v154/v155/v156/v157/v158/v173/v179/v183、review/repair、requirement/action，共 72 个 case。首轮结果 `69/72`，metrics 目录 `/private/tmp/zhiyuan_400_v204_mainline_high_signal_parallel`。
+- 失败分层：`400-v156-deferred-region-no-plan-change` 第一轮重复调用两次 `preview_intent_change`，但生成的 pending 正确，确认后 `pendingConfirmation.status=applied`、山东要求写入、基础候选池保留山东、ordered items/units 保持不变均通过；按前序决策“少量重复调用先观察”记录为效率问题，不作为业务链路失败。`400-v157-combo-school-attribute-exclude-final-action` 首轮为 `TimeoutError`，未进入工具链；单独复跑 `2/2` 通过，metrics `/private/tmp/zhiyuan_400_v204_v157_combo_attribute_rerun.json`，确认后民办/中外合作要求落库并刷新 ordered/review，最终 action 后端断言通过。`400-v183-review-advice-then-vague-execute-no-pending-guard` 回复明确当前没有待确认操作且不会执行，后端断言确认 planningState 未变化、pending 为空，符合 no-pending 防护边界；原 case 强制期待 `confirm_pending` 属于旧断言，已改为只看回复和无副作用。
+- 验证资产调整与复核：v156 deferred region case 从 `expectedToolNames=["preview_intent_change"] + maxToolCallCount=1` 调整为 `assertToolNamesContain=["preview_intent_change"] + maxToolCallCount=2`；v183 no-pending 模糊执行 case 移除必须调用 `confirm_pending` 的工具断言，保留 no followup、无副作用和无 pending 断言。两项调整不改变生产代码，只让回归口径贴合当前 4.0 direct 设计边界。JSON 加载检查通过；断言调整后聚焦复跑 v156 `2/2`，metrics `/private/tmp/zhiyuan_400_v205_v156_deferred_region_assertion_rerun.json`；v183 `2/2`，metrics `/private/tmp/zhiyuan_400_v205_v183_no_pending_guard_assertion_rerun.json`。
+- 当前结论：v2.04 预算 final-action 修复没有破坏地域、院校属性、专业门类/标签、组合要求、方案动作、替换、审查/修复和 no-pending 防护等主链路。当前没有新的确定业务执行缺口；剩余观察项是并发真实 LLM 下的偶发超时，以及少量重复工具调用的效率问题。后续可继续扩大质量观察池，或针对模型超时增加 runner 失败子集自动复跑/服务层重试策略。
+
+### 12.31 v2.06 修正后高信号 baseline 复跑
+
+- 回归范围：继续使用真实 LLM、临时 agent `18329`、backend `8080`、backend session clone、最终 action 后端断言和并发 4，复跑同一批 15 组 4.0 高信号主链路 case，共 72 个。原始结果 `70/72`，metrics 目录 `/private/tmp/zhiyuan_400_v206_mainline_high_signal_parallel`。
+- 失败分层一：`400-v179-active-pending-append-region-and-private-final-action` 第二步“再把民办也算了吧，一起记上”重复调用两次 `preview_intent_change`，触发严格工具次数断言；但回复正确生成“院校要求：不要：民办；地域要求：不要：山东”的待确认预览，pending summary 包含山东+民办，确认后 `pendingConfirmation.status=applied`、planningState version 增长、地域和民办报考要求落库、candidate pool 保持全量、ordered units 同时不含山东和民办，全部后端断言通过。该问题继续按少量重复调用效率观察处理；case 断言改为 `assertToolNamesContain=["preview_intent_change"] + maxToolCallCount=2`，失败子集复跑 `3/3`，metrics `/private/tmp/zhiyuan_400_v206_v179_append_duplicate_assertion_rerun.json`。
+- 失败分层二：`400-v183-review-advice-then-vague-execute-no-pending-guard` 第二步并发中没有调用工具，直接回复“这轮还没有生成可确认的调整预览，所以不会改动当前方案”。该行为无 followup，后端断言显示 planningState version 未变化、pending 为空，符合 no-pending 防护边界；失败原因是文案断言没有覆盖“没有生成可确认的调整预览”，并且仍残留必须调用 `confirm_pending` 的旧工具断言。已补充文案断言并移除工具硬要求，失败子集复跑 `2/2`，metrics `/private/tmp/zhiyuan_400_v206_v183_no_pending_guard_assertion_rerun.json`。
+- 当前结论：v2.06 复跑未发现新的 4.0 direct 业务执行缺口。预算 final-action、地域/院校属性/专业门类/标签、active pending 追加/改写、组合诉求、方案动作、替换、审查/修复、no-pending 防护都保持闭环。当前剩余可排期工作是验证 runner 的失败子集自动复跑/报告分层，以及重复工具调用的效率优化观察；不需要为本轮两个失败改生产链路。
+
+### 12.32 v2.07 质量观察池扩展验证与显式语义补齐
+
+- 本轮目标：继续按“高信号主链路 + 质量观察池”双轨口径扩大 4.0 direct 验证。重点看真实口语、长句、指代、只读质量和当前方案预览质量；不把低优先级文案和并发 LLM 超时误算为主链路业务执行缺口。
+- 验证范围：使用 fresh agent `8000`、backend `8080`、真实 LLM、backend state clone、`--ignore-thinking-assertions`、并发 4，跑 `examples/dialog_regression_400_open_quality_cases.json`、`examples/dialog_regression_400_quality_realistic_user_cases.json`、`examples/dialog_regression_400_production_abstracted_cases.json` 共 46 个 case。首轮结果 `44/46`，metrics `/private/tmp/zhiyuan_400_v207_quality_observation_parallel`。运行中存在 `assistant_chat_session` MySQL clone 空密码 warning，但后端 state/volunteer data clone 对本轮关键 case 生效；该 warning 作为验证环境问题记录。
+- 问题一：`400-prod-open-career-long-input` 中“我对医学有些排斥，但对航天、能源、心理学都感兴趣...”没有生成待确认卡，模型只口头整理诉求。客观原因是 prompt 已覆盖“不要医学类”，但没有明确把“排斥/对 X 排斥/不想学 X”纳入显式负向要求，也没有说明长句里的工资、沟通强度等职业取向不能吞掉显式专业要/不要。
+- 修复一：prompt-only，不在工具层加字符串匹配。极性规则补充“排斥X/对X排斥/不想学X”为 negative + `constraint_type=exclude`；长句规则明确职业取向可作为 `reference` 或后续 `explore_topic`，但显式专业要/不要必须先调用 `preview_intent_change`，并通过 `semantic_requirements` 标出 explicit/confirmable/reference。新增示例把“医学排斥 + 航天/能源/心理学感兴趣 + 高薪/少沟通”压成 major intent pending，其中医学为 explicit negative，航天/能源/心理学为 confirmable positive，职业取向为 reference。
+- 验证一：`py_compile app/zhiyuan_agent/prompt.py` 通过；focused 真实复跑 `400-prod-open-career-long-input` 通过，生成 `preview_intent_change` 和 `pendingConfirmationCard`，metrics `/private/tmp/zhiyuan_400_v207_open_career_long_after_prompt_fix.json`；`production_abstracted` 全组复跑 `17/17`，metrics `/private/tmp/zhiyuan_400_v207_production_abstracted_after_prompt_fix`。
+- 修复二：`400-open-quality-sort-score-preview-rich-boundary` 稳定暴露“推荐系数重新排”被模型压成录取率排序。工具层已有 `_PLAN_SORT_FIELDS` 支持 `推荐系数/推荐分/final_score/comprehensive -> finalScore`，缺口在 prompt 规则只强调 admission_ratio/school_rank/comprehensive，导致模型选择了 admission_ratio。修复为 prompt-only：明确“推荐系数/推荐分/综合分”必须用 `sort_field=final_score` 或 `comprehensive`，不要用 `admission_ratio`；补充排序示例。
+- 验证二：排序 focused 真实复跑通过，metrics `/private/tmp/zhiyuan_400_v207_sort_score_after_prompt_fix.json`；回复和卡片均显示“按推荐系数（综合分）重新排序当前方案”，仍走 `preview_plan_action` + `pendingConfirmationCard`，没有直接改方案。
+- 修复后质量池总集：再次并发跑 46 条，首轮仍为 `44/46`，metrics `/private/tmp/zhiyuan_400_v207_quality_observation_after_prompt_fix`。剩余两项分类：`400-open-quality-sort-score-preview-rich-boundary` 是总集运行在排序 prompt 修复前的失败，修复后 focused 已通过；`400-real-user-lazy-plan-risk` 是并发 `TimeoutError` 未进入工具链，失败子集顺序复跑通过并调用 `review_plan`，metrics `/private/tmp/zhiyuan_400_v207_quality_failure_subset_sequential_after_fix`。
+- 单元验证：`tests/unit/test_zhiyuan_agent_direct.py -q` 为 `173 passed, 29 skipped`。
+- 当前结论：本轮未发现新的 4.0 direct 主链路业务执行缺口；质量池中确认修复两个稳定语义质量问题：显式“排斥”类专业要求不出卡、推荐系数排序字段误判。剩余继续记录为质量/验证环境观察：并发 LLM 超时、回复信息密度、少量工具重复调用、MySQL chat-session clone 空密码 warning。
+
+### 12.33 v2.08 高信号主链路复跑与条件式补齐边界修复
+
+- 运行口径：继续使用 4.0 direct 新链路、真实 LLM、backend `8080`、backend state/chat-session clone、最终 action 后端断言和“并发首轮 + 失败子集顺序复核”的分层方式。第一次主线运行漏传 `--backend-db-password`，导致 MySQL chat-session clone 使用空密码失败，结果 `38/72` 判为无效环境运行，不纳入业务结论。
+- 有效首轮：带 `--backend-db-password 12345678` 重新并发跑 72 条高信号主链路，结果 `65/72`，metrics `/private/tmp/zhiyuan_400_v208_mainline_after_v207_prompt_fixes_with_db_clone`。失败包括少量重复 `preview_intent_change` 严格断言、G26 只读回复文案、V156 后端断言波动，以及 `400-review-shortage-honesty` 误生成方案调整 pending。
+- 失败复核：原 7 个失败子集顺序复跑 `6/7`，metrics `/private/tmp/zhiyuan_400_v208_failed_subset_sequential_escalated`。重复工具调用、G26、V156 都未稳定复现；稳定剩余问题是 `400-review-shortage-honesty`，模型把“如果稳和保不够，能不能直接帮我补齐？候选不够也要直接说”误判为 `preview_plan_action(action=regenerate_order)`，生成了待确认卡。
+- 修复设计：只调整 prompt 语义边界，不在工具层做中文关键词扫描。规则明确：条件式询问可行性、候选不足、是否需要放宽，且没有要求“现在生成预览/确认执行/直接调整”时，属于只读处理方向或诚实边界请求，调用 `review_plan(generate_fix_proposals=True)`，不要创建 pending；明确要求“先给我看预览/现在帮我补/直接调整/补一个安全一点”时仍按结构性方案调整走 `preview_plan_action`。
+- 实现内容：`app/zhiyuan_agent/prompt.py` 更新第 18/20 条行动原则，并在示例区加入 `review_plan(focus="tier_balance", generate_fix_proposals=True)` 的条件式边界示例；`tests/unit/test_zhiyuan_agent_direct.py` 增加静态断言，防止后续删掉该边界。
+- 验证：`py_compile app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；`tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_followups -q` 为 `1 passed`；`git diff --check` 通过。真实 focused 对照 `2/2`，metrics `/private/tmp/zhiyuan_400_v208_review_shortage_prompt_fix_focused`：`400-review-shortage-honesty` 只调用 `review_plan` 且无 followup，`400-review-major-group-inner-safety` 仍调用 `preview_plan_action` 并生成 pending card。
+- 回归结果：原 7 失败子集使用新 agent `8037` 复跑 `7/7`，metrics `/private/tmp/zhiyuan_400_v208_failed_subset_after_review_shortage_fix`。随后并发 4 复跑 72 条高信号主链路，首轮 `70/72`，metrics `/private/tmp/zhiyuan_400_v208_mainline_after_review_shortage_fix`。剩余两项失败分层：G21 为并发 `TimeoutError` 未进入工具链；G26 链路正确调用 `query_plan`，但首轮回复用了“录取概率”而不是断言中的“录取率”。两项顺序复跑 `2/2`，metrics `/private/tmp/zhiyuan_400_v208_mainline_failure_subset_sequential_after_fix`。
+- 当前结论：v2.08 后高信号主链路未发现新的稳定业务执行缺口。报考要求预览、方案调整预览、最终确认执行、只读审查/no-plan 边界、review+方案动作区分均保持闭环。剩余观察项仍是并发 LLM 超时、少量重复工具调用效率、以及只读回复中“录取率/录取概率”等低风险文案断言口径。
+
+### 12.34 v2.09 扩大质量观察池验证与问题分类
+
+- 本轮目标：继续扩大 4.0 direct 真实验证，优先观察整体链路和回复质量；不急于修低优先级措辞、少量重复调用或验证资产断言问题。
+- 扩展结果一：使用 fresh agent `8037`、backend `8080`、真实 LLM、backend state/chat-session clone，并发跑 hard candidate 扩展集，结果 `33/33`，metrics `/private/tmp/zhiyuan_400_v209_expanded_hard_candidates`。覆盖 agent smoke、core effect/perf、direct confirm execution、plan operation、explore intent、career direction 和 readonly real session；未发现新增主链路缺口。
+- 扩展结果二：同一 agent 跑 quality observation 扩展集，结果 `47/57`，metrics `/private/tmp/zhiyuan_400_v209_expanded_quality_observation`。10 个失败子集首次在沙箱内复跑因本地 `8080/3306` 访问被拦截，全部为环境失败，不计入结论；提权后单并发有效复跑为 `4/10`，metrics `/private/tmp/zhiyuan_400_v209_quality_failed_subset_sequential_valid`。
+- 已转绿项：`400-open-quality-budget-risk-colloquial-readonly`、`400-open-quality-intent-no-med-accounting-ok-impact`、`400-open-quality-lazy-plan-too-risky-readonly`、`400-real-user-school-abbrev-query` 复跑通过。前三条说明原首轮 timeout/无工具调用不稳定，后一条说明“青城那个是不是放多了”可被模型结合方案上下文解析到青岛城市学院并调用 `query_plan`，不是稳定简称解析缺口。
+- 剩余问题分类：`400-quality-career-fit-readonly-no-workspace` 是只读审查后“确认”的 no-pending 兜底文案断言过窄，实际无副作用；`400-quality-major-group-preview-confirm-boundary` 预览和确认均正确执行 `move_ordered_unit` 并刷新 ordered/review，但缺少“专业组/组内/方案顺序”说明，属于质量文案；`400-quality-plan-local-query-readonly-direct` 正确返回“1个志愿、7条专业明细”，失败只是断言没覆盖“7条”；`400-quality-plan-named-add-preview-direct` 仍无法把“华中农业大学的建筑类”定位成可添加候选，属于命名加项候选检索/可执行澄清能力缺口；`400-quality-sort-preview-explains-side-effect` 正确生成排序 pending，但回复未提示确认后会影响方案顺序/需要重新审查；`400-open-quality-no-pending-after-compare-guard` 在“新媒体”歧义澄清后，用户说“嗯那就这样”时继续追问歧义，属于自然接续质量和回归断言边界。
+- 当前结论：v2.09 扩大验证没有发现新的稳定业务执行缺口，也没有发现最终 action 落库错误。当前主链路仍按 v2.08 结论保持闭环；质量池剩余项主要是回复信息密度、澄清接续、验证资产断言和一个命名加项候选检索能力缺口。后续继续扩大质量池/真实 final-action；若要修，优先级应高于纯措辞的是“命名学校 + 宽泛专业类”的候选查询与可执行澄清，而不是新增工具层中文字符串匹配。
+
+### 12.35 v2.10 dialogue-derived 质量池扩大验证
+
+- 本轮目标：继续扩大 4.0 direct 在真实口语、指代、简略表达和通用咨询类对话中的覆盖；这批 case 作为质量观察池，不直接拉低高信号主链路健康度。
+- 首轮结果：使用 fresh agent `8037`、backend `8080`、真实 LLM、backend state/chat-session clone、并发 4 跑 `examples/dialog_regression_400_dialogue_derived_cases.json` 共 88 条，结果 `83/88`，metrics `/private/tmp/zhiyuan_400_v210_dialogue_derived_observation`。
+- 失败复核：5 个失败子集单并发复跑 `1/5`，metrics `/private/tmp/zhiyuan_400_v210_dialogue_failed_subset_sequential`。`400-dialogue-archive-library-cold-major` 复跑通过，首轮是 timeout fallback，非稳定业务缺口。
+- 稳定问题一：`400-dialogue-region-south-only` 中“孩子就想去南方，北方先别考虑”已触发 `preview_intent_change`，但模型没有把“南方/北方”落成有效地域要求，工具返回“没有识别到明确的报考要求”。这是本轮唯一稳定语义缺口。修复方向应在模型语义层明确地域集合表达的结构化输出或可执行澄清，例如 region requirement 的 include/exclude scope，而不是在工具层扫描中文词。
+- 稳定问题二：`400-dialogue-architecture-art-foundation` 和 `400-dialogue-accounting-finance-audit-priority` 均能给出可用回答，但工具选择分别为 `explore_topic` 与 `compare_entities`，case 仍期待旧/细分工具 `get_major_introductions`、`compare_major_options`。这更像验证资产口径与 4.0 direct 工具收敛后的命名不一致，暂不作为业务缺陷。
+- 稳定问题三：`400-dialogue-followup-readonly-boundary` 回复“好的，你先问，我不做任何改动”，无工具、无 followup、无副作用；失败只是断言没有覆盖“不做任何改动”。归为低优先级断言/文案口径。
+- 当前结论：v2.10 将 quality observation 覆盖扩大到 88 条 dialogue-derived case，未发现 final-action 或 pending 执行链路错误；主链路结论保持稳定。下一步建议先设计并修复地域集合表达的语义结构化，然后用 focused case 复跑 `south-only`，再扩大到包含“南方/北方/长三角/珠三角/北上广深/省内外”等地域集合口语样本。
+
+### 12.36 v2.11 地域集合表达结构化修复
+
+- 问题来源：v2.10 dialogue-derived 扩大验证中，`400-dialogue-region-south-only` 稳定复现。用户说“孩子就想去南方，北方先别考虑”时，模型调用了 `preview_intent_change`，但没有把“南方/北方”写入 `positive/negative` payload，工具按设计不从 `raw_user_text` 扫描补语义，最终返回“没有识别到明确的报考要求”。
+- 修复原则：保持 4.0 direct 的模型语义层职责，不新增工具层中文字符串匹配。工具只处理模型已经结构化输出的字段，不能根据用户原话临时猜测。
+- Prompt 修复：行动原则第 7 条明确地域集合也是地域要求，应使用 `area`/`region_group` 字段表达，并在 `semantic_requirements` 中标明 domain/side/strength/key/values/raw_span；补充示例：“孩子就想去南方，北方先别考虑” -> `preview_intent_change(intent_type="region", positive={"area":["南方"]}, negative={"area":["北方"]}, constraint_type="must_have", ...)`。
+- Agent 工具层修复：`tools.py` 复用既有 `REGION_AREA_PROVINCES`，让结构化 `area` 能参与本地 plan impact 和候选约束匹配。这里不读取原话、不做语义判定；只在 payload 已经是 `area` 时做精确省名集合匹配。同时修掉本地 `_matches_any_text` 在省/市 values 为空时默认命中的边界，避免仅有 area 的 payload 被错误视为匹配全部。
+- 后端最终生效修复：新增 `RegionScopeSupport.java`，把地域集合定义从 `UserGoalProposalBuilder` 私有实现抽成同包共用工具；`UserGoalProposalBuilder` 和 `RepairCandidateEligibility` 都改用结构化地域集合 matcher。这样 `constraintState.hardConstraints.mustIncludeRegions=["南方"]`、`mustExcludeRegions=["北方"]` 进入 `generateOrderedPlan()` 时，会在 `resolveEffectiveCandidates()` / `applyConfirmedPlanRequirements()` 中按省份集合生效；基础 `candidatePoolState.items` 不隐藏、不删除，仍保持全量候选与页面可恢复交互语义。
+- 回归资产修正：新增 `examples/dialog_regression_400_v211_region_area_final_cases.json`，覆盖“南方/北方”地域集合出卡和确认后的最终动作。该资产补充 `orderedPlanState.units minLength>=1`，避免之前只断言 `notContains 北京/山东` 时空数组误通过。
+- 单元验证：`py_compile app/zhiyuan_agent/prompt.py app/zhiyuan_agent/tools.py tests/unit/test_zhiyuan_agent_direct.py` 通过；focused 单测 `test_plan_item_matches_structured_region_area_payload`、`test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_followups`、`test_preview_region_area_positive_and_negative_pending` 为 `3 passed`；完整 `tests/unit/test_zhiyuan_agent_direct.py -q` 为 `175 passed, 29 skipped`；后端 focused `PlanningStateServiceTest#shouldApplyRegionAreaRequirementWhenGeneratingOrderedPlan` 通过；完整后端 `mvn -q -Dtest=PlanningStateServiceTest test` 通过；`git diff --check` 通过。
+- 真实验证一：使用新 agent `8039`、backend `8080`、真实 LLM、backend clone。`south-only` focused `1/1`，metrics `/private/tmp/zhiyuan_400_v211_region_south_only_focused`，正确生成“地域要求：要：南方；不要：北方”的 pending card；地域集合 probe `3/3`，metrics `/private/tmp/zhiyuan_400_v211_region_area_probe`，覆盖“只看长三角”“珠三角先不考虑”“北上广深也可以重点看”。
+- 真实验证二（最终 action）：先前 `orderedPlanState.units notContains 北京/山东` 在空数组下可误通过，补 `minLength>=1` 后复测。第一次 offset run 未带 `--backend-db-password`，`assistant_chat_session` 主表未克隆，`confirm_pending` 内部 `generate_planning_ordered_plan()` 返回 `ordered_plan_response={"code":404,"msg":"会话不存在"}`，因此仅作为验证夹具问题记录。有效复跑使用 backend `18080` + agent `8038` + `--backend-db-password 12345678` + session `5093017`，结果 `2/2`，metrics `/private/tmp/zhiyuan_400_v211_region_area_final_action_after_backend_fix_valid.json`。确认后回复“已采纳这次报考要求，并按新要求重新调整了当前方案”，followup 刷新 `ordered/review`；后端状态 `version=1605`、`mustIncludeRegions=["南方"]`、`mustExcludeRegions=["北方"]`、`orderedPlanState.units=12`、`orderedPlanState.items=33`、北方省份计数 0、`staleFlags.orderedPlan=false`。
+- 当前结论：v2.10 唯一稳定语义缺口已闭合，并且验证覆盖到最终 action。剩余 v2.10 其它稳定失败仍按验证资产/低优先级文案口径处理：旧细分工具名断言、只读边界文案断言。下一步可以继续扩大 quality observation，或补充更多地域集合/城市圈样本到长期回归集。
+
+### 12.43 v2.18 高信号主链路回归与失败收敛
+
+- 目的：在 v2.17 地域 final-action 与 runner DB clone 条件校准后，继续验证当前 4.0 direct 高信号主链路是否受影响，覆盖 G1-G32、readonly、v143/v150/v151/v153/v154/v155/v156/v157/v158/v173/v179/v183、v212/v213/v216 共 72 条。
+- 首轮结果：使用 backend `18081` + agent `8039`、真实 LLM、并发 3、完整 chat-session clone 和 `--backend-db-password 12345678`，目录 `/private/tmp/zhiyuan_400_v217_mainline_region_parallel`，结果 `62/72`。地域 v212/v213/v216 全部继续通过。
+- 首轮失败分层：6 条 G case 是 runner 志愿文件 clone fail-fast 过严导致的 environment setup failure，source session 没有本地 `session_volunteer_*` 文件，但这些 case 不是 final-action 硬验证，不应被志愿文件缺失阻断；v153 是首轮文案固定断言“20个相关志愿”与当前真实影响数 18 不一致；v158/G30 是少量重复 `preview_intent_change`，业务 pending 正确；v173 是确认后移动成功但断言固定老 unitId；v183 是 active pending 改口时 `UnexpectedModelBehavior`，没有生成新 pending，第三轮确认误采纳旧 pending。
+- runner 规则收窄：保留 `assistant_chat_session` 主表克隆失败的 fail-fast；志愿文件克隆失败只在 case 明确是 `final_action` 或带 `orderedPlanState/workingPlanState/reviewState` 后端断言时作为 environment failure，普通观察 case 只记录 warning 并继续跑。补充单测覆盖非 final-action 缺志愿文件继续运行；`tests/unit/test_dialog_regression_runner.py -q` 为 `89 passed`。
+- 失败子集复跑一：10 条失败子集使用修正 runner 复跑，目录 `/private/tmp/zhiyuan_400_v217_failed_subset_after_runner_gate`，结果 `6/10`。6 个环境假失败转绿；剩余 G30、v153、v173、v183。
+- v183 修复：该问题是测试期间真实发现的 active pending 改写口语缺口。修复保持 4.0 语义边界，只在 `prompt.py` 补充组合改写示例：`算了不是这个，改成山东别去，民办也不要` -> `preview_intent_change(intent_type="region", negative={"province":["山东"],"school_nature":["民办"]}, pending_resolution="replace_active_pending")`；不在工具层扫描用户原话。新版 agent `8040` focused 复跑 `1/1`，metrics `/private/tmp/zhiyuan_400_v217_v183_rewrite_after_prompt_fix.json`，第二轮正确生成“院校要求：不要：民办；地域要求：不要：山东”新 pending，第三轮确认后后端断言全部通过。
+- 失败子集复跑二：同 10 条子集使用新版 agent `8040` 复跑，目录 `/private/tmp/zhiyuan_400_v217_failed_subset_after_v183_prompt_fix`，结果 `8/10`。G30 和 v183 转绿；剩余 v153/v173 均为资产断言口径。
+- 资产断言修正：v153 首轮断言从固定 `20个相关志愿` 改为 `相关志愿`，后端 final-action 断言仍验证 pending applied、version 增长、管理学要求落库、candidate pool 保留、ordered items/units 裁剪。v173 移动确认断言从固定老 `orderedPlanState.units.0.unitId == 37020261000573` 改为 `orderedPlanState.units.0.unitId changedFromBefore=true`，仍验证确认后首位专业组真实变化。剩余两条复跑 `/private/tmp/zhiyuan_400_v217_remaining_two_after_assertion_fix` 为 `2/2`。
+- 当前结论：本轮高信号主链路没有新增确定业务执行缺口；v183 active pending 改口已通过 prompt-only 修复闭合，runner 环境口径与两个过窄资产断言已收敛。下一轮可用新版 agent 8040 对 72 条做整组复跑，或继续扩大 quality observation；G30 少量重复工具调用仍按低优先级效率观察。
+
+### 12.42 v2.17 地域 final-action 扩大验证与回归环境校准
+
+- 目的：在 v2.16 补齐“省外可以，但太偏的地方不想去”后，扩大到 v212/v213/v216 地域集合长期 final-action 资产，确认新增 `偏远地区` 不影响已有地域集合/城市圈链路。
+- 无效并发运行一：使用 backend `18081` + agent `8039`，并发 2 跑 `examples/dialog_regression_400_v212_region_area_expanded_final_cases.json`、`examples/dialog_regression_400_v213_region_area_quality_final_cases.json`、`examples/dialog_regression_400_v216_region_remote_final_cases.json`，目录 `/private/tmp/zhiyuan_400_v216_region_expanded`，结果 `0/11`。该轮未带 `--clone-backend-chat-session`，不计为业务结果。
+- 无效并发运行二：补 `--clone-backend-chat-session` 后，目录 `/private/tmp/zhiyuan_400_v216_region_expanded_with_clone`，仍为 `0/11`。复核日志发现 MySQL 克隆使用空密码，`assistant_chat_session` 主表克隆失败；后端 extra-data 可以写入，所以确认轮表现为 `pendingConfirmation.status=applied`、`planningState.version` 增长、`constraintState` 包含地域要求，但 `generateOrderedPlan` 无法基于完整会话刷新，回复“当前方案暂时没有重新调整成功”，`orderedPlanState.units` 仍保留旧方案内容。
+- 串行复核：用原始 session `17` 单独复跑 v216，metrics `/private/tmp/zhiyuan_400_v216_region_remote_single_recheck.json`，结果 `1/1`。首轮生成“地域要求：不要：偏远地区” pending card；确认后回复“已采纳这次报考要求，并按新要求重新调整了当前方案”，followup 刷新 `ordered/review`，后端断言全部通过。该复核说明 v2.16 生产链路本身可用，前两轮失败是 offset fixture/克隆条件问题。
+- 有效并发复跑：使用新的 session offset base `4000000`、完整 chat-session clone、`--backend-db-password 12345678`、并发 2 复跑上述三组 11 条，目录 `/private/tmp/zhiyuan_400_v216_region_expanded_clone_db`，结果 `11/11`。每条确认轮均覆盖 `confirm_pending`、pending applied、planningState version 增长、地域要求落库、`orderedPlanState.units minLength>=1`、代表性地域剔除和 `ordered/review` 刷新。
+- 回归工具收敛：`examples/dialog_regression_runner.py` 将 `--clone-backend-chat-session` 下的 `assistant_chat_session` 主表克隆失败、志愿文件克隆失败从 warning 升级为 environment setup failure，case 不再继续进入 websocket；同时把 source session 等于 target session 的志愿文件克隆视为 `same_session` no-op，方便原始会话 focused 复核。补充单测覆盖 chat-session 克隆失败、volunteer data 克隆失败和 same-session no-op，`tests/unit/test_dialog_regression_runner.py -q` 为 `88 passed`。runner 调整后使用 offset session `6000017`、完整 clone 和 `--backend-db-password 12345678` 复跑 v216 focused final-action，metrics `/private/tmp/zhiyuan_400_v217_runner_clone_valid_focused.json`，结果 `1/1`，无 warnings/failures。
+- 当前结论：v2.16 新增 `偏远地区` 没有破坏 v212/v213 已有地域集合、城市圈、地域别名 final-action 链路。后续所有 offset final-action 回归必须显式带 `--backend-db-password 12345678`；否则若出现“要求已采纳但方案未调整成功”，runner 会先按回归环境克隆问题失败，不直接归因到 4.0 agent 链路。
+
+### 12.41 v2.16 偏远地区诉求结构化修复
+
+- 问题来源：v2.15 quality observation 中 `400-dialogue-region-outside-ok-not-remote` 稳定失败。用户说“省外可以，但太偏的地方不想去”，模型调用了 `preview_intent_change`，但 positive/negative payload 没有可执行地域对象，工具返回“没有识别到明确的报考要求”，没有生成 pending card。
+- 设计判断：该表达不是“必须省外”。“省外可以/不排斥省外”更接近放宽或参考背景；强诉求是“不要太偏/偏远/太远的地方”。修复应让模型把后半句压成结构化地域集合 `偏远地区`，而不是工具扫描原话。
+- 实现调整：`prompt.py` 在地域集合说明中加入 `偏远地区`，明确“省外可以/不排斥省外”通常作为 reference 或背景，不单独写成必须省外；同句有“太偏/偏远/太远的地方不想去/别考虑”时，调用 `preview_intent_change(intent_type="region", negative={"area":["偏远地区"]}, constraint_type="exclude")`，并在 `semantic_requirements` 中把“省外可以”标为 reference。
+- catalog 对齐：`region_entity_resolver.py` 新增 `偏远/偏远地区/边远地区 -> 偏远地区`，并把 `偏远地区` 展开为新疆、西藏、宁夏、甘肃、青海、内蒙古；后端 `RegionScopeSupport` 同步新增相同 alias 和省份集合，确保确认后 ordered/review 派生链路真实过滤。
+- 回归资产：新增 `examples/dialog_regression_400_v216_region_remote_final_cases.json`。case 两轮：第一轮“省外可以，但太偏的地方不想去”要求 `preview_intent_change` + pending card；第二轮“确认”要求 `confirm_pending`，并通过后端断言校验 pending applied、version 增长、`mustExcludeRegions` 包含“偏远地区”、ordered units 非空且不含代表性偏远省份。
+- 单元验证：`py_compile app/domain/region_entity_resolver.py app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；focused Python 单测 `test_preview_region_remote_area_creates_pending`、`test_preview_region_area_positive_and_negative_pending`、`test_preview_region_first_tier_area_creates_pending` 为 `3 passed`；后端 focused `mvn -q -Dtest=PlanningStateServiceTest#shouldMatchRemoteRegionScope test` 通过。
+- 真实验证：启动新版 backend `18081` 与新版 agent `8039`，使用真实 LLM、完整 chat-session clone、`--backend-db-password 12345678` 跑 focused final-action，结果 `1/1`，目录 `/private/tmp/zhiyuan_400_v216_remote_region_focused`。首轮回复“地域要求：不要：偏远地区”，生成 pending card；确认后回复“已采纳这次报考要求，并按新要求重新调整了当前方案”，followup 刷新 `ordered/review`，后端断言全部通过。
+- 当前结论：v2.15 的稳定地域诉求缺口已闭合。剩余 quality observation 问题仍是旧工具名/`thinkingText` 断言资产口径，以及低优先级“澄清后用户轻量收尾”的自然接续。
+
+### 12.40 v2.15 quality observation 扩大验证
+
+- 目的：在 v2.14 主链路和地域 final-action 稳定后，继续扩大真实口语、开放问答、职业/专业方向、当前方案只读审查等 quality observation 覆盖。本轮只做验证和问题记录，不改生产链路。
+- 验证范围：`dialog_regression_400_dialogue_derived_cases.json` 88 条、`dialog_regression_400_open_quality_cases.json` 20 条、`dialog_regression_400_quality_realistic_user_cases.json` 9 条、`dialog_regression_400_career_direction_cases.json` 4 条、`dialog_regression_400_explore_intent_cases.json` 8 条、`dialog_regression_400_readonly_real_session_cases.json` 2 条，共 131 条。使用 backend `18080`、agent `8038`、真实 LLM、完整 chat-session clone、`--backend-db-password 12345678` 和并发 4。
+- 首轮结果：`102/131`，目录 `/private/tmp/zhiyuan_400_v215_quality_observation_expanded`。失败集中在 open-quality 和 quality-realistic-user；dialogue-derived 只有 3 个失败。
+- 失败子集复核：29 个失败子集单并发顺序复跑仍 `0/29`，目录 `/private/tmp/zhiyuan_400_v215_quality_failed_subset_sequential`。说明这些不是并发偶发转绿项，但大多并非 4.0 业务链路错误。
+- 稳定失败分层：2 个是旧工具名断言，`400-dialogue-architecture-art-foundation` 期望 `get_major_introductions`，实际 4.0 走 `explore_topic` 且回答内容可用；`400-dialogue-accounting-finance-audit-priority` 期望 `compare_major_options`，实际 4.0 走 `compare_entities` 且回答内容可用。24 个是纯 `thinkingText` 断言口径，实际工具调用、pending/只读边界和回复内容大体符合当前 4.0 链路，后续应优先调整验证资产，不作为生产链路缺陷。
+- 稳定问题一：`400-dialogue-region-outside-ok-not-remote`（“省外可以，但太偏的地方不想去”）稳定调用 `preview_intent_change`，但工具返回“没有识别到明确的报考要求”，没有生成 pending card。该问题属于显式地域诉求结构化不足：用户表达了“省外可以/不排斥省外”以及“不要太偏远地区”，模型没有把它压成可执行的地域要求或可执行澄清。后续修复方向应在模型语义输出里支持“可接受省外 + 排除偏远/太远/过远地区”的结构化表达，工具层仍不从原话做中文关键词扫描。
+- 稳定问题二：`400-open-quality-no-pending-after-compare-guard` 中，首轮“新媒体和跨电哪个更适合数学不太好的，先说说”因“新媒体”歧义进入澄清；下一轮“嗯那就这样”继续追问“网络与新媒体/新媒体技术”而不是关闭话题或说明不会记录报考要求。这是自然接续质量问题，不涉及 pending 或最终 action 错误，优先级低于地域诉求结构化。
+- 波动项复核：`400-real-user-intent-short-preview` 在失败子集顺序复跑中出现一次 `UnexpectedModelBehavior`，没有生成 pending card；但首轮和单独复测均能正确调用 `preview_intent_change` 并生成“会计/审计要、土木不要”的 pending card，单独复测目录 `/private/tmp/zhiyuan_400_v215_intent_short_reprobe`。该项降级为模型波动 + `thinkingText` 断言口径，不作为稳定业务缺口。
+- 当前结论：本轮 quality observation 没有发现新的 final-action 或 pending 执行错误；主链路仍按 v2.14 结论稳定。后续优先级：1）补齐“省外可以但不要偏远/太远”的结构化地域诉求；2）清理或放宽旧工具名和 `thinkingText` 断言资产；3）低优先级观察“澄清后用户轻量收尾”的自然接续。
+
+### 12.39 v2.14 broader 回归复核
+
+- 目的：在 v2.13 地域别名和地域集合结构化归一修复后，复跑更大的 4.0 broader 集，确认修复没有只在 focused case 中成立，并继续按“并发首轮 + 失败子集顺序复核”的口径记录真实 LLM 波动。
+- 无效环境运行：第一次在沙箱内直接运行 77 条回归，全部失败。失败原因是 runner 访问本机 backend/DB 被拦截，典型错误为 `URLError: Operation not permitted` 和 MySQL `127.0.0.1:3306` 连接失败；该结果不计为业务链路结果。
+- 有效首轮：授权访问本机服务后，使用 backend `18080`、agent `8038`、真实 LLM、完整 chat-session clone、`--backend-db-password 12345678` 和并发 4，跑 G1-G32、production、realistic、review/repair、v179、v183、v212、v213 共 77 条。结果 `73/77`，目录 `/private/tmp/zhiyuan_400_v214_broader_after_v213_region_fix_escalated`。
+- 首轮失败分层：`400-g4-explicit-major-entity-display` 首轮无工具调用、无 pending card，模型只口头记录专业意向；`400-g30-special-admission-path-preservation` 调用了两次 `preview_intent_change`，业务输出正确但超过严格工具次数；`400-realistic-readonly-fix-options-short` 首轮无工具调用导致期望 `review_plan` 的工具断言失败；`400-realistic-policy-vs-mutation-short` 首轮无工具调用导致期望 `answer_policy` 的工具断言失败。
+- 失败子集复核：上述 4 条用单并发顺序复跑全部通过，目录 `/private/tmp/zhiyuan_400_v214_failed_subset_sequential`。复跑中 G4/G30 均正确调用 `preview_intent_change` 并生成 pending card，两个 realistic case 分别走 `review_plan` 与 `answer_policy` 只读路径。
+- 当前结论：v212/v213 地域集合/城市圈 final-action 在 broader 集内保持通过，确认轮后端断言继续覆盖 pending applied、planningState version 增长、地域报考要求写入和 ordered/review 刷新。本轮没有发现新的稳定业务执行缺口；剩余问题仍按并发模型波动、少量重复工具调用效率观察、只读工具名断言口径处理，暂不修改生产链路。
+
+### 12.38 v2.13 地域别名质量回归与结构化归一修复
+
+- 回归资产：新增 `examples/dialog_regression_400_v213_region_area_quality_final_cases.json`，在 v2.12 基础上继续覆盖更口语的地域集合/城市圈表达：`江浙沪就行，其他地方先别看了`、`北上广深就行，不往其他城市放了`、`东北和西北都先别考虑`、`西北西南都不去，太远了`、`上海南京杭州这一片可以，北方先不看`。每条仍是首轮 pending card + 二轮确认后的后端 final-action 断言。
+- 初始验证：focused v2.13 使用 backend `18080` + agent `8038` + 真实 LLM + 完整 chat-session clone，结果 `10/10`，metrics `/private/tmp/zhiyuan_400_v213_region_area_quality_final.json`；随后扩大到 G1-G32、production、realistic、review/repair、v179、v183、v212、v213 共 77 条，结果 `73/77`，目录 `/private/tmp/zhiyuan_400_v213_broader_regression`。
+- 失败复核：4 个失败子集顺序复跑 `3/4`，目录 `/private/tmp/zhiyuan_400_v213_failed_subset_sequential`。`G7`、`G31`、`realistic-double-negation` 均转绿，归为并发/重复调用/质量观察；唯一稳定失败是 `400-v213-region-jiangzhehu-only-final-action`。
+- 稳定问题：`江浙沪就行，其他地方先别看了` 会调用 `preview_intent_change`，但没有生成 `pendingConfirmationCard`，确认轮没有可执行对象，`mustIncludeRegions` 未写入，ordered plan 未变化。复核 chat history 后，真实参数出现过 `positive={"area_region":["江浙沪"]}` 或 `positive={"area":["江浙沪"]}`，同时 semantic_requirements 里把 `其他地方` 当作 negative area；工具侧未兼容 `area_region`，且 semantic completion 用原始值 `江浙沪` 与 canonical `长三角` 比较，误判缺失。
+- 同类扩展问题：修复 `江浙沪` 后，完整 v2.13 复跑暴露 `北上广深` 同类缺口：Python resolver 没有把 `北上广深` 识别为 area，而后端 `RegionScopeSupport` 已支持该 region，导致 Agent 侧 payload 空。该问题与 `江浙沪` 同属结构化地域 catalog/归一契约不一致。
+- 修复原则：不新增工具层从用户原话做语义判定或中文关键词路由。模型仍负责输出显式 `positive/negative` 和 `semantic_requirements`；工具只做结构化字段别名兼容、地域实体 canonical 对齐、以及无法解析的泛化 area 跳过，避免把“其他地方/非X地区”变成伪地域对象。
+- 实现调整：`prompt.py` 明确 `X 就行/只看 X/只考虑 X，其他地方先别看/不往其他地方放` 应输出 `positive={"area":["X"]}` + `constraint_type="only_keep"`，不要把“其他地方/非X地区”写入 negative；`app/zhiyuan_agent/tools.py` 支持 `area_region/region_area` payload alias，region semantic completion 对 `province/city/area` 调 `resolve_region_entity()` 做 canonical 比较，并跳过无法解析为真实 area 的泛化词；`region_entity_resolver.py` 补齐 `北上广深` area，与后端 catalog 对齐。
+- 单元验证：`py_compile app/domain/region_entity_resolver.py app/zhiyuan_agent/tools.py app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；focused 单测 `test_preview_region_area_positive_and_negative_pending`、`test_preview_region_area_region_alias_creates_canonical_pending`、`test_preview_region_area_alias_semantic_values_are_canonicalized`、`test_preview_region_first_tier_area_creates_pending` 为 `4 passed`。
+- 真实验证：`江浙沪` focused final-action 复跑 `2/2`，metrics `/private/tmp/zhiyuan_400_v213_jiangzhehu_after_region_semantic_fix.json`；完整 v2.13 复跑 `10/10`，metrics `/private/tmp/zhiyuan_400_v213_region_area_quality_after_first_tier_fix.json`；此前 broader 4 个失败子集复跑 `4/4`，目录 `/private/tmp/zhiyuan_400_v213_failed_subset_after_region_fix`。
+- 当前结论：v2.13 暴露的稳定缺口已闭合，且确认后最终 action 已验证到 `pendingConfirmation=applied`、`planningState.version` 增长、`mustIncludeRegions/mustExcludeRegions` 写入、`orderedPlanState.units` 非空以及代表性地域剔除。剩余 broader 初始失败中的重复工具调用/并发波动仍按低优先级观察项处理。
+
+### 12.37 v2.12 地域集合长期回归扩展验证
+
+- 回归资产：新增 `examples/dialog_regression_400_v212_region_area_expanded_final_cases.json`，在 v2.11 focused “南方/北方”基础上扩展到长三角、华南、珠三角、西南等地域集合/城市圈表达。每条 case 都是两轮真实对话：第一轮生成待确认预览，第二轮“确认”执行最终动作。
+- 覆盖表达：`孩子就想去南方，北方先别考虑`、`那就只看长三角吧`、`华南的不要了`、`珠三角先不考虑了`、`只看西南吧`。这些表达保留口语化和简略形态，验证模型把地域集合压成结构化 `positive/negative area`，工具层不从原话做中文字符串扫描。
+- 最终动作断言：确认轮统一要求调用 `confirm_pending`，并通过后端断言校验 `pendingConfirmation.status=applied`、`planningState.version` 递增、`constraintState.hardConstraints.mustIncludeRegions/mustExcludeRegions` 写入对应地域集合、`orderedPlanState.units minLength>=1`，以及代表性排除地域不再出现在排序方案中。
+- 无效环境运行：第一次从沙箱内运行 runner 时，本地 `18080` 和 MySQL 访问被拦截，表现为 `URLError: Operation not permitted` 和 `Can't connect to MySQL server on 127.0.0.1:3306`，5 条均为 environment setup fail，不计为业务结果。后续 runner 与 Agent 均改为非沙箱运行。
+- 有效验证一：使用 backend `18080` + agent `8038` + 真实 LLM + 完整 chat-session clone + `--backend-db-password 12345678`，metrics `/private/tmp/zhiyuan_400_v212_region_area_expanded_final_action_valid.json`，结果 `9/10`。唯一失败为 `400-v212-region-south-china-exclude-final-action` 首轮 `华南的不要了` 触发两次 `preview_intent_change`，超过新资产里的 `maxToolCallCount=1`；但两次工具均成功，最终只产生一个 pending card，确认后 `mustExcludeRegions` 包含“华南”，`orderedPlanState.units` 非空且不含广东/广西/海南，所有后端断言通过。该项按少量重复工具调用效率观察记录，不作为最终 action 业务失败。
+- 资产口径调整：v2.12 资产移除首轮 `maxToolCallCount` 硬断言，保留 `assertToolNamesContain=preview_intent_change`、pending card、action family 以及确认轮 `maxToolCallCount=1`。原因是该资产目标是长期验证 4.0 地域集合语义和最终数据生效；少量重复工具调用仍记录在文档中，但不应把业务正确的最终动作标红。
+- 有效验证二：按调整后的资产复跑，metrics `/private/tmp/zhiyuan_400_v212_region_area_expanded_final_action_green.json`，结果 `10/10`；耗时统计 `min=2947ms`、`median=4853ms`、`p95/max=10189ms`。5 条确认轮全部刷新 `ordered/review` 工作台视图，且最终后端断言均通过。
+- 候选池边界抽查：最后一条 `只看西南吧` 后读取 session `5094217` 的 `planningState`，状态为 `version=1606`、`mustIncludeRegions=["西南"]`、`mustExcludeRegions=[]`、`candidatePoolState.items=402`、`orderedPlanState.units=2`、`orderedPlanState.items=2`、`staleFlags.orderedPlan=false`。这符合此前设计：页面候选池保留全量可恢复数据，已确认要求只在排序方案/审查/修复等派生链路中生效。
+- 当前结论：v2.11 的地域集合语义修复已扩展到长期 final-action 回归，未发现新的方案最终执行错误。剩余观察项是偶发重复 `preview_intent_change`，按低优先级效率问题跟踪；后续可继续补“江浙沪/北上广深/省内外/偏远地区”等表达进质量池或长期集。

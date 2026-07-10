@@ -1,4 +1,4 @@
-"""Release 4.0 Zhiyuan Agent PoC package."""
+"""Release 4.0 Zhiyuan Agent direct-chain package."""
 
 from app.zhiyuan_agent.agent import ZhiyuanAgent
 from app.zhiyuan_agent.prompt import build_turn_context, build_zhiyuan_agent_instructions

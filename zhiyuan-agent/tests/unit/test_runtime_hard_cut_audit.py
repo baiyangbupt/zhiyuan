@@ -7,8 +7,15 @@ SERVICE_TEXT = (Path(__file__).resolve().parents[2] / "app" / "service.py").read
 )
 PLAN_SEMANTIC_ACTION_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "plan_semantic_action_tool.py"
 PLAN_EXECUTION_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "plan_execution_tool.py"
+INTENT_PREVIEW_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "intent_preview_tool.py"
+PLANNING_WORKFLOW_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "planning_workflow_tool.py"
+TURN_DECISION_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "turn_decision_tool.py"
+INTENT_ENTITY_PROFILE_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "intent_entity_profile_tool.py"
+PLAN_QUERY_PROFILE_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "plan_query_profile_tool.py"
+REPLY_PROFILE_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "reply_profile_tool.py"
 PLAN_ACTION_EXECUTION_PATH = Path(__file__).resolve().parents[2] / "app" / "domain" / "plan_action_execution.py"
 HANDLERS_PATH = Path(__file__).resolve().parents[2] / "app" / "handlers"
+EXAMPLES_PATH = Path(__file__).resolve().parents[2] / "examples"
 PROPOSAL_COMPILER_TEXT = (
     Path(__file__).resolve().parents[2] / "app" / "domain" / "proposal_compiler.py"
 ).read_text(encoding="utf-8")
@@ -20,6 +27,18 @@ INTERNAL_CLIENT_TEXT = (
 ).read_text(encoding="utf-8")
 DIALOG_REGRESSION_RUNNER_TEXT = (
     Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_runner.py"
+).read_text(encoding="utf-8")
+DIALOG_CASE_EVALUATION_REPORT_TEXT = (
+    Path(__file__).resolve().parents[2] / "examples" / "dialog_case_evaluation_report.py"
+).read_text(encoding="utf-8")
+DIALOG_QUALITY_GATE_TEXT = (
+    Path(__file__).resolve().parents[2] / "examples" / "dialog_quality_gate.py"
+).read_text(encoding="utf-8")
+E2E_EFFECT_PERF_TEXT = (
+    Path(__file__).resolve().parents[2] / "tests" / "e2e" / "test_agent_dialog_effect_perf.py"
+).read_text(encoding="utf-8")
+MAINLINE_DIALOG_SCENARIOS_TEXT = (
+    Path(__file__).resolve().parents[2] / "tests" / "unit" / "test_mainline_dialog_scenarios.py"
 ).read_text(encoding="utf-8")
 
 
@@ -73,12 +92,164 @@ def test_service_runtime_does_not_reintroduce_recovery_classifiers_or_legacy_wra
     assert present == []
 
 
+def test_zhiyuan_agent_direct_route_is_not_feature_flag_or_rollout_gated():
+    forbidden = [
+        "ZHIYUAN_AGENT_ENABLED",
+        "ZHIYUAN_AGENT_ROLLOUT_PERCENT",
+        "_zhiyuan_agent_direct_enabled",
+        "_zhiyuan_agent_rollout_percent",
+        "_should_use_zhiyuan_agent_direct",
+        "_score_available_for_zhiyuan_agent_direct",
+        "from app.agent.chat_agent import ChatAgent",
+        "ChatAgent(",
+    ]
+
+    assert [snippet for snippet in forbidden if snippet in SERVICE_TEXT] == []
+
+
+def test_zhiyuan_agent_direct_shadow_runtime_is_removed():
+    forbidden = [
+        "ZHIYUAN_AGENT_POC_SHADOW",
+        "ZHIYUAN_AGENT_DIRECT_SHADOW",
+        "_ZHIYUAN_AGENT_POC_SHADOW_TIMEOUT_SECONDS",
+        "_ZHIYUAN_AGENT_DIRECT_SHADOW_TIMEOUT_SECONDS",
+        "_maybe_run_zhiyuan_agent_shadow",
+        "_run_zhiyuan_agent_shadow_task",
+        "_append_completed_poc_shadow_observability_message",
+        "_append_zhiyuan_agent_shadow_history",
+        "zhiyuanAgentPocShadow",
+        "zhiyuanAgentDirectShadow",
+        "zhiyuan_agent_poc_shadow_event",
+        "zhiyuan_agent_shadow_event",
+        "expectedZhiyuanAgentPoc",
+        "maxZhiyuanAgentPoc",
+        "poc-shadow-wait-seconds",
+        "runtime-shadow-output",
+        "runtimeShadowCaseId",
+        "runtimeShadowSummary",
+        "_build_runtime_shadow_observation",
+        "_build_runtime_shadow_summary",
+    ]
+
+    assert [snippet for snippet in forbidden if snippet in SERVICE_TEXT] == []
+    for text in (DIALOG_REGRESSION_RUNNER_TEXT, DIALOG_CASE_EVALUATION_REPORT_TEXT):
+        assert [snippet for snippet in forbidden if snippet in text] == []
+
+
+def test_regression_runner_protocol_does_not_reintroduce_semantic_shadow_or_full_agent_timing_names():
+    forbidden = [
+        "semanticRouterShadow",
+        "semantic-router-shadow",
+        "semanticRouterSummary",
+        "preFullAgentDurationMs",
+        "postFullAgentDurationMs",
+        "fullAgentToolTrial",
+        "Full Agent Tool Trial",
+    ]
+
+    for text in (DIALOG_REGRESSION_RUNNER_TEXT, DIALOG_CASE_EVALUATION_REPORT_TEXT):
+        assert [snippet for snippet in forbidden if snippet in text] == []
+
+
 def test_plan_semantic_action_tool_is_removed():
     assert not PLAN_SEMANTIC_ACTION_TOOL_PATH.exists()
 
 
 def test_legacy_plan_execution_tool_file_is_removed():
     assert not PLAN_EXECUTION_TOOL_PATH.exists()
+
+
+def test_legacy_intent_preview_wrapper_file_is_removed():
+    assert not INTENT_PREVIEW_TOOL_PATH.exists()
+
+
+def test_legacy_planning_workflow_tool_file_is_removed():
+    assert not PLANNING_WORKFLOW_TOOL_PATH.exists()
+    assert "planning_workflow_tool" not in SERVICE_TEXT
+
+
+def test_legacy_turn_decision_tool_file_is_removed():
+    assert not TURN_DECISION_TOOL_PATH.exists()
+    forbidden = [
+        "turn_decision_tool",
+        "classify_turn_decision",
+        "_classify_turn_decision_cached",
+        "TurnDecision",
+        "turnDecision",
+        "_turn_decision_",
+        "TURN_DECISION_TIMEOUT_SECONDS",
+        "latest_profile_change_replan_dsl",
+    ]
+    assert [snippet for snippet in forbidden if snippet in SERVICE_TEXT] == []
+
+
+def test_legacy_model_node_profile_tools_are_removed():
+    assert not INTENT_ENTITY_PROFILE_TOOL_PATH.exists()
+    assert not PLAN_QUERY_PROFILE_TOOL_PATH.exists()
+    assert not REPLY_PROFILE_TOOL_PATH.exists()
+    forbidden = [
+        "intent_entity_profile_tool",
+        "plan_query_profile_tool",
+        "reply_profile_tool",
+        "extract_intent_entity_profile",
+        "classify_plan_query_profile",
+        "classify_reply_focus_binding",
+        "classify_reply_generation_grounding",
+        "3.2.0 profile",
+    ]
+    assert [snippet for snippet in forbidden if snippet in INTENT_STATE_TOOL_TEXT] == []
+
+
+def test_legacy_runtime_pending_audit_and_compiler_adapter_assets_are_removed():
+    removed = [
+        "runtime_pending_entrypoint_audit.py",
+        "runtime_pending_sink_call_audit.py",
+        "runtime_pending_entrypoints_320.json",
+        "runtime_pending_entrypoints_320_expectations.json",
+        "runtime_pending_sink_calls_320.json",
+        "runtime_pending_sink_calls_320_expectations.json",
+        "intent_preview_compiler_adapter.py",
+        "intent_preview_compiler_adapter_320_cases.json",
+        "intent_select_compiler_adapter.py",
+        "intent_select_compiler_adapter_320_cases.json",
+        "compiled_pending_sink_contract.py",
+        "compiled_pending_sink_contract_320_cases.json",
+        "dialog_regression_320_prod_asset_quality_cases.json",
+        "dialog_regression_320_prod_asset_micro_cases.json",
+        "dialog_regression_320_prod_asset_additional_raw_cases.json",
+        "dialog_regression_320_prod_raw_framework_gap_cases.json",
+        "dialog_regression_320_career_region_fastpath_probe.json",
+        "dialog_regression_320_prod_asset_supplemental_cases.json",
+    ]
+    assert [name for name in removed if (EXAMPLES_PATH / name).exists()] == []
+
+
+def test_legacy_release_quality_gate_assets_are_removed_from_release_gate():
+    removed = [
+        "dialog_regression_301_agent_smoke_cases.json",
+        "dialog_regression_302_agent_cases.json",
+        "dialog_regression_302_explore_intent_cases.json",
+        "dialog_regression_302_readonly_real_session_cases.json",
+        "dialog_regression_302_effect_perf_cases.json",
+        "dialog_regression_302_effect_perf_output.json",
+        "dialog_regression_303_effect_perf_cases.json",
+        "dialog_regression_303_open_quality_cases.json",
+        "dialog_regression_303_realistic_user_cases.json",
+        "dialog_regression_303_dialogue_derived_cases.json",
+        "dialog_regression_303_career_direction_cases.json",
+        "dialog_regression_303_phase2_career_output.json",
+        "dialog_regression_303_phase2_major_compare_output.json",
+        "dialog_regression_310_review_repair_cases.json",
+        "dialog_regression_310_production_abstracted_cases.json",
+        "dialog_regression_310_constraint_plan_action_cases.json",
+        "dialog_regression_310_production_dialogue_candidates.json",
+        "model_provider_303_quality_readonly_cases.json",
+        "model_provider_303_open_quality_realistic_cases.json",
+    ]
+
+    assert [name for name in removed if (EXAMPLES_PATH / name).exists()] == []
+    for text in (DIALOG_QUALITY_GATE_TEXT, E2E_EFFECT_PERF_TEXT, MAINLINE_DIALOG_SCENARIOS_TEXT):
+        assert [name for name in removed if name in text] == []
 
 
 def test_legacy_plan_action_execution_dispatch_is_removed():
@@ -90,6 +261,23 @@ def test_legacy_plan_action_execution_dispatch_is_removed():
 
 def test_service_runtime_does_not_parse_legacy_execute_plan_action_results():
     assert "execute_plan_action" not in SERVICE_TEXT
+
+
+def test_service_runtime_does_not_reference_legacy_full_agent_tool_names():
+    forbidden = [
+        "preview_current_intent_confirmation",
+        "preview_current_major_intent_confirmation",
+        "preview_current_school_intent_confirmation",
+        "preview_current_region_intent_confirmation",
+        "preview_current_career_intent_confirmation",
+        "analyze_volunteer_intent_change",
+        "query_volunteer_plan",
+        "answer_admission_policy_question",
+        "compare_majors",
+        "compare_schools",
+    ]
+
+    assert [snippet for snippet in forbidden if snippet in SERVICE_TEXT] == []
 
 
 def test_legacy_plan_edit_cache_is_not_used_by_runtime_or_regression_runner():
@@ -140,26 +328,22 @@ def test_legacy_execute_preview_no_longer_feeds_plan_pending_sink():
     )
 
 
-def test_intent_preview_turn_decision_arbitration_stays_in_proposal_compiler():
-    assert "compile_runtime_intent_preview_turn_decision_arbitration_source" in SERVICE_TEXT
-    assert "_full_agent_intent_preview_overrides_turn_decision_block" not in SERVICE_TEXT
-    helper_match = re.search(
-        r"def _compile_full_agent_intent_preview_turn_decision_arbitration[\s\S]+?"
-        r"\n\ndef _intent_preview_payload_from_semantic_decision",
-        SERVICE_TEXT,
-    )
-    assert helper_match is not None
-    helper_text = helper_match.group(0)
-    assert "compile_runtime_intent_preview_turn_decision_arbitration_source" in helper_text
-    forbidden_helper_snippets = [
-        "task_layer not in",
-        "side_effect not in",
-        "scope_anchor not in",
-        "scenario in",
-        "current_plan_atomic_mutation",
-        "_prompt",
+def test_service_runtime_does_not_reintroduce_full_agent_intent_arbitration():
+    forbidden = [
+        "_compile_full_agent_intent_preview_turn_decision_arbitration",
+        "_full_agent_intent_preview_overrides_turn_decision_block",
+        "_turn_decision_blocks_full_agent_intent_pending",
+        "_full_agent_intent_pending_blocked_by_turn_decision_reply",
+        "_blocked_intent_preview_for_plan_route_reply",
+        "compile_runtime_intent_preview_turn_decision_arbitration_source",
+        "compile_blocked_intent_preview_for_plan_route_reply_source",
+        "full_agent_intent_pending_requires_turn_decision",
+        "RuntimeIntentPreviewTurnDecisionArbitrationSource",
+        "RuntimeBlockedIntentPreviewReplySource",
     ]
-    assert [snippet for snippet in forbidden_helper_snippets if snippet in helper_text] == []
+
+    assert [snippet for snippet in forbidden if snippet in SERVICE_TEXT] == []
+    assert [snippet for snippet in forbidden if snippet in PROPOSAL_COMPILER_TEXT] == []
 
 
 def test_legacy_workspace_presentation_compiler_is_removed():
@@ -181,6 +365,32 @@ def test_legacy_workspace_presentation_compiler_is_removed():
         "mutating_tool_names",
     ]
     assert [snippet for snippet in forbidden_service_snippets if snippet in SERVICE_TEXT] == []
+
+
+def test_legacy_proposal_compiler_32_turn_decision_compilers_are_removed():
+    forbidden = [
+        "PlanConfirmationCandidateResolution",
+        "RuntimePlanCompiledSource",
+        "RuntimeLocalPlanActionSource",
+        "RuntimePlanQueryCompiledSource",
+        "ProfileChangeReplanCompiledSource",
+        "ProfileChangeStateQueryResolution",
+        "PendingTurnResolution",
+        "ApplyThenGeneratePlanCompiledSource",
+        "resolve_plan_confirmation_candidate",
+        "compile_runtime_plan_confirmation_source",
+        "compile_apply_then_generate_plan_source",
+        "resolve_pending_turn_action",
+        "compile_runtime_pending_turn_decision_source",
+        "compile_post_apply_readonly_evidence_plan",
+        "compile_runtime_local_plan_action_source",
+        "compile_runtime_plan_query_profile_source",
+        "pending_turn_looks_no_active_pending_confirmation",
+        "compile_profile_change_replan_source",
+        "resolve_profile_change_replan_state_query",
+    ]
+
+    assert [snippet for snippet in forbidden if snippet in PROPOSAL_COMPILER_TEXT] == []
 
 
 def test_legacy_semantic_plan_display_compiler_is_removed():

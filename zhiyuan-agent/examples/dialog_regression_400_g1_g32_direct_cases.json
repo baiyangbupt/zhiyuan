@@ -40,9 +40,7 @@
         "level3"
       ],
       "expectedRoutingPath": "zhiyuan_agent_direct",
-      "expectedZhiyuanAgentPocStatus": "success",
       "maxToolCallCount": 2,
-      "maxZhiyuanAgentPocToolCallCount": 2,
       "warnElapsedSeconds": 60,
       "maxElapsedSeconds": 180
     }
@@ -74,12 +72,6 @@
           "expectedToolNames": [
             "preview_intent_change"
           ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
-          ],
           "maxToolCallCount": 1
         }
       ]
@@ -109,12 +101,6 @@
           "assertNoFollowups": true,
           "expectedToolNames": [
             "review_plan"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "review_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ],
           "maxToolCallCount": 1
         }
@@ -149,12 +135,6 @@
           "expectedToolNames": [
             "query_plan"
           ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "query_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
-          ],
           "maxToolCallCount": 1
         }
       ]
@@ -187,12 +167,6 @@
           "expectedToolNames": [
             "preview_intent_change"
           ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
-          ],
           "maxToolCallCount": 1
         }
       ]
@@ -223,12 +197,6 @@
           "expectedToolNames": [
             "review_plan"
           ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "review_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
-          ],
           "maxToolCallCount": 1
         }
       ]
@@ -257,12 +225,6 @@
           "expectedToolNames": [
             "preview_intent_change"
           ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
-          ],
           "maxToolCallCount": 1
         }
       ]
@@ -284,9 +246,11 @@
           "assertContainsAny": [
             "没有上一轮待确认",
             "没有待确认",
-            "没有可确认"
+            "没有可确认",
+            "没有看到待确认"
           ],
           "assertNoFollowups": true,
+          "expectedRoutingPath": "direct_no_pending_short_text_confirm",
           "expectedToolNames": [
             "confirm_pending"
           ],
@@ -297,7 +261,7 @@
     {
       "name": "400-g12-query-and-replace-compound",
       "sessionId": "9904412",
-      "cloneBackendStateFromSessionId": "35",
+      "cloneBackendStateFromSessionId": "16",
       "coverage": [
         "G12",
         "compound_query_action",
@@ -319,9 +283,6 @@
           "expectedToolNames": [
             "query_plan",
             "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "query_plan"
           ],
           "maxToolCallCount": 2
         }
@@ -352,12 +313,6 @@
           "expectedToolNames": [
             "preview_plan_action"
           ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
-          ],
           "maxToolCallCount": 1
         }
       ]
@@ -365,7 +320,7 @@
     {
       "name": "400-g17-tier-local-reorder",
       "sessionId": "9904417",
-      "cloneBackendStateFromSessionId": "26",
+      "cloneBackendStateFromSessionId": "16",
       "coverage": [
         "G17",
         "plan_action",
@@ -386,12 +341,6 @@
           "assertFollowupCount": 1,
           "expectedToolNames": [
             "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ],
           "maxToolCallCount": 1
         }
@@ -450,12 +399,6 @@
           "assertNoFollowups": true,
           "expectedToolNames": [
             "review_plan"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "review_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ],
           "maxToolCallCount": 1
         }
@@ -523,12 +466,6 @@
           "expectedToolNames": [
             "preview_intent_change"
           ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
-          ],
           "maxToolCallCount": 1
         }
       ]
@@ -559,12 +496,6 @@
           "assertFollowupCount": 1,
           "expectedToolNames": [
             "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ],
           "maxToolCallCount": 1
         }
@@ -601,12 +532,6 @@
           "expectedToolNames": [
             "query_plan"
           ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "query_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
-          ],
           "maxToolCallCount": 1
         }
       ]
@@ -614,7 +539,7 @@
     {
       "name": "400-g27-tuition-replace-preview",
       "sessionId": "9904427",
-      "cloneBackendStateFromSessionId": "26",
+      "cloneBackendStateFromSessionId": "16",
       "coverage": [
         "G27",
         "plan_action",
@@ -636,12 +561,6 @@
           "assertFollowupCount": 1,
           "expectedToolNames": [
             "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ],
           "maxToolCallCount": 1
         }
@@ -673,12 +592,6 @@
           "assertFollowupCount": 1,
           "expectedToolNames": [
             "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ],
           "maxToolCallCount": 1
         }
@@ -712,12 +625,6 @@
           "assertNoFollowups": true,
           "expectedToolNames": [
             "query_plan"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "query_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ],
           "maxToolCallCount": 1
         }

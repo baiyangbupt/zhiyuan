@@ -1,0 +1,94 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Focused v1.43 checks for explicit requirement confirmation and final action boundaries.",
+    "notes": "The cloned local session does not create a backend chat_session row, so candidate-pool regenerate can fail with session-not-found. This case verifies the requirement is written and no misleading plan refresh is sent when rebuild fails."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "confirm_pending",
+      "v1_43_constraint_apply"
+    ],
+    "coverage": [
+      "explicit_requirement",
+      "candidate_pool_rebuild_boundary",
+      "no_false_workspace_refresh"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "26",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v143-private-school-rebuild-failure-no-refresh",
+      "sessionId": "9904432",
+      "prompts": [
+        {
+          "prompt": "民办就算了",
+          "assertContainsAny": [
+            "民办",
+            "采纳",
+            "确认",
+            "报考条件"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "候选重建",
+            "当前方案",
+            "报考要求"
+          ],
+          "assertNoFollowups": true,
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": "院校性质:民办"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

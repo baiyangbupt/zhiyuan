@@ -40,19 +40,19 @@ pytest -v -s
 ```bash
 RUN_AGENT_DIALOG_E2E=1 \
 AGENT_DIALOG_E2E_URL=ws://127.0.0.1:18291/gaotu-assistant-agent/plus/chat/1/bot/test/do \
-AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/dialog_regression_303_effect_perf_output.json \
+AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/dialog_regression_400_effect_perf_output.json \
 pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s
 ```
 
-3.2.0 本地回归调试统一使用隔离端口：Agent `18291`、Backend `18290`、Rank `18292`、Web `3201`。如果需要覆盖默认地址，保证 Agent 启动时的 `INTERNAL_SERVICE_URL` 与回归命令里的后端地址一致，避免连到已有测试环境后读到错误方案状态。
+4.0 本地回归调试统一使用隔离端口：Agent `18291`、Backend `18290`、Rank `18292`、Web `3201`。如果需要覆盖默认地址，保证 Agent 启动时的 `INTERNAL_SERVICE_URL` 与回归命令里的后端地址一致，避免连到已有测试环境后读到错误方案状态。
 
-3.2.0 的对话回归区分 evidence 与 workspace mutation：只读方案查询、只读审查、readonly while pending 和 unsupported no-op 不应产生 `planningWorkspaceAction`；只有真实 apply、post-apply readback 或确认卡相关 preview 才应断言 workspace refresh。
+4.0 的对话回归区分 evidence 与 workspace mutation：只读方案查询、只读审查、readonly while pending 和 unsupported no-op 不应产生 `planningWorkspaceAction`；只有真实 apply、post-apply readback 或确认卡相关 preview 才应断言 workspace refresh。
 
-3.2.0 的语义回归应断言结构化路由，不断言中文措辞命中：pending 后只读/影响查询、采纳后再查询、采纳后生成方案、新诉求与 active pending 冲突、只读 PlanQuery 和 intent hard cut，均应通过 `turnObservability.routeDecision`、`sideEffect/scenario`、`TurnDecision -> PendingTurn compiler`、`PlanQueryProfile/PlanQuery DSL` 或 action DSL 验证。协议级短确认/取消可以保留固定短语测试，但业务语义不应依赖用户原话字符串。
+4.0 的语义回归应断言结构化路由，不断言中文措辞命中：pending 后只读/影响查询、采纳后再查询、采纳后生成方案、新诉求与 active pending 冲突、只读方案查询和 intent hard cut，均应通过 4.0 direct chain 的 tool call、pending card、final action、workspace event 和观测字段验证。协议级短确认/取消可以保留固定短语测试，但业务语义不应依赖用户原话字符串。
 
 如果 case 依赖 backend fixture，`cloneBackendStateFromSessionId` 的 clone/clear 失败会作为 environment failure 跳过 WebSocket 步骤；声明需要源 active pending 的 fixture 会连同 `pendingConfirmation` 克隆，只有源 pending 为 active 时才跳过 per-case pending clear，避免脏 pending 伪造回归结果。
 
-默认使用 `examples/dialog_regression_303_effect_perf_cases.json`，覆盖：
+默认使用 `examples/dialog_regression_400_effect_perf_cases.json`，覆盖：
 
 - 方案只读查询的结构化回复、信息丰富度和无工作台误联动。
 - 院校专业组移动 preview -> confirm -> apply，要求解释专业组顺序语义和确认边界。

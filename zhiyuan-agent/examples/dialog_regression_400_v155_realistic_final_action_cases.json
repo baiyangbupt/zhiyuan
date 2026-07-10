@@ -1,0 +1,295 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v1.55 realistic spoken/deictic final-action checks.",
+    "notes": "Run with --clone-backend-chat-session. These cases keep formal final-action cases, but add everyday short utterances and follow-up references, verifying final backend plan changes after confirmation."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "confirm_pending",
+      "realistic_user_input",
+      "final_action"
+    ],
+    "coverage": [
+      "spoken_style",
+      "ellipsis",
+      "deictic_reference",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v155-review-reference-remove-high-tuition-final-action",
+      "sessionId": "9904551",
+      "coverage": [
+        "review_then_plan_action",
+        "short_followup_reference",
+        "high_tuition_remove",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "有啥问题，咋弄",
+          "assertContainsAny": [
+            "问题",
+            "风险",
+            "处理",
+            "高收费",
+            "中外合作"
+          ],
+          "assertNoFollowups": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "那高收费的别要了",
+          "assertContainsAny": [
+            "高收费",
+            "移出",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_plan_action"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "已移出",
+            "已执行",
+            "已更新",
+            "刷新"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261001095_37020262020504_709"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v155-current-plan-private-remove-final-action",
+      "sessionId": "9904552",
+      "coverage": [
+        "plan_action",
+        "current_plan_anchor",
+        "school_nature",
+        "short_negative_expression",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "方案里的民办不要了",
+          "assertContainsAny": [
+            "民办",
+            "移出",
+            "调整",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_plan_action"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已移出",
+            "已执行",
+            "已更新",
+            "刷新"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261000269_37020262005080_709"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v155-region-bare-spoken-final-action",
+      "sessionId": "9904553",
+      "coverage": [
+        "intent_change",
+        "region",
+        "bare_constraint",
+        "short_negative_expression",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "山东别去了",
+          "assertContainsAny": [
+            "山东",
+            "确认",
+            "采纳",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "山东",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "candidateViewState.filters.negativeProvinceNames",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "山东"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

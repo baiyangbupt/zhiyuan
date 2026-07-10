@@ -1,4 +1,4 @@
-"""Release 4.0 Zhiyuan Agent PoC implementation."""
+"""Release 4.0 Zhiyuan Agent direct-chain implementation."""
 
 from __future__ import annotations
 
@@ -26,7 +26,11 @@ from app.zhiyuan_agent.tools import (
 
 
 _TERMINAL_NEXT_STEPS = {"confirm", "clarify"}
-_POC_TOOL_NAMES = {
+_TERMINAL_RESPOND_TOOL_NAMES = {
+    "confirm_pending",
+    "review_plan",
+}
+_DIRECT_TOOL_NAMES = {
     "read_state",
     "answer_policy",
     "compare_entities",
@@ -47,7 +51,7 @@ _COMPOSABLE_READONLY_TOOLS = {
 
 
 class ZhiyuanAgent(BaseAgent[str]):
-    """Compact orthogonal-tool agent used to validate the 4.0 PoC design."""
+    """Compact orthogonal-tool agent for the 4.0 direct chain."""
 
     MAX_TOOL_CALLS_PER_TURN = 3
 
@@ -111,7 +115,7 @@ class ZhiyuanAgent(BaseAgent[str]):
         if next_step in _TERMINAL_NEXT_STEPS:
             return True
         tool_name = str(getattr(tool_return, "tool_name", "") or "").strip()
-        return tool_name == "confirm_pending" and next_step == "respond"
+        return tool_name in _TERMINAL_RESPOND_TOOL_NAMES and next_step == "respond"
 
     def _should_retry_incomplete_plan_action(self, tool_return: ToolReturnPart, payload: dict[str, Any]) -> bool:
         if str(getattr(tool_return, "tool_name", "") or "").strip() != "preview_plan_action":
@@ -149,9 +153,22 @@ class ZhiyuanAgent(BaseAgent[str]):
             if rendered:
                 prefix = self._render_prior_readonly_context(tool_returns[:index])
                 if prefix:
-                    return f"{prefix}\n\n下面是这次待确认预览：\n\n{rendered}"
+                    header = self._compound_result_header(tool_return, payload)
+                    return f"{prefix}\n\n{header}\n\n{rendered}"
                 return rendered
         return None
+
+    @staticmethod
+    def _compound_result_header(tool_return: ToolReturnPart, payload: dict[str, Any]) -> str:
+        tool_name = str(getattr(tool_return, "tool_name", "") or "").strip()
+        next_step = str(payload.get("next_step") or "").strip()
+        if tool_name in {"preview_intent_change", "preview_plan_action"} and next_step == "confirm":
+            return "下面是这次待确认预览："
+        if tool_name == "review_plan":
+            return "继续看审查结果："
+        if tool_name == "confirm_pending":
+            return "继续看处理结果："
+        return "继续看结果："
 
     def _guard_repeated_tool_calls(self, tool_names: list[str], observability: dict[str, Any]) -> str | None:
         guarded = super()._guard_repeated_tool_calls(tool_names, observability)
@@ -185,7 +202,7 @@ class ZhiyuanAgent(BaseAgent[str]):
     ) -> str | None:
         if tool_name != "total_tool_calls":
             return super().render_tool_loop_guard_output_from_history(tool_name, count, messages)
-        recent = self._find_recent_poc_tool_return(messages)
+        recent = self._find_recent_direct_tool_return(messages)
         if recent:
             return f"这轮已经达到工具调用上限，我先按已拿到的结果回答。\n\n{recent}"
         return None
@@ -240,13 +257,13 @@ class ZhiyuanAgent(BaseAgent[str]):
             return compact
         return compact[:limit].rstrip() + "..."
 
-    def _find_recent_poc_tool_return(self, messages: list[Any]) -> str | None:
+    def _find_recent_direct_tool_return(self, messages: list[Any]) -> str | None:
         for message in reversed(messages or []):
             parts = list(getattr(message, "parts", []) or [])
             for part in reversed(parts):
                 if not isinstance(part, ToolReturnPart):
                     continue
-                if str(getattr(part, "tool_name", "") or "") not in _POC_TOOL_NAMES:
+                if str(getattr(part, "tool_name", "") or "") not in _DIRECT_TOOL_NAMES:
                     continue
                 payload = self._parse_tool_payload(part)
                 if not isinstance(payload, dict):

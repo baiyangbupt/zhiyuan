@@ -30,23 +30,22 @@ LOCAL_PYTEST_TARGETS = [
     "tests/unit/test_dialog_case_evaluation_report.py",
     "tests/unit/test_model_provider_benchmark.py",
     "tests/unit/test_mainline_dialog_scenarios.py",
-    "tests/integration/test_dialog_style_coverage.py",
     "tests/unit/test_action_resolver.py",
-    "tests/unit/test_plan_query_tool.py",
     "tests/unit/test_chat_service_history_persistence.py",
     "tests/unit/test_ws_compat.py",
 ]
 
 PINNED_LIVE_CASE_FILES = [
-    "dialog_regression_301_agent_smoke_cases.json",
-    "dialog_regression_302_agent_cases.json",
-    "dialog_regression_302_explore_intent_cases.json",
-    "dialog_regression_302_readonly_real_session_cases.json",
-    "dialog_regression_302_effect_perf_cases.json",
-    "dialog_regression_303_effect_perf_cases.json",
-    "dialog_regression_303_open_quality_cases.json",
-    "dialog_regression_303_realistic_user_cases.json",
-    "dialog_regression_303_dialogue_derived_cases.json",
+    "dialog_regression_400_agent_smoke_cases.json",
+    "dialog_regression_400_plan_operation_cases.json",
+    "dialog_regression_400_explore_intent_cases.json",
+    "dialog_regression_400_readonly_real_session_cases.json",
+    "dialog_regression_400_core_effect_perf_cases.json",
+    "dialog_regression_400_effect_perf_cases.json",
+    "dialog_regression_400_open_quality_cases.json",
+    "dialog_regression_400_quality_realistic_user_cases.json",
+    "dialog_regression_400_dialogue_derived_cases.json",
+    "dialog_regression_400_career_direction_cases.json",
     "dialog_regression_mainline_cases.json",
     "dialog_regression_full_journey_cases.json",
     "dialog_regression_plan_correctness_cases.json",
@@ -59,14 +58,15 @@ PINNED_LIVE_CASE_FILES = [
     "dialog_regression_science_cases.json",
     "dialog_regression_special_cases.json",
     "dialog_regression_comprehensive_cases.json",
-    "dialog_regression_310_review_repair_cases.json",
-    "dialog_regression_310_production_abstracted_cases.json",
+    "dialog_regression_400_review_repair_cases.json",
+    "dialog_regression_400_production_abstracted_cases.json",
+    "dialog_regression_400_requirement_plan_action_cases.json",
 ]
 
 MODEL_PROVIDER_CASE_FILES = [
     "model_provider_benchmark_e2e_cases.json",
-    "model_provider_303_quality_readonly_cases.json",
-    "model_provider_303_open_quality_realistic_cases.json",
+    "model_provider_400_quality_readonly_cases.json",
+    "model_provider_400_open_quality_realistic_cases.json",
 ]
 
 
@@ -128,7 +128,7 @@ def build_gate_plan(
             name="local-pytest-regression",
             category="local",
             command=[py, "-m", "pytest", *_existing_local_pytest_targets(), "-q"],
-            description="Run local unit/integration/regression tests for routing, pending protocol, preview/apply, style and semantic shadow.",
+            description="Run local unit/integration/regression tests for routing, pending protocol, preview/apply, style and semantic frame observation.",
         )
     )
 
@@ -138,7 +138,7 @@ def build_gate_plan(
         stem = Path(case_name).stem
         metrics_output = _metrics_path(metrics_dir, stem, "live.json")
         report_output = _metrics_path(metrics_dir, stem, "report.md")
-        clear_arg = "--clear-history-per-case" if case_name == "dialog_regression_303_dialogue_derived_cases.json" else "--clear-history"
+        clear_arg = "--clear-history-per-case" if case_name == "dialog_regression_400_dialogue_derived_cases.json" else "--clear-history"
         commands.append(
             GateCommand(
                 name=f"live-{stem}",
@@ -196,7 +196,7 @@ def build_gate_plan(
                     "--output",
                     str(semantic_output),
                 ],
-                description=f"Evaluate SemanticIntentFrame shadow expectations for {case_path}.",
+                description=f"Evaluate SemanticIntentFrame observation expectations for {case_path}.",
                 output=str(semantic_output),
                 depends_on=[f"live-{stem}"],
             )

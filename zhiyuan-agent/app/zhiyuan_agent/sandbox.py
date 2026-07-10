@@ -638,8 +638,16 @@ class BackendAdapter:
                 negative_major_keywords=_clean_string_list(
                     query.get("negative_major_keywords") or query.get("negativeMajorKeywords")
                 ),
+                school_tags=_clean_string_list(query.get("school_tags") or query.get("schoolTags")),
+                negative_school_tags=_clean_string_list(
+                    query.get("negative_school_tags") or query.get("negativeSchoolTags")
+                ),
+                major_tags=_clean_string_list(query.get("major_tags") or query.get("majorTags")),
+                negative_major_tags=_clean_string_list(query.get("negative_major_tags") or query.get("negativeMajorTags")),
                 page=max(1, _as_int(query.get("page"), 1)),
                 page_size=max(1, _as_int(query.get("page_size") or query.get("pageSize"), 20)),
+                sort_field=str(query.get("sort_field") or query.get("sortField") or "finalScore"),
+                sort_order=str(query.get("sort_order") or query.get("sortOrder") or "desc"),
             )
             data = _candidate_file_from_response(response)
             return BackendReadResult(data, _extract_version(response, data))

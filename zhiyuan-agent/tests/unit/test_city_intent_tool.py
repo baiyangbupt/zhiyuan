@@ -915,11 +915,11 @@ class TestExtractCityIntentsWithPolarity:
         assert mock_agent_instance.run.await_args.kwargs["model_settings"]["temperature"] == 0
 
 
-# ---- ChatAgent integration ----
+# ---- City intent import coverage ----
 
 
-class TestChatAgentCityIntentRegistration:
-    """Tests for city intent tools registration in ChatAgent."""
+class TestCityIntentImportCoverage:
+    """Tests for city intent tool import coverage."""
 
     def test_extract_city_intent_importable(self):
         """Test that extract_city_intent is importable."""

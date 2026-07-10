@@ -40,9 +40,7 @@
         "level3"
       ],
       "expectedRoutingPath": "zhiyuan_agent_direct",
-      "expectedZhiyuanAgentPocStatus": "success",
       "maxToolCallCount": 1,
-      "maxZhiyuanAgentPocToolCallCount": 2,
       "warnElapsedSeconds": 60,
       "maxElapsedSeconds": 180
     }
@@ -73,12 +71,6 @@
           "assertNoFollowups": true,
           "expectedToolNames": [
             "review_plan"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "review_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ]
         }
       ]
@@ -108,12 +100,6 @@
           "assertNoFollowups": true,
           "expectedToolNames": [
             "review_plan"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "review_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ]
         }
       ]
@@ -141,12 +127,6 @@
           "assertNoFollowups": true,
           "expectedToolNames": [
             "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ]
         }
       ]
@@ -175,12 +155,6 @@
           "assertFollowupCount": 1,
           "expectedToolNames": [
             "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_plan_action"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ]
         }
       ]
@@ -208,12 +182,6 @@
           "assertNoFollowups": true,
           "expectedToolNames": [
             "review_plan"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "review_plan"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "respond"
           ]
         }
       ]
@@ -242,12 +210,6 @@
           "assertFollowupCount": 1,
           "expectedToolNames": [
             "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ]
         }
       ]
@@ -278,12 +240,6 @@
           "assertFollowupCount": 1,
           "expectedToolNames": [
             "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocFirstToolNames": [
-            "preview_intent_change"
-          ],
-          "expectedZhiyuanAgentPocNextSteps": [
-            "confirm"
           ]
         }
       ]

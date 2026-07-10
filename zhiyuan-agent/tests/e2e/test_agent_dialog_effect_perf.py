@@ -23,7 +23,7 @@ pytestmark = [
 ]
 
 RUNNER_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_runner.py"
-EFFECT_PERF_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_effect_perf_cases.json"
+EFFECT_PERF_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_400_effect_perf_cases.json"
 DEFAULT_HISTORY_DB = Path(__file__).resolve().parents[2] / "data" / "chat_history.db"
 
 SPEC = importlib.util.spec_from_file_location("dialog_regression_runner", RUNNER_PATH)

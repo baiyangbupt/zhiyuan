@@ -1,0 +1,551 @@
+[
+  {
+    "name": "400-requirement-only-keep-major-preview-boundary",
+    "sessionId": "9903101",
+    "flow": [
+      "intent",
+      "confirm"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "requirement_plan_action",
+      "only_keep_requirement",
+      "major_scope",
+      "preview_confirm_boundary",
+      "zhiyuan_agent_direct"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "prompts": [
+      {
+        "prompt": "我只想学临床医学，其他专业先不要",
+        "assertContainsAny": [
+          "临床医学",
+          "只保留",
+          "采纳",
+          "确认"
+        ],
+        "assertNotContains": [
+          "排除临床医学",
+          "删掉临床医学",
+          "移除临床医学",
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "确认卡片",
+          "硬要求",
+          "硬约束",
+          "软偏好",
+          "草稿",
+          "只读替换预览",
+          "只读调整预览",
+          "目标调整预览",
+          "当前不会直接修改方案",
+          "当前不会修改方案"
+        ],
+        "assertThinkingNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
+        "expectedKeyPoints": [
+          "临床医学",
+          "只保留",
+          "确认前不生效"
+        ],
+        "warnElapsedSeconds": 60
+      },
+      {
+        "prompt": "确认",
+        "assertContainsAny": [
+          "已采纳",
+          "临床医学",
+          "后续",
+          "更新"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿",
+          "只读替换预览",
+          "只读调整预览",
+          "目标调整预览",
+          "当前不会直接修改方案",
+          "当前不会修改方案"
+        ],
+        "assertThinkingNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertNoFollowups": true,
+        "assertActionableFollowupTypes": [
+          "planningWorkspaceAction"
+        ],
+        "assertActionableFollowupTargets": [
+          "ordered",
+          "review"
+        ],
+        "assertActionableFollowupCount": 2,
+        "expectedKeyPoints": [
+          "已采纳",
+          "临床医学",
+          "后续参考"
+        ],
+        "warnElapsedSeconds": 60
+      }
+    ]
+  },
+  {
+    "name": "400-requirement-must-have-major-preview-boundary",
+    "sessionId": "9903102",
+    "flow": [
+      "intent",
+      "plan",
+      "confirm"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "requirement_plan_action",
+      "must_have_requirement",
+      "major_scope",
+      "preview_confirm_boundary",
+      "zhiyuan_agent_direct"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "prompts": [
+      {
+        "prompt": "方案里必须有法学，其他专业可以先保留",
+        "assertContainsAny": [
+          "法学",
+          "至少",
+          "保留",
+          "采纳",
+          "确认"
+        ],
+        "assertNotContains": [
+          "只保留法学",
+          "排除其他专业",
+          "删掉其他专业",
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "确认卡片",
+          "硬要求",
+          "硬约束",
+          "软偏好",
+          "草稿",
+          "只读替换预览",
+          "只读调整预览",
+          "目标调整预览",
+          "当前不会直接修改方案",
+          "当前不会修改方案"
+        ],
+        "assertThinkingNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
+        "expectedKeyPoints": [
+          "法学",
+          "至少保留",
+          "其他方向可以保留"
+        ],
+        "warnElapsedSeconds": 60
+      },
+      {
+        "prompt": "确认",
+        "assertContainsAny": [
+          "法学",
+          "已确认",
+          "当前方案",
+          "已有",
+          "不用调整",
+          "补入",
+          "调整预览"
+        ],
+        "assertNotContains": [
+          "只保留法学",
+          "排除其他专业",
+          "删掉其他专业",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "确认卡片",
+          "硬要求",
+          "硬约束",
+          "软偏好",
+          "草稿",
+          "只读替换预览",
+          "只读调整预览",
+          "目标调整预览",
+          "当前不会直接修改方案",
+          "当前不会修改方案"
+        ],
+        "assertThinkingNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "法学",
+          "后续参考"
+        ],
+        "warnElapsedSeconds": 60
+      }
+    ]
+  },
+  {
+    "name": "400-requirement-exclude-major-preview-and-apply",
+    "sessionId": "9903103",
+    "flow": [
+      "intent",
+      "plan",
+      "confirm"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "requirement_plan_action",
+      "negative_requirement",
+      "major_scope",
+      "preview_confirm_boundary",
+      "plan_apply",
+      "zhiyuan_agent_direct"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "prompts": [
+      {
+        "prompt": "不要英语相关专业，当前方案里有的话也删掉",
+        "assertContainsAny": [
+          "英语",
+          "避开",
+          "移出",
+          "删除",
+          "采纳",
+          "确认"
+        ],
+        "assertNotContains": [
+          "只保留",
+          "only_keep",
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "确认卡片",
+          "硬要求",
+          "硬约束",
+          "软偏好",
+          "草稿",
+          "只读替换预览",
+          "只读调整预览",
+          "目标调整预览",
+          "当前不会直接修改方案",
+          "当前不会修改方案"
+        ],
+        "assertThinkingNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
+        "expectedKeyPoints": [
+          "英语",
+          "当前方案",
+          "确认前不改"
+        ],
+        "warnElapsedSeconds": 60
+      },
+      {
+        "prompt": "确认执行",
+        "assertContainsAny": [
+          "已",
+          "英语",
+          "方案",
+          "更新",
+          "移出"
+        ],
+        "assertNotContains": [
+          "只保留",
+          "only_keep",
+          "移除88",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿",
+          "只读替换预览",
+          "只读调整预览",
+          "目标调整预览",
+          "当前不会直接修改方案",
+          "当前不会修改方案"
+        ],
+        "assertThinkingNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "方案已更新",
+          "审查"
+        ],
+        "warnElapsedSeconds": 60
+      }
+    ]
+  },
+  {
+    "name": "400-requirement-exclude-cooperative-program-preview-and-apply",
+    "sessionId": "9903105",
+    "flow": [
+      "plan",
+      "confirm"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "requirement_plan_action",
+      "negative_requirement",
+      "review_issue_scope",
+      "cooperative_program",
+      "plan_apply",
+      "zhiyuan_agent_direct"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "26",
+    "clearBackendPlanningIntentState": true,
+    "prompts": [
+      {
+        "prompt": "中外合作的都排除掉，当前方案里有的话先移出去",
+        "assertContainsAny": [
+          "中外合作",
+          "排除",
+          "移出",
+          "确认"
+        ],
+        "assertNotContains": [
+          "具体专业：中外合作",
+          "当前方案里暂时没有匹配",
+          "默认优先做替换预览",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "确认卡片",
+          "硬要求",
+          "硬约束",
+          "软偏好",
+          "草稿",
+          "只读替换预览",
+          "只读调整预览",
+          "目标调整预览",
+          "当前不会直接修改方案",
+          "当前不会修改方案"
+        ],
+        "assertThinkingNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
+        "expectedKeyPoints": [
+          "中外合作",
+          "当前方案",
+          "确认前不改"
+        ],
+        "warnElapsedSeconds": 60
+      },
+      {
+        "prompt": "确认执行",
+        "assertContainsAny": [
+          "已",
+          "中外合作",
+          "方案",
+          "更新",
+          "移出"
+        ],
+        "assertNotContains": [
+          "具体专业：中外合作",
+          "当前方案里暂时没有匹配",
+          "默认优先做替换预览",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿",
+          "只读替换预览",
+          "只读调整预览",
+          "目标调整预览",
+          "当前不会直接修改方案",
+          "当前不会修改方案"
+        ],
+        "assertThinkingNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "方案已更新",
+          "审查"
+        ],
+        "warnElapsedSeconds": 60
+      }
+    ]
+  },
+  {
+    "name": "400-requirement-tuition-budget-preview",
+    "sessionId": "9903106",
+    "flow": [
+      "plan",
+      "confirm"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "requirement_plan_action",
+      "tuition_budget",
+      "preview_confirm_boundary",
+      "zhiyuan_agent_direct"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "prompts": [
+      {
+        "prompt": "太贵的学校别放了，学费最好控制在两万以内",
+        "assertContainsAny": [
+          "学费",
+          "预算",
+          "20000",
+          "两万",
+          "调整预览",
+          "确认"
+        ],
+        "assertNotContains": [
+          "移出再补充",
+          "缺少必要信息",
+          "没准确整理",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "确认卡片",
+          "硬要求",
+          "硬约束",
+          "软偏好",
+          "草稿"
+        ],
+        "assertThinkingNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
+        "expectedKeyPoints": [
+          "学费",
+          "预算",
+          "确认前不改"
+        ],
+        "warnElapsedSeconds": 60
+      },
+      {
+        "prompt": "确认执行",
+        "assertContainsAny": [
+          "已采纳",
+          "学费",
+          "预算",
+          "方案",
+          "调整"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿",
+          "只读替换预览",
+          "只读调整预览",
+          "目标调整预览",
+          "当前不会直接修改方案",
+          "当前不会修改方案"
+        ],
+        "assertThinkingNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertNoFollowups": true,
+        "assertActionableFollowupTypes": [
+          "planningWorkspaceAction"
+        ],
+        "assertActionableFollowupTargets": [
+          "ordered",
+          "review"
+        ],
+        "assertActionableFollowupCount": 2,
+        "assertBackendExtraData": [
+          {
+            "key": "pendingConfirmation",
+            "path": "status",
+            "equals": "applied"
+          },
+          {
+            "key": "planningState",
+            "path": "version",
+            "greaterThanBefore": true
+          },
+          {
+            "key": "planningState",
+            "path": "orderedPlanState.units",
+            "maxNumericFieldLessThanOrEqual": {
+              "field": "tuitionPerYear",
+              "value": 20000
+            }
+          }
+        ],
+        "expectedKeyPoints": [
+          "已采纳",
+          "方案已更新",
+          "学费预算"
+        ],
+        "warnElapsedSeconds": 60
+      }
+    ]
+  }
+]

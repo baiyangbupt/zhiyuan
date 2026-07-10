@@ -1,0 +1,415 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v1.58 realistic pending rewrite, cross-domain combo, and confirmation negation final-action checks.",
+    "notes": "Run with --clone-backend-chat-session. These cases verify same-turn cancellation plus new requirement, region+school-attribute combo requirements, and confirmation negation wording with final backend assertions."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "confirm_pending",
+      "realistic_user_input",
+      "pending_rewrite",
+      "cross_domain_combo",
+      "confirmation_negation",
+      "final_action"
+    ],
+    "coverage": [
+      "spoken_style",
+      "same_turn_cancel_and_reissue",
+      "region_and_school_attribute_combo",
+      "confirmation_negation",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v158-same-turn-cancel-and-reissue-region-final-action",
+      "sessionId": "9904581",
+      "coverage": [
+        "same_turn_cancel_and_reissue",
+        "region",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "民办的不要",
+          "assertContainsAny": [
+            "民办",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "这个先算了，改成山东别去了",
+          "assertContainsAny": [
+            "山东",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "active"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "unchangedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "notContains": "院校性质:民办"
+            }
+          ]
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "山东",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "notContains": "院校性质:民办"
+            },
+            {
+              "key": "planningState",
+              "path": "candidateViewState.filters.negativeProvinceNames",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "山东"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v158-region-and-school-attribute-combo-final-action",
+      "sessionId": "9904582",
+      "coverage": [
+        "cross_domain_combo",
+        "region",
+        "school_nature",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "山东别去，民办也算了",
+          "assertContainsAny": [
+            "山东",
+            "民办",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 2
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已采纳",
+            "山东",
+            "民办",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": "院校性质:民办"
+            },
+            {
+              "key": "planningState",
+              "path": "candidateViewState.filters.negativeProvinceNames",
+              "contains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": [
+                "山东",
+                "民办"
+              ]
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "民办"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v158-confirm-negative-requirement-without-active-pending",
+      "sessionId": "9904583",
+      "coverage": [
+        "confirmation_negation",
+        "school_nature",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "确认不要民办",
+          "assertContainsAny": [
+            "民办",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已采纳",
+            "民办",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": "院校性质:民办"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": "民办"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "民办"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v158-do-not-confirm-means-cancel-active-pending",
+      "sessionId": "9904584",
+      "coverage": [
+        "confirmation_negation",
+        "cancel_pending",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "中外合作算了吧",
+          "assertContainsAny": [
+            "中外合作",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "不要确认，先别采纳",
+          "assertContainsAny": [
+            "已取消",
+            "取消",
+            "不会执行",
+            "继续说明"
+          ],
+          "assertNoFollowups": true,
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "cancelled"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "unchangedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "notContains": "招生类型:中外合作"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "unchangedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "unchangedFromBefore": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

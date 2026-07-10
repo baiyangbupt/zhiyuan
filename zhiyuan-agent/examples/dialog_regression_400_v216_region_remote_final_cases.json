@@ -1,0 +1,118 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v2.16 focused final-action check for remote-region requirement."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "region_area",
+      "confirm_pending",
+      "final_action"
+    ],
+    "coverage": [
+      "explicit_requirement",
+      "remote_region_area",
+      "spoken_expression",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v216-region-remote-exclude-final-action",
+      "sessionId": "17",
+      "prompts": [
+        {
+          "prompt": "省外可以，但太偏的地方不想去",
+          "assertContainsAny": [
+            "偏远",
+            "地域",
+            "确认",
+            "方案"
+          ],
+          "assertToolNamesContain": [
+            "preview_intent_change"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertActionFamiliesContain": [
+            "apply_selected_intents"
+          ]
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已采纳",
+            "当前方案",
+            "报考要求"
+          ],
+          "assertToolNamesContain": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "偏远地区"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "minLength": 1
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "新疆"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "西藏"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "青海"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

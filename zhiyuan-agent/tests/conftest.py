@@ -13,7 +13,6 @@ from app.config import LLMConfig
 
 # 引入共享 fixtures，使其对所有测试可见
 from tests.fixtures.mock_backend import patch_backend  # noqa: F401
-from tests.fixtures.mock_planning import patch_planning  # noqa: F401
 
 
 _LLM_ENV_KEYS = [

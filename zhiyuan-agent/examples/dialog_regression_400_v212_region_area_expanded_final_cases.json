@@ -1,0 +1,403 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v2.12 expanded region area requirement final-action checks for explicit colloquial area expressions.",
+    "notes": "Run with --clone-backend-chat-session. Verifies area-level include/exclude region requirements create pending previews and apply to confirmed requirements and ordered plan refresh without hiding candidatePoolState."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "region_area",
+      "confirm_pending",
+      "final_action"
+    ],
+    "coverage": [
+      "explicit_requirement",
+      "region_area",
+      "spoken_expression",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v212-region-south-north-final-action",
+      "sessionId": "17",
+      "prompts": [
+        {
+          "prompt": "孩子就想去南方，北方先别考虑",
+          "assertContainsAny": [
+            "南方",
+            "北方",
+            "确认",
+            "地域",
+            "方案"
+          ],
+          "assertToolNamesContain": [
+            "preview_intent_change"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertActionFamiliesContain": [
+            "apply_selected_intents"
+          ]
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已采纳",
+            "当前方案",
+            "报考要求"
+          ],
+          "assertToolNamesContain": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustIncludeRegions",
+              "contains": "南方"
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "北方"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "minLength": 1
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "北京"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "山东"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v212-region-yangtze-delta-only-final-action",
+      "sessionId": "17",
+      "prompts": [
+        {
+          "prompt": "那就只看长三角吧",
+          "assertContainsAny": [
+            "长三角",
+            "确认",
+            "地域",
+            "方案"
+          ],
+          "assertToolNamesContain": [
+            "preview_intent_change"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertActionFamiliesContain": [
+            "apply_selected_intents"
+          ]
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已采纳",
+            "当前方案",
+            "报考要求"
+          ],
+          "assertToolNamesContain": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustIncludeRegions",
+              "contains": "长三角"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "minLength": 1
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "北京"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "广东"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v212-region-south-china-exclude-final-action",
+      "sessionId": "17",
+      "prompts": [
+        {
+          "prompt": "华南的不要了",
+          "assertContainsAny": [
+            "华南",
+            "确认",
+            "地域",
+            "方案"
+          ],
+          "assertToolNamesContain": [
+            "preview_intent_change"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertActionFamiliesContain": [
+            "apply_selected_intents"
+          ]
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已采纳",
+            "当前方案",
+            "报考要求"
+          ],
+          "assertToolNamesContain": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "华南"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "minLength": 1
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "广东"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "广西"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "海南"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v212-region-pearl-delta-exclude-final-action",
+      "sessionId": "17",
+      "prompts": [
+        {
+          "prompt": "珠三角先不考虑了",
+          "assertContainsAny": [
+            "珠三角",
+            "确认",
+            "地域",
+            "方案"
+          ],
+          "assertToolNamesContain": [
+            "preview_intent_change"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertActionFamiliesContain": [
+            "apply_selected_intents"
+          ]
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已采纳",
+            "当前方案",
+            "报考要求"
+          ],
+          "assertToolNamesContain": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeRegions",
+              "contains": "珠三角"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "minLength": 1
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "广州"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "深圳"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "佛山"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v212-region-southwest-only-final-action",
+      "sessionId": "17",
+      "prompts": [
+        {
+          "prompt": "只看西南吧",
+          "assertContainsAny": [
+            "西南",
+            "确认",
+            "地域",
+            "方案"
+          ],
+          "assertToolNamesContain": [
+            "preview_intent_change"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertActionFamiliesContain": [
+            "apply_selected_intents"
+          ]
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已采纳",
+            "当前方案",
+            "报考要求"
+          ],
+          "assertToolNamesContain": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustIncludeRegions",
+              "contains": "西南"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "minLength": 1
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "山东"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "江苏"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "广东"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

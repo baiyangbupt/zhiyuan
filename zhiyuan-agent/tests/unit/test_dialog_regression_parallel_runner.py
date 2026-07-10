@@ -67,3 +67,52 @@ def test_parallel_runner_passes_history_db_to_child_runner(tmp_path):
     cmd = recorded["cmd"]
     assert "--history-db" in cmd
     assert str(history_db) in cmd
+
+
+def test_parallel_runner_passes_backend_chat_clone_options_to_child_runner(tmp_path):
+    case_file = tmp_path / "cases.json"
+    case_file.write_text("[]\n", encoding="utf-8")
+    recorded: dict[str, object] = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(cmd, **kwargs):
+        recorded["cmd"] = list(cmd)
+        return _Proc()
+
+    with patch.object(parallel_runner.subprocess, "run", side_effect=fake_run):
+        parallel_runner._run_one(
+            case_file=str(case_file),
+            case_name="case-a",
+            case_payload={"name": "case-a", "steps": []},
+            output_dir=tmp_path,
+            url="ws://agent",
+            internal_url="http://backend",
+            history_db=None,
+            base_offset=0,
+            clear_history_per_case=False,
+            clear_backend_pending_per_case=False,
+            clear_backend_planning_intent_per_case=False,
+            keep_response_text=False,
+            assert_plan_style=False,
+            response_timeout=10,
+            open_timeout=5,
+            clone_backend_chat_session=True,
+            backend_db_host="db-host",
+            backend_db_port="13306",
+            backend_db_user="db-user",
+            backend_db_password="secret",
+            backend_db_name="db-name",
+            backend_volunteer_data_dir="/tmp/volunteer-data",
+        )
+
+    cmd = recorded["cmd"]
+    assert "--clone-backend-chat-session" in cmd
+    assert cmd[cmd.index("--backend-db-host") + 1] == "db-host"
+    assert cmd[cmd.index("--backend-db-port") + 1] == "13306"
+    assert cmd[cmd.index("--backend-db-user") + 1] == "db-user"
+    assert cmd[cmd.index("--backend-db-password") + 1] == "secret"
+    assert cmd[cmd.index("--backend-db-name") + 1] == "db-name"
+    assert cmd[cmd.index("--backend-volunteer-data-dir") + 1] == "/tmp/volunteer-data"

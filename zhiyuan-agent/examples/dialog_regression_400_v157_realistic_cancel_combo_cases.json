@@ -1,0 +1,472 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "v1.57 realistic cancel, re-issue, combo requirement, and long-context final-action checks.",
+    "notes": "Run with --clone-backend-chat-session. These cases verify cancellation does not mutate planning state, later re-issued requirements still execute, combined explicit requirements are applied together, and long-context references trigger final backend actions."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "confirm_pending",
+      "realistic_user_input",
+      "cancel_or_combo",
+      "final_action"
+    ],
+    "coverage": [
+      "spoken_style",
+      "cancel_pending",
+      "reissue_requirement",
+      "combo_requirement",
+      "long_context_reference",
+      "ordered_plan_final_action"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-v157-cancel-then-reissue-public-only",
+      "sessionId": "9904571",
+      "coverage": [
+        "cancel_pending",
+        "reissue_requirement",
+        "school_nature",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "民办的不要",
+          "assertContainsAny": [
+            "民办",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "先不采纳了",
+          "assertContainsAny": [
+            "已取消",
+            "取消",
+            "不会执行",
+            "继续说明"
+          ],
+          "assertNoFollowups": true,
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "cancelled"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "unchangedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "notContains": "院校性质:民办"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "unchangedFromBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "unchangedFromBefore": true
+            }
+          ]
+        },
+        {
+          "prompt": "那就只看公办吧",
+          "assertContainsAny": [
+            "公办",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "公办",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustIncludeSchools",
+              "contains": "院校性质:公办"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthLessThanBefore": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v157-combo-school-attribute-exclude-final-action",
+      "sessionId": "9904572",
+      "coverage": [
+        "combo_requirement",
+        "school_nature",
+        "program_type",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "民办和中外合作都算了吧",
+          "assertContainsAny": [
+            "民办",
+            "中外合作",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认",
+          "assertContainsAny": [
+            "已采纳",
+            "民办",
+            "中外合作",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": [
+                "院校性质:民办",
+                "招生类型:中外合作"
+              ]
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": [
+                "民办",
+                "中外合作"
+              ]
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "中外合作"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261000269_37020262005080_709"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v157-combo-major-taxonomy-and-tag-final-action",
+      "sessionId": "9904573",
+      "coverage": [
+        "combo_requirement",
+        "major_taxonomy",
+        "major_tag",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "管理学和五年制的都别要了",
+          "assertContainsAny": [
+            "管理学",
+            "五年",
+            "5年",
+            "采纳",
+            "确认",
+            "报考要求"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "管理学",
+            "五年",
+            "5年",
+            "当前方案",
+            "报考要求"
+          ],
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeMajors",
+              "contains": [
+                "管理学",
+                "专业标签:学制：5年"
+              ]
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.items",
+              "contains": [
+                "37020261000315_37020262005917_845",
+                "学制：5年"
+              ]
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261000315_37020262005917_845"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "37020261001095_37020262020504_709"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-v157-review-long-context-high-tuition-remove-final-action",
+      "sessionId": "9904574",
+      "coverage": [
+        "review_then_plan_action",
+        "long_context_reference",
+        "high_tuition_remove",
+        "final_action"
+      ],
+      "prompts": [
+        {
+          "prompt": "这版方案有啥问题，怎么处理，先别直接改",
+          "assertContainsAny": [
+            "问题",
+            "风险",
+            "处理",
+            "高收费",
+            "中外合作"
+          ],
+          "assertNoFollowups": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "你说的高收费这类先去掉吧",
+          "assertContainsAny": [
+            "高收费",
+            "移出",
+            "去掉",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_plan_action"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "执行",
+          "assertContainsAny": [
+            "已移出",
+            "已执行",
+            "已更新",
+            "刷新"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthLessThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "maxNumericFieldLessThanOrEqual": {
+                "field": "tuitionPerYear",
+                "value": 20000
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

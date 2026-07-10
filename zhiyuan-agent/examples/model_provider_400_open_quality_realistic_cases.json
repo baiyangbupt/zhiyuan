@@ -1,0 +1,1832 @@
+[
+  {
+    "name": "400-provider-open-plan-too-risky-colloquial",
+    "sessionId": "17",
+    "flow": [
+      "plan",
+      "review"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "lazy_short_prompt",
+      "risk_summary"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "这版是不是太冲了，能不能给我说人话",
+        "assertContainsAny": [
+          "冲",
+          "稳",
+          "保",
+          "风险",
+          "保底",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "@1",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "冲",
+          "稳",
+          "保",
+          "风险",
+          "需要关注"
+        ],
+        "forbiddenPatterns": [
+          "方案情况如下",
+          "payload",
+          "volunteerId",
+          "@1"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 35
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-career-parent-readonly",
+    "sessionId": "16",
+    "flow": [
+      "explore",
+      "plan"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "career_explore",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "家里就想让孩子以后稳一点进体制，这个方案能撑住吗，先别动",
+        "assertContainsAny": [
+          "体制",
+          "考公",
+          "稳定",
+          "当前方案",
+          "承接",
+          "候选"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "分析结论",
+          "方案承接",
+          "体制",
+          "稳定",
+          "候选机会",
+          "代表样本",
+          "本次边界"
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
+          "已记录",
+          "确认后执行"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 35
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-major-pressure-compare",
+    "sessionId": "880707",
+    "flow": [
+      "explore"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "major_compare",
+      "readonly_no_pending_intent"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "法学会不会太卷啊，跟财政比哪个普通家庭更扛得住，先别记",
+        "assertContainsAny": [
+          "法学",
+          "财政学",
+          "普通家庭",
+          "就业",
+          "建议"
+        ],
+        "assertNotContains": [
+          "缺少性别信息",
+          "已记录",
+          "我记下",
+          "确认后写入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "当前会话参考",
+          "本次边界",
+          "法学",
+          "财政学",
+          "就业路径",
+          "选择建议",
+          "下一步"
+        ],
+        "forbiddenPatterns": [
+          "缺少性别信息",
+          "已记录",
+          "确认后写入"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-intent-soft-hard-colloquial",
+    "sessionId": "880708",
+    "flow": [
+      "intent"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "short_intent",
+      "preview_confirm_boundary"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "会计审计这类还行，土木建筑那种别碰",
+        "assertContainsAny": [
+          "会计",
+          "审计",
+          "土木",
+          "建筑",
+          "确认",
+          "后续参考"
+        ],
+        "assertNotContains": [
+          "候选结果收紧",
+          "专家推荐",
+          "已直接调整",
+          "已直接删除",
+          "已直接记录",
+          "我已经记下",
+          "已经记下",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "确认前不会写入后续参考",
+          "会计",
+          "审计",
+          "土木",
+          "确认后",
+          "下一步"
+        ],
+        "forbiddenPatterns": [
+          "候选结果收紧",
+          "专家推荐",
+          "已直接记录"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-candidate-stable-accounting",
+    "sessionId": "17",
+    "flow": [
+      "plan"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "candidate_lookup",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "候选里还有没有更稳一点的会计审计，别直接加",
+        "assertContainsAny": [
+          "候选",
+          "会计",
+          "审计",
+          "命中",
+          "示例",
+          "机会"
+        ],
+        "assertNotContains": [
+          "已直接加入",
+          "确认后执行",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "候选",
+          "会计学",
+          "审计学"
+        ],
+        "forbiddenPatterns": [
+          "已直接加入",
+          "确认后执行",
+          "volunteerId"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 20
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-budget-risk-readonly",
+    "sessionId": "17",
+    "flow": [
+      "plan",
+      "explore"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "budget_risk",
+      "readonly_no_workspace_card",
+      "zhiyuan_agent_direct_candidate"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动",
+        "assertContainsAny": [
+          "中外合作",
+          "预算",
+          "学费",
+          "风险",
+          "先别动",
+          "不改"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "中外合作",
+          "风险",
+          "预算"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "预算含义",
+            "any": [
+              "预算",
+              "学费",
+              "费用"
+            ]
+          },
+          {
+            "label": "只读边界",
+            "any": [
+              "先别动",
+              "不改",
+              "不会改动方案",
+              "只是帮你看风险"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
+          "已记录",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 45
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-generic-direction-low-info",
+    "sessionId": "880710",
+    "flow": [
+      "explore"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "generic_direction",
+      "lazy_short_prompt",
+      "zhiyuan_agent_direct_candidate"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "我这个分数也不算高，家里就想稳一点，以后别太折腾，大概往哪类方向看",
+        "assertContainsAny": [
+          "稳定",
+          "方向",
+          "就业",
+          "风险",
+          "下一步"
+        ],
+        "assertNotContains": [
+          "已记录",
+          "我记下",
+          "确认后写入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "稳定方向",
+            "any": [
+              "稳定",
+              "稳",
+              "就业确定性",
+              "路径清晰"
+            ]
+          },
+          {
+            "label": "方向建议",
+            "any": [
+              "方向",
+              "导向",
+              "几类",
+              "路径",
+              "往哪类"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已记录",
+          "确认后写入",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 45
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-three-major-loose-compare",
+    "sessionId": "880711",
+    "flow": [
+      "explore"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "major_compare",
+      "multi_option_compare",
+      "zhiyuan_agent_direct_candidate"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "财会、法学、新媒体这几个，哪个更不容易踩坑，先说说别记偏好",
+        "assertContainsAny": [
+          "财会",
+          "会计",
+          "法学",
+          "新媒体",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已记录",
+          "我记下",
+          "确认后写入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "法学",
+          "新媒体"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "财会方向",
+            "any": [
+              "财会",
+              "会计",
+              "审计"
+            ]
+          },
+          {
+            "label": "风险表达",
+            "any": [
+              "风险",
+              "踩坑",
+              "坑点",
+              "坑位"
+            ]
+          },
+          {
+            "label": "建议表达",
+            "any": [
+              "建议",
+              "优先",
+              "更适合",
+              "可以先",
+              "首选",
+              "排序",
+              "结论",
+              "总结",
+              "求稳"
+            ]
+          },
+          {
+            "label": "只读边界",
+            "any": [
+              "本次边界",
+              "不记偏好",
+              "不会写入",
+              "先别记",
+              "别记偏好"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已记录",
+          "确认后写入",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 45
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-region-risk-parent",
+    "sessionId": "17",
+    "flow": [
+      "explore",
+      "plan"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "region_risk",
+      "readonly_no_workspace_card",
+      "zhiyuan_agent_direct_candidate"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改",
+        "assertContainsAny": [
+          "北京",
+          "天津",
+          "风险",
+          "录取",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "北京",
+          "天津",
+          "风险"
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
+          "已记录",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 45
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-fee-parent-lazy-no-change",
+    "sessionId": "17",
+    "flow": [
+      "plan",
+      "review"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "parent_colloquial",
+      "budget_risk",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "家里预算一年最多两万多，方案里那些贵的合作办学会不会坑，先别给我删",
+        "assertContainsAny": [
+          "学费",
+          "预算",
+          "中外合作",
+          "高收费",
+          "风险",
+          "不会改"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "风险"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "费用风险",
+            "any": [
+              "学费",
+              "预算",
+              "费用",
+              "高收费",
+              "中外合作"
+            ]
+          },
+          {
+            "label": "只读边界",
+            "any": [
+              "先别删",
+              "不会改动方案",
+              "不改",
+              "不删除",
+              "只是帮你看风险"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
+          "已记录",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 45
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-vague-plan-status-lazy",
+    "sessionId": "17",
+    "flow": [
+      "plan",
+      "review"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "lazy_short_prompt",
+      "risk_summary",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "这方案咋样，能不能说重点",
+        "assertContainsAny": [
+          "方案",
+          "冲",
+          "稳",
+          "保",
+          "风险",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "@1",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "数量或完整度",
+            "any": [
+              "个志愿",
+              "数量",
+              "完整",
+              "缺口"
+            ]
+          },
+          {
+            "label": "梯度分布",
+            "any": [
+              "冲",
+              "稳",
+              "保",
+              "梯度"
+            ]
+          },
+          {
+            "label": "风险和建议",
+            "any": [
+              "风险",
+              "冒险",
+              "问题",
+              "需要关注",
+              "建议",
+              "下一步",
+              "开始调"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "方案情况如下",
+          "payload",
+          "volunteerId",
+          "@1"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 35,
+        "minTextLengthWarn": 180
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-school-abbrev-query-readonly",
+    "sessionId": "17",
+    "flow": [
+      "plan"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "school_abbreviation",
+      "zhiyuan_agent_direct",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "青城那个是不是放多了，先看看别改",
+        "assertContainsAny": [
+          "青岛城市",
+          "青城",
+          "当前方案",
+          "命中",
+          "相关"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "学校简称承接",
+            "any": [
+              "青岛城市",
+              "青城"
+            ]
+          },
+          {
+            "label": "只读边界",
+            "any": [
+              "先看看",
+              "不改",
+              "不会改动方案",
+              "不会改动当前方案",
+              "不会写入偏好",
+              "本轮边界",
+              "只是查询"
+            ]
+          },
+          {
+            "label": "命中概览",
+            "any": [
+              "命中",
+              "相关",
+              "当前方案",
+              "示例"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
+          "已记录",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 20
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-major-abbrev-compare-lazy",
+    "sessionId": "880712",
+    "flow": [
+      "explore"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "major_abbreviation",
+      "major_compare",
+      "readonly_no_pending_intent"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "新媒体和跨电呢，数学不太行，哪个别踩坑",
+        "assertContainsAny": [
+          "新媒体",
+          "跨境电子商务",
+          "数学",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已记录",
+          "我记下",
+          "确认后写入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "新媒体方向",
+            "any": [
+              "新媒体",
+              "网络与新媒体"
+            ]
+          },
+          {
+            "label": "跨电方向",
+            "any": [
+              "跨电",
+              "跨境电子商务"
+            ]
+          },
+          {
+            "label": "数学约束",
+            "any": [
+              "数学",
+              "数据",
+              "量化"
+            ]
+          },
+          {
+            "label": "建议和风险",
+            "any": [
+              "建议",
+              "风险",
+              "踩坑",
+              "更适合",
+              "优先"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已记录",
+          "确认后写入",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25,
+        "minTextLengthWarn": 160
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-good-school-sort-preview",
+    "sessionId": "17",
+    "flow": [
+      "plan"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "lazy_short_prompt",
+      "plan_sort_preview",
+      "preview_confirm_boundary"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "按好学校排下看看，先给我看会怎么动",
+        "assertContainsAny": [
+          "院校层次",
+          "院校排名",
+          "排序",
+          "确认"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "已直接排序",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "排序方式",
+            "any": [
+              "院校层次",
+              "院校排名",
+              "好学校"
+            ]
+          },
+          {
+            "label": "执行影响",
+            "any": [
+              "导出顺序",
+              "方案顺序",
+              "待重新审查",
+              "审查状态"
+            ]
+          },
+          {
+            "label": "确认边界",
+            "any": [
+              "需要你确认",
+              "确认后",
+              "先给你看",
+              "不会直接执行"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已直接排序",
+          "已直接调整",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-vague-confirm-guard",
+    "sessionId": "880713",
+    "flow": [
+      "confirm_guard"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "vague_confirm",
+      "no_pending_guard",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "嗯可以",
+        "assertContainsAny": [
+          "没有待确认",
+          "没有待执行",
+          "上一轮",
+          "可以继续"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "已直接删除",
+          "已直接加入",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "无待确认边界",
+            "any": [
+              "没有待确认",
+              "没有待执行",
+              "没有上一轮待确认",
+              "还没有待确认"
+            ]
+          },
+          {
+            "label": "下一步引导",
+            "any": [
+              "可以继续",
+              "你可以",
+              "告诉我",
+              "继续看"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
+          "已记录",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 15
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-bottom-safety-lazy",
+    "sessionId": "17",
+    "flow": [
+      "plan",
+      "review"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "lazy_short_prompt",
+      "risk_summary",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "保底够不够啊，别给我整太专业",
+        "assertContainsAny": [
+          "保底",
+          "保",
+          "风险",
+          "滑档",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "@1",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "保底判断",
+            "any": [
+              "保底",
+              "保",
+              "兜底",
+              "滑档"
+            ]
+          },
+          {
+            "label": "梯度分布",
+            "any": [
+              "冲",
+              "稳",
+              "保",
+              "梯度"
+            ]
+          },
+          {
+            "label": "下一步建议",
+            "any": [
+              "建议",
+              "下一步",
+              "需要关注",
+              "可以先"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "方案情况如下",
+          "payload",
+          "volunteerId",
+          "@1"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 35,
+        "minTextLengthWarn": 160
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-computer-abbrev-compare-lazy",
+    "sessionId": "880714",
+    "flow": [
+      "explore"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "major_abbreviation",
+      "major_compare",
+      "readonly_no_pending_intent"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "计科和软工哪个更稳一点，孩子数学还行但不想太累",
+        "assertContainsAny": [
+          "计算机科学与技术",
+          "软件工程",
+          "数学",
+          "就业",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已记录",
+          "我记下",
+          "确认后写入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "计科方向",
+            "any": [
+              "计科",
+              "计算机科学与技术"
+            ]
+          },
+          {
+            "label": "软工方向",
+            "any": [
+              "软工",
+              "软件工程"
+            ]
+          },
+          {
+            "label": "学生约束",
+            "any": [
+              "数学",
+              "不想太累",
+              "学习强度",
+              "持续学习"
+            ]
+          },
+          {
+            "label": "建议表达",
+            "any": [
+              "建议",
+              "风险",
+              "更适合",
+              "优先",
+              "下一步"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已记录",
+          "确认后写入",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25,
+        "minTextLengthWarn": 180
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-law-finance-short-compare",
+    "sessionId": "880715",
+    "flow": [
+      "explore"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "major_abbreviation",
+      "major_compare",
+      "parent_colloquial",
+      "readonly_no_pending_intent"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "法和财哪个更适合女孩子，家里一般，先别记",
+        "assertContainsAny": [
+          "法学",
+          "财政学",
+          "女生",
+          "普通家庭",
+          "建议"
+        ],
+        "assertNotContains": [
+          "缺少性别信息",
+          "已记录",
+          "我记下",
+          "确认后写入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "法学方向",
+            "any": [
+              "法学",
+              "法考",
+              "法律"
+            ]
+          },
+          {
+            "label": "财政方向",
+            "any": [
+              "财政学",
+              "财税",
+              "财政",
+              "税务"
+            ]
+          },
+          {
+            "label": "家庭约束",
+            "any": [
+              "普通家庭",
+              "家里一般",
+              "试错成本",
+              "稳定"
+            ]
+          },
+          {
+            "label": "只读边界",
+            "any": [
+              "本次边界",
+              "先别记",
+              "不会写入",
+              "不记偏好"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "缺少性别信息",
+          "已记录",
+          "确认后写入"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25,
+        "minTextLengthWarn": 180
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-career-study-vs-employment-lazy",
+    "sessionId": "880716",
+    "flow": [
+      "explore"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "career_explore",
+      "career_short_prompt",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "读研和稳定就业哪个更实际点，先别改偏好",
+        "assertContainsAny": [
+          "读研",
+          "深造",
+          "稳定就业",
+          "就业",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已记录",
+          "我记下",
+          "确认后写入",
+          "已直接调整",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "深造方向",
+            "any": [
+              "读研",
+              "深造",
+              "升学"
+            ]
+          },
+          {
+            "label": "稳定就业方向",
+            "any": [
+              "稳定就业",
+              "就业",
+              "岗位"
+            ]
+          },
+          {
+            "label": "比较判断",
+            "any": [
+              "更实际",
+              "承接",
+              "适合",
+              "需要留意",
+              "建议"
+            ]
+          },
+          {
+            "label": "只读边界",
+            "any": [
+              "本次边界",
+              "先别改",
+              "不会写入",
+              "不会自动修改"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已记录",
+          "确认后写入",
+          "已直接调整",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 35,
+        "minTextLengthWarn": 180
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-medical-nursing-risk-readonly",
+    "sessionId": "17",
+    "flow": [
+      "plan",
+      "review"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "zhiyuan_agent_direct",
+      "negative_preference",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "孩子不想学医也不想护理，方案里有没有这种坑，先看看",
+        "assertContainsAny": [
+          "医学",
+          "护理",
+          "方案",
+          "风险",
+          "命中",
+          "没有"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "排斥方向",
+            "any": [
+              "医学",
+              "护理",
+              "不想学医",
+              "不想护理"
+            ]
+          },
+          {
+            "label": "方案检查",
+            "any": [
+              "方案",
+              "命中",
+              "相关",
+              "风险",
+              "没有"
+            ]
+          },
+          {
+            "label": "只读边界",
+            "any": [
+              "本轮边界",
+              "先看看",
+              "不会改动方案",
+              "不会改动当前方案",
+              "不改",
+              "只是查询"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
+          "已记录",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 35,
+        "minTextLengthWarn": 120
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-accounting-audit-civil-service-lazy",
+    "sessionId": "880717",
+    "flow": [
+      "explore"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "major_abbreviation",
+      "major_compare",
+      "career_hint",
+      "readonly_no_pending_intent"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "会计和审计哪个更稳，考公也能用点的",
+        "assertContainsAny": [
+          "会计学",
+          "审计学",
+          "考公",
+          "稳定",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已记录",
+          "我记下",
+          "确认后写入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "会计方向",
+            "any": [
+              "会计",
+              "会计学",
+              "财务"
+            ]
+          },
+          {
+            "label": "审计方向",
+            "any": [
+              "审计",
+              "审计学"
+            ]
+          },
+          {
+            "label": "考公承接",
+            "any": [
+              "考公",
+              "公务员",
+              "体制内",
+              "岗位口径"
+            ]
+          },
+          {
+            "label": "建议表达",
+            "any": [
+              "建议",
+              "更稳",
+              "优先",
+              "下一步"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已记录",
+          "确认后写入",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25,
+        "minTextLengthWarn": 160
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-civil-service-plan-support-lazy",
+    "sessionId": "16",
+    "flow": [
+      "explore",
+      "plan"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "career_explore",
+      "plan_support",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "以后想考公但也怕太卷，这方案有支撑吗，先看看",
+        "assertContainsAny": [
+          "考公",
+          "体制内",
+          "方案",
+          "支撑",
+          "候选",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已记录",
+          "我记下",
+          "确认后写入",
+          "已直接调整",
+          "确认后执行",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "考公方向",
+            "any": [
+              "考公",
+              "体制内",
+              "公务员",
+              "编制"
+            ]
+          },
+          {
+            "label": "方案承接",
+            "any": [
+              "方案承接",
+              "当前方案",
+              "支撑",
+              "短板"
+            ]
+          },
+          {
+            "label": "候选机会",
+            "any": [
+              "候选",
+              "机会",
+              "还没进方案"
+            ]
+          },
+          {
+            "label": "只读边界",
+            "any": [
+              "本次边界",
+              "先看看",
+              "不会改动方案",
+              "不改方案"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已记录",
+          "确认后写入",
+          "已直接调整",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 35,
+        "minTextLengthWarn": 180
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-plan-make-safer-preview",
+    "sessionId": "17",
+    "flow": [
+      "plan",
+      "review"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "plan_adjustment_preview",
+      "preview_confirm_boundary"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "就按别太冒险的思路把这版调稳点，先给我看看会怎么动",
+        "assertContainsAny": [
+          "风险",
+          "稳",
+          "调整",
+          "预览",
+          "确认"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "已直接排序",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "调整方向",
+            "any": [
+              "调稳",
+              "更稳",
+              "降低风险",
+              "别太冒险"
+            ]
+          },
+          {
+            "label": "影响说明",
+            "any": [
+              "方案顺序",
+              "导出顺序",
+              "待重新审查",
+              "审查状态",
+              "影响"
+            ]
+          },
+          {
+            "label": "确认边界",
+            "any": [
+              "需要你确认",
+              "确认后",
+              "先给你看",
+              "不会直接执行",
+              "不会直接改方案",
+              "先分析"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
+          "已直接排序",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 35,
+        "minTextLengthWarn": 150
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-region-vs-safety-lazy",
+    "sessionId": "17",
+    "flow": [
+      "plan",
+      "review"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "region_risk",
+      "risk_summary",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "北京天津想去，但别最后没学上，这个取舍咋看",
+        "assertContainsAny": [
+          "北京",
+          "天津",
+          "风险",
+          "保底",
+          "建议"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "地域诉求",
+            "any": [
+              "北京",
+              "天津",
+              "京津"
+            ]
+          },
+          {
+            "label": "安全诉求",
+            "any": [
+              "保底",
+              "没学上",
+              "滑档",
+              "兜底"
+            ]
+          },
+          {
+            "label": "取舍建议",
+            "any": [
+              "取舍",
+              "建议",
+              "优先",
+              "可以先"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
+          "已记录",
+          "payload"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 45,
+        "minTextLengthWarn": 160
+      }
+    ]
+  },
+  {
+    "name": "400-provider-open-intent-colloquial-no-med-accounting-ok",
+    "sessionId": "880718",
+    "flow": [
+      "intent"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "provider_benchmark",
+      "open_quality",
+      "realistic_user_input",
+      "short_intent",
+      "negative_preference",
+      "preview_confirm_boundary"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "医学护理这些别碰，财会还能接受，先看看影响",
+        "assertContainsAny": [
+          "医学",
+          "护理",
+          "财会",
+          "会计",
+          "确认",
+          "影响"
+        ],
+        "assertNotContains": [
+          "候选结果收紧",
+          "专家推荐",
+          "已直接调整",
+          "已直接删除",
+          "已直接记录",
+          "我已经记下",
+          "已经记下",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPointGroups": [
+          {
+            "label": "排除方向",
+            "any": [
+              "医学",
+              "护理",
+              "别碰",
+              "排除"
+            ]
+          },
+          {
+            "label": "可接受方向",
+            "any": [
+              "财会",
+              "会计",
+              "审计",
+              "能接受"
+            ]
+          },
+          {
+            "label": "确认边界",
+            "any": [
+              "确认前不会写入",
+              "确认后",
+              "待确认",
+              "需要你确认"
+            ]
+          }
+        ],
+        "forbiddenPatterns": [
+          "候选结果收紧",
+          "专家推荐",
+          "已直接记录"
+        ],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25,
+        "minTextLengthWarn": 140
+      }
+    ]
+  }
+]
