@@ -4533,6 +4533,38 @@ async def test_apply_constraint_intents_marks_stale_without_candidate_filtering(
 
 
 @pytest.mark.asyncio
+async def test_apply_constraint_intents_does_not_block_on_overlay_refresh_timeout():
+    async def slow_candidate_query(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return {"code": 0, "data": {"total": 1}}
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.update_planning_constraint_state", new=AsyncMock(return_value={"code": 0})),
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})),
+        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(side_effect=slow_candidate_query)) as query_mock,
+        patch("app.tools.intent_state_tool._RECOMMENDATION_OVERLAY_REFRESH_TIMEOUT_SECONDS", 0.01),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.update_city_intent = AsyncMock()
+        mock_pm.update_major_intent = AsyncMock()
+        mock_pm.update_school_intent = AsyncMock()
+
+        resp = await _apply_intents(
+            session_id="120",
+            batch="01",
+            merged={"city_intents": {"negative_province": ["北京"]}},
+            intent_mode=INTENT_MODE_CONSTRAINT,
+        )
+
+    query_mock.assert_awaited_once()
+    assert resp.applied is True
+    assert resp.recommendationRefresh["triggered"] is True
+    assert resp.recommendationRefresh["success"] is False
+    assert "整理调整预览" in resp.message
+
+
+@pytest.mark.asyncio
 async def test_apply_mixed_constraint_intents_syncs_positive_soft_and_negative_hard():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,

@@ -50,6 +50,26 @@ public class RepairReplacementActionBuilderTest {
     }
 
     @Test
+    void shouldKeepAllStructuralReplacementPairsBeyondFive() {
+        PlanningStateDTO state = fullMajorPlanStateWithManyReplacements(6);
+        FixProposalDTO proposal = structuralProposal("rebalance_tier_ratio", "rebalance_protect_ratio",
+                "protect_1", "protect_2", "protect_3", "protect_4", "protect_5", "protect_6");
+
+        RepairReplacementActionBuilder.populateStructuralReplacementActions(
+                state, reviewCheck("ratio_distribution"), proposal,
+                Lists.newArrayList(compensationAction("rebalance_protect_ratio",
+                        "protect_1", "protect_2", "protect_3", "protect_4", "protect_5", "protect_6")));
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(1, proposal.getActions().size());
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals(6, action.getReplacementPairs().size());
+        assertEquals(Integer.valueOf(6), action.getTotalReplacementPairCount());
+        assertEquals(Integer.valueOf(6), action.getTotalVolunteerCount());
+        assertTrue(action.getDetail().contains("另有 3 组配对未展开"));
+    }
+
+    @Test
     void shouldBlockFullPlanStructuralAddActionWhenReplacementSourceIsLocked() {
         PlanningStateDTO state = fullMajorPlanState(true);
         FixProposalDTO proposal = structuralProposal("rebalance_tier_ratio", "rebalance_protect_ratio", "protect_1");
@@ -122,25 +142,46 @@ public class RepairReplacementActionBuilderTest {
         return state;
     }
 
+    private PlanningStateDTO fullMajorPlanStateWithManyReplacements(int count) {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(count);
+        state.getCandidatePoolState().setRequiredTierCounts(tierCounts(0, 0, count));
+        java.util.List<CandidateItemDTO> candidates = Lists.newArrayList();
+        for (int i = 1; i <= count; i++) {
+            String sprintId = "sprint_" + i;
+            String protectId = "protect_" + i;
+            state.getOrderedPlanState().getItems().add(orderedItem(sprintId, "冲", false));
+            candidates.add(candidate(sprintId, "冲", 60D - i, 20D + i));
+            candidates.add(candidate(protectId, "保", 90D - i, 80D + i));
+        }
+        state.getCandidatePoolState().setItems(candidates);
+        return state;
+    }
+
     private FixProposalDTO structuralProposal(String strategy, String actionType, String volunteerId) {
+        return structuralProposal(strategy, actionType, new String[]{volunteerId});
+    }
+
+    private FixProposalDTO structuralProposal(String strategy, String actionType, String... volunteerIds) {
         FixProposalDTO proposal = new FixProposalDTO();
         proposal.setStrategy(strategy);
         proposal.setStatus("ready");
-        proposal.getActions().add(fixAction(actionType, volunteerId));
+        proposal.getActions().add(fixAction(actionType, volunteerIds));
         return proposal;
     }
 
-    private FixProposalActionDTO fixAction(String actionType, String volunteerId) {
+    private FixProposalActionDTO fixAction(String actionType, String... volunteerIds) {
         FixProposalActionDTO action = new FixProposalActionDTO();
         action.setActionType(actionType);
-        action.setCandidateVolunteerIds(Lists.newArrayList(volunteerId));
+        action.setCandidateVolunteerIds(Lists.newArrayList(volunteerIds));
         return action;
     }
 
-    private CompensationActionDTO compensationAction(String type, String volunteerId) {
+    private CompensationActionDTO compensationAction(String type, String... volunteerIds) {
         CompensationActionDTO action = new CompensationActionDTO();
         action.setType(type);
-        action.setVolunteerIds(Lists.newArrayList(volunteerId));
+        action.setVolunteerIds(Lists.newArrayList(volunteerIds));
         return action;
     }
 

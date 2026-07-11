@@ -226,6 +226,17 @@ const normalizePrepareTypeCode = (code?: string | null, desc?: string) => {
 const isVolunteerPrepareType = (code?: string | null, desc?: string) =>
   normalizePrepareTypeCode(code, desc) === 'VOLUNTEER';
 
+const resolvePlanYear = (prepareTypeCode?: string | null, prepareTypeDesc?: string, examYear?: number | string | null) => {
+  const normalizedPrepareTypeCode = normalizePrepareTypeCode(prepareTypeCode, prepareTypeDesc);
+  if (normalizedPrepareTypeCode === 'PREDICT') {
+    return 2025;
+  }
+  if (normalizedPrepareTypeCode === 'VOLUNTEER') {
+    return 2026;
+  }
+  return Number(examYear) || 2026;
+};
+
 const parseDateTimeValue = (value?: string) => {
   if (!value) {
     return 0;
@@ -652,7 +663,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     loadedUnitCount: 0,
   });
   const normalizedPrepareTypeCode = normalizePrepareTypeCode(prepareTypeCode, prepareTypeDesc);
-  const planYear = normalizedPrepareTypeCode === 'PREDICT' ? 2025 : Number(examYear) || 2026;
+  const planYear = resolvePlanYear(prepareTypeCode, prepareTypeDesc, examYear);
   const planYearTitle = `${planYear}招生计划`;
   const [candidatePoolLoading, setCandidatePoolLoading] = useState(false);
   const [candidateCacheVersion, setCandidateCacheVersion] = useState(0);
@@ -687,6 +698,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const draftItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const draftBasketRef = useRef<HTMLDivElement | null>(null);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
+  const filterPanelTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const filterPanelDropdownRef = useRef<HTMLDivElement | null>(null);
   const candidateSummaryRef = useRef<HTMLDivElement | null>(null);
   const reviewSummaryRef = useRef<HTMLDivElement | null>(null);
   const workspaceTouchStartYRef = useRef<number | null>(null);
@@ -1826,6 +1839,30 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
   };
 
+  const maybeLoadNextCandidatePage = () => {
+    if (activeView !== 'candidate' || candidatePoolLoading) {
+      return false;
+    }
+    if (!latestCandidateQuerySignatureRef.current || candidateQueryInFlightPagesRef.current.size > 0) {
+      return false;
+    }
+    const currentPage = candidatePoolResult.page || 1;
+    if (currentPage >= candidateTotalPages) {
+      return false;
+    }
+    const container = workspaceBodyRef.current;
+    if (!container) {
+      return false;
+    }
+    const distanceToBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceToBottom > 180) {
+      return false;
+    }
+    queryCandidatePool(currentPage + 1, true);
+    return true;
+  };
+
   const refreshCandidatePool = async (forceRegenerate: boolean = false, refreshSourceData: boolean = false) => {
     const ready = await ensureCandidatePoolReady(forceRegenerate, refreshSourceData);
     if (ready) {
@@ -2729,23 +2766,38 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     const handleScroll = () => {
-      if (candidatePoolLoading) {
-        return;
-      }
-      const currentPage = candidatePoolResult.page || 1;
-      if (currentPage >= candidateTotalPages) {
-        return;
-      }
-      const distanceToBottom =
-        container.scrollHeight - container.scrollTop - container.clientHeight;
-      if (distanceToBottom > 180) {
-        return;
-      }
-      queryCandidatePool(currentPage + 1, true);
+      maybeLoadNextCandidatePage();
     };
     container.addEventListener('scroll', handleScroll);
     return () => container.removeEventListener('scroll', handleScroll);
-  }, [activeView, candidatePoolLoading, candidatePoolResult.page, candidateTotalPages]);
+  }, [
+    activeView,
+    candidatePoolLoading,
+    candidatePoolResult.page,
+    candidatePoolResult.items?.length,
+    candidatePoolResult.total,
+    candidatePoolResult.pageSize,
+    candidateTotalPages,
+  ]);
+
+  useEffect(() => {
+    if (activeView !== 'candidate') {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      maybeLoadNextCandidatePage();
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeView,
+    candidatePoolLoading,
+    candidatePoolResult.page,
+    candidatePoolResult.items?.length,
+    candidatePoolResult.total,
+    candidatePoolResult.pageSize,
+    candidateTotalPages,
+    expandedCandidateGroupKeys.length,
+  ]);
 
   useEffect(() => {
     if (!workspaceIntent) {
@@ -2856,6 +2908,38 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       document.removeEventListener('touchstart', handlePointerDown);
     };
   }, [draftExpanded]);
+
+  useEffect(() => {
+    if (!filterPanelOpen) {
+      return undefined;
+    }
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!target) {
+        return;
+      }
+      if (
+        filterPanelTriggerRef.current?.contains(target) ||
+        filterPanelDropdownRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setFilterPanelOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setFilterPanelOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [filterPanelOpen]);
 
   const actionableReviewChecks = reviewChecks.filter(
     check =>
@@ -3294,6 +3378,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const formatFixProposalActionDetail = (action: NonNullable<PlanningFixProposal['actions']>[number]) => {
     const fallback = normalizePlanActionTextForUser(action.detail || action.summary);
     if (action.actionType === 'replace_volunteers' && (action.replacementPairs || []).length > 0) {
+      const totalPairCount = Math.max(
+        action.totalReplacementPairCount || 0,
+        (action.replacementPairs || []).length
+      );
       const pairTexts = (action.replacementPairs || [])
         .slice(0, 3)
         .map(pair => {
@@ -3307,14 +3395,19 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         .filter(Boolean);
       const visiblePairCount = Math.min((action.replacementPairs || []).length, 3);
       if (pairTexts.length === visiblePairCount && pairTexts.length > 0) {
-        const remainCount = (action.replacementPairs || []).length - pairTexts.length;
-        return `建议替换：${pairTexts.join('；')}${remainCount > 0 ? `；另有 ${remainCount} 组未展开` : ''}。`;
+        const remainCount = totalPairCount - pairTexts.length;
+        const countText = totalPairCount > pairTexts.length ? `共 ${totalPairCount} 组，` : '';
+        return `建议替换：${countText}${pairTexts.join('；')}${remainCount > 0 ? `；另有 ${remainCount} 组未展开` : ''}。`;
       }
     }
     if (action.actionType === 'remove_volunteers') {
       const removeText = formatVolunteerListBrief(action.removeVolunteerIds || action.volunteerIds);
       if (removeText) {
-        return `建议移出：${removeText}。`;
+        const totalCount = Math.max(
+          action.totalVolunteerCount || 0,
+          (action.removeVolunteerIds || action.volunteerIds || []).length
+        );
+        return `建议移出：${totalCount > 3 ? `共 ${totalCount} 条，` : ''}${removeText}。`;
       }
     }
     if (['fill_total_count', 'add_local_protect', 'rebalance_protect_ratio', 'fill_probability_gap'].includes(action.actionType || '')) {
@@ -3322,16 +3415,20 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       const volunteerText = formatVolunteerListBrief(action.candidateVolunteerIds || action.volunteerIds);
       const targetText = unitText || volunteerText;
       if (targetText) {
+        const totalCount = unitText
+          ? Math.max(action.totalUnitCount || 0, (action.candidateUnitIds || action.unitIds || []).length)
+          : Math.max(action.totalVolunteerCount || 0, (action.candidateVolunteerIds || action.volunteerIds || []).length);
+        const countPrefix = totalCount > 3 ? `共 ${totalCount} ${unitText ? '组' : '条'}，` : '';
         if (action.actionType === 'add_local_protect') {
-          return `建议补入保底候选：${targetText}。`;
+          return `建议补入保底候选：${countPrefix}${targetText}。`;
         }
         if (action.actionType === 'rebalance_protect_ratio') {
-          return `建议补入保区候选，改善冲稳保结构：${targetText}。`;
+          return `建议补入保区候选，改善冲稳保结构：${countPrefix}${targetText}。`;
         }
         if (action.actionType === 'fill_probability_gap') {
-          return `建议补入中间梯度候选：${targetText}。`;
+          return `建议补入中间梯度候选：${countPrefix}${targetText}。`;
         }
-        return `建议补足方案数量：${targetText}。`;
+        return `建议补足方案数量：${countPrefix}${targetText}。`;
       }
     }
     if (action.actionType === 'sort_by_probability') {
@@ -3711,12 +3808,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     const actionDetails = (isBlocked ? [] : proposal.actions || [])
       .map(action => formatFixProposalActionDetail(action))
       .filter(Boolean);
+    const visibleActionDetailCount = Math.min(actionDetails.length, 5);
     const replacementPairTexts = uniqueStrings(
       (isBlocked ? [] : proposal.actions || [])
         .flatMap(action => action.replacementPairs || [])
         .map(formatReplacementPairReadableText)
         .filter(Boolean)
     );
+    const totalReplacementPairCount = Math.max(
+      replacementPairTexts.length,
+      ...(isBlocked ? [] : proposal.actions || []).map(action => action.totalReplacementPairCount || 0)
+    );
+    const visibleReplacementPairCount = Math.min(replacementPairTexts.length, 5);
     const shouldShowReplacementPairs = replacementPairTexts.length > 0 && actionDetails.length === 0;
     const shortages = proposal.candidateShortages || [];
     const visibleShortages = isBlocked ? shortages.slice(0, 1) : shortages.slice(0, 4);
@@ -3785,11 +3888,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             ) : null}
             {actionDetails.length > 0 ? (
               <div className={style.fixProposalPreviewDetails}>
-                {actionDetails.slice(0, 5).map((detail, detailIndex) => (
+                {actionDetails.slice(0, visibleActionDetailCount).map((detail, detailIndex) => (
                   <div key={`${proposal.proposalId || index}-action-${detailIndex}`}>
                     {detail}
                   </div>
                 ))}
+                {actionDetails.length > visibleActionDetailCount ? (
+                  <div className={style.fixProposalMoreText}>
+                    当前展开 {visibleActionDetailCount} 条动作，另有 {actionDetails.length - visibleActionDetailCount} 条未展开
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {canApply ? applyButton : null}
@@ -3797,8 +3905,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         ) : null}
         {!isBlocked && !isInfo && shouldShowReplacementPairs ? (
           <div className={style.fixProposalPairList}>
-            <div className={style.fixProposalSectionTitle}>可能的替换方式</div>
-            {replacementPairTexts.slice(0, 5).map((pairText, pairIndex) => (
+            <div className={style.fixProposalSectionTitle}>
+              可能的替换方式{totalReplacementPairCount > 0 ? `（共 ${totalReplacementPairCount} 组）` : ''}
+            </div>
+            {replacementPairTexts.slice(0, visibleReplacementPairCount).map((pairText, pairIndex) => (
               <div
                 key={`${proposal.proposalId || index}-pair-${pairIndex}`}
                 className={style.fixProposalPairItem}
@@ -3806,8 +3916,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                 <span>{pairText}</span>
               </div>
             ))}
-            {replacementPairTexts.length > 5 ? (
-              <div className={style.fixProposalMoreText}>还有 {replacementPairTexts.length - 5} 个替换配对未展开</div>
+            {totalReplacementPairCount > visibleReplacementPairCount ? (
+              <div className={style.fixProposalMoreText}>
+                当前展开 {visibleReplacementPairCount} 组，另有 {totalReplacementPairCount - visibleReplacementPairCount} 组未展开
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -5009,7 +5121,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                   open={filterPanelOpen}
                   onOpenChange={open => setFilterPanelOpen(open)}
                   dropdownRender={() => (
-                    <div className={style.filterPanelDropdown}>
+                    <div ref={filterPanelDropdownRef} className={style.filterPanelDropdown}>
                       <div className={style.filterPanelSearchRow}>
                         <input
                           className={style.filterPanelSearchInput}
@@ -5038,7 +5150,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                     </div>
                   )}
                 >
-                  <button type="button" className={style.tagFilterInput}>
+                  <button ref={filterPanelTriggerRef} type="button" className={style.tagFilterInput}>
                     <span className={style.tagFilterInputText}>{attributeFilterTriggerText}</span>
                     <DownOutlined className={style.tagFilterInputIcon} />
                   </button>

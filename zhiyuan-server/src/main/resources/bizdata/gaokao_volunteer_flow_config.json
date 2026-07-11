@@ -1841,12 +1841,12 @@
                 "fieldName": "学费区间",
                 "fieldType": "range",
                 "min": 0,
-                "max": 100000,
+                "max": 200000,
                 "step": 1000,
                 "unit": "元/年",
                 "defaultValue": {
                   "minValue": 0,
-                  "maxValue": 60000
+                  "maxValue": 100000
                 },
                 "required": false,
                 "helpConfig": {

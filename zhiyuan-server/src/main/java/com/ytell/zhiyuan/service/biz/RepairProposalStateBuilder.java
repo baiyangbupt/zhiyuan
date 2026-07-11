@@ -501,7 +501,26 @@ final class RepairProposalStateBuilder {
         target.setDetail(action.getDetail());
         target.setUnitIds(defaultList(action.getUnitIds()));
         target.setVolunteerIds(defaultList(action.getVolunteerIds()));
+        populateActionTotals(target);
         return target;
+    }
+
+    static void populateActionTotals(FixProposalDTO proposal) {
+        if (proposal == null || proposal.getActions() == null) {
+            return;
+        }
+        proposal.getActions().forEach(RepairProposalStateBuilder::populateActionTotals);
+    }
+
+    private static void populateActionTotals(FixProposalActionDTO action) {
+        if (action == null) {
+            return;
+        }
+        action.setTotalUnitCount(Math.max(defaultList(action.getRemoveUnitIds()).size(),
+                Math.max(defaultList(action.getCandidateUnitIds()).size(), defaultList(action.getUnitIds()).size())));
+        action.setTotalVolunteerCount(Math.max(defaultList(action.getRemoveVolunteerIds()).size(),
+                Math.max(defaultList(action.getCandidateVolunteerIds()).size(), defaultList(action.getVolunteerIds()).size())));
+        action.setTotalReplacementPairCount(defaultList(action.getReplacementPairs()).size());
     }
 
     private static String sha1Hex(String value) {

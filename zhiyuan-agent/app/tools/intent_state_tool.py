@@ -6,6 +6,7 @@ Responsible for intent fact extraction, analysis facts, and state execution.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -85,6 +86,8 @@ from app.util.internal_client import (
 from app.util.structured_log import log_event
 
 logger = logging.getLogger(__name__)
+
+_RECOMMENDATION_OVERLAY_REFRESH_TIMEOUT_SECONDS = 8.0
 
 INTENT_SELECT_INPUT_TYPE = "intentSelect"
 INTENT_CONFIRM_POPUP_TYPE = "intentConfirmPopup"
@@ -3657,13 +3660,16 @@ async def _refresh_recommendation_overlay_best_effort(session_id: str) -> bool:
     recommendation/candidate scoring data.
     """
     try:
-        resp = await query_planning_candidate_pool(
-            1,
-            int(session_id),
-            page=1,
-            page_size=1,
-            sort_field="finalScore",
-            sort_order="desc",
+        resp = await asyncio.wait_for(
+            query_planning_candidate_pool(
+                1,
+                int(session_id),
+                page=1,
+                page_size=1,
+                sort_field="finalScore",
+                sort_order="desc",
+            ),
+            timeout=_RECOMMENDATION_OVERLAY_REFRESH_TIMEOUT_SECONDS,
         )
         success = isinstance(resp, dict) and (
             resp.get("code") in {0, "0"} or resp.get("success") is True
@@ -3674,6 +3680,13 @@ async def _refresh_recommendation_overlay_best_effort(session_id: str) -> bool:
             success,
         )
         return success
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Intent recommendation overlay refresh timed out: session_id=%s timeoutSeconds=%s",
+            session_id,
+            _RECOMMENDATION_OVERLAY_REFRESH_TIMEOUT_SECONDS,
+        )
+        return False
     except Exception:
         logger.warning(
             "Intent recommendation overlay refresh failed: session_id=%s",

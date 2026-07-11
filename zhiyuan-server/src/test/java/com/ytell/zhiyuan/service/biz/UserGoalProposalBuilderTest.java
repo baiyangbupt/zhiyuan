@@ -275,6 +275,95 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void shouldNotLimitUserGoalReplacementPreviewToFiveCandidates() {
+        PlanningStateDTO state = state(12);
+        for (int i = 1; i <= 6; i++) {
+            CandidateItemDTO current = candidate("cur" + i, "北京学校" + i, "金融学", "经济学", 80D - i);
+            current.setProvinceName("北京");
+            CandidateItemDTO replacement = candidate("rep" + i, "外地学校" + i, "法学", "法学", 90D - i);
+            replacement.setProvinceName("天津");
+            state.getCandidatePoolState().getItems().add(current);
+            state.getCandidatePoolState().getItems().add(replacement);
+            state.getOrderedPlanState().getItems().add(ordered(current.getVolunteerId(), current.getSchoolName(), current.getMajorName(), false));
+        }
+        UserGoalFixProposalReq.ScopeDTO scope = negativeScope("region", "北京");
+        scope.setScopeLevel("province");
+        UserGoalFixProposalReq req = req("exclude_scope", 12, scope);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getSummary().contains("有 6 条命中"));
+        assertTrue(proposal.getSummary().contains("本次能替换 6 条"));
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals("replace_volunteers", action.getActionType());
+        assertEquals(6, action.getReplacementPairs().size());
+        assertEquals(Integer.valueOf(6), action.getTotalReplacementPairCount());
+    }
+
+    @Test
+    void shouldCountMajorGroupUserGoalExcludeByUnitAndBuildUnitReplacement() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO currentA1 = candidate("u1_m1", "北京学校第1组", "金融学", "经济学", 80D);
+        CandidateItemDTO currentA2 = candidate("u1_m2", "北京学校第1组", "会计学", "管理学", 79D);
+        CandidateItemDTO currentB1 = candidate("u2_m1", "北京学校第2组", "英语", "文学", 78D);
+        CandidateItemDTO currentB2 = candidate("u2_m2", "北京学校第2组", "法学", "法学", 77D);
+        for (CandidateItemDTO item : java.util.Arrays.asList(currentA1, currentA2)) {
+            item.setPlanSchoolDataId("u1");
+            item.setProvinceName("北京");
+        }
+        for (CandidateItemDTO item : java.util.Arrays.asList(currentB1, currentB2)) {
+            item.setPlanSchoolDataId("u2");
+            item.setProvinceName("北京");
+        }
+        CandidateItemDTO replacementA1 = candidate("u3_m1", "天津学校第1组", "金融学", "经济学", 92D);
+        CandidateItemDTO replacementA2 = candidate("u3_m2", "天津学校第1组", "会计学", "管理学", 91D);
+        replacementA1.setPlanSchoolDataId("u3");
+        replacementA2.setPlanSchoolDataId("u3");
+        replacementA1.setProvinceName("天津");
+        replacementA2.setProvinceName("天津");
+        CandidateItemDTO replacementB1 = candidate("u4_m1", "河北学校第1组", "英语", "文学", 90D);
+        replacementB1.setPlanSchoolDataId("u4");
+        replacementB1.setProvinceName("河北");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(
+                currentA1, currentA2, currentB1, currentB2, replacementA1, replacementA2, replacementB1));
+        OrderedUnitDTO unit1 = new OrderedUnitDTO();
+        unit1.setUnitId("u1");
+        unit1.setSchoolName("北京学校第1组");
+        unit1.getMajorItems().add(unitMajor("u1_m1", "金融学"));
+        unit1.getMajorItems().add(unitMajor("u1_m2", "会计学"));
+        OrderedUnitDTO unit2 = new OrderedUnitDTO();
+        unit2.setUnitId("u2");
+        unit2.setSchoolName("北京学校第2组");
+        unit2.getMajorItems().add(unitMajor("u2_m1", "英语"));
+        unit2.getMajorItems().add(unitMajor("u2_m2", "法学"));
+        state.getOrderedPlanState().getUnits().add(unit1);
+        state.getOrderedPlanState().getUnits().add(unit2);
+        UserGoalFixProposalReq.ScopeDTO scope = negativeScope("region", "北京");
+        scope.setScopeLevel("province");
+        UserGoalFixProposalReq req = req("exclude_scope", 12, scope);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getSummary().contains("有 2 个专业组命中"));
+        assertTrue(proposal.getSummary().contains("本次能替换 2 个专业组"));
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals("replace_volunteers", action.getActionType());
+        assertEquals(2, action.getReplacementPairs().size());
+        assertEquals(2, action.getRemoveUnitIds().size());
+        assertTrue(action.getRemoveUnitIds().contains("u1"));
+        assertTrue(action.getRemoveUnitIds().contains("u2"));
+        assertEquals(2, action.getCandidateUnitIds().size());
+        assertTrue(action.getCandidateUnitIds().contains("u3"));
+        assertTrue(action.getCandidateUnitIds().contains("u4"));
+        assertEquals(4, action.getRemoveVolunteerIds().size());
+        assertEquals(3, action.getCandidateVolunteerIds().size());
+        assertEquals(Integer.valueOf(2), action.getTotalReplacementPairCount());
+    }
+
+    @Test
     void shouldBuildExcludePreviewForProgramTypeScope() {
         PlanningStateDTO state = state(12);
         CandidateItemDTO coop = candidate("v1", "青岛理工大学", "建筑学(中外合作办学)", "建筑类", 91D);

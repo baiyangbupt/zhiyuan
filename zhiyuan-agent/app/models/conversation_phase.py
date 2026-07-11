@@ -80,6 +80,10 @@ class PendingConfirmation(BaseModel):
     一次只能有一个 pending，新 pending 会覆盖旧 pending。
     """
 
+    # 后端 pendingConfirmation 的持久化 ID，用于新 pending 覆盖旧 pending 时
+    # 建立 replacesPendingId 关系。
+    pending_id: str = ""
+
     kind: Literal["intent_change", "plan_mutation", "plan_generation"]
 
     # 对应的 action_family

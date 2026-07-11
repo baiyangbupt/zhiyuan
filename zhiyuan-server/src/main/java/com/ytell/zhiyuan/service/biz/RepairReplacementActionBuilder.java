@@ -101,6 +101,7 @@ final class RepairReplacementActionBuilder {
         populateReplacementPairs(action, candidates, selection, candidateVolunteerIds, candidateUnitIds,
                 pairCount, majorGroupMode, check.getCode(),
                 RepairProposalTaxonomy.CompensationActionType.REBALANCE_PROTECT_RATIO);
+        populateActionTotals(action);
         action.setDetail(buildReplacementPreviewDetail(action, candidates, baseDetail));
         return action;
     }
@@ -146,6 +147,7 @@ final class RepairReplacementActionBuilder {
         populateReplacementPairs(action, candidates, selection, candidateVolunteerIds, candidateUnitIds,
                 pairCount, majorGroupMode, check.getCode(),
                 RepairProposalTaxonomy.CompensationActionType.FILL_PROBABILITY_GAP);
+        populateActionTotals(action);
         action.setDetail(buildReplacementPreviewDetail(action, candidates, baseDetail));
         return action;
     }
@@ -218,6 +220,17 @@ final class RepairReplacementActionBuilder {
         pair.setToVolunteerId(toVolunteerId);
         pair.setReasonCodes(Lists.newArrayList(checkCode, reasonCode));
         return pair;
+    }
+
+    private static void populateActionTotals(FixProposalActionDTO action) {
+        if (action == null) {
+            return;
+        }
+        action.setTotalUnitCount(Math.max(defaultList(action.getRemoveUnitIds()).size(),
+                defaultList(action.getCandidateUnitIds()).size()));
+        action.setTotalVolunteerCount(Math.max(defaultList(action.getRemoveVolunteerIds()).size(),
+                defaultList(action.getCandidateVolunteerIds()).size()));
+        action.setTotalReplacementPairCount(defaultList(action.getReplacementPairs()).size());
     }
 
     private static String buildReplacementPreviewDetail(FixProposalActionDTO action,

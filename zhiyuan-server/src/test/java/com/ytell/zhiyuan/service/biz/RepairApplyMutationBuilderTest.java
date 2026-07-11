@@ -162,6 +162,45 @@ public class RepairApplyMutationBuilderTest {
     }
 
     @Test
+    void shouldApplyMajorGroupReplacementWhenUnitMajorCountsDiffer() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        state.getCandidatePoolState().setRequiredCount(1);
+        state.getWorkingPlanState().getItems().add(draftItem("unita_m1", "冲"));
+        state.getWorkingPlanState().getItems().add(draftItem("unita_m2", "冲"));
+        state.getWorkingPlanState().getItems().add(draftItem("unita_m3", "冲"));
+
+        FixProposalDTO proposal = new FixProposalDTO();
+        proposal.setTitle("替换风险专业组");
+        FixProposalActionDTO action = new FixProposalActionDTO();
+        action.setActionType("replace_volunteers");
+        action.setRemoveUnitIds(Lists.newArrayList("unit_a"));
+        action.setCandidateUnitIds(Lists.newArrayList("unit_b"));
+        action.setRemoveVolunteerIds(Lists.newArrayList("unita_m1", "unita_m2", "unita_m3"));
+        action.setCandidateVolunteerIds(Lists.newArrayList("unitb_m1"));
+        action.getReplacementPairs().add(replacementPair("unit_a", "unita_m1", "unit_b", "unitb_m1"));
+        proposal.setActions(Lists.newArrayList(action));
+
+        RepairApplyMutationBuilder.MutationResult result = RepairApplyMutationBuilder.applyReplaceVolunteers(
+                state,
+                Lists.newArrayList(
+                        candidate("unita_m1", "unit_a", "冲", 30D, 5D),
+                        candidate("unita_m2", "unit_a", "冲", 35D, 8D),
+                        candidate("unita_m3", "unit_a", "冲", 36D, 9D),
+                        candidate("unitb_m1", "unit_b", "冲", 70D, 45D)),
+                proposal);
+
+        assertEquals("applied", result.getStatus());
+        assertEquals(3, result.getRemovedVolunteerIds().size());
+        assertEquals(Lists.newArrayList("unitb_m1"), result.getAddedVolunteerIds());
+        assertEquals(1, state.getWorkingPlanState().getItems().size());
+        assertEquals("unitb_m1", state.getWorkingPlanState().getItems().get(0).getVolunteerId());
+        assertEquals(1, state.getWorkingPlanState().getUnits().size());
+        assertEquals("unit_b", state.getWorkingPlanState().getUnits().get(0).getUnitId());
+        assertEquals(Integer.valueOf(1), state.getWorkingPlanState().getSummary().getTotal());
+    }
+
+    @Test
     void shouldApplyReplaceVolunteersFromReplacementPairsOnlyInProfessionalMode() {
         PlanningStateDTO state = new PlanningStateDTO();
         state.getCandidatePoolState().setRequiredCount(2);
@@ -403,6 +442,16 @@ public class RepairApplyMutationBuilderTest {
         ReplacementPairDTO pair = new ReplacementPairDTO();
         pair.setFromVolunteerId(removeId);
         pair.setToVolunteerId(addId);
+        return pair;
+    }
+
+    private ReplacementPairDTO replacementPair(String removeUnitId,
+                                               String removeId,
+                                               String addUnitId,
+                                               String addId) {
+        ReplacementPairDTO pair = replacementPair(removeId, addId);
+        pair.setFromUnitId(removeUnitId);
+        pair.setToUnitId(addUnitId);
         return pair;
     }
 

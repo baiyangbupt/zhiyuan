@@ -2,8 +2,10 @@ package com.ytell.zhiyuan.service.biz;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
+import com.google.common.base.Strings;
 import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.common.util.ApplyTypeUtil;
 import com.ytell.zhiyuan.common.util.ExcelUtil;
 import com.ytell.zhiyuan.common.util.VolunteerFilePathUtil;
 import com.ytell.zhiyuan.common.util.VolunteerFilePathUtil.VolunteerFileType;
@@ -22,6 +24,7 @@ import com.ytell.zhiyuan.model.dto.volunteer.VolunteerSchoolGroup;
 import com.ytell.zhiyuan.model.entity.biz.ChatSession;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.enums.SessionStatus;
+import com.ytell.zhiyuan.model.enums.VolunteerModel;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
@@ -471,7 +474,7 @@ public class VolunteerBizService {
         // 3. 解析本地对应文件成DTO返回
         try {
             String jsonContent = FileUtils.readFileToString(localFile, StandardCharsets.UTF_8);
-            VolunteerRecommendListResponse volunteerDataDTO = parseVolunteerRecommendListResponse(jsonContent);
+            VolunteerRecommendListResponse volunteerDataDTO = parseVolunteerRecommendListResponse(jsonContent, chatSessionId);
             log.info("成功加载缓存推荐数据，会话ID: {}, 数据大小: {} bytes", chatSessionId, jsonContent.length());
             return volunteerDataDTO;
         } catch (Exception e) {
@@ -505,7 +508,7 @@ public class VolunteerBizService {
         // 3.解析本地对应文件成DTO返回
         try {
             String jsonContent = FileUtils.readFileToString(localFile, StandardCharsets.UTF_8);
-            VolunteerRecommendListResponse volunteerDataDTO = parseVolunteerRecommendListResponse(jsonContent);
+            VolunteerRecommendListResponse volunteerDataDTO = parseVolunteerRecommendListResponse(jsonContent, chatSessionId);
             log.info("成功加载最终志愿数据，会话ID: {}, 数据大小: {} bytes", chatSessionId, jsonContent.length());
             return volunteerDataDTO;
         } catch (Exception e) {
@@ -531,7 +534,7 @@ public class VolunteerBizService {
 
         try {
             String jsonContent = FileUtils.readFileToString(localFile, StandardCharsets.UTF_8);
-            VolunteerRecommendListResponse volunteerDataDTO = parseVolunteerRecommendListResponse(jsonContent);
+            VolunteerRecommendListResponse volunteerDataDTO = parseVolunteerRecommendListResponse(jsonContent, chatSessionId);
             log.info("成功加载原始志愿数据，会话ID: {}, 数据大小: {} bytes", chatSessionId, jsonContent.length());
             return volunteerDataDTO;
         } catch (Exception e) {
@@ -541,15 +544,24 @@ public class VolunteerBizService {
     }
 
     VolunteerRecommendListResponse parseVolunteerRecommendListResponse(String jsonContent) {
+        return parseVolunteerRecommendListResponse(jsonContent, (CreateSessionReq) null);
+    }
+
+    VolunteerRecommendListResponse parseVolunteerRecommendListResponse(String jsonContent, Long chatSessionId) {
+        return parseVolunteerRecommendListResponse(jsonContent, loadScoreDetailForLegacyConversion(chatSessionId));
+    }
+
+    VolunteerRecommendListResponse parseVolunteerRecommendListResponse(String jsonContent, CreateSessionReq scoreDetail) {
         VolunteerRecommendListResponse response = JSONObject.parseObject(jsonContent, VolunteerRecommendListResponse.class);
         if (hasRecommendListItems(response)) {
+            applySessionContext(response, scoreDetail, false);
             return response;
         }
         VolunteerDataDTO legacyData = JSONObject.parseObject(jsonContent, VolunteerDataDTO.class);
         if (legacyData == null || legacyData.getDetailList() == null || legacyData.getDetailList().isEmpty()) {
             return response;
         }
-        return convertLegacyVolunteerData(legacyData);
+        return convertLegacyVolunteerData(legacyData, scoreDetail);
     }
 
     private boolean hasRecommendListItems(VolunteerRecommendListResponse response) {
@@ -560,11 +572,16 @@ public class VolunteerBizService {
     }
 
     private VolunteerRecommendListResponse convertLegacyVolunteerData(VolunteerDataDTO legacyData) {
+        return convertLegacyVolunteerData(legacyData, null);
+    }
+
+    private VolunteerRecommendListResponse convertLegacyVolunteerData(VolunteerDataDTO legacyData, CreateSessionReq scoreDetail) {
         VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
-        response.setBaseData(convertLegacyBaseData(legacyData));
+        response.setBaseData(convertLegacyBaseData(legacyData, scoreDetail));
         response.setSprints(new ArrayList<>());
         response.setSafes(new ArrayList<>());
         response.setProtects(new ArrayList<>());
+        response.setMajorSchoolType(resolveMajorSchoolType(legacyData, scoreDetail));
 
         Map<String, Integer> tierRanks = new HashMap<>();
         for (ProgramPageDTO.SchoolDetail detail : legacyData.getDetailList()) {
@@ -584,10 +601,15 @@ public class VolunteerBizService {
                 response.getProtects().add(school);
             }
         }
+        applySessionContext(response, scoreDetail, true);
         return response;
     }
 
     private VolunteerRecommendListResponse.BaseData convertLegacyBaseData(VolunteerDataDTO legacyData) {
+        return convertLegacyBaseData(legacyData, null);
+    }
+
+    private VolunteerRecommendListResponse.BaseData convertLegacyBaseData(VolunteerDataDTO legacyData, CreateSessionReq scoreDetail) {
         VolunteerRecommendListResponse.BaseData baseData = new VolunteerRecommendListResponse.BaseData();
         ProgramPageDTO.ProgramModel model = legacyData == null ? null : legacyData.getModel();
         if (model == null) {
@@ -601,7 +623,143 @@ public class VolunteerBizService {
         targetCounts.put("safes_count", firstNotNull(model.getMajorSafeNum(), model.getSchoolSafeNum(), 0));
         targetCounts.put("protects_count", firstNotNull(model.getMajorProtectNum(), model.getSchoolProtectNum(), 0));
         baseData.setThree_target_count_map(targetCounts);
+        applyLegacyCandidateCountsByModel(baseData, model, scoreDetail == null ? null : scoreDetail.getVolunteerModel());
         return baseData;
+    }
+
+    private void applySessionContext(VolunteerRecommendListResponse response,
+                                     CreateSessionReq scoreDetail,
+                                     boolean overrideTargetCount) {
+        if (response == null || scoreDetail == null) {
+            return;
+        }
+        if (response.getUserScoreDetail() == null) {
+            response.setUserScoreDetail(scoreDetail);
+        }
+        if (response.getBaseData() == null) {
+            response.setBaseData(new VolunteerRecommendListResponse.BaseData());
+        }
+        VolunteerRecommendListResponse.BaseData baseData = response.getBaseData();
+        if (baseData.getTarget_type() == null) {
+            baseData.setTarget_type(scoreDetail.getTargetType());
+        }
+        if (baseData.getVolunteerCount() == null) {
+            baseData.setVolunteerCount(scoreDetail.getVolunteerCount());
+        }
+        if (baseData.getVolunteerModel() == null) {
+            baseData.setVolunteerModel(scoreDetail.getVolunteerModel());
+        }
+        if (baseData.getPrepareType() == null) {
+            baseData.setPrepareType(scoreDetail.getPrepareType());
+        }
+        if (baseData.getTuitionRange() == null) {
+            baseData.setTuitionRange(scoreDetail.getTuitionRange());
+        }
+        VolunteerModel volunteerModel = baseData.getVolunteerModel() != null
+                ? baseData.getVolunteerModel()
+                : scoreDetail.getVolunteerModel();
+        if (response.getMajorSchoolType() == null && volunteerModel != null) {
+            response.setMajorSchoolType(VolunteerModel.major.equals(volunteerModel));
+        }
+        Integer targetCount = resolveTargetVolunteerCount(scoreDetail, volunteerModel);
+        if (targetCount != null && targetCount > 0
+                && (overrideTargetCount || baseData.getNeed_count() == null || baseData.getNeed_count() <= 0)) {
+            baseData.setNeed_count(targetCount);
+            baseData.setThree_target_count_map(buildThreeTargetCountMap(targetCount, scoreDetail.getStrategyType()));
+        }
+    }
+
+    private void applyLegacyCandidateCountsByModel(VolunteerRecommendListResponse.BaseData baseData,
+                                                   ProgramPageDTO.ProgramModel model,
+                                                   VolunteerModel volunteerModel) {
+        if (baseData == null || model == null || volunteerModel == null) {
+            return;
+        }
+        Integer total = VolunteerModel.major.equals(volunteerModel)
+                ? model.getMajorTotalNum()
+                : model.getSchoolTotalNum();
+        Integer sprint = VolunteerModel.major.equals(volunteerModel)
+                ? model.getMajorSprintNum()
+                : model.getSchoolSprintNum();
+        Integer safe = VolunteerModel.major.equals(volunteerModel)
+                ? model.getMajorSafeNum()
+                : model.getSchoolSafeNum();
+        Integer protect = VolunteerModel.major.equals(volunteerModel)
+                ? model.getMajorProtectNum()
+                : model.getSchoolProtectNum();
+        if (total != null) {
+            baseData.setTotal_count(total);
+        }
+        if (sprint != null) {
+            baseData.setSprints_count(sprint);
+        }
+        if (safe != null) {
+            baseData.setSafes_count(safe);
+        }
+        if (protect != null) {
+            baseData.setProtects_count(protect);
+        }
+    }
+
+    private Integer resolveTargetVolunteerCount(CreateSessionReq scoreDetail, VolunteerModel volunteerModel) {
+        if (scoreDetail == null || scoreDetail.getVolunteerCount() == null || volunteerModel == null) {
+            return null;
+        }
+        if (VolunteerModel.major.equals(volunteerModel)) {
+            return scoreDetail.getVolunteerCount().getMajorCount();
+        }
+        if (VolunteerModel.majorGroup.equals(volunteerModel)) {
+            return scoreDetail.getVolunteerCount().getSchoolCount();
+        }
+        return null;
+    }
+
+    private Map<String, Integer> buildThreeTargetCountMap(Integer targetCount,
+                                                          CreateSessionReq.StrategyType strategyType) {
+        Map<String, Integer> targetCounts = new HashMap<>();
+        if (targetCount == null || targetCount <= 0) {
+            targetCounts.put("sprints_count", 0);
+            targetCounts.put("safes_count", 0);
+            targetCounts.put("protects_count", 0);
+            return targetCounts;
+        }
+        VolunteerIntervalService intervalService = volunteerIntervalService == null
+                ? new VolunteerIntervalService()
+                : volunteerIntervalService;
+        Map<String, Integer> calculated = intervalService.calculateTargetCounts(targetCount, false, strategyType);
+        targetCounts.put("sprints_count", calculated.getOrDefault("冲", 0));
+        targetCounts.put("safes_count", calculated.getOrDefault("稳", 0));
+        targetCounts.put("protects_count", calculated.getOrDefault("保", 0));
+        return targetCounts;
+    }
+
+    private Boolean resolveMajorSchoolType(VolunteerDataDTO legacyData, CreateSessionReq scoreDetail) {
+        if (scoreDetail != null && scoreDetail.getVolunteerModel() != null) {
+            return VolunteerModel.major.equals(scoreDetail.getVolunteerModel());
+        }
+        String typeCode = legacyData != null && legacyData.getType() != null ? legacyData.getType().getCode() : null;
+        if (Strings.isNullOrEmpty(typeCode)) {
+            return null;
+        }
+        return ApplyTypeUtil.isMajorSchoolType(typeCode);
+    }
+
+    private CreateSessionReq loadScoreDetailForLegacyConversion(Long chatSessionId) {
+        if (chatSessionId == null || chatSessionExtraDataSharedService == null) {
+            return null;
+        }
+        try {
+            ChatSessionExtraData scoreData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                    chatSessionId,
+                    ChatSessionExtraDataConstants.USER_SCORE_KEY);
+            if (scoreData == null || Strings.isNullOrEmpty(scoreData.getDataValue())) {
+                return null;
+            }
+            return JSONObject.parseObject(scoreData.getDataValue(), CreateSessionReq.class);
+        } catch (Exception ex) {
+            log.warn("loadScoreDetailForLegacyConversion failed, chatSessionId={}", chatSessionId, ex);
+            return null;
+        }
     }
 
     private VolunteerRecommendListResponse.VolunteerSchool convertLegacySchool(ProgramPageDTO.SchoolDetail detail) {

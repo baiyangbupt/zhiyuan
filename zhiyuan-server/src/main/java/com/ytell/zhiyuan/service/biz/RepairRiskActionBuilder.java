@@ -134,6 +134,7 @@ final class RepairRiskActionBuilder {
         pair.setToVolunteerId(replacement.getVolunteerId());
         pair.setReasonCodes(Lists.newArrayList(check.getCode(), "same_tier_safe_replacement"));
         action.getReplacementPairs().add(pair);
+        populateActionTotals(action);
         return action;
     }
 
@@ -146,7 +147,19 @@ final class RepairRiskActionBuilder {
         target.setDetail(action.getDetail());
         target.setUnitIds(defaultList(action.getUnitIds()));
         target.setVolunteerIds(defaultList(action.getVolunteerIds()));
+        populateActionTotals(target);
         return target;
+    }
+
+    private static void populateActionTotals(FixProposalActionDTO action) {
+        if (action == null) {
+            return;
+        }
+        action.setTotalUnitCount(Math.max(defaultList(action.getRemoveUnitIds()).size(),
+                Math.max(defaultList(action.getCandidateUnitIds()).size(), defaultList(action.getUnitIds()).size())));
+        action.setTotalVolunteerCount(Math.max(defaultList(action.getRemoveVolunteerIds()).size(),
+                Math.max(defaultList(action.getCandidateVolunteerIds()).size(), defaultList(action.getVolunteerIds()).size())));
+        action.setTotalReplacementPairCount(defaultList(action.getReplacementPairs()).size());
     }
 
     private static <T> List<T> defaultList(List<T> values) {

@@ -59,6 +59,14 @@ class _UnexpectedJsonWebSocket:
         raise RuntimeError("unexpected websocket failure")
 
 
+class _RecordingJsonWebSocket:
+    def __init__(self):
+        self.sent: list[dict] = []
+
+    async def send_json(self, data):
+        self.sent.append(data)
+
+
 class _PlanStatusToolAgent:
     def __init__(self):
         self.calls: list[dict] = []
@@ -205,6 +213,30 @@ def test_safe_send_json_reraises_unexpected_runtime_error(client):
 
     with pytest.raises(RuntimeError, match="unexpected websocket failure"):
         asyncio.run(_safe_send_json(_UnexpectedJsonWebSocket(), {"type": "text"}, context="test.unexpected"))
+
+
+def test_safe_send_compat_json_forwards_to_latest_connection_when_original_closed(client):
+    from app.server import _compat_connections, _safe_send_compat_json
+
+    active_ws = _RecordingJsonWebSocket()
+    payload = {"type": "text", "content": "已处理", "end": True}
+
+    async def _run():
+        await _compat_connections.register("sess-reconnect", active_ws)
+        try:
+            return await _safe_send_compat_json(
+                _ClosedJsonWebSocket(),
+                "sess-reconnect",
+                payload,
+                context="test.reconnect",
+            )
+        finally:
+            await _compat_connections.unregister("sess-reconnect", active_ws)
+
+    result = asyncio.run(_run())
+
+    assert result is True
+    assert active_ws.sent == [payload]
 
 
 def test_ping_pong(client):

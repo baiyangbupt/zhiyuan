@@ -209,19 +209,24 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
   useEffect(() => {
     isMountedRef.current = true;
 
-    // 只在客户端执行连接
+    // 只在客户端执行连接；url 变化时需要重连到新的会话/环境地址。
     if (typeof window !== 'undefined') {
-      console.log('🏗️ Component mounted, connecting WebSocket');
+      console.log('🏗️ Component mounted or websocket url changed, connecting WebSocket');
       connect();
     }
 
-    // 清理函数 - 只在组件卸载时执行
     return () => {
-      console.log('🧹 Component unmounting, cleaning up WebSocket');
-      isMountedRef.current = false;
+      console.log('🧹 WebSocket url cleanup, disconnecting current WebSocket');
       disconnect();
     };
-  }, []); // 空依赖数组，只在挂载和卸载时执行
+  }, [url]);
+
+  useEffect(
+    () => () => {
+      isMountedRef.current = false;
+    },
+    []
+  );
 
   // 添加调试信息
   useEffect(() => {
