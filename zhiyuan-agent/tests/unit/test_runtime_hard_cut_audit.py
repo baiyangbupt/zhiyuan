@@ -5,6 +5,12 @@ from pathlib import Path
 SERVICE_TEXT = (Path(__file__).resolve().parents[2] / "app" / "service.py").read_text(
     encoding="utf-8"
 )
+SERVER_TEXT = (Path(__file__).resolve().parents[2] / "app" / "server.py").read_text(
+    encoding="utf-8"
+)
+WS_COMPAT_TEST_TEXT = (
+    Path(__file__).resolve().parents[2] / "tests" / "unit" / "test_ws_compat.py"
+).read_text(encoding="utf-8")
 PLAN_SEMANTIC_ACTION_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "plan_semantic_action_tool.py"
 PLAN_EXECUTION_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "plan_execution_tool.py"
 INTENT_PREVIEW_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "intent_preview_tool.py"
@@ -13,6 +19,28 @@ TURN_DECISION_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" 
 INTENT_ENTITY_PROFILE_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "intent_entity_profile_tool.py"
 PLAN_QUERY_PROFILE_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "plan_query_profile_tool.py"
 REPLY_PROFILE_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "reply_profile_tool.py"
+MAJOR_INFO_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "major_info_tool.py"
+MAJOR_COMPARE_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "major_compare_tool.py"
+MAJOR_CHAT_SKILL_PATH = Path(__file__).resolve().parents[2] / "skills" / "major_chat" / "SKILL.md"
+SCHOOL_INFO_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "school_info_tool.py"
+SCHOOL_COMPARE_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "school_compare_tool.py"
+SCHOOL_RECOMMEND_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "school_recommend_tool.py"
+SCHOOL_CHAT_SKILL_PATH = Path(__file__).resolve().parents[2] / "skills" / "school_chat" / "SKILL.md"
+EXPLORE_FOLLOWUP_TOOL_TEXT = (
+    Path(__file__).resolve().parents[2] / "app" / "tools" / "explore_followup_tool.py"
+).read_text(encoding="utf-8")
+ZHIYUAN_TOOLS_TEXT = (
+    Path(__file__).resolve().parents[2] / "app" / "zhiyuan_agent" / "tools.py"
+).read_text(encoding="utf-8")
+ZHIYUAN_SANDBOX_TEXT = (
+    Path(__file__).resolve().parents[2] / "app" / "zhiyuan_agent" / "sandbox.py"
+).read_text(encoding="utf-8")
+EXPLORE_CHAT_SKILL_TEXT = (
+    Path(__file__).resolve().parents[2] / "skills" / "explore_chat" / "SKILL.md"
+).read_text(encoding="utf-8")
+CAREER_PATH_CHAT_SKILL_TEXT = (
+    Path(__file__).resolve().parents[2] / "skills" / "career_path_chat" / "SKILL.md"
+).read_text(encoding="utf-8")
 PLAN_ACTION_EXECUTION_PATH = Path(__file__).resolve().parents[2] / "app" / "domain" / "plan_action_execution.py"
 HANDLERS_PATH = Path(__file__).resolve().parents[2] / "app" / "handlers"
 EXAMPLES_PATH = Path(__file__).resolve().parents[2] / "examples"
@@ -90,6 +118,14 @@ def test_service_runtime_does_not_reintroduce_recovery_classifiers_or_legacy_wra
     present = [snippet for snippet in FORBIDDEN_RUNTIME_SNIPPETS if snippet in SERVICE_TEXT]
 
     assert present == []
+
+
+def test_legacy_chat_input_aliases_are_removed_from_ws_compat():
+    assert "\"planEdit\": \"chat\"" not in SERVER_TEXT
+    assert "\"intentDetect\": \"chat\"" not in SERVER_TEXT
+    assert "inputType\": \"planEdit\"" not in WS_COMPAT_TEST_TEXT
+    assert "inputType\": \"intentDetect\"" not in WS_COMPAT_TEST_TEXT
+    assert "test_legacy_plan_edit_maps_to_chat" not in WS_COMPAT_TEST_TEXT
 
 
 def test_zhiyuan_agent_direct_route_is_not_feature_flag_or_rollout_gated():
@@ -200,6 +236,74 @@ def test_legacy_model_node_profile_tools_are_removed():
     assert [snippet for snippet in forbidden if snippet in INTENT_STATE_TOOL_TEXT] == []
 
 
+def test_legacy_major_topic_tools_and_skill_are_removed_from_4_0_runtime():
+    assert not MAJOR_INFO_TOOL_PATH.exists()
+    assert not MAJOR_COMPARE_TOOL_PATH.exists()
+    assert not MAJOR_CHAT_SKILL_PATH.exists()
+
+    forbidden = [
+        "get_major_introduction",
+        "get_major_introductions",
+        "compare_majors",
+        "compare_major_options",
+        "analyze_current_major_interest",
+        "analyze_current_career_direction",
+        "analyze_volunteer_intent_change",
+        "preview_current_intent_confirmation",
+    ]
+    for text in (EXPLORE_CHAT_SKILL_TEXT, CAREER_PATH_CHAT_SKILL_TEXT):
+        assert [snippet for snippet in forbidden if snippet in text] == []
+
+
+def test_legacy_school_topic_tools_and_skill_are_removed_from_4_0_runtime():
+    assert not SCHOOL_INFO_TOOL_PATH.exists()
+    assert not SCHOOL_COMPARE_TOOL_PATH.exists()
+    assert not SCHOOL_RECOMMEND_TOOL_PATH.exists()
+    assert not SCHOOL_CHAT_SKILL_PATH.exists()
+
+    forbidden = [
+        "get_school_introduction",
+        "compare_schools",
+        "compare_schools_adhoc",
+        "get_school_recommendations",
+        "school_compare_tool",
+        "school_info_tool",
+        "school_recommend_tool",
+    ]
+    for text in (EXPLORE_CHAT_SKILL_TEXT, CAREER_PATH_CHAT_SKILL_TEXT):
+        assert [snippet for snippet in forbidden if snippet in text] == []
+
+
+def test_frontend_followup_compat_bridge_does_not_reintroduce_legacy_plan_chain():
+    assert "legacy explore follow-up" not in EXPLORE_FOLLOWUP_TOOL_TEXT
+    assert "get_pending_confirmation" in EXPLORE_FOLLOWUP_TOOL_TEXT
+    assert "pendingConfirmation" in EXPLORE_FOLLOWUP_TOOL_TEXT
+    assert "query_plan(" in EXPLORE_FOLLOWUP_TOOL_TEXT
+    forbidden = [
+        "plan_next_action",
+        "collect_plan_context_inputs",
+        "execute_plan_action",
+        "planEditCache",
+        "save_intent_change_cache",
+        "app.tools.plan_execution_tool",
+        "app.tools.plan_orchestration_tool",
+        "app.tools.plan_context_tool",
+    ]
+    assert [snippet for snippet in forbidden if snippet in EXPLORE_FOLLOWUP_TOOL_TEXT] == []
+
+
+def test_zhiyuan_direct_production_code_does_not_reintroduce_ambiguous_legacy_names():
+    forbidden = [
+        "_replacement_legacy_auto_select_reason",
+        "_legacy_volunteer_prefix",
+        "by_legacy_prefix",
+    ]
+    assert [snippet for snippet in forbidden if snippet in ZHIYUAN_TOOLS_TEXT] == []
+    assert [snippet for snippet in forbidden if snippet in ZHIYUAN_SANDBOX_TEXT] == []
+    assert "_replacement_auto_select_reason" in ZHIYUAN_TOOLS_TEXT
+    assert "_volunteer_group_prefix" in ZHIYUAN_SANDBOX_TEXT
+
+
 def test_legacy_runtime_pending_audit_and_compiler_adapter_assets_are_removed():
     removed = [
         "runtime_pending_entrypoint_audit.py",
@@ -278,6 +382,10 @@ def test_service_runtime_does_not_reference_legacy_full_agent_tool_names():
     ]
 
     assert [snippet for snippet in forbidden if snippet in SERVICE_TEXT] == []
+
+
+def test_legacy_intent_popup_title_alias_is_removed():
+    assert "_build_popup_title" not in INTENT_STATE_TOOL_TEXT
 
 
 def test_legacy_plan_edit_cache_is_not_used_by_runtime_or_regression_runner():

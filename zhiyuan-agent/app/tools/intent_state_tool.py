@@ -2020,15 +2020,6 @@ def _build_preview_title(
     return f"好的，我先把这次你提到的{('要求' if intent_mode == INTENT_MODE_CONSTRAINT else '想法')}整理一下。{suffix}"
 
 
-def _build_popup_title(
-    edit_flag: str | None,
-    intent_mode: str = INTENT_MODE_PREFERENCE,
-    analysis_stage: str = ANALYSIS_STAGE_CONFIRMED,
-) -> str:
-    """Legacy alias for older tests and protocol wording."""
-    return _build_preview_title(edit_flag, intent_mode, analysis_stage)
-
-
 def _latest_user_utterance(ctx: RunContext[RequestContext]) -> str:
     history = getattr(ctx.deps, "chat_history", None) or []
     for message in reversed(history):
@@ -4396,7 +4387,7 @@ async def analyze_volunteer_intent_change(
 
     status = "existing_only" if not items else "ready"
     logger.info(
-        "Skipping legacy intent cache persistence: session_id=%s analysis_stage=%s status=%s utterance=%s",
+        "Skipping backend intent cache persistence: session_id=%s analysis_stage=%s status=%s utterance=%s",
         session_id,
         analysis_stage,
         status,

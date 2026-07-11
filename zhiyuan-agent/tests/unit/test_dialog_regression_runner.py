@@ -2307,7 +2307,7 @@ def test_tool_assertions_can_require_exact_tool_sequence():
             "actionFamilies": ["query_ordered"],
             "resultKinds": ["ordered_snapshot"],
             "toolCalls": [
-                {"name": "compare_major_options"},
+                {"name": "compare_entities"},
             ]
         },
         {
@@ -2315,9 +2315,9 @@ def test_tool_assertions_can_require_exact_tool_sequence():
             "expectedRoutingPath": "zhiyuan_agent_direct",
             "assertActionFamiliesContain": ["query_ordered"],
             "assertResultKindsContain": ["ordered_snapshot"],
-            "expectedToolNames": ["compare_major_options"],
-            "expectedToolCounts": {"compare_major_options": 1},
-            "assertToolNamesNotContain": ["compare_major_options_legacy"],
+            "expectedToolNames": ["compare_entities"],
+            "expectedToolCounts": {"compare_entities": 1},
+            "assertToolNamesNotContain": ["compare_entities_legacy"],
             "assertNoRepeatedToolNames": True,
         },
         "case-tools",
@@ -2334,8 +2334,8 @@ def test_tool_assertions_report_repeated_or_forbidden_tools():
             "actionFamilies": ["query_state"],
             "resultKinds": ["status_overview"],
             "toolCalls": [
-                {"name": "get_major_introduction"},
-                {"name": "get_major_introduction"},
+                {"name": "explore_topic"},
+                {"name": "explore_topic"},
             ]
         },
         {
@@ -2343,8 +2343,8 @@ def test_tool_assertions_report_repeated_or_forbidden_tools():
             "expectedRoutingPath": "zhiyuan_agent_direct",
             "assertActionFamiliesContain": ["query_ordered"],
             "assertResultKindsContain": ["ordered_snapshot"],
-            "expectedToolNames": ["get_major_introductions"],
-            "assertToolNamesNotContain": ["get_major_introduction"],
+            "expectedToolNames": ["compare_entities"],
+            "assertToolNamesNotContain": ["explore_topic"],
             "maxToolCallCount": 1,
             "assertNoRepeatedToolNames": True,
         },

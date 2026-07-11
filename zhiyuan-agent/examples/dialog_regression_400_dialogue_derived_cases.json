@@ -972,13 +972,14 @@
             "建议"
           ],
           "expectedToolNames": [
-            "get_major_introductions"
+            "explore_topic"
           ],
           "assertToolNamesNotContain": [
-            "get_major_introduction"
+            "get_major_introduction",
+            "get_major_introductions"
           ],
           "expectedToolCounts": {
-            "get_major_introductions": 1
+            "explore_topic": 1
           },
           "maxToolCallCount": 1,
           "assertNoRepeatedToolNames": true,
@@ -1131,14 +1132,15 @@
             "建议"
           ],
           "expectedToolNames": [
-            "compare_major_options"
+            "compare_entities"
           ],
           "assertToolNamesNotContain": [
             "compare_majors",
+            "compare_major_options",
             "analyze_current_major_interest"
           ],
           "expectedToolCounts": {
-            "compare_major_options": 1
+            "compare_entities": 1
           },
           "maxToolCallCount": 1,
           "assertNoRepeatedToolNames": true,

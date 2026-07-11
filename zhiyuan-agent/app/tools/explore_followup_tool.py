@@ -1,4 +1,4 @@
-"""Follow-up handlers for explore-stage actions."""
+"""Frontend follow-up compatibility handlers for intent analysis cards."""
 
 from __future__ import annotations
 
@@ -158,7 +158,7 @@ async def _query_candidate_base_total(session_id: str) -> int | None:
 
 
 async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
-    """Load the intent payload for legacy explore follow-up actions.
+    """Load the intent payload for frontend follow-up actions.
 
     Active pendingConfirmation is the only executable source. Older explore
     action cards without active pending are treated as expired and must be

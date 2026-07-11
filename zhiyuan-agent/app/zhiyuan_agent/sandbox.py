@@ -357,7 +357,7 @@ def _clean_volunteer_id(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _legacy_volunteer_prefix(value: Any) -> str:
+def _volunteer_group_prefix(value: Any) -> str:
     text = _clean_volunteer_id(value)
     if not text:
         return ""
@@ -394,7 +394,7 @@ def _ordered_unit_for_item(
 ) -> dict[str, Any]:
     volunteer_id = _clean_volunteer_id(item.get("volunteerId") or item.get("volunteer_id"))
     if volunteer_id:
-        unit = by_plan_school_data_id.get(_legacy_volunteer_prefix(volunteer_id))
+        unit = by_plan_school_data_id.get(_volunteer_group_prefix(volunteer_id))
         if unit is not None:
             return unit
     return by_position.get(_as_int(item.get("position")), {})
@@ -402,23 +402,23 @@ def _ordered_unit_for_item(
 
 def _candidate_lookup(candidates: list[Any]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     by_volunteer_id: dict[str, dict[str, Any]] = {}
-    by_legacy_prefix: dict[str, dict[str, Any]] = {}
+    by_group_prefix: dict[str, dict[str, Any]] = {}
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
         volunteer_id = _clean_volunteer_id(candidate.get("volunteerId") or candidate.get("volunteer_id"))
         if volunteer_id and volunteer_id not in by_volunteer_id:
             by_volunteer_id[volunteer_id] = candidate
-        legacy_prefix = _legacy_volunteer_prefix(volunteer_id)
-        if legacy_prefix and legacy_prefix not in by_legacy_prefix:
-            by_legacy_prefix[legacy_prefix] = candidate
-    return by_volunteer_id, by_legacy_prefix
+        group_prefix = _volunteer_group_prefix(volunteer_id)
+        if group_prefix and group_prefix not in by_group_prefix:
+            by_group_prefix[group_prefix] = candidate
+    return by_volunteer_id, by_group_prefix
 
 
 def _candidate_for_ordered_item(
     item: dict[str, Any],
     by_volunteer_id: dict[str, dict[str, Any]],
-    by_legacy_prefix: dict[str, dict[str, Any]],
+    by_group_prefix: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     volunteer_id = _clean_volunteer_id(item.get("volunteerId") or item.get("volunteer_id"))
     if not volunteer_id:
@@ -426,7 +426,7 @@ def _candidate_for_ordered_item(
     candidate = by_volunteer_id.get(volunteer_id)
     if candidate is not None:
         return candidate
-    return by_legacy_prefix.get(_legacy_volunteer_prefix(volunteer_id), {})
+    return by_group_prefix.get(_volunteer_group_prefix(volunteer_id), {})
 
 
 def _merge_ordered_item_with_candidate(item: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
@@ -465,7 +465,7 @@ def _enrich_ordered_items_from_candidates(ordered_state: dict[str, Any], candida
     candidates = candidate_state.get("items")
     if not isinstance(candidates, list):
         candidates = []
-    by_volunteer_id, by_legacy_prefix = _candidate_lookup(candidates)
+    by_volunteer_id, by_group_prefix = _candidate_lookup(candidates)
     by_plan_school_data_id, by_position = _ordered_unit_lookup(units)
     enriched: list[dict[str, Any]] = []
     for item in items:
@@ -480,7 +480,7 @@ def _enrich_ordered_items_from_candidates(ordered_state: dict[str, Any], candida
             plan_school_data_id = ordered_unit.get("planSchoolDataId") or ordered_unit.get("plan_school_data_id")
             if plan_school_data_id not in (None, "", [], {}) and item.get("planSchoolDataId") in (None, "", [], {}):
                 item["planSchoolDataId"] = plan_school_data_id
-        candidate = _candidate_for_ordered_item(item, by_volunteer_id, by_legacy_prefix)
+        candidate = _candidate_for_ordered_item(item, by_volunteer_id, by_group_prefix)
         enriched.append(_merge_ordered_item_with_candidate(item, candidate))
     return enriched
 

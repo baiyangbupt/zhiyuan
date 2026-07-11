@@ -296,7 +296,7 @@ def normalize_review_issue_scope_kind(
     backend_scope_kind: str | None = None,
     backend_default_fix_strategy: str | None = None,
 ) -> ReviewIssueScopeKind:
-    """Normalize backend review metadata, with local registry as old-state fallback."""
+    """Normalize backend review metadata, with local registry fallback."""
     scope = str(backend_scope_kind or "").strip()
     strategy = str(backend_default_fix_strategy or "").strip()
     if scope == "item" and strategy == "replace_risk_items":

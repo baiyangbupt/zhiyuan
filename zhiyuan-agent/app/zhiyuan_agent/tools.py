@@ -4801,7 +4801,7 @@ def _replacement_spec_is_actionable(spec: ReplacementSpec) -> bool:
     return bool(spec.get("improve_dims") or spec.get("exclude_markers"))
 
 
-def _replacement_legacy_auto_select_reason(spec: ReplacementSpec) -> str:
+def _replacement_auto_select_reason(spec: ReplacementSpec) -> str:
     markers = set(spec.get("exclude_markers") or [])
     dims = set(spec.get("improve_dims") or [])
     if "high_tuition" in markers or "tuition_decrease" in dims:
@@ -7469,7 +7469,7 @@ async def preview_plan_action(
             filters=old_filter_payload or replacement_filter_input,
             old_items=old_resolved if old_reason == "ok" else [],
         )
-        auto_select_reason = _replacement_legacy_auto_select_reason(replacement_spec)
+        auto_select_reason = _replacement_auto_select_reason(replacement_spec)
         if candidate_targets:
             new_resolved, new_missing, new_reason = await _resolve_plan_targets(ctx, candidate_targets, source="candidates")
         elif old_reason == "ok" and old_resolved:

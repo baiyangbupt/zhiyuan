@@ -4,7 +4,7 @@ import csv
 from collections import defaultdict
 from pathlib import Path
 
-# Common school name keywords for filtering (from old CONSTANTS.py line 99)
+# Common school name keywords for filtering.
 SCHOOL_NAME_LIST = [
     '医', '药', '理', '工', '师', '政', '法', '农', '林', '财', '经', '语', '民', '体',
     '艺', '军', '卫', '交', '警', '信', '建', '科', '电', '旅', '铁', '教', '航', '海',

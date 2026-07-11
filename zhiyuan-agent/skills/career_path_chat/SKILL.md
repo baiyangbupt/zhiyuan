@@ -46,18 +46,15 @@ version: 1.0.0
 
 ## 可用能力
 
-- `analyze_current_career_direction`
-- `query_plan`
-- `review_plan`
-- `preview_plan_action`
-- `confirm_pending`
+4.0 direct 链路下，职业路径探索只使用这些能力：
 
-必要时可组合只读主题工具：
-
-- `get_major_introduction`
-- `compare_majors`
-- `get_school_introduction`
-- `compare_schools`
+- `explore_topic(topic_type="career")`：分析体制内、稳定就业、读研深造、就业导向等职业路径问题。
+- `query_plan`：只读查询当前方案是否承接相关方向。
+- `review_plan`：只读审查当前方案问题与改进建议。
+- `compare_entities`：必要时对比具体专业或院校。
+- `preview_intent_change`：用户明确表示以后要按某个职业方向看时生成待确认报考要求。
+- `preview_plan_action`：用户明确要求调整当前方案时生成待确认方案动作。
+- `confirm_pending`：用户确认采纳已有待确认内容时执行。
 
 ## 规则
 

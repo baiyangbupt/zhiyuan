@@ -9,7 +9,7 @@ from app.util.internal_client import save_message
 
 
 class MessageStore:
-    """Persist websocket-visible messages to the legacy message table."""
+    """Persist websocket-visible messages to the backend message table."""
 
     async def save_user_message(self, chat_session_id: str, content: str) -> int | None:
         result = await save_message(

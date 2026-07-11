@@ -1,4 +1,4 @@
-"""Tests for legacy render message persistence wrapper."""
+"""Tests for backend render message persistence wrapper."""
 
 from __future__ import annotations
 

@@ -461,6 +461,10 @@ def test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_fol
     assert "地域集合也是地域要求" in text
     assert "positive={\"area\":[\"南方\"]}" in text
     assert "negative={\"area\":[\"北方\"]}" in text
+    assert "倾向A和B，但Y不要" in text
+    assert "我倾向会计学和审计学，但土木工程不要" in text
+    assert "positive={\"major\":[\"会计学\",\"审计学\"]}" in text
+    assert "negative={\"major\":[\"土木工程\"]}" in text
 
 
 async def test_sandbox_cache_hit_uses_adapter_once():

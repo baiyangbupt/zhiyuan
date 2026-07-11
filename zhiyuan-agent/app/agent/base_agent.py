@@ -701,7 +701,7 @@ class BaseAgent(Generic[T]):
         return messages_result
 
     def _normalize_message_history(self, message_history: list[Any] | None) -> list[Any] | None:
-        """Accept legacy {role, content} history and pass ModelMessage objects to pydantic-ai."""
+        """Accept {role, content} history and pass ModelMessage objects to pydantic-ai."""
         if not message_history:
             return message_history
 

@@ -72,8 +72,8 @@ class UserProfile(BaseModel):
 
     @classmethod
     def from_backend_format(cls, data: dict[str, Any]) -> "UserProfile":
-        """Parse UserProfile from backend response (old format)."""
-        # Convert old format to new format
+        """Parse UserProfile from the backend response format."""
+        # Convert backend payloads to the internal profile model.
         college_info = data.get("college_info", {})
         negative_college_info = data.get("negative_college_info", {})
         school = SchoolIntent(
@@ -126,7 +126,7 @@ class UserProfile(BaseModel):
         )
 
     def to_backend_format(self) -> dict[str, Any]:
-        """Convert to backend format (old format for compatibility)."""
+        """Convert to the backend-compatible profile format."""
         return {
             "major_intent": {
                 "level1": self.major.level1 or None,

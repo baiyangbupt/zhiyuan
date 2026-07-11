@@ -808,30 +808,6 @@ def test_ws_compat_question_style_interest_query_falls_back_to_chat_response(cli
     assert resp["content"] == "这是普通查询回复"
 
 
-def test_legacy_plan_edit_maps_to_chat(client):
-    mock_service = AsyncMock()
-    mock_service.handle_message = AsyncMock(return_value="方案已生成")
-    mock_service.handle_intent_select = AsyncMock()
-    client.app.state.chat_service = mock_service
-
-    with client.websocket_connect(WS_PATH) as ws:
-        with patch("app.server.message_store") as mock_store:
-            mock_store.save_user_message = AsyncMock(return_value=1)
-            mock_store.save_agent_message = AsyncMock(return_value=2)
-
-            ws.send_json({
-                "sessionId": "sess-004",
-                "userId": "user-004",
-                "content": "采纳",
-                "inputType": "planEdit",
-            })
-            resp = ws.receive_json()
-
-    assert resp["type"] == "text"
-    assert resp["content"] == "方案已生成"
-    mock_service.handle_intent_select.assert_not_awaited()
-
-
 def test_handler_exception_returns_error(client):
     mock_service = AsyncMock()
     mock_service.handle_message = AsyncMock(side_effect=RuntimeError("boom"))

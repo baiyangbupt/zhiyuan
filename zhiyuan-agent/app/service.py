@@ -4279,8 +4279,8 @@ _PENDING_INTENT_FOLLOWUP_REPLY_TOKENS = (
 def _is_pending_intent_followup_turn(content: str, reply: str) -> bool:
     """Whether an existing pending intent is relevant to this read-only turn.
 
-    A session may contain an old backend pending-intent cache while the user asks
-    an unrelated Explore question. In that case appending a confirmation
+    A session may contain persisted backend pending-intent state while the user
+    asks an unrelated Explore question. In that case appending a confirmation
     boundary is confusing. Keep the boundary only when this turn explicitly
     references the pending preference/requirement or its impact.
     """
