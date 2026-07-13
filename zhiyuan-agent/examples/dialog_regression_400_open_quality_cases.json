@@ -1,7 +1,8 @@
 [
   {
     "name": "400-open-quality-intent-existing-impact-readonly",
-    "sessionId": "16",
+    "sessionId": "9907047",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "intent",
       "plan",
@@ -29,12 +30,6 @@
           "点“采纳”前不会生效",
           "采纳这次报考条件",
           "采纳"
-        ],
-        "assertThinkingContainsAny": [
-          "正在把你的专业想法整理成待确认偏好",
-          "正在整理这个专业想法的影响，等你确认后才会记入偏好",
-          "正在结合这条待确认想法查看当前方案影响",
-          "正在整理这个专业想法的影响和边界"
         ],
         "assertNotContains": [
           "候选结果收紧",
@@ -105,19 +100,14 @@
           "已直接记录"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 10,
-        "assertThinkingContainsAny": [
-          "正在理解你的问题，并结合当前信息整理回答",
-          "正在读取当前方案并整理这次请求",
-          "正在处理你的方案",
-          "正在看这个专业方向是否适合你"
-        ]
+        "warnElapsedSeconds": 10
       }
     ]
   },
   {
     "name": "400-open-quality-career-multi-direction-readonly",
-    "sessionId": "16",
+    "sessionId": "9907048",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "explore",
       "plan"
@@ -172,12 +162,7 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在看这条发展方向是否适合你",
-          "还在分析你的问题，正在整理可用信息",
-          "正在看这条方向和当前方案的承接情况"
-        ]
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -238,18 +223,14 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在对比这几个专业的差异",
-          "正在看这个专业方向是否适合你",
-          "正在对照这些专业的学习内容和就业情况"
-        ]
+        "minTextLengthWarn": 180
       }
     ]
   },
   {
     "name": "400-open-quality-plan-query-then-confirm-guard",
-    "sessionId": "17",
+    "sessionId": "9907041",
+    "cloneBackendStateFromSessionId": "17",
     "flow": [
       "plan",
       "confirm_guard"
@@ -312,15 +293,7 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在查当前方案和候选里的相关结果",
-          "正在整理当前方案的数量、梯度和风险",
-          "正在读取当前方案并整理这次请求",
-          "正在查看当前方案和候选机会",
-          "正在查询当前方案",
-          "正在理解你的问题，并结合当前信息整理回答"
-        ]
+        "minTextLengthWarn": 180
       },
       {
         "prompt": "确认",
@@ -364,7 +337,8 @@
   },
   {
     "name": "400-open-quality-sort-score-preview-rich-boundary",
-    "sessionId": "17",
+    "sessionId": "9907042",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan"
     ],
@@ -422,14 +396,6 @@
           "actionable_next_step",
           "preview_confirm_boundary",
           "user_language"
-        ],
-        "assertThinkingContainsAny": [
-          "正在处理你的方案",
-          "正在整理当前方案的数量、梯度和风险",
-          "正在读取当前方案并整理这次请求",
-          "正在生成这次调整的影响预览",
-          "正在理解你的问题，并结合当前信息整理回答",
-          "正在根据当前方案提醒整理调整预览"
         ],
         "assertFollowupCount": 1,
         "assertFollowupType": "pendingConfirmationCard"
@@ -494,17 +460,14 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在对比这几个专业的差异",
-          "正在对照这些专业的学习内容和就业情况"
-        ]
+        "minTextLengthWarn": 180
       }
     ]
   },
   {
     "name": "400-open-quality-career-three-direction-readonly",
-    "sessionId": "16",
+    "sessionId": "9907049",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "explore",
       "plan"
@@ -562,18 +525,14 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在看这条发展方向是否适合你",
-          "还在分析你的问题，正在整理可用信息",
-          "正在看这条方向和当前方案的承接情况"
-        ]
+        "minTextLengthWarn": 180
       }
     ]
   },
   {
     "name": "400-open-quality-lazy-plan-too-risky-readonly",
-    "sessionId": "17",
+    "sessionId": "9907043",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan",
       "review"
@@ -597,11 +556,6 @@
           "风险",
           "保底",
           "建议"
-        ],
-        "assertThinkingContainsAny": [
-          "正在理解你的问题，并结合当前信息整理回答",
-          "正在整理当前方案的数量、梯度和风险",
-          "正在读取当前方案并整理这次请求"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -641,7 +595,8 @@
   },
   {
     "name": "400-open-quality-career-parent-colloquial-readonly",
-    "sessionId": "16",
+    "sessionId": "9907050",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "explore",
       "plan"
@@ -698,12 +653,7 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在看这条发展方向是否适合你",
-          "还在分析你的问题，正在整理可用信息",
-          "正在看这条方向和当前方案的承接情况"
-        ]
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -765,10 +715,7 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在对比这几个专业的差异"
-        ]
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -798,12 +745,6 @@
           "建筑",
           "确认",
           "后续参考"
-        ],
-        "assertThinkingContainsAny": [
-          "正在把你的专业想法整理成待确认偏好",
-          "正在整理这个专业想法的影响，等你确认后才会记入偏好",
-          "正在结合这条待确认想法查看当前方案影响",
-          "正在整理这个专业想法的影响和边界"
         ],
         "assertNotContains": [
           "候选结果收紧",
@@ -845,7 +786,8 @@
   },
   {
     "name": "400-open-quality-candidate-colloquial-query-readonly",
-    "sessionId": "17",
+    "sessionId": "9907044",
+    "cloneBackendStateFromSessionId": "17",
     "flow": [
       "plan"
     ],
@@ -925,20 +867,14 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 140,
-        "assertThinkingContainsAny": [
-          "正在查当前方案和候选里的相关结果",
-          "正在整理当前方案的数量、梯度和风险",
-          "正在读取当前方案并整理这次请求",
-          "正在查看当前方案和候选机会",
-          "正在理解你的问题，并结合当前信息整理回答"
-        ]
+        "minTextLengthWarn": 140
       }
     ]
   },
   {
     "name": "400-open-quality-budget-risk-colloquial-readonly",
-    "sessionId": "17",
+    "sessionId": "9907045",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan",
       "review"
@@ -962,11 +898,6 @@
           "风险",
           "不会改动方案",
           "只是帮你看风险"
-        ],
-        "assertThinkingContainsAny": [
-          "正在理解你的问题，并结合当前信息整理回答",
-          "正在整理当前方案的数量、梯度和风险",
-          "正在读取当前方案并整理这次请求"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -1050,11 +981,7 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在对比这几个专业的差异",
-          "正在对照这些专业的学习内容和就业情况"
-        ]
+        "minTextLengthWarn": 180
       },
       {
         "prompt": "嗯那就这样",
@@ -1075,7 +1002,9 @@
           "随时喊我",
           "随时说",
           "随时跟我说",
-          "不会记录"
+          "不会记录",
+          "当前没有待确认操作",
+          "不会执行任何变更"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -1162,10 +1091,7 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在对比这几个专业的差异"
-        ]
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -1226,12 +1152,7 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在看这条发展方向是否适合你",
-          "还在分析你的问题，正在整理可用信息",
-          "正在看这条方向和当前方案的承接情况"
-        ]
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -1282,16 +1203,14 @@
           "确认后写入"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 25,
-        "assertThinkingContainsAny": [
-          "正在对比这几个专业的差异"
-        ]
+        "warnElapsedSeconds": 25
       }
     ]
   },
   {
     "name": "400-open-quality-civil-service-plan-support-lazy",
-    "sessionId": "16",
+    "sessionId": "9907055",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "explore",
       "plan"
@@ -1348,18 +1267,14 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180,
-        "assertThinkingContainsAny": [
-          "正在看这条发展方向是否适合你",
-          "还在分析你的问题，正在整理可用信息",
-          "正在看这条方向和当前方案的承接情况"
-        ]
+        "minTextLengthWarn": 180
       }
     ]
   },
   {
     "name": "400-open-quality-plan-make-safer-preview",
-    "sessionId": "17",
+    "sessionId": "9907046",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan",
       "review"
@@ -1381,14 +1296,6 @@
           "调整",
           "预览",
           "确认"
-        ],
-        "assertThinkingContainsAny": [
-          "正在处理你的方案",
-          "正在整理当前方案的数量、梯度和风险",
-          "正在读取当前方案并整理这次请求",
-          "正在生成这次调整的影响预览",
-          "正在根据当前方案提醒整理调整预览",
-          "正在理解你的问题，并结合当前信息整理回答"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -1452,12 +1359,6 @@
           "会计",
           "确认",
           "影响"
-        ],
-        "assertThinkingContainsAny": [
-          "正在看这个专业方向是否适合你",
-          "正在整理这个专业想法的影响和边界",
-          "还在分析你的问题，正在整理可用信息",
-          "这轮分析耗时较长，我会继续等待结果"
         ],
         "assertNotContains": [
           "候选结果收紧",

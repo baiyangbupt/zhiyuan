@@ -15,7 +15,7 @@
       "zhiyuan_agent_direct"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "16",
     "clearBackendPlanningIntentState": true,
     "prompts": [
       {
@@ -124,7 +124,7 @@
       "zhiyuan_agent_direct"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "16",
     "clearBackendPlanningIntentState": true,
     "prompts": [
       {
@@ -235,7 +235,7 @@
       "zhiyuan_agent_direct"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "16",
     "clearBackendPlanningIntentState": true,
     "prompts": [
       {
@@ -439,7 +439,7 @@
       "zhiyuan_agent_direct"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "16",
     "clearBackendPlanningIntentState": true,
     "prompts": [
       {

@@ -435,6 +435,26 @@ def test_needs_plan_first_guard_blocks_plan_mutation_without_formal_plan_referen
     assert resolution.blocking_reasons == ["missing_formal_plan"]
 
 
+def test_needs_plan_first_guard_allows_pre_score_adjustment_policy_question():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "批次线出来前先按模考估，后面咋调整",
+        planning_summary={},
+    )
+
+    assert resolution.side_effect == "none"
+    assert resolution.target_issues == []
+
+
+def test_needs_plan_first_guard_still_blocks_current_plan_pre_score_mutation():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "当前方案按模考位次调整",
+        planning_summary={},
+    )
+
+    assert resolution.side_effect == "needs_plan_first"
+    assert resolution.target_issues == ["plan_mutation_without_referent"]
+
+
 def test_needs_plan_first_guard_blocks_plan_add_without_formal_plan_referent():
     resolution = proposal_compiler.resolve_needs_plan_first_guard(
         "把广西师大统计加进来",

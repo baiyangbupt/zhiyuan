@@ -1006,6 +1006,21 @@ _CURRENT_PLAN_ADD_MUTATION_MARKERS = (
     "纳入方案",
 )
 
+
+def _content_is_pre_score_adjustment_policy_question(compact: str) -> bool:
+    """Keep pre-score planning questions out of the current-plan mutation guard."""
+
+    if any(marker in compact for marker in _CURRENT_PLAN_REFERENCE_MARKERS):
+        return False
+    has_pre_score_context = "模考" in compact and any(
+        marker in compact for marker in ("批次线", "出分", "高考成绩", "一分一段")
+    )
+    has_future_adjustment_question = any(
+        marker in compact for marker in ("后面咋调整", "后面怎么调整", "出分后咋调整", "出分后怎么调整")
+    )
+    return has_pre_score_context and has_future_adjustment_question
+
+
 _UNSUPPORTED_PIN_LOCK_ACTION_MARKERS = (
     "锁定",
     "固定",
@@ -1379,6 +1394,8 @@ def resolve_needs_plan_first_guard(
     if not compact or planning_summary is None or _planning_summary_has_current_plan(planning_summary):
         return NeedsPlanFirstResolution()
     if any(marker in compact for marker in _PLAN_GENERATION_MARKERS):
+        return NeedsPlanFirstResolution()
+    if _content_is_pre_score_adjustment_policy_question(compact):
         return NeedsPlanFirstResolution()
     if any(marker in compact for marker in _FUTURE_REFERENCE_MARKERS) and not any(
         marker in compact for marker in _CURRENT_PLAN_REFERENCE_MARKERS

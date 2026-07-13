@@ -4376,7 +4376,7 @@ def _plan_item_scope_summary(
     *,
     limit: int,
     total: int | None = None,
-    noun: str = "志愿组",
+    noun: str = "专业组",
 ) -> str:
     visible_limit = max(1, limit)
     actual_total = max(len(items), _as_int(total))

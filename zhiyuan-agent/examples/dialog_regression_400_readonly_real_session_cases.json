@@ -1,7 +1,8 @@
 [
   {
     "name": "400-real-session-career-fit-readonly",
-    "sessionId": "17",
+    "sessionId": "9907061",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "explore",
       "plan"
@@ -39,7 +40,8 @@
   },
   {
     "name": "400-real-session-borderline-risk-readonly",
-    "sessionId": "17",
+    "sessionId": "9907062",
+    "cloneBackendStateFromSessionId": "17",
     "flow": [
       "explore",
       "plan"

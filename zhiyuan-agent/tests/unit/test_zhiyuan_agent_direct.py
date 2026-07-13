@@ -3898,9 +3898,9 @@ async def test_preview_plan_action_remove_discloses_total_when_scope_is_truncate
 
     assert result["next_step"] == "confirm", result
     assert result["data"]["plan_impact"]["affected_count"] == 6
-    assert "以上仅展示前5个，本次实际影响6个志愿组" in result["message"]
+    assert "以上仅展示前5个，本次实际影响6个专业组" in result["message"]
     saved_state = save_mock.await_args.args[1]
-    assert "以上仅展示前5个，本次实际影响6个志愿组" in saved_state["affectedScope"]
+    assert "以上仅展示前5个，本次实际影响6个专业组" in saved_state["affectedScope"]
 
 
 async def test_preview_plan_action_remove_missing_review_issue_falls_back_to_structured_filter(mocker):

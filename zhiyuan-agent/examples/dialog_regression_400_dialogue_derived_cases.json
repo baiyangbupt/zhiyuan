@@ -158,6 +158,15 @@
             "就业",
             "建议"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "expectedToolCounts": {
+            "explore_topic": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "英语优势",
             "专业方向",
@@ -198,6 +207,15 @@
             "专科",
             "建议"
           ],
+          "expectedToolNames": [
+            "answer_policy"
+          ],
+          "expectedToolCounts": {
+            "answer_policy": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "本科线",
             "保底",
@@ -306,6 +324,15 @@
             "专业",
             "方向"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "expectedToolCounts": {
+            "explore_topic": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "选科组合",
             "就业面",
@@ -343,6 +370,15 @@
             "方案",
             "预案"
           ],
+          "expectedToolNames": [
+            "answer_policy"
+          ],
+          "expectedToolCounts": {
+            "answer_policy": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "模考预估",
             "批次线",
@@ -637,6 +673,18 @@
             "确认",
             "建议"
           ],
+          "assertNotContains": [
+            "系统后台在生成方案时会自动读取并应用"
+          ],
+          "expectedToolNames": [
+            "answer_policy"
+          ],
+          "expectedToolCounts": {
+            "answer_policy": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "加分项",
             "成绩口径",
@@ -674,6 +722,15 @@
             "审查",
             "建议"
           ],
+          "expectedToolNames": [
+            "answer_policy"
+          ],
+          "expectedToolCounts": {
+            "answer_policy": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "体检表缺失",
             "可先做",
@@ -726,7 +783,8 @@
     },
     {
       "name": "400-dialogue-accounting-audit-ok-civil-no",
-      "sessionId": "17",
+      "sessionId": "9907101",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "intent"
       ],
@@ -801,7 +859,8 @@
     },
     {
       "name": "400-dialogue-not-teacher-remove-normal",
-      "sessionId": "17",
+      "sessionId": "9907102",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "intent",
         "plan"
@@ -859,6 +918,14 @@
             "风险",
             "建议"
           ],
+          "assertNotContains": [
+            "待确认预览",
+            "确认前不会生效",
+            "不要：虚",
+            "不要：偏虚"
+          ],
+          "assertNoFollowups": true,
+          "expectedNoAction": true,
           "expectedKeyPoints": [
             "新闻传播",
             "网络与新媒体",
@@ -913,7 +980,8 @@
     },
     {
       "name": "400-dialogue-medical-nursing-tcm-boundary",
-      "sessionId": "17",
+      "sessionId": "9907103",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "intent",
         "explore"
@@ -1198,7 +1266,8 @@
     },
     {
       "name": "400-dialogue-region-south-only",
-      "sessionId": "17",
+      "sessionId": "9907104",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "intent",
         "plan"
@@ -1236,7 +1305,8 @@
     },
     {
       "name": "400-dialogue-region-outside-ok-not-remote",
-      "sessionId": "17",
+      "sessionId": "9907105",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "intent",
         "plan"
@@ -1274,7 +1344,8 @@
     },
     {
       "name": "400-dialogue-region-beijing-tianjin-safety",
-      "sessionId": "17",
+      "sessionId": "9907106",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "explore",
         "plan"
@@ -1577,7 +1648,8 @@
     },
     {
       "name": "400-dialogue-career-civil-service-major",
-      "sessionId": "17",
+      "sessionId": "9907107",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "explore",
         "plan"
@@ -1949,7 +2021,8 @@
     },
     {
       "name": "400-dialogue-budget-sino-foreign-worth",
-      "sessionId": "17",
+      "sessionId": "9907108",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "explore",
         "plan"
@@ -1988,7 +2061,8 @@
     },
     {
       "name": "400-dialogue-budget-cap-two-three-wan",
-      "sessionId": "17",
+      "sessionId": "9907109",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan",
         "review"
@@ -2103,7 +2177,8 @@
     },
     {
       "name": "400-dialogue-budget-less-sino-foreign",
-      "sessionId": "17",
+      "sessionId": "9907110",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "explore",
         "plan"
@@ -2141,7 +2216,8 @@
     },
     {
       "name": "400-dialogue-budget-high-fee-safety",
-      "sessionId": "17",
+      "sessionId": "9907111",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan",
         "review"
@@ -2217,7 +2293,8 @@
     },
     {
       "name": "400-dialogue-budget-tuition-visible-in-plan",
-      "sessionId": "17",
+      "sessionId": "9907112",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2254,7 +2331,8 @@
     },
     {
       "name": "400-dialogue-plan-too-risky",
-      "sessionId": "17",
+      "sessionId": "9907113",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan",
         "review"
@@ -2293,7 +2371,8 @@
     },
     {
       "name": "400-dialogue-plan-safe-enough",
-      "sessionId": "17",
+      "sessionId": "9907114",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan",
         "review"
@@ -2332,7 +2411,8 @@
     },
     {
       "name": "400-dialogue-plan-review-obvious-pit",
-      "sessionId": "17",
+      "sessionId": "9907115",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "review",
         "plan"
@@ -2371,7 +2451,8 @@
     },
     {
       "name": "400-dialogue-plan-medical-nursing-query",
-      "sessionId": "17",
+      "sessionId": "9907116",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2408,7 +2489,8 @@
     },
     {
       "name": "400-dialogue-plan-accounting-fit",
-      "sessionId": "17",
+      "sessionId": "9907117",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2446,7 +2528,8 @@
     },
     {
       "name": "400-dialogue-plan-region-too-many-outside",
-      "sessionId": "17",
+      "sessionId": "9907118",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2484,7 +2567,8 @@
     },
     {
       "name": "400-dialogue-plan-public-school-ratio",
-      "sessionId": "17",
+      "sessionId": "9907119",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2522,7 +2606,8 @@
     },
     {
       "name": "400-dialogue-plan-high-fee-risk",
-      "sessionId": "17",
+      "sessionId": "9907120",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan",
         "review"
@@ -2561,7 +2646,8 @@
     },
     {
       "name": "400-dialogue-plan-major-vs-school-bias",
-      "sessionId": "17",
+      "sessionId": "9907121",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2599,7 +2685,8 @@
     },
     {
       "name": "400-dialogue-plan-worth-in-plain-language",
-      "sessionId": "17",
+      "sessionId": "9907122",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2637,7 +2724,8 @@
     },
     {
       "name": "400-dialogue-operation-sort-admission-rate",
-      "sessionId": "17",
+      "sessionId": "9907123",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2672,7 +2760,8 @@
     },
     {
       "name": "400-dialogue-operation-sort-good-school",
-      "sessionId": "17",
+      "sessionId": "9907124",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2707,7 +2796,8 @@
     },
     {
       "name": "400-dialogue-operation-sort-recommendation",
-      "sessionId": "17",
+      "sessionId": "9907125",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2742,7 +2832,8 @@
     },
     {
       "name": "400-dialogue-operation-move-index-preview",
-      "sessionId": "17",
+      "sessionId": "9907126",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2780,7 +2871,8 @@
     },
     {
       "name": "400-dialogue-operation-remove-expensive-preview",
-      "sessionId": "17",
+      "sessionId": "9907127",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2817,7 +2909,8 @@
     },
     {
       "name": "400-dialogue-operation-add-stable-accounting",
-      "sessionId": "17",
+      "sessionId": "9907128",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2855,7 +2948,8 @@
     },
     {
       "name": "400-dialogue-operation-school-abbrev-query",
-      "sessionId": "17",
+      "sessionId": "9907129",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2892,7 +2986,8 @@
     },
     {
       "name": "400-dialogue-operation-move-beijing-forward",
-      "sessionId": "17",
+      "sessionId": "9907130",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2928,7 +3023,8 @@
     },
     {
       "name": "400-dialogue-operation-major-group-keep-safest-major",
-      "sessionId": "16",
+      "sessionId": "9907131",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "explore",
         "plan"
@@ -3080,7 +3176,8 @@
     },
     {
       "name": "400-dialogue-followup-plain-language",
-      "sessionId": "17",
+      "sessionId": "9907132",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],

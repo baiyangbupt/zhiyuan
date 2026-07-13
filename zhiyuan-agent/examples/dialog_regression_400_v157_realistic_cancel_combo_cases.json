@@ -428,7 +428,7 @@
           ],
           "assertContains": [
             "本次实际影响",
-            "志愿组"
+            "专业组"
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,

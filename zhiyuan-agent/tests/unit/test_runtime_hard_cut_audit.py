@@ -364,11 +364,14 @@ def test_current_regression_fixtures_do_not_clone_a_session_onto_itself():
     invalid: list[str] = []
     for path in sorted(EXAMPLES_PATH.glob("dialog_regression_400*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            continue
-        defaults = payload.get("defaults") if isinstance(payload.get("defaults"), dict) else {}
+        defaults = (
+            payload.get("defaults")
+            if isinstance(payload, dict) and isinstance(payload.get("defaults"), dict)
+            else {}
+        )
+        cases = payload.get("cases") or [] if isinstance(payload, dict) else payload
         default_source = defaults.get("cloneBackendStateFromSessionId")
-        for case in payload.get("cases") or []:
+        for case in cases:
             if not isinstance(case, dict):
                 continue
             source = case.get("cloneBackendStateFromSessionId", default_source)
@@ -629,6 +632,17 @@ def test_legacy_semantic_plan_display_compiler_is_removed():
     assert "_semantic_plan_display_payload" not in SERVICE_TEXT
     assert "_plan_result_has_fix_proposal_options" not in SERVICE_TEXT
     assert "_plan_result_has_fix_proposal_options" not in PROPOSAL_COMPILER_TEXT
+
+
+def test_unused_readonly_policy_copy_fallbacks_are_removed():
+    forbidden = [
+        "_prompt_requires_readonly_policy_answer",
+        "_readonly_policy_fallback_reply_for_prompt",
+        "_build_score_batch_risk_policy_reply",
+        "_build_major_group_keep_safest_policy_reply",
+    ]
+
+    assert [snippet for snippet in forbidden if snippet in SERVICE_TEXT] == []
 
 
 def test_reply_guard_resolution_stays_in_proposal_compiler():

@@ -1,7 +1,8 @@
 [
   {
     "name": "400-effect-clean-plan-status-major",
-    "sessionId": "17",
+    "sessionId": "9907021",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan"
     ],
@@ -48,7 +49,8 @@
   },
   {
     "name": "400-effect-readonly-career-fit-real-plan",
-    "sessionId": "17",
+    "sessionId": "9907022",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "explore",
       "plan"
@@ -96,7 +98,8 @@
   },
   {
     "name": "400-effect-major-positional-move-preview-confirm",
-    "sessionId": "17",
+    "sessionId": "9907023",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan",
       "confirm"
@@ -161,7 +164,8 @@
   },
   {
     "name": "400-effect-major-group-unit-move-preview-confirm",
-    "sessionId": "16",
+    "sessionId": "9907024",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan",
       "confirm"
@@ -228,7 +232,8 @@
   },
   {
     "name": "400-effect-ambiguous-school-major-safe-readonly",
-    "sessionId": "17",
+    "sessionId": "9907025",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan"
     ],

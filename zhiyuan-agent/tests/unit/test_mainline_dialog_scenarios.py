@@ -343,8 +343,13 @@ def test_release_400_readonly_real_session_cases_cover_no_workspace_card_smoke()
 
     banned_terms = {"payload", "stage", "action_family", "volunteerId", "草稿"}
     all_steps = [step for case in cases for step in case["prompts"]]
+    target_session_ids = {case["sessionId"] for case in cases}
+    assert len(target_session_ids) == len(cases)
     for case in cases:
-        assert case["sessionId"] == "17"
+        source_session_id = case.get("cloneBackendStateFromSessionId")
+        assert source_session_id in {"16", "17"}
+        assert case["sessionId"] != source_session_id
+        assert case["sessionId"].startswith("990706")
         assert case["assertPlanStyle"] is True
         assert set(case["flow"]).issubset({"explore", "plan"})
         for step in case["prompts"]:

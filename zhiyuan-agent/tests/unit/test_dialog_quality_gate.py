@@ -88,8 +88,9 @@ def test_live_gate_passes_backend_args_for_clone_backed_cases_only(tmp_path):
     assert "--clear-backend-planning-intent-per-case" in smoke.command
     assert "--internal-service-url" in smoke.command
     assert "http://127.0.0.1:8080" in smoke.command
-    assert "--clone-backend-chat-session" not in smoke.command
-    assert "--backend-db-password" not in smoke.command
+    assert "--clone-backend-chat-session" in smoke.command
+    assert "--backend-db-password" in smoke.command
+    assert "pw" in smoke.command
 
     for command in (review, requirement):
         assert "--internal-service-url" in command.command
@@ -154,6 +155,18 @@ def test_final_action_formal_plan_cases_do_not_use_empty_session_17_fixture():
                 ),
             )
             if str(source_session or "") == "17":
+                violations.append(f"{case_file_name}:{case.get('name')}")
+
+    assert violations == []
+
+
+def test_pinned_live_cases_do_not_target_shared_source_sessions():
+    violations = []
+    for case_file_name in gate.PINNED_LIVE_CASE_FILES:
+        payload = json.loads((gate.EXAMPLES / case_file_name).read_text(encoding="utf-8"))
+        cases = payload.get("cases", []) if isinstance(payload, dict) else payload
+        for case in cases:
+            if str(case.get("sessionId") or "") in {"16", "17"}:
                 violations.append(f"{case_file_name}:{case.get('name')}")
 
     assert violations == []
