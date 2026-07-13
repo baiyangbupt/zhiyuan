@@ -2,6 +2,7 @@ package com.ytell.zhiyuan.web.controller.inner;
 
 import com.ytell.zhiyuan.common.base.BaseResponse;
 import com.ytell.zhiyuan.model.dto.planning.*;
+import com.ytell.zhiyuan.service.biz.PendingPlanningCommandBizService;
 import com.ytell.zhiyuan.service.biz.PlanningStateService;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
@@ -25,6 +26,8 @@ public class PlanningStateController {
 
     @Autowired
     private PlanningStateService planningStateService;
+    @Autowired
+    private PendingPlanningCommandBizService pendingPlanningCommandBizService;
 
     @GetMapping("/session/state")
     @ApiOperation("获取完整规划状态")
@@ -129,6 +132,18 @@ public class PlanningStateController {
         log.info("generateCandidatePool: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
         return BaseResponse.success(planningStateService.generateCandidatePool(tenantId, chatSessionId,
                 req == null ? new CandidatePoolGenerateReq() : req));
+    }
+
+    @PostMapping("/session/pending-command/execute")
+    @ApiOperation("执行幂等待确认规划命令")
+    public BaseResponse<PendingPlanningCommandRes> executePendingCommand(
+            @PathVariable("tenantId") Long tenantId,
+            @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+            @RequestBody PendingPlanningCommandReq req) {
+        log.info("executePendingCommand: tenantId={}, chatSessionId={}, operationId={}, commandType={}",
+                tenantId, chatSessionId, req == null ? null : req.getOperationId(),
+                req == null ? null : req.getCommandType());
+        return BaseResponse.success(pendingPlanningCommandBizService.execute(tenantId, chatSessionId, req));
     }
 
     @PostMapping("/session/candidate-pool/query")

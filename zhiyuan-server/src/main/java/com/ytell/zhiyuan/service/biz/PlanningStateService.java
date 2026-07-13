@@ -7684,16 +7684,8 @@ public class PlanningStateService {
                 || !hasConfirmedPlanRequirements(state)) {
             return;
         }
-        Set<String> effectiveVolunteerIds = defaultCandidates(effectiveCandidates).stream()
-                .map(CandidateItemDTO::getVolunteerId)
-                .filter(id -> !Strings.isNullOrEmpty(id))
-                .collect(Collectors.toCollection(LinkedHashSet::new));
         DraftPlanStateDTO draft = state.getDraftPlanState();
-        draft.setItems(defaultDraftItems(draft.getItems()).stream()
-                .filter(item -> item != null
-                        && !Strings.isNullOrEmpty(item.getVolunteerId())
-                        && effectiveVolunteerIds.contains(item.getVolunteerId()))
-                .collect(Collectors.toList()));
+        syncWorkingPlanItemsWithLatestCandidates(draft, new CandidateResolver(effectiveCandidates));
         syncWorkingPlanUnitsWithItems(draft, effectiveCandidates, state.getCandidatePoolState());
         recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
     }
@@ -7705,73 +7697,15 @@ public class PlanningStateService {
                 || !hasConfirmedPlanRequirements(state)) {
             return;
         }
-        Set<String> effectiveVolunteerIds = defaultCandidates(effectiveCandidates).stream()
-                .map(CandidateItemDTO::getVolunteerId)
-                .filter(id -> !Strings.isNullOrEmpty(id))
-                .collect(Collectors.toCollection(LinkedHashSet::new));
         OrderedPlanStateDTO orderedPlanState = state.getOrderedPlanState();
-        orderedPlanState.setItems(OrderedPlanPositioningSupport.rebuildItems(defaultOrderedItems(orderedPlanState.getItems()).stream()
-                .filter(item -> item != null
-                        && !Strings.isNullOrEmpty(item.getVolunteerId())
-                        && effectiveVolunteerIds.contains(item.getVolunteerId()))
-                .collect(Collectors.toList())));
-        orderedPlanState.setUnits(defaultOrderedUnits(orderedPlanState.getUnits()).stream()
-                .map(unit -> syncOrderedUnitWithEffectiveVolunteerIds(unit, effectiveVolunteerIds))
-                .filter(Objects::nonNull)
-                .filter(unit -> isOrderedUnitEligibleForConfirmedRequirements(unit, state))
-                .collect(Collectors.toList()));
+        syncOrderedPlanItemsWithLatestCandidates(orderedPlanState, new CandidateResolver(effectiveCandidates));
+        orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(
+                orderedPlanState.getItems(), state.getDraftPlanState(), effectiveCandidates));
     }
 
     private boolean hasConfirmedPlanRequirements(PlanningStateDTO state) {
         return RepairCandidateEligibility.hasConfirmedHardConstraints(state)
                 || hasActiveTuitionRange(loadSessionTuitionRange(state == null ? null : state.getSessionId()));
-    }
-
-    private OrderedUnitDTO syncOrderedUnitWithEffectiveVolunteerIds(OrderedUnitDTO unit,
-                                                                    Set<String> effectiveVolunteerIds) {
-        if (unit == null || effectiveVolunteerIds == null || effectiveVolunteerIds.isEmpty()) {
-            return unit;
-        }
-        List<PlanningUnitMajorDTO> majors = defaultPlanningUnitMajors(unit.getMajorItems());
-        if (majors.isEmpty()) {
-            return unit;
-        }
-        List<PlanningUnitMajorDTO> filteredMajors = majors.stream()
-                .filter(major -> major != null
-                        && !Strings.isNullOrEmpty(major.getVolunteerId())
-                        && effectiveVolunteerIds.contains(major.getVolunteerId()))
-                .collect(Collectors.toList());
-        if (filteredMajors.isEmpty()) {
-            return null;
-        }
-        unit.setMajorItems(filteredMajors);
-        unit.setTotalMajorCount(filteredMajors.size());
-        return unit;
-    }
-
-    private boolean isOrderedUnitEligibleForConfirmedRequirements(OrderedUnitDTO unit,
-                                                                  PlanningStateDTO state) {
-        if (unit == null) {
-            return false;
-        }
-        PlanningUnitDTO planningUnit = new PlanningUnitDTO();
-        planningUnit.setUnitId(unit.getUnitId());
-        planningUnit.setPlanSchoolDataId(unit.getPlanSchoolDataId());
-        planningUnit.setSchoolId(unit.getSchoolId());
-        planningUnit.setSchoolName(unit.getSchoolName());
-        planningUnit.setProvinceName(unit.getProvinceName());
-        planningUnit.setCityName(unit.getCityName());
-        planningUnit.setSchoolLevel(unit.getSchoolLevel());
-        planningUnit.setSchoolNature(unit.getSchoolNature());
-        planningUnit.setSchoolCategory(unit.getSchoolCategory());
-        planningUnit.setTier(unit.getTier());
-        planningUnit.setSchoolEnrollRatio(unit.getSchoolEnrollRatio());
-        planningUnit.setFinalScore(unit.getFinalScore());
-        planningUnit.setAdmissionRatio(unit.getAdmissionRatio());
-        planningUnit.setTotalMajorCount(unit.getTotalMajorCount());
-        planningUnit.setSelectedMajors(defaultPlanningUnitMajors(unit.getMajorItems()));
-        planningUnit.setAllMajors(defaultPlanningUnitMajors(unit.getMajorItems()));
-        return RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(planningUnit, state);
     }
 
     private List<CandidateItemDTO> applyFutureDevelopmentScores(List<CandidateItemDTO> candidates,
@@ -10560,21 +10494,23 @@ public class PlanningStateService {
                 major.setMajorName(item.getMajorName());
                 major.setTier(item.getTier());
                 major.setSelected(true);
-                if (candidate != null) {
-                    major.setMajorId(candidate.getMajorId());
-                    major.setMajorCode(candidate.getMajorCode());
-                    major.setMajorCategoryId(candidate.getMajorCategoryId());
-                    major.setMajorSubCategoryId(candidate.getMajorSubCategoryId());
-                    major.setAdmissionRatio(candidate.getAdmissionRatio());
-                    major.setFinalScore(candidate.getFinalScore());
-                    major.setIntentScore(candidate.getIntentScore());
-                    major.setPreferred(candidate.getPreferred());
-                    major.setSafetyMajor(candidate.getAdmissionRatio() != null
-                            && candidate.getSchoolEnrollRatio() != null
-                            && isSafetyMajorRatio(candidate.getAdmissionRatio(), candidate.getSchoolEnrollRatio()));
-                    major.setTuitionPerYear(candidate.getTuitionPerYear());
-                    major.setRankInTier(candidate.getRankInTier());
-                }
+            }
+            if (candidate != null) {
+                major.setMajorId(candidate.getMajorId());
+                major.setMajorCode(candidate.getMajorCode());
+                major.setMajorCategoryId(candidate.getMajorCategoryId());
+                major.setMajorSubCategoryId(candidate.getMajorSubCategoryId());
+                major.setAdmissionRatio(candidate.getAdmissionRatio());
+                major.setFinalScore(candidate.getFinalScore());
+                major.setIntentScore(candidate.getIntentScore());
+                major.setPreferred(candidate.getPreferred());
+                major.setSafetyMajor(candidate.getAdmissionRatio() != null
+                        && candidate.getSchoolEnrollRatio() != null
+                        && isSafetyMajorRatio(candidate.getAdmissionRatio(), candidate.getSchoolEnrollRatio()));
+                major.setTuitionPerYear(candidate.getTuitionPerYear());
+                major.setRankInTier(candidate.getRankInTier());
+                major.setReasonCodes(defaultList(candidate.getReasonCodes()));
+                major.setMajorPlanTags(defaultList(candidate.getMajorPlanTags()));
             }
             unit.getMajorItems().add(major);
             if (candidate != null) {

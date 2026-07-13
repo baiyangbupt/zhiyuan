@@ -121,7 +121,7 @@ const FinTableWrapper = (props: IPropsType) => {
                     <Tooltip
                       title={item.tips}
                       placement="top"
-                      overlayStyle={{ maxWidth: '300px', width: 'auto' }}
+                      styles={{ root: { maxWidth: '300px', width: 'auto' } }}
                     >
                       <QuestionCircleOutlined />
                     </Tooltip>

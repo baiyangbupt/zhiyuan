@@ -233,7 +233,7 @@
   },
   {
     "name": "400-quality-plan-named-move-preview-direct",
-    "sessionId": "17",
+    "sessionId": "16",
     "flow": [
       "plan"
     ],
@@ -255,15 +255,15 @@
     },
     "prompts": [
       {
-        "prompt": "把中国海洋大学004专业组的国际经济与贸易改到第3位",
+        "prompt": "把电子科技大学中山学院第101组的光电信息科学与工程改到第3位",
         "assertContains": [
           "确认"
         ],
         "assertContainsAny": [
           "移动",
           "第3位",
-          "中国海洋大学",
-          "国际经济与贸易"
+          "电子科技大学中山学院",
+          "光电信息科学与工程"
         ],
         "assertNotContains": [
           "已直接移动",
@@ -308,7 +308,8 @@
     "name": "400-quality-plan-named-add-preview-direct",
     "sessionId": "17",
     "flow": [
-      "plan"
+      "plan",
+      "confirm"
     ],
     "coverage": [
       "release_4_0_0",
@@ -320,20 +321,18 @@
     ],
     "assertPlanStyle": true,
     "fixtureContract": {
-      "type": "formal_plan_present",
+      "type": "empty_plan",
       "requiredState": [
-        "orderedPlan",
-        "formalPlan",
         "candidatePool"
       ]
     },
     "prompts": [
       {
-        "prompt": "把华中农业大学的建筑类加进来",
+        "prompt": "把厦门大学嘉庚学院的建筑学加进来",
         "assertContains": [
           "确认",
-          "华中农业大学",
-          "建筑类"
+          "厦门大学嘉庚学院",
+          "建筑学"
         ],
         "assertContainsAny": [
           "加入",
@@ -343,9 +342,6 @@
         "expectedRoutingPath": "zhiyuan_agent_direct",
         "assertActionFamiliesContain": [
           "add_units"
-        ],
-        "assertResultKindsContain": [
-          "preview_only"
         ],
         "assertFollowupType": "pendingConfirmationCard",
         "assertFollowupCount": 1,
@@ -382,6 +378,95 @@
           "actionable_next_step",
           "preview_confirm_boundary",
           "rich_decision_basis",
+          "user_language"
+        ]
+      },
+      {
+        "prompt": "确认",
+        "assertContainsAny": [
+          "已执行",
+          "已加入",
+          "方案",
+          "刷新"
+        ],
+        "assertNoFollowups": true,
+        "assertActionableFollowupTypes": [
+          "planningWorkspaceAction"
+        ],
+        "assertActionableFollowupTargets": [
+          "ordered",
+          "review"
+        ],
+        "expectedRoutingPathAny": [
+          "direct_pending_plan_confirm",
+          "pending_plan_short_text_confirm",
+          "pending_plan_structured_short_text_confirm"
+        ],
+        "maxToolCallCount": 1,
+        "assertBackendExtraData": [
+          {
+            "key": "pendingConfirmation",
+            "path": "status",
+            "equals": "applied"
+          },
+          {
+            "key": "planningState",
+            "path": "version",
+            "greaterThanBefore": true
+          },
+          {
+            "key": "planningState",
+            "path": "orderedPlanState.items",
+            "contains": "37020261000269_37020262005080_709"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "400-quality-plan-named-add-broad-major-clarify-direct",
+    "sessionId": "17",
+    "flow": [
+      "plan"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "effect_quality",
+      "zhiyuan_agent_direct",
+      "candidate_school_major_category_ref",
+      "clarify_boundary"
+    ],
+    "assertPlanStyle": true,
+    "fixtureContract": {
+      "type": "empty_plan",
+      "requiredState": [
+        "candidatePool"
+      ]
+    },
+    "prompts": [
+      {
+        "prompt": "把厦门大学嘉庚学院的建筑类加进来",
+        "assertContains": [
+          "厦门大学嘉庚学院"
+        ],
+        "assertContainsAny": [
+          "多个",
+          "具体专业",
+          "建筑学",
+          "城乡规划"
+        ],
+        "expectedRoutingPath": "zhiyuan_agent_direct",
+        "assertNoFollowups": true,
+        "assertNotContains": [
+          "已直接加入",
+          "volunteerId",
+          "payload",
+          "action_family"
+        ],
+        "warnElapsedSeconds": 30,
+        "qualityFocus": [
+          "actionable_next_step",
+          "clarify_boundary",
           "user_language"
         ]
       }

@@ -57,7 +57,7 @@
   "cases": [
     {
       "name": "400-review-summary-user-friendly",
-      "sessionId": "132",
+      "sessionId": "9904811",
       "coverage": [
         "review_workspace",
         "risk_summary",
@@ -108,7 +108,7 @@
     },
     {
       "name": "400-review-shortage-honesty",
-      "sessionId": "132",
+      "sessionId": "9904812",
       "coverage": [
         "review_workspace",
         "candidate_shortage",
@@ -164,7 +164,7 @@
     },
     {
       "name": "400-review-fix-preview-then-apply",
-      "sessionId": "130",
+      "sessionId": "9904813",
       "flow": [
         "review",
         "plan"
@@ -226,7 +226,7 @@
     },
     {
       "name": "400-review-major-group-inner-safety",
-      "sessionId": "131",
+      "sessionId": "9904814",
       "coverage": [
         "majorGroup_model",
         "major_group_inner_safety",
@@ -282,7 +282,7 @@
     },
     {
       "name": "400-review-fix-unavailable-guidance",
-      "sessionId": "132",
+      "sessionId": "9904815",
       "coverage": [
         "review_then_fix",
         "candidate_shortage",
@@ -348,7 +348,7 @@
     },
     {
       "name": "400-review-professional-mode-export-boundary",
-      "sessionId": "130",
+      "sessionId": "9904816",
       "flow": [
         "plan"
       ],
@@ -393,7 +393,7 @@
     },
     {
       "name": "400-review-fix-explain-hierarchy",
-      "sessionId": "131",
+      "sessionId": "9904817",
       "coverage": [
         "review_workspace",
         "user_friendly_review_copy",
@@ -448,7 +448,7 @@
     },
     {
       "name": "400-review-repair-after-manual-move-stale",
-      "sessionId": "131",
+      "sessionId": "9904818",
       "coverage": [
         "review_stale",
         "move_operation",

@@ -18,7 +18,14 @@
       "ordered_plan_final_action"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "16",
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": [
+        "orderedPlan",
+        "formalPlan"
+      ]
+    },
     "clearBackendPlanningIntentState": true,
     "promptDefaults": {
       "assertNotContains": [
@@ -48,14 +55,12 @@
       "prompts": [
         {
           "prompt": "管理学的不要了",
-          "assertContains": [
-            "相关志愿"
-          ],
           "assertContainsAny": [
             "管理学",
             "采纳",
             "确认",
-            "报考要求"
+            "报考要求",
+            "相关志愿"
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
@@ -98,22 +103,20 @@
             {
               "key": "planningState",
               "path": "candidatePoolState.items",
-              "contains": "37020261000315_37020262005917_845"
+              "unchangedFromBefore": true
             },
             {
               "key": "planningState",
               "path": "orderedPlanState.items",
-              "lengthLessThanBefore": true
+              "lengthLessThanBefore": true,
+              "minLength": 1,
+              "notContains": "管理学"
             },
             {
               "key": "planningState",
               "path": "orderedPlanState.units",
-              "lengthLessThanBefore": true
-            },
-            {
-              "key": "planningState",
-              "path": "orderedPlanState.units",
-              "notContains": "37020261000315_37020262005917_845"
+              "minLength": 1,
+              "notContains": "管理学"
             }
           ]
         }

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import random
+import uuid
 from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
@@ -171,6 +172,38 @@ class HttpClient:
 
 # ── 全局 HTTP 客户端实例 ──────────────────────────────────────────
 http_client = HttpClient()
+
+
+def _pending_resource_data(response: Dict[str, Any] | None) -> Dict[str, Any]:
+    data = (response or {}).get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _pending_revision(data_value: Dict[str, Any] | None) -> int:
+    if not isinstance(data_value, dict):
+        return 0
+    for key in ("_pendingRevision", "revision"):
+        try:
+            value = int(data_value.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return 0
+
+
+def _pending_claim_token(data_value: Dict[str, Any] | None) -> str:
+    if not isinstance(data_value, dict):
+        return ""
+    return str(data_value.get("_pendingClaimToken") or data_value.get("claimToken") or "").strip()
+
+
+async def _get_pending_resource(chat_session_id: Union[str, int]) -> Dict[str, Any]:
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/chat/1/session/pending",
+        params={"chatSessionId": chat_session_id},
+        error_msg="获取待确认资源失败",
+    )
 
 
 # ── 消息相关 ──────────────────────────────────────────────────────
@@ -888,36 +921,114 @@ async def get_school_majors_recommend(
 async def save_pending_confirmation(
     chat_session_id: Union[str, int],
     data_value: Dict[str, Any],
-    version: int = 0,
 ) -> Dict[str, Any]:
-    """Store the active pending confirmation card state."""
+    """Create/replace or finalize the dedicated pending resource."""
+    status = str(data_value.get("status") or "active").strip().lower()
+    pending_id = str(data_value.get("pendingId") or data_value.get("pending_id") or "").strip()
+    expected_revision = _pending_revision(data_value)
+    current_response: Dict[str, Any] = {}
+    if expected_revision <= 0:
+        current_response = await _get_pending_resource(chat_session_id)
+        current = _pending_resource_data(current_response)
+        current_pending_id = str(current.get("pendingId") or "").strip()
+        current_revision = _pending_revision(current)
+        if current_pending_id == pending_id or status == "active":
+            expected_revision = current_revision
+
+    if status != "active":
+        action_by_status = {
+            "applying": "confirm",
+            "applied": "complete",
+            "cancelled": "cancel",
+            "expired": "expire",
+            "failed": "fail",
+        }
+        action = action_by_status.get(status)
+        if not action:
+            return {"code": 40001, "msg": f"unsupported pending status: {status}"}
+        return await resolve_pending_confirmation(
+            chat_session_id,
+            pending_id=pending_id,
+            expected_revision=expected_revision,
+            action=action,
+            claim_token=_pending_claim_token(data_value),
+            result_code=str(data_value.get("resultCode") or "").strip(),
+            data_value=data_value,
+        )
+
     payload = {
         "chatSessionId": chat_session_id,
-        "dataKey": "pendingConfirmation",
-        "dataType": "JSON_OBJECT",
+        "pendingId": pending_id,
+        "expectedRevision": expected_revision,
+        "kind": data_value.get("kind"),
+        "actionFamily": data_value.get("actionFamily") or data_value.get("action_family"),
         "dataValue": data_value,
-        "version": version,
     }
     logger.info("存储待确认卡片状态: {}", payload)
     return await http_client.post(
-        endpoint="/gaotu-assistant-bot/inner/chat/1/session/add-extra-data",
+        endpoint="/gaotu-assistant-bot/inner/chat/1/session/pending",
         json_data=payload,
         error_msg="存储待确认卡片状态失败",
     )
 
 
-async def get_pending_confirmation(
-    chat_session_id: Union[str, int], version: int = 0
+async def resolve_pending_confirmation(
+    chat_session_id: Union[str, int],
+    *,
+    pending_id: str,
+    expected_revision: int,
+    action: str,
+    claim_token: str = "",
+    result_code: str = "",
+    data_value: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Fetch the active pending confirmation card state."""
-    return await get_extra_data(chat_session_id, "pendingConfirmation", version)
+    payload: Dict[str, Any] = {
+        "chatSessionId": chat_session_id,
+        "pendingId": pending_id,
+        "expectedRevision": expected_revision,
+        "action": action,
+    }
+    if result_code:
+        payload["resultCode"] = result_code
+    if claim_token:
+        payload["claimToken"] = claim_token
+    if data_value:
+        payload["dataValue"] = data_value
+    return await http_client.post(
+        endpoint="/gaotu-assistant-bot/inner/chat/1/session/pending/resolve",
+        json_data=payload,
+        error_msg="迁移待确认状态失败",
+    )
+
+
+async def claim_pending_confirmation(
+    chat_session_id: Union[str, int],
+    data_value: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Atomically claim execution rights for one active pending snapshot."""
+    pending_id = str(data_value.get("pendingId") or data_value.get("pending_id") or "").strip()
+    revision = _pending_revision(data_value)
+    claim_token = str(uuid.uuid4())
+    if revision <= 0:
+        materialized = await save_pending_confirmation(chat_session_id, {**data_value, "status": "active"})
+        if materialized.get("code") != 0:
+            return materialized
+        current = _pending_resource_data(materialized)
+        revision = _pending_revision(current)
+    return await resolve_pending_confirmation(
+        chat_session_id,
+        pending_id=pending_id,
+        expected_revision=revision,
+        action="confirm",
+        claim_token=claim_token,
+    )
 
 
 async def get_last_pending_confirmation(
     chat_session_id: Union[str, int],
 ) -> Dict[str, Any]:
-    """Fetch the latest-version pending confirmation card state."""
-    return await get_last_extra_data(chat_session_id, "pendingConfirmation")
+    """Fetch the dedicated pending resource."""
+    return await _get_pending_resource(chat_session_id)
 
 
 # ── 方案参数校验 ──────────────────────────────────────────────────
@@ -1190,6 +1301,48 @@ async def generate_planning_candidate_pool(
         ),
         json_data={"forceRegenerate": force_regenerate},
         error_msg="生成候选池失败",
+    )
+
+
+async def execute_pending_planning_command(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    *,
+    operation_id: str,
+    pending_id: str,
+    claim_token: str,
+    expected_plan_version: int,
+    command_type: str,
+    constraint_update: Optional[Dict[str, Any]] = None,
+    min_tuition_per_year: Optional[int] = None,
+    max_tuition_per_year: Optional[int] = None,
+    regenerate_ordered_plan: bool = False,
+    unit_ids: Optional[List[str]] = None,
+    volunteer_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "operationId": operation_id,
+        "pendingId": pending_id,
+        "claimToken": claim_token,
+        "expectedPlanVersion": expected_plan_version,
+        "commandType": command_type,
+        "regenerateOrderedPlan": regenerate_ordered_plan,
+        "unitIds": unit_ids or [],
+        "volunteerIds": volunteer_ids or [],
+    }
+    if constraint_update:
+        payload["constraintUpdate"] = constraint_update
+    if min_tuition_per_year is not None:
+        payload["minTuitionPerYear"] = min_tuition_per_year
+    if max_tuition_per_year is not None:
+        payload["maxTuitionPerYear"] = max_tuition_per_year
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/pending-command/execute"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data=payload,
+        error_msg="执行幂等待确认规划命令失败",
     )
 
 

@@ -67,7 +67,7 @@ from app.util.internal_client import (
     generate_user_goal_planning_fix_proposals,
     get_last_pending_confirmation,
     get_message_by_id,
-    get_pending_confirmation,
+    claim_pending_confirmation,
     get_planning_state,
     get_planning_workspace_state,
     get_user_init_profile,
@@ -745,9 +745,19 @@ def _extract_extra_data_value(response: dict[str, Any] | None, key: str) -> dict
         except (TypeError, ValueError):
             parsed = None
         value = parsed
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or not value:
         return None
     result = dict(value)
+    pending_revision = _as_int(data.get("revision"))
+    if pending_revision > 0:
+        result["_pendingRevision"] = pending_revision
+        result["revision"] = pending_revision
+    claim_token = str(data.get("claimToken") or "").strip()
+    if claim_token:
+        result["_pendingClaimToken"] = claim_token
+    claim_expires_at = data.get("claimExpiresAt")
+    if claim_expires_at not in (None, ""):
+        result["_pendingClaimExpiresAt"] = claim_expires_at
     data_version = _as_int(data.get("dataVersion") or data.get("version"))
     if data_version > 0:
         result.setdefault("_extraDataVersion", data_version)
@@ -756,61 +766,56 @@ def _extract_extra_data_value(response: dict[str, Any] | None, key: str) -> dict
 
 
 async def _load_pending_confirmation_state(session_id: str) -> dict[str, Any] | None:
+    """Load the single authoritative latest pending snapshot.
+
+    An empty latest value is a tombstone. Falling back to version zero here can
+    resurrect an older pending after it was cancelled, applied, or cleared.
+    """
     try:
         response = await get_last_pending_confirmation(session_id)
     except Exception:
         logger.warning("Failed to load latest pending confirmation state: session_id=%s", session_id, exc_info=True)
-        response = None
-    state = _extract_extra_data_value(response, "pendingConfirmation")
-    if state:
-        return state
-    try:
-        response = await get_pending_confirmation(session_id)
-    except Exception:
-        logger.warning("Failed to load pending confirmation state: session_id=%s", session_id, exc_info=True)
         return None
     return _extract_extra_data_value(response, "pendingConfirmation")
 
 
-async def _load_pending_confirmation_state_at_version(
-    session_id: str,
-    version: int,
-) -> dict[str, Any] | None:
-    try:
-        response = await get_pending_confirmation(session_id, version=version)
-    except Exception:
-        logger.warning(
-            "Failed to load pending confirmation state at version: session_id=%s version=%s",
-            session_id,
-            version,
-            exc_info=True,
-        )
-        return None
-    return _extract_extra_data_value(response, "pendingConfirmation")
-
-
-def _pending_extra_data_version(state: dict[str, Any] | None) -> int:
+def _pending_claim_expired(state: dict[str, Any] | None) -> bool:
     if not isinstance(state, dict):
-        return 0
-    return _as_int(
-        state.get("_extraDataVersion")
-        or state.get("dataVersion")
-        or state.get("sourceBackendVersion")
-        or state.get("source_backend_version")
-        or state.get("planningVersion")
-        or state.get("planning_version")
-    )
+        return False
+    raw = state.get("_pendingClaimExpiresAt") or state.get("claimExpiresAt")
+    if raw in (None, ""):
+        return True
+    try:
+        if isinstance(raw, (int, float)):
+            timestamp = float(raw)
+            if timestamp > 10_000_000_000:
+                timestamp /= 1000.0
+            return timestamp <= datetime.now(timezone.utc).timestamp()
+        normalized = str(raw).strip().replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc) <= datetime.now(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
-def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingConfirmation | None:
+def _pending_confirmation_from_state(
+    state: dict[str, Any] | None,
+    *,
+    allow_applying: bool = False,
+) -> PendingConfirmation | None:
     """Build runtime pending projection from backend pendingConfirmation state."""
     if not isinstance(state, dict):
         return None
-    if str(state.get("status") or "").strip() != "active":
+    status = str(state.get("status") or "").strip()
+    claimable = status == "active" or (status == "applying" and _pending_claim_expired(state))
+    if not claimable and not (allow_applying and status == "applying"):
         return None
     kind = str(state.get("kind") or "").strip()
     action_family = str(state.get("actionFamily") or "").strip()
-    if kind not in _SUPPORTED_PENDING_KINDS or not action_family:
+    pending_id = str(state.get("pendingId") or state.get("pending_id") or "").strip()
+    if kind not in _SUPPORTED_PENDING_KINDS or not action_family or not pending_id:
         return None
     execution_payload = state.get("executionPayload")
     if not isinstance(execution_payload, dict):
@@ -836,6 +841,7 @@ def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingCon
                 return None
         pending = PendingConfirmation(
             kind=kind,
+            pending_id=pending_id,
             action_family=action_family,
             preview_summary=str(state.get("summary") or ""),
             execution_payload=payload,
@@ -855,6 +861,7 @@ def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingCon
         return None
     pending = PendingConfirmation(
         kind="intent_change",
+        pending_id=pending_id,
         action_family=action_family,
         preview_summary=str(state.get("summary") or ""),
         execution_payload=execution_payload,
@@ -918,11 +925,36 @@ def _recent_intent_summary_for_no_plan_guard(
     return _intent_card_primary_reply_from_preview_payload(recent_intent_analysis).split("：", 1)[-1].split("。", 1)[0].strip()
 
 
-async def _save_pending_confirmation_state(session_id: str, state: dict[str, Any]) -> None:
+async def _save_pending_confirmation_state(session_id: str, state: dict[str, Any]) -> dict[str, Any]:
     try:
-        await save_pending_confirmation(session_id, state, version=_pending_extra_data_version(state))
+        response = await save_pending_confirmation(session_id, state)
+        saved = _extract_extra_data_value(response, "pendingConfirmation")
+        if isinstance(saved, dict):
+            state.update(saved)
+        return response if isinstance(response, dict) else {}
     except Exception:
         logger.warning("Failed to save pending confirmation state: session_id=%s", session_id, exc_info=True)
+        return {}
+
+
+async def _claim_pending_confirmation_state(
+    session_id: str,
+    state: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    try:
+        response = await claim_pending_confirmation(session_id, state)
+    except Exception:
+        logger.warning("Failed to claim pending confirmation: session_id=%s", session_id, exc_info=True)
+        return None, "pending_claim_failed"
+    if not isinstance(response, dict) or response.get("code") != 0:
+        return None, str((response or {}).get("msg") or "pending_claim_conflict")
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    if data.get("transitionApplied") is not True:
+        return None, "pending_already_claimed"
+    claimed = _extract_extra_data_value(response, "pendingConfirmation")
+    if not isinstance(claimed, dict) or str(claimed.get("status") or "") != "applying":
+        return None, "pending_claim_invalid_response"
+    return claimed, ""
 
 
 async def _mark_pending_confirmation_message_status(
@@ -7061,22 +7093,6 @@ def _pending_id_from_tool_payload(payload: dict[str, Any] | None) -> str:
     return str(data.get("pending_id") or data.get("pendingId") or "").strip()
 
 
-def _pending_version_from_tool_payload(payload: dict[str, Any] | None) -> int | None:
-    if not isinstance(payload, dict):
-        return None
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    for value in (
-        data.get("pending_version"),
-        data.get("pendingVersion"),
-        data.get("source_backend_version"),
-        data.get("sourceBackendVersion"),
-    ):
-        version = _as_int(value)
-        if version >= 0 and value is not None:
-            return version
-    return None
-
-
 def _pending_state_from_sandbox(
     request_context: RequestContext,
     *,
@@ -7413,17 +7429,15 @@ class ChatService:
         session_id: str,
         request_context: RequestContext,
         pending_id: str,
-        pending_version: int | None = None,
     ) -> dict[str, Any] | None:
-        if pending_version is not None:
-            pending_state = await _load_pending_confirmation_state_at_version(session_id, pending_version)
-            if isinstance(pending_state, dict):
-                if str(pending_state.get("status") or "").strip() == "active":
-                    loaded_pending_id = str(
-                        pending_state.get("pendingId") or pending_state.get("pending_id") or ""
-                    ).strip()
-                    if not pending_id or not loaded_pending_id or pending_id == loaded_pending_id:
-                        return pending_state
+        pending_state = await _load_pending_confirmation_state(session_id)
+        if isinstance(pending_state, dict):
+            if str(pending_state.get("status") or "").strip() == "active":
+                loaded_pending_id = str(
+                    pending_state.get("pendingId") or pending_state.get("pending_id") or ""
+                ).strip()
+                if not pending_id or not loaded_pending_id or pending_id == loaded_pending_id:
+                    return pending_state
         pending_state = _pending_state_from_sandbox(request_context, pending_id=pending_id)
         if isinstance(pending_state, dict):
             return pending_state
@@ -7701,12 +7715,10 @@ class ChatService:
         if pending_payload_info is not None:
             pending_payload, pending_tool_name = pending_payload_info
             pending_id = _pending_id_from_tool_payload(pending_payload)
-            pending_version = _pending_version_from_tool_payload(pending_payload)
             pending_state = await self._pending_state_for_direct_card(
                 session_id=session_id,
                 request_context=request_context,
                 pending_id=pending_id,
-                pending_version=pending_version,
             )
             if isinstance(pending_state, dict):
                 pending_card = _build_structured_pending_card(
@@ -8038,7 +8050,11 @@ class ChatService:
                 init_profile=parsed_init_profile,
                 planning_state=planning_data if isinstance(planning_data, dict) else None,
                 planning_summary=parsed_planning_summary,
-                pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
+                pending_state=(
+                    backend_pending_state
+                    if backend_pending is not None and isinstance(backend_pending_state, dict)
+                    else None
+                ),
                 pending=backend_pending,
             ),
             conversation_phase=conversation_phase,
@@ -8231,7 +8247,7 @@ class ChatService:
             return None
         action_family = str(pending_state.get("actionFamily") or "").strip()
         tool_name = str(execution_payload.get("toolName") or "").strip()
-        active_pending = _pending_confirmation_from_state(pending_state)
+        active_pending = _pending_confirmation_from_state(pending_state, allow_applying=True)
         if active_pending is None:
             return None
         if _is_plan_pending_kind(active_pending.kind):
@@ -8289,6 +8305,7 @@ class ChatService:
         result_data = result.get("data") if isinstance(result.get("data"), dict) else {}
         apply_result = result_data.get("result") if isinstance(result_data.get("result"), dict) else {}
         applied = bool(result_data.get("applied"))
+        execution_uncertain = bool(result_data.get("execution_uncertain"))
         reply = str(result.get("message") or "").strip() or (
             "已执行这次方案调整。" if applied else "这次方案调整没有执行成功，请重新生成预览后再确认。"
         )
@@ -8306,16 +8323,18 @@ class ChatService:
             session_id,
             message_id,
             pending_id=pending_id,
-            status="applied" if applied else "expired",
+            status="applied" if applied else "applying" if execution_uncertain else "expired",
         )
 
         result_code = (
             "applied"
             if applied
+            else "pending_command_result_uncertain"
+            if execution_uncertain
             else str(apply_result.get("reason") or result_data.get("error") or "structured_pending_apply_failed")
         )
         emit_pending_event(
-            result="applied" if applied else "failed",
+            result="applied" if applied else "pending" if execution_uncertain else "failed",
             result_code=result_code,
         )
 
@@ -8357,8 +8376,8 @@ class ChatService:
             pending_type=pending_type,
             action_family=action_family,
             started_at=turn_started_at,
-            status="success" if applied else "error",
-            error_type=None if applied else result_code,
+            status="success" if applied else "pending" if execution_uncertain else "error",
+            error_type=None if applied or execution_uncertain else result_code,
             post_apply_evidence_plan=post_apply_evidence_plan if applied else None,
         )
         try:
@@ -8415,12 +8434,7 @@ class ChatService:
         post_apply_intent: str | None = None,
         post_apply_evidence_plan: dict[str, Any] | None = None,
     ) -> str | ChatServiceResponseEnvelope:
-        """Handle explicit confirmation-card actions.
-
-        This is the migration bridge before durable pending_id endpoints land:
-        the card click is explicit, while the executable payload is still
-        recovered from recent persisted plan preview history.
-        """
+        """Handle card actions through the durable pending resource CAS flow."""
         try:
             selected_data = json.loads(content) if isinstance(content, str) else {}
         except (json.JSONDecodeError, TypeError):
@@ -8445,7 +8459,17 @@ class ChatService:
         active_status = str((pending_state or {}).get("status") or "").strip()
         if not pending_id:
             return "这次操作缺少校验信息，请重新生成预览后再确认。"
-        if not pending_state or active_status != "active" or active_pending_id != pending_id:
+        active_state_claimable = active_status == "active" or (
+            active_status == "applying" and _pending_claim_expired(pending_state)
+        )
+        if (
+            pending_state
+            and active_status == "applying"
+            and not _pending_claim_expired(pending_state)
+            and active_pending_id == pending_id
+        ):
+            return "这次待采纳内容正在处理中，请稍后刷新查看结果，不会重复执行。"
+        if not pending_state or not active_state_claimable or active_pending_id != pending_id:
             await _mark_pending_confirmation_message_status(
                 session_id,
                 message_id,
@@ -8466,7 +8490,9 @@ class ChatService:
             cancelled_state = dict(pending_state)
             cancelled_state["status"] = "cancelled"
             cancelled_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
-            await _save_pending_confirmation_state(session_id, cancelled_state)
+            cancel_response = await _save_pending_confirmation_state(session_id, cancelled_state)
+            if cancel_response.get("code") != 0:
+                return "这次待采纳内容已经变化，未执行取消。请刷新后以最新内容为准。"
             await _mark_pending_confirmation_message_status(
                 session_id,
                 message_id,
@@ -8525,6 +8551,12 @@ class ChatService:
 
         if active_kind not in _SUPPORTED_PENDING_KINDS:
             return "这类待采纳内容暂时还不能在这里处理，请刷新后重试。"
+
+        claimed_state, claim_error = await _claim_pending_confirmation_state(session_id, pending_state)
+        if claimed_state is None:
+            emit_pending_event(result="blocked", result_code=claim_error)
+            return "这次待采纳内容已被处理或已经变化，不会重复执行。请刷新后以最新状态为准。"
+        pending_state = claimed_state
 
         structured_pending_reply = await self._handle_structured_pending_confirmation(
             session_id=session_id,

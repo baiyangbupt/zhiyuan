@@ -5,7 +5,7 @@ Usage:
   ./.venv/bin/python examples/dialog_regression_runner.py
   ./.venv/bin/python examples/dialog_regression_runner.py --cases examples/dialog_regression_cases.json
   ./.venv/bin/python examples/dialog_regression_runner.py --session 35 --prompts "方案有了么" "帮我审查一下"
-  ./.venv/bin/python examples/dialog_regression_runner.py --cases examples/dialog_regression_plan_cases.json --assert-plan-style
+  ./.venv/bin/python examples/dialog_regression_runner.py --cases examples/dialog_regression_400_plan_operation_cases.json --assert-plan-style
 """
 
 from __future__ import annotations
@@ -516,72 +516,65 @@ def _clear_backend_pending_state(
     *,
     timeout_seconds: float = 5,
 ) -> list[dict[str, Any]]:
-    """Clear backend pending state used by confirmation-card flows.
-
-    SQLite history cleanup is not enough for live regression: pending
-    confirmations live in backend extra-data and can otherwise leak across
-    cases that reuse real session ids.
-    """
+    """Resolve any active/applying dedicated pending resource for test sessions."""
     results: list[dict[str, Any]] = []
     normalized_base_url = str(base_url or "").rstrip("/")
     if not normalized_base_url:
         return results
     for session_id in session_ids:
-        for key in PENDING_STATE_KEYS:
-            versions = {0}
-            latest_url = (
-                f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/get-extra-data-last-version"
-                f"?chatSessionId={parse.quote(str(session_id))}&key={parse.quote(str(key))}"
+        result: dict[str, Any] = {"session": session_id, "key": "pendingConfirmation", "ok": False}
+        try:
+            state = _get_backend_pending_state(
+                normalized_base_url,
+                session_id,
+                timeout_seconds=timeout_seconds,
             )
-            try:
-                with request.urlopen(latest_url, timeout=timeout_seconds) as response:
-                    raw = response.read().decode("utf-8")
-                if raw:
-                    parsed = json.loads(raw)
-                    if isinstance(parsed, dict):
-                        data = parsed.get("data")
-                        version = data.get("dataVersion") if isinstance(data, dict) else None
-                        try:
-                            version_int = int(version)
-                        except (TypeError, ValueError):
-                            version_int = 0
-                        if version_int > 0:
-                            versions.add(version_int)
-            except (OSError, error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
-                pass
-
-            for version in sorted(versions):
-                payload = {
-                    "chatSessionId": session_id,
-                    "dataKey": key,
-                    "dataType": "JSON_OBJECT",
-                    "dataValue": {},
-                    "version": version,
-                }
-                req = request.Request(
-                    f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/add-extra-data",
-                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
-                    method="POST",
-                )
-                result: dict[str, Any] = {"session": session_id, "key": key, "version": version, "ok": False}
-                try:
-                    with request.urlopen(req, timeout=timeout_seconds) as response:
-                        raw = response.read().decode("utf-8")
-                    result["status"] = response.status
-                    result["ok"] = 200 <= int(response.status) < 300
-                    if raw:
-                        try:
-                            parsed = json.loads(raw)
-                        except Exception:
-                            parsed = raw[:200]
-                        result["response"] = parsed
-                except (OSError, error.URLError, TimeoutError) as exc:
-                    result["error"] = f"{type(exc).__name__}: {exc}"
+            status = str(state.get("status") or "").strip()
+            if status not in {"active", "applying"}:
+                result["ok"] = True
+                result["skipped"] = "no_active_pending"
                 results.append(result)
+                continue
+            if int(state.get("_pendingRevision") or 0) <= 0:
+                write_result = _write_backend_pending_state(
+                    normalized_base_url,
+                    session_id,
+                    state,
+                    timeout_seconds=timeout_seconds,
+                )
+                if not write_result.get("ok"):
+                    result.update(write_result)
+                    results.append(result)
+                    continue
+                state = _get_backend_pending_state(
+                    normalized_base_url,
+                    session_id,
+                    timeout_seconds=timeout_seconds,
+                )
+                status = str(state.get("status") or "").strip()
+            action = "cancel" if status == "active" else "expire"
+            payload = {
+                "chatSessionId": session_id,
+                "pendingId": state.get("pendingId"),
+                "expectedRevision": state.get("_pendingRevision"),
+                "action": action,
+                "resultCode": "regression_fixture_clear",
+            }
+            req = request.Request(
+                f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/pending/resolve",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
+            with request.urlopen(req, timeout=timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else {}
+            result["status"] = response.status
+            result["response"] = parsed
+            result["ok"] = 200 <= int(response.status) < 300 and parsed.get("code") == 0
+        except (OSError, error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+        results.append(result)
     return results
 
 
@@ -678,6 +671,80 @@ def _get_backend_latest_extra_data(
     return result
 
 
+def _get_backend_pending_state(
+    base_url: str,
+    session_id: str,
+    *,
+    timeout_seconds: float = 5,
+) -> dict[str, Any]:
+    normalized_base_url = str(base_url or "").rstrip("/")
+    response = _http_get_json(
+        f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/pending"
+        f"?chatSessionId={parse.quote(str(session_id))}",
+        timeout_seconds=timeout_seconds,
+    )
+    resource = response.get("data") if isinstance(response.get("data"), dict) else {}
+    value = resource.get("dataValue") if isinstance(resource.get("dataValue"), dict) else {}
+    if value:
+        result = deepcopy(value)
+        result["_pendingRevision"] = resource.get("revision")
+        result["revision"] = resource.get("revision")
+        return result
+    # Bounded migration fallback for sessions not materialized in V7 yet.
+    return _get_backend_latest_extra_data(
+        normalized_base_url,
+        session_id,
+        "pendingConfirmation",
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _write_backend_pending_state(
+    base_url: str,
+    session_id: str,
+    value: dict[str, Any],
+    *,
+    timeout_seconds: float = 5,
+) -> dict[str, Any]:
+    normalized_base_url = str(base_url or "").rstrip("/")
+    current = _http_get_json(
+        f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/pending"
+        f"?chatSessionId={parse.quote(str(session_id))}",
+        timeout_seconds=timeout_seconds,
+    )
+    resource = current.get("data") if isinstance(current.get("data"), dict) else {}
+    expected_revision = int(resource.get("revision") or 0)
+    pending_id = str(value.get("pendingId") or value.get("pending_id") or "").strip()
+    payload_value = deepcopy(value)
+    payload_value.pop("_pendingRevision", None)
+    payload_value.pop("_pendingClaimToken", None)
+    payload_value.pop("_pendingClaimExpiresAt", None)
+    payload_value["sessionId"] = str(session_id)
+    payload_value["status"] = "active"
+    payload = {
+        "chatSessionId": session_id,
+        "pendingId": pending_id,
+        "expectedRevision": expected_revision,
+        "kind": value.get("kind"),
+        "actionFamily": value.get("actionFamily") or value.get("action_family"),
+        "dataValue": payload_value,
+    }
+    req = request.Request(
+        f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/pending",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with request.urlopen(req, timeout=timeout_seconds) as response:
+        raw = response.read().decode("utf-8")
+    parsed = json.loads(raw) if raw else {}
+    return {
+        "status": response.status,
+        "response": parsed,
+        "ok": 200 <= int(response.status) < 300 and parsed.get("code") == 0,
+    }
+
+
 def _get_backend_planning_state(
     base_url: str,
     session_id: str,
@@ -704,8 +771,7 @@ def _get_backend_assertion_data(
     if key == "planningState":
         return _get_backend_planning_state(base_url, session_id, timeout_seconds=timeout_seconds)
     if key == "pendingConfirmation":
-        latest = _get_backend_latest_extra_data(base_url, session_id, key, timeout_seconds=timeout_seconds)
-        return latest or _get_backend_extra_data(base_url, session_id, key, timeout_seconds=timeout_seconds)
+        return _get_backend_pending_state(base_url, session_id, timeout_seconds=timeout_seconds)
     return _get_backend_extra_data(base_url, session_id, key, timeout_seconds=timeout_seconds)
 
 
@@ -836,6 +902,12 @@ def _as_comparable_number(value: Any) -> float | None:
 def _format_json_assert_value(value: Any) -> str:
     if value is _JSON_PATH_MISSING:
         return "<missing>"
+    if isinstance(value, (dict, list)):
+        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if len(rendered) > 1000:
+            size = len(value)
+            return f"{rendered[:1000]}...<truncated {type(value).__name__} size={size}>"
+        return rendered
     return repr(value)
 
 
@@ -1085,7 +1157,7 @@ def _clone_backend_session_state(
     source_session_id: str,
     target_session_id: str,
     keys: tuple[str, ...] = BACKEND_STATE_CLONE_KEYS,
-    timeout_seconds: float = 5,
+    timeout_seconds: float = 30,
 ) -> list[dict[str, Any]]:
     """Clone backend extra-data state for destructive live regression cases."""
     results: list[dict[str, Any]] = []
@@ -1100,11 +1172,19 @@ def _clone_backend_session_state(
             "ok": False,
         }
         try:
-            value = _get_backend_extra_data(
-                normalized_base_url,
-                source_session_id,
-                key,
-                timeout_seconds=timeout_seconds,
+            value = (
+                _get_backend_pending_state(
+                    normalized_base_url,
+                    source_session_id,
+                    timeout_seconds=timeout_seconds,
+                )
+                if key == "pendingConfirmation"
+                else _get_backend_extra_data(
+                    normalized_base_url,
+                    source_session_id,
+                    key,
+                    timeout_seconds=timeout_seconds,
+                )
             )
             if not value:
                 result["skipped"] = "source_empty"
@@ -1117,15 +1197,26 @@ def _clone_backend_session_state(
             elif key == "pendingConfirmation":
                 result["sourcePendingStatus"] = str(value.get("status") or "").strip()
                 result["sourcePendingKind"] = str(value.get("kind") or "").strip()
-            write_result = _write_backend_extra_data(
-                normalized_base_url,
-                target_session_id,
-                key,
-                cloned_value,
-                timeout_seconds=timeout_seconds,
+            write_result = (
+                _write_backend_pending_state(
+                    normalized_base_url,
+                    target_session_id,
+                    cloned_value,
+                    timeout_seconds=timeout_seconds,
+                )
+                if key == "pendingConfirmation"
+                else _write_backend_extra_data(
+                    normalized_base_url,
+                    target_session_id,
+                    key,
+                    cloned_value,
+                    timeout_seconds=timeout_seconds,
+                )
             )
             result["status"] = write_result.get("status")
-            result["ok"] = 200 <= int(write_result.get("status") or 0) < 300
+            result["ok"] = bool(write_result.get("ok")) if key == "pendingConfirmation" else (
+                200 <= int(write_result.get("status") or 0) < 300
+            )
         except (OSError, error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
             result["error"] = f"{type(exc).__name__}: {exc}"
         results.append(result)
@@ -1233,6 +1324,70 @@ def _clone_backend_chat_session_row(
     return result
 
 
+def _reset_backend_test_session_state(
+    *,
+    target_session_id: str,
+    db_host: str,
+    db_port: str,
+    db_user: str,
+    db_password: str,
+    db_name: str,
+    timeout_seconds: float = 30,
+) -> dict[str, Any]:
+    """Remove mutable state owned by a disposable clone-backed test session."""
+
+    result: dict[str, Any] = {
+        "targetSession": target_session_id,
+        "ok": False,
+    }
+    if not str(target_session_id).isdigit():
+        result["error"] = "target session id must be numeric"
+        return result
+    sql = (
+        "DELETE FROM assistant_planning_pending_command "
+        "WHERE chat_session_id={target_id}; "
+        "DELETE FROM assistant_chat_session_pending_confirmation "
+        "WHERE chat_session_id={target_id}; "
+        "DELETE FROM assistant_chat_session_extra_data "
+        "WHERE chat_session_id={target_id};"
+    ).format(target_id=int(target_session_id))
+    cmd = [
+        "mysql",
+        f"-h{db_host}",
+        f"-P{db_port}",
+        f"-u{db_user}",
+        "-N",
+        "-B",
+        db_name,
+        "-e",
+        sql,
+    ]
+    env = os.environ.copy()
+    if db_password:
+        env["MYSQL_PWD"] = db_password
+    try:
+        proc = subprocess.run(
+            cmd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    result["returnCode"] = proc.returncode
+    if proc.stderr.strip():
+        result["stderr"] = proc.stderr.strip()
+    if proc.returncode != 0:
+        result["error"] = proc.stderr.strip() or f"mysql exited {proc.returncode}"
+        return result
+    result["ok"] = True
+    return result
+
+
 def _clone_backend_volunteer_data_files(
     *,
     source_session_id: str,
@@ -1276,6 +1431,12 @@ def _clone_backend_volunteer_data_files(
             "target": str(target),
             "ok": False,
         }
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as exc:
+            file_result["error"] = f"{type(exc).__name__}: {exc}"
+            result["files"].append(file_result)
+            continue
         if not source.exists():
             file_result["skipped"] = "source_missing"
             file_result["ok"] = True
@@ -1301,6 +1462,39 @@ def _clone_backend_volunteer_data_files(
         return result
     if not original_present:
         result["error"] = "source original session_volunteer file missing"
+        return result
+    result["ok"] = True
+    return result
+
+
+def _clear_backend_volunteer_data_files(
+    *,
+    target_session_id: str,
+    data_dir: str | Path,
+    suffixes: tuple[str, ...] = BACKEND_VOLUNTEER_FILE_SUFFIXES,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "targetSession": target_session_id,
+        "dataDir": str(data_dir),
+        "ok": False,
+        "removedFiles": [],
+    }
+    if not str(target_session_id).isdigit():
+        result["error"] = "target session id must be numeric"
+        return result
+    root = Path(data_dir)
+    failures: list[dict[str, str]] = []
+    for suffix in suffixes:
+        target = root / f"session_volunteer_{target_session_id}{suffix}.json"
+        try:
+            if target.exists():
+                target.unlink()
+                result["removedFiles"].append(str(target))
+        except OSError as exc:
+            failures.append({"path": str(target), "error": f"{type(exc).__name__}: {exc}"})
+    if failures:
+        result["failures"] = failures
+        result["error"] = "some target volunteer files could not be removed"
         return result
     result["ok"] = True
     return result
@@ -2499,9 +2693,54 @@ async def _run_cases(
         session_id = str(case["sessionId"])
         case_env_failures: list[str] = []
         clone_source_session_id = str(case.get("cloneBackendStateFromSessionId") or "").strip()
+        if clone_source_session_id == session_id:
+            case_env_failures.append(
+                "backend clone source and target session must differ; "
+                f"both were {session_id}"
+            )
+            clone_source_session_id = ""
         clone_score_source_session_id = str(case.get("cloneBackendScoreFromSessionId") or "").strip()
         clone_results: list[dict[str, Any]] = []
         all_clone_results: list[dict[str, Any]] = []
+        if clone_backend_chat_session:
+            volunteer_reset_result = _clear_backend_volunteer_data_files(
+                target_session_id=session_id,
+                data_dir=backend_volunteer_data_dir,
+            )
+            print(
+                "resetCaseBackendVolunteerData="
+                + json.dumps(volunteer_reset_result, ensure_ascii=False)
+            )
+            if not volunteer_reset_result.get("ok"):
+                case_env_failures.append(
+                    "backend volunteer target reset failed: "
+                    + json.dumps(volunteer_reset_result, ensure_ascii=False)
+                )
+            reset_result = _reset_backend_test_session_state(
+                target_session_id=session_id,
+                db_host=backend_db_host,
+                db_port=backend_db_port,
+                db_user=backend_db_user,
+                db_password=backend_db_password,
+                db_name=backend_db_name,
+            )
+            print(
+                "resetCaseBackendState="
+                + json.dumps(
+                    {
+                        "dbHost": backend_db_host,
+                        "dbName": backend_db_name,
+                        "targetSession": session_id,
+                        "result": reset_result,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            if not reset_result.get("ok"):
+                case_env_failures.append(
+                    "backend test session reset failed: "
+                    + json.dumps(reset_result, ensure_ascii=False)
+                )
         if clone_source_session_id:
             if clone_backend_chat_session:
                 session_clone_result = _clone_backend_chat_session_row(

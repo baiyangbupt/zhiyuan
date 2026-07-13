@@ -47,6 +47,18 @@ public class RepairCandidateEligibilityTest {
     }
 
     @Test
+    void shouldRejectCandidateByProgramTypeInSchoolUnitName() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().setMustExcludeSchools(Lists.newArrayList("招生类型:中外合作"));
+        CandidateItemDTO cooperativeCandidate = candidate("公办", "理工", "财务管理");
+        cooperativeCandidate.setSchoolName("测试大学第206组(中外合作办学或国际项目)");
+        CandidateItemDTO normalCandidate = candidate("公办", "理工", "财务管理");
+
+        assertFalse(RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(cooperativeCandidate, state));
+        assertTrue(RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(normalCandidate, state));
+    }
+
+    @Test
     void shouldRejectPlanningUnitByProgramTypeScopeFromMajorTags() {
         PlanningStateDTO state = new PlanningStateDTO();
         state.getConstraintState().getHardConstraints().setMustExcludeSchools(Lists.newArrayList("招生类型:中外合作"));

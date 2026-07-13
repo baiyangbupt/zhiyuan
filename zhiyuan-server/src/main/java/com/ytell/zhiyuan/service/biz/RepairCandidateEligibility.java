@@ -219,6 +219,7 @@ final class RepairCandidateEligibility {
         }
         if (containsAny(label, "招生类型", "项目", "限制")) {
             return matchesHighTuitionScope(item, pattern)
+                    || textMatches(item.getSchoolName(), pattern)
                     || textMatches(item.getMajorName(), pattern)
                     || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getMajorPlanTags()).toArray(new String[0]))
                     || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getReasonCodes()).toArray(new String[0]));

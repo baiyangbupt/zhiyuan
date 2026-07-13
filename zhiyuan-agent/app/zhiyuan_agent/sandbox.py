@@ -127,6 +127,16 @@ def _extract_extra_data_value(response: Any, key: str) -> dict[str, Any]:
         value = response.get(key)
     result = _as_dict(value)
     if result:
+        revision = _as_int(data.get("revision"))
+        if revision > 0:
+            result["_pendingRevision"] = revision
+            result["revision"] = revision
+        claim_token = str(data.get("claimToken") or "").strip()
+        if claim_token:
+            result["_pendingClaimToken"] = claim_token
+        claim_expires_at = data.get("claimExpiresAt")
+        if claim_expires_at not in (None, ""):
+            result["_pendingClaimExpiresAt"] = claim_expires_at
         version = _as_int(data.get("dataVersion") or data.get("version"))
         if version > 0:
             result.setdefault("_extraDataVersion", version)
@@ -250,9 +260,16 @@ def _profile_file_from_summary(summary: PlanningSummary | None) -> dict[str, Any
 
 
 def _plan_summary_file_from_object(summary: PlanningSummary | None) -> dict[str, Any]:
-    if summary is None or _as_int(getattr(summary, "ordered_total", 0)) <= 0:
+    if summary is None:
         return {
             "has_plan": False,
+            "guidance": "还没有生成正式方案，可以先明确报考要求或生成方案。",
+        }
+    if _as_int(getattr(summary, "ordered_total", 0)) <= 0:
+        return {
+            "has_plan": False,
+            "phase": summary.phase,
+            "version": summary.version,
             "guidance": "还没有生成正式方案，可以先明确报考要求或生成方案。",
         }
     return {
@@ -357,14 +374,6 @@ def _clean_volunteer_id(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _volunteer_group_prefix(value: Any) -> str:
-    text = _clean_volunteer_id(value)
-    if not text:
-        return ""
-    parts = text.split("_")
-    return "_".join(parts[:2]) if len(parts) >= 2 else text
-
-
 def _ordered_unit_id_from_volunteer_id(value: Any) -> str:
     text = _clean_volunteer_id(value)
     if not text:
@@ -394,31 +403,44 @@ def _ordered_unit_for_item(
 ) -> dict[str, Any]:
     volunteer_id = _clean_volunteer_id(item.get("volunteerId") or item.get("volunteer_id"))
     if volunteer_id:
-        unit = by_plan_school_data_id.get(_volunteer_group_prefix(volunteer_id))
+        unit = by_plan_school_data_id.get(_ordered_unit_id_from_volunteer_id(volunteer_id))
         if unit is not None:
             return unit
     return by_position.get(_as_int(item.get("position")), {})
 
 
+def _candidate_school_major_key(item: dict[str, Any]) -> str:
+    school = str(item.get("schoolName") or item.get("school_name") or "").strip()
+    major = str(item.get("majorName") or item.get("major_name") or "").strip()
+    return f"{school}\n{major}" if school and major else ""
+
+
 def _candidate_lookup(candidates: list[Any]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     by_volunteer_id: dict[str, dict[str, Any]] = {}
-    by_group_prefix: dict[str, dict[str, Any]] = {}
+    by_school_major: dict[str, dict[str, Any]] = {}
+    duplicated_school_major: set[str] = set()
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
         volunteer_id = _clean_volunteer_id(candidate.get("volunteerId") or candidate.get("volunteer_id"))
         if volunteer_id and volunteer_id not in by_volunteer_id:
             by_volunteer_id[volunteer_id] = candidate
-        group_prefix = _volunteer_group_prefix(volunteer_id)
-        if group_prefix and group_prefix not in by_group_prefix:
-            by_group_prefix[group_prefix] = candidate
-    return by_volunteer_id, by_group_prefix
+        school_major = _candidate_school_major_key(candidate)
+        if not school_major:
+            continue
+        if school_major in by_school_major:
+            duplicated_school_major.add(school_major)
+        else:
+            by_school_major[school_major] = candidate
+    for key in duplicated_school_major:
+        by_school_major.pop(key, None)
+    return by_volunteer_id, by_school_major
 
 
 def _candidate_for_ordered_item(
     item: dict[str, Any],
     by_volunteer_id: dict[str, dict[str, Any]],
-    by_group_prefix: dict[str, dict[str, Any]],
+    by_school_major: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     volunteer_id = _clean_volunteer_id(item.get("volunteerId") or item.get("volunteer_id"))
     if not volunteer_id:
@@ -426,7 +448,7 @@ def _candidate_for_ordered_item(
     candidate = by_volunteer_id.get(volunteer_id)
     if candidate is not None:
         return candidate
-    return by_group_prefix.get(_volunteer_group_prefix(volunteer_id), {})
+    return by_school_major.get(_candidate_school_major_key(item), {})
 
 
 def _merge_ordered_item_with_candidate(item: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
@@ -465,7 +487,7 @@ def _enrich_ordered_items_from_candidates(ordered_state: dict[str, Any], candida
     candidates = candidate_state.get("items")
     if not isinstance(candidates, list):
         candidates = []
-    by_volunteer_id, by_group_prefix = _candidate_lookup(candidates)
+    by_volunteer_id, by_school_major = _candidate_lookup(candidates)
     by_plan_school_data_id, by_position = _ordered_unit_lookup(units)
     enriched: list[dict[str, Any]] = []
     for item in items:
@@ -480,7 +502,7 @@ def _enrich_ordered_items_from_candidates(ordered_state: dict[str, Any], candida
             plan_school_data_id = ordered_unit.get("planSchoolDataId") or ordered_unit.get("plan_school_data_id")
             if plan_school_data_id not in (None, "", [], {}) and item.get("planSchoolDataId") in (None, "", [], {}):
                 item["planSchoolDataId"] = plan_school_data_id
-        candidate = _candidate_for_ordered_item(item, by_volunteer_id, by_group_prefix)
+        candidate = _candidate_for_ordered_item(item, by_volunteer_id, by_school_major)
         enriched.append(_merge_ordered_item_with_candidate(item, candidate))
     return enriched
 
@@ -525,6 +547,7 @@ def _pending_file_from_state(state: dict[str, Any] | PendingConfirmation | None,
     if isinstance(state, PendingConfirmation):
         return {
             "active": True,
+            "pending_id": state.pending_id,
             "kind": state.kind,
             "action_family": state.action_family,
             "preview_summary": state.preview_summary,
@@ -536,7 +559,9 @@ def _pending_file_from_state(state: dict[str, Any] | PendingConfirmation | None,
             "created_turn": state.created_turn,
         }
     data = _as_dict(state)
-    if not data or str(data.get("status") or "active").strip() != "active":
+    # ``applying`` is exposed only to the already-claimed execution context.
+    # Normal request phases do not project it as an active PendingConfirmation.
+    if not data or str(data.get("status") or "active").strip() not in {"active", "applying"}:
         return {"active": False, "source_backend_version": version}
     execution_payload = _as_dict(data.get("executionPayload") or data.get("execution_payload"))
     composite_proposal = _as_dict(data.get("compositeProposal") or data.get("composite_proposal"))
@@ -659,9 +684,6 @@ class BackendAdapter:
         if normalized_path == "pending.json":
             response = await internal_client.get_last_pending_confirmation(self.session_id)
             raw_data = _extract_extra_data_value(response, "pendingConfirmation")
-            if not raw_data:
-                response = await internal_client.get_pending_confirmation(self.session_id)
-                raw_data = _extract_extra_data_value(response, "pendingConfirmation")
             version = _extract_version(response, raw_data)
             data = _pending_file_from_state(raw_data, version=version)
             return BackendReadResult(data, _extract_version(data, response, raw_data))

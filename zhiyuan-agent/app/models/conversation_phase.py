@@ -82,6 +82,10 @@ class PendingConfirmation(BaseModel):
 
     kind: Literal["intent_change", "plan_mutation", "plan_generation"]
 
+    # 后端 pending 资源标识。确认执行时用于校验运行时投影与 Sandbox
+    # 快照仍指向同一轮预览。
+    pending_id: str = ""
+
     # 对应的 action_family
     # Intent: "set_preference" / "set_constraint" / "remove_preference"
     # Plan: "add_units" / "remove_units" / "generate_plan" 等

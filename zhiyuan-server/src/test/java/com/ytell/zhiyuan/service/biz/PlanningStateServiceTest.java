@@ -5870,6 +5870,49 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldResolveLegacyPlanIdentityBeforePruningConfirmedSchoolNature() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().getMustExcludeSchools().add("院校性质:民办");
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.majorGroup.name());
+        CandidateItemDTO publicItem = buildCandidateItem(
+                "plan-school-public_plan-major-public", "plan-school-public", "school-public",
+                "北京工业大学第101组", "稳", "自动化", 55D, 80D, 55D, false);
+        publicItem.setMajorId("major-public");
+        publicItem.setSchoolNature("公办");
+        CandidateItemDTO privateItem = buildCandidateItem(
+                "plan-school-private_plan-major-private", "plan-school-private", "school-private",
+                "北京城市学院第101组", "稳", "软件工程", 56D, 79D, 56D, false);
+        privateItem.setMajorId("major-private");
+        privateItem.setSchoolNature("民办");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(publicItem, privateItem));
+
+        state.getDraftPlanState().getItems().add(buildDraftItem(
+                "plan-school-public_major-public", "北京工业大学第101组", "自动化", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem(
+                "plan-school-private_major-private", "北京城市学院第101组", "软件工程", "稳"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem(
+                "plan-school-public_major-public", "北京工业大学第101组", "自动化", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem(
+                "plan-school-private_major-private", "北京城市学院第101组", "软件工程", "稳", 2));
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setForceRegenerate(true);
+        PlanningStateDTO ordered = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        assertEquals(1, ordered.getDraftPlanState().getItems().size());
+        assertEquals("plan-school-public_plan-major-public",
+                ordered.getDraftPlanState().getItems().get(0).getVolunteerId());
+        assertEquals(1, ordered.getOrderedPlanState().getItems().size());
+        assertEquals("plan-school-public_plan-major-public",
+                ordered.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals(1, ordered.getOrderedPlanState().getUnits().size());
+        assertEquals("plan-school-public", ordered.getOrderedPlanState().getUnits().get(0).getUnitId());
+    }
+
+    @Test
     void shouldTreatHighTuitionScopeAsTuitionYearWhenGeneratingOrderedPlan() {
         bindPlanningStateStore();
 
@@ -7041,8 +7084,12 @@ public class PlanningStateServiceTest {
         candidatePoolState.getItems().add(buildCandidateItem("ps1_m2", "ps1", "s1", "学校A", "冲", "专业A2", 33D, 58D, 35D, false));
         CandidateItemDTO unitMoveCandidate = buildCandidateItem("ps2_m3", "ps2", "s2", "学校B", "稳", "专业B1", 45D, 90D, 45D, false);
         unitMoveCandidate.setSchoolRank(80);
+        unitMoveCandidate.setTuitionPerYear(12000);
         candidatePoolState.getItems().add(unitMoveCandidate);
-        candidatePoolState.getItems().add(buildCandidateItem("ps2_m4", "ps2", "s2", "学校B", "稳", "专业B2", 48D, 88D, 45D, false));
+        CandidateItemDTO secondUnitMoveCandidate = buildCandidateItem(
+                "ps2_m4", "ps2", "s2", "学校B", "稳", "专业B2", 48D, 88D, 45D, false);
+        secondUnitMoveCandidate.setTuitionPerYear(13000);
+        candidatePoolState.getItems().add(secondUnitMoveCandidate);
         state.setCandidatePoolState(candidatePoolState);
 
         DraftPlanStateDTO draftPlanState = new DraftPlanStateDTO();
@@ -7051,6 +7098,7 @@ public class PlanningStateServiceTest {
         draftPlanState.getItems().add(buildDraftItem("ps2_m3", "学校B", "专业B1", "稳"));
         draftPlanState.getItems().add(buildDraftItem("ps2_m4", "学校B", "专业B2", "稳"));
         ReflectionTestUtils.invokeMethod(planningStateService, "syncWorkingPlanUnitsWithItems", draftPlanState, candidatePoolState.getItems(), candidatePoolState);
+        draftPlanState.getUnits().forEach(unit -> unit.getMajorItems().forEach(major -> major.setTuitionPerYear(null)));
         ReflectionTestUtils.invokeMethod(planningStateService, "recalculateWorkingPlanSummary", draftPlanState, candidatePoolState);
         state.setDraftPlanState(draftPlanState);
 
@@ -7085,6 +7133,10 @@ public class PlanningStateServiceTest {
         assertEquals("ps2_m4", removed.getOrderedPlanState().getItems().get(1).getVolunteerId());
         assertEquals(1, removed.getOrderedPlanState().getUnits().size());
         assertEquals("ps2", removed.getOrderedPlanState().getUnits().get(0).getUnitId());
+        assertEquals(java.util.Arrays.asList(12000, 13000), removed.getOrderedPlanState().getUnits().get(0).getMajorItems().stream()
+                .map(PlanningUnitMajorDTO::getTuitionPerYear)
+                .sorted()
+                .collect(Collectors.toList()));
         assertEquals(2, removed.getDraftPlanState().getItems().size());
         assertEquals(1, removed.getDraftPlanState().getUnits().size());
         ArgumentCaptor<PlanningBehaviorEventDTO> behaviorEventCaptor = ArgumentCaptor.forClass(PlanningBehaviorEventDTO.class);

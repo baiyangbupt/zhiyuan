@@ -35,6 +35,7 @@ from app.domain.major_entity_resolver import (
     resolve_major_entity,
 )
 from app.domain.region_entity_resolver import REGION_AREA_PROVINCES, resolve_region_entity
+from app.domain.school_major_ref_resolver import resolve_school_major_ref
 from app.domain.school_entity_resolver import resolve_school_entity
 from app.schemas.user_profile import UserProfile
 from app.tools.review_issue_registry import normalize_review_issue_code
@@ -721,12 +722,17 @@ def _response_data(response: Any) -> dict[str, Any]:
     return response
 
 
-async def _sandbox_data(ctx: RunContext[RequestContext], path: str) -> dict[str, Any]:
+async def _sandbox_data(
+    ctx: RunContext[RequestContext],
+    path: str,
+    *,
+    query: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     sandbox = getattr(ctx.deps, "sandbox", None)
     normalized_path = normalize_sandbox_path(path)
     if sandbox is None:
         return _sandbox_unavailable(normalized_path)
-    data = await sandbox.read(normalized_path)
+    data = await sandbox.read(normalized_path, query=query)
     return data if isinstance(data, dict) else {}
 
 
@@ -3883,7 +3889,7 @@ async def _create_intent_pending(
             "state": pending_state,
             "backend_response": {},
         }
-    response = await internal_client.save_pending_confirmation(ctx.deps.sessionid, pending_state, version=source_version)
+    response = await internal_client.save_pending_confirmation(ctx.deps.sessionid, pending_state)
     if not _is_success_response(response):
         return {
             "created": False,
@@ -4330,7 +4336,10 @@ def _matches_plan_item(item: dict[str, Any], filters: dict[str, Any], *, batch: 
 def _plan_item_brief(item: dict[str, Any]) -> dict[str, Any]:
     majors = _item_major_names(item)
     return {
-        "position": _as_int(_item_value(item, "position", "rank", "order")),
+        "position": _as_int(
+            item.get("_group_ordinal_position")
+            or _item_value(item, "position", "rank", "order")
+        ),
         "school": str(_item_value(item, "schoolName", "school_name", "collegeName") or "").strip(),
         "major": majors[0] if majors else "",
         "tier": _normalize_tier(_item_value(item, "tier", "riskTier", "risk_tier")),
@@ -4360,6 +4369,21 @@ def _plan_item_snippet(item: dict[str, Any], *, include_fields: list[str] | None
     if brief.get("tuition_per_year"):
         suffixes.append(f"{brief['tuition_per_year']}元/年")
     return f"{name}（{'，'.join(suffixes)}）" if suffixes else name
+
+
+def _plan_item_scope_summary(
+    items: list[dict[str, Any]],
+    *,
+    limit: int,
+    total: int | None = None,
+    noun: str = "志愿组",
+) -> str:
+    visible_limit = max(1, limit)
+    actual_total = max(len(items), _as_int(total))
+    summary = "；".join(_plan_item_snippet(item) for item in items[:visible_limit])
+    if actual_total > visible_limit:
+        summary += f"；以上仅展示前{visible_limit}个，本次实际影响{actual_total}个{noun}"
+    return summary
 
 
 def _describe_filters(filters: dict[str, Any]) -> str:
@@ -5085,7 +5109,7 @@ async def _auto_select_replacement_candidates(
 
 
 def _item_unit_id(item: dict[str, Any]) -> str:
-    for key in ("unitId", "unit_id", "id"):
+    for key in ("unitId", "unit_id", "planSchoolDataId", "plan_school_data_id", "id"):
         text = str(item.get(key) or "").strip()
         if text:
             return text
@@ -5301,7 +5325,9 @@ def _items_by_unit_positions(items: list[dict[str, Any]], positions: list[int]) 
         if item_id in seen:
             continue
         seen.add(item_id)
-        result.append(item)
+        resolved_item = dict(item)
+        resolved_item["_group_ordinal_position"] = position
+        result.append(resolved_item)
     return result
 
 
@@ -5452,6 +5478,105 @@ async def _resolve_plan_targets(
     resolved = _dedupe_items_by_id(resolved, id_getter)
     reason = "ok" if not missing else "missing_targets"
     return resolved, missing, reason
+
+
+def _add_candidate_reference_filters(
+    ctx: RunContext[RequestContext],
+    targets: list[str] | None,
+    filters: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized_filters, _ = _normalize_plan_query_filters(filters if isinstance(filters, dict) else {})
+    if normalized_filters.get("school") and normalized_filters.get("major"):
+        return normalized_filters
+
+    raw_targets = _as_list(targets)
+    batch = getattr(ctx.deps, "batch", None) or "01"
+    if len(raw_targets) == 1:
+        reference = resolve_school_major_ref(raw_targets[0], batch)
+        if reference.can_query:
+            normalized_filters.setdefault("school", reference.school_keywords)
+            normalized_filters.setdefault("major", reference.major_keywords)
+            return normalized_filters
+
+    schools: list[str] = []
+    majors: list[str] = []
+    for target in raw_targets:
+        school_result = resolve_school_entity(target, batch)
+        if school_result.best is not None and not school_result.ambiguous:
+            _append_unique(schools, school_result.best.canonical_name)
+        major_result = resolve_major_entity(target, batch)
+        if major_result.best is not None and not major_result.ambiguous:
+            _append_unique(majors, major_result.best.canonical_name)
+    if len(schools) == 1 and len(majors) == 1:
+        normalized_filters.setdefault("school", schools)
+        normalized_filters.setdefault("major", majors)
+    return normalized_filters
+
+
+def _candidate_query_for_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tiers": _as_list(filters.get("tier")),
+        "province_names": _as_list(filters.get("province")),
+        "school_keywords": _as_list(filters.get("school")),
+        "major_keywords": _as_list(filters.get("major")),
+        "page": 1,
+        "page_size": 50,
+        "sort_field": "finalScore",
+        "sort_order": "desc",
+    }
+
+
+async def _resolve_add_candidate_targets(
+    ctx: RunContext[RequestContext],
+    targets: list[str] | None,
+    filters: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+    resolved, missing, direct_reason = await _resolve_plan_targets(ctx, targets, source="candidates")
+    if direct_reason == "ok" and not missing and resolved:
+        return resolved, {}, "ok"
+
+    normalized_filters = _add_candidate_reference_filters(ctx, targets, filters)
+    if not normalized_filters.get("school") or not normalized_filters.get("major"):
+        return [], normalized_filters, direct_reason
+
+    batch = getattr(ctx.deps, "batch", None) or "01"
+    cached = await _sandbox_data(ctx, "plan/candidates.json")
+    matches = [
+        item
+        for item in _candidate_items(cached)
+        if _matches_plan_item(item, normalized_filters, batch=batch)
+    ]
+    if not matches:
+        queried = await _sandbox_data(
+            ctx,
+            "plan/candidates.json",
+            query=_candidate_query_for_filters(normalized_filters),
+        )
+        matches = [
+            item
+            for item in _candidate_items(queried)
+            if _matches_plan_item(item, normalized_filters, batch=batch)
+        ]
+    matches = _dedupe_items_by_id(matches, _item_volunteer_id)
+    if not matches:
+        return [], normalized_filters, "candidate_no_match"
+
+    plan_data = await _sandbox_data(ctx, "plan/items.json")
+    selected_volunteer_ids = {
+        _item_volunteer_id(item)
+        for item in _items_from_plan_file(plan_data)
+        if _item_volunteer_id(item)
+    }
+    matches = [item for item in matches if _item_volunteer_id(item) not in selected_volunteer_ids]
+    if not matches:
+        return [], normalized_filters, "candidate_already_selected"
+    if len(matches) == 1:
+        return matches, normalized_filters, "ok"
+
+    unit_ids = {_item_unit_id(item) for item in matches if _item_unit_id(item)}
+    if len(unit_ids) == 1:
+        return matches, normalized_filters, "ok"
+    return matches, normalized_filters, "candidate_ambiguous"
 
 
 async def _plan_items_for_target_position(
@@ -5862,7 +5987,7 @@ async def _create_plan_pending(
             "state": pending_state,
             "backend_response": {},
         }
-    response = await internal_client.save_pending_confirmation(ctx.deps.sessionid, pending_state, version=source_version)
+    response = await internal_client.save_pending_confirmation(ctx.deps.sessionid, pending_state)
     if not _is_success_response(response):
         return {
             "created": False,
@@ -5962,33 +6087,6 @@ def _tuition_budget_bounds(merged: dict[str, Any]) -> tuple[int, int]:
     return min_tuition, max_tuition
 
 
-async def _sync_tuition_budget_direct(ctx: RunContext[RequestContext], merged: dict[str, Any]) -> dict[str, Any] | None:
-    min_tuition, max_tuition = _tuition_budget_bounds(merged)
-    if min_tuition <= 0 and max_tuition <= 0:
-        return None
-    try:
-        response = await internal_client.update_session_tuition_range(
-            ctx.deps.sessionid,
-            min_tuition=min_tuition,
-            max_tuition=max_tuition,
-        )
-    except Exception as exc:
-        return {
-            "triggered": True,
-            "success": False,
-            "min_tuition_per_year": min_tuition,
-            "max_tuition_per_year": max_tuition,
-            "error": str(exc),
-        }
-    return {
-        "triggered": True,
-        "success": _is_success_response(response),
-        "min_tuition_per_year": min_tuition,
-        "max_tuition_per_year": max_tuition,
-        "backend_response": response,
-    }
-
-
 def _selected_values_from_pending_payload(execution_payload: dict[str, Any]) -> list[dict[str, Any]]:
     selected_data = execution_payload.get("selectedData") or execution_payload.get("selected_data")
     if isinstance(selected_data, dict):
@@ -6068,9 +6166,33 @@ def _pending_source_version(pending: dict[str, Any]) -> int:
     )
 
 
-async def _mark_pending_status(ctx: RunContext[RequestContext], pending: dict[str, Any], status: str, **extra: Any) -> None:
+def _pending_command_operation_id(pending: dict[str, Any], command_type: str) -> str:
+    raw = pending.get("raw") if isinstance(pending.get("raw"), dict) else {}
+    pending_id = str(pending.get("pending_id") or pending.get("pendingId") or raw.get("pendingId") or "").strip()
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"zhiyuan:{pending_id}:{command_type}"))
+
+
+def _pending_claim_token(pending: dict[str, Any]) -> str:
+    raw = pending.get("raw") if isinstance(pending.get("raw"), dict) else {}
+    return str(raw.get("_pendingClaimToken") or raw.get("claimToken") or "").strip()
+
+
+def _pending_command_execution_uncertain(response: dict[str, Any] | None) -> bool:
+    if not isinstance(response, dict):
+        return True
+    if response.get("error") or response.get("success") is False:
+        return True
+    if _as_int(response.get("code"), -1) == 40903:
+        message = str(response.get("msg") or response.get("message") or "").strip().lower()
+        return "already running" in message
+    return "code" not in response
+
+
+async def _mark_pending_status(
+    ctx: RunContext[RequestContext], pending: dict[str, Any], status: str, **extra: Any
+) -> dict[str, Any]:
     if _dry_run_state_mutations(ctx):
-        return
+        return {"code": 0, "data": {"transitionApplied": False}}
     raw = pending.get("raw")
     state = dict(raw) if isinstance(raw, dict) and raw else {
         "type": "pendingConfirmation",
@@ -6082,17 +6204,7 @@ async def _mark_pending_status(ctx: RunContext[RequestContext], pending: dict[st
     state["status"] = status
     state["updatedAt"] = _now_iso()
     state.update({key: value for key, value in extra.items() if value is not None})
-    version = _as_int(
-        pending.get("_extraDataVersion")
-        or pending.get("dataVersion")
-        or state.get("_extraDataVersion")
-        or state.get("dataVersion")
-        or pending.get("source_backend_version")
-        or pending.get("sourceBackendVersion")
-        or state.get("sourceBackendVersion")
-        or state.get("source_backend_version")
-    )
-    await internal_client.save_pending_confirmation(ctx.deps.sessionid, state, version=version)
+    return await internal_client.save_pending_confirmation(ctx.deps.sessionid, state)
 
 
 def _invalidate_after_pending_action(ctx: RunContext[RequestContext], kind: str, action_family: str) -> None:
@@ -6180,35 +6292,45 @@ async def _apply_intent_pending(
 
     major_preferences, school_preferences, region_preferences = _intent_constraint_payloads(merged)
     has_constraint_payload = any((major_preferences, school_preferences, region_preferences))
-    response: dict[str, Any] = {"skipped": "no_constraint_payload"}
-    constraint_success = True
+    constraint_update: dict[str, Any] | None = None
     if has_constraint_payload:
-        response = await internal_client.update_planning_constraint_state(
-            ctx.deps.sessionid,
-            intent_mode="constraint",
-            major_preferences=major_preferences,
-            school_preferences=school_preferences,
-            region_preferences=region_preferences,
-        )
-        constraint_success = _is_success_response(response)
-    tuition_budget_response = await _sync_tuition_budget_direct(ctx, merged)
-    tuition_budget_applied = (
-        True
-        if tuition_budget_response is None
-        else bool(tuition_budget_response.get("success"))
-    )
-    success = constraint_success and tuition_budget_applied
+        constraint_update = {"intentMode": "constraint"}
+        if major_preferences is not None:
+            constraint_update["majorPreferences"] = major_preferences
+        if school_preferences is not None:
+            constraint_update["schoolPreferences"] = school_preferences
+        if region_preferences is not None:
+            constraint_update["regionPreferences"] = region_preferences
     tenant_id = getattr(ctx.deps, "tenant_id", 1)
-    candidate_pool_regenerated = False
-    ordered_response = None
-    plan_regenerated = False
-    requires_candidate_pool_rebuild = False
-    if success and has_plan and apply_to_current_plan:
-        ordered_response = await internal_client.generate_planning_ordered_plan(
-            tenant_id,
-            ctx.deps.sessionid,
-        )
-        plan_regenerated = _is_success_response(ordered_response)
+    min_tuition, max_tuition = _tuition_budget_bounds(merged)
+    command_type = "apply_constraint_and_regenerate"
+    response = await internal_client.execute_pending_planning_command(
+        tenant_id,
+        ctx.deps.sessionid,
+        operation_id=_pending_command_operation_id(pending, command_type),
+        pending_id=str(pending.get("pending_id") or pending.get("pendingId") or ""),
+        claim_token=_pending_claim_token(pending),
+        expected_plan_version=_pending_source_version(pending),
+        command_type=command_type,
+        constraint_update=constraint_update,
+        min_tuition_per_year=min_tuition if max_tuition > 0 else None,
+        max_tuition_per_year=max_tuition if max_tuition > 0 else None,
+        regenerate_ordered_plan=has_plan and apply_to_current_plan,
+    )
+    if _pending_command_execution_uncertain(response):
+        return False, {
+            "reason": "pending_command_result_uncertain",
+            "execution_uncertain": True,
+            "backend_response": response,
+        }, "这次操作结果还在确认中，不会重复执行；请稍后刷新后再确认状态。"
+    success = _is_success_response(response)
+    command_data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    completed_steps = command_data.get("completedSteps") if isinstance(command_data.get("completedSteps"), list) else []
+    planning_state = command_data.get("planningState") if isinstance(command_data.get("planningState"), dict) else {}
+    ordered_response = {"code": 0, "data": planning_state} if success and planning_state else None
+    constraint_success = success and (not has_constraint_payload or "constraint_updated" in completed_steps)
+    tuition_budget_applied = success and (max_tuition <= 0 or "tuition_updated" in completed_steps)
+    plan_regenerated = success and has_plan and apply_to_current_plan and "ordered_plan_regenerated" in completed_steps
 
     data = {
         "intent_mode": intent_mode,
@@ -6216,13 +6338,16 @@ async def _apply_intent_pending(
         "merged": merged,
         "backend_response": response,
         "constraint_state_applied": constraint_success,
-        "tuition_budget_response": tuition_budget_response,
+        "tuition_budget_response": response if max_tuition > 0 else None,
         "tuition_budget_applied": tuition_budget_applied,
         "has_plan": has_plan,
         "apply_to_current_plan": apply_to_current_plan,
-        "requires_candidate_pool_rebuild": requires_candidate_pool_rebuild,
-        "candidate_pool_regenerated": candidate_pool_regenerated,
+        "requires_candidate_pool_rebuild": False,
+        "candidate_pool_regenerated": False,
         "plan_regenerated": plan_regenerated,
+        "operation_id": command_data.get("operationId"),
+        "operation_replayed": bool(command_data.get("replayed")),
+        "completed_steps": completed_steps,
     }
     if ordered_response is not None:
         data["ordered_plan_response"] = ordered_response
@@ -6623,43 +6748,82 @@ async def _apply_plan_pending(
         volunteer_ids = _plan_volunteer_ids(payload, atomic)
         if not volunteer_ids:
             return False, {"reason": "missing_volunteer_ids"}, "这次添加方案缺少可执行的志愿标识，请重新生成预览。"
-        select_response = await internal_client.select_working_plan_items(tenant_id, ctx.deps.sessionid, volunteer_ids)
-        if not _is_success_response(select_response):
-            return False, {"action_family": action_family, "backend_response": select_response}, "这次加入方案没有执行成功，请重新生成预览。"
-        ordered_response = await internal_client.generate_planning_ordered_plan(tenant_id, ctx.deps.sessionid)
+        command_type = "add_units"
+        command_response = await internal_client.execute_pending_planning_command(
+            tenant_id,
+            ctx.deps.sessionid,
+            operation_id=_pending_command_operation_id(pending, command_type),
+            pending_id=str(pending.get("pending_id") or pending.get("pendingId") or ""),
+            claim_token=_pending_claim_token(pending),
+            expected_plan_version=_pending_source_version(pending),
+            command_type=command_type,
+            volunteer_ids=volunteer_ids,
+            regenerate_ordered_plan=True,
+        )
+        if _pending_command_execution_uncertain(command_response):
+            return False, {
+                "reason": "pending_command_result_uncertain",
+                "execution_uncertain": True,
+                "backend_response": command_response,
+            }, "这次加入结果还在确认中，不会重复执行；请稍后刷新后再确认状态。"
+        command_data = command_response.get("data") if isinstance(command_response.get("data"), dict) else {}
+        planning_state = command_data.get("planningState") if isinstance(command_data.get("planningState"), dict) else {}
+        ordered_response = (
+            {"code": 0, "data": planning_state}
+            if _is_success_response(command_response) and planning_state
+            else command_response
+        )
         success = _is_success_response(ordered_response)
         return success, {
             "action_family": action_family,
             "selected_volunteer_ids": volunteer_ids,
-            "select_response": select_response,
+            "operation_id": command_data.get("operationId"),
+            "operation_replayed": bool(command_data.get("replayed")),
+            "completed_steps": command_data.get("completedSteps") or [],
             "backend_response": ordered_response,
-        }, ("已加入所选志愿并刷新排序方案。" if success else "志愿已加入，但刷新排序方案失败，请稍后查看。")
+        }, ("已加入所选志愿并刷新排序方案。" if success else "这次加入方案没有执行成功，请重新生成预览。")
     if action_family == "replace_units":
         unit_ids = _plan_unit_ids(payload, atomic)
         volunteer_ids = _plan_volunteer_ids(payload, atomic)
         if not unit_ids or not volunteer_ids:
             return False, {"reason": "missing_replace_args"}, "这次替换方案缺少要移出的志愿组或要加入的候选志愿，请重新生成预览。"
-        remove_response = await internal_client.remove_planning_ordered_plan_units(tenant_id, ctx.deps.sessionid, unit_ids)
-        if not _is_success_response(remove_response):
-            return False, {"action_family": action_family, "backend_response": remove_response}, "这次替换中的移出操作没有执行成功，请重新生成预览。"
-        select_response = await internal_client.select_working_plan_items(tenant_id, ctx.deps.sessionid, volunteer_ids)
-        if not _is_success_response(select_response):
+        command_type = "replace_units"
+        command_response = await internal_client.execute_pending_planning_command(
+            tenant_id,
+            ctx.deps.sessionid,
+            operation_id=_pending_command_operation_id(pending, command_type),
+            pending_id=str(pending.get("pending_id") or pending.get("pendingId") or ""),
+            claim_token=_pending_claim_token(pending),
+            expected_plan_version=_pending_source_version(pending),
+            command_type=command_type,
+            unit_ids=unit_ids,
+            volunteer_ids=volunteer_ids,
+            regenerate_ordered_plan=True,
+        )
+        if _pending_command_execution_uncertain(command_response):
             return False, {
-                "action_family": action_family,
-                "remove_response": remove_response,
-                "backend_response": select_response,
-            }, "已移出原志愿组，但新候选加入失败，请查看当前方案后重新调整。"
-        ordered_response = await internal_client.generate_planning_ordered_plan(tenant_id, ctx.deps.sessionid)
+                "reason": "pending_command_result_uncertain",
+                "execution_uncertain": True,
+                "backend_response": command_response,
+            }, "这次替换结果还在确认中，不会重复执行；请稍后刷新后再确认状态。"
+        command_data = command_response.get("data") if isinstance(command_response.get("data"), dict) else {}
+        planning_state = command_data.get("planningState") if isinstance(command_data.get("planningState"), dict) else {}
+        ordered_response = (
+            {"code": 0, "data": planning_state}
+            if _is_success_response(command_response) and planning_state
+            else command_response
+        )
         success = _is_success_response(ordered_response)
         data = {
             "action_family": action_family,
             "unit_ids": unit_ids,
             "selected_volunteer_ids": volunteer_ids,
-            "remove_response": remove_response,
-            "select_response": select_response,
+            "operation_id": command_data.get("operationId"),
+            "operation_replayed": bool(command_data.get("replayed")),
+            "completed_steps": command_data.get("completedSteps") or [],
             "backend_response": ordered_response,
         }
-        message = "已完成替换并刷新排序方案。" if success else "已完成替换，但刷新排序方案失败，请稍后查看。"
+        message = "已完成替换并刷新排序方案。" if success else "这次替换没有执行成功，请重新生成预览。"
         if success:
             validation = _ordered_plan_diff_validation(
                 action_family,
@@ -7278,7 +7442,22 @@ async def preview_plan_action(
                     "message": "当前还没有正式方案，不能预览移出或移动操作。可以先生成方案。",
                 }
             )
-        if not _as_list(targets) and review_issue_code and normalized_action == "remove":
+        effective_targets = _as_list(targets)
+        if not effective_targets and not normalized_filters and raw_user_text:
+            inferred_positions = _target_position_values(raw_user_text) or _target_position_range(raw_user_text)
+            if not inferred_positions:
+                single_position = _target_position_value(raw_user_text)
+                if single_position > 0:
+                    inferred_positions = [single_position]
+            if not inferred_positions and normalized_action == "move" and _as_int(target_position) > 0:
+                source_match = re.search(r"第([一二两三四五六七八九十]+|\d+)", raw_user_text)
+                if source_match:
+                    source_position = _as_int(source_match.group(1)) or _chinese_ordinal_value(source_match.group(1))
+                    if source_position > 0:
+                        inferred_positions = [source_position]
+            if inferred_positions:
+                effective_targets = [f"第{position}个" for position in inferred_positions]
+        if not effective_targets and review_issue_code and normalized_action == "remove":
             issue, resolved, reason = await _review_issue_action_target(ctx, review_issue_code)
             missing = [] if reason in {"ok", "review_issue_units_not_in_plan"} else [str(review_issue_code)]
             if issue:
@@ -7286,17 +7465,22 @@ async def preview_plan_action(
             if reason == "ok" and normalized_filters:
                 resolved, normalized_filters, reason = _filter_resolved_plan_items(ctx, resolved, normalized_filters)
                 missing = [] if reason == "ok" else [_describe_filters(normalized_filters)]
-        elif not _as_list(targets) and normalized_filters and normalized_action == "remove":
+            elif reason != "ok":
+                fallback_filters = normalized_filters or _review_issue_fallback_filters(review_issue_code)
+                if fallback_filters:
+                    resolved, normalized_filters, reason = await _resolve_plan_filter_targets(ctx, fallback_filters)
+                    missing = [] if reason == "ok" else [_describe_filters(normalized_filters)]
+        elif not effective_targets and normalized_filters and normalized_action == "remove":
             resolved, normalized_filters, reason = await _resolve_plan_filter_targets(ctx, normalized_filters)
             missing = [] if reason == "ok" else [_describe_filters(normalized_filters)]
-        elif not _as_list(targets) and normalized_filters and normalized_action == "move":
+        elif not effective_targets and normalized_filters and normalized_action == "move":
             resolved, normalized_filters, reason = await _resolve_plan_filter_selector_target(
                 ctx,
                 normalized_filters,
             )
             missing = [] if reason == "ok" else [_describe_filters(normalized_filters)]
         else:
-            resolved, missing, reason = await _resolve_plan_targets(ctx, targets, source="plan")
+            resolved, missing, reason = await _resolve_plan_targets(ctx, effective_targets, source="plan")
         if reason == "filter_no_match":
             return _json(
                 {
@@ -7355,7 +7539,7 @@ async def preview_plan_action(
         unit_ids = [_item_unit_id(item) for item in resolved if _item_unit_id(item)]
         affected_items = [_plan_item_brief(item) for item in resolved if item]
         count = len(unit_ids)
-        affected_scope = "；".join(_plan_item_snippet(item) for item in resolved[:5])
+        affected_scope = _plan_item_scope_summary(resolved, limit=5, total=count)
         if normalized_filters and normalized_action == "remove" and not _as_list(targets) and not review_issue_meta:
             affected_scope = f"{_describe_filters(normalized_filters)}：{affected_scope}"
         if review_issue_meta:
@@ -7395,24 +7579,71 @@ async def preview_plan_action(
             )
 
     elif normalized_action == "add":
-        resolved, missing, reason = await _resolve_plan_targets(ctx, targets, source="candidates")
-        if reason != "ok" or missing or not resolved:
+        resolved, add_filters, reason = await _resolve_add_candidate_targets(ctx, targets, normalized_filters)
+        if add_filters:
+            normalized_filters = add_filters
+        if reason == "candidate_ambiguous":
+            options = [_plan_item_brief(item) for item in resolved[:5]]
             return _json(
                 {
                     "data": {
                         "action": "add",
                         "targets": targets or [],
-                        "missing_targets": missing,
+                        "filters": normalized_filters,
+                        "candidate_options": options,
+                        "matched_total": len(resolved),
                         "reason": reason,
                     },
                     "next_step": "clarify",
-                    "message": "还没有唯一定位到要加入的候选志愿，请说明候选里的学校和专业。",
+                    "message": (
+                        "当前候选池里找到多个符合条件的志愿："
+                        + "；".join(_plan_item_snippet(item) for item in resolved[:5])
+                        + "。请说明要加入其中哪个具体专业。"
+                    ),
+                }
+            )
+        if reason in {"candidate_no_match", "candidate_already_selected"}:
+            description = _describe_filters(normalized_filters) or "、".join(_as_list(targets))
+            message = (
+                f"当前候选池里没有命中“{description}”的可加入志愿。"
+                if reason == "candidate_no_match"
+                else f"“{description}”对应的候选已经在当前方案中，不需要重复加入。"
+            )
+            return _json(
+                {
+                    "data": {
+                        "action": "add",
+                        "targets": targets or [],
+                        "filters": normalized_filters,
+                        "candidate_options": [],
+                        "reason": reason,
+                    },
+                    "next_step": "respond",
+                    "message": message,
+                }
+            )
+        if reason != "ok" or not resolved:
+            return _json(
+                {
+                    "data": {
+                        "action": "add",
+                        "targets": targets or [],
+                        "filters": normalized_filters,
+                        "reason": reason,
+                    },
+                    "next_step": "clarify",
+                    "message": "还没有唯一定位到要加入的候选志愿，请同时说明候选里的学校和专业。",
                 }
             )
         volunteer_ids = [_item_volunteer_id(item) for item in resolved if _item_volunteer_id(item)]
         affected_items = [_plan_item_brief(item) for item in resolved if item]
         count = len(volunteer_ids)
-        affected_scope = "；".join(_plan_item_snippet(item) for item in resolved[:5])
+        affected_scope = _plan_item_scope_summary(
+            resolved,
+            limit=5,
+            total=count,
+            noun="候选志愿",
+        )
 
     elif normalized_action == "replace":
         candidate_targets = _as_list(
@@ -7537,8 +7768,17 @@ async def preview_plan_action(
         volunteer_ids = [_item_volunteer_id(item) for item in new_resolved if _item_volunteer_id(item)]
         affected_items = [_plan_item_brief(item) for item in old_resolved + new_resolved if item]
         count = len(unit_ids) + len(volunteer_ids)
-        affected_scope = "移出：" + "；".join(_plan_item_snippet(item) for item in old_resolved[:3])
-        affected_scope += "；加入：" + "；".join(_plan_item_snippet(item) for item in new_resolved[:3])
+        affected_scope = "移出：" + _plan_item_scope_summary(
+            old_resolved,
+            limit=3,
+            total=len(unit_ids),
+        )
+        affected_scope += "；加入：" + _plan_item_scope_summary(
+            new_resolved,
+            limit=3,
+            total=len(volunteer_ids),
+            noun="候选志愿",
+        )
         if review_issue_meta:
             affected_scope = f"审查问题 {review_issue_meta.get('code')}：" + affected_scope
 
@@ -7851,6 +8091,13 @@ async def query_plan(
     )
 
 
+def _no_active_pending_confirmation_message() -> str:
+    return (
+        "当前没有待确认操作；上一轮只是查询或分析，没有待采纳或待执行的内容，因此不会执行任何变更。"
+        "下一步可以直接说明想查看什么，或者先让我生成具体调整预览。"
+    )
+
+
 async def confirm_pending(
     ctx: RunContext[RequestContext],
     action: PendingAction,
@@ -7876,6 +8123,19 @@ async def confirm_pending(
             }
         )
 
+    runtime_pending = _turn_started_active_pending(ctx)
+    if runtime_pending is None:
+        return _json(
+            {
+                "data": {
+                    "active": False,
+                    "action": normalized_action,
+                },
+                "next_step": "respond",
+                "message": _no_active_pending_confirmation_message(),
+            }
+        )
+
     pending = await _pending_data(ctx)
     if not pending.get("active"):
         return _json(
@@ -7885,14 +8145,39 @@ async def confirm_pending(
                     "action": normalized_action,
                 },
                 "next_step": "respond",
-                "message": "当前没有待确认操作；没有上一轮待确认内容，也没有待执行的方案调整或报考要求，不会执行任何变更。",
+                "message": _no_active_pending_confirmation_message(),
+            }
+        )
+
+    runtime_pending_id = str(getattr(runtime_pending, "pending_id", "") or "").strip()
+    snapshot_pending_id = str(pending.get("pending_id") or pending.get("pendingId") or "").strip()
+    if not runtime_pending_id or not snapshot_pending_id or runtime_pending_id != snapshot_pending_id:
+        return _json(
+            {
+                "data": {
+                    "active": False,
+                    "action": normalized_action,
+                    "error": "pending_snapshot_mismatch",
+                    "runtime_pending_id": runtime_pending_id,
+                    "snapshot_pending_id": snapshot_pending_id,
+                },
+                "next_step": "respond",
+                "message": "当前待确认内容已经变化，这次不会执行。请刷新后按最新预览重新确认。",
             }
         )
 
     kind = str(pending.get("kind") or "").strip()
     action_family = str(pending.get("action_family") or pending.get("actionFamily") or "").strip()
     if normalized_action == "cancel":
-        await _mark_pending_status(ctx, pending, "cancelled")
+        cancel_response = await _mark_pending_status(ctx, pending, "cancelled")
+        if not _is_success_response(cancel_response):
+            return _json(
+                {
+                    "data": {"active": True, "action": "cancel", "error": "pending_cas_conflict"},
+                    "next_step": "respond",
+                    "message": "当前待确认内容已经变化，这次未取消。请刷新后以最新预览为准。",
+                }
+            )
         _invalidate_after_pending_action(ctx, kind, action_family)
         _clear_context_pending(ctx)
         return _json(
@@ -7959,6 +8244,32 @@ async def confirm_pending(
             }
         )
 
+    raw_pending = pending.get("raw") if isinstance(pending.get("raw"), dict) else {}
+    if str(raw_pending.get("status") or "").strip() != "applying":
+        claim_response = await internal_client.claim_pending_confirmation(ctx.deps.sessionid, raw_pending)
+        claim_data = claim_response.get("data") if isinstance(claim_response.get("data"), dict) else {}
+        if not _is_success_response(claim_response) or claim_data.get("transitionApplied") is not True:
+            return _json(
+                {
+                    "data": {
+                        "active": False,
+                        "action": "confirm",
+                        "kind": kind,
+                        "action_family": action_family,
+                        "error": "pending_claim_conflict",
+                    },
+                    "next_step": "respond",
+                    "message": "这次待确认内容已被处理或已经变化，不会重复执行。请刷新后以最新状态为准。",
+                }
+            )
+        claimed_raw = claim_data.get("dataValue") if isinstance(claim_data.get("dataValue"), dict) else {}
+        if claimed_raw:
+            claimed_raw["_pendingRevision"] = claim_data.get("revision")
+            claimed_raw["revision"] = claim_data.get("revision")
+            claimed_raw["_pendingClaimToken"] = claim_data.get("claimToken")
+            claimed_raw["_pendingClaimExpiresAt"] = claim_data.get("claimExpiresAt")
+            pending["raw"] = claimed_raw
+
     if kind == "intent_change":
         success, data, message = await _apply_intent_pending(
             ctx,
@@ -7972,7 +8283,27 @@ async def confirm_pending(
         data = {"reason": "unsupported_pending_kind", "kind": kind}
         message = "这类待确认内容还不能由新确认工具执行，请重新生成预览。"
 
-    status = "applied" if success else "failed"
+    if data.get("execution_uncertain"):
+        _invalidate_after_pending_action(ctx, kind, action_family)
+        _clear_context_pending(ctx)
+        return _json(
+            {
+                "data": {
+                    "active": True,
+                    "action": "confirm",
+                    "kind": kind,
+                    "action_family": action_family,
+                    "pending_id": pending.get("pending_id"),
+                    "applied": False,
+                    "execution_uncertain": True,
+                    "result": data,
+                },
+                "next_step": "respond",
+                "message": message,
+            }
+        )
+
+    status = "applied" if success else "expired"
     await _mark_pending_status(
         ctx,
         pending,

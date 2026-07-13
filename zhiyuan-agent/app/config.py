@@ -57,6 +57,8 @@ class InternalServiceConfig(BaseSettings):
     }
 
     url: str = "https://zhiyuan.ytell.cn"
+    # 仅用于 4.0 发布迁移窗口：新 pending 表无记录时读取旧 extra-data。
+    # 新写入始终只走独立 pending 资源，完成存量迁移后应删除此开关和兜底。
 
 
 class ExtractConfig(BaseSettings):

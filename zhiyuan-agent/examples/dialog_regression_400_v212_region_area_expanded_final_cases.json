@@ -19,7 +19,14 @@
       "ordered_plan_final_action"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "18",
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": [
+        "orderedPlan",
+        "formalPlan"
+      ]
+    },
     "clearBackendPlanningIntentState": true,
     "promptDefaults": {
       "assertNotContains": [
@@ -45,7 +52,7 @@
   "cases": [
     {
       "name": "400-v212-region-south-north-final-action",
-      "sessionId": "17",
+      "sessionId": "9904721",
       "prompts": [
         {
           "prompt": "孩子就想去南方，北方先别考虑",
@@ -99,17 +106,17 @@
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "minLength": 1
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "北京"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "山东"
             }
           ]
@@ -118,7 +125,7 @@
     },
     {
       "name": "400-v212-region-yangtze-delta-only-final-action",
-      "sessionId": "17",
+      "sessionId": "9904722",
       "prompts": [
         {
           "prompt": "那就只看长三角吧",
@@ -166,17 +173,17 @@
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "minLength": 1
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "北京"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "广东"
             }
           ]
@@ -185,7 +192,7 @@
     },
     {
       "name": "400-v212-region-south-china-exclude-final-action",
-      "sessionId": "17",
+      "sessionId": "9904723",
       "prompts": [
         {
           "prompt": "华南的不要了",
@@ -233,22 +240,22 @@
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "minLength": 1
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "广东"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "广西"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "海南"
             }
           ]
@@ -257,7 +264,7 @@
     },
     {
       "name": "400-v212-region-pearl-delta-exclude-final-action",
-      "sessionId": "17",
+      "sessionId": "9904724",
       "prompts": [
         {
           "prompt": "珠三角先不考虑了",
@@ -305,22 +312,22 @@
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "minLength": 1
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "广州"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "深圳"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "佛山"
             }
           ]
@@ -329,7 +336,7 @@
     },
     {
       "name": "400-v212-region-southwest-only-final-action",
-      "sessionId": "17",
+      "sessionId": "9904725",
       "prompts": [
         {
           "prompt": "只看西南吧",
@@ -377,22 +384,22 @@
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "minLength": 1
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "山东"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "江苏"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "广东"
             }
           ]

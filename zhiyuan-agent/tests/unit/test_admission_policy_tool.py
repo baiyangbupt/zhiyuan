@@ -124,7 +124,7 @@ async def test_missing_info_checklist_uses_context_and_lists_core_gaps():
     assert "选科（物理、化学、生物）" in summary
     assert "位次或一分一段位置" in summary
     assert "体检受限项" in summary
-    assert "家庭约束" in summary
+    assert "家庭预算与可接受学费上限" in summary
     assert "missing_info" == payload["consultation_scope"]
 
 

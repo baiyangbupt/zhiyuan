@@ -19,7 +19,14 @@
       "ordered_plan_final_action"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "16",
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": [
+        "orderedPlan",
+        "formalPlan"
+      ]
+    },
     "clearBackendPlanningIntentState": true,
     "promptDefaults": {
       "assertNotContains": [
@@ -128,7 +135,8 @@
             {
               "key": "planningState",
               "path": "orderedPlanState.units",
-              "lengthLessThanBefore": true
+              "lengthLessThanBefore": true,
+              "minLength": 1
             },
             {
               "key": "planningState",
@@ -204,7 +212,8 @@
             {
               "key": "planningState",
               "path": "orderedPlanState.units",
-              "lengthLessThanBefore": true
+              "lengthLessThanBefore": true,
+              "minLength": 1
             },
             {
               "key": "planningState",

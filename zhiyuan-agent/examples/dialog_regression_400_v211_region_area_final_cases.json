@@ -19,7 +19,14 @@
       "ordered_plan_final_action"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "18",
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": [
+        "orderedPlan",
+        "formalPlan"
+      ]
+    },
     "clearBackendPlanningIntentState": true,
     "promptDefaults": {
       "assertNotContains": [
@@ -45,7 +52,7 @@
   "cases": [
     {
       "name": "400-v211-region-south-north-final-action",
-      "sessionId": "17",
+      "sessionId": "9904711",
       "prompts": [
         {
           "prompt": "孩子就想去南方，北方先别考虑",
@@ -100,17 +107,17 @@
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "minLength": 1
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "北京"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "山东"
             }
           ]

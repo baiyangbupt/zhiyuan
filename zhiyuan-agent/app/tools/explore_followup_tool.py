@@ -14,7 +14,7 @@ from app.tools.intent_response_tool import (
 )
 from app.util.code_enrichment import normalize_candidate_filters_async
 from app.util.internal_client import (
-    get_pending_confirmation,
+    get_last_pending_confirmation,
     get_planning_state,
     query_planning_candidate_pool,
 )
@@ -165,8 +165,9 @@ async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
     regenerated from a fresh user utterance.
     """
     try:
-        pending_result = await get_pending_confirmation(session_id)
-        pending_data = (pending_result or {}).get("data", {}).get("pendingConfirmation") or {}
+        pending_result = await get_last_pending_confirmation(session_id)
+        pending_payload = (pending_result or {}).get("data") or {}
+        pending_data = pending_payload.get("dataValue") or {}
         if (
             isinstance(pending_data, dict)
             and pending_data.get("status") == "active"
