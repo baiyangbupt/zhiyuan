@@ -119,6 +119,12 @@
       "prompts": [
         {
           "prompt": "如果稳和保不够，能不能直接帮我补齐？候选不够也要直接说",
+          "assertContains": [
+            "稳",
+            "保",
+            "结论",
+            "只读审查"
+          ],
           "assertContainsAny": [
             "稳",
             "保",
@@ -189,6 +195,12 @@
             "取舍",
             "预览"
           ],
+          "assertContains": [
+            "当前正式方案",
+            "高收费",
+            "中外合作",
+            "不会改动方案"
+          ],
           "assertNotContains": [
             "已直接替换",
             "已直接删除"
@@ -218,7 +230,17 @@
             "actionable_next_step",
             "user_language"
           ],
-          "assertNoFollowups": true
+          "assertNoFollowups": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "review_plan"
+          ],
+          "assertToolNamesNotContain": [
+            "preview_plan_action",
+            "preview_plan_change",
+            "preview_intent_change",
+            "query_plan"
+          ]
         }
       ],
       "sourceSessionId": "130",
@@ -252,6 +274,20 @@
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertToolNamesNotContain": [
+            "preview_plan_action",
+            "review_plan",
+            "query_plan"
+          ],
+          "maxToolCallCount": 1,
+          "expectedActionFamily": "apply_plan_change_proposal",
           "expectedKeyPoints": [
             "专业组",
             "安全垫",
@@ -275,6 +311,67 @@
             "actionable_next_step",
             "user_language"
           ]
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "安全垫",
+            "3个专业组",
+            "补入3个专业",
+            "复审校验通过"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.proposalSource",
+              "equals": "review_check"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.proposalStrategy",
+              "equals": "adjust_major_group_inner_safety"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.postValidationPassed",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.affectedUnitCount",
+              "equals": 3
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.addedVolunteerCount",
+              "equals": 3
+            }
+          ]
         }
       ],
       "sourceSessionId": "131",
@@ -295,6 +392,7 @@
           "assertContainsAny": [
             "处理不了",
             "不能直接处理",
+            "不能直接补或调",
             "不能直接改",
             "候选",
             "可替换机会不够",

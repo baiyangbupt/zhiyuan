@@ -30,7 +30,12 @@
           "action_family",
           "volunteerId",
           "草稿"
-        ]
+        ],
+        "expectedToolNames": [
+          "compare_entities"
+        ],
+        "maxToolCallCount": 1,
+        "assertNoFollowups": true
       }
     ]
   },
@@ -66,7 +71,12 @@
           "action_family",
           "volunteerId",
           "草稿"
-        ]
+        ],
+        "expectedToolNames": [
+          "explore_topic"
+        ],
+        "maxToolCallCount": 1,
+        "assertNoFollowups": true
       },
       {
         "prompt": "先把体制内稳定就业作为参考方向",
@@ -116,7 +126,8 @@
           "action_family",
           "volunteerId",
           "草稿"
-        ]
+        ],
+        "assertNoFollowups": true
       }
     ]
   },
@@ -131,14 +142,14 @@
       "release_4_0_0",
       "explicit_major_requirement",
       "positive_negative_intent_mix",
-      "priority_reference_boundary",
+      "explicit_reference_boundary",
       "plan_impact",
       "zhiyuan_agent_direct"
     ],
     "assertPlanStyle": true,
     "prompts": [
       {
-        "prompt": "财经类可以优先，但是护理和中西医结合不要",
+        "prompt": "财经类只作为参考，护理和中西医结合不要",
         "assertContainsAny": [
           "确认",
           "护理",
@@ -207,7 +218,7 @@
     ],
     "coverage": [
       "release_4_0_0",
-      "region_priority_reference_boundary",
+      "explicit_region_reference_boundary",
       "explicit_region_requirement",
       "priority_confirmable_boundary",
       "zhiyuan_agent_direct"
@@ -215,14 +226,15 @@
     "assertPlanStyle": true,
     "prompts": [
       {
-        "prompt": "优先北京天津",
+        "prompt": "北京天津只作为参考，先别记录也别调整",
         "assertContainsAny": [
           "北京",
           "天津",
           "参考",
           "优先",
           "待确认",
-          "报考要求"
+          "报考要求",
+          "还没有生成可确认的调整预览"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -231,7 +243,12 @@
           "action_family",
           "volunteerId",
           "草稿"
-        ]
+        ],
+        "expectedToolNames": [
+          "preview_intent_change"
+        ],
+        "maxToolCallCount": 1,
+        "assertNoFollowups": true
       },
       {
         "prompt": "确认",
@@ -303,7 +320,7 @@
     ]
   },
   {
-    "name": "400-school-priority-reference-boundary",
+    "name": "400-school-priority-hard-requirement-boundary",
     "sessionId": "5739",
     "flow": [
       "explore",
@@ -313,7 +330,7 @@
       "release_4_0_0",
       "school_explore",
       "region_explore",
-      "school_priority_reference_boundary",
+      "school_priority_hard_requirement_boundary",
       "candidate_match",
       "zhiyuan_agent_direct"
     ],
@@ -333,15 +350,18 @@
           "action_family",
           "volunteerId",
           "草稿"
-        ]
+        ],
+        "expectedToolNames": [
+          "discover_options"
+        ],
+        "maxToolCallCount": 1,
+        "assertNoFollowups": true
       },
       {
         "prompt": "天津商业大学和河北经贸大学先记为重点关注学校，后面生成方案时优先考虑",
         "assertContainsAny": [
           "重点关注",
           "优先考虑",
-          "软性参考",
-          "参考倾向",
           "后续生成方案",
           "待确认",
           "报考要求",
@@ -390,7 +410,12 @@
           "action_family",
           "volunteerId",
           "草稿"
-        ]
+        ],
+        "expectedToolNames": [
+          "discover_options"
+        ],
+        "maxToolCallCount": 1,
+        "assertNoFollowups": true
       }
     ]
   },
@@ -463,12 +488,17 @@
     "prompts": [
       {
         "prompt": "候选里计算机方向有哪些机会",
+        "assertContains": [
+          "候选",
+          "计算机"
+        ],
         "assertContainsAny": [
           "候选",
           "计算机",
           "机会"
         ],
         "assertNotContains": [
+          "暂不支持这些筛选字段",
           "已直接加入",
           "payload",
           "stage",

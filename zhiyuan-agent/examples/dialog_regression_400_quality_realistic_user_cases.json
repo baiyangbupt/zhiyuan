@@ -83,6 +83,13 @@
     "prompts": [
       {
         "prompt": "保底够不够啊",
+        "assertContains": [
+          "冲",
+          "稳",
+          "保",
+          "结论",
+          "只读审查"
+        ],
         "assertContainsAny": [
           "保",
           "保底",

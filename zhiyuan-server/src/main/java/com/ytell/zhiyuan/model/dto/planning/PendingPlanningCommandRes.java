@@ -14,5 +14,6 @@ public class PendingPlanningCommandRes {
     private Integer resultPlanVersion;
     private Boolean replayed = false;
     private List<String> completedSteps = Lists.newArrayList();
+    private PlanChangePostconditionReportDTO postconditionReport;
     private PlanningStateDTO planningState;
 }

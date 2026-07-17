@@ -18,4 +18,5 @@ public class PendingPlanningCommandReq {
     private Boolean regenerateOrderedPlan = false;
     private List<String> unitIds = Lists.newArrayList();
     private List<String> volunteerIds = Lists.newArrayList();
+    private FixProposalApplyReq proposalApply;
 }

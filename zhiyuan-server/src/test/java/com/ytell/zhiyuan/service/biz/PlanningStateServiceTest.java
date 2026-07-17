@@ -54,12 +54,14 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateVersionDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningWorkspaceStateRes;
+import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReorderSuggestionDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReplaceSuggestionDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewWorkflowRunRes;
 import com.ytell.zhiyuan.model.dto.planning.StaleFlagsDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import com.ytell.zhiyuan.model.dto.planning.UpdateConstraintStateReq;
 import com.ytell.zhiyuan.model.dto.planning.UpdateLatentProfileReq;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
@@ -3189,6 +3191,605 @@ public class PlanningStateServiceTest {
         assertFalse(draftIds.contains("ps2_m2"));
         assertTrue(res.getState().getOperationLogs().stream()
                 .anyMatch(log -> "user_goal_apply".equals(log.getType())));
+    }
+
+    @Test
+    void shouldApplyUserGoalFillToCountAndPersistNewTarget() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(2);
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "临床医学", 55D, 80D, 55D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "学校C", "稳", "法学", 58D, 90D, 58D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps4_m4", "ps4", "s4", "学校D", "保", "数学", 65D, 85D, 65D, false));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "临床医学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(4);
+        req.setSourceVersionGuard(9);
+        req.setUserOriginalText("把方案补齐到4个");
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals("applied", res.getStatus());
+        assertEquals(Integer.valueOf(4), res.getState().getCandidatePoolState().getRequiredCount());
+        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertEquals(4, draftIds.size());
+        assertTrue(draftIds.contains("ps1_m1"));
+        assertTrue(draftIds.contains("ps2_m2"));
+        assertTrue(draftIds.contains("ps3_m3"));
+        assertTrue(draftIds.contains("ps4_m4"));
+        assertEquals(Integer.valueOf(2), res.getRepairReport().getAddedVolunteerCount());
+    }
+
+    @Test
+    void shouldApplyProjectedExcludeAndFillAsOneUserGoalProposal() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(2);
+        CandidateItemDTO publicCurrent = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "公办学校A", "稳", "数学", 55D, 80D, 55D, false);
+        publicCurrent.setSchoolNature("公办");
+        CandidateItemDTO privateCurrent = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "民办学校B", "稳", "法学", 60D, 70D, 60D, false);
+        privateCurrent.setSchoolNature("民办");
+        CandidateItemDTO publicReplacement = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "公办学校C", "稳", "金融学", 58D, 90D, 58D, false);
+        publicReplacement.setSchoolNature("公办");
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(publicCurrent, privateCurrent, publicReplacement));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "公办学校A", "数学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "民办学校B", "法学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setSourceVersionGuard(9);
+        req.setUserOriginalText("补齐到2个，而且民办的不要");
+        UserGoalFixProposalReq.RequirementDTO requirement = new UserGoalFixProposalReq.RequirementDTO();
+        requirement.setKind("exclude");
+        requirement.setDomain("school");
+        requirement.setKey("school_nature");
+        requirement.setValues(java.util.Arrays.asList("民办"));
+        req.getRequirements().add(requirement);
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals("applied", res.getStatus());
+        assertEquals(Integer.valueOf(2), res.getState().getCandidatePoolState().getRequiredCount());
+        assertTrue(res.getState().getConstraintState().getHardConstraints().getMustExcludeSchools()
+                .contains("院校性质:民办"));
+        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertEquals(new java.util.HashSet<String>(java.util.Arrays.asList("ps1_m1", "ps3_m3")), draftIds);
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getRemovedVolunteerCount());
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getAddedVolunteerCount());
+        assertEquals(3, res.getState().getCandidatePoolState().getItems().size());
+    }
+
+    @Test
+    void shouldUseEnrichedMajorTaxonomyForFillPreviewAndApply() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(3);
+        CandidateItemDTO medicalCurrent = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "医学院", "稳", "护理学", 55D, 80D, 55D, false);
+        medicalCurrent.setMajorSubCategoryId("89");
+        CandidateItemDTO managementCurrent = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "管理学院", "稳", "工程管理", 60D, 70D, 60D, false);
+        managementCurrent.setMajorSubCategoryId("91");
+        CandidateItemDTO lawCandidate = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "法学院", "稳", "法学", 58D, 90D, 58D, false);
+        lawCandidate.setMajorDiscipline("法学");
+        CandidateItemDTO engineeringCandidate = buildCandidateItem(
+                "ps4_m4", "ps4", "s4", "工学院", "保", "软件工程", 65D, 85D, 65D, false);
+        engineeringCandidate.setMajorDiscipline("工学");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(
+                medicalCurrent, managementCurrent, lawCandidate, engineeringCandidate));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps1_m1", "医学院", "护理学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps2_m2", "管理学院", "工程管理", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setSourceVersionGuard(9);
+        UserGoalFixProposalReq.RequirementDTO requirement = new UserGoalFixProposalReq.RequirementDTO();
+        requirement.setKind("exclude");
+        requirement.setDomain("major");
+        requirement.setKey("level1");
+        requirement.setValues(java.util.Arrays.asList("医学"));
+        req.getRequirements().add(requirement);
+
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req)
+                .getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getRemoveVolunteerCount());
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getAddVolunteerCount());
+        assertTrue(proposal.getActions().stream()
+                .filter(action -> "remove_volunteers".equals(action.getActionType()))
+                .anyMatch(action -> action.getRemoveVolunteerIds().contains("ps1_m1")));
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(true);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals("applied", res.getStatus());
+        assertEquals(3, res.getState().getOrderedPlanState().getItems().size());
+        assertTrue(res.getState().getOrderedPlanState().getItems().stream()
+                .noneMatch(item -> "ps1_m1".equals(item.getVolunteerId())));
+        assertTrue(res.getState().getConstraintState().getHardConstraints().getMustExcludeMajors()
+                .contains("专业门类:医学"));
+    }
+
+    @Test
+    void shouldProjectMajorGroupLossWithLegacySelectedMajorIdsBeforeFill() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.majorGroup.name());
+        state.getCandidatePoolState().setRequiredCount(3);
+        CandidateItemDTO medicalOnlySelected = buildCandidateItem(
+                "ps1_plan801", "ps1", "s1", "学校A第101组", "稳", "药学", 55D, 80D, 55D, false);
+        medicalOnlySelected.setMajorId("801");
+        medicalOnlySelected.setMajorSubCategoryId("85");
+        CandidateItemDTO nonMedicalAlternative = buildCandidateItem(
+                "ps1_plan698", "ps1", "s1", "学校A第101组", "稳", "食品质量与安全", 58D, 82D, 55D, false);
+        nonMedicalAlternative.setMajorId("698");
+        nonMedicalAlternative.setMajorDiscipline("工学类");
+        CandidateItemDTO currentEngineering = buildCandidateItem(
+                "ps2_plan574", "ps2", "s2", "学校B第102组", "稳", "计算机科学与技术", 60D, 88D, 60D, false);
+        currentEngineering.setMajorId("574");
+        currentEngineering.setMajorDiscipline("工学类");
+        CandidateItemDTO currentNursing = buildCandidateItem(
+                "ps2_plan827", "ps2", "s2", "学校B第102组", "稳", "护理学", 62D, 86D, 60D, false);
+        currentNursing.setMajorId("827");
+        currentNursing.setMajorSubCategoryId("89");
+        CandidateItemDTO externalLaw = buildCandidateItem(
+                "ps3_plan301", "ps3", "s3", "学校C第103组", "保", "法学", 70D, 84D, 70D, false);
+        externalLaw.setMajorId("301");
+        externalLaw.setMajorDiscipline("法学");
+        CandidateItemDTO externalMath = buildCandidateItem(
+                "ps4_plan460", "ps4", "s4", "学校D第104组", "保", "数学与应用数学", 72D, 83D, 72D, false);
+        externalMath.setMajorId("460");
+        externalMath.setMajorDiscipline("理学");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(
+                medicalOnlySelected, nonMedicalAlternative, currentEngineering, currentNursing,
+                externalLaw, externalMath));
+
+        OrderedUnitDTO medicalUnit = new OrderedUnitDTO();
+        medicalUnit.setUnitId("ps1");
+        medicalUnit.setSchoolName("学校A第101组");
+        medicalUnit.setTier("稳");
+        PlanningUnitMajorDTO medicalMajor = new PlanningUnitMajorDTO();
+        medicalMajor.setVolunteerId("ps1_801");
+        medicalMajor.setMajorName("药学");
+        medicalUnit.getMajorItems().add(medicalMajor);
+        OrderedUnitDTO mixedUnit = new OrderedUnitDTO();
+        mixedUnit.setUnitId("ps2");
+        mixedUnit.setSchoolName("学校B第102组");
+        mixedUnit.setTier("稳");
+        PlanningUnitMajorDTO engineeringMajor = new PlanningUnitMajorDTO();
+        engineeringMajor.setVolunteerId("ps2_574");
+        engineeringMajor.setMajorName("计算机科学与技术");
+        PlanningUnitMajorDTO nursingMajor = new PlanningUnitMajorDTO();
+        nursingMajor.setVolunteerId("ps2_827");
+        nursingMajor.setMajorName("护理学");
+        mixedUnit.getMajorItems().addAll(java.util.Arrays.asList(engineeringMajor, nursingMajor));
+        state.getOrderedPlanState().getUnits().addAll(java.util.Arrays.asList(medicalUnit, mixedUnit));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setSourceVersionGuard(9);
+        UserGoalFixProposalReq.RequirementDTO requirement = new UserGoalFixProposalReq.RequirementDTO();
+        requirement.setKind("exclude");
+        requirement.setDomain("major");
+        requirement.setKey("level1");
+        requirement.setValues(java.util.Arrays.asList("医学"));
+        req.getRequirements().add(requirement);
+
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req)
+                .getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getRemoveUnitCount());
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getAddUnitCount());
+        FixProposalActionDTO removeAction = proposal.getActions().stream()
+                .filter(action -> "remove_volunteers".equals(action.getActionType()))
+                .findFirst().orElse(null);
+        assertNotNull(removeAction);
+        assertEquals(java.util.Arrays.asList("ps1"), removeAction.getRemoveUnitIds());
+        assertTrue(removeAction.getRemoveVolunteerIds().contains("ps1_801"));
+        assertTrue(removeAction.getRemoveVolunteerIds().contains("ps2_827"));
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(true);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals("applied", res.getStatus());
+        assertEquals(3, res.getState().getOrderedPlanState().getUnits().size());
+        assertTrue(res.getState().getOrderedPlanState().getUnits().stream()
+                .flatMap(unit -> unit.getMajorItems().stream())
+                .noneMatch(major -> "ps1_801".equals(major.getVolunteerId())
+                        || "ps2_827".equals(major.getVolunteerId())));
+    }
+
+    @Test
+    void shouldApplyIncludeCoverageAndPersistObjectiveWithoutMustIncludeFilter() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(2);
+        CandidateItemDTO math = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "数学", 55D, 80D, 55D, false);
+        CandidateItemDTO finance = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "金融学", 60D, 70D, 60D, false);
+        CandidateItemDTO law = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "学校C", "稳", "法学", 58D, 90D, 58D, false);
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(math, finance, law));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "数学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "金融学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setSourceVersionGuard(9);
+        UserGoalFixProposalReq.RequirementDTO requirement = new UserGoalFixProposalReq.RequirementDTO();
+        requirement.setKind("include");
+        requirement.setDomain("major");
+        requirement.setKey("major");
+        requirement.setValues(java.util.Arrays.asList("法学"));
+        requirement.setMinCount(1);
+        req.getRequirements().add(requirement);
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertEquals(2, draftIds.size());
+        assertTrue(draftIds.contains("ps3_m3"));
+        assertTrue(res.getState().getConstraintState().getHardConstraints().getMustIncludeMajors().isEmpty());
+        assertEquals(1, res.getState().getConstraintState().getHardPlanningObjectives()
+                .getCoverageRequirements().size());
+        assertEquals("major", res.getState().getConstraintState().getHardPlanningObjectives()
+                .getCoverageRequirements().get(0).getDomain());
+        assertEquals(java.util.Arrays.asList("法学"), res.getState().getConstraintState()
+                .getHardPlanningObjectives().getCoverageRequirements().get(0).getValues());
+    }
+
+    @Test
+    void shouldApplyPriorityProposalPersistRuleAndReorderCurrentPlan() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        CandidateItemDTO beijing = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "北京学校", "稳", "数学", 40D, 90D, 40D, false);
+        beijing.setProvinceName("北京");
+        CandidateItemDTO shanghai = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "上海学校", "稳", "法学", 60D, 80D, 60D, false);
+        shanghai.setProvinceName("上海");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(beijing, shanghai));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps1_m1", "北京学校", "数学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps2_m2", "上海学校", "法学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("prioritize_within_tier");
+        req.setSourceVersionGuard(9);
+        PriorityRuleDTO rule = new PriorityRuleDTO();
+        rule.setDomain("region");
+        rule.setKey("province");
+        rule.setValues(java.util.Arrays.asList("上海"));
+        rule.setOrderingTarget("rank_before");
+        rule.setScope("within_tier");
+        req.getPriorityRules().add(rule);
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req)
+                .getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(true);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals(java.util.Arrays.asList("ps2_m2", "ps1_m1"),
+                res.getState().getOrderedPlanState().getItems().stream()
+                        .map(OrderedItemDTO::getVolunteerId).collect(Collectors.toList()));
+        assertEquals(1, res.getState().getConstraintState().getHardPlanningObjectives()
+                .getPriorityRules().size());
+        assertEquals(java.util.Arrays.asList("上海"), res.getState().getConstraintState()
+                .getHardPlanningObjectives().getPriorityRules().get(0).getValues());
+        assertEquals("hard_priority_rank_before",
+                res.getState().getOrderedPlanState().getItems().get(0).getOrderReason());
+    }
+
+    @Test
+    void shouldApplyFillAndPriorityInOneProposal() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(2);
+        CandidateItemDTO beijing = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "北京学校", "稳", "数学", 40D, 90D, 40D, false);
+        beijing.setProvinceName("北京");
+        CandidateItemDTO tianjin = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "天津学校", "稳", "金融学", 50D, 85D, 50D, false);
+        tianjin.setProvinceName("天津");
+        CandidateItemDTO shanghai = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "上海学校", "稳", "法学", 60D, 80D, 60D, false);
+        shanghai.setProvinceName("上海");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(beijing, tianjin, shanghai));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps1_m1", "北京学校", "数学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps2_m2", "天津学校", "金融学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setSourceVersionGuard(9);
+        PriorityRuleDTO rule = new PriorityRuleDTO();
+        rule.setDomain("region");
+        rule.setKey("province");
+        rule.setValues(java.util.Arrays.asList("上海"));
+        rule.setOrderingTarget("rank_before");
+        rule.setScope("within_tier");
+        req.getPriorityRules().add(rule);
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req)
+                .getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(true);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals(Integer.valueOf(3), res.getState().getCandidatePoolState().getRequiredCount());
+        assertEquals(3, res.getState().getOrderedPlanState().getItems().size());
+        assertEquals("ps3_m3", res.getState().getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals(1, res.getState().getConstraintState().getHardPlanningObjectives()
+                .getPriorityRules().size());
+        assertTrue(PriorityRuleSupport.isSatisfied(res.getState(),
+                res.getState().getCandidatePoolState().getItems(), rule));
+    }
+
+    @Test
+    void shouldApplyCoverageReplacementWithoutOverwritingPlanningTargetCount() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(48);
+        CandidateItemDTO beijing = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "北京学校", "稳", "数学", 40D, 90D, 40D, false);
+        beijing.setProvinceName("北京");
+        CandidateItemDTO shanghaiLaw = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "上海学校1", "稳", "法学", 50D, 85D, 50D, false);
+        shanghaiLaw.setProvinceName("上海");
+        CandidateItemDTO shanghaiFinance = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "上海学校2", "稳", "金融学", 60D, 80D, 60D, false);
+        shanghaiFinance.setProvinceName("上海");
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(beijing, shanghaiLaw, shanghaiFinance));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps1_m1", "北京学校", "数学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps2_m2", "上海学校1", "法学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setPersistTargetCount(false);
+        req.setSourceVersionGuard(9);
+        UserGoalFixProposalReq.RequirementDTO coverage = new UserGoalFixProposalReq.RequirementDTO();
+        coverage.setKind("include");
+        coverage.setDomain("region");
+        coverage.setKey("province");
+        coverage.setValues(java.util.Arrays.asList("上海"));
+        coverage.setMinCount(2);
+        req.getRequirements().add(coverage);
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req)
+                .getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(true);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals(Integer.valueOf(48), res.getState().getCandidatePoolState().getRequiredCount());
+        assertEquals(2, res.getState().getOrderedPlanState().getItems().size());
+        assertEquals(2, res.getState().getConstraintState().getHardPlanningObjectives()
+                .getCoverageRequirements().get(0).getMinCount().intValue());
+        Set<String> orderedIds = res.getState().getOrderedPlanState().getItems().stream()
+                .map(OrderedItemDTO::getVolunteerId).collect(Collectors.toSet());
+        assertEquals(new java.util.HashSet<String>(java.util.Arrays.asList("ps2_m2", "ps3_m3")), orderedIds);
+    }
+
+    @Test
+    void shouldApplyAndPersistExactTierQuotaWithoutOverwritingPlanningTargetCount() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(48);
+        CandidateItemDTO sprintOne = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校1", "冲", "数学", 40D, 90D, 40D, false);
+        CandidateItemDTO sprintTwo = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校2", "冲", "物理学", 50D, 85D, 50D, false);
+        CandidateItemDTO stable = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "学校3", "稳", "金融学", 60D, 80D, 60D, false);
+        CandidateItemDTO protect = buildCandidateItem(
+                "ps4_m4", "ps4", "s4", "学校4", "保", "会计学", 70D, 75D, 70D, false);
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(sprintOne, sprintTwo, stable, protect));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps1_m1", "学校1", "数学", "冲", 1));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps2_m2", "学校2", "物理学", "冲", 2));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps3_m3", "学校3", "金融学", "稳", 3));
+        saveStateToStore(1L, state);
+
+        TierQuotaGoalDTO quota = new TierQuotaGoalDTO();
+        quota.setType("exact_counts");
+        quota.setSprintCount(1);
+        quota.setStableCount(1);
+        quota.setProtectCount(1);
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setPersistTargetCount(false);
+        req.setSourceVersionGuard(9);
+        req.setTierQuotaGoal(quota);
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req)
+                .getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(true);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals(Integer.valueOf(48), res.getState().getCandidatePoolState().getRequiredCount());
+        assertTrue(TierQuotaSupport.isPersisted(res.getState(), quota));
+        Map<String, Long> tierCounts = res.getState().getOrderedPlanState().getItems().stream()
+                .collect(Collectors.groupingBy(OrderedItemDTO::getTier, Collectors.counting()));
+        assertEquals(Long.valueOf(1L), tierCounts.get("冲"));
+        assertEquals(Long.valueOf(1L), tierCounts.get("稳"));
+        assertEquals(Long.valueOf(1L), tierCounts.get("保"));
+    }
+
+    @Test
+    void shouldSyncOrderedMajorGroupUnitsBeforeProjectedRequirementMutation() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.majorGroup.name());
+        state.getCandidatePoolState().setRequiredCount(2);
+        CandidateItemDTO publicCurrent = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "公办学校A第101组", "稳", "数学", 55D, 80D, 55D, false);
+        publicCurrent.setSchoolNature("公办");
+        CandidateItemDTO privateCurrent = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "民办学校B第102组", "稳", "法学", 60D, 70D, 60D, false);
+        privateCurrent.setSchoolNature("民办");
+        CandidateItemDTO publicReplacement = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "公办学校C第103组", "稳", "金融学", 58D, 90D, 58D, false);
+        publicReplacement.setSchoolNature("公办");
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(publicCurrent, privateCurrent, publicReplacement));
+        OrderedUnitDTO publicUnit = new OrderedUnitDTO();
+        publicUnit.setUnitId("ps1");
+        publicUnit.setSchoolName("公办学校A第101组");
+        PlanningUnitMajorDTO publicMajor = new PlanningUnitMajorDTO();
+        publicMajor.setVolunteerId("ps1_m1");
+        publicMajor.setMajorName("数学");
+        publicUnit.getMajorItems().add(publicMajor);
+        OrderedUnitDTO privateUnit = new OrderedUnitDTO();
+        privateUnit.setUnitId("ps2");
+        privateUnit.setSchoolName("民办学校B第102组");
+        PlanningUnitMajorDTO privateMajor = new PlanningUnitMajorDTO();
+        privateMajor.setVolunteerId("ps2_m2");
+        privateMajor.setMajorName("法学");
+        privateUnit.getMajorItems().add(privateMajor);
+        state.getOrderedPlanState().getUnits().addAll(java.util.Arrays.asList(publicUnit, privateUnit));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setSourceVersionGuard(9);
+        UserGoalFixProposalReq.RequirementDTO requirement = new UserGoalFixProposalReq.RequirementDTO();
+        requirement.setKind("exclude");
+        requirement.setDomain("school");
+        requirement.setKey("school_nature");
+        requirement.setValues(java.util.Arrays.asList("民办"));
+        req.getRequirements().add(requirement);
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertEquals(new java.util.HashSet<String>(java.util.Arrays.asList("ps1_m1", "ps3_m3")), draftIds);
+        assertEquals(2, res.getState().getDraftPlanState().getUnits().size());
+        assertTrue(res.getState().getDraftPlanState().getUnits().stream()
+                .noneMatch(unit -> "ps2".equals(unit.getUnitId())));
     }
 
     @Test
@@ -7334,6 +7935,50 @@ public class PlanningStateServiceTest {
         assertEquals("ps4_m4", ordered.getOrderedPlanState().getItems().get(2).getVolunteerId());
         assertEquals("ps3_m3", ordered.getOrderedPlanState().getItems().get(3).getVolunteerId());
         assertEquals("ps5_m5", ordered.getOrderedPlanState().getItems().get(4).getVolunteerId());
+    }
+
+    @Test
+    void shouldKeepConfirmedPriorityRuleEffectiveAcrossOrderedRegeneration() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(3);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        CandidateItemDTO beijing = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "北京学校", "稳", "数学", 30D, 90D, 30D, false);
+        beijing.setProvinceName("北京");
+        CandidateItemDTO shanghai = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "上海学校", "稳", "法学", 60D, 80D, 60D, false);
+        shanghai.setProvinceName("上海");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(beijing, shanghai));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "北京学校", "数学", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps2_m2", "上海学校", "法学", "稳"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "北京学校", "数学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "上海学校", "法学", "稳", 2));
+        PriorityRuleDTO rule = new PriorityRuleDTO();
+        rule.setDomain("region");
+        rule.setKey("province");
+        rule.setValues(java.util.Arrays.asList("上海"));
+        rule.setOrderingTarget("rank_before");
+        rule.setScope("within_tier");
+        state.getConstraintState().getHardPlanningObjectives().getPriorityRules().add(rule);
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setRegroupByTier(true);
+        generateReq.setForceRegenerate(true);
+        PlanningStateDTO regenerated = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        assertEquals(java.util.Arrays.asList("ps2_m2", "ps1_m1"),
+                regenerated.getOrderedPlanState().getItems().stream()
+                        .map(OrderedItemDTO::getVolunteerId).collect(Collectors.toList()));
+        assertEquals("hard_priority_rank_before",
+                regenerated.getOrderedPlanState().getItems().get(0).getOrderReason());
+        assertEquals(1, regenerated.getConstraintState().getHardPlanningObjectives()
+                .getPriorityRules().size());
+        assertTrue(PriorityRuleSupport.isSatisfied(regenerated,
+                regenerated.getCandidatePoolState().getItems(), rule));
     }
 
     @Test

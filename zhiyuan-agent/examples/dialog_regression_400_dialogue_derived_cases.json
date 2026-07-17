@@ -725,6 +725,9 @@
           "expectedToolNames": [
             "answer_policy"
           ],
+          "assertNotContains": [
+            "系统会预留体检审核环节"
+          ],
           "expectedToolCounts": {
             "answer_policy": 1
           },
@@ -1006,9 +1009,14 @@
             "医学",
             "护理",
             "中医",
-            "排除边界",
-            "确认前"
+            "层级冲突",
+            "确认前不记录"
           ],
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "preview_confirm_boundary",
             "rich_decision_basis"
@@ -1058,6 +1066,11 @@
             "学习要求",
             "下一步"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "readonly_boundary",
             "rich_decision_basis"
@@ -1095,6 +1108,11 @@
             "替代方向",
             "下一步"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "readonly_boundary",
             "rich_decision_basis"
@@ -1434,6 +1452,15 @@
       "prompts": [
         {
           "prompt": "兰州银川能不能作为兜底",
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "expectedToolCounts": {
+            "explore_topic": 1
+          },
+          "assertToolNamesNotContain": [
+            "clarify_request"
+          ],
           "assertContainsAny": [
             "兰州",
             "银川",
@@ -1899,6 +1926,11 @@
             "专业方向",
             "下一步"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "readonly_boundary",
             "rich_decision_basis"
@@ -2075,6 +2107,12 @@
       "prompts": [
         {
           "prompt": "一年学费最多两三万，方案里高收费多吗",
+          "assertContains": [
+            "当前正式方案",
+            "30000",
+            "待确认预览",
+            "确认前"
+          ],
           "assertContainsAny": [
             "学费",
             "高收费",
@@ -2090,8 +2128,14 @@
             "风险",
             "下一步"
           ],
+          "expectedToolNames": [
+            "query_plan",
+            "preview_intent_change"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
           "qualityFocus": [
-            "readonly_boundary",
+            "preview_confirm_boundary",
             "rich_decision_basis",
             "multi_distribution"
           ],
@@ -2549,6 +2593,22 @@
             "风险",
             "建议"
           ],
+          "assertContains": [
+            "河南"
+          ],
+          "assertNotContains": [
+            "甚至可能没有省外院校",
+            "这些大多是省内或周边省份"
+          ],
+          "expectedToolNames": [
+            "query_plan"
+          ],
+          "expectedToolCounts": {
+            "query_plan": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "地域分布",
             "省外",
@@ -2903,7 +2963,23 @@
             "preview_confirm_boundary",
             "rich_decision_basis"
           ],
-          "minTextLengthWarn": 160
+          "minTextLengthWarn": 160,
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_action": 1
+          },
+          "assertToolNamesNotContain": [
+            "review_plan",
+            "query_plan",
+            "preview_intent_change"
+          ],
+          "expectedActionFamily": "remove_units",
+          "maxToolCallCount": 1
         }
       ]
     },
@@ -2942,7 +3018,24 @@
             "readonly_boundary",
             "rich_decision_basis"
           ],
-          "minTextLengthWarn": 180
+          "minTextLengthWarn": 180,
+          "assertNoFollowups": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "discover_options"
+          ],
+          "expectedToolCounts": {
+            "discover_options": 1
+          },
+          "assertToolNamesNotContain": [
+            "clarify_request",
+            "respond_casual",
+            "query_plan",
+            "review_plan",
+            "preview_intent_change",
+            "preview_plan_action"
+          ],
+          "maxToolCallCount": 1
         }
       ]
     },
@@ -3038,6 +3131,17 @@
       "prompts": [
         {
           "prompt": "专业组里只保留最稳的专业行不行",
+          "expectedToolNames": [
+            "answer_policy"
+          ],
+          "expectedToolCounts": {
+            "answer_policy": 1
+          },
+          "assertToolNamesNotContain": [
+            "clarify_request",
+            "preview_plan_action",
+            "preview_plan_change"
+          ],
           "assertContainsAny": [
             "专业组",
             "专业",
@@ -3090,6 +3194,10 @@
             "下一步"
           ],
           "expectedNoAction": true,
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
           "assertNoFollowups": true,
           "qualityFocus": [
             "readonly_boundary",
@@ -3126,6 +3234,10 @@
             "下一步"
           ],
           "expectedNoAction": true,
+          "expectedToolNames": [
+            "acknowledge_readonly"
+          ],
+          "maxToolCallCount": 1,
           "assertNoFollowups": true,
           "qualityFocus": [
             "readonly_boundary",
@@ -3316,6 +3428,7 @@
           "qualityFocus": [
             "rich_decision_basis"
           ],
+          "maxToolCallCount": 1,
           "minTextLengthWarn": 160
         }
       ]
@@ -3373,6 +3486,10 @@
       "prompts": [
         {
           "prompt": "我只想先保存这个思路，不要自动改",
+          "assertContains": [
+            "具体内容",
+            "确认前不会记录或改方案"
+          ],
           "assertContainsAny": [
             "思路",
             "确认",
@@ -3389,6 +3506,9 @@
           ],
           "expectedNoAction": true,
           "assertNoFollowups": true,
+          "expectedToolNames": [
+            "clarify_request"
+          ],
           "qualityFocus": [
             "readonly_boundary",
             "preview_confirm_boundary"
@@ -3462,6 +3582,11 @@
             "后续调整",
             "下一步"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "rich_decision_basis"
           ],

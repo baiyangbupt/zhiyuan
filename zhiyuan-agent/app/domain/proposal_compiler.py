@@ -1006,6 +1006,12 @@ _CURRENT_PLAN_ADD_MUTATION_MARKERS = (
     "纳入方案",
 )
 
+_CANDIDATE_QUERY_SCOPE_MARKERS = (
+    "候选",
+    "可选范围",
+    "可选志愿",
+)
+
 
 def _content_is_pre_score_adjustment_policy_question(compact: str) -> bool:
     """Keep pre-score planning questions out of the current-plan mutation guard."""
@@ -1408,6 +1414,14 @@ def resolve_needs_plan_first_guard(
         any(marker in compact for marker in _CURRENT_PLAN_MUTATION_MARKERS)
         or has_current_plan_add
     )
+    # A mixed readonly question about candidates and the formal plan still has
+    # an answerable candidate scope. Let the Agent query that scope and report
+    # the missing formal plan instead of blocking the whole turn up front.
+    if (
+        not has_current_plan_mutation
+        and any(marker in compact for marker in _CANDIDATE_QUERY_SCOPE_MARKERS)
+    ):
+        return NeedsPlanFirstResolution()
     if not ((has_current_plan_reference and has_plan_scope) or has_current_plan_mutation):
         return NeedsPlanFirstResolution()
     target_issues: list[str] = []

@@ -640,6 +640,8 @@ def test_unused_readonly_policy_copy_fallbacks_are_removed():
         "_readonly_policy_fallback_reply_for_prompt",
         "_build_score_batch_risk_policy_reply",
         "_build_major_group_keep_safest_policy_reply",
+        "_normalize_unbacked_no_tool_action_boundary",
+        "_NO_TOOL_NO_ACTION_BOUNDARY_REPLY",
     ]
 
     assert [snippet for snippet in forbidden if snippet in SERVICE_TEXT] == []
@@ -661,7 +663,7 @@ def test_reply_guard_resolution_stays_in_proposal_compiler():
 
     service_helper_match = re.search(
         r"def _guard_unbacked_plan_confirmation_reply[\s\S]+?"
-        r"\n\ndef _normalize_unbacked_no_tool_action_boundary",
+        r"\n\ndef _clean_review_fallback_text",
         SERVICE_TEXT,
     )
     assert service_helper_match is not None

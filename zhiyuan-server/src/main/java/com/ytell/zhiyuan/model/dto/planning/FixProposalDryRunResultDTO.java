@@ -37,5 +37,9 @@ public class FixProposalDryRunResultDTO {
     private Integer addVolunteerCount = 0;
     private Integer removeUnitCount = 0;
     private Integer removeVolunteerCount = 0;
+    private Integer priorityMatchedCount = 0;
+    private Integer priorityBeforeInversionCount = 0;
+    private Integer priorityAfterInversionCount = 0;
+    private Integer priorityMovedTargetCount = 0;
     private List<String> warnings = Lists.newArrayList();
 }

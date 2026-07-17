@@ -65,7 +65,7 @@
       {
         "prompt": "先不确认，看看这个偏好会影响当前方案吗",
         "assertContains": [
-          "当前方案"
+          "正式方案"
         ],
         "assertContainsAny": [
           "影响",
@@ -325,6 +325,10 @@
           "已直接删除",
           "payload"
         ],
+        "expectedToolNames": [
+          "confirm_pending"
+        ],
+        "maxToolCallCount": 1,
         "assertNoFollowups": true,
         "warnElapsedSeconds": 8,
         "qualityFocus": [
@@ -549,6 +553,13 @@
     "prompts": [
       {
         "prompt": "这版是不是太冲了，能不能给我说人话",
+        "assertContains": [
+          "冲",
+          "稳",
+          "保",
+          "结论",
+          "只读审查"
+        ],
         "assertContainsAny": [
           "冲",
           "稳",
@@ -803,6 +814,11 @@
     "prompts": [
       {
         "prompt": "候选里还有没有更稳一点的会计审计，别直接加",
+        "assertContains": [
+          "候选",
+          "会计",
+          "审计"
+        ],
         "assertContainsAny": [
           "候选",
           "会计",
@@ -812,6 +828,7 @@
           "机会"
         ],
         "assertNotContains": [
+          "暂不支持这些筛选字段",
           "已直接加入",
           "确认后执行",
           "已记录",
@@ -1002,6 +1019,7 @@
           "随时喊我",
           "随时说",
           "随时跟我说",
+          "随时找我",
           "不会记录",
           "当前没有待确认操作",
           "不会执行任何变更"
@@ -1026,6 +1044,10 @@
           "已记录",
           "payload"
         ],
+        "expectedToolNames": [
+          "acknowledge_readonly"
+        ],
+        "maxToolCallCount": 1,
         "assertNoFollowups": true,
         "warnElapsedSeconds": 8,
         "qualityFocus": [
@@ -1290,6 +1312,11 @@
     "prompts": [
       {
         "prompt": "就按别太冒险的思路把这版调稳点，先给我看看会怎么动",
+        "assertContains": [
+          "具体影响",
+          "专业组",
+          "确认前"
+        ],
         "assertContainsAny": [
           "风险",
           "稳",
@@ -1321,8 +1348,19 @@
         "assertFollowupType": "pendingConfirmationCard",
         "assertFollowupCount": 1,
         "expectedToolNames": [
-          "preview_plan_action"
+          "preview_plan_change",
+          "preview_plan_change"
         ],
+        "expectedToolCounts": {
+          "preview_plan_change": 2
+        },
+        "assertToolNamesNotContain": [
+          "preview_plan_action",
+          "review_plan",
+          "query_plan"
+        ],
+        "maxToolCallCount": 2,
+        "expectedActionFamily": "apply_plan_change_proposal",
         "warnElapsedSeconds": 35,
         "qualityFocus": [
           "actionable_next_step",

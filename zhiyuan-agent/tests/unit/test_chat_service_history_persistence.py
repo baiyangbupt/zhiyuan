@@ -49,6 +49,7 @@ from app.service import (
     _semantic_intent_decision_requires_readonly,
     _extract_recent_intent_analysis_payload,
     _guard_unbacked_plan_confirmation_reply,
+    _latest_terminal_reference_reply,
     _constraint_user_goal_fix_candidate_from_preview,
     _enforce_single_pending_confirmation_followup,
     _pending_short_text_action,
@@ -2298,6 +2299,46 @@ def test_unbacked_plan_confirmation_guard_blocks_toolless_fake_confirm_copy():
     assert "确认后会执行" not in guarded
     assert "还没有生成可确认的调整预览" in guarded
     assert "确认当前有效预览后才会执行" in guarded
+
+
+def test_unbacked_plan_confirmation_guard_preserves_readonly_reply_with_active_pending():
+    reply = (
+        "当前方案按专业命中4个志愿。这只是当前查询到的局部结果；"
+        "如果要继续调整，我会先给你一版调整预览。"
+    )
+
+    guarded = _guard_unbacked_plan_confirmation_reply(reply, has_active_pending=True)
+
+    assert guarded == reply
+    assert "还没有生成可确认的调整预览" not in guarded
+
+
+def test_latest_terminal_reference_reply_uses_authoritative_no_pending_message():
+    message = "这次我先按参考方向理解：地域参考：北京、天津。不会记录，也不会调整方案。"
+    messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="preview_intent_change",
+                    tool_call_id="reference-preview",
+                    content=json.dumps(
+                        {
+                            "data": {
+                                "reason": "reference_only_semantic_requirements",
+                                "pending_created": False,
+                                "requires_confirmation": False,
+                            },
+                            "next_step": "respond",
+                            "message": message,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
+        )
+    ]
+
+    assert _latest_terminal_reference_reply(messages) == message
 
 
 def test_plan_status_timeout_fallback_uses_structured_user_copy():

@@ -182,11 +182,10 @@
           "青岛城市学院"
         ],
         "assertContainsAny": [
-          "一共",
-          "7 条",
-          "7 个",
-          "7个",
-          "多个"
+          "没有",
+          "0 个",
+          "0个",
+          "不在"
         ],
         "assertNotContains": [
           "方案已经有了",
@@ -209,11 +208,9 @@
           "volunteerId"
         ],
         "expectedKeyPoints": [
-          "共命中",
-          "冲稳保",
-          "学校层次",
-          "专业热度",
-          "示例",
+          "当前正式方案",
+          "没有命中",
+          "只读查询",
           "下一步"
         ],
         "forbiddenPatterns": [
@@ -222,6 +219,10 @@
           "volunteerId"
         ],
         "assertNoFollowups": true,
+        "expectedToolNames": [
+          "query_plan"
+        ],
+        "maxToolCallCount": 1,
         "warnElapsedSeconds": 20,
         "qualityFocus": [
           "actionable_next_step",
@@ -298,6 +299,10 @@
         ],
         "assertFollowupType": "pendingConfirmationCard",
         "assertFollowupCount": 1,
+        "expectedToolNames": [
+          "preview_plan_action"
+        ],
+        "maxToolCallCount": 1,
         "warnElapsedSeconds": 30,
         "qualityFocus": [
           "actionable_next_step",
@@ -913,6 +918,10 @@
         ],
         "assertFollowupType": "pendingConfirmationCard",
         "assertFollowupCount": 1,
+        "expectedToolNames": [
+          "preview_intent_change"
+        ],
+        "maxToolCallCount": 1,
         "warnElapsedSeconds": 60,
         "qualityFocus": [
           "actionable_next_step",
@@ -955,6 +964,10 @@
           "payload",
           "volunteerId"
         ],
+        "expectedToolNames": [
+          "confirm_pending"
+        ],
+        "maxToolCallCount": 1,
         "warnElapsedSeconds": 20,
         "qualityFocus": [
           "actionable_next_step",

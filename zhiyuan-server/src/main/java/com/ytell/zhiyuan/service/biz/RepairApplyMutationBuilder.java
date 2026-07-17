@@ -262,7 +262,8 @@ final class RepairApplyMutationBuilder {
                         .filter(value -> !Strings.isNullOrEmpty(value))
                         .collect(Collectors.toList()));
             }
-            if (RepairProposalTaxonomy.ActionType.ADD_VOLUNTEERS.equals(actionType)) {
+            if (RepairProposalTaxonomy.ActionType.ADD_VOLUNTEERS.equals(actionType)
+                    || RepairProposalTaxonomy.ActionType.FILL_TOTAL_COUNT.equals(actionType)) {
                 addIds.addAll(defaultList(action.getCandidateVolunteerIds()).stream()
                         .filter(value -> !Strings.isNullOrEmpty(value))
                         .collect(Collectors.toList()));

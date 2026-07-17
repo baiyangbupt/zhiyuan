@@ -30,6 +30,7 @@
           "排除临床医学",
           "删掉临床医学",
           "移除临床医学",
+          "不要：",
           "已直接调整",
           "payload",
           "stage",
@@ -55,6 +56,10 @@
         ],
         "assertFollowupType": "pendingConfirmationCard",
         "assertFollowupCount": 1,
+        "expectedToolNames": [
+          "preview_intent_change"
+        ],
+        "maxToolCallCount": 1,
         "expectedKeyPoints": [
           "临床医学",
           "只保留",
@@ -90,6 +95,10 @@
           "草稿"
         ],
         "assertNoFollowups": true,
+        "expectedToolNames": [
+          "confirm_pending"
+        ],
+        "maxToolCallCount": 1,
         "assertActionableFollowupTypes": [
           "planningWorkspaceAction"
         ],
@@ -170,6 +179,10 @@
           "至少保留",
           "其他方向可以保留"
         ],
+        "expectedToolNames": [
+          "preview_intent_change"
+        ],
+        "maxToolCallCount": 1,
         "warnElapsedSeconds": 60
       },
       {
@@ -213,6 +226,10 @@
           "法学",
           "后续参考"
         ],
+        "expectedToolNames": [
+          "confirm_pending"
+        ],
+        "maxToolCallCount": 1,
         "warnElapsedSeconds": 60
       }
     ]
@@ -441,6 +458,13 @@
     "assertPlanStyle": true,
     "cloneBackendStateFromSessionId": "16",
     "clearBackendPlanningIntentState": true,
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": [
+        "orderedPlan",
+        "formalPlan"
+      ]
+    },
     "prompts": [
       {
         "prompt": "太贵的学校别放了，学费最好控制在两万以内",
@@ -475,6 +499,10 @@
         ],
         "assertFollowupType": "pendingConfirmationCard",
         "assertFollowupCount": 1,
+        "expectedToolNames": [
+          "preview_intent_change"
+        ],
+        "maxToolCallCount": 1,
         "expectedKeyPoints": [
           "学费",
           "预算",
@@ -511,6 +539,10 @@
           "草稿"
         ],
         "assertNoFollowups": true,
+        "expectedToolNames": [
+          "confirm_pending"
+        ],
+        "maxToolCallCount": 1,
         "assertActionableFollowupTypes": [
           "planningWorkspaceAction"
         ],

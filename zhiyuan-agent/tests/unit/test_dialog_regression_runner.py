@@ -33,6 +33,39 @@ def test_runner_defaults_use_isolated_320_debug_ports(monkeypatch):
     assert module.DEFAULT_INTERNAL_SERVICE_URL == "http://127.0.0.1:18290"
 
 
+def test_clear_backend_planning_intent_uses_large_fixture_timeout(monkeypatch):
+    observed_timeouts = []
+
+    def fake_get(_base_url, _session_id, key, *, timeout_seconds):
+        observed_timeouts.append(("get", key, timeout_seconds))
+        return {"profileState": {}} if key == "planningState" else {"college_info": {}}
+
+    def fake_write(_base_url, _session_id, key, _value, *, timeout_seconds):
+        observed_timeouts.append(("write", key, timeout_seconds))
+        return {"status": 200}
+
+    monkeypatch.setattr(runner, "_get_backend_extra_data", fake_get)
+    monkeypatch.setattr(runner, "_write_backend_extra_data", fake_write)
+
+    result = runner._clear_backend_planning_intent_state("http://backend.test", ["9904565"])
+
+    assert result == [
+        {
+            "session": "9904565",
+            "ok": True,
+            "keys": ["planningState", "userprofile"],
+            "planningStateStatus": 200,
+            "userprofileStatus": 200,
+        }
+    ]
+    assert observed_timeouts == [
+        ("get", "planningState", 30),
+        ("write", "planningState", 30),
+        ("get", "userprofile", 30),
+        ("write", "userprofile", 30),
+    ]
+
+
 def test_plan_reply_style_accepts_markdown_sections_and_lists():
     text = (
         "**审查结论**\n\n"
@@ -1111,6 +1144,57 @@ def test_run_cases_fails_fast_when_backend_clone_fails(monkeypatch, tmp_path):
     assert record["failureReason"] == "environment"
     assert record["fixtureType"] == "pending_exists"
     assert "backend state clone had failures" in record["error"]
+
+
+def test_fixture_clone_preflight_rejects_empty_formal_plan():
+    failures = runner._fixture_clone_preflight_failures(
+        {
+            "fixtureContract": {
+                "type": "formal_plan_present",
+                "requiredState": ["orderedPlan", "formalPlan"],
+            }
+        },
+        [
+            {
+                "key": "planningState",
+                "ok": True,
+                "stateProfile": {
+                    "formalPlanPresent": False,
+                    "candidatePoolPresent": True,
+                    "reviewStatePresent": False,
+                    "profileReady": True,
+                },
+            }
+        ],
+    )
+
+    assert failures
+    assert all("formalPlan" in item or "orderedPlan" in item for item in failures)
+
+
+def test_fixture_clone_preflight_accepts_non_empty_formal_plan():
+    failures = runner._fixture_clone_preflight_failures(
+        {
+            "fixtureContract": {
+                "type": "formal_plan_present",
+                "requiredState": ["orderedPlan", "formalPlan"],
+            }
+        },
+        [
+            {
+                "key": "planningState",
+                "ok": True,
+                "stateProfile": {
+                    "formalPlanPresent": True,
+                    "candidatePoolPresent": True,
+                    "reviewStatePresent": True,
+                    "profileReady": True,
+                },
+            }
+        ],
+    )
+
+    assert failures == []
 
 
 def test_run_cases_fails_fast_when_backend_chat_session_clone_fails(monkeypatch, tmp_path):
@@ -2568,6 +2652,59 @@ def test_tool_assertions_accept_any_expected_routing_path():
     )
 
     assert violations == []
+
+
+def test_structured_runtime_failures_reject_route_decision_error_even_when_reply_is_text():
+    violations = runner._check_structured_runtime_failures(
+        {
+            "routingPath": "zhiyuan_agent_direct",
+            "routeDecision": {
+                "route": "direct",
+                "error": "TimeoutError",
+            },
+        },
+        "case-timeout-fallback",
+        "9901",
+        "上海的有哪些",
+    )
+
+    assert len(violations) == 1
+    assert "routeDecision.error=TimeoutError" in violations[0]
+
+
+def test_structured_runtime_failures_reject_agent_run_error_once():
+    violations = runner._check_structured_runtime_failures(
+        {
+            "routeDecision": {
+                "agentRun": {
+                    "errorType": "ModelHTTPError",
+                    "errorMessage": "upstream unavailable",
+                }
+            }
+        },
+        "case-model-error",
+        "9902",
+        "方案怎么样",
+    )
+
+    assert len(violations) == 1
+    assert "agentRun.errorType=ModelHTTPError" in violations[0]
+    assert "upstream unavailable" in violations[0]
+
+
+def test_metrics_summary_counts_structured_runtime_failure_reason():
+    summary = runner._build_metrics_summary(
+        [
+            {
+                "case": "case-timeout-fallback",
+                "elapsedMs": 30000,
+                "runtimeViolations": ["routeDecision.error=TimeoutError"],
+            }
+        ]
+    )
+
+    assert summary["failedSteps"] == 1
+    assert summary["failedByReason"] == {"runtime": 1}
 
 
 def test_tool_assertions_accept_any_expected_result_kind():

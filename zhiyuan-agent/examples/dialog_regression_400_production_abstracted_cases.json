@@ -115,7 +115,8 @@
           "assertNotContains": [
             "排除临床医学",
             "移除临床医学",
-            "删掉临床医学"
+            "删掉临床医学",
+            "不要："
           ],
           "expectedKeyPoints": [
             "临床医学",
@@ -219,7 +220,7 @@
           "prompt": "只要电气和气象，其他方向都不要",
           "assertContains": [
             "电气",
-            "气象"
+            "大气科学"
           ],
           "assertContainsAny": [
             "只保留",
@@ -432,6 +433,11 @@
             "不是唯一专业",
             "下一步"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "rich_decision_basis",
             "user_language"
@@ -572,6 +578,14 @@
     {
       "name": "400-prod-scenario-public-service-oriented-plan",
       "sessionId": "5917",
+      "cloneBackendStateFromSessionId": "16",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": [
+          "orderedPlan",
+          "formalPlan"
+        ]
+      },
       "flow": [
         "explore",
         "plan"
@@ -602,8 +616,15 @@
             "删除所有非体制",
             "已直接调整",
             "已直接删除",
-            "已直接记录"
+            "已直接记录",
+            "还没有生成正式方案",
+            "暂时不能判断方案"
           ],
+          "expectedToolNames": [
+            "review_plan"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "expectedKeyPoints": [
             "高层情景",
             "当前方案承接",
@@ -619,6 +640,10 @@
         },
         {
           "prompt": "具体一点，先把第8个志愿移到第12位，只给我预览",
+          "assertContains": [
+            "第8",
+            "第12"
+          ],
           "assertContainsAny": [
             "第8",
             "第12",
@@ -628,8 +653,16 @@
           ],
           "assertNotContains": [
             "已直接移动",
-            "已直接调整"
+            "已直接调整",
+            "还没有正式方案",
+            "暂时没法预览"
           ],
+          "expectedToolNames": [
+            "preview_plan_action"
+          ],
+          "maxToolCallCount": 1,
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
           "expectedKeyPoints": [
             "具体原子动作",
             "移动预览",

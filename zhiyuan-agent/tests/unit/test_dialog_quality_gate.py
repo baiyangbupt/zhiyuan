@@ -134,6 +134,29 @@ def test_gate_plan_adds_clone_backed_final_action_pack(tmp_path):
         assert str(tmp_path) in str(command.output)
 
 
+def test_gate_display_and_written_plan_redact_database_password(tmp_path):
+    commands = gate.build_gate_plan(
+        metrics_dir=tmp_path,
+        backend_db_password="local-secret",
+    )
+    final_action = next(command for command in commands if command.category == "final-action")
+
+    display = gate._command_for_display(final_action.command)
+    assert "local-secret" in final_action.command
+    assert "local-secret" not in display
+    assert display[display.index("--backend-db-password") + 1] == "<redacted>"
+
+    markdown = gate._render_markdown([final_action])
+    assert "local-secret" not in markdown
+    assert "<redacted>" in markdown
+
+    output = tmp_path / "plan.json"
+    gate._write_plan(str(output), [final_action], markdown=False)
+    written = output.read_text(encoding="utf-8")
+    assert "local-secret" not in written
+    assert "<redacted>" in written
+
+
 def test_final_action_formal_plan_cases_do_not_use_empty_session_17_fixture():
     violations = []
     for case_file_name in gate.FINAL_ACTION_CASE_FILES:

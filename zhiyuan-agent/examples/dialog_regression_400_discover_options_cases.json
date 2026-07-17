@@ -1,0 +1,144 @@
+[
+  {
+    "name": "400-discover-shanghai-bare-query-clarifies-scope",
+    "sessionId": "9907131",
+    "cloneBackendStateFromSessionId": "16",
+    "coverage": [
+      "release_4_0_0",
+      "discover_options",
+      "ambiguous_scope",
+      "no_context_guess"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "上海的有哪些",
+        "assertContainsAny": [
+          "院校",
+          "可报",
+          "当前方案"
+        ],
+        "assertToolNamesNotContain": [
+          "discover_options",
+          "explore_topic",
+          "query_plan"
+        ],
+        "expectedToolNames": [
+          "clarify_request"
+        ],
+        "maxToolCallCount": 1,
+        "assertNoFollowups": true
+      }
+    ]
+  },
+  {
+    "name": "400-discover-shanghai-school-catalog",
+    "sessionId": "9907132",
+    "coverage": [
+      "release_4_0_0",
+      "discover_options",
+      "school_catalog",
+      "shanghai"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "上海有哪些本科院校",
+        "assertContainsAny": [
+          "上海",
+          "院校目录",
+          "本科院校"
+        ],
+        "expectedToolNames": [
+          "discover_options"
+        ],
+        "expectedToolCounts": {
+          "discover_options": 1
+        },
+        "assertToolNamesNotContain": [
+          "explore_topic",
+          "query_plan"
+        ],
+        "maxToolCallCount": 1,
+        "assertNoFollowups": true
+      }
+    ]
+  },
+  {
+    "name": "400-discover-shanghai-eligible-candidates",
+    "sessionId": "9907133",
+    "cloneBackendStateFromSessionId": "16",
+    "coverage": [
+      "release_4_0_0",
+      "discover_options",
+      "eligible_candidates",
+      "shanghai"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "我现在能报的上海院校有哪些",
+        "assertContainsAny": [
+          "上海",
+          "当前可报",
+          "暂时没有命中"
+        ],
+        "assertNotContains": [
+          "这些均为民办院校",
+          "均为民办院校",
+          "以民办院校为主",
+          "以民办本科为主",
+          "主要以民办",
+          "公办本科在该分数段几乎没有",
+          "公办本科几乎没有"
+        ],
+        "expectedToolNames": [
+          "discover_options"
+        ],
+        "expectedToolCounts": {
+          "discover_options": 1
+        },
+        "assertToolNamesNotContain": [
+          "explore_topic",
+          "query_plan"
+        ],
+        "maxToolCallCount": 1,
+        "assertNoFollowups": true
+      }
+    ]
+  },
+  {
+    "name": "400-discover-shanghai-current-plan-query",
+    "sessionId": "9907134",
+    "cloneBackendStateFromSessionId": "16",
+    "coverage": [
+      "release_4_0_0",
+      "query_plan",
+      "current_plan_context",
+      "shanghai"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "当前方案里上海的有哪些院校",
+        "assertContainsAny": [
+          "当前正式方案",
+          "上海",
+          "暂时没有命中"
+        ],
+        "expectedToolNames": [
+          "query_plan"
+        ],
+        "expectedToolCounts": {
+          "query_plan": 1
+        },
+        "assertToolNamesNotContain": [
+          "discover_options",
+          "explore_topic"
+        ],
+        "maxToolCallCount": 1,
+        "assertNoFollowups": true
+      }
+    ]
+  }
+]

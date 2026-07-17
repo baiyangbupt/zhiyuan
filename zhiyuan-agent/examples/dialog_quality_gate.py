@@ -71,6 +71,11 @@ FINAL_ACTION_CASE_FILES = [
     "dialog_regression_400_v212_region_area_expanded_final_cases.json",
     "dialog_regression_400_v213_region_area_quality_final_cases.json",
     "dialog_regression_400_v216_region_remote_final_cases.json",
+    "dialog_regression_400_fill_to_count_cases.json",
+    "dialog_regression_400_coverage_preserve_cases.json",
+    "dialog_regression_400_priority_rules_cases.json",
+    "dialog_regression_400_tier_minimum_cases.json",
+    "dialog_regression_400_tier_quota_cases.json",
 ]
 
 MODEL_PROVIDER_CASE_FILES = [
@@ -304,6 +309,29 @@ def _filter_commands(commands: list[GateCommand], modes: set[str]) -> list[GateC
     return [command for command in commands if command.category in modes]
 
 
+_SENSITIVE_COMMAND_OPTIONS = {"--backend-db-password"}
+
+
+def _command_for_display(command: list[str]) -> list[str]:
+    rendered: list[str] = []
+    redact_next = False
+    for part in command:
+        if redact_next:
+            rendered.append("<redacted>")
+            redact_next = False
+            continue
+        rendered.append(part)
+        if part in _SENSITIVE_COMMAND_OPTIONS:
+            redact_next = True
+    return rendered
+
+
+def _command_dict_for_display(command: GateCommand) -> dict[str, Any]:
+    payload = command.as_dict()
+    payload["command"] = _command_for_display(command.command)
+    return payload
+
+
 def _render_markdown(commands: list[GateCommand]) -> str:
     lines = [
         "# Agent Dialog Quality Gate",
@@ -315,7 +343,7 @@ def _render_markdown(commands: list[GateCommand]) -> str:
         "| --- | --- | --- | --- |",
     ]
     for command in commands:
-        rendered = " ".join(command.command)
+        rendered = " ".join(_command_for_display(command.command))
         lines.append(
             f"| {command.category} | {command.name} | {command.output or '-'} | `{rendered}` |"
         )
@@ -326,7 +354,11 @@ def _write_plan(path: str | None, commands: list[GateCommand], *, markdown: bool
     if markdown:
         text = _render_markdown(commands)
     else:
-        text = json.dumps({"commands": [command.as_dict() for command in commands]}, ensure_ascii=False, indent=2) + "\n"
+        text = json.dumps(
+            {"commands": [_command_dict_for_display(command) for command in commands]},
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
     if path:
         Path(path).write_text(text, encoding="utf-8")
     else:
@@ -336,7 +368,7 @@ def _write_plan(path: str | None, commands: list[GateCommand], *, markdown: bool
 def _run_commands(commands: list[GateCommand], *, stop_on_failure: bool) -> int:
     exit_code = 0
     for command in commands:
-        print(f"[gate] running {command.name}: {' '.join(command.command)}", flush=True)
+        print(f"[gate] running {command.name}: {' '.join(_command_for_display(command.command))}", flush=True)
         result = subprocess.run(command.command, cwd=ROOT, text=True)
         if result.returncode != 0:
             exit_code = result.returncode

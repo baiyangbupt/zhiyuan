@@ -111,10 +111,10 @@
       "sessionId": "9904403",
       "cloneBackendStateFromSessionId": "130",
       "fixtureContract": {
-        "type": "pending_exists",
+        "type": "formal_plan_present",
         "requiredState": [
-          "activePending",
-          "orderedPlan"
+          "orderedPlan",
+          "formalPlan"
         ]
       },
       "coverage": [
@@ -123,6 +123,21 @@
         "readonly_query"
       ],
       "prompts": [
+        {
+          "profileCaseId": "G3-create-intent-pending",
+          "prompt": "先记下民办学校不要，暂时不调整当前方案",
+          "assertContainsAny": [
+            "民办",
+            "采纳",
+            "确认"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
         {
           "profileCaseId": "G3-readonly-query-while-intent-pending",
           "prompt": "先不确认，当前方案里有没有网络与新媒体相关专业",
@@ -135,7 +150,14 @@
           "expectedToolNames": [
             "query_plan"
           ],
-          "maxToolCallCount": 1
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "active"
+            }
+          ]
         }
       ]
     },
@@ -333,6 +355,13 @@
       "name": "400-g17-tier-local-reorder",
       "sessionId": "9904417",
       "cloneBackendStateFromSessionId": "16",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": [
+          "orderedPlan",
+          "formalPlan"
+        ]
+      },
       "coverage": [
         "G17",
         "plan_action",
@@ -342,6 +371,10 @@
         {
           "profileCaseId": "G17-tier-local-reorder",
           "prompt": "帮我把保底区里录取率最高的那个调到保底的第一位",
+          "assertContains": [
+            "保底",
+            "第1位"
+          ],
           "assertContainsAny": [
             "保底",
             "录取率",
@@ -420,10 +453,10 @@
       "sessionId": "9904422",
       "cloneBackendStateFromSessionId": "130",
       "fixtureContract": {
-        "type": "pending_exists",
+        "type": "formal_plan_present",
         "requiredState": [
-          "activePending",
-          "orderedPlan"
+          "orderedPlan",
+          "formalPlan"
         ]
       },
       "coverage": [
@@ -432,6 +465,21 @@
         "readonly_state"
       ],
       "prompts": [
+        {
+          "profileCaseId": "G22-create-school-pending",
+          "prompt": "先记下民办学校不要，暂时不调整当前方案",
+          "assertContainsAny": [
+            "民办",
+            "采纳",
+            "确认"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
         {
           "profileCaseId": "G22-readonly-state-query-while-school-pending",
           "prompt": "现在方案是按当前档案算的吧",
@@ -448,7 +496,14 @@
             "preview_plan_action",
             "confirm_pending"
           ],
-          "maxToolCallCount": 1
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "active"
+            }
+          ]
         }
       ]
     },
@@ -615,10 +670,10 @@
       "sessionId": "9904431",
       "cloneBackendStateFromSessionId": "130",
       "fixtureContract": {
-        "type": "pending_exists",
+        "type": "formal_plan_present",
         "requiredState": [
-          "activePending",
-          "orderedPlan"
+          "orderedPlan",
+          "formalPlan"
         ]
       },
       "coverage": [
@@ -627,6 +682,21 @@
         "readonly_query"
       ],
       "prompts": [
+        {
+          "profileCaseId": "G31-create-intent-pending",
+          "prompt": "先记下民办学校不要，暂时不调整当前方案",
+          "assertContainsAny": [
+            "民办",
+            "采纳",
+            "确认"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1
+        },
         {
           "profileCaseId": "G31-pending-context-should-not-block-readonly-fact-query",
           "prompt": "再给我看下保底学校",
@@ -639,7 +709,14 @@
           "expectedToolNames": [
             "query_plan"
           ],
-          "maxToolCallCount": 1
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "active"
+            }
+          ]
         }
       ]
     },

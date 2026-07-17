@@ -51,6 +51,7 @@ DEFAULT_BACKEND_VOLUNTEER_DATA_DIR = (
 PENDING_STATE_KEYS = ("pendingConfirmation",)
 BACKEND_STATE_CLONE_KEYS = ("planningState", "userprofile", "userScoreDetail")
 BACKEND_VOLUNTEER_FILE_SUFFIXES = ("", "_temp", "_final", "_temp_summary", "_final_summary")
+BACKEND_FIXTURE_STATE_TIMEOUT_SECONDS = 30
 
 EMPTY_CONSTRAINT_STATE = {
     "hardConstraints": {
@@ -496,6 +497,102 @@ def _clone_results_have_active_pending(clone_results: list[dict[str, Any]]) -> b
         if str(item.get("sourcePendingStatus") or "").strip() == "active":
             return True
     return False
+
+
+def _planning_state_fixture_profile(state: dict[str, Any]) -> dict[str, bool]:
+    ordered_state = state.get("orderedPlanState") if isinstance(state.get("orderedPlanState"), dict) else {}
+    candidate_state = (
+        state.get("candidatePoolState") if isinstance(state.get("candidatePoolState"), dict) else {}
+    )
+    review_state = state.get("reviewState") if isinstance(state.get("reviewState"), dict) else {}
+    profile_state = state.get("profileState") if isinstance(state.get("profileState"), dict) else {}
+
+    def state_has_items(value: dict[str, Any]) -> bool:
+        summary = value.get("summary") if isinstance(value.get("summary"), dict) else {}
+        total = summary.get("total") or summary.get("unitTotal") or summary.get("entryTotal") or 0
+        try:
+            if int(total) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+        return any(isinstance(value.get(key), list) and bool(value.get(key)) for key in ("units", "items"))
+
+    return {
+        "formalPlanPresent": state_has_items(ordered_state),
+        "candidatePoolPresent": state_has_items(candidate_state),
+        "reviewStatePresent": bool(review_state),
+        "profileReady": bool(profile_state),
+    }
+
+
+def _fixture_clone_preflight_failures(
+    case: dict[str, Any],
+    clone_results: list[dict[str, Any]],
+) -> list[str]:
+    """Reject cloned fixtures that do not satisfy their declared state contract."""
+    contract = case.get("fixtureContract")
+    if not isinstance(contract, dict) or not clone_results:
+        return []
+
+    required_state = {
+        str(item or "").strip()
+        for item in (contract.get("requiredState") or [])
+        if str(item or "").strip()
+    }
+    fixture_type = str(contract.get("type") or "").strip()
+    if fixture_type == "formal_plan_present":
+        required_state.add("formalPlan")
+    elif fixture_type == "pending_exists":
+        required_state.add("activePending")
+
+    planning_result = next(
+        (
+            item
+            for item in clone_results
+            if isinstance(item, dict) and str(item.get("key") or "").strip() == "planningState"
+        ),
+        None,
+    )
+    planning_profile = (
+        planning_result.get("stateProfile")
+        if isinstance(planning_result, dict) and isinstance(planning_result.get("stateProfile"), dict)
+        else None
+    )
+    state_profile_keys = {
+        "orderedPlan": "formalPlanPresent",
+        "formalPlan": "formalPlanPresent",
+        "candidatePool": "candidatePoolPresent",
+        "reviewState": "reviewStatePresent",
+        "profileReady": "profileReady",
+    }
+    failures: list[str] = []
+    if planning_profile is not None:
+        for state_name, profile_key in state_profile_keys.items():
+            if state_name in required_state and not planning_profile.get(profile_key):
+                failures.append(
+                    f"fixture preflight failed: requiredState={state_name} is absent in cloned planningState"
+                )
+
+    if "activePending" in required_state:
+        pending_result = next(
+            (
+                item
+                for item in clone_results
+                if isinstance(item, dict)
+                and str(item.get("key") or "").strip() == "pendingConfirmation"
+            ),
+            None,
+        )
+        pending_status = (
+            str(pending_result.get("sourcePendingStatus") or "").strip()
+            if isinstance(pending_result, dict)
+            else ""
+        )
+        if pending_status != "active":
+            failures.append(
+                "fixture preflight failed: requiredState=activePending is absent in cloned pending resource"
+            )
+    return failures
 
 
 def _clear_history(db_path: Path, session_ids: list[str]) -> int:
@@ -1093,7 +1190,7 @@ def _clear_backend_planning_intent_state(
     base_url: str,
     session_ids: list[str],
     *,
-    timeout_seconds: float = 5,
+    timeout_seconds: float = BACKEND_FIXTURE_STATE_TIMEOUT_SECONDS,
 ) -> list[dict[str, Any]]:
     """Clear accepted intent/preference state while preserving plan data.
 
@@ -1186,6 +1283,8 @@ def _clone_backend_session_state(
                     timeout_seconds=timeout_seconds,
                 )
             )
+            if key == "planningState":
+                result["stateProfile"] = _planning_state_fixture_profile(value)
             if not value:
                 result["skipped"] = "source_empty"
                 result["ok"] = True
@@ -2486,6 +2585,39 @@ def _check_tool_assertions(
     return violations
 
 
+def _check_structured_runtime_failures(
+    turn_observability: dict[str, Any] | None,
+    case_name: str,
+    session_id: str,
+    prompt: str,
+) -> list[str]:
+    """Fail closed when persisted observability reports an Agent runtime error."""
+    turn_observability = turn_observability if isinstance(turn_observability, dict) else {}
+    route_decision = turn_observability.get("routeDecision")
+    if not isinstance(route_decision, dict):
+        return []
+
+    failures: list[str] = []
+    route_error = str(route_decision.get("error") or "").strip()
+    if route_error:
+        failures.append(
+            f"{case_name} session={session_id} prompt={prompt}: "
+            f"structured runtime failure - routeDecision.error={route_error}"
+        )
+
+    agent_run = route_decision.get("agentRun")
+    if isinstance(agent_run, dict):
+        error_type = str(agent_run.get("errorType") or "").strip()
+        error_message = str(agent_run.get("errorMessage") or "").strip()
+        if error_type and error_type != route_error:
+            detail = f" errorMessage={error_message}" if error_message else ""
+            failures.append(
+                f"{case_name} session={session_id} prompt={prompt}: "
+                f"structured runtime failure - agentRun.errorType={error_type}{detail}"
+            )
+    return failures
+
+
 def _as_optional_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -2561,6 +2693,8 @@ def _record_failure_reasons(record: dict[str, Any]) -> list[str]:
         reasons.append("content")
     if record.get("toolViolations"):
         reasons.append("tool")
+    if record.get("runtimeViolations"):
+        reasons.append("runtime")
     if record.get("backendViolations"):
         reasons.append("backend")
     if record.get("performanceViolations"):
@@ -2851,6 +2985,7 @@ async def _run_cases(
                     ensure_ascii=False,
                 )
             )
+        case_env_failures.extend(_fixture_clone_preflight_failures(case, clone_results))
         if clear_history_per_case and history_db:
             deleted = _clear_history(Path(history_db), [session_id])
             print(
@@ -3061,6 +3196,17 @@ async def _run_cases(
                 record["followupTargets"] = followup_targets
                 record["followupRefreshes"] = followup_refreshes
                 record["followupTypes"] = followup_types
+            runtime_violations = _check_structured_runtime_failures(
+                record.get("turnObservability"),
+                name,
+                session_id,
+                prompt,
+            )
+            if runtime_violations:
+                for v in runtime_violations:
+                    print(f"  RUNTIME_FAIL: {v}")
+                failures.extend(runtime_violations)
+                record["runtimeViolations"] = runtime_violations
             text = _extract_text(primary)
             if case_assert_style:
                 violations = _check_plan_reply_style(text)

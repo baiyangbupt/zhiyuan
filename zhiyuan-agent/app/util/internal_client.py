@@ -322,6 +322,43 @@ async def catalog_lookup_city(name: str) -> Dict[str, Any]:
     )
 
 
+async def catalog_search_major(keyword: str, education_level: Optional[str] = None) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"keyword": keyword}
+    if education_level:
+        params["educationLevel"] = education_level
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/catalog/search/major",
+        params=params,
+        error_msg="catalog 搜索专业失败",
+    )
+
+
+async def catalog_list_schools(
+    *,
+    province: Optional[str] = None,
+    city: Optional[str] = None,
+    school_type: Optional[str] = None,
+    ownership: Optional[str] = None,
+    education_level: Optional[str] = None,
+) -> Any:
+    params = {
+        key: value
+        for key, value in {
+            "province": province,
+            "city": city,
+            "schoolType": school_type,
+            "ownership": ownership,
+            "educationLevel": education_level,
+        }.items()
+        if value
+    }
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/school/search/advanced",
+        params=params,
+        error_msg="catalog 查询学校列表失败",
+    )
+
+
 async def catalog_tree_filter_tags() -> Dict[str, Any]:
     return await http_client.get(
         endpoint="/gaotu-assistant-bot/inner/catalog/tree/filter-tags",
@@ -1319,6 +1356,7 @@ async def execute_pending_planning_command(
     regenerate_ordered_plan: bool = False,
     unit_ids: Optional[List[str]] = None,
     volunteer_ids: Optional[List[str]] = None,
+    proposal_apply: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "operationId": operation_id,
@@ -1336,6 +1374,8 @@ async def execute_pending_planning_command(
         payload["minTuitionPerYear"] = min_tuition_per_year
     if max_tuition_per_year is not None:
         payload["maxTuitionPerYear"] = max_tuition_per_year
+    if proposal_apply:
+        payload["proposalApply"] = proposal_apply
     return await http_client.post(
         endpoint=(
             f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/pending-command/execute"

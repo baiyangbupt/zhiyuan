@@ -129,6 +129,35 @@ def test_parallel_report_classifies_environment_failures(tmp_path):
     assert report["failures"][0]["inferredRootCause"] == "environment_setup"
 
 
+def test_parallel_report_promotes_structured_runtime_error_from_old_green_summary(tmp_path):
+    _write_metrics(
+        tmp_path,
+        "case-timeout",
+        {
+            "records": [
+                {
+                    "stepIndex": 1,
+                    "prompt": "上海的有哪些",
+                    "responseText": "这轮处理没有完成，请稍后重试。",
+                    "turnObservability": {
+                        "routingPath": "zhiyuan_agent_direct",
+                        "routeDecision": {"route": "direct", "error": "TimeoutError"},
+                    },
+                }
+            ],
+            "summary": {"steps": 1, "failedSteps": 0, "elapsed": {"maxMs": 30000}},
+            "failures": [],
+        },
+    )
+
+    report = parallel_report.build_report(tmp_path, [])
+
+    assert report["failedCaseFiles"] == {"dialog_cases.json": 1}
+    assert report["failedRecordCount"] == 1
+    assert report["records"][0]["failedSteps"] == 1
+    assert report["failureRootCauses"] == {"runtime_timeout": 1}
+
+
 def test_parallel_report_classifies_no_plan_local_lookup_expectation_as_fixture_mismatch(tmp_path):
     failure = (
         "case-abbrev session=17 prompt=青城那个是不是放多了: "

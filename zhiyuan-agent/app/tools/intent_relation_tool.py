@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.domain.career_alignment import matches_career_slot
 from app.domain.career_slots import (
     CAREER_FURTHER_STUDY,
     CAREER_LABEL_MAP,
@@ -297,69 +298,19 @@ def _sort_relation_examples(
 
 
 def _is_public_service_aligned_item(item: dict[str, Any]) -> bool:
-    if not item:
-        return False
-    school_tags = item.get("schoolRankTags") or []
-    school_basic_tags = item.get("schoolBasicTags") or []
-    school_popup_tags = item.get("schoolPopupTags") or []
-    major_rank_tags = item.get("majorRankTags") or []
-    major_plan_tags = item.get("majorPlanTags") or []
-
-    if _contains_any_text(item.get("schoolCategory"), ["师范", "政法", "财经", "农林", "医药"]):
-        return True
-    if _contains_any_text(item.get("majorName"), ["法学", "汉语言", "中国语言", "思想政治", "教育", "师范", "行政管理", "公共管理", "政治学", "马克思"]):
-        return True
-    if _contains_any_text(item.get("majorCategory"), ["法学", "汉语言", "中国语言", "思想政治", "教育", "师范", "行政管理", "公共管理", "政治学", "马克思"]):
-        return True
-    if _contains_any_text(item.get("majorDiscipline"), ["法学", "汉语言", "中国语言", "思想政治", "教育", "师范", "行政管理", "公共管理", "政治学", "马克思"]):
-        return True
-    if _contains_any_in_list(school_tags + school_basic_tags + school_popup_tags, ["师范", "政法", "财经", "农林", "医药", "部委院校", "公安", "警校"]):
-        return True
-    if _contains_any_in_list(major_rank_tags + major_plan_tags, ["法学", "汉语言", "中国语言", "思想政治", "教育", "师范", "行政管理", "公共管理", "政治学", "马克思"]):
-        return True
-    if _contains_any_in_list(
-        _collect_item_search_texts(item),
-        ["法学", "汉语言", "中国语言", "思想政治", "教育", "师范", "行政管理", "公共管理", "政治学", "马克思"],
-    ):
-        return True
-    return False
+    return matches_career_slot(_collect_item_search_texts(item), CAREER_SYSTEM_PUBLIC_SERVICE)
 
 
 def _is_stable_employment_aligned_item(item: dict[str, Any]) -> bool:
-    if not item:
-        return False
-    if _is_public_service_aligned_item(item):
-        return True
-    if _contains_any_text(item.get("schoolNature"), ["公办"]):
-        return True
-    if _contains_any_text(item.get("schoolCategory"), ["师范", "医药", "政法", "农林"]):
-        return True
-    if _contains_any_in_list(
-        _collect_item_search_texts(item),
-        ["师范", "教育", "护理", "医学", "药学", "法学", "行政管理", "公办"],
-    ):
-        return True
-    return False
+    return matches_career_slot(_collect_item_search_texts(item), CAREER_STABLE_EMPLOYMENT)
 
 
 def _is_further_study_aligned_item(item: dict[str, Any]) -> bool:
-    if not item:
-        return False
-    return _contains_any_in_list(
-        _collect_item_search_texts(item),
-        ["保研", "双一流", "985", "211", "国重点", "省重点", "博士点", "硕士点", "升学率"],
-    )
+    return matches_career_slot(_collect_item_search_texts(item), CAREER_FURTHER_STUDY)
 
 
 def _is_market_employment_aligned_item(item: dict[str, Any]) -> bool:
-    if not item:
-        return False
-    if _contains_any_text(item.get("schoolCategory"), ["理工", "财经", "综合"]):
-        return True
-    return _contains_any_in_list(
-        _collect_item_search_texts(item),
-        ["计算机", "软件", "电子", "信息", "人工智能", "数据", "自动化", "通信", "金融", "会计", "审计", "市场营销", "电子商务", "数字媒体", "就业", "产业", "校企", "实习", "互联网"],
-    )
+    return matches_career_slot(_collect_item_search_texts(item), CAREER_MARKET_EMPLOYMENT)
 
 
 _CAREER_MATCHERS = {

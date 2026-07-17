@@ -105,7 +105,7 @@
           "assertToolNamesContain": [
             "preview_intent_change"
           ],
-          "maxToolCallCount": 2,
+          "maxToolCallCount": 1,
           "assertBackendExtraData": [
             {
               "key": "pendingConfirmation",

@@ -13,12 +13,27 @@ public class UserGoalFixProposalReq {
     private String userOriginalText;
     private String confidence = "medium";
     private Integer sourceVersionGuard;
+    private Integer targetCount;
+    private Boolean persistTargetCount = true;
+    private TierQuotaGoalDTO tierQuotaGoal;
+    private List<RequirementDTO> requirements = Lists.newArrayList();
+    private List<PriorityRuleDTO> priorityRules = Lists.newArrayList();
     private List<ScopeDTO> targetScopes = Lists.newArrayList();
     private List<ScopeDTO> negativeScopes = Lists.newArrayList();
     private List<String> qualityGuards = Lists.newArrayList();
     private List<String> tradeoffGuards = Lists.newArrayList();
     private List<String> sourceReviewIssueCodes = Lists.newArrayList();
     private Map<String, Object> context;
+
+    @Data
+    public static class RequirementDTO {
+        private String kind;
+        private String domain;
+        private String key;
+        private List<String> values = Lists.newArrayList();
+        private Integer minCount = 1;
+        private String rawText;
+    }
 
     @Data
     public static class ScopeDTO {

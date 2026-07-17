@@ -270,6 +270,8 @@ def _plan_summary_file_from_object(summary: PlanningSummary | None) -> dict[str,
             "has_plan": False,
             "phase": summary.phase,
             "version": summary.version,
+            "candidate_target_total": summary.candidate_target_total,
+            "ordered_target_total": summary.ordered_target_total or summary.candidate_target_total,
             "guidance": "还没有生成正式方案，可以先明确报考要求或生成方案。",
         }
     return {
@@ -277,7 +279,8 @@ def _plan_summary_file_from_object(summary: PlanningSummary | None) -> dict[str,
         "phase": summary.phase,
         "version": summary.version,
         "ordered_total": summary.ordered_total,
-        "ordered_target_total": summary.ordered_target_total or summary.ordered_total,
+        "candidate_target_total": summary.candidate_target_total,
+        "ordered_target_total": summary.ordered_target_total or summary.candidate_target_total,
         "tier_counts": dict(summary.tier_counts or {}),
         "review": {
             "risk_count": summary.review_risk_count,
@@ -528,18 +531,59 @@ def _ordered_items_file_from_response(response: Any) -> dict[str, Any]:
 
 
 def _candidate_file_from_response(response: Any) -> dict[str, Any]:
+    response_error = ""
+    if not isinstance(response, dict):
+        response_error = "invalid_candidate_response"
+    else:
+        response_error = str(response.get("error") or "").strip()
     data = _response_data(response)
     candidate_state = _as_dict(data.get("candidatePoolState") or data.get("candidate_pool_state") or data)
     items = candidate_state.get("items")
     if not isinstance(items, list):
         items = candidate_state.get("units") if isinstance(candidate_state.get("units"), list) else []
-    page = _as_dict(data.get("page") or data.get("pagination") or candidate_state.get("page"))
+    raw_page = data.get("pagination") or candidate_state.get("pagination")
+    page = _as_dict(raw_page)
+    if not page:
+        page = {
+            "page": _as_int(data.get("page") or candidate_state.get("page"), 1),
+            "page_size": _as_int(
+                data.get("pageSize")
+                or data.get("page_size")
+                or candidate_state.get("pageSize")
+                or candidate_state.get("page_size")
+            ),
+            "total": _as_int(data.get("total") or candidate_state.get("total")),
+            "total_unit_count": _as_int(
+                data.get("totalUnitCount")
+                or data.get("total_unit_count")
+                or candidate_state.get("totalUnitCount")
+                or candidate_state.get("total_unit_count")
+            ),
+        }
+    view_summary = _as_dict(
+        data.get("viewSummary")
+        or data.get("view_summary")
+        or candidate_state.get("viewSummary")
+        or candidate_state.get("view_summary")
+    )
+    total = _as_int(data.get("total") or candidate_state.get("total") or page.get("total"))
+    total_unit_count = _as_int(
+        data.get("totalUnitCount")
+        or data.get("total_unit_count")
+        or candidate_state.get("totalUnitCount")
+        or candidate_state.get("total_unit_count")
+        or page.get("total_unit_count")
+    )
     return {
-        "available": bool(items or candidate_state.get("summary")),
+        "available": not response_error,
         "version": _extract_version(data, candidate_state),
         "summary": _as_dict(candidate_state.get("summary")),
         "items": items,
         "page": page,
+        "total": total,
+        "total_unit_count": total_unit_count,
+        "view_summary": view_summary,
+        "error": response_error,
     }
 
 

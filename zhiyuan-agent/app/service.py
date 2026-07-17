@@ -111,7 +111,10 @@ def _env_float(name: str, default: float) -> float:
 
 _ZHIYUAN_AGENT_DIRECT_TIMEOUT_SECONDS = max(
     0.0,
-    _env_float("ZHIYUAN_AGENT_DIRECT_TIMEOUT_SECONDS", 30.0),
+    # One direct turn may legitimately contain two model requests plus a
+    # grounded tool call. The previous 30s total budget cut off healthy
+    # second requests observed around 20-25s after a successful first call.
+    _env_float("ZHIYUAN_AGENT_DIRECT_TIMEOUT_SECONDS", 60.0),
 )
 
 _PLAN_STYLE_SEVERE_MARKERS = (
@@ -235,10 +238,6 @@ _UNBACKED_PLAN_CONFIRMATION_REPLY = (
     "这轮还没有生成可确认的调整预览，所以不会改动当前方案。"
     "如果你要继续调整，请再发一次具体要求，我会重新定位影响范围并列出调整预览；"
     "只有你点“确认执行”或直接确认当前有效预览后才会执行。"
-)
-_NO_TOOL_NO_ACTION_BOUNDARY_REPLY = (
-    "可以，先按这次思路保留和讨论；这轮不会改动当前方案，也不会写入后续报考参考里的偏好或要求，更不会开始任何方案调整。"
-    "下一步如果要正式采用新的想法或调整方案，我会先把要采用的内容或调整预览列清楚，你确认前不会执行。"
 )
 _ROUTE_OBSERVABILITY_MODEL_NAME = "route-observability"
 _INTENT_PREVIEW_TOOL_NAMES = {
@@ -5962,8 +5961,15 @@ def _remove_unbacked_plan_confirmation_copy(reply: str) -> str:
     return proposal_compiler.strip_unbacked_plan_confirmation_copy(reply)
 
 
-def _guard_unbacked_plan_confirmation_reply(reply: str, tool_context_messages: list[Any] | None = None) -> str:
+def _guard_unbacked_plan_confirmation_reply(
+    reply: str,
+    tool_context_messages: list[Any] | None = None,
+    *,
+    has_active_pending: bool = False,
+) -> str:
     """Replace unsupported Plan confirmation copy with an explicit no-card boundary."""
+    if has_active_pending:
+        return reply
     source = proposal_compiler.compile_runtime_reply_guard_source(
         reply=reply,
         guard_context="plan_confirmation",
@@ -5977,23 +5983,6 @@ def _guard_unbacked_plan_confirmation_reply(reply: str, tool_context_messages: l
             return f"{readonly_reply}\n\n{_UNBACKED_PLAN_CONFIRMATION_REPLY}"
         return _UNBACKED_PLAN_CONFIRMATION_REPLY
     return f"{stripped}\n\n{_UNBACKED_PLAN_CONFIRMATION_REPLY}"
-
-
-def _normalize_unbacked_no_tool_action_boundary(reply: str) -> str:
-    """Use a neutral no-change boundary when no executable action was created.
-
-    `_UNBACKED_PLAN_CONFIRMATION_REPLY` is appropriate while the service is
-    still trying to route a missing Plan preview. If all structured boundary paths end
-    with no tools, no pending card, and no preview, surfacing that text reads as
-    an execution failure even when the user only set a discussion boundary.
-    """
-    source = proposal_compiler.compile_runtime_reply_guard_source(
-        reply=reply,
-        guard_context="no_tool_action_boundary",
-    )
-    if not source.matched:
-        return reply
-    return _NO_TOOL_NO_ACTION_BOUNDARY_REPLY
 
 
 def _clean_review_fallback_text(value: Any) -> str:
@@ -6957,6 +6946,46 @@ def _latest_direct_confirm_pending_payload(
     return None
 
 
+def _latest_terminal_plan_change_reply(messages: list[Any] | None) -> str:
+    """Return an authoritative no-pending reply from preview_plan_change."""
+    for part in reversed(_iter_tool_return_parts(messages)):
+        if str(part.tool_name or "").strip() != "preview_plan_change":
+            continue
+        payload = _parse_tool_return_json(part.content)
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("next_step") or "").strip() not in {"respond", "clarify"}:
+            continue
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        if data.get("pending_created") is True or data.get("requires_confirmation") is True:
+            continue
+        message = str(payload.get("message") or "").strip()
+        if message:
+            return message
+    return ""
+
+
+def _latest_terminal_reference_reply(messages: list[Any] | None) -> str:
+    """Return the authoritative readonly result for an explicit reference."""
+    for part in reversed(_iter_tool_return_parts(messages)):
+        if str(part.tool_name or "").strip() != "preview_intent_change":
+            continue
+        payload = _parse_tool_return_json(part.content)
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("next_step") or "").strip() != "respond":
+            continue
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        if str(data.get("reason") or "").strip() != "reference_only_semantic_requirements":
+            continue
+        if data.get("pending_created") is True or data.get("requires_confirmation") is True:
+            continue
+        message = str(payload.get("message") or "").strip()
+        if message:
+            return message
+    return ""
+
+
 def _pending_id_from_tool_payload(payload: dict[str, Any] | None) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -7110,6 +7139,7 @@ def _build_structured_plan_pending_card(
         "move_unit": "确认移动志愿",
         "move_ordered_unit": "确认移动志愿",
         "sort_ordered_plan": "确认方案排序",
+        "apply_plan_change_proposal": "确认调整方案",
         "regenerate_order": "确认重排方案",
         "generate_plan": "确认生成方案",
     }
@@ -7598,7 +7628,10 @@ class ChatService:
                     fallback_summary=str(pending_payload.get("message") or ""),
                 )
 
-        final_reply = str(reply or "").strip()
+        terminal_plan_change_reply = _latest_terminal_plan_change_reply(new_messages)
+        terminal_reference_reply = _latest_terminal_reference_reply(new_messages)
+        terminal_tool_reply = terminal_plan_change_reply or terminal_reference_reply
+        final_reply = terminal_tool_reply or str(reply or "").strip()
         if pending_card is not None:
             primary_from_card = _pending_confirmation_primary_reply_from_card(pending_card)
             use_card_primary = final_reply in {"", "已完成处理。", "已完成处理"}
@@ -7616,8 +7649,18 @@ class ChatService:
         direct_routing_path = _direct_confirm_routing_path(confirm_pending_result)
         direct_workspace_refresh_targets = _direct_confirm_workspace_refresh_targets(confirm_pending_result)
         post_processing_applied = ["zhiyuan_agent_direct"]
-        if pending_card is None and not direct_workspace_refresh_targets:
-            guarded_reply = _sanitize_reply_for_user(_guard_unbacked_plan_confirmation_reply(final_reply, new_messages))
+        if (
+            pending_card is None
+            and not direct_workspace_refresh_targets
+            and not terminal_tool_reply
+        ):
+            guarded_reply = _sanitize_reply_for_user(
+                _guard_unbacked_plan_confirmation_reply(
+                    final_reply,
+                    new_messages,
+                    has_active_pending=active_pending is not None,
+                )
+            )
             if guarded_reply != final_reply:
                 raw_reply = str(reply or "").strip()
                 _replace_text_reply(new_messages, raw_reply, guarded_reply)

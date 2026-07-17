@@ -1,0 +1,189 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Complete exact sprint/stable/protect quotas through one backend Proposal and dedicated postcondition.",
+    "notes": "Exact quotas are persisted independently from tier minimum coverage. All three counts must be explicit and their sum must equal the frozen final plan count."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "preview_plan_change",
+      "apply_plan_change_proposal"
+    ],
+    "coverage": [
+      "exact_tier_quota",
+      "preserve_current_count",
+      "single_proposal",
+      "dedicated_postcondition"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "16",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "action_family",
+        "volunteerId",
+        "软偏好",
+        "草稿"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-tier-quota-exact-nine-seventeen-nineteen-final-action",
+      "sessionId": "9907430",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": [
+          "orderedPlan",
+          "formalPlan"
+        ]
+      },
+      "prompts": [
+        {
+          "prompt": "这45个专业组总数不变，按冲9、稳17、保19精确调整，先看预览",
+          "assertContains": [
+            "45",
+            "冲9",
+            "稳17",
+            "保19"
+          ],
+          "assertContainsAny": [
+            "已经满足",
+            "精确配额",
+            "确认"
+          ],
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action",
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContains": [
+            "45个专业组",
+            "冲稳保精确配额",
+            "校验通过"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.tierQuotaResult.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.tierQuotaResult.actualSprintCount",
+              "equals": 9
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.tierQuotaResult.actualStableCount",
+              "equals": 17
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.tierQuotaResult.actualProtectCount",
+              "equals": 19
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.requiredCount",
+              "equals": 48
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthEquals": 45
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.tierQuotaGoal",
+              "equals": {
+                "type": "exact_counts",
+                "sprintCount": 9,
+                "stableCount": 17,
+                "protectCount": 19
+              }
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-tier-quota-total-mismatch-clarifies",
+      "sessionId": "9907431",
+      "prompts": [
+        {
+          "prompt": "当前45个总数不变，改成冲9、稳17、保18",
+          "assertContains": [
+            "44",
+            "45"
+          ],
+          "assertContainsAny": [
+            "合计",
+            "总数",
+            "一致"
+          ],
+          "assertNoFollowups": true,
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action",
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        }
+      ]
+    }
+  ]
+}
