@@ -9,7 +9,9 @@ import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
+import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReplacementPairDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 import org.junit.jupiter.api.Test;
 
@@ -651,6 +653,879 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void shouldBuildExactFillToCountPreviewForMajorMode() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "专业1", "类别1", 80D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "专业2", "类别2", 81D));
+        state.getCandidatePoolState().getItems().add(candidate("v3", "学校3", "专业3", "类别3", 95D));
+        state.getCandidatePoolState().getItems().add(candidate("v4", "学校4", "专业4", "类别4", 90D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "专业1", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "学校2", "专业2", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(4);
+        req.setSourceVersionGuard(12);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals(1, proposal.getActions().size());
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals("fill_total_count", action.getActionType());
+        assertEquals(2, action.getVolunteerIds().size());
+        assertEquals("v3", action.getVolunteerIds().get(0));
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getBeforeVolunteerTotal());
+        assertEquals(Integer.valueOf(4), proposal.getDryRunResult().getAfterVolunteerTotal());
+    }
+
+    @Test
+    void shouldCombineFillRequirementsAndPriorityInOneProposal() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO beijing = candidate("v1", "北京学校", "数学", "理学", 90D);
+        beijing.setProvinceName("北京");
+        beijing.setTier("稳");
+        beijing.setSchoolNature("公办");
+        CandidateItemDTO shanghai = candidate("v2", "上海学校", "法学", "法学", 89D);
+        shanghai.setProvinceName("上海");
+        shanghai.setTier("稳");
+        shanghai.setSchoolNature("公办");
+        CandidateItemDTO tianjin = candidate("v3", "天津学校", "金融学", "经济学", 88D);
+        tianjin.setProvinceName("天津");
+        tianjin.setTier("稳");
+        tianjin.setSchoolNature("公办");
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(beijing, shanghai, tianjin));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v1", "北京学校", "数学", "稳"));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v2", "上海学校", "法学", "稳"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("exclude", "school", "school_nature", "民办"));
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertEquals(2, proposal.getActions().size());
+        assertEquals("fill_total_count", proposal.getActions().get(0).getActionType());
+        assertEquals("reorder_volunteers", proposal.getActions().get(1).getActionType());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getPriorityMatchedCount());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getPriorityBeforeInversionCount());
+        assertEquals(Integer.valueOf(0), proposal.getDryRunResult().getPriorityAfterInversionCount());
+        assertTrue(proposal.getSummary().contains("同档逆序"));
+        assertTrue(proposal.getSummary().contains("排除民办（院校性质）"));
+        assertTrue(proposal.getSummary().contains("上海（地域）"));
+    }
+
+    @Test
+    void shouldAllowPriorityTargetIntroducedByFillCandidate() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO beijing = candidate("v1", "北京学校", "数学", "理学", 90D);
+        beijing.setProvinceName("北京");
+        beijing.setTier("稳");
+        CandidateItemDTO shanghai = candidate("v2", "上海学校", "法学", "法学", 89D);
+        shanghai.setProvinceName("上海");
+        shanghai.setTier("稳");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(beijing, shanghai));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v1", "北京学校", "数学", "稳"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setSourceVersionGuard(12);
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getPriorityMatchedCount());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getPriorityBeforeInversionCount());
+    }
+
+    @Test
+    void shouldBlockWhenProjectedRequirementsRemoveEveryPriorityMatch() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO shanghaiPrivate = candidate("v1", "上海民办学校", "法学", "法学", 90D);
+        shanghaiPrivate.setProvinceName("上海");
+        shanghaiPrivate.setSchoolNature("民办");
+        shanghaiPrivate.setTier("稳");
+        CandidateItemDTO beijingPublic = candidate("v2", "北京公办学校", "数学", "理学", 89D);
+        beijingPublic.setProvinceName("北京");
+        beijingPublic.setSchoolNature("公办");
+        beijingPublic.setTier("稳");
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(shanghaiPrivate, beijingPublic));
+        state.getOrderedPlanState().getItems().add(
+                orderedWithTier("v1", "上海民办学校", "法学", "稳"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("exclude", "school", "school_nature", "民办"));
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("priority_target_not_in_plan", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getBlockingReason().contains("投影后的最终方案"));
+    }
+
+    @Test
+    void shouldProjectCompleteMajorGroupForFillPriorityComposite() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO current = candidate("v1", "北京学校", "数学", "理学", 90D);
+        current.setPlanSchoolDataId("u1");
+        current.setProvinceName("北京");
+        current.setTier("稳");
+        CandidateItemDTO shanghaiA = candidate("v2", "上海学校", "法学", "法学", 89D);
+        shanghaiA.setPlanSchoolDataId("u2");
+        shanghaiA.setProvinceName("上海");
+        shanghaiA.setTier("稳");
+        CandidateItemDTO shanghaiB = candidate("v2b", "上海学校", "金融学", "经济学", 88D);
+        shanghaiB.setPlanSchoolDataId("u2");
+        shanghaiB.setProvinceName("上海");
+        shanghaiB.setTier("稳");
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(current, shanghaiA, shanghaiB));
+        OrderedUnitDTO currentUnit = new OrderedUnitDTO();
+        currentUnit.setUnitId("u1");
+        currentUnit.setTier("稳");
+        currentUnit.setProvinceName("北京");
+        currentUnit.getMajorItems().add(unitMajor("v1", "数学"));
+        state.getOrderedPlanState().getUnits().add(currentUnit);
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setSourceVersionGuard(12);
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(2, proposal.getActions().size());
+        assertEquals(java.util.Arrays.asList("u2"), proposal.getActions().get(0).getCandidateUnitIds());
+        assertEquals("reorder_volunteers", proposal.getActions().get(1).getActionType());
+        assertEquals("unit", proposal.getActions().get(1).getLevel());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getPriorityMatchedCount());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getPriorityBeforeInversionCount());
+    }
+
+    @Test
+    void shouldReturnInfoWhenFillTargetAlreadyReached() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "专业1", "类别1", 80D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "专业2", "类别2", 81D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "专业1", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "学校2", "专业2", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setSourceVersionGuard(12);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("info", proposal.getStatus());
+        assertFalse(proposal.getRequiresConfirmation());
+        assertTrue(proposal.getActions().isEmpty());
+    }
+
+    @Test
+    void shouldBlockFillRatherThanCreatePartialPreviewWhenCandidatesAreInsufficient() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "专业1", "类别1", 80D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "专业2", "类别2", 81D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "专业1", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setSourceVersionGuard(12);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("candidate_pool_insufficient", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getActions().isEmpty());
+        assertTrue(proposal.getBlockingReason().contains("不能生成部分执行预览"));
+    }
+
+    @Test
+    void shouldAttributeFillShortageToConfirmedHardConstraints() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "数学", "理学", 80D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "法学", "法学", 90D));
+        state.getCandidatePoolState().getItems().add(candidate("v3", "学校3", "金融学", "经济学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "数学", false));
+        state.getConstraintState().getHardConstraints().setMustExcludeMajors(
+                java.util.Arrays.asList("法学", "金融学"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setSourceVersionGuard(12);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("hard_constraints_candidate_insufficient", proposal.getBlockingReasonCodes().get(0));
+        assertEquals("hard_constraints", proposal.getCandidateShortages().get(0).getScope());
+        assertTrue(proposal.getActions().isEmpty());
+    }
+
+    @Test
+    void shouldProjectExcludeRequirementBeforeFillingToCount() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO publicCurrent = candidate("v1", "公办学校1", "数学", "理学", 80D);
+        publicCurrent.setSchoolNature("公办");
+        CandidateItemDTO privateCurrent = candidate("v2", "民办学校", "法学", "法学", 90D);
+        privateCurrent.setSchoolNature("民办");
+        CandidateItemDTO publicReplacement = candidate("v3", "公办学校2", "金融学", "经济学", 88D);
+        publicReplacement.setSchoolNature("公办");
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(publicCurrent, privateCurrent, publicReplacement));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "公办学校1", "数学", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "民办学校", "法学", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("exclude", "school", "school_nature", "民办"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(2, proposal.getActions().size());
+        assertEquals("remove_volunteers", proposal.getActions().get(0).getActionType());
+        assertEquals(java.util.Arrays.asList("v2"), proposal.getActions().get(0).getRemoveVolunteerIds());
+        assertEquals("fill_total_count", proposal.getActions().get(1).getActionType());
+        assertEquals(java.util.Arrays.asList("v3"), proposal.getActions().get(1).getCandidateVolunteerIds());
+        assertTrue(proposal.getSummary().contains("排除民办（院校性质）"));
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getRemoveVolunteerCount());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getAddVolunteerCount());
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getAfterVolunteerTotal());
+    }
+
+    @Test
+    void shouldProjectOrderedUnitAttributesWhenCurrentCandidateIsMissing() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO publicReplacement = candidate("v2", "公办学校", "金融学", "经济学", 88D);
+        publicReplacement.setPlanSchoolDataId("u2");
+        publicReplacement.setSchoolNature("公办");
+        state.getCandidatePoolState().getItems().add(publicReplacement);
+
+        OrderedUnitDTO privateUnit = new OrderedUnitDTO();
+        privateUnit.setUnitId("u1");
+        privateUnit.setSchoolName("民办学校");
+        privateUnit.setSchoolNature("民办");
+        privateUnit.getMajorItems().add(unitMajor("v1", "法学"));
+        state.getOrderedPlanState().getUnits().add(privateUnit);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("exclude", "school", "school_nature", "民办"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(2, proposal.getActions().size());
+        assertEquals(java.util.Arrays.asList("u1"), proposal.getActions().get(0).getRemoveUnitIds());
+        assertEquals(java.util.Arrays.asList("v1"), proposal.getActions().get(0).getRemoveVolunteerIds());
+        assertEquals(java.util.Arrays.asList("u2"), proposal.getActions().get(1).getCandidateUnitIds());
+        assertEquals(java.util.Arrays.asList("v2"), proposal.getActions().get(1).getCandidateVolunteerIds());
+    }
+
+    @Test
+    void shouldEnrichMajorItemFromOrderedUnitWhenCurrentCandidateIsMissing() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO publicReplacement = candidate("v2", "公办学校", "金融学", "经济学", 88D);
+        publicReplacement.setPlanSchoolDataId("u2");
+        publicReplacement.setSchoolNature("公办");
+        state.getCandidatePoolState().getItems().add(publicReplacement);
+
+        state.getOrderedPlanState().getItems().add(ordered("v1", "民办学校", "法学", false));
+        OrderedUnitDTO privateUnit = new OrderedUnitDTO();
+        privateUnit.setUnitId("u1");
+        privateUnit.setSchoolName("民办学校");
+        privateUnit.setSchoolNature("民办");
+        privateUnit.getMajorItems().add(unitMajor("v1", "法学"));
+        state.getOrderedPlanState().getUnits().add(privateUnit);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("exclude", "school", "school_nature", "民办"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(java.util.Arrays.asList("v1"), proposal.getActions().get(0).getRemoveVolunteerIds());
+        assertEquals(java.util.Arrays.asList("v2"), proposal.getActions().get(1).getCandidateVolunteerIds());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getAfterVolunteerTotal());
+    }
+
+    @Test
+    void shouldBlockProjectedRequirementWhenViolatingItemIsLocked() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO privateCurrent = candidate("v1", "民办学校", "法学", "法学", 90D);
+        privateCurrent.setSchoolNature("民办");
+        state.getCandidatePoolState().getItems().add(privateCurrent);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "民办学校", "法学", true));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("exclude", "school", "school_nature", "民办"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("projected_requirements_locked_item", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getActions().isEmpty());
+    }
+
+    @Test
+    void shouldReplaceExistingOnlyKeepScopeInSameDomain() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getConstraintState().getHardConstraints().getMustIncludeRegions().add("北京");
+        CandidateItemDTO beijing = candidate("v1", "北京学校", "数学", "理学", 80D);
+        beijing.setProvinceName("北京");
+        CandidateItemDTO shanghai = candidate("v2", "上海学校", "法学", "法学", 90D);
+        shanghai.setProvinceName("上海");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(beijing, shanghai));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "北京学校", "数学", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "上海学校", "法学", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("only_keep", "region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(1, proposal.getActions().size());
+        assertEquals(java.util.Arrays.asList("v1"), proposal.getActions().get(0).getRemoveVolunteerIds());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getAfterVolunteerTotal());
+    }
+
+    @Test
+    void shouldFillWithNonExclusiveIncludeWithoutRemovingOtherMajors() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "数学", "理学", 90D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "法学", "法学", 88D));
+        state.getCandidatePoolState().getItems().add(candidate("v3", "学校3", "金融学", "经济学", 95D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "数学", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("include", "major", "major", "法学"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(1, proposal.getActions().size());
+        assertEquals("fill_total_count", proposal.getActions().get(0).getActionType());
+        assertEquals(java.util.Arrays.asList("v2"), proposal.getActions().get(0).getCandidateVolunteerIds());
+        assertTrue(proposal.getSummary().contains("至少包含法学（专业）"));
+        assertEquals(Integer.valueOf(0), proposal.getDryRunResult().getRemoveVolunteerCount());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getAddVolunteerCount());
+    }
+
+    @Test
+    void shouldReplaceUnlockedItemForIncludeWhenPlanIsFull() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "数学", "理学", 90D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "法学", "法学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "数学", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("include", "major", "major", "法学"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(2, proposal.getActions().size());
+        assertEquals(java.util.Arrays.asList("v1"), proposal.getActions().get(0).getRemoveVolunteerIds());
+        assertEquals(java.util.Arrays.asList("v2"), proposal.getActions().get(1).getCandidateVolunteerIds());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getAfterVolunteerTotal());
+        assertTrue(proposal.getActions().get(0).getDetail().contains("等量替换"));
+    }
+
+    @Test
+    void shouldPersistAlreadySatisfiedIncludeWithoutRemovingNonMatchingItems() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "法学", "法学", 90D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "数学", "理学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "法学", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "学校2", "数学", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("include", "major", "major", "法学"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getActions().isEmpty());
+        assertTrue(proposal.getSummary().contains("已经满足目标"));
+        assertEquals(Integer.valueOf(0), proposal.getDryRunResult().getRemoveVolunteerCount());
+    }
+
+    @Test
+    void shouldIncreaseExplicitCoverageWhilePreservingCurrentPlanCount() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO beijing = candidate("v1", "北京学校", "数学", "理学", 90D);
+        beijing.setProvinceName("北京");
+        CandidateItemDTO shanghaiLaw = candidate("v2", "上海学校1", "法学", "法学", 88D);
+        shanghaiLaw.setProvinceName("上海");
+        CandidateItemDTO shanghaiFinance = candidate("v3", "上海学校2", "金融学", "经济学", 86D);
+        shanghaiFinance.setProvinceName("上海");
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(beijing, shanghaiLaw, shanghaiFinance));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "北京学校", "数学", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "上海学校1", "法学", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setPersistTargetCount(false);
+        req.setSourceVersionGuard(12);
+        UserGoalFixProposalReq.RequirementDTO coverage = requirement(
+                "include", "region", "province", "上海");
+        coverage.setMinCount(2);
+        req.getRequirements().add(coverage);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(2, proposal.getActions().size());
+        assertEquals(java.util.Arrays.asList("v1"), proposal.getActions().get(0).getRemoveVolunteerIds());
+        assertEquals(java.util.Arrays.asList("v3"), proposal.getActions().get(1).getCandidateVolunteerIds());
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getBeforeVolunteerTotal());
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getAfterVolunteerTotal());
+        assertTrue(proposal.getTitle().contains("保持当前 2 个志愿"));
+        assertTrue(proposal.getSummary().contains("至少包含2个上海（地区）"), proposal.getSummary());
+    }
+
+    @Test
+    void shouldIncreaseProtectTierMinimumWhilePreservingCurrentPlanCount() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO safeOne = candidate("v1", "学校1", "数学", "理学", 90D);
+        safeOne.setTier("稳");
+        CandidateItemDTO protectOne = candidate("v2", "学校2", "法学", "法学", 88D);
+        protectOne.setTier("保");
+        CandidateItemDTO safeTwo = candidate("v3", "学校3", "金融学", "经济学", 87D);
+        safeTwo.setTier("稳");
+        CandidateItemDTO protectTwo = candidate("v4", "学校4", "会计学", "管理学", 86D);
+        protectTwo.setTier("保底");
+        CandidateItemDTO protectThree = candidate("v5", "学校5", "审计学", "管理学", 85D);
+        protectThree.setTier("protect");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(
+                safeOne, protectOne, safeTwo, protectTwo, protectThree));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v1", "学校1", "数学", "稳"));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v2", "学校2", "法学", "保"));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v3", "学校3", "金融学", "稳"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setPersistTargetCount(false);
+        req.setSourceVersionGuard(12);
+        UserGoalFixProposalReq.RequirementDTO minimum = requirement(
+                "include", "admission", "tier", "保");
+        minimum.setMinCount(3);
+        req.getRequirements().add(minimum);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(Integer.valueOf(3), proposal.getDryRunResult().getBeforeVolunteerTotal());
+        assertEquals(Integer.valueOf(3), proposal.getDryRunResult().getAfterVolunteerTotal());
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getRemoveVolunteerCount());
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getAddVolunteerCount());
+        assertTrue(proposal.getSummary().contains("至少包含3个保（录取档位）"), proposal.getSummary());
+    }
+
+    @Test
+    void shouldRejectUnknownAdmissionTierMinimum() {
+        PlanningStateDTO state = state(12);
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setSourceVersionGuard(12);
+        UserGoalFixProposalReq.RequirementDTO minimum = requirement(
+                "include", "admission", "tier", "超稳");
+        minimum.setMinCount(2);
+        req.getRequirements().add(minimum);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertTrue(proposal.getBlockingReason().contains("冲、稳、保"));
+    }
+
+    @Test
+    void shouldReplaceExcessTierForExactTierQuota() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO sprintOne = candidate("v1", "学校1", "数学", "理学", 90D);
+        sprintOne.setTier("冲");
+        CandidateItemDTO sprintTwo = candidate("v2", "学校2", "物理学", "理学", 88D);
+        sprintTwo.setTier("冲刺");
+        CandidateItemDTO stable = candidate("v3", "学校3", "金融学", "经济学", 87D);
+        stable.setTier("稳");
+        CandidateItemDTO protect = candidate("v4", "学校4", "会计学", "管理学", 86D);
+        protect.setTier("protect");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(
+                sprintOne, sprintTwo, stable, protect));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v1", "学校1", "数学", "冲"));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v2", "学校2", "物理学", "冲"));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v3", "学校3", "金融学", "稳"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setPersistTargetCount(false);
+        req.setSourceVersionGuard(12);
+        req.setTierQuotaGoal(tierQuota(1, 1, 1));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(2, proposal.getActions().size());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getRemoveVolunteerCount());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getAddVolunteerCount());
+        assertEquals(java.util.Arrays.asList("v4"),
+                proposal.getActions().get(1).getCandidateVolunteerIds());
+        assertTrue(proposal.getSummary().contains("冲1个、稳1个、保1个"), proposal.getSummary());
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult()
+                .getBeforeVolunteerTierCounts().get("冲"));
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult()
+                .getAfterVolunteerTierCounts().get("保"));
+    }
+
+    @Test
+    void shouldBlockExactTierQuotaWhenTotalDoesNotMatchTarget() {
+        PlanningStateDTO state = state(12);
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(4);
+        req.setSourceVersionGuard(12);
+        req.setTierQuotaGoal(tierQuota(1, 1, 1));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("tier_quota_invalid", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getBlockingReason().contains("合计必须等于"));
+    }
+
+    @Test
+    void shouldBlockExactTierQuotaComposite() {
+        PlanningStateDTO state = state(12);
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setSourceVersionGuard(12);
+        req.setTierQuotaGoal(tierQuota(1, 1, 1));
+        req.getRequirements().add(requirement("exclude", "school", "school_nature", "民办"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("tier_quota_composite_not_supported", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getActions().isEmpty());
+    }
+
+    @Test
+    void shouldBlockExactTierQuotaOnNonFillProposal() {
+        PlanningStateDTO state = state(12);
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("prioritize_within_tier");
+        req.setSourceVersionGuard(12);
+        req.setTierQuotaGoal(tierQuota(1, 1, 1));
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("tier_quota_invalid", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getBlockingReason().contains("fill_to_count"));
+    }
+
+    @Test
+    void shouldBlockPreserveCoverageWhenFrozenCountIsStale() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "法学", "法学", 90D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "法学", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(2);
+        req.setPersistTargetCount(false);
+        req.setSourceVersionGuard(12);
+        UserGoalFixProposalReq.RequirementDTO coverage = requirement(
+                "include", "major", "major", "法学");
+        coverage.setMinCount(1);
+        req.getRequirements().add(coverage);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("preserve_count_mismatch", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getActions().isEmpty());
+    }
+
+    @Test
+    void shouldBlockIncludeReplacementWhenOnlyRemovableItemIsLocked() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "数学", "理学", 90D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "法学", "法学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "数学", true));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("include", "major", "major", "法学"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("coverage_replacement_locked_item", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getActions().isEmpty());
+    }
+
+    @Test
+    void shouldBlockIncludeWhenNoMatchingCandidateExists() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "数学", "理学", 90D));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("include", "major", "major", "法学"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("coverage_requirement_insufficient", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getActions().isEmpty());
+    }
+
+    @Test
+    void shouldUseOneCandidateToCoverMultipleIncludeRequirements() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO shanghaiLaw = candidate("v1", "上海政法学院", "法学", "法学", 90D);
+        shanghaiLaw.setProvinceName("上海");
+        state.getCandidatePoolState().getItems().add(shanghaiLaw);
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("include", "major", "major", "法学"));
+        req.getRequirements().add(requirement("include", "region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(1, proposal.getActions().size());
+        assertEquals(java.util.Arrays.asList("v1"), proposal.getActions().get(0).getCandidateVolunteerIds());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getAfterVolunteerTotal());
+    }
+
+    @Test
+    void shouldCountMajorGroupUnitsAndIncludeCompleteSelectedUnits() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO v1 = candidate("v1", "学校1", "专业1", "类别1", 80D);
+        v1.setPlanSchoolDataId("u1");
+        CandidateItemDTO v1b = candidate("v1b", "学校1", "专业1B", "类别1", 79D);
+        v1b.setPlanSchoolDataId("u1");
+        CandidateItemDTO v2 = candidate("v2", "学校2", "专业2A", "类别2", 95D);
+        v2.setPlanSchoolDataId("u2");
+        CandidateItemDTO v3 = candidate("v3", "学校2", "专业2B", "类别2", 90D);
+        v3.setPlanSchoolDataId("u2");
+        CandidateItemDTO v4 = candidate("v4", "学校3", "专业3", "类别3", 85D);
+        v4.setPlanSchoolDataId("u3");
+        state.getCandidatePoolState().getItems().add(v1);
+        state.getCandidatePoolState().getItems().add(v1b);
+        state.getCandidatePoolState().getItems().add(v2);
+        state.getCandidatePoolState().getItems().add(v3);
+        state.getCandidatePoolState().getItems().add(v4);
+        OrderedUnitDTO currentUnit = new OrderedUnitDTO();
+        currentUnit.setUnitId("u1");
+        currentUnit.getMajorItems().add(unitMajor("v1", "专业1"));
+        currentUnit.getMajorItems().add(unitMajor("v1b", "专业1B"));
+        state.getOrderedPlanState().getUnits().add(currentUnit);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "专业1", false));
+        state.getOrderedPlanState().getItems().add(ordered("v1b", "学校1", "专业1B", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(3);
+        req.setSourceVersionGuard(12);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals("unit", action.getLevel());
+        assertEquals(java.util.Arrays.asList("u2", "u3"), action.getUnitIds());
+        assertEquals(java.util.Arrays.asList("v2", "v3", "v4"), action.getVolunteerIds());
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getBeforeUnitTotal());
+        assertEquals(Integer.valueOf(3), proposal.getDryRunResult().getAfterUnitTotal());
+        assertEquals(Integer.valueOf(5), proposal.getDryRunResult().getAfterVolunteerTotal());
+    }
+
+    @Test
+    void shouldBuildWithinTierPriorityPreview() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO other1 = candidate("v1", "北京学校", "数学", "理学", 90D);
+        other1.setProvinceName("北京");
+        CandidateItemDTO shanghai1 = candidate("v2", "上海学校1", "法学", "法学", 89D);
+        shanghai1.setProvinceName("上海");
+        CandidateItemDTO other2 = candidate("v3", "天津学校", "金融学", "经济学", 88D);
+        other2.setProvinceName("天津");
+        CandidateItemDTO shanghai2 = candidate("v4", "上海学校2", "会计学", "管理学", 87D);
+        shanghai2.setProvinceName("上海");
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(other1, shanghai1, other2, shanghai2));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v1", "北京学校", "数学", "稳"));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v2", "上海学校1", "法学", "稳"));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v3", "天津学校", "金融学", "稳"));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v4", "上海学校2", "会计学", "稳"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("prioritize_within_tier");
+        req.setSourceVersionGuard(12);
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("prioritize_within_tier", proposal.getStrategy());
+        assertEquals(1, proposal.getActions().size());
+        assertEquals("reorder_volunteers", proposal.getActions().get(0).getActionType());
+        assertEquals(java.util.Arrays.asList("v2", "v4"), proposal.getActions().get(0).getVolunteerIds());
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getPriorityMatchedCount());
+        assertEquals(Integer.valueOf(3), proposal.getDryRunResult().getPriorityBeforeInversionCount());
+        assertEquals(Integer.valueOf(0), proposal.getDryRunResult().getPriorityAfterInversionCount());
+        assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getPriorityMovedTargetCount());
+        assertEquals(Integer.valueOf(4), proposal.getDryRunResult().getAfterVolunteerTotal());
+    }
+
+    @Test
+    void shouldPersistAlreadySatisfiedPriorityThroughReadyProposal() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO shanghai = candidate("v1", "上海学校", "法学", "法学", 90D);
+        shanghai.setProvinceName("上海");
+        CandidateItemDTO other = candidate("v2", "北京学校", "数学", "理学", 89D);
+        other.setProvinceName("北京");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(shanghai, other));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v1", "上海学校", "法学", "稳"));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v2", "北京学校", "数学", "稳"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("prioritize_within_tier");
+        req.setSourceVersionGuard(12);
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getActions().isEmpty());
+        assertTrue(proposal.getSummary().contains("已经"));
+        assertEquals(Integer.valueOf(0), proposal.getDryRunResult().getPriorityBeforeInversionCount());
+    }
+
+    @Test
+    void shouldBlockPriorityWhenPinnedPositionWouldMove() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO other = candidate("v1", "北京学校", "数学", "理学", 90D);
+        other.setProvinceName("北京");
+        CandidateItemDTO shanghai = candidate("v2", "上海学校", "法学", "法学", 89D);
+        shanghai.setProvinceName("上海");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(other, shanghai));
+        OrderedItemDTO pinned = orderedWithTier("v1", "北京学校", "数学", "稳");
+        pinned.setPinned(true);
+        pinned.setPinnedPosition(1);
+        state.getOrderedPlanState().getItems().add(pinned);
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v2", "上海学校", "法学", "稳"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("prioritize_within_tier");
+        req.setSourceVersionGuard(12);
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("priority_pinned_position_conflict", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getActions().isEmpty());
+    }
+
+    @Test
+    void shouldBlockPriorityWhenCurrentPlanHasNoMatchingTarget() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO other = candidate("v1", "北京学校", "数学", "理学", 90D);
+        other.setProvinceName("北京");
+        state.getCandidatePoolState().getItems().add(other);
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v1", "北京学校", "数学", "稳"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("prioritize_within_tier");
+        req.setSourceVersionGuard(12);
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("priority_target_not_in_plan", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getBlockingReason().contains("不会自动增加"));
+    }
+
+    @Test
+    void shouldBlockPriorityWhenTierDataIsMissing() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO shanghai = candidate("v1", "上海学校", "法学", "法学", 90D);
+        shanghai.setProvinceName("上海");
+        state.getCandidatePoolState().getItems().add(shanghai);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "上海学校", "法学", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("prioritize_within_tier");
+        req.setSourceVersionGuard(12);
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("priority_tier_unavailable", proposal.getBlockingReasonCodes().get(0));
+    }
+
+    @Test
     void shouldBlockWhenGoalTypeIsMissing() {
         PlanningStateDTO state = state(14);
         UserGoalFixProposalReq req = new UserGoalFixProposalReq();
@@ -693,6 +1568,18 @@ public class UserGoalProposalBuilderTest {
         return scope(entityType, normalizedName);
     }
 
+    private UserGoalFixProposalReq.RequirementDTO requirement(String kind,
+                                                              String domain,
+                                                              String key,
+                                                              String value) {
+        UserGoalFixProposalReq.RequirementDTO requirement = new UserGoalFixProposalReq.RequirementDTO();
+        requirement.setKind(kind);
+        requirement.setDomain(domain);
+        requirement.setKey(key);
+        requirement.setValues(java.util.Arrays.asList(value));
+        return requirement;
+    }
+
     private CandidateItemDTO candidate(String volunteerId, String schoolName, String majorName, String majorCategory, Double finalScore) {
         CandidateItemDTO candidate = new CandidateItemDTO();
         candidate.setVolunteerId(volunteerId);
@@ -714,6 +1601,34 @@ public class UserGoalProposalBuilderTest {
         item.setMajorName(majorName);
         item.setLocked(locked);
         return item;
+    }
+
+    private OrderedItemDTO orderedWithTier(String volunteerId,
+                                           String schoolName,
+                                           String majorName,
+                                           String tier) {
+        OrderedItemDTO item = ordered(volunteerId, schoolName, majorName, false);
+        item.setTier(tier);
+        return item;
+    }
+
+    private PriorityRuleDTO priorityRule(String domain, String key, String value) {
+        PriorityRuleDTO rule = new PriorityRuleDTO();
+        rule.setDomain(domain);
+        rule.setKey(key);
+        rule.setValues(java.util.Arrays.asList(value));
+        rule.setOrderingTarget("rank_before");
+        rule.setScope("within_tier");
+        return rule;
+    }
+
+    private TierQuotaGoalDTO tierQuota(int sprint, int stable, int protect) {
+        TierQuotaGoalDTO goal = new TierQuotaGoalDTO();
+        goal.setType("exact_counts");
+        goal.setSprintCount(sprint);
+        goal.setStableCount(stable);
+        goal.setProtectCount(protect);
+        return goal;
     }
 
     private PlanningUnitMajorDTO unitMajor(String volunteerId, String majorName) {

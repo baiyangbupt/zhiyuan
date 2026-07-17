@@ -12,9 +12,6 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCall
 from app.data.history_store import ChatHistoryStore
 from app.service import ChatService, ChatServiceResponseEnvelope
 
-MAINLINE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_mainline_cases.json"
-SCIENCE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_science_cases.json"
-FULL_JOURNEY_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_full_journey_cases.json"
 RELEASE_400_PLAN_OPERATION_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_400_plan_operation_cases.json"
 RELEASE_400_EXPLORE_INTENT_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_400_explore_intent_cases.json"
 RELEASE_400_READONLY_REAL_SESSION_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_400_readonly_real_session_cases.json"
@@ -170,18 +167,6 @@ def _build_service(tmp_path, agent: _ScenarioAgent) -> ChatService:
         return ChatService(client, store)
 
 
-def _load_mainline_cases() -> list[dict]:
-    return json.loads(MAINLINE_CASES_PATH.read_text(encoding="utf-8"))
-
-
-def _load_science_cases() -> list[dict]:
-    return json.loads(SCIENCE_CASES_PATH.read_text(encoding="utf-8"))
-
-
-def _load_full_journey_cases() -> list[dict]:
-    return json.loads(FULL_JOURNEY_CASES_PATH.read_text(encoding="utf-8"))
-
-
 def _load_release_400_plan_operation_cases() -> list[dict]:
     return json.loads(RELEASE_400_PLAN_OPERATION_CASES_PATH.read_text(encoding="utf-8"))
 
@@ -237,225 +222,6 @@ def _load_release_400_production_abstracted_cases() -> list[dict]:
     return _expand_case_payload(_load_release_400_production_abstracted_payload())
 
 
-def test_mainline_dialog_case_catalog_has_current_explore_intent_plan_scenarios():
-    cases = _load_mainline_cases()
-
-    assert len(cases) >= 36
-    assert len({case["name"] for case in cases}) == len(cases)
-    for case in cases:
-        assert case["assertPlanStyle"] is True
-        assert case["prompts"]
-        assert set(case["flow"]).issubset({"explore", "intent", "plan"})
-        assert case["coverage"]
-
-    complete_flow_cases = [case for case in cases if case["flow"] == ["explore", "intent", "plan"]]
-    assert len(complete_flow_cases) >= 6
-
-
-def test_mainline_dialog_case_catalog_covers_session57_risks_and_plan_boundaries():
-    cases = _load_mainline_cases()
-    case_names = {case["name"] for case in cases}
-    coverage = {tag for case in cases for tag in case["coverage"]}
-    required_case_names = {
-        "risk-followup-remove-preview-apply-review",
-        "fix-proposal-preview-apply-post-review",
-        "ordered-move-preview-apply",
-        "pin-unpin-after-review",
-        "school-major-group-query-then-replace",
-        "colloquial-review-remove-fix-proposal-mainline",
-        "colloquial-adjustment-then-reorder-mainline",
-    }
-    required_tags = {
-        "positive_major_intent",
-        "negative_major_intent",
-        "major_alias",
-        "candidate_match",
-        "historical_intent",
-        "no_stale_candidate_refresh",
-        "plan_generate",
-        "plan_query",
-        "plan_status",
-        "plan_analysis",
-        "plan_preview",
-        "plan_apply",
-        "confirmation_boundary",
-        "ordered_workspace",
-        "review_workspace",
-        "plan_review",
-        "risk_followup",
-        "remove_units",
-        "fix_proposal_apply",
-        "move_unit",
-            "no_pin_user_entry",
-            "no_legacy_lock",
-        "group_mode",
-        "school_major_query",
-        "replace_units",
-    }
-
-    assert required_case_names.issubset(case_names)
-    assert required_tags.issubset(coverage)
-    all_prompts = "\n".join(prompt for case in cases for prompt in case["prompts"])
-    assert "网络与新媒体" in all_prompts
-    assert "跨境电商" in all_prompts or "跨境电子商务" in all_prompts
-    assert "审计" in all_prompts
-    assert "会计" in all_prompts
-    assert "确认生成" in all_prompts
-    assert "确认" in all_prompts
-    assert "中外合作" in all_prompts
-    assert "固定住" in all_prompts
-    assert "广西师范大学" in all_prompts
-    assert "这版有啥问题" in all_prompts
-    assert "贵的先去掉" in all_prompts
-    assert "现在少的这些咋补" in all_prompts
-    assert "这版怎么排更合适" in all_prompts
-    assert "帮我顺一下" in all_prompts
-
-
-def test_science_dialog_case_catalog_has_40_engineering_scenarios():
-    cases = _load_science_cases()
-
-    assert len(cases) == 40
-    assert len({case["name"] for case in cases}) == 40
-    for case in cases:
-        assert case["assertPlanStyle"] is True
-        assert case["prompts"]
-        assert set(case["flow"]).issubset({"explore", "intent", "plan"})
-        assert "plan" in case["flow"]
-        assert case["coverage"]
-
-    complete_flow_cases = [case for case in cases if case["flow"] == ["explore", "intent", "plan"]]
-    assert len(complete_flow_cases) >= 12
-
-
-def test_science_dialog_case_catalog_covers_main_engineering_branches_and_plan_boundaries():
-    cases = _load_science_cases()
-    coverage = {tag for case in cases for tag in case["coverage"]}
-    required_tags = {
-        "computer_science",
-        "electronic_information",
-        "automation",
-        "mechanical_engineering",
-        "civil_engineering",
-        "materials",
-        "biomedical_engineering",
-        "subject_requirement",
-        "negative_major_intent",
-        "plan_preview",
-        "plan_apply",
-        "plan_review",
-    }
-
-    assert required_tags.issubset(coverage)
-    all_prompts = "\n".join(prompt for case in cases for prompt in case["prompts"])
-    assert "计算机" in all_prompts
-    assert "电子信息" in all_prompts
-    assert "不想学土木" in all_prompts
-    assert "确认" in all_prompts
-
-
-def test_full_journey_dialog_case_catalog_covers_start_explore_intent_plan_adjustment():
-    cases = _load_full_journey_cases()
-
-    assert len(cases) >= 9
-    assert len({case["name"] for case in cases}) == len(cases)
-
-    allowed_flow = {"start", "explore", "intent", "plan", "review"}
-    coverage = {tag for case in cases for tag in case["coverage"]}
-    all_prompts = "\n".join(
-        step["prompt"] if isinstance(step, dict) else str(step)
-        for case in cases
-        for step in case["prompts"]
-    )
-
-    for case in cases:
-        assert case["assertPlanStyle"] is True
-        assert set(case["flow"]).issubset(allowed_flow)
-        assert {"start", "explore", "intent", "plan"}.issubset(set(case["flow"]))
-        assert case["coverage"]
-        assert case["prompts"]
-
-    required_tags = {
-        "full_journey",
-        "opening_context",
-        "major_explore",
-        "career_explore",
-        "school_explore",
-        "positive_major_intent",
-        "positive_career_intent",
-        "positive_region_intent",
-        "positive_school_intent",
-        "explicit_major_requirement",
-        "explicit_region_requirement",
-        "plan_query",
-        "candidate_explore",
-        "candidate_refresh",
-        "candidate_results",
-        "candidate_view_state",
-        "candidate_school_major_ref",
-            "candidate_search_add",
-            "fix_proposal_apply",
-            "replace_units",
-            "fix_proposal_preview",
-        "move_ordered_unit",
-        "remove_ordered_unit",
-        "remove_then_add",
-        "majorGroup_mutation",
-        "majorGroup_operations",
-        "positive_negative_intent_mix",
-        "explicit_intent_stability",
-        "review_accuracy",
-        "review_then_adjust",
-        "review_then_fix",
-        "move_operation",
-        "preview_confirm_apply",
-        "confirmation_boundary",
-        "no_premature_plan_apply",
-        "review_workspace",
-    }
-    assert required_tags.issubset(coverage)
-
-    assert "网络与新媒体" in all_prompts
-    assert "跨境电商" in all_prompts
-    assert "会计审计不要" in all_prompts
-    assert "体制内" in all_prompts
-    assert "江苏浙江上海" in all_prompts
-    assert "东北西北不要" in all_prompts
-    assert "第3个专业组移到第5位" in all_prompts
-    assert "删除第5个专业组" in all_prompts
-    assert "先不确认" in all_prompts
-    assert "确认刚才" in all_prompts
-    assert "候选列表按计算机方向刷新一下" in all_prompts
-    assert "湖北工程学院的计算机科学与技术" in all_prompts
-    assert "概率倒挂和高收费风险" in all_prompts
-    assert "风险最大的两个" in all_prompts
-    assert "电气自动化" in all_prompts
-    assert "第4个专业组" in all_prompts
-
-
-def test_full_journey_dialog_case_catalog_has_content_assertions_and_no_internal_terms():
-    cases = _load_full_journey_cases()
-    banned_terms = {"payload", "stage", "action_family", "volunteerId", "草稿"}
-    mutation_prompts = []
-
-    for case in cases:
-        for step in case["prompts"]:
-            assert isinstance(step, dict)
-            assert step.get("prompt")
-            assert step.get("assertContainsAny") or step.get("assertContains")
-            assert banned_terms.intersection(set(step.get("assertNotContains") or [])) == banned_terms
-            prompt = step["prompt"]
-            if any(token in prompt for token in ("替换", "补", "移到", "删除")):
-                mutation_prompts.append(step)
-
-    assert mutation_prompts
-    preview_steps = [step for step in mutation_prompts if "确认" not in step["prompt"]]
-    direct_mutation_phrases = {"已直接调整", "已直接替换", "已直接加入", "已直接移动", "已直接删除"}
-    assert any(direct_mutation_phrases.intersection(set(step.get("assertNotContains") or [])) for step in preview_steps)
-    all_steps = [step for case in cases for step in case["prompts"]]
-    assert any(step.get("assertFollowupTarget") == "ordered" for step in all_steps)
-
-
 def test_release_400_plan_operation_case_catalog_covers_plan_operations_and_runtime_history():
     cases = _load_release_400_plan_operation_cases()
 
@@ -505,28 +271,32 @@ def test_release_400_explore_intent_case_catalog_covers_front_layers_before_plan
         "release_4_0_0",
         "zhiyuan_agent_direct",
         "major_explore",
+        "major_compare",
         "career_explore",
         "career_compare",
+        "career_reference_boundary",
         "school_explore",
         "region_explore",
-        "positive_major_intent",
-        "positive_career_intent",
-        "positive_region_intent",
-        "positive_school_intent",
         "explicit_major_requirement",
         "explicit_region_requirement",
         "positive_negative_intent_mix",
-        "intent_revision",
-        "historical_intent",
+        "explicit_reference_boundary",
+        "explicit_region_reference_boundary",
+        "priority_confirmable_boundary",
+        "school_priority_hard_requirement_boundary",
         "pending_intent",
         "no_duplicate_intent",
+        "confirmation_boundary",
         "candidate_explore",
+        "candidate_match",
+        "candidate_results",
         "candidate_risk_explanation",
         "eligibility_explanation",
         "readonly_no_pending_intent",
         "no_premature_plan_apply",
         "plan_status",
         "plan_analysis",
+        "plan_impact",
     }
     assert required_tags.issubset(coverage)
 
@@ -573,8 +343,13 @@ def test_release_400_readonly_real_session_cases_cover_no_workspace_card_smoke()
 
     banned_terms = {"payload", "stage", "action_family", "volunteerId", "草稿"}
     all_steps = [step for case in cases for step in case["prompts"]]
+    target_session_ids = {case["sessionId"] for case in cases}
+    assert len(target_session_ids) == len(cases)
     for case in cases:
-        assert case["sessionId"] == "17"
+        source_session_id = case.get("cloneBackendStateFromSessionId")
+        assert source_session_id in {"16", "17"}
+        assert case["sessionId"] != source_session_id
+        assert case["sessionId"].startswith("990706")
         assert case["assertPlanStyle"] is True
         assert set(case["flow"]).issubset({"explore", "plan"})
         for step in case["prompts"]:

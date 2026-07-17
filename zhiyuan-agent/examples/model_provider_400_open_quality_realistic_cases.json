@@ -1666,7 +1666,22 @@
           "已直接排序",
           "payload"
         ],
-        "assertNoFollowups": true,
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
+        "expectedToolNames": [
+          "preview_plan_change",
+          "preview_plan_change"
+        ],
+        "expectedToolCounts": {
+          "preview_plan_change": 2
+        },
+        "assertToolNamesNotContain": [
+          "preview_plan_action",
+          "review_plan",
+          "query_plan"
+        ],
+        "maxToolCallCount": 2,
+        "expectedActionFamily": "apply_plan_change_proposal",
         "warnElapsedSeconds": 35,
         "minTextLengthWarn": 150
       }

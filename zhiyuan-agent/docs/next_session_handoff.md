@@ -189,7 +189,7 @@
     - 增加口语化直接改排问法 -> `regenerate_order` preview
   - `skills/plan_chat/SKILL.md`
     - 同步补充上述口语化方案话术和边界说明
-  - `examples/dialog_regression_mainline_cases.json`
+  - `examples/dialog_regression_400_plan_operation_cases.json`
     - 新增 2 条口语化主线 case
   - `docs/test/planning-dialog-integration-checklist.md`
     - 新增话术包 G/H，明确真实联调优先用口语化问法
@@ -705,7 +705,7 @@
 
 ### 本轮代码侧调整
 
-- 新增 `examples/dialog_regression_science_cases.json`：40 个偏理工场景案例，覆盖计算机、软件、数据、AI、电子信息、自动化、机械、土木、材料、生医、选科限制、负向专业、plan preview/apply/review 等。
+- 3.x `dialog_regression_science_cases.json` 已从当前 4.0 门禁移除；同类专业/方案场景由 `dialog_regression_400_dialogue_derived_cases.json`、`dialog_regression_400_open_quality_cases.json` 和 action/final 资产承接。
 - 更新 `tests/unit/test_mainline_dialog_scenarios.py`：校验 40 个理工案例的数量、flow、coverage tags。
 - `app/server.py` 增加 websocket 服务层超时兜底：
   - `handle_message` 超过 105 秒时返回自然兜底文案，避免用户一直等不到 end 包。

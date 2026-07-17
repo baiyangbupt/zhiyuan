@@ -25,34 +25,29 @@ description: 处理围绕当前方案或候选池的局部命中查询。优先�
 
 ## 可用工具
 
-### `query_volunteer_plan`
+### `query_plan`
 
 用途：
 
 - 查询当前方案里是否命中某组局部条件
 - 查询候选池里是否还有符合条件的机会
-- 当 `scope=plan_then_candidate` 时，先看当前方案，再补看候选机会
+- `scope=plan` 查询当前方案，`scope=candidates` 查询候选池
 
 ### 推荐参数形态
 
-优先传结构化 filters：
+调用 `query_plan(scope, filters)`，优先传结构化 filters：
 
 - `scope`
   - `plan`
-  - `candidate`
-  - `plan_then_candidate`
-- `school_keywords`
-- `major_keywords`
-- `province_names`
-- `city_names`
-- `school_tags`
-- `major_tags`
+  - `candidates`
+- `school`
+- `major`
+- `province`
+- `city`
+- `school_tag`
+- `major_tag`
 - `tiers`
-- `match_mode`
-
-仅当你暂时抽不出结构化条件时，才退回：
-
-- `query`
+- `limit`
 
 如果是意向确认类工具，不要发明额外 key；专业意向只使用：
 
@@ -73,13 +68,11 @@ description: 处理围绕当前方案或候选池的局部命中查询。优先�
 
 - “当前方案里有没有上海的网络与新媒体”
   - `scope="plan"`
-  - `province_names=["上海"]`
-  - `major_keywords=["网络与新媒体"]`
+  - `filters={"province":["上海"], "major":["网络与新媒体"]}`
 
 - “候选里还有没有北京农学院的生物工程”
-  - `scope="candidate"`
-  - `school_keywords=["北京农学院"]`
-  - `major_keywords=["生物工程"]`
+  - `scope="candidates"`
+  - `filters={"school":["北京农学院"], "major":["生物工程"]}`
 
 ### 2. 注意“学校 + 专业”和“院校专业组”不是一回事
 
@@ -90,8 +83,8 @@ description: 处理围绕当前方案或候选池的局部命中查询。优先�
 
 优先拆成：
 
-- `school_keywords`
-- `major_keywords`
+- `school`
+- `major`
 
 不要把整串只当成一个学校名，也不要把“第01组 / 006专业组”当成用户必须显式说出的部分。
 
@@ -105,8 +98,8 @@ description: 处理围绕当前方案或候选池的局部命中查询。优先�
 
 优先拆到：
 
-- `province_names`
-- `city_names`
+- `province`
+- `city`
 
 不要把地域词和学校/专业词混成一个 `query` 字符串。
 
@@ -121,8 +114,8 @@ description: 处理围绕当前方案或候选池的局部命中查询。优先�
 
 优先拆到：
 
-- `school_tags`
-- `major_tags`
+- `school_tag`
+- `major_tag`
 
 ### 5. 这些问题不要走本技能
 

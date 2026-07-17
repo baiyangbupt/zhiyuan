@@ -67,7 +67,7 @@ from app.util.internal_client import (
     generate_user_goal_planning_fix_proposals,
     get_last_pending_confirmation,
     get_message_by_id,
-    get_pending_confirmation,
+    claim_pending_confirmation,
     get_planning_state,
     get_planning_workspace_state,
     get_user_init_profile,
@@ -111,7 +111,10 @@ def _env_float(name: str, default: float) -> float:
 
 _ZHIYUAN_AGENT_DIRECT_TIMEOUT_SECONDS = max(
     0.0,
-    _env_float("ZHIYUAN_AGENT_DIRECT_TIMEOUT_SECONDS", 30.0),
+    # One direct turn may legitimately contain two model requests plus a
+    # grounded tool call. The previous 30s total budget cut off healthy
+    # second requests observed around 20-25s after a successful first call.
+    _env_float("ZHIYUAN_AGENT_DIRECT_TIMEOUT_SECONDS", 60.0),
 )
 
 _PLAN_STYLE_SEVERE_MARKERS = (
@@ -235,10 +238,6 @@ _UNBACKED_PLAN_CONFIRMATION_REPLY = (
     "这轮还没有生成可确认的调整预览，所以不会改动当前方案。"
     "如果你要继续调整，请再发一次具体要求，我会重新定位影响范围并列出调整预览；"
     "只有你点“确认执行”或直接确认当前有效预览后才会执行。"
-)
-_NO_TOOL_NO_ACTION_BOUNDARY_REPLY = (
-    "可以，先按这次思路保留和讨论；这轮不会改动当前方案，也不会写入后续报考参考里的偏好或要求，更不会开始任何方案调整。"
-    "下一步如果要正式采用新的想法或调整方案，我会先把要采用的内容或调整预览列清楚，你确认前不会执行。"
 )
 _ROUTE_OBSERVABILITY_MODEL_NAME = "route-observability"
 _INTENT_PREVIEW_TOOL_NAMES = {
@@ -745,9 +744,19 @@ def _extract_extra_data_value(response: dict[str, Any] | None, key: str) -> dict
         except (TypeError, ValueError):
             parsed = None
         value = parsed
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or not value:
         return None
     result = dict(value)
+    pending_revision = _as_int(data.get("revision"))
+    if pending_revision > 0:
+        result["_pendingRevision"] = pending_revision
+        result["revision"] = pending_revision
+    claim_token = str(data.get("claimToken") or "").strip()
+    if claim_token:
+        result["_pendingClaimToken"] = claim_token
+    claim_expires_at = data.get("claimExpiresAt")
+    if claim_expires_at not in (None, ""):
+        result["_pendingClaimExpiresAt"] = claim_expires_at
     data_version = _as_int(data.get("dataVersion") or data.get("version"))
     if data_version > 0:
         result.setdefault("_extraDataVersion", data_version)
@@ -756,61 +765,56 @@ def _extract_extra_data_value(response: dict[str, Any] | None, key: str) -> dict
 
 
 async def _load_pending_confirmation_state(session_id: str) -> dict[str, Any] | None:
+    """Load the single authoritative latest pending snapshot.
+
+    An empty latest value is a tombstone. Falling back to version zero here can
+    resurrect an older pending after it was cancelled, applied, or cleared.
+    """
     try:
         response = await get_last_pending_confirmation(session_id)
     except Exception:
         logger.warning("Failed to load latest pending confirmation state: session_id=%s", session_id, exc_info=True)
-        response = None
-    state = _extract_extra_data_value(response, "pendingConfirmation")
-    if state:
-        return state
-    try:
-        response = await get_pending_confirmation(session_id)
-    except Exception:
-        logger.warning("Failed to load pending confirmation state: session_id=%s", session_id, exc_info=True)
         return None
     return _extract_extra_data_value(response, "pendingConfirmation")
 
 
-async def _load_pending_confirmation_state_at_version(
-    session_id: str,
-    version: int,
-) -> dict[str, Any] | None:
-    try:
-        response = await get_pending_confirmation(session_id, version=version)
-    except Exception:
-        logger.warning(
-            "Failed to load pending confirmation state at version: session_id=%s version=%s",
-            session_id,
-            version,
-            exc_info=True,
-        )
-        return None
-    return _extract_extra_data_value(response, "pendingConfirmation")
-
-
-def _pending_extra_data_version(state: dict[str, Any] | None) -> int:
+def _pending_claim_expired(state: dict[str, Any] | None) -> bool:
     if not isinstance(state, dict):
-        return 0
-    return _as_int(
-        state.get("_extraDataVersion")
-        or state.get("dataVersion")
-        or state.get("sourceBackendVersion")
-        or state.get("source_backend_version")
-        or state.get("planningVersion")
-        or state.get("planning_version")
-    )
+        return False
+    raw = state.get("_pendingClaimExpiresAt") or state.get("claimExpiresAt")
+    if raw in (None, ""):
+        return True
+    try:
+        if isinstance(raw, (int, float)):
+            timestamp = float(raw)
+            if timestamp > 10_000_000_000:
+                timestamp /= 1000.0
+            return timestamp <= datetime.now(timezone.utc).timestamp()
+        normalized = str(raw).strip().replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc) <= datetime.now(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
-def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingConfirmation | None:
+def _pending_confirmation_from_state(
+    state: dict[str, Any] | None,
+    *,
+    allow_applying: bool = False,
+) -> PendingConfirmation | None:
     """Build runtime pending projection from backend pendingConfirmation state."""
     if not isinstance(state, dict):
         return None
-    if str(state.get("status") or "").strip() != "active":
+    status = str(state.get("status") or "").strip()
+    claimable = status == "active" or (status == "applying" and _pending_claim_expired(state))
+    if not claimable and not (allow_applying and status == "applying"):
         return None
     kind = str(state.get("kind") or "").strip()
     action_family = str(state.get("actionFamily") or "").strip()
-    if kind not in _SUPPORTED_PENDING_KINDS or not action_family:
+    pending_id = str(state.get("pendingId") or state.get("pending_id") or "").strip()
+    if kind not in _SUPPORTED_PENDING_KINDS or not action_family or not pending_id:
         return None
     execution_payload = state.get("executionPayload")
     if not isinstance(execution_payload, dict):
@@ -838,6 +842,7 @@ def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingCon
         pending = PendingConfirmation(
             pending_id=pending_id,
             kind=kind,
+            pending_id=pending_id,
             action_family=action_family,
             preview_summary=str(state.get("summary") or ""),
             execution_payload=payload,
@@ -858,6 +863,7 @@ def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingCon
     pending = PendingConfirmation(
         pending_id=pending_id,
         kind="intent_change",
+        pending_id=pending_id,
         action_family=action_family,
         preview_summary=str(state.get("summary") or ""),
         execution_payload=execution_payload,
@@ -921,11 +927,36 @@ def _recent_intent_summary_for_no_plan_guard(
     return _intent_card_primary_reply_from_preview_payload(recent_intent_analysis).split("：", 1)[-1].split("。", 1)[0].strip()
 
 
-async def _save_pending_confirmation_state(session_id: str, state: dict[str, Any]) -> None:
+async def _save_pending_confirmation_state(session_id: str, state: dict[str, Any]) -> dict[str, Any]:
     try:
-        await save_pending_confirmation(session_id, state, version=_pending_extra_data_version(state))
+        response = await save_pending_confirmation(session_id, state)
+        saved = _extract_extra_data_value(response, "pendingConfirmation")
+        if isinstance(saved, dict):
+            state.update(saved)
+        return response if isinstance(response, dict) else {}
     except Exception:
         logger.warning("Failed to save pending confirmation state: session_id=%s", session_id, exc_info=True)
+        return {}
+
+
+async def _claim_pending_confirmation_state(
+    session_id: str,
+    state: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    try:
+        response = await claim_pending_confirmation(session_id, state)
+    except Exception:
+        logger.warning("Failed to claim pending confirmation: session_id=%s", session_id, exc_info=True)
+        return None, "pending_claim_failed"
+    if not isinstance(response, dict) or response.get("code") != 0:
+        return None, str((response or {}).get("msg") or "pending_claim_conflict")
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    if data.get("transitionApplied") is not True:
+        return None, "pending_already_claimed"
+    claimed = _extract_extra_data_value(response, "pendingConfirmation")
+    if not isinstance(claimed, dict) or str(claimed.get("status") or "") != "applying":
+        return None, "pending_claim_invalid_response"
+    return claimed, ""
 
 
 async def _mark_pending_confirmation_message_status(
@@ -4297,8 +4328,8 @@ _PENDING_INTENT_FOLLOWUP_REPLY_TOKENS = (
 def _is_pending_intent_followup_turn(content: str, reply: str) -> bool:
     """Whether an existing pending intent is relevant to this read-only turn.
 
-    A session may contain an old backend pending-intent cache while the user asks
-    an unrelated Explore question. In that case appending a confirmation
+    A session may contain persisted backend pending-intent state while the user
+    asks an unrelated Explore question. In that case appending a confirmation
     boundary is confusing. Keep the boundary only when this turn explicitly
     references the pending preference/requirement or its impact.
     """
@@ -5159,135 +5190,6 @@ def _prompt_explicitly_readonly(content: str | None) -> bool:
     return any(marker in compact for marker in _READONLY_USER_PROMPT_MARKERS)
 
 
-def _prompt_is_score_batch_risk_policy_question(content: str | None) -> bool:
-    compact = re.sub(r"\s+", "", str(content or "").strip())
-    if not compact:
-        return False
-    has_score_boundary = any(
-        marker in compact
-        for marker in (
-            "本科线",
-            "批次线",
-            "压线",
-            "刚过线",
-            "刚压",
-            "过线不多",
-            "只高一点",
-        )
-    )
-    has_risk_request = any(
-        marker in compact
-        for marker in (
-            "别给我画大饼",
-            "不要画大饼",
-            "画大饼",
-            "保底",
-            "兜底",
-            "保本科",
-            "滑档",
-            "风险",
-        )
-    )
-    return has_score_boundary and has_risk_request
-
-
-def _prompt_is_major_group_keep_safest_policy_question(content: str | None) -> bool:
-    compact = re.sub(r"\s+", "", str(content or "").strip())
-    if not compact:
-        return False
-    has_group_anchor = any(marker in compact for marker in ("专业组", "组内", "这一组", "这个组"))
-    has_keep_safest = any(marker in compact for marker in ("只保留", "保留")) and any(
-        marker in compact for marker in ("最稳", "更稳", "稳的专业", "安全垫")
-    )
-    has_question = any(marker in compact for marker in ("行不行", "可不可以", "能不能", "是否", "要不要"))
-    explicit_apply = any(marker in compact for marker in ("直接执行", "确认执行", "现在就改", "直接改", "就这么改"))
-    return has_group_anchor and has_keep_safest and has_question and not explicit_apply
-
-
-def _prompt_requires_readonly_policy_answer(content: str | None) -> bool:
-    return _prompt_is_score_batch_risk_policy_question(content) or _prompt_is_major_group_keep_safest_policy_question(content)
-
-
-def _build_score_batch_risk_policy_reply() -> str:
-    return (
-        "如果分数刚压本科线，不能按“能上本科”乐观处理，要按压线风险来做预案。"
-        "建议把目标拆成三层：第一层少量冲本科批里过线要求低、招生计划稳定的机会；第二层重点放稳妥保本科，优先看往年位次、录取最低分和计划变化，不只看分数；"
-        "第三层准备兜底方案，包括能接受的民办本科、中外合作或高质量专科，避免只押一个本科批结果导致滑档。"
-        "保底位要留足安全垫，专业也要现实一些，不能只放热门专业。下一步需要核对所在省当年本科线、一分一段位次、批次规则和当前方案里的冲稳保比例，再决定本科和专科兜底怎么配。"
-    )
-
-
-def _build_major_group_keep_safest_policy_reply() -> str:
-    return (
-        "专业组里只保留最稳的专业，可以作为降低组内风险的思路，但不能直接当成长期就业偏好。"
-        "在院校专业组模式下，要先看这个专业组的投档规则、组内专业录取率、计划数、专业备注和是否服从调剂；"
-        "如果只保留最稳的专业，可能降低被不想读专业分配的风险，但也可能减少组内可选空间，影响专业满足率或让这个专业组不再值得保留。"
-        "更稳妥的做法是先读取具体专业组，判断哪些专业是安全垫、哪些专业风险偏高，再决定是保留一个兜底专业、删掉高风险专业，还是生成可确认的调整预览。"
-        "确认前不应改动当前方案，也不应写成后续报考参考里的职业或专业偏好。"
-    )
-
-
-def _score_batch_policy_reply_is_sufficient(reply: str | None) -> bool:
-    compact = _compact_plan_reply_text(str(reply or ""))
-    if not compact:
-        return False
-    has_boundary = "本科线" in compact or "批次线" in compact
-    has_pressure = any(marker in compact for marker in ("压线", "刚过线", "过线不多", "只高一点"))
-    has_floor = any(marker in compact for marker in ("保底", "兜底", "保本科", "滑档"))
-    return has_boundary and has_pressure and has_floor and "风险" in compact
-
-
-def _major_group_policy_reply_is_sufficient(reply: str | None) -> bool:
-    compact = _compact_plan_reply_text(str(reply or ""))
-    if not compact:
-        return False
-    has_group = "专业组" in compact and "专业" in compact
-    has_safety = any(marker in compact for marker in ("录取率", "最稳", "更稳", "安全垫", "兜底"))
-    has_boundary = any(marker in compact for marker in ("风险", "调剂", "确认", "当前方案"))
-    return has_group and has_safety and has_boundary
-
-
-def _reply_is_readonly_policy_misroute(reply: str | None) -> bool:
-    compact = _compact_plan_reply_text(str(reply or ""))
-    if not compact:
-        return True
-    if any(
-        marker in compact
-        for marker in (
-            "不会写入后续报考参考",
-            "还没有生成可执行的调整内容",
-            "没有生成可执行的调整内容",
-            "还没有生成可确认的调整预览",
-            "没有生成可确认的调整预览",
-            "这轮还没有生成可点击的方案待采纳内容",
-            "待确认内容",
-            "待采纳内容",
-            "稳定就业导向",
-        )
-    ):
-        return True
-    return _reply_looks_like_unbacked_intent_preview(str(reply or "")) or _reply_looks_like_unbacked_plan_action_boundary(str(reply or ""))
-
-
-def _readonly_policy_fallback_reply_for_prompt(
-    content: str | None,
-    reply: str | None,
-    tool_context_messages: list[Any] | None,
-) -> str | None:
-    if _prompt_is_score_batch_risk_policy_question(content):
-        if _score_batch_policy_reply_is_sufficient(reply) and not _reply_is_readonly_policy_misroute(reply):
-            return None
-        tool_reply = _latest_readonly_tool_reply(tool_context_messages)
-        if _score_batch_policy_reply_is_sufficient(tool_reply):
-            return tool_reply
-        return _build_score_batch_risk_policy_reply()
-    if _prompt_is_major_group_keep_safest_policy_question(content):
-        if _major_group_policy_reply_is_sufficient(reply) and not _reply_is_readonly_policy_misroute(reply):
-            return None
-        return _build_major_group_keep_safest_policy_reply()
-    return None
-
-
 def _prompt_rejects_current_plan_action(content: str | None) -> bool:
     compact = re.sub(r"\s+", "", str(content or "").strip())
     if not compact:
@@ -6077,8 +5979,15 @@ def _remove_unbacked_plan_confirmation_copy(reply: str) -> str:
     return proposal_compiler.strip_unbacked_plan_confirmation_copy(reply)
 
 
-def _guard_unbacked_plan_confirmation_reply(reply: str, tool_context_messages: list[Any] | None = None) -> str:
+def _guard_unbacked_plan_confirmation_reply(
+    reply: str,
+    tool_context_messages: list[Any] | None = None,
+    *,
+    has_active_pending: bool = False,
+) -> str:
     """Replace unsupported Plan confirmation copy with an explicit no-card boundary."""
+    if has_active_pending:
+        return reply
     source = proposal_compiler.compile_runtime_reply_guard_source(
         reply=reply,
         guard_context="plan_confirmation",
@@ -6092,23 +6001,6 @@ def _guard_unbacked_plan_confirmation_reply(reply: str, tool_context_messages: l
             return f"{readonly_reply}\n\n{_UNBACKED_PLAN_CONFIRMATION_REPLY}"
         return _UNBACKED_PLAN_CONFIRMATION_REPLY
     return f"{stripped}\n\n{_UNBACKED_PLAN_CONFIRMATION_REPLY}"
-
-
-def _normalize_unbacked_no_tool_action_boundary(reply: str) -> str:
-    """Use a neutral no-change boundary when no executable action was created.
-
-    `_UNBACKED_PLAN_CONFIRMATION_REPLY` is appropriate while the service is
-    still trying to route a missing Plan preview. If all structured boundary paths end
-    with no tools, no pending card, and no preview, surfacing that text reads as
-    an execution failure even when the user only set a discussion boundary.
-    """
-    source = proposal_compiler.compile_runtime_reply_guard_source(
-        reply=reply,
-        guard_context="no_tool_action_boundary",
-    )
-    if not source.matched:
-        return reply
-    return _NO_TOOL_NO_ACTION_BOUNDARY_REPLY
 
 
 def _clean_review_fallback_text(value: Any) -> str:
@@ -7072,27 +6964,51 @@ def _latest_direct_confirm_pending_payload(
     return None
 
 
+def _latest_terminal_plan_change_reply(messages: list[Any] | None) -> str:
+    """Return an authoritative no-pending reply from preview_plan_change."""
+    for part in reversed(_iter_tool_return_parts(messages)):
+        if str(part.tool_name or "").strip() != "preview_plan_change":
+            continue
+        payload = _parse_tool_return_json(part.content)
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("next_step") or "").strip() not in {"respond", "clarify"}:
+            continue
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        if data.get("pending_created") is True or data.get("requires_confirmation") is True:
+            continue
+        message = str(payload.get("message") or "").strip()
+        if message:
+            return message
+    return ""
+
+
+def _latest_terminal_reference_reply(messages: list[Any] | None) -> str:
+    """Return the authoritative readonly result for an explicit reference."""
+    for part in reversed(_iter_tool_return_parts(messages)):
+        if str(part.tool_name or "").strip() != "preview_intent_change":
+            continue
+        payload = _parse_tool_return_json(part.content)
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("next_step") or "").strip() != "respond":
+            continue
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        if str(data.get("reason") or "").strip() != "reference_only_semantic_requirements":
+            continue
+        if data.get("pending_created") is True or data.get("requires_confirmation") is True:
+            continue
+        message = str(payload.get("message") or "").strip()
+        if message:
+            return message
+    return ""
+
+
 def _pending_id_from_tool_payload(payload: dict[str, Any] | None) -> str:
     if not isinstance(payload, dict):
         return ""
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     return str(data.get("pending_id") or data.get("pendingId") or "").strip()
-
-
-def _pending_version_from_tool_payload(payload: dict[str, Any] | None) -> int | None:
-    if not isinstance(payload, dict):
-        return None
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    for value in (
-        data.get("pending_version"),
-        data.get("pendingVersion"),
-        data.get("source_backend_version"),
-        data.get("sourceBackendVersion"),
-    ):
-        version = _as_int(value)
-        if version >= 0 and value is not None:
-            return version
-    return None
 
 
 def _pending_state_from_sandbox(
@@ -7241,6 +7157,7 @@ def _build_structured_plan_pending_card(
         "move_unit": "确认移动志愿",
         "move_ordered_unit": "确认移动志愿",
         "sort_ordered_plan": "确认方案排序",
+        "apply_plan_change_proposal": "确认调整方案",
         "regenerate_order": "确认重排方案",
         "generate_plan": "确认生成方案",
     }
@@ -7431,17 +7348,15 @@ class ChatService:
         session_id: str,
         request_context: RequestContext,
         pending_id: str,
-        pending_version: int | None = None,
     ) -> dict[str, Any] | None:
-        if pending_version is not None:
-            pending_state = await _load_pending_confirmation_state_at_version(session_id, pending_version)
-            if isinstance(pending_state, dict):
-                if str(pending_state.get("status") or "").strip() == "active":
-                    loaded_pending_id = str(
-                        pending_state.get("pendingId") or pending_state.get("pending_id") or ""
-                    ).strip()
-                    if not pending_id or not loaded_pending_id or pending_id == loaded_pending_id:
-                        return pending_state
+        pending_state = await _load_pending_confirmation_state(session_id)
+        if isinstance(pending_state, dict):
+            if str(pending_state.get("status") or "").strip() == "active":
+                loaded_pending_id = str(
+                    pending_state.get("pendingId") or pending_state.get("pending_id") or ""
+                ).strip()
+                if not pending_id or not loaded_pending_id or pending_id == loaded_pending_id:
+                    return pending_state
         pending_state = _pending_state_from_sandbox(request_context, pending_id=pending_id)
         if isinstance(pending_state, dict):
             return pending_state
@@ -7719,12 +7634,10 @@ class ChatService:
         if pending_payload_info is not None:
             pending_payload, pending_tool_name = pending_payload_info
             pending_id = _pending_id_from_tool_payload(pending_payload)
-            pending_version = _pending_version_from_tool_payload(pending_payload)
             pending_state = await self._pending_state_for_direct_card(
                 session_id=session_id,
                 request_context=request_context,
                 pending_id=pending_id,
-                pending_version=pending_version,
             )
             if isinstance(pending_state, dict):
                 pending_card = _build_structured_pending_card(
@@ -7733,7 +7646,10 @@ class ChatService:
                     fallback_summary=str(pending_payload.get("message") or ""),
                 )
 
-        final_reply = str(reply or "").strip()
+        terminal_plan_change_reply = _latest_terminal_plan_change_reply(new_messages)
+        terminal_reference_reply = _latest_terminal_reference_reply(new_messages)
+        terminal_tool_reply = terminal_plan_change_reply or terminal_reference_reply
+        final_reply = terminal_tool_reply or str(reply or "").strip()
         if pending_card is not None:
             primary_from_card = _pending_confirmation_primary_reply_from_card(pending_card)
             use_card_primary = final_reply in {"", "已完成处理。", "已完成处理"}
@@ -7751,8 +7667,18 @@ class ChatService:
         direct_routing_path = _direct_confirm_routing_path(confirm_pending_result)
         direct_workspace_refresh_targets = _direct_confirm_workspace_refresh_targets(confirm_pending_result)
         post_processing_applied = ["zhiyuan_agent_direct"]
-        if pending_card is None and not direct_workspace_refresh_targets:
-            guarded_reply = _sanitize_reply_for_user(_guard_unbacked_plan_confirmation_reply(final_reply, new_messages))
+        if (
+            pending_card is None
+            and not direct_workspace_refresh_targets
+            and not terminal_tool_reply
+        ):
+            guarded_reply = _sanitize_reply_for_user(
+                _guard_unbacked_plan_confirmation_reply(
+                    final_reply,
+                    new_messages,
+                    has_active_pending=active_pending is not None,
+                )
+            )
             if guarded_reply != final_reply:
                 raw_reply = str(reply or "").strip()
                 _replace_text_reply(new_messages, raw_reply, guarded_reply)
@@ -8056,7 +7982,11 @@ class ChatService:
                 init_profile=parsed_init_profile,
                 planning_state=planning_data if isinstance(planning_data, dict) else None,
                 planning_summary=parsed_planning_summary,
-                pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
+                pending_state=(
+                    backend_pending_state
+                    if backend_pending is not None and isinstance(backend_pending_state, dict)
+                    else None
+                ),
                 pending=backend_pending,
             ),
             conversation_phase=conversation_phase,
@@ -8249,7 +8179,7 @@ class ChatService:
             return None
         action_family = str(pending_state.get("actionFamily") or "").strip()
         tool_name = str(execution_payload.get("toolName") or "").strip()
-        active_pending = _pending_confirmation_from_state(pending_state)
+        active_pending = _pending_confirmation_from_state(pending_state, allow_applying=True)
         if active_pending is None:
             return None
         if _is_plan_pending_kind(active_pending.kind):
@@ -8307,6 +8237,7 @@ class ChatService:
         result_data = result.get("data") if isinstance(result.get("data"), dict) else {}
         apply_result = result_data.get("result") if isinstance(result_data.get("result"), dict) else {}
         applied = bool(result_data.get("applied"))
+        execution_uncertain = bool(result_data.get("execution_uncertain"))
         reply = str(result.get("message") or "").strip() or (
             "已执行这次方案调整。" if applied else "这次方案调整没有执行成功，请重新生成预览后再确认。"
         )
@@ -8324,16 +8255,18 @@ class ChatService:
             session_id,
             message_id,
             pending_id=pending_id,
-            status="applied" if applied else "expired",
+            status="applied" if applied else "applying" if execution_uncertain else "expired",
         )
 
         result_code = (
             "applied"
             if applied
+            else "pending_command_result_uncertain"
+            if execution_uncertain
             else str(apply_result.get("reason") or result_data.get("error") or "structured_pending_apply_failed")
         )
         emit_pending_event(
-            result="applied" if applied else "failed",
+            result="applied" if applied else "pending" if execution_uncertain else "failed",
             result_code=result_code,
         )
 
@@ -8375,8 +8308,8 @@ class ChatService:
             pending_type=pending_type,
             action_family=action_family,
             started_at=turn_started_at,
-            status="success" if applied else "error",
-            error_type=None if applied else result_code,
+            status="success" if applied else "pending" if execution_uncertain else "error",
+            error_type=None if applied or execution_uncertain else result_code,
             post_apply_evidence_plan=post_apply_evidence_plan if applied else None,
         )
         try:
@@ -8433,12 +8366,7 @@ class ChatService:
         post_apply_intent: str | None = None,
         post_apply_evidence_plan: dict[str, Any] | None = None,
     ) -> str | ChatServiceResponseEnvelope:
-        """Handle explicit confirmation-card actions.
-
-        This is the migration bridge before durable pending_id endpoints land:
-        the card click is explicit, while the executable payload is still
-        recovered from recent persisted plan preview history.
-        """
+        """Handle card actions through the durable pending resource CAS flow."""
         try:
             selected_data = json.loads(content) if isinstance(content, str) else {}
         except (json.JSONDecodeError, TypeError):
@@ -8463,7 +8391,17 @@ class ChatService:
         active_status = str((pending_state or {}).get("status") or "").strip()
         if not pending_id:
             return "这次操作缺少校验信息，请重新生成预览后再确认。"
-        if not pending_state or active_status != "active" or active_pending_id != pending_id:
+        active_state_claimable = active_status == "active" or (
+            active_status == "applying" and _pending_claim_expired(pending_state)
+        )
+        if (
+            pending_state
+            and active_status == "applying"
+            and not _pending_claim_expired(pending_state)
+            and active_pending_id == pending_id
+        ):
+            return "这次待采纳内容正在处理中，请稍后刷新查看结果，不会重复执行。"
+        if not pending_state or not active_state_claimable or active_pending_id != pending_id:
             await _mark_pending_confirmation_message_status(
                 session_id,
                 message_id,
@@ -8484,7 +8422,9 @@ class ChatService:
             cancelled_state = dict(pending_state)
             cancelled_state["status"] = "cancelled"
             cancelled_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
-            await _save_pending_confirmation_state(session_id, cancelled_state)
+            cancel_response = await _save_pending_confirmation_state(session_id, cancelled_state)
+            if cancel_response.get("code") != 0:
+                return "这次待采纳内容已经变化，未执行取消。请刷新后以最新内容为准。"
             await _mark_pending_confirmation_message_status(
                 session_id,
                 message_id,
@@ -8543,6 +8483,12 @@ class ChatService:
 
         if active_kind not in _SUPPORTED_PENDING_KINDS:
             return "这类待采纳内容暂时还不能在这里处理，请刷新后重试。"
+
+        claimed_state, claim_error = await _claim_pending_confirmation_state(session_id, pending_state)
+        if claimed_state is None:
+            emit_pending_event(result="blocked", result_code=claim_error)
+            return "这次待采纳内容已被处理或已经变化，不会重复执行。请刷新后以最新状态为准。"
+        pending_state = claimed_state
 
         structured_pending_reply = await self._handle_structured_pending_confirmation(
             session_id=session_id,

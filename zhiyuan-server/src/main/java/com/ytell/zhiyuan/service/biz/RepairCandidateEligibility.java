@@ -22,10 +22,13 @@ final class RepairCandidateEligibility {
     }
 
     static boolean isEligibleForConfirmedHardConstraints(CandidateItemDTO item, PlanningStateDTO state) {
+        return isEligibleForHardConstraints(item, confirmedHardConstraints(state));
+    }
+
+    static boolean isEligibleForHardConstraints(CandidateItemDTO item, HardConstraintsDTO hard) {
         if (item == null) {
             return false;
         }
-        HardConstraintsDTO hard = confirmedHardConstraints(state);
         if (hard == null) {
             return true;
         }
@@ -40,10 +43,13 @@ final class RepairCandidateEligibility {
     }
 
     static boolean isEligibleForConfirmedHardConstraints(PlanningUnitDTO unit, PlanningStateDTO state) {
+        return isEligibleForHardConstraints(unit, confirmedHardConstraints(state));
+    }
+
+    static boolean isEligibleForHardConstraints(PlanningUnitDTO unit, HardConstraintsDTO hard) {
         if (unit == null) {
             return false;
         }
-        HardConstraintsDTO hard = confirmedHardConstraints(state);
         if (hard == null) {
             return true;
         }
@@ -219,6 +225,7 @@ final class RepairCandidateEligibility {
         }
         if (containsAny(label, "招生类型", "项目", "限制")) {
             return matchesHighTuitionScope(item, pattern)
+                    || textMatches(item.getSchoolName(), pattern)
                     || textMatches(item.getMajorName(), pattern)
                     || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getMajorPlanTags()).toArray(new String[0]))
                     || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getReasonCodes()).toArray(new String[0]));

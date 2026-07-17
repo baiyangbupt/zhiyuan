@@ -10,18 +10,24 @@ import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalActionDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
+import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReplacementPairDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
+import org.springframework.beans.BeanUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -34,7 +40,22 @@ final class UserGoalProposalBuilder {
     private static final String REASON_GOAL_UNCLEAR = "user_goal_unclear";
     private static final String REASON_TARGET_NOT_FOUND = "user_goal_target_not_found";
     private static final String REASON_ENTITY_NEEDS_CLARIFICATION = "user_goal_entity_needs_clarification";
-
+    private static final String REASON_CANDIDATE_POOL_INSUFFICIENT = "candidate_pool_insufficient";
+    private static final String REASON_HARD_CONSTRAINTS_INSUFFICIENT = "hard_constraints_candidate_insufficient";
+    private static final String REASON_PROJECTED_REQUIREMENTS_INVALID = "projected_requirements_invalid";
+    private static final String REASON_PROJECTED_REQUIREMENTS_LOCKED = "projected_requirements_locked_item";
+    private static final String REASON_COVERAGE_INSUFFICIENT = "coverage_requirement_insufficient";
+    private static final String REASON_COVERAGE_REPLACEMENT_LOCKED = "coverage_replacement_locked_item";
+    private static final String REASON_FILL_CANNOT_TRIM = "fill_to_count_cannot_trim_compliant_items";
+    private static final String REASON_PRIORITY_INVALID = "priority_rule_invalid";
+    private static final String REASON_PRIORITY_TARGET_NOT_IN_PLAN = "priority_target_not_in_plan";
+    private static final String REASON_PRIORITY_PINNED_CONFLICT = "priority_pinned_position_conflict";
+    private static final String REASON_PRIORITY_TIER_UNAVAILABLE = "priority_tier_unavailable";
+    private static final String REASON_PRIORITY_COMPOSITE_NOT_SUPPORTED = "priority_composite_not_supported";
+    private static final String REASON_TIER_QUOTA_INVALID = "tier_quota_invalid";
+    private static final String REASON_TIER_QUOTA_COMPOSITE_NOT_SUPPORTED = "tier_quota_composite_not_supported";
+    private static final String REASON_PRESERVE_COUNT_REQUIRES_INCLUDE = "preserve_count_requires_include";
+    private static final String REASON_PRESERVE_COUNT_MISMATCH = "preserve_count_mismatch";
     private UserGoalProposalBuilder() {
     }
 
@@ -53,6 +74,11 @@ final class UserGoalProposalBuilder {
         if (!Strings.isNullOrEmpty(guardReason)) {
             return buildBlockedProposal(state, req, goalType, guardReason);
         }
+        if (req != null && req.getTierQuotaGoal() != null
+                && !RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(goalType)) {
+            return buildScopeBlockedProposal(state, req, goalType, REASON_TIER_QUOTA_INVALID,
+                    "冲稳保精确配额只支持 fill_to_count 方案目标，不能附加到其他 Proposal。");
+        }
         if (RepairProposalTaxonomy.Strategy.ONLY_KEEP_SCOPE.equals(goalType)
                 || RepairProposalTaxonomy.Strategy.MUST_INCLUDE_SCOPE.equals(goalType)
                 || RepairProposalTaxonomy.Strategy.EXCLUDE_SCOPE.equals(goalType)) {
@@ -61,7 +87,740 @@ final class UserGoalProposalBuilder {
         if (RepairProposalTaxonomy.Strategy.TUITION_BUDGET_SCOPE.equals(goalType)) {
             return buildTuitionBudgetProposal(state, req);
         }
+        if (RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(goalType)) {
+            return buildFillToCountProposal(state, req);
+        }
+        if (RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER.equals(goalType)) {
+            return buildPriorityProposal(state, req);
+        }
         return buildBlockedProposal(state, req, goalType, REASON_ENGINE_NOT_READY);
+    }
+
+    private static FixProposalDTO buildFillToCountProposal(PlanningStateDTO state,
+                                                            UserGoalFixProposalReq req) {
+        Integer targetCount = req == null ? null : req.getTargetCount();
+        boolean preserveCurrentCount = req != null && Boolean.FALSE.equals(req.getPersistTargetCount());
+        if (targetCount == null || targetCount <= 0) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_GOAL_UNCLEAR, "补齐目标数量必须是大于 0 的整数。");
+        }
+
+        String requirementError = ProjectedHardRequirementSupport.validate(
+                req == null ? null : req.getRequirements());
+        if (!Strings.isNullOrEmpty(requirementError)) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_PROJECTED_REQUIREMENTS_INVALID, requirementError);
+        }
+        String priorityError = PriorityRuleSupport.validate(req == null ? null : req.getPriorityRules());
+        if (!Strings.isNullOrEmpty(priorityError)) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_PRIORITY_INVALID, priorityError);
+        }
+        PriorityRuleDTO priorityRule = req == null || defaultList(req.getPriorityRules()).isEmpty()
+                ? null : req.getPriorityRules().get(0);
+        TierQuotaGoalDTO tierQuotaGoal = req == null ? null : req.getTierQuotaGoal();
+        String tierQuotaError = TierQuotaSupport.validate(tierQuotaGoal, targetCount);
+        if (!Strings.isNullOrEmpty(tierQuotaError)) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_TIER_QUOTA_INVALID, tierQuotaError);
+        }
+        if (tierQuotaGoal != null && (!defaultList(req.getRequirements()).isEmpty()
+                || !defaultList(req.getPriorityRules()).isEmpty())) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_TIER_QUOTA_COMPOSITE_NOT_SUPPORTED,
+                    "冲稳保精确配额暂不能与本轮普通要求或优先排序规则混合执行。请先单独确认精确配额。");
+        }
+        if (preserveCurrentCount && tierQuotaGoal == null
+                && (defaultList(req.getRequirements()).isEmpty()
+                || defaultList(req.getRequirements()).stream().anyMatch(requirement -> requirement == null
+                || !ProjectedHardRequirementSupport.KIND_INCLUDE.equalsIgnoreCase(requirement.getKind())))) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_PRESERVE_COUNT_REQUIRES_INCLUDE,
+                    "保持方案总数的覆盖调整必须包含明确数量的 include 要求，不能混入排除或只保留条件。");
+        }
+
+        boolean majorGroupMode = isMajorGroupMode(state);
+        int currentCount = majorGroupMode ? currentPlanUnitCount(state) : currentPlanVolunteerCount(state);
+        if (preserveCurrentCount && targetCount != currentCount) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_PRESERVE_COUNT_MISMATCH,
+                    "保持方案总数的冻结数量与当前正式方案不一致，请基于最新方案重新生成预览。");
+        }
+        List<CandidateItemDTO> poolCandidates = candidates(state);
+        List<PlanVolunteer> current = currentPlanVolunteers(state, poolCandidates);
+        HardConstraintsDTO projectedRequirements = ProjectedHardRequirementSupport.project(
+                null, req == null ? null : req.getRequirements());
+        HardConstraintsDTO projectedHardConstraints = ProjectedHardRequirementSupport.project(
+                state, req == null ? null : req.getRequirements());
+        FillCurrentProjection currentProjection = projectCurrentPlan(
+                current, projectedRequirements, majorGroupMode);
+        int retainedCount = currentProjection.retainedCount;
+        boolean hasProjectedRequirements = req != null && req.getRequirements() != null
+                && !req.getRequirements().isEmpty();
+        boolean hasPriorityRule = priorityRule != null;
+        boolean hasTierQuota = tierQuotaGoal != null;
+        String projectedRequirementSummary = ProjectedHardRequirementSupport.summarize(
+                req == null ? null : req.getRequirements());
+        List<String> objectiveSummaries = Lists.newArrayList();
+        if (!Strings.isNullOrEmpty(projectedRequirementSummary)) {
+            objectiveSummaries.add(projectedRequirementSummary);
+        }
+        if (priorityRule != null) {
+            objectiveSummaries.add(PriorityRuleSupport.summarize(priorityRule));
+        }
+        if (tierQuotaGoal != null) {
+            objectiveSummaries.add("冲稳保精确配额：" + TierQuotaSupport.summarize(tierQuotaGoal));
+        }
+        String combinedObjectiveSummary = String.join("；", objectiveSummaries);
+        FixProposalDTO proposal = buildUserGoalPreviewBase(state, req,
+                RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                preserveCurrentCount
+                        ? "保持当前 " + targetCount + (majorGroupMode ? " 个专业组" : " 个志愿")
+                        + (tierQuotaGoal == null ? "并落实覆盖数量的调整预览" : "并落实冲稳保精确配额的调整预览")
+                        : "补齐到 " + targetCount + (majorGroupMode ? " 个专业组" : " 个志愿") + "的调整预览");
+        if (currentProjection.lockedViolation) {
+            String message = "当前方案中有锁定项不满足本轮硬要求，不能在不解除锁定的情况下生成原子调整预览。";
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_PROJECTED_REQUIREMENTS_LOCKED, message);
+        }
+        if (!hasProjectedRequirements && !hasPriorityRule && !hasTierQuota && currentCount >= targetCount) {
+            proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
+            proposal.setSummary("当前方案已有 " + currentCount + (majorGroupMode ? " 个专业组" : " 个志愿")
+                    + "，已经达到补齐目标 " + targetCount + "，本轮不需要新增。");
+            proposal.setImpact(currentCount > targetCount
+                    ? "补齐目标不会自动删减现有方案；如需精简，请单独提出移出或缩减目标。"
+                    : "当前方案数量与目标一致。");
+            proposal.setRequiresConfirmation(false);
+            populateFillDryRun(proposal, state, currentCount, currentCount, 0, 0, 0, 0,
+                    "当前方案已经达到补齐目标。");
+            return proposal;
+        }
+        if (retainedCount > targetCount) {
+            String message = "应用本轮硬要求后仍有 " + retainedCount + (majorGroupMode ? " 个专业组" : " 个志愿")
+                    + "，高于补齐目标 " + targetCount + "；fill_to_count 不会额外删除符合要求的项目。";
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_FILL_CANNOT_TRIM, message);
+        }
+
+        int gap = targetCount - retainedCount;
+        Set<String> selectedVolunteerIds = current.stream()
+                .map(PlanVolunteer::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        selectedVolunteerIds.removeAll(currentProjection.removeVolunteerIds);
+        Set<String> selectedUnitIds = current.stream()
+                .map(PlanVolunteer::getUnitId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        selectedUnitIds.removeAll(currentProjection.removeUnitIds);
+
+        List<UserGoalFixProposalReq.RequirementDTO> coverageRequirements = defaultList(
+                req == null ? null : req.getRequirements()).stream()
+                .filter(requirement -> requirement != null
+                        && ProjectedHardRequirementSupport.KIND_INCLUDE.equalsIgnoreCase(requirement.getKind()))
+                .collect(Collectors.toList());
+        coverageRequirements.addAll(TierQuotaSupport.syntheticRequirements(tierQuotaGoal));
+        FillSelection selection = selectFillCandidates(projectedHardConstraints, poolCandidates,
+                selectedVolunteerIds, selectedUnitIds, gap, targetCount, majorGroupMode,
+                current, currentProjection, coverageRequirements);
+        if (!Strings.isNullOrEmpty(selection.blockingReason)) {
+            String reasonCode = selection.blockingReasonCode;
+            String message = selection.blockingReason;
+            proposal.setStatus(RepairProposalTaxonomy.Status.BLOCKED);
+            proposal.setSummary(message);
+            proposal.setBlockingReason(message);
+            proposal.getBlockingReasonCodes().add(reasonCode);
+            CandidateShortageDTO shortage = buildBoundaryShortage(
+                    RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT, reasonCode, message);
+            shortage.setScope("coverage_requirement");
+            if (hasTierQuota) {
+                shortage.setScope("tier_quota");
+            }
+            shortage.setRequiredCount(targetCount);
+            shortage.setCurrentCount(retainedCount);
+            shortage.setShortageCount(selection.coverageShortageCount);
+            shortage.setAvailableCount(selection.availableWithHardConstraints);
+            proposal.getCandidateShortages().add(shortage);
+            proposal.getDryRunResult().setStatus(RepairProposalTaxonomy.Status.BLOCKED);
+            proposal.getDryRunResult().setMessage(message);
+            proposal.setRequiresConfirmation(false);
+            populateFillDryRun(proposal, state, currentCount, currentCount, 0, 0, 0, 0, message);
+            return proposal;
+        }
+        int adjustedGap = gap + selection.replacementCount();
+        if (selection.selectedCount() < adjustedGap) {
+            String reasonCode = selection.availableWithoutHardConstraints >= adjustedGap
+                    && selection.availableWithHardConstraints < adjustedGap
+                    ? REASON_HARD_CONSTRAINTS_INSUFFICIENT : REASON_CANDIDATE_POOL_INSUFFICIENT;
+            String domain = majorGroupMode ? "专业组" : "志愿";
+            String message = "应用本轮要求后方案保留 " + retainedCount + " 个" + domain + "，补齐到 " + targetCount
+                    + " 并满足覆盖要求还需要补入 " + adjustedGap + " 个；按本轮及已确认要求过滤后仅有 "
+                    + selection.availableWithHardConstraints + " 个可补入，不能生成部分执行预览。";
+            proposal.setStatus(RepairProposalTaxonomy.Status.BLOCKED);
+            proposal.setSummary(message);
+            proposal.setBlockingReason(message);
+            proposal.getBlockingReasonCodes().add(reasonCode);
+            CandidateShortageDTO shortage = buildBoundaryShortage(
+                    RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT, reasonCode, message);
+            shortage.setScope(REASON_HARD_CONSTRAINTS_INSUFFICIENT.equals(reasonCode)
+                    ? "hard_constraints" : "candidate_pool");
+            shortage.setRequiredCount(targetCount);
+            shortage.setCurrentCount(retainedCount);
+            shortage.setShortageCount(adjustedGap - selection.availableWithHardConstraints);
+            shortage.setAvailableCount(selection.availableWithHardConstraints);
+            proposal.getCandidateShortages().add(shortage);
+            proposal.getDryRunResult().setStatus(RepairProposalTaxonomy.Status.BLOCKED);
+            proposal.getDryRunResult().setMessage(message);
+            proposal.setRequiresConfirmation(false);
+            populateFillDryRun(proposal, state, currentCount, currentCount, 0, 0, 0, 0, message);
+            return proposal;
+        }
+
+        List<String> removeVolunteerIds = Lists.newArrayList(currentProjection.removeVolunteerIds);
+        selection.removeVolunteerIds.stream()
+                .filter(value -> !removeVolunteerIds.contains(value))
+                .forEach(removeVolunteerIds::add);
+        List<String> removeUnitIds = Lists.newArrayList(currentProjection.removeUnitIds);
+        selection.removeUnitIds.stream()
+                .filter(value -> !removeUnitIds.contains(value))
+                .forEach(removeUnitIds::add);
+        PriorityRuleSupport.Analysis priorityAnalysis = priorityRule == null ? null
+                : analyzeProjectedPriority(current, poolCandidates, removeVolunteerIds,
+                removeUnitIds, selection, majorGroupMode, priorityRule);
+        if (priorityAnalysis != null && priorityAnalysis.getMatchedCount() == 0) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_PRIORITY_TARGET_NOT_IN_PLAN,
+                    "按本轮数量和筛选要求投影后的最终方案没有命中优先目标；同档前置不会自动增加目标项目。");
+        }
+        if (priorityAnalysis != null && priorityAnalysis.hasMissingTier()) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_PRIORITY_TIER_UNAVAILABLE,
+                    "按本轮要求投影后的最终方案存在未标注冲稳保档位的项目，不能可靠执行同档前置。");
+        }
+        if (priorityAnalysis != null && priorityAnalysis.hasPinnedConflict()) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                    REASON_PRIORITY_PINNED_CONFLICT,
+                    "按本轮要求执行同档前置会影响已固定位置的志愿，不能生成组合执行预览。");
+        }
+        if (!removeVolunteerIds.isEmpty()) {
+            FixProposalActionDTO removeAction = new FixProposalActionDTO();
+            removeAction.setActionType(RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS);
+            removeAction.setLevel(majorGroupMode ? "unit" : "volunteer");
+            removeAction.setSummary("移出不满足本轮硬要求的 "
+                    + (majorGroupMode ? removeUnitIds.size() + " 个专业组"
+                    : removeVolunteerIds.size() + " 个志愿"));
+            removeAction.setDetail(selection.replacementCount() > 0
+                    ? hasTierQuota
+                    ? "其中包含为满足冲稳保精确配额而进行的等量替换。"
+                    : "其中包含为满足非排他覆盖要求而进行的等量替换。"
+                    : "这些项目不满足本轮要求。");
+            removeAction.setUnitIds(removeUnitIds);
+            removeAction.setRemoveUnitIds(removeUnitIds);
+            removeAction.setVolunteerIds(removeVolunteerIds);
+            removeAction.setRemoveVolunteerIds(removeVolunteerIds);
+            proposal.getActions().add(removeAction);
+        }
+        if (adjustedGap > 0) {
+            FixProposalActionDTO action = new FixProposalActionDTO();
+            action.setActionType(RepairProposalTaxonomy.ActionType.FILL_TOTAL_COUNT);
+            action.setLevel(majorGroupMode ? "unit" : "volunteer");
+            action.setSummary("从当前候选池补入 " + adjustedGap + (majorGroupMode ? " 个专业组" : " 个志愿"));
+            action.setDetail(selection.replacementCount() > 0
+                    ? "其中 " + selection.replacementCount() + " 个用于"
+                    + (hasTierQuota ? "冲稳保精确配额" : "覆盖要求")
+                    + "的等量替换；最终数量精确达到 " + targetCount + "。"
+                    : "补入后方案数量将从 " + retainedCount + " 精确达到 " + targetCount + "。");
+            action.setUnitIds(selection.unitIds);
+            action.setVolunteerIds(selection.volunteerIds);
+            action.setCandidateUnitIds(selection.unitIds);
+            action.setCandidateVolunteerIds(selection.volunteerIds);
+            proposal.getActions().add(action);
+        }
+        if (priorityAnalysis != null && priorityAnalysis.getInversionCount() > 0) {
+            FixProposalActionDTO action = new FixProposalActionDTO();
+            action.setActionType(RepairProposalTaxonomy.ActionType.REORDER_VOLUNTEERS);
+            action.setLevel(majorGroupMode ? "unit" : "volunteer");
+            action.setSummary("在最终方案各档内前置目标项目");
+            action.setDetail(PriorityRuleSupport.summarize(priorityRule));
+            if (majorGroupMode) {
+                action.setUnitIds(priorityAnalysis.getMatchedIds());
+            } else {
+                action.setVolunteerIds(priorityAnalysis.getMatchedIds());
+            }
+            proposal.getActions().add(action);
+        }
+        proposal.setStatus(RepairProposalTaxonomy.Status.READY);
+        int removeCount = majorGroupMode
+                ? removeUnitIds.size() : removeVolunteerIds.size();
+        String prioritySummary = priorityAnalysis == null ? ""
+                : priorityAnalysis.getInversionCount() == 0
+                ? "；同档前置目标当前已满足，确认后会保存并持续执行这条规则"
+                : "；同时将 " + priorityAnalysis.getMovedTargetCount() + " 个目标项目在各自档位内前移，消除 "
+                + priorityAnalysis.getInversionCount() + " 处同档逆序";
+        if (!hasProjectedRequirements && !hasPriorityRule && !hasTierQuota) {
+            proposal.setSummary("当前方案有 " + currentCount + (majorGroupMode ? " 个专业组" : " 个志愿")
+                    + "；本次将从符合已确认要求的候选中补入 " + gap + " 个，达到 " + targetCount + " 个。");
+            proposal.setImpact("确认前不会改动方案；确认后只应用这份预览中的候选，并重新生成和审查方案。");
+        } else if (removeCount == 0 && gap == 0) {
+            proposal.setSummary("当前方案有 " + currentCount
+                    + (majorGroupMode ? " 个专业组" : " 个志愿")
+                    + "，数量和集合已经满足目标；本轮要求：" + combinedObjectiveSummary
+                    + prioritySummary + "。确认后会采纳并刷新方案。");
+            proposal.setImpact("确认前不会改动方案；确认后会在同一事务中持久化本轮要求、执行同档硬序并重新审查方案。");
+        } else {
+            String objectiveSummary = Strings.isNullOrEmpty(combinedObjectiveSummary)
+                    ? "补齐数量" : combinedObjectiveSummary;
+            proposal.setSummary("当前方案有 " + currentCount + (majorGroupMode ? " 个专业组" : " 个志愿")
+                    + "；本轮要求：" + objectiveSummary + "。本次先移出 " + removeCount
+                    + " 个不符合或需等量替换的项目，再补入 " + adjustedGap
+                    + " 个符合本轮及已确认要求的候选，最终达到 " + targetCount + " 个" + prioritySummary + "。");
+            proposal.setImpact("确认前不会改动方案；确认后会在同一事务中持久化本轮要求、应用最终集合、执行同档硬序并重新审查方案。");
+        }
+        proposal.setRequiresConfirmation(true);
+        populateFillDryRun(proposal, state, currentCount, targetCount,
+                selection.unitIds.size(), selection.volunteerIds.size(),
+                removeUnitIds.size(), removeVolunteerIds.size(),
+                preserveCurrentCount
+                        ? hasTierQuota
+                        ? "已生成保持方案总数的冲稳保精确配额调整预览，等待确认后执行。"
+                        : "已生成保持方案总数的覆盖调整预览，等待确认后执行。"
+                        : "已生成精确补齐预览，等待确认后执行。");
+        populateTierQuotaDryRun(proposal, current, majorGroupMode, tierQuotaGoal);
+        populatePriorityDryRun(proposal, priorityAnalysis);
+        return proposal;
+    }
+
+    private static FixProposalDTO buildPriorityProposal(PlanningStateDTO state,
+                                                        UserGoalFixProposalReq req) {
+        if (req != null && ((req.getRequirements() != null && !req.getRequirements().isEmpty())
+                || req.getTargetCount() != null)) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER,
+                    REASON_PRIORITY_COMPOSITE_NOT_SUPPORTED,
+                    "同档前置首个纵切只接受 priorityRules；数量和筛选要求不能拆开或部分执行。" );
+        }
+        if (req == null || req.getPriorityRules() == null || req.getPriorityRules().isEmpty()) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER,
+                    REASON_PRIORITY_INVALID, "同档前置必须包含一条明确的 priority rule。" );
+        }
+        String validationError = PriorityRuleSupport.validate(req == null ? null : req.getPriorityRules());
+        if (!Strings.isNullOrEmpty(validationError)) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER,
+                    REASON_PRIORITY_INVALID, validationError);
+        }
+        PriorityRuleDTO rule = req.getPriorityRules().get(0);
+        List<CandidateItemDTO> poolCandidates = candidates(state);
+        PriorityRuleSupport.Analysis analysis = PriorityRuleSupport.analyze(state, poolCandidates, rule);
+        if (analysis.getEntityCount() == 0) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER,
+                    REASON_TARGET_NOT_FOUND, "当前还没有正式方案，不能生成同档前置预览。" );
+        }
+        if (analysis.getMatchedCount() == 0) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER,
+                    REASON_PRIORITY_TARGET_NOT_IN_PLAN,
+                    "当前方案没有命中“" + String.join("、", rule.getValues())
+                            + "”的项目；同档前置只重排现有方案，不会自动增加新项目。" );
+        }
+        if (analysis.hasMissingTier()) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER,
+                    REASON_PRIORITY_TIER_UNAVAILABLE,
+                    "当前方案存在未标注冲稳保档位的项目，不能生成可靠的同档前置预览。" );
+        }
+        if (analysis.hasPinnedConflict()) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER,
+                    REASON_PRIORITY_PINNED_CONFLICT,
+                    "执行同档前置会影响已固定位置的志愿；本轮不能同时保持固定位置并完成前置目标。" );
+        }
+
+        FixProposalDTO proposal = buildUserGoalPreviewBase(state, req,
+                RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER,
+                "同档优先靠前的方案调整预览");
+        proposal.setStatus(RepairProposalTaxonomy.Status.READY);
+        proposal.setRequiresConfirmation(true);
+        String domain = analysis.isUnitMode() ? "专业组" : "志愿";
+        if (analysis.getInversionCount() == 0) {
+            proposal.setSummary("当前方案中的 " + analysis.getMatchedCount() + " 个目标" + domain
+                    + "已经在各自冲稳保档内优先靠前；确认后会保存并持续执行这条规则。");
+            proposal.setImpact("志愿集合、冲稳保档位和固定位置保持不变；后续重新生成方案仍会校验同档前置目标。");
+        } else {
+            proposal.setSummary("当前方案命中 " + analysis.getMatchedCount() + " 个目标" + domain
+                    + "；确认后将其中 " + analysis.getMovedTargetCount()
+                    + " 个在各自冲稳保档内前移，消除 " + analysis.getInversionCount() + " 处同档逆序。");
+            proposal.setImpact("只在同一冲稳保档内稳定前置匹配项；志愿集合、档位和固定位置保持不变。");
+            FixProposalActionDTO action = new FixProposalActionDTO();
+            action.setActionType(RepairProposalTaxonomy.ActionType.REORDER_VOLUNTEERS);
+            action.setLevel(analysis.isUnitMode() ? "unit" : "volunteer");
+            action.setSummary("按硬优先规则在同档内前置目标项目");
+            action.setDetail(PriorityRuleSupport.summarize(rule));
+            if (analysis.isUnitMode()) {
+                action.setUnitIds(analysis.getMatchedIds());
+            } else {
+                action.setVolunteerIds(analysis.getMatchedIds());
+            }
+            proposal.getActions().add(action);
+        }
+        proposal.getDryRunResult().setStatus(RepairProposalTaxonomy.Status.READY);
+        proposal.getDryRunResult().setMessage("确认后同档逆序数必须降为 0。");
+        proposal.getDryRunResult().setBeforeUnitTotal(currentPlanUnitCount(state));
+        proposal.getDryRunResult().setAfterUnitTotal(currentPlanUnitCount(state));
+        proposal.getDryRunResult().setBeforeVolunteerTotal(currentPlanVolunteerCount(state));
+        proposal.getDryRunResult().setAfterVolunteerTotal(currentPlanVolunteerCount(state));
+        populatePriorityDryRun(proposal, analysis);
+        return proposal;
+    }
+
+    private static PriorityRuleSupport.Analysis analyzeProjectedPriority(
+            List<PlanVolunteer> current,
+            List<CandidateItemDTO> poolCandidates,
+            List<String> removeVolunteerIds,
+            List<String> removeUnitIds,
+            FillSelection selection,
+            boolean unitMode,
+            PriorityRuleDTO rule) {
+        PlanningStateDTO projected = new PlanningStateDTO();
+        projected.getCandidatePoolState().setVolunteerModel(unitMode ? "majorGroup" : "major");
+        Map<String, CandidateItemDTO> candidateViews = new LinkedHashMap<String, CandidateItemDTO>();
+        for (PlanVolunteer volunteer : defaultList(current)) {
+            if (volunteer != null && volunteer.getCandidate() != null
+                    && !Strings.isNullOrEmpty(volunteer.getVolunteerId())) {
+                candidateViews.put(volunteer.getVolunteerId(), volunteer.asCandidate());
+            }
+        }
+        for (CandidateItemDTO candidate : defaultList(poolCandidates)) {
+            if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
+                candidateViews.putIfAbsent(candidate.getVolunteerId(), candidate);
+            }
+        }
+        projected.getCandidatePoolState().setItems(Lists.newArrayList(candidateViews.values()));
+        Set<String> removedVolunteers = new LinkedHashSet<String>(defaultList(removeVolunteerIds));
+        Set<String> removedUnits = new LinkedHashSet<String>(defaultList(removeUnitIds));
+        if (unitMode) {
+            Map<String, List<PlanVolunteer>> retainedByUnit = defaultList(current).stream()
+                    .filter(Objects::nonNull)
+                    .filter(item -> !removedVolunteers.contains(item.getVolunteerId()))
+                    .filter(item -> !removedUnits.contains(item.getUnitId()))
+                    .collect(Collectors.groupingBy(
+                            item -> firstNonEmpty(item.getUnitId(), item.getVolunteerId()),
+                            LinkedHashMap::new, Collectors.toList()));
+            for (Map.Entry<String, List<PlanVolunteer>> entry : retainedByUnit.entrySet()) {
+                projected.getOrderedPlanState().getUnits().add(
+                        projectedUnit(entry.getKey(), entry.getValue()));
+            }
+            Map<String, List<CandidateItemDTO>> selectedByUnit = defaultList(selection.volunteerIds).stream()
+                    .map(candidateViews::get)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.groupingBy(
+                            candidate -> firstNonEmpty(
+                                    RepairCandidateSelector.resolveInitialRecommendationUnitId(candidate),
+                                    candidate.getVolunteerId()),
+                            LinkedHashMap::new, Collectors.toList()));
+            for (Map.Entry<String, List<CandidateItemDTO>> entry : selectedByUnit.entrySet()) {
+                projected.getOrderedPlanState().getUnits().add(
+                        projectedUnit(entry.getKey(), entry.getValue(), false));
+            }
+        } else {
+            for (PlanVolunteer volunteer : defaultList(current)) {
+                if (volunteer == null || removedVolunteers.contains(volunteer.getVolunteerId())
+                        || removedUnits.contains(volunteer.getUnitId())) {
+                    continue;
+                }
+                projected.getOrderedPlanState().getItems().add(projectedItem(
+                        volunteer.getVolunteerId(), volunteer.asCandidate(), volunteer.isPinned()));
+            }
+            for (String volunteerId : defaultList(selection.volunteerIds)) {
+                CandidateItemDTO candidate = candidateViews.get(volunteerId);
+                if (candidate != null) {
+                    projected.getOrderedPlanState().getItems().add(
+                            projectedItem(volunteerId, candidate, false));
+                }
+            }
+        }
+        return PriorityRuleSupport.analyze(projected, projected.getCandidatePoolState().getItems(), rule);
+    }
+
+    private static OrderedItemDTO projectedItem(String volunteerId,
+                                                CandidateItemDTO candidate,
+                                                boolean pinned) {
+        OrderedItemDTO item = new OrderedItemDTO();
+        item.setVolunteerId(volunteerId);
+        item.setTier(candidate == null ? null : candidate.getTier());
+        item.setSchoolName(candidate == null ? null : candidate.getSchoolName());
+        item.setMajorName(candidate == null ? null : candidate.getMajorName());
+        item.setPinned(pinned);
+        return item;
+    }
+
+    private static OrderedUnitDTO projectedUnit(String unitId, List<PlanVolunteer> volunteers) {
+        List<CandidateItemDTO> candidates = defaultList(volunteers).stream()
+                .filter(Objects::nonNull)
+                .map(PlanVolunteer::asCandidate)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        boolean pinned = defaultList(volunteers).stream()
+                .anyMatch(item -> item != null && item.isPinned());
+        return projectedUnit(unitId, candidates, pinned);
+    }
+
+    private static OrderedUnitDTO projectedUnit(String unitId,
+                                                List<CandidateItemDTO> candidates,
+                                                boolean pinned) {
+        CandidateItemDTO representative = defaultList(candidates).stream()
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(new CandidateItemDTO());
+        OrderedUnitDTO unit = new OrderedUnitDTO();
+        unit.setUnitId(unitId);
+        unit.setTier(representative.getTier());
+        unit.setSchoolName(representative.getSchoolName());
+        unit.setProvinceName(representative.getProvinceName());
+        unit.setCityName(representative.getCityName());
+        unit.setSchoolLevel(representative.getSchoolLevel());
+        unit.setSchoolNature(representative.getSchoolNature());
+        unit.setSchoolCategory(representative.getSchoolCategory());
+        unit.setPinned(pinned);
+        for (CandidateItemDTO candidate : defaultList(candidates)) {
+            if (candidate == null || Strings.isNullOrEmpty(candidate.getVolunteerId())) {
+                continue;
+            }
+            PlanningUnitMajorDTO major = new PlanningUnitMajorDTO();
+            major.setVolunteerId(candidate.getVolunteerId());
+            major.setMajorName(candidate.getMajorName());
+            major.setMajorCategoryId(candidate.getMajorCategoryId());
+            major.setMajorSubCategoryId(candidate.getMajorSubCategoryId());
+            major.setMajorPlanTags(defaultList(candidate.getMajorPlanTags()));
+            unit.getMajorItems().add(major);
+        }
+        return unit;
+    }
+
+    private static void populatePriorityDryRun(FixProposalDTO proposal,
+                                               PriorityRuleSupport.Analysis analysis) {
+        if (proposal == null || analysis == null) {
+            return;
+        }
+        proposal.getDryRunResult().setPriorityMatchedCount(analysis.getMatchedCount());
+        proposal.getDryRunResult().setPriorityBeforeInversionCount(analysis.getInversionCount());
+        proposal.getDryRunResult().setPriorityAfterInversionCount(0);
+        proposal.getDryRunResult().setPriorityMovedTargetCount(analysis.getMovedTargetCount());
+        Integer affectedUnitCount = proposal.getDryRunResult().getAffectedUnitCount();
+        Integer affectedVolunteerCount = proposal.getDryRunResult().getAffectedVolunteerCount();
+        if (analysis.isUnitMode() && (affectedUnitCount == null || affectedUnitCount == 0)) {
+            proposal.getDryRunResult().setAffectedUnitCount(analysis.getMovedTargetCount());
+        }
+        if (!analysis.isUnitMode() && (affectedVolunteerCount == null || affectedVolunteerCount == 0)) {
+            proposal.getDryRunResult().setAffectedVolunteerCount(analysis.getMovedTargetCount());
+        }
+    }
+
+    private static FillSelection selectFillCandidates(HardConstraintsDTO projectedHardConstraints,
+                                                      List<CandidateItemDTO> poolCandidates,
+                                                      Set<String> selectedVolunteerIds,
+                                                      Set<String> selectedUnitIds,
+                                                      int gap,
+                                                      int targetCount,
+                                                      boolean unitMode,
+                                                      List<PlanVolunteer> current,
+                                                      FillCurrentProjection currentProjection,
+                                                      List<UserGoalFixProposalReq.RequirementDTO> coverageRequirements) {
+        List<FillOption> available = buildFillOptions(poolCandidates, selectedVolunteerIds, selectedUnitIds, unitMode);
+        List<FillOption> eligible = available.stream()
+                .map(option -> option.retainAllowed(projectedHardConstraints))
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        FillSelection selection = new FillSelection();
+        selection.unitMode = unitMode;
+        selection.availableWithoutHardConstraints = available.size();
+        selection.availableWithHardConstraints = eligible.size();
+
+        List<CoverageEntity> retained = buildRetainedCoverageEntities(
+                current, currentProjection, unitMode);
+        int[] coverageCounts = new int[coverageRequirements.size()];
+        for (int index = 0; index < coverageRequirements.size(); index++) {
+            UserGoalFixProposalReq.RequirementDTO requirement = coverageRequirements.get(index);
+            if (CoverageRequirementSupport.minCount(requirement) > targetCount) {
+                selection.block(REASON_COVERAGE_INSUFFICIENT,
+                        "覆盖要求至少需要 " + CoverageRequirementSupport.minCount(requirement)
+                                + " 个匹配项，但方案目标总数只有 " + targetCount + "。", 1);
+                return selection;
+            }
+            coverageCounts[index] = (int) retained.stream()
+                    .filter(entity -> entity.matches(requirement))
+                    .count();
+        }
+
+        List<FillOption> selected = CoverageSelectionSolver.selectMinimum(
+                eligible, coverageRequirements, coverageCounts,
+                CoverageRequirementSupport::minCount, FillOption::matches);
+        if (selected == null) {
+            selection.block(REASON_COVERAGE_INSUFFICIENT,
+                    "当前候选池中没有足够的匹配项，或覆盖组合过于复杂，无法同时满足全部非排他覆盖要求。",
+                    1);
+            return selection;
+        }
+        for (FillOption option : selected) {
+            for (int index = 0; index < coverageRequirements.size(); index++) {
+                if (option.matches(coverageRequirements.get(index))) {
+                    coverageCounts[index]++;
+                }
+            }
+        }
+
+        int replacementCount = Math.max(0, selected.size() - gap);
+        if (replacementCount > 0) {
+            for (int index = retained.size() - 1; index >= 0 && selection.replacementCount() < replacementCount; index--) {
+                CoverageEntity candidate = retained.get(index);
+                if (candidate.locked || !canRemoveCoverageEntity(candidate, coverageRequirements, coverageCounts)) {
+                    continue;
+                }
+                candidate.removeFromCounts(coverageRequirements, coverageCounts);
+                selection.removeUnitIds.addAll(candidate.unitIds);
+                selection.removeVolunteerIds.addAll(candidate.volunteerIds);
+            }
+            if (selection.replacementCount() < replacementCount) {
+                selection.block(REASON_COVERAGE_REPLACEMENT_LOCKED,
+                        "方案数量已满，满足覆盖要求需要等量替换，但当前没有足够的未锁定且可移出项目。",
+                        replacementCount - selection.replacementCount());
+                return selection;
+            }
+        }
+
+        int additionsNeeded = gap + selection.replacementCount();
+        for (FillOption option : eligible) {
+            if (selected.size() >= additionsNeeded) {
+                break;
+            }
+            if (!selected.contains(option)) {
+                selected.add(option);
+            }
+        }
+        selected.stream().limit(additionsNeeded).forEach(selection::add);
+        return selection;
+    }
+
+    private static List<FillOption> buildFillOptions(List<CandidateItemDTO> poolCandidates,
+                                                     Set<String> selectedVolunteerIds,
+                                                     Set<String> selectedUnitIds,
+                                                     boolean unitMode) {
+        if (!unitMode) {
+            return defaultList(poolCandidates).stream()
+                    .filter(candidate -> candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId()))
+                    .filter(candidate -> !selectedVolunteerIds.contains(candidate.getVolunteerId()))
+                    .filter(RepairCandidateSelector::isCompensationSafeCandidate)
+                    .sorted(buildCandidatePreviewComparator())
+                    .map(FillOption::new)
+                    .collect(Collectors.toList());
+        }
+        Map<String, List<CandidateItemDTO>> grouped = new LinkedHashMap<String, List<CandidateItemDTO>>();
+        defaultList(poolCandidates).stream()
+                .filter(candidate -> candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId()))
+                .forEach(candidate -> {
+                    String unitId = RepairCandidateSelector.resolveInitialRecommendationUnitId(candidate);
+                    if (!Strings.isNullOrEmpty(unitId) && !selectedUnitIds.contains(unitId)) {
+                        grouped.computeIfAbsent(unitId, ignored -> Lists.newArrayList()).add(candidate);
+                    }
+                });
+        return grouped.entrySet().stream()
+                .map(entry -> new FillOption(entry.getKey(), entry.getValue()))
+                .filter(option -> option.candidates.stream().allMatch(RepairCandidateSelector::isCompensationSafeCandidate))
+                .sorted((left, right) -> buildCandidatePreviewComparator().compare(left.representative, right.representative))
+                .collect(Collectors.toList());
+    }
+
+    private static List<CoverageEntity> buildRetainedCoverageEntities(List<PlanVolunteer> current,
+                                                                       FillCurrentProjection projection,
+                                                                       boolean unitMode) {
+        List<PlanVolunteer> retained = defaultList(current).stream()
+                .filter(item -> unitMode
+                        ? !projection.removeUnitIds.contains(item.getUnitId())
+                        : !projection.removeVolunteerIds.contains(item.getVolunteerId()))
+                .collect(Collectors.toList());
+        if (!unitMode) {
+            return retained.stream().map(CoverageEntity::new).collect(Collectors.toList());
+        }
+        Map<String, List<PlanVolunteer>> grouped = retained.stream().collect(Collectors.groupingBy(
+                item -> firstNonEmpty(item.getUnitId(), item.getVolunteerId()),
+                LinkedHashMap::new,
+                Collectors.toList()));
+        return grouped.entrySet().stream()
+                .map(entry -> new CoverageEntity(entry.getKey(), entry.getValue()))
+                .collect(Collectors.toList());
+    }
+
+    private static boolean canRemoveCoverageEntity(CoverageEntity entity,
+                                                   List<UserGoalFixProposalReq.RequirementDTO> requirements,
+                                                   int[] coverageCounts) {
+        for (int index = 0; index < requirements.size(); index++) {
+            if (entity.matches(requirements.get(index))
+                    && coverageCounts[index] <= CoverageRequirementSupport.minCount(requirements.get(index))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void populateFillDryRun(FixProposalDTO proposal,
+                                           PlanningStateDTO state,
+                                           int beforeTargetDomainCount,
+                                           int afterTargetDomainCount,
+                                           int addUnitCount,
+                                           int addVolunteerCount,
+                                           int removeUnitCount,
+                                           int removeVolunteerCount,
+                                           String message) {
+        boolean majorGroupMode = isMajorGroupMode(state);
+        int beforeUnitCount = currentPlanUnitCount(state);
+        int beforeVolunteerCount = currentPlanVolunteerCount(state);
+        proposal.getDryRunResult().setStatus(proposal.getStatus());
+        proposal.getDryRunResult().setMessage(message);
+        proposal.getDryRunResult().setBeforeUnitTotal(beforeUnitCount);
+        proposal.getDryRunResult().setBeforeVolunteerTotal(beforeVolunteerCount);
+        proposal.getDryRunResult().setAfterUnitTotal(majorGroupMode
+                ? afterTargetDomainCount : beforeUnitCount - removeUnitCount + addUnitCount);
+        proposal.getDryRunResult().setAfterVolunteerTotal(majorGroupMode
+                ? beforeVolunteerCount - removeVolunteerCount + addVolunteerCount : afterTargetDomainCount);
+        proposal.getDryRunResult().setAffectedUnitCount(addUnitCount + removeUnitCount);
+        proposal.getDryRunResult().setAffectedVolunteerCount(addVolunteerCount + removeVolunteerCount);
+        proposal.getDryRunResult().setAddUnitCount(addUnitCount);
+        proposal.getDryRunResult().setAddVolunteerCount(addVolunteerCount);
+        proposal.getDryRunResult().setRemoveUnitCount(removeUnitCount);
+        proposal.getDryRunResult().setRemoveVolunteerCount(removeVolunteerCount);
+    }
+
+    private static void populateTierQuotaDryRun(FixProposalDTO proposal,
+                                                List<PlanVolunteer> current,
+                                                boolean majorGroupMode,
+                                                TierQuotaGoalDTO tierQuotaGoal) {
+        if (proposal == null || tierQuotaGoal == null) {
+            return;
+        }
+        List<UserGoalFixProposalReq.RequirementDTO> requirements =
+                TierQuotaSupport.syntheticRequirements(tierQuotaGoal);
+        List<CoverageEntity> currentEntities = buildRetainedCoverageEntities(
+                current, new FillCurrentProjection(), majorGroupMode);
+        Map<String, Integer> before = new LinkedHashMap<String, Integer>();
+        before.put("冲", (int) currentEntities.stream()
+                .filter(entity -> entity.matches(requirements.get(0))).count());
+        before.put("稳", (int) currentEntities.stream()
+                .filter(entity -> entity.matches(requirements.get(1))).count());
+        before.put("保", (int) currentEntities.stream()
+                .filter(entity -> entity.matches(requirements.get(2))).count());
+        Map<String, Integer> after = new LinkedHashMap<String, Integer>();
+        after.put("冲", tierQuotaGoal.getSprintCount());
+        after.put("稳", tierQuotaGoal.getStableCount());
+        after.put("保", tierQuotaGoal.getProtectCount());
+        if (majorGroupMode) {
+            proposal.getDryRunResult().setBeforeUnitTierCounts(before);
+            proposal.getDryRunResult().setAfterUnitTierCounts(after);
+        } else {
+            proposal.getDryRunResult().setBeforeVolunteerTierCounts(before);
+            proposal.getDryRunResult().setAfterVolunteerTierCounts(after);
+        }
     }
 
     private static FixProposalDTO buildBlockedProposal(PlanningStateDTO state,
@@ -1043,6 +1802,14 @@ final class UserGoalProposalBuilder {
     }
 
     private static String buildTitle(String goalType) {
+        if (RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(
+                RepairProposalTaxonomy.normalizeStrategy(goalType))) {
+            return "补齐方案数量的调整预览";
+        }
+        if (RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER.equals(
+                RepairProposalTaxonomy.normalizeStrategy(goalType))) {
+            return "同档优先靠前的方案调整预览";
+        }
         if ("only_keep_scope".equals(goalType)) {
             return "只保留范围的方案调整暂不自动执行";
         }
@@ -1074,6 +1841,10 @@ final class UserGoalProposalBuilder {
         if (REASON_ENTITY_NEEDS_CLARIFICATION.equals(reasonCode)) {
             return "这次提到的范围还不够明确，需要先确认具体专业、院校或地域后再生成调整预览。";
         }
+        if (RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(
+                RepairProposalTaxonomy.normalizeStrategy(goalType))) {
+            return "已识别为补齐方案数量目标，但需要明确目标数量并验证候选是否足够；当前不会自动修改方案。";
+        }
         if ("only_keep_scope".equals(goalType)) {
             return "已识别为“只保留某个范围”的复合目标，但还需要先计算当前方案中哪些保留、哪些移出、候选是否能补足，以及调整后的风险变化；当前不会自动修改方案。";
         }
@@ -1093,7 +1864,7 @@ final class UserGoalProposalBuilder {
     }
 
     private static String normalizeGoalType(String goalType) {
-        return Strings.nullToEmpty(goalType).trim();
+        return RepairProposalTaxonomy.normalizeStrategy(Strings.nullToEmpty(goalType).trim());
     }
 
     private static Integer maxTuitionFromRequest(UserGoalFixProposalReq req) {
@@ -1176,34 +1947,156 @@ final class UserGoalProposalBuilder {
         if (state == null) {
             return result;
         }
-        if (state.getOrderedPlanState() != null && !defaultList(state.getOrderedPlanState().getItems()).isEmpty()) {
-            for (OrderedItemDTO item : defaultList(state.getOrderedPlanState().getItems())) {
-                result.add(PlanVolunteer.from(item, RepairCandidateSelector.findCandidate(candidates, item.getVolunteerId()), candidates));
-            }
-            return result;
-        }
-        if (state.getOrderedPlanState() != null && !defaultList(state.getOrderedPlanState().getUnits()).isEmpty()) {
-            for (OrderedUnitDTO unit : defaultList(state.getOrderedPlanState().getUnits())) {
-                for (PlanningUnitMajorDTO major : defaultList(unit.getMajorItems())) {
-                    result.add(PlanVolunteer.from(unit, major, RepairCandidateSelector.findCandidate(candidates, major.getVolunteerId()), candidates));
+        boolean majorGroupMode = isMajorGroupMode(state);
+        if (state.getOrderedPlanState() != null) {
+            if (majorGroupMode) {
+                if (appendOrderedUnits(result, state.getOrderedPlanState().getUnits(), candidates)
+                        || appendOrderedItems(result, state.getOrderedPlanState().getItems(),
+                        state.getOrderedPlanState().getUnits(), candidates)) {
+                    return result;
                 }
+            } else if (appendOrderedItems(result, state.getOrderedPlanState().getItems(),
+                    state.getOrderedPlanState().getUnits(), candidates)
+                    || appendOrderedUnits(result, state.getOrderedPlanState().getUnits(), candidates)) {
+                return result;
             }
-            return result;
         }
-        if (state.getWorkingPlanState() != null && !defaultList(state.getWorkingPlanState().getItems()).isEmpty()) {
-            for (DraftItemDTO item : defaultList(state.getWorkingPlanState().getItems())) {
-                result.add(PlanVolunteer.from(item, RepairCandidateSelector.findCandidate(candidates, item.getVolunteerId()), candidates));
-            }
-            return result;
-        }
-        if (state.getWorkingPlanState() != null && !defaultList(state.getWorkingPlanState().getUnits()).isEmpty()) {
-            for (DraftUnitDTO unit : defaultList(state.getWorkingPlanState().getUnits())) {
-                for (PlanningUnitMajorDTO major : defaultList(unit.getMajorItems())) {
-                    result.add(PlanVolunteer.from(unit, major, RepairCandidateSelector.findCandidate(candidates, major.getVolunteerId()), candidates));
+        if (state.getWorkingPlanState() != null) {
+            if (majorGroupMode) {
+                if (appendWorkingUnits(result, state.getWorkingPlanState().getUnits(), candidates)
+                        || appendWorkingItems(result, state.getWorkingPlanState().getItems(), candidates)) {
+                    return result;
                 }
+            } else if (appendWorkingItems(result, state.getWorkingPlanState().getItems(), candidates)
+                    || appendWorkingUnits(result, state.getWorkingPlanState().getUnits(), candidates)) {
+                return result;
             }
         }
         return result;
+    }
+
+    private static boolean appendOrderedItems(List<PlanVolunteer> target,
+                                              List<OrderedItemDTO> items,
+                                              List<OrderedUnitDTO> units,
+                                              List<CandidateItemDTO> candidates) {
+        int before = target.size();
+        for (OrderedItemDTO item : defaultList(items)) {
+            if (item != null) {
+                OrderedUnitDTO unit = orderedUnitForVolunteer(units, item.getVolunteerId());
+                PlanningUnitMajorDTO major = unitMajor(unit, item.getVolunteerId());
+                target.add(PlanVolunteer.from(item, unit, major,
+                        findCurrentPlanCandidate(candidates, item.getVolunteerId(),
+                                unit == null ? null : unit.getUnitId(),
+                                firstNonEmpty(item.getSchoolName(), unit == null ? null : unit.getSchoolName()),
+                                firstNonEmpty(item.getMajorName(), major == null ? null : major.getMajorName())),
+                        candidates));
+            }
+        }
+        return target.size() > before;
+    }
+
+    private static OrderedUnitDTO orderedUnitForVolunteer(List<OrderedUnitDTO> units, String volunteerId) {
+        if (Strings.isNullOrEmpty(volunteerId)) {
+            return null;
+        }
+        return defaultList(units).stream()
+                .filter(Objects::nonNull)
+                .filter(unit -> unitMajor(unit, volunteerId) != null)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static PlanningUnitMajorDTO unitMajor(OrderedUnitDTO unit, String volunteerId) {
+        if (unit == null || Strings.isNullOrEmpty(volunteerId)) {
+            return null;
+        }
+        return defaultList(unit.getMajorItems()).stream()
+                .filter(Objects::nonNull)
+                .filter(major -> volunteerId.equals(major.getVolunteerId()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static boolean appendOrderedUnits(List<PlanVolunteer> target,
+                                              List<OrderedUnitDTO> units,
+                                              List<CandidateItemDTO> candidates) {
+        int before = target.size();
+        for (OrderedUnitDTO unit : defaultList(units)) {
+            if (unit != null) {
+                for (PlanningUnitMajorDTO major : defaultList(unit.getMajorItems())) {
+                    if (major != null) {
+                        target.add(PlanVolunteer.from(unit, major,
+                                findCurrentPlanCandidate(candidates, major.getVolunteerId(), unit.getUnitId(),
+                                        unit.getSchoolName(), major.getMajorName()), candidates));
+                    }
+                }
+            }
+        }
+        return target.size() > before;
+    }
+
+    private static boolean appendWorkingItems(List<PlanVolunteer> target,
+                                              List<DraftItemDTO> items,
+                                              List<CandidateItemDTO> candidates) {
+        int before = target.size();
+        for (DraftItemDTO item : defaultList(items)) {
+            if (item != null) {
+                target.add(PlanVolunteer.from(item,
+                        findCurrentPlanCandidate(candidates, item.getVolunteerId(),
+                                unitIdPrefix(item.getVolunteerId()), item.getSchoolName(), item.getMajorName()),
+                        candidates));
+            }
+        }
+        return target.size() > before;
+    }
+
+    private static boolean appendWorkingUnits(List<PlanVolunteer> target,
+                                              List<DraftUnitDTO> units,
+                                              List<CandidateItemDTO> candidates) {
+        int before = target.size();
+        for (DraftUnitDTO unit : defaultList(units)) {
+            if (unit != null) {
+                for (PlanningUnitMajorDTO major : defaultList(unit.getMajorItems())) {
+                    if (major != null) {
+                        target.add(PlanVolunteer.from(unit, major,
+                                findCurrentPlanCandidate(candidates, major.getVolunteerId(), unit.getUnitId(),
+                                        unit.getSchoolName(), major.getMajorName()), candidates));
+                    }
+                }
+            }
+        }
+        return target.size() > before;
+    }
+
+    private static CandidateItemDTO findCurrentPlanCandidate(List<CandidateItemDTO> candidates,
+                                                             String volunteerId,
+                                                             String unitId,
+                                                             String schoolName,
+                                                             String majorName) {
+        CandidateItemDTO direct = RepairCandidateSelector.findCandidate(candidates, volunteerId);
+        if (direct != null) {
+            return direct;
+        }
+        if (Strings.isNullOrEmpty(majorName)) {
+            return null;
+        }
+        List<CandidateItemDTO> matches = defaultList(candidates).stream()
+                .filter(Objects::nonNull)
+                .filter(candidate -> majorName.equals(candidate.getMajorName()))
+                .filter(candidate -> !Strings.isNullOrEmpty(unitId)
+                        ? unitId.equals(RepairCandidateSelector.resolveInitialRecommendationUnitId(candidate))
+                        : !Strings.isNullOrEmpty(schoolName) && schoolName.equals(candidate.getSchoolName()))
+                .limit(2)
+                .collect(Collectors.toList());
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    private static String unitIdPrefix(String volunteerId) {
+        if (Strings.isNullOrEmpty(volunteerId)) {
+            return null;
+        }
+        int split = volunteerId.indexOf('_');
+        return split > 0 ? volunteerId.substring(0, split) : null;
     }
 
     private static Comparator<CandidateItemDTO> buildCandidatePreviewComparator() {
@@ -1246,6 +2139,10 @@ final class UserGoalProposalBuilder {
                 String.valueOf(state == null ? null : state.getSessionId()),
                 String.valueOf(state == null ? null : state.getVersion()),
                 String.valueOf(req == null ? null : req.getGoalType()),
+                String.valueOf(req == null ? null : req.getTargetCount()),
+                String.valueOf(req == null ? null : req.getRequirements()),
+                String.valueOf(req == null ? null : req.getPriorityRules()),
+                String.valueOf(req == null ? null : req.getTierQuotaGoal()),
                 String.valueOf(req == null ? null : req.getUserOriginalText()),
                 String.valueOf(reasonCode));
         return "ugp_" + UUID.nameUUIDFromBytes(raw.getBytes(StandardCharsets.UTF_8)).toString().replace("-", "").substring(0, 16);
@@ -1520,12 +2417,200 @@ final class UserGoalProposalBuilder {
         }
     }
 
+    private static FillCurrentProjection projectCurrentPlan(List<PlanVolunteer> current,
+                                                            HardConstraintsDTO projectedRequirements,
+                                                            boolean majorGroupMode) {
+        FillCurrentProjection result = new FillCurrentProjection();
+        if (!majorGroupMode) {
+            for (PlanVolunteer volunteer : defaultList(current)) {
+                if (ProjectedHardRequirementSupport.isAllowed(volunteer.asCandidate(), projectedRequirements)) {
+                    result.retainedCount++;
+                    continue;
+                }
+                result.lockedViolation = result.lockedViolation || volunteer.isLocked();
+                if (!Strings.isNullOrEmpty(volunteer.getVolunteerId())) {
+                    result.removeVolunteerIds.add(volunteer.getVolunteerId());
+                }
+                if (!Strings.isNullOrEmpty(volunteer.getUnitId())) {
+                    result.removeUnitIds.add(volunteer.getUnitId());
+                }
+            }
+            return result;
+        }
+
+        Map<String, List<PlanVolunteer>> grouped = new LinkedHashMap<String, List<PlanVolunteer>>();
+        for (PlanVolunteer volunteer : defaultList(current)) {
+            String unitId = firstNonEmpty(volunteer.getUnitId(), volunteer.getVolunteerId());
+            grouped.computeIfAbsent(unitId, ignored -> Lists.newArrayList()).add(volunteer);
+        }
+        for (Map.Entry<String, List<PlanVolunteer>> entry : grouped.entrySet()) {
+            List<PlanVolunteer> disallowed = entry.getValue().stream()
+                    .filter(volunteer -> !ProjectedHardRequirementSupport.isAllowed(
+                            volunteer.asCandidate(), projectedRequirements))
+                    .collect(Collectors.toList());
+            if (disallowed.isEmpty()) {
+                result.retainedCount++;
+                continue;
+            }
+            result.lockedViolation = result.lockedViolation
+                    || disallowed.stream().anyMatch(PlanVolunteer::isLocked);
+            disallowed.stream()
+                    .map(PlanVolunteer::getVolunteerId)
+                    .filter(value -> !Strings.isNullOrEmpty(value))
+                    .filter(value -> !result.removeVolunteerIds.contains(value))
+                    .forEach(result.removeVolunteerIds::add);
+            if (disallowed.size() < entry.getValue().size()) {
+                result.retainedCount++;
+                continue;
+            }
+            if (!Strings.isNullOrEmpty(entry.getKey())) {
+                result.removeUnitIds.add(entry.getKey());
+            }
+        }
+        return result;
+    }
+
+    private static final class FillCurrentProjection {
+        private int retainedCount;
+        private boolean lockedViolation;
+        private final List<String> removeUnitIds = Lists.newArrayList();
+        private final List<String> removeVolunteerIds = Lists.newArrayList();
+    }
+
+    private static final class FillSelection {
+        private boolean unitMode;
+        private int availableWithoutHardConstraints;
+        private int availableWithHardConstraints;
+        private String blockingReasonCode;
+        private String blockingReason;
+        private int coverageShortageCount;
+        private final List<String> unitIds = Lists.newArrayList();
+        private final List<String> volunteerIds = Lists.newArrayList();
+        private final List<String> removeUnitIds = Lists.newArrayList();
+        private final List<String> removeVolunteerIds = Lists.newArrayList();
+
+        private int selectedCount() {
+            return unitMode ? new LinkedHashSet<String>(unitIds).size() : volunteerIds.size();
+        }
+
+        private int replacementCount() {
+            return unitMode ? new LinkedHashSet<String>(removeUnitIds).size() : removeVolunteerIds.size();
+        }
+
+        private void add(FillOption option) {
+            if (option == null) {
+                return;
+            }
+            if (!Strings.isNullOrEmpty(option.unitId) && !unitIds.contains(option.unitId)) {
+                unitIds.add(option.unitId);
+            }
+            option.volunteerIds.stream()
+                    .filter(value -> !volunteerIds.contains(value))
+                    .forEach(volunteerIds::add);
+        }
+
+        private void block(String reasonCode, String reason, int shortageCount) {
+            this.blockingReasonCode = reasonCode;
+            this.blockingReason = reason;
+            this.coverageShortageCount = Math.max(0, shortageCount);
+        }
+    }
+
+    private static final class FillOption {
+        private final String unitId;
+        private final List<CandidateItemDTO> candidates;
+        private final CandidateItemDTO representative;
+        private final List<String> volunteerIds;
+
+        private FillOption(CandidateItemDTO candidate) {
+            this(RepairCandidateSelector.resolveInitialRecommendationUnitId(candidate),
+                    Lists.newArrayList(candidate));
+        }
+
+        private FillOption(String unitId, List<CandidateItemDTO> sourceCandidates) {
+            this.unitId = unitId;
+            this.candidates = defaultList(sourceCandidates).stream()
+                    .filter(Objects::nonNull)
+                    .sorted(buildCandidatePreviewComparator())
+                    .collect(Collectors.toList());
+            this.representative = this.candidates.isEmpty() ? new CandidateItemDTO() : this.candidates.get(0);
+            this.volunteerIds = this.candidates.stream()
+                    .map(CandidateItemDTO::getVolunteerId)
+                    .filter(value -> !Strings.isNullOrEmpty(value))
+                    .distinct()
+                    .collect(Collectors.toList());
+        }
+
+        private FillOption retainAllowed(HardConstraintsDTO projectedHardConstraints) {
+            List<CandidateItemDTO> allowed = candidates.stream()
+                    .filter(candidate -> ProjectedHardRequirementSupport.isAllowed(
+                            candidate, projectedHardConstraints))
+                    .collect(Collectors.toList());
+            return allowed.isEmpty() ? null : new FillOption(unitId, allowed);
+        }
+
+        private boolean matches(UserGoalFixProposalReq.RequirementDTO requirement) {
+            return candidates.stream().anyMatch(candidate -> CoverageRequirementSupport.matches(candidate, requirement));
+        }
+    }
+
+    private static final class CoverageEntity {
+        private final List<String> unitIds = Lists.newArrayList();
+        private final List<String> volunteerIds = Lists.newArrayList();
+        private final List<CandidateItemDTO> candidates = Lists.newArrayList();
+        private final boolean locked;
+
+        private CoverageEntity(PlanVolunteer volunteer) {
+            if (volunteer != null) {
+                if (!Strings.isNullOrEmpty(volunteer.getUnitId())) {
+                    unitIds.add(volunteer.getUnitId());
+                }
+                if (!Strings.isNullOrEmpty(volunteer.getVolunteerId())) {
+                    volunteerIds.add(volunteer.getVolunteerId());
+                }
+                candidates.add(volunteer.asCandidate());
+            }
+            this.locked = volunteer != null && volunteer.isLocked();
+        }
+
+        private CoverageEntity(String unitId, List<PlanVolunteer> volunteers) {
+            if (!Strings.isNullOrEmpty(unitId)) {
+                unitIds.add(unitId);
+            }
+            for (PlanVolunteer volunteer : defaultList(volunteers)) {
+                if (volunteer == null) {
+                    continue;
+                }
+                if (!Strings.isNullOrEmpty(volunteer.getVolunteerId())) {
+                    volunteerIds.add(volunteer.getVolunteerId());
+                }
+                candidates.add(volunteer.asCandidate());
+            }
+            this.locked = defaultList(volunteers).stream().anyMatch(
+                    volunteer -> volunteer != null && volunteer.isLocked());
+        }
+
+        private boolean matches(UserGoalFixProposalReq.RequirementDTO requirement) {
+            return candidates.stream().anyMatch(candidate -> CoverageRequirementSupport.matches(candidate, requirement));
+        }
+
+        private void removeFromCounts(List<UserGoalFixProposalReq.RequirementDTO> requirements,
+                                      int[] coverageCounts) {
+            for (int index = 0; index < requirements.size(); index++) {
+                if (matches(requirements.get(index))) {
+                    coverageCounts[index]--;
+                }
+            }
+        }
+    }
+
     private static final class PlanVolunteer {
         private final String volunteerId;
         private final String unitId;
         private final String schoolName;
         private final String majorName;
         private final boolean locked;
+        private final boolean pinned;
         private final CandidateItemDTO candidate;
 
         private PlanVolunteer(String volunteerId,
@@ -1533,59 +2618,105 @@ final class UserGoalProposalBuilder {
                               String schoolName,
                               String majorName,
                               boolean locked,
+                              boolean pinned,
                               CandidateItemDTO candidate) {
             this.volunteerId = volunteerId;
             this.unitId = unitId;
             this.schoolName = schoolName;
             this.majorName = majorName;
             this.locked = locked;
+            this.pinned = pinned;
             this.candidate = candidate;
         }
 
-        static PlanVolunteer from(OrderedItemDTO item, CandidateItemDTO candidate, List<CandidateItemDTO> candidates) {
+        static PlanVolunteer from(OrderedItemDTO item,
+                                  OrderedUnitDTO unit,
+                                  PlanningUnitMajorDTO major,
+                                  CandidateItemDTO candidate,
+                                  List<CandidateItemDTO> candidates) {
+            String unitId = firstNonEmpty(
+                    unit == null ? null : unit.getUnitId(),
+                    item == null ? null : RepairCandidateSelector.resolveUnitId(item.getVolunteerId(), candidates));
+            CandidateItemDTO view = candidateView(candidate,
+                    item == null ? null : item.getVolunteerId(), unitId,
+                    firstNonEmpty(item == null ? null : item.getSchoolName(), unit == null ? null : unit.getSchoolName()),
+                    firstNonEmpty(item == null ? null : item.getMajorName(), major == null ? null : major.getMajorName()),
+                    unit == null ? null : unit.getProvinceName(), unit == null ? null : unit.getCityName(),
+                    unit == null ? null : unit.getSchoolLevel(), unit == null ? null : unit.getSchoolNature(),
+                    unit == null ? null : unit.getSchoolCategory(), major);
+            view.setTier(firstNonEmpty(view.getTier(),
+                    item == null ? null : item.getTier(), unit == null ? null : unit.getTier()));
             return new PlanVolunteer(
                     item == null ? null : item.getVolunteerId(),
-                    item == null ? null : RepairCandidateSelector.resolveUnitId(item.getVolunteerId(), candidates),
-                    firstNonEmpty(candidate == null ? null : candidate.getSchoolName(), item == null ? null : item.getSchoolName()),
-                    firstNonEmpty(candidate == null ? null : candidate.getMajorName(), item == null ? null : item.getMajorName()),
-                    item != null && Boolean.TRUE.equals(item.getLocked()),
-                    candidate);
+                    unitId,
+                    view.getSchoolName(),
+                    view.getMajorName(),
+                    (item != null && Boolean.TRUE.equals(item.getLocked()))
+                            || (unit != null && Boolean.TRUE.equals(unit.getLocked())),
+                    (item != null && Boolean.TRUE.equals(item.getPinned()))
+                            || (unit != null && Boolean.TRUE.equals(unit.getPinned())),
+                    view);
         }
 
         static PlanVolunteer from(DraftItemDTO item, CandidateItemDTO candidate, List<CandidateItemDTO> candidates) {
+            String unitId = item == null ? null : RepairCandidateSelector.resolveUnitId(item.getVolunteerId(), candidates);
+            CandidateItemDTO view = candidateView(candidate,
+                    item == null ? null : item.getVolunteerId(), unitId,
+                    item == null ? null : item.getSchoolName(), item == null ? null : item.getMajorName(),
+                    null, null, null, null, null, null);
+            view.setTier(firstNonEmpty(view.getTier(), item == null ? null : item.getTier()));
             return new PlanVolunteer(
                     item == null ? null : item.getVolunteerId(),
-                    item == null ? null : RepairCandidateSelector.resolveUnitId(item.getVolunteerId(), candidates),
-                    firstNonEmpty(candidate == null ? null : candidate.getSchoolName(), item == null ? null : item.getSchoolName()),
-                    firstNonEmpty(candidate == null ? null : candidate.getMajorName(), item == null ? null : item.getMajorName()),
+                    unitId,
+                    view.getSchoolName(),
+                    view.getMajorName(),
                     item != null && Boolean.TRUE.equals(item.getLocked()),
-                    candidate);
+                    false,
+                    view);
         }
 
         static PlanVolunteer from(OrderedUnitDTO unit,
                                   PlanningUnitMajorDTO major,
                                   CandidateItemDTO candidate,
                                   List<CandidateItemDTO> candidates) {
+            String unitId = firstNonEmpty(unit == null ? null : unit.getUnitId(),
+                    major == null ? null : RepairCandidateSelector.resolveUnitId(major.getVolunteerId(), candidates));
+            CandidateItemDTO view = candidateView(candidate,
+                    major == null ? null : major.getVolunteerId(), unitId,
+                    unit == null ? null : unit.getSchoolName(), major == null ? null : major.getMajorName(),
+                    unit == null ? null : unit.getProvinceName(), unit == null ? null : unit.getCityName(),
+                    unit == null ? null : unit.getSchoolLevel(), unit == null ? null : unit.getSchoolNature(),
+                    unit == null ? null : unit.getSchoolCategory(), major);
+            view.setTier(firstNonEmpty(view.getTier(), unit == null ? null : unit.getTier()));
             return new PlanVolunteer(
                     major == null ? null : major.getVolunteerId(),
-                    firstNonEmpty(unit == null ? null : unit.getUnitId(), major == null ? null : RepairCandidateSelector.resolveUnitId(major.getVolunteerId(), candidates)),
-                    firstNonEmpty(candidate == null ? null : candidate.getSchoolName(), unit == null ? null : unit.getSchoolName()),
-                    firstNonEmpty(candidate == null ? null : candidate.getMajorName(), major == null ? null : major.getMajorName()),
+                    unitId,
+                    view.getSchoolName(),
+                    view.getMajorName(),
                     unit != null && Boolean.TRUE.equals(unit.getLocked()),
-                    candidate);
+                    unit != null && Boolean.TRUE.equals(unit.getPinned()),
+                    view);
         }
 
         static PlanVolunteer from(DraftUnitDTO unit,
                                   PlanningUnitMajorDTO major,
                                   CandidateItemDTO candidate,
                                   List<CandidateItemDTO> candidates) {
+            String unitId = firstNonEmpty(unit == null ? null : unit.getUnitId(),
+                    major == null ? null : RepairCandidateSelector.resolveUnitId(major.getVolunteerId(), candidates));
+            CandidateItemDTO view = candidateView(candidate,
+                    major == null ? null : major.getVolunteerId(), unitId,
+                    unit == null ? null : unit.getSchoolName(), major == null ? null : major.getMajorName(),
+                    null, null, null, null, null, major);
+            view.setTier(firstNonEmpty(view.getTier(), unit == null ? null : unit.getTier()));
             return new PlanVolunteer(
                     major == null ? null : major.getVolunteerId(),
-                    firstNonEmpty(unit == null ? null : unit.getUnitId(), major == null ? null : RepairCandidateSelector.resolveUnitId(major.getVolunteerId(), candidates)),
-                    firstNonEmpty(candidate == null ? null : candidate.getSchoolName(), unit == null ? null : unit.getSchoolName()),
-                    firstNonEmpty(candidate == null ? null : candidate.getMajorName(), major == null ? null : major.getMajorName()),
+                    unitId,
+                    view.getSchoolName(),
+                    view.getMajorName(),
                     unit != null && Boolean.TRUE.equals(unit.getLocked()),
-                    candidate);
+                    false,
+                    view);
         }
 
         String getVolunteerId() {
@@ -1608,8 +2739,55 @@ final class UserGoalProposalBuilder {
             return locked;
         }
 
+        boolean isPinned() {
+            return pinned;
+        }
+
         CandidateItemDTO getCandidate() {
             return candidate;
+        }
+
+        CandidateItemDTO asCandidate() {
+            return candidate;
+        }
+
+        private static CandidateItemDTO candidateView(CandidateItemDTO source,
+                                                      String volunteerId,
+                                                      String unitId,
+                                                      String schoolName,
+                                                      String majorName,
+                                                      String provinceName,
+                                                      String cityName,
+                                                      String schoolLevel,
+                                                      String schoolNature,
+                                                      String schoolCategory,
+                                                      PlanningUnitMajorDTO major) {
+            CandidateItemDTO view = new CandidateItemDTO();
+            if (source != null) {
+                BeanUtils.copyProperties(source, view);
+            }
+            view.setVolunteerId(firstNonEmpty(view.getVolunteerId(), volunteerId));
+            view.setPlanSchoolDataId(firstNonEmpty(view.getPlanSchoolDataId(), unitId));
+            view.setSchoolName(firstNonEmpty(view.getSchoolName(), schoolName));
+            view.setDisplaySchoolName(firstNonEmpty(view.getDisplaySchoolName(), view.getSchoolName()));
+            view.setMajorName(firstNonEmpty(view.getMajorName(), majorName));
+            view.setProvinceName(firstNonEmpty(view.getProvinceName(), provinceName));
+            view.setCityName(firstNonEmpty(view.getCityName(), cityName));
+            view.setSchoolLevel(firstNonEmpty(view.getSchoolLevel(), schoolLevel));
+            view.setSchoolNature(firstNonEmpty(view.getSchoolNature(), schoolNature));
+            view.setSchoolCategory(firstNonEmpty(view.getSchoolCategory(), schoolCategory));
+            if (major != null) {
+                if (view.getTuitionPerYear() == null) {
+                    view.setTuitionPerYear(major.getTuitionPerYear());
+                }
+                if (defaultList(view.getReasonCodes()).isEmpty()) {
+                    view.setReasonCodes(Lists.newArrayList(defaultList(major.getReasonCodes())));
+                }
+                if (defaultList(view.getMajorPlanTags()).isEmpty()) {
+                    view.setMajorPlanTags(Lists.newArrayList(defaultList(major.getMajorPlanTags())));
+                }
+            }
+            return view;
         }
 
         private static String firstNonEmpty(String... values) {

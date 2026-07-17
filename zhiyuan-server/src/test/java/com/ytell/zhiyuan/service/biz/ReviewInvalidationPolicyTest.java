@@ -63,12 +63,12 @@ public class ReviewInvalidationPolicyTest {
     }
 
     @Test
-    void shouldMarkConstraintIntentStaleWithCandidatePool() {
+    void shouldMarkConstraintIntentStaleWithoutCandidatePool() {
         PlanningStateDTO state = cleanState();
 
         ReviewInvalidationPolicy.markConstraintIntentStale(state);
 
-        assertTrue(state.getStaleFlags().getCandidatePool());
+        assertFalse(state.getStaleFlags().getCandidatePool());
         assertTrue(state.getStaleFlags().getRecommendationOverlay());
         assertTrue(state.getStaleFlags().getInitialRecommendation());
         assertTrue(state.getStaleFlags().getOrderedPlan());

@@ -74,8 +74,6 @@
 - `skills/intent_detect/SKILL.md`
 - `skills/plan_chat/SKILL.md`
 - `skills/plan_query/SKILL.md`
-- `skills/major_chat/SKILL.md`
-- `skills/school_chat/SKILL.md`
 - `skills/career_path_chat/SKILL.md`
 
 它们负责：
@@ -90,214 +88,87 @@ skill 不直接执行状态，也不应该替代 tool 的安全边界。
 说明：
 
 - `skills/career_path_chat/SKILL.md` 是 `Explore + career` 的语义说明层。
-- 职业路径探索的运行时主入口是 `analyze_current_career_direction`。
-- 职业路径偏好写入必须先走 `preview_current_career_intent_confirmation` 生成统一 `pendingConfirmationCard`，再等用户点击卡片采纳后由 `apply_selected_intents` 生效。
+- 4.0 direct 职业路径探索运行时走 `explore_topic(topic_type="career")`。
+- 用户明确表达职业方向报考要求时，运行时走 `preview_intent_change` 生成统一待确认预览，再等用户采纳后由确认链路生效。
 
 ### 3.3 Tool 层
 
 #### Explore
 
-- `app/tools/intent_preview_tool.py`
-- `app/tools/explore_direction_tool.py`
+4.0 direct 当前高层 Explore 入口：
 
-当前高层 Explore 入口：
-
-- `analyze_current_career_direction`
-- `analyze_current_major_interest`
-- `analyze_current_school_interest`
-- `analyze_current_region_interest`
-- `analyze_current_interest`（兼容兜底）
+- `app/zhiyuan_agent/tools.py::explore_topic`
+- `app/zhiyuan_agent/tools.py::compare_entities`
+- `app/zhiyuan_agent/tools.py::answer_policy`
+- `app/zhiyuan_agent/tools.py::query_plan`
+- `app/zhiyuan_agent/tools.py::review_plan`
 
 #### Intent
 
-- `app/tools/intent_state_tool.py`
-- `app/tools/intent_response_tool.py`
-- `app/tools/intent_relation_tool.py`
+4.0 direct 当前报考要求入口：
 
-当前核心能力：
+- `app/zhiyuan_agent/tools.py::preview_intent_change`
+- `app/zhiyuan_agent/tools.py::confirm_pending`
 
-- `preview_current_intent_confirmation`
-- `preview_current_major_intent_confirmation`
-- `preview_current_school_intent_confirmation`
-- `preview_current_region_intent_confirmation`
-- `preview_current_career_intent_confirmation`
-- `apply_selected_intents`（仅卡片点击确认后由 Service 调用）
+底层仍保留：
+
+- `app/tools/intent_state_tool.py`：执行确认后的报考要求应用与状态同步。
+- `app/tools/intent_response_tool.py`：结构化结果解析与渲染。
+- `app/tools/intent_relation_tool.py`：报考要求与当前方案关系分析。
 
 其中：
 
-- `preview_current_*_intent_confirmation` 是主 agent 可见的高层语义入口
-- `analyze_volunteer_intent_change` 继续保留为内部低层分析能力，由 wrapper 调用
-- `update_volunteer_intent_state` 旧 wrapper 已删除；当前意向确认只走 `pendingConfirmation(kind=intent_change) -> apply_selected_intents`
+- 主 agent 不再暴露 `preview_current_*` 或 `analyze_current_*` wrapper。
+- 用户明确表达要/不要/只看时，由 `preview_intent_change` 生成待确认预览。
+- 用户采纳后通过 `confirm_pending` 执行，底层再调用 `apply_selected_intents`。
 
 #### Plan
 
-- `app/tools/plan_context_tool.py`
-- `app/tools/plan_orchestration_tool.py`
-- `app/tools/plan_execution_tool.py`
-- `app/tools/plan_query_tool.py`
+4.0 direct 当前方案入口：
 
-主链：
+- `app/zhiyuan_agent/tools.py::query_plan`
+- `app/zhiyuan_agent/tools.py::review_plan`
+- `app/zhiyuan_agent/tools.py::preview_plan_action`
+- `app/zhiyuan_agent/tools.py::confirm_pending`
 
-- `collect_plan_context_inputs`
-- `plan_next_action`
-- `execute_plan_action`
+其中：
 
-局部查询：
+- 查询、审查和方案调整预览都由 4.0 direct 工具直接承接。
+- 方案调整只生成待确认预览，不直接修改当前方案。
+- 用户采纳后由 `confirm_pending` 执行结构化 `action_family + atomic_actions` payload。
 
-- `query_volunteer_plan`
+## 4. 当前结构状态
 
-## 4. 当前真实问题落点
+当前普通会话已收敛到 `ZhiyuanAgent` direct 链路：
 
-### 4.1 Explore / Intent 边界问题
+- System prompt 与主编排规则集中在 `app/zhiyuan_agent/prompt.py`。
+- 主 agent 可见工具为 `read_state`、`answer_policy`、`compare_entities`、`explore_topic`、`preview_intent_change`、`preview_plan_action`、`query_plan`、`review_plan`、`confirm_pending`。
+- 旧 `ChatAgent`、旧 `intent_preview_tool.py` wrapper、旧 `planning_workflow_tool.py`、旧 `plan_execution_tool.py`、旧 `plan_query_tool.py` 均不再作为运行时入口。
+- Skill 文档只保留语义边界说明，不再作为 4.0 direct 主链路的提示词来源。
 
-典型现象：
+## 5. 当前剩余风险
 
-- 用户说“电子信息工程适合我吗”
-- 模型实际调用了 `analyze_volunteer_intent_change(recovery_scope=major)`
-- 这本来应该属于 `Explore + major`
+当前剩余风险集中在模型语义判断和结构化 payload 质量：
 
-这说明问题不是单点的，而是两层叠加：
-
-1. 模型会偶发误选低层 Intent tool
-2. 低层 tool 之前默认会落 `planEditCache`，把误路由放大成状态污染
-
-### 4.2 当前已做的修复
-
-在 `app/tools/intent_state_tool.py` 已加副作用边界：
-
-- 对“X适合我吗 / 适不适合我 / 我适合X吗”这类 fit question
-- 即使误路由到了 `analyze_volunteer_intent_change`
-- 也会被强制降成 `interest` 只读分析
-- 且不再写 `planEditCache`
-
-这层修复的定位是：
-
-- 不解决“模型一定选对工具”
-- 先解决“模型选错工具会污染状态”
-
-### 4.3 当前 skill / prompt 层已补的边界
-
-已补充：
-
-- `Explore + major` 的明确例子：
-  - “电子信息工程适合我吗”
-  - “计算机类适不适合我”
-  - “网络与新媒体值不值得继续看”
-- `intent-detect` 明确声明：
-  - 这类问句不属于 Intent
-- `major-chat` 明确声明：
-  - 这类“适合我吗”问题不应只做纯专业科普，应转 Explore
-
-## 5. 当前结构状态
-
-这一轮之后，主 agent 的 Intent tool surface 已收窄为高层语义入口：
-
-- Explore 只暴露 `analyze_current_*`
-- Intent 只暴露 `preview_current_*_intent_confirmation` 和通用兜底 `preview_current_intent_confirmation`
-- `analyze_volunteer_intent_change` 不再作为主 agent 的直接裸入口
-
-这样做的意义是：
-
-- 模型仍然做语义判断
-- skill 仍然提供边界和例子
-- 但模型看到的 tool 已更贴近语义层，不再默认直连低层状态分析入口
-
-当前剩余风险不再是“结构默认就允许误走低层 tool”，而是：
-
-- skill / prompt 还需要继续提高主题判断稳定性
-- wrapper 内部依赖的低层抽取与关系分析仍要持续验证场景覆盖
-- 个别历史会话可能带着旧缓存或旧上下文污染结果
-- `chat_agent` 模块本身也不再为了旧测试额外挂出 `extract_city_intent / extract_major_intent / extract_school_intent` 这类低层 extractor，主 agent 的可见 surface 只围绕高层语义工具验证
+- 口语化、指代性、多诉求混合表达仍需要通过 prompt/schema 和真实回归持续校准。
+- `intent_state_tool` 仍是确认后的底层应用能力，需要继续验证与 4.0 pending/confirm 协议一致。
+- `explore_followup_tool` 仍服务前端 actionType 兼容，只允许从 active pending 读取来源；`plan_analyze` 分支只委托 4.0 `query_plan` 做只读承接，不得回到旧 plan chain。
+- 历史文档和旧 changelog 中仍可能出现 3.x 工具名，只作为历史记录，不应作为当前实现入口。
 
 ## 6. 建议的下一步优化方向
 
-### 6.1 继续补 prompt / skill
+### 6.1 继续补 prompt / schema / 回归
 
-当前结构收敛已经完成，下一步重点变成提高模型在高层入口之间的选择稳定性：
+下一步重点仍是提高模型在 4.0 高层工具之间的选择稳定性：
 
-- Explore 题稳走 `analyze_current_*`
-- Intent 题稳走对应主题的 `preview_current_*_intent_confirmation`
-- Plan 题稳走 `collect_plan_context_inputs -> plan_next_action -> execute_plan_action`
+- Explore 题稳定走 `explore_topic` / `compare_entities` / `answer_policy`。
+- Intent 题稳定走 `preview_intent_change`。
+- Plan 查询、审查、调整稳定走 `query_plan` / `review_plan` / `preview_plan_action`。
 
-这类工作仍然应该落在：
+这类工作应落在 `prompt.py`、工具 schema、结构化 payload 校验和真实对话回归里，不重新引入 service 层中文字符串分流。
 
-- `chat_agent` 总指令
-- 各主题 skill 的边界说明
-- 场景回归验证
+### 6.2 继续清理旧说明和资产
 
-而不是重新把路由前移到 service 规则层。
-
-### 6.2 持续补 wrapper / 低层能力覆盖
-
-接下来更值得做的是：
-
-- 补 wrapper 级单测，确保主题路由和副作用边界稳定
-- 补低层 intent relation / candidate 匹配能力，尤其是专业组内嵌套专业项
-- 补 plan preview -> pending -> confirm -> apply 的闭环验证
-
-### 6.3 不建议方向：service 层前置规则分流
-
-这类做法虽然能快速兜住个别问题，但会有三个副作用：
-
-- 主路由从模型转移到规则
-- 语义边界会重复存在于 service / prompt / skill / tool 多层
-- 后面问题越修越碎
-
-因此 service 层只适合做：
-
-- 执行确认 guard
-- 副作用兜底
-- 极小范围的状态一致性保护
-
-不适合接管 Explore / Intent / Plan 主分类。
-
-## 7. 推荐的目标结构
-
-推荐把这一层收成下面的形式：
-
-1. 模型先在 skill / prompt 引导下判断 `Explore / Intent / Plan`
-2. 再判断 `career / major / school / region`
-3. 只调用对应层级的高层 tool
-4. 高层 tool 内部再调用低层抽取、状态、关系分析、执行能力
-5. 低层 tool 自带副作用 guard，防止误路由把状态写脏
-
-可以把它理解成：
-
-- `Agent / Skill` 决定“要做什么”
-- `High-level Tool` 决定“这层语义用哪条业务链”
-- `Low-level Tool` 决定“链路里怎么抽取 / 读状态 / 写状态 / 算关系”
-
-## 8. 验证建议
-
-这一层优化完成后，验证应分两档：
-
-### 8.1 结构验证
-
-看日志是否仍频繁误走低层 tool：
-
-- “电子信息工程适合我吗”
-- “计算机类适不适合我”
-- “网络与新媒体值不值得继续看”
-- “体制内适不适合我”
-
-### 8.2 产品验证
-
-看用户面是否符合预期：
-
-- 回复内容像 Explore，不像 Intent 确认卡
-- backend `planEditCache` 不被污染
-- 后续如果用户说“那就把这个记成偏好”，再进入 Intent 链
-
-## 9. 关于 session 验证
-
-像 `session 60` 这类已经真实做过生成、替换、重排、补齐验证的会话，整体 plan 状态已经被多次修改。
-
-因此：
-
-- 它仍可用于“单点路由 / 单轮状态污染”验证
-- 但不适合继续承担“纯净语义路径”验证
-
-后续涉及 Explore / Intent 边界的验证，优先使用：
-
-- 新 backend session
-- 或至少是后端 `planEditCache`、本地 agent history 都清空过的 session
+- 当前质量门禁和 hard-cut audit 已覆盖主链路旧入口防回退。
+- 后续继续清理非 gate 的历史说明、旧样例和不再执行的兼容分支。
+- 清理时优先删除不可达旧代码，不保留需要长期维护的并行实现。

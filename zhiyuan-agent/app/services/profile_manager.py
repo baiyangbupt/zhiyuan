@@ -16,7 +16,7 @@ from app.util.code_enrichment import add_codes_to_profile_async
 def _normalize_string_list(values: Any) -> list[str]:
     """Normalize backend/raw list values to a plain string list.
 
-    Some legacy or malformed profile payloads may contain dict items like
+    Some backend or malformed profile payloads may contain dict items like
     {"value": "北京"} or {"label": "北京"} which are not hashable.
     """
     if not values:
@@ -44,7 +44,7 @@ def _normalize_string_list(values: Any) -> list[str]:
 
 
 def _normalize_batch(batch: Any) -> str:
-    """Normalize batch payload to the legacy batch code string."""
+    """Normalize batch payload to the backend batch code string."""
     if not batch:
         return "01"
     if isinstance(batch, str):
@@ -583,7 +583,7 @@ class ProfileManager:
         """Replace positive major intent with an exclusive selected scope.
 
         This is used for confirmed ``only_keep`` constraints. It deliberately
-        does not merge with old positive major preferences; otherwise historical
+        does not merge with existing positive major preferences; otherwise historical
         soft preferences continue to affect recommendation and review after the
         user has explicitly limited the scope.
         """

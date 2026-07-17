@@ -20,7 +20,14 @@
       "ordered_plan_final_action"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "16",
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": [
+        "orderedPlan",
+        "formalPlan"
+      ]
+    },
     "clearBackendPlanningIntentState": true,
     "promptDefaults": {
       "assertNotContains": [
@@ -52,7 +59,7 @@
   "cases": [
     {
       "name": "400-v173-position-unit-remove-final-action",
-      "sessionId": "9904731",
+      "sessionId": "9904941",
       "coverage": [
         "remove_units",
         "position_reference",
@@ -118,7 +125,8 @@
             {
               "key": "planningState",
               "path": "orderedPlanState.units",
-              "lengthLessThanBefore": true
+              "lengthLessThanBefore": true,
+              "minLength": 1
             },
             {
               "key": "planningState",
@@ -131,7 +139,8 @@
     },
     {
       "name": "400-v173-targeted-high-tuition-replace-final-action",
-      "sessionId": "9904732",
+      "sessionId": "9904942",
+      "cloneBackendStateFromSessionId": "131",
       "coverage": [
         "replace_units",
         "targeted_current_plan_item",
@@ -140,7 +149,7 @@
       ],
       "prompts": [
         {
-          "prompt": "青岛理工那个中外合作建筑太贵了，换个便宜点的先看看",
+          "prompt": "青岛理工那个中外合作财务管理太贵了，换个便宜点的先看看",
           "assertContainsAny": [
             "青岛理工",
             "中外合作",
@@ -209,7 +218,7 @@
     },
     {
       "name": "400-v173-position-unit-move-final-action",
-      "sessionId": "9904733",
+      "sessionId": "9904943",
       "coverage": [
         "move_ordered_unit",
         "position_reference",
@@ -284,7 +293,7 @@
     },
     {
       "name": "400-v173-school-level-sort-final-action",
-      "sessionId": "9904734",
+      "sessionId": "9904944",
       "coverage": [
         "sort_ordered_plan",
         "school_level",
@@ -356,7 +365,7 @@
     },
     {
       "name": "400-v173-review-followup-high-tuition-replace-final-action",
-      "sessionId": "9904735",
+      "sessionId": "9904945",
       "coverage": [
         "review_then_plan_action",
         "replace_units",

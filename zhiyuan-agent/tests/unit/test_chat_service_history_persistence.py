@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,12 +24,11 @@ from app.service import (
     _create_pending_intent_confirmation_result_from_preview_payload,
     _pending_confirmation_primary_reply_from_card,
     _load_pending_confirmation_state,
-    _load_pending_confirmation_state_at_version,
-    _pending_version_from_tool_payload,
     _save_pending_confirmation_state,
     build_runtime_history,
     _normalize_pending_intent_reply,
     _pending_confirmation_from_state,
+    _pending_claim_expired,
     _format_intent_card_impact,
     _normalize_downgraded_intent_preview_reply,
     _normalize_false_apology_reply,
@@ -49,6 +49,7 @@ from app.service import (
     _semantic_intent_decision_requires_readonly,
     _extract_recent_intent_analysis_payload,
     _guard_unbacked_plan_confirmation_reply,
+    _latest_terminal_reference_reply,
     _constraint_user_goal_fix_candidate_from_preview,
     _enforce_single_pending_confirmation_followup,
     _pending_short_text_action,
@@ -83,14 +84,13 @@ def test_no_pending_short_text_action_is_narrower_than_active_pending_actions():
     assert _no_pending_short_text_action("那就只看公办吧") == ""
 
 
-def test_pending_confirmation_loads_latest_version_and_saves_same_version():
+def test_pending_confirmation_loads_and_saves_dedicated_revision():
     latest_response = {
         "code": 0,
         "data": {
             "chatSessionId": 9904301,
-            "dataKey": "pendingConfirmation",
-            "dataType": "JSON_OBJECT",
-            "dataVersion": 248,
+            "pendingId": "pending-versioned",
+            "revision": 7,
             "dataValue": json.dumps(
                 {
                     "type": "pendingConfirmation",
@@ -115,17 +115,48 @@ def test_pending_confirmation_loads_latest_version_and_saves_same_version():
         state = asyncio.run(_load_pending_confirmation_state("9904301"))
         assert state is not None
         assert state["pendingId"] == "pending-versioned"
-        assert state["_extraDataVersion"] == 248
+        assert state["_pendingRevision"] == 7
         applied_state = dict(state)
         applied_state["status"] = "applied"
         asyncio.run(_save_pending_confirmation_state("9904301", applied_state))
 
     save_mock.assert_awaited_once()
     assert save_mock.await_args.args[:2] == ("9904301", applied_state)
-    assert save_mock.await_args.kwargs["version"] == 248
+    assert save_mock.await_args.kwargs == {}
 
 
-def test_pending_confirmation_load_falls_back_to_version_zero():
+def test_pending_confirmation_loads_claim_lease_metadata():
+    expires_at = int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp() * 1000)
+    response = {
+        "code": 0,
+        "data": {
+            "pendingId": "pending-lease",
+            "revision": 9,
+            "status": "applying",
+            "claimToken": "claim-owner",
+            "claimExpiresAt": expires_at,
+            "dataValue": {
+                "pendingId": "pending-lease",
+                "kind": "plan_mutation",
+                "status": "applying",
+                "actionFamily": "remove_units",
+                "executionPayload": {
+                    "action_family": "remove_units",
+                    "atomic_actions": [{"action_type": "remove_units", "unit_ids": ["u1"]}],
+                },
+            },
+        },
+    }
+
+    with patch("app.service.get_last_pending_confirmation", AsyncMock(return_value=response)):
+        state = asyncio.run(_load_pending_confirmation_state("9904301"))
+
+    assert state["_pendingClaimToken"] == "claim-owner"
+    assert state["_pendingClaimExpiresAt"] == expires_at
+    assert _pending_claim_expired(state) is False
+
+
+def test_pending_confirmation_empty_latest_does_not_resurrect_version_zero():
     pending = {
         "type": "pendingConfirmation",
         "pendingId": "pending-v0",
@@ -135,49 +166,20 @@ def test_pending_confirmation_load_falls_back_to_version_zero():
         "executionPayload": {"merged": {"school_intents": {"negative_school_nature": ["民办"]}}},
     }
 
-    with patch("app.service.get_last_pending_confirmation", AsyncMock(return_value={"code": 0, "data": {}})), \
-            patch(
-                "app.service.get_pending_confirmation",
-                AsyncMock(return_value={"code": 0, "data": {"pendingConfirmation": pending}}),
-            ):
+    with patch("app.service.get_last_pending_confirmation", AsyncMock(return_value={"code": 0, "data": {}})):
         state = asyncio.run(_load_pending_confirmation_state("9904302"))
 
-    assert state == pending
+    assert state is None
 
 
-def test_pending_confirmation_loads_tool_return_version_before_latest_empty():
-    pending = {
-        "type": "pendingConfirmation",
-        "pendingId": "pending-v0-direct",
-        "kind": "intent_change",
-        "status": "active",
-        "actionFamily": "apply_selected_intents",
-        "executionPayload": {"merged": {"school_intents": {"negative_school_nature": ["民办"]}}},
-    }
-
+def test_pending_confirmation_latest_lookup_failure_does_not_resurrect_version_zero():
     with patch(
-        "app.service.get_pending_confirmation",
-        AsyncMock(return_value={"code": 0, "data": {"pendingConfirmation": pending}}),
-    ) as get_mock:
-        state = asyncio.run(_load_pending_confirmation_state_at_version("9904303", 0))
+        "app.service.get_last_pending_confirmation",
+        AsyncMock(side_effect=TimeoutError("latest lookup timed out")),
+    ):
+        state = asyncio.run(_load_pending_confirmation_state("9904302"))
 
-    assert state == pending
-    get_mock.assert_awaited_once_with("9904303", version=0)
-
-
-def test_pending_version_from_tool_payload_accepts_zero_version():
-    assert (
-        _pending_version_from_tool_payload(
-            {
-                "data": {
-                    "pending_id": "pending-v0-direct",
-                    "pending_version": 0,
-                    "pending_created": True,
-                }
-            }
-        )
-        == 0
-    )
+    assert state is None
 
 
 
@@ -540,6 +542,7 @@ def test_pending_confirmation_from_state_preserves_composite_proposal():
         "intent_updates": [{"constraintIntentType": "only_keep"}],
     }
     pending_state = {
+        "pendingId": "pending-composite",
         "status": "active",
         "kind": "intent_change",
         "actionFamily": "apply_selected_intents",
@@ -560,6 +563,7 @@ def test_pending_confirmation_from_state_preserves_composite_proposal():
 
 def test_pending_confirmation_from_state_accepts_plan_generation():
     pending_state = {
+        "pendingId": "pending-plan-generation",
         "status": "active",
         "kind": "plan_generation",
         "actionFamily": "regenerate_order",
@@ -578,6 +582,98 @@ def test_pending_confirmation_from_state_accepts_plan_generation():
     assert pending is not None
     assert pending.kind == "plan_generation"
     assert pending.action_family == "regenerate_order"
+
+
+def test_pending_confirmation_from_state_preserves_pending_id():
+    pending_state = {
+        "pendingId": "pending-current-snapshot",
+        "status": "active",
+        "kind": "intent_change",
+        "actionFamily": "apply_selected_intents",
+        "executionPayload": {"merged": {"city_intents": {"negative_province": ["山东"]}}},
+    }
+
+    pending = _pending_confirmation_from_state(pending_state)
+
+    assert pending is not None
+    assert pending.pending_id == "pending-current-snapshot"
+
+
+def test_unexpired_applying_pending_is_not_projected_for_second_execution():
+    pending_state = {
+        "pendingId": "pending-applying",
+        "kind": "plan_mutation",
+        "status": "applying",
+        "actionFamily": "remove_units",
+        "executionPayload": {
+            "action_family": "remove_units",
+            "atomic_actions": [{"action_type": "remove_units", "unit_ids": ["u1"]}],
+        },
+        "_pendingClaimExpiresAt": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+    }
+
+    assert _pending_claim_expired(pending_state) is False
+    assert _pending_confirmation_from_state(pending_state) is None
+
+
+def test_expired_applying_pending_is_projected_for_lease_recovery():
+    pending_state = {
+        "pendingId": "pending-applying-expired",
+        "kind": "plan_mutation",
+        "status": "applying",
+        "actionFamily": "remove_units",
+        "executionPayload": {
+            "action_family": "remove_units",
+            "atomic_actions": [{"action_type": "remove_units", "unit_ids": ["u1"]}],
+        },
+        "_pendingClaimExpiresAt": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+    }
+
+    assert _pending_claim_expired(pending_state) is True
+    pending = _pending_confirmation_from_state(pending_state)
+    assert pending is not None
+    assert pending.pending_id == "pending-applying-expired"
+
+
+@pytest.mark.parametrize(
+    "pending_state",
+    [
+        {
+            "status": "active",
+            "kind": "legacy_intent",
+            "pendingId": "pending-legacy-kind",
+            "actionFamily": "apply_selected_intents",
+            "executionPayload": {"merged": {"city_intents": {"negative_area": ["偏远地区"]}}},
+        },
+        {
+            "status": "active",
+            "kind": "plan_mutation",
+            "pendingId": "pending-legacy-payload",
+            "actionFamily": "remove_units",
+            "executionPayload": {"planPayload": {"unitIds": ["u1"]}},
+        },
+        {
+            "status": "failed",
+            "kind": "intent_change",
+            "pendingId": "pending-failed",
+            "actionFamily": "apply_selected_intents",
+            "executionPayload": {"merged": {"city_intents": {"negative_area": ["偏远地区"]}}},
+        },
+    ],
+)
+def test_pending_confirmation_from_state_rejects_non_executable_snapshots(pending_state):
+    assert _pending_confirmation_from_state(pending_state) is None
+
+
+def test_pending_confirmation_from_state_rejects_anonymous_active_pending():
+    pending_state = {
+        "status": "active",
+        "kind": "intent_change",
+        "actionFamily": "apply_selected_intents",
+        "executionPayload": {"merged": {"city_intents": {"negative_province": ["山东"]}}},
+    }
+
+    assert _pending_confirmation_from_state(pending_state) is None
 
 
 def test_selected_data_with_existing_positive_context_augments_negative_only_preview():
@@ -725,7 +821,7 @@ def test_chat_service_needs_plan_first_guard_runs_before_zhiyuan_direct(
                 },
             })), \
             patch("app.service.save_pending_confirmation", save_pending_mock), \
-            patch("app.service.get_pending_confirmation", get_pending_mock):
+            patch("app.service.get_last_pending_confirmation", get_pending_mock):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(
             service.handle_message(
@@ -1477,11 +1573,11 @@ def _pending_confirmation_store(initial: dict | None = None):
     if initial is not None:
         state["value"] = dict(initial)
 
-    async def save(_session_id, data_value, version=0):
+    async def save(_session_id, data_value):
         state["value"] = dict(data_value)
         return {"code": 0, "data": {"pendingConfirmation": state["value"]}}
 
-    async def get(_session_id, version=0):
+    async def get(_session_id):
         return {"code": 0, "data": {"pendingConfirmation": state.get("value")}}
 
     return state, AsyncMock(side_effect=save), AsyncMock(side_effect=get)
@@ -2205,6 +2301,46 @@ def test_unbacked_plan_confirmation_guard_blocks_toolless_fake_confirm_copy():
     assert "确认当前有效预览后才会执行" in guarded
 
 
+def test_unbacked_plan_confirmation_guard_preserves_readonly_reply_with_active_pending():
+    reply = (
+        "当前方案按专业命中4个志愿。这只是当前查询到的局部结果；"
+        "如果要继续调整，我会先给你一版调整预览。"
+    )
+
+    guarded = _guard_unbacked_plan_confirmation_reply(reply, has_active_pending=True)
+
+    assert guarded == reply
+    assert "还没有生成可确认的调整预览" not in guarded
+
+
+def test_latest_terminal_reference_reply_uses_authoritative_no_pending_message():
+    message = "这次我先按参考方向理解：地域参考：北京、天津。不会记录，也不会调整方案。"
+    messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="preview_intent_change",
+                    tool_call_id="reference-preview",
+                    content=json.dumps(
+                        {
+                            "data": {
+                                "reason": "reference_only_semantic_requirements",
+                                "pending_created": False,
+                                "requires_confirmation": False,
+                            },
+                            "next_step": "respond",
+                            "message": message,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
+        )
+    ]
+
+    assert _latest_terminal_reference_reply(messages) == message
+
+
 def test_plan_status_timeout_fallback_uses_structured_user_copy():
     reply = _build_plan_timeout_fallback_reply(
         {
@@ -2702,7 +2838,7 @@ def test_plan_mutation_card_intent_summary_preserves_user_facing_major_alias():
             patch("app.service.get_planning_state", AsyncMock(return_value=_planning_state_response(12))), \
             patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)), \
             patch("app.service.save_pending_confirmation", save_pending_mock), \
-            patch("app.service.get_pending_confirmation", get_pending_mock):
+            patch("app.service.get_last_pending_confirmation", get_pending_mock):
         pending_result = asyncio.run(_create_pending_intent_confirmation_result_from_preview_payload("35-plan", preview_payload))
         card = pending_result.card
 
@@ -2766,7 +2902,7 @@ def test_plan_mutation_card_drops_excluded_major_from_only_keep_target_scopes():
             patch("app.service.get_planning_state", AsyncMock(return_value=_planning_state_response(12))), \
             patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)) as proposal_mock, \
             patch("app.service.save_pending_confirmation", save_pending_mock), \
-            patch("app.service.get_pending_confirmation", get_pending_mock):
+            patch("app.service.get_last_pending_confirmation", get_pending_mock):
         pending_result = asyncio.run(_create_pending_intent_confirmation_result_from_preview_payload("35-conflict", preview_payload))
         card = pending_result.card
 
@@ -2894,7 +3030,7 @@ def test_chat_service_constraint_preview_with_plan_hit_compiled_user_goal_fix_tr
             patch("app.service.get_planning_state", AsyncMock(return_value=_planning_state_response(12))), \
             patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)), \
             patch("app.service.save_pending_confirmation", save_pending_mock), \
-            patch("app.service.get_pending_confirmation", get_pending_mock):
+            patch("app.service.get_last_pending_confirmation", get_pending_mock):
         pending_result = asyncio.run(_create_pending_intent_confirmation_result_from_preview_payload("34", preview_payload))
         card = pending_result.card
 
@@ -2945,7 +3081,7 @@ def test_chat_service_constraint_preview_ready_without_actions_blocks_compiled_f
             patch("app.service.get_planning_state", AsyncMock(return_value=_planning_state_response(12))), \
             patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)), \
             patch("app.service.save_pending_confirmation", save_pending_mock), \
-            patch("app.service.get_pending_confirmation", get_pending_mock):
+            patch("app.service.get_last_pending_confirmation", get_pending_mock):
         pending_result = asyncio.run(_create_pending_intent_confirmation_result_from_preview_payload("34-gap", preview_payload))
         card = pending_result.card
 

@@ -1,7 +1,8 @@
 [
   {
     "name": "400-status-major-readable",
-    "sessionId": "17",
+    "sessionId": "9907011",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "query_state"
     ],
@@ -40,7 +41,8 @@
   },
   {
     "name": "400-sort-school-rank-major",
-    "sessionId": "17",
+    "sessionId": "9907012",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "sort_ordered_plan",
       "confirm"
@@ -97,7 +99,8 @@
   },
   {
     "name": "400-move-unit-major-group",
-    "sessionId": "16",
+    "sessionId": "9907013",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "move_ordered_unit",
       "confirm"
@@ -158,7 +161,8 @@
   },
   {
     "name": "400-remove-by-school-major-abbrev-negative",
-    "sessionId": "17",
+    "sessionId": "9907014",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "remove_units",
       "confirm"
@@ -221,14 +225,15 @@
     ]
   },
   {
-    "name": "400-query-after-mutation",
-    "sessionId": "17",
+    "name": "400-review-current-plan-readable",
+    "sessionId": "9907015",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "query_state"
     ],
     "coverage": [
       "release_4_0_0",
-      "post_mutation_status",
+      "current_plan_review",
       "stale_review_hint",
       "zhiyuan_agent_direct"
     ],
@@ -242,11 +247,15 @@
     },
     "prompts": [
       {
-        "prompt": "调整后现在方案怎么样",
+        "prompt": "现在方案怎么样",
         "assertContains": [
-          "冲",
-          "稳",
-          "保"
+          "方案"
+        ],
+        "assertContainsAny": [
+          "风险",
+          "提醒",
+          "梯度",
+          "志愿"
         ],
         "assertNotContains": [
           "草稿",

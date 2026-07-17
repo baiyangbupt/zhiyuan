@@ -58,18 +58,18 @@
   },
   {
     "name": "400-quality-plan-named-move-preview-direct",
-    "sessionId": "17",
+    "sessionId": "16",
     "prompts": [
       {
-        "prompt": "把青岛城市学院的国际经济与贸易改到第3位",
+        "prompt": "把电子科技大学中山学院第101组的光电信息科学与工程改到第3位",
         "assertContains": [
           "确认"
         ],
         "assertContainsAny": [
           "移动",
           "第3位",
-          "青岛城市学院",
-          "国际经济与贸易"
+          "电子科技大学中山学院",
+          "光电信息科学与工程"
         ],
         "assertNotContains": [
           "已直接移动",
@@ -87,11 +87,11 @@
     "sessionId": "17",
     "prompts": [
       {
-        "prompt": "把华中农业大学的建筑类加进来",
+        "prompt": "把厦门大学嘉庚学院的建筑学加进来",
         "assertContains": [
           "确认",
-          "华中农业大学",
-          "建筑类"
+          "厦门大学嘉庚学院",
+          "建筑学"
         ],
         "assertContainsAny": [
           "加入",

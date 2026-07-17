@@ -1006,6 +1006,27 @@ _CURRENT_PLAN_ADD_MUTATION_MARKERS = (
     "纳入方案",
 )
 
+_CANDIDATE_QUERY_SCOPE_MARKERS = (
+    "候选",
+    "可选范围",
+    "可选志愿",
+)
+
+
+def _content_is_pre_score_adjustment_policy_question(compact: str) -> bool:
+    """Keep pre-score planning questions out of the current-plan mutation guard."""
+
+    if any(marker in compact for marker in _CURRENT_PLAN_REFERENCE_MARKERS):
+        return False
+    has_pre_score_context = "模考" in compact and any(
+        marker in compact for marker in ("批次线", "出分", "高考成绩", "一分一段")
+    )
+    has_future_adjustment_question = any(
+        marker in compact for marker in ("后面咋调整", "后面怎么调整", "出分后咋调整", "出分后怎么调整")
+    )
+    return has_pre_score_context and has_future_adjustment_question
+
+
 _UNSUPPORTED_PIN_LOCK_ACTION_MARKERS = (
     "锁定",
     "固定",
@@ -1380,6 +1401,8 @@ def resolve_needs_plan_first_guard(
         return NeedsPlanFirstResolution()
     if any(marker in compact for marker in _PLAN_GENERATION_MARKERS):
         return NeedsPlanFirstResolution()
+    if _content_is_pre_score_adjustment_policy_question(compact):
+        return NeedsPlanFirstResolution()
     if any(marker in compact for marker in _FUTURE_REFERENCE_MARKERS) and not any(
         marker in compact for marker in _CURRENT_PLAN_REFERENCE_MARKERS
     ):
@@ -1391,6 +1414,14 @@ def resolve_needs_plan_first_guard(
         any(marker in compact for marker in _CURRENT_PLAN_MUTATION_MARKERS)
         or has_current_plan_add
     )
+    # A mixed readonly question about candidates and the formal plan still has
+    # an answerable candidate scope. Let the Agent query that scope and report
+    # the missing formal plan instead of blocking the whole turn up front.
+    if (
+        not has_current_plan_mutation
+        and any(marker in compact for marker in _CANDIDATE_QUERY_SCOPE_MARKERS)
+    ):
+        return NeedsPlanFirstResolution()
     if not ((has_current_plan_reference and has_plan_scope) or has_current_plan_mutation):
         return NeedsPlanFirstResolution()
     target_issues: list[str] = []

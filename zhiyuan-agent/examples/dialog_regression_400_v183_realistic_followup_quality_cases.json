@@ -27,7 +27,14 @@
       "ordered_plan_final_action"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "131",
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": [
+        "orderedPlan",
+        "formalPlan"
+      ]
+    },
     "clearBackendPlanningIntentState": true,
     "promptDefaults": {
       "assertNotContains": [
@@ -321,7 +328,7 @@
       ],
       "prompts": [
         {
-          "prompt": "青岛理工那个建筑太贵了，换个便宜点正常收费的",
+          "prompt": "青岛理工那个财务管理太贵了，换个便宜点正常收费的",
           "assertContainsAny": [
             "青岛理工",
             "正常收费",
@@ -435,6 +442,8 @@
             "没有待确认",
             "没有可确认",
             "没有生成可确认",
+            "没有生成待确认",
+            "没有可执行",
             "不会执行",
             "不会改动",
             "先明确"

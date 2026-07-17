@@ -100,6 +100,7 @@ class BaseAgent(Generic[T]):
         skill_dirs: list[str] | None = None,
         deps_type: type[Any] | None = None,
         expose_skill_tools: bool = False,
+        capabilities: list[Any] | None = None,
     ):
         self.llm_client = llm_client
         self.skills_toolset: AbstractToolset | None = None
@@ -122,6 +123,7 @@ class BaseAgent(Generic[T]):
             toolsets=toolsets,
             model_settings=llm_client.model_settings,
             deps_type=deps_type,
+            capabilities=capabilities or [],
         )
 
         # 注入技能列表到 system prompt。主对话可以只保留技能边界摘要，
@@ -219,6 +221,7 @@ class BaseAgent(Generic[T]):
         ) as agent_run:
             node = agent_run.next_node
             node_count = 0
+            current_turn_tool_returns: list[ToolReturnPart] = []
             while not isinstance(node, End):
                 node_count += 1
                 node_name = type(node).__name__
@@ -319,6 +322,8 @@ class BaseAgent(Generic[T]):
                     raise
 
                 direct_tool_returns = self._extract_tool_returns_from_next_node(node)
+                if direct_tool_returns:
+                    current_turn_tool_returns.extend(direct_tool_returns)
                 self._record_node_observability(
                     observability,
                     node_name=node_name,
@@ -334,13 +339,7 @@ class BaseAgent(Generic[T]):
                 ):
                     partial_messages = await self._resolve_messages(agent_run.all_messages())
                     tool_request = getattr(node, "request", None)
-                    render_tool_returns = self._extract_tool_returns_from_messages(partial_messages)
-                    if isinstance(tool_request, ModelRequest):
-                        render_tool_returns.extend(
-                            part for part in tool_request.parts if isinstance(part, ToolReturnPart)
-                        )
-                    if not render_tool_returns:
-                        render_tool_returns = list(direct_tool_returns)
+                    render_tool_returns = list(current_turn_tool_returns)
                     direct_output = self.render_direct_tool_output(tool_names, render_tool_returns, deps)
                     if direct_output:
                         output = self._sanitize_model_output(direct_output)
@@ -421,13 +420,6 @@ class BaseAgent(Generic[T]):
         if not isinstance(request, ModelRequest):
             return []
         return [part for part in request.parts if isinstance(part, ToolReturnPart)]
-
-    def _extract_tool_returns_from_messages(self, messages: list[Any]) -> list[ToolReturnPart]:
-        returns: list[ToolReturnPart] = []
-        for message in messages or []:
-            parts = list(getattr(message, "parts", []) or [])
-            returns.extend(part for part in parts if isinstance(part, ToolReturnPart))
-        return returns
 
     def _init_observability(
         self,
@@ -701,7 +693,7 @@ class BaseAgent(Generic[T]):
         return messages_result
 
     def _normalize_message_history(self, message_history: list[Any] | None) -> list[Any] | None:
-        """Accept legacy {role, content} history and pass ModelMessage objects to pydantic-ai."""
+        """Accept {role, content} history and pass ModelMessage objects to pydantic-ai."""
         if not message_history:
             return message_history
 

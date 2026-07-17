@@ -358,9 +358,7 @@ async def ws_chat(ws: WebSocket):
 
 _INPUT_TYPE_MAP = {
     "text": "chat",
-    "planEdit": "chat",  # legacy compat: historical soft-intent confirm path
     "planEditSelect": "planEditSelect",
-    "intentDetect": "chat",
     "intentDetectSelect": "intentSelect",
     "intentSelect": "intentSelect",
     "pendingConfirmation": "pendingConfirmation",

@@ -9,6 +9,7 @@ BOT_ID="${ZHIYUAN_BOT_ID:-1}"
 SESSION_ID="${ZHIYUAN_SESSION_ID:-}"
 SERVER_PORT="${ZHIYUAN_SERVER_PORT:-18090}"
 WEB_PORT="${ZHIYUAN_WEB_PORT:-3001}"
+WEB_BASE_PATH="${ZHIYUAN_WEB_BASE_PATH-/assistant-pc}"
 AGENT_PORT="${ZHIYUAN_AGENT_PORT:-18091}"
 RANK_PORT="${ZHIYUAN_RANK_PORT:-18092}"
 RANK_URL="${ZHIYUAN_RANK_URL:-}"
@@ -62,6 +63,7 @@ Usage:
 Environment overrides:
   ZHIYUAN_SERVER_PORT=18090
   ZHIYUAN_WEB_PORT=3001
+  ZHIYUAN_WEB_BASE_PATH=/assistant-pc (set empty for local dev)
   ZHIYUAN_AGENT_PORT=18091
   ZHIYUAN_RANK_PORT=18092
   ZHIYUAN_TENANT_ID=1
@@ -86,6 +88,14 @@ done
 if [ "$MODE" = "remote" ] && [ -z "$BASE_URL" ]; then
   echo "--remote requires a base URL" >&2
   exit 2
+fi
+
+if [ -n "$WEB_BASE_PATH" ]; then
+  case "$WEB_BASE_PATH" in
+    /*) ;;
+    *) WEB_BASE_PATH="/${WEB_BASE_PATH}" ;;
+  esac
+  WEB_BASE_PATH="${WEB_BASE_PATH%/}"
 fi
 
 RESULTS=()
@@ -234,10 +244,14 @@ else
   WS_BASE="$(websocket_url_from_base "$BASE_URL")"
 fi
 
-curl_check "web session page" "${WEB_BASE}/assistant-pc/session" "assistant-pc"
-curl_check "web detail page" "${WEB_BASE}/assistant-pc/sessionDetailV2" "assistant-pc"
+curl_check "web session page" "${WEB_BASE}${WEB_BASE_PATH}/session" "__NEXT_DATA__"
+curl_check "web detail page" "${WEB_BASE}${WEB_BASE_PATH}/sessionDetailV2" "__NEXT_DATA__"
 if [ "$MODE" = "local" ]; then
-  file_contains_check "web basePath manifest" "zhiyuan-web/.next/routes-manifest.json" '"/assistant-pc"'
+  if [ -n "$WEB_BASE_PATH" ]; then
+    file_contains_check "web basePath manifest" "zhiyuan-web/.next/routes-manifest.json" "\"${WEB_BASE_PATH}\""
+  else
+    record "web basePath manifest" "PASS" "development basePath disabled"
+  fi
 fi
 
 curl_check "server health" "${SERVER_BASE}/gaotu-assistant-bot/inner/ops/health" '"status"'

@@ -1,4 +1,4 @@
-"""Follow-up handlers for explore-stage actions."""
+"""Frontend follow-up compatibility handlers for intent analysis cards."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from app.tools.intent_response_tool import (
 )
 from app.util.code_enrichment import normalize_candidate_filters_async
 from app.util.internal_client import (
-    get_pending_confirmation,
+    get_last_pending_confirmation,
     get_planning_state,
     query_planning_candidate_pool,
 )
@@ -158,15 +158,16 @@ async def _query_candidate_base_total(session_id: str) -> int | None:
 
 
 async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
-    """Load the intent payload for legacy explore follow-up actions.
+    """Load the intent payload for frontend follow-up actions.
 
     Active pendingConfirmation is the only executable source. Older explore
     action cards without active pending are treated as expired and must be
     regenerated from a fresh user utterance.
     """
     try:
-        pending_result = await get_pending_confirmation(session_id)
-        pending_data = (pending_result or {}).get("data", {}).get("pendingConfirmation") or {}
+        pending_result = await get_last_pending_confirmation(session_id)
+        pending_payload = (pending_result or {}).get("data") or {}
+        pending_data = pending_payload.get("dataValue") or {}
         if (
             isinstance(pending_data, dict)
             and pending_data.get("status") == "active"

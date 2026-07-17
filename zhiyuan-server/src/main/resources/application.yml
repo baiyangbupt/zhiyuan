@@ -12,6 +12,12 @@ spring:
     password: ${spring.datasource.dynamic.datasource.master.password}
 
 planning:
+  pending-command:
+    retention:
+      enabled: true
+      fixed-delay-ms: 3600000
+      retention-days: 30
+      batch-size: 500
   data-freshness:
     schedule:
       enabled: false

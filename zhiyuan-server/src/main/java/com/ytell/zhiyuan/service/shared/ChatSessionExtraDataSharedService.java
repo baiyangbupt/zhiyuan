@@ -24,6 +24,15 @@ public class ChatSessionExtraDataSharedService extends ServiceImpl<ChatSessionEx
         return this.getBySessionIdAndDataKeyAndVersion(sessionId, dataKey, 0);
     }
 
+    public ChatSessionExtraData lockBySessionIdAndDataKey(Long sessionId, String dataKey) {
+        QueryWrapper<ChatSessionExtraData> queryWrapper = new QueryWrapper<ChatSessionExtraData>();
+        queryWrapper.lambda().eq(ChatSessionExtraData::getChatSessionId, sessionId);
+        queryWrapper.lambda().eq(ChatSessionExtraData::getDataKey, dataKey);
+        queryWrapper.lambda().eq(ChatSessionExtraData::getDataVersion, 0);
+        queryWrapper.last("limit 1 for update");
+        return this.getOne(queryWrapper);
+    }
+
     public ChatSessionExtraData getBySessionIdAndDataKeyAndVersion(Long sessionId, String dataKey, Integer version) {
         QueryWrapper<ChatSessionExtraData> queryWrapper = new QueryWrapper<>();
         queryWrapper.lambda().eq(ChatSessionExtraData::getChatSessionId, sessionId);

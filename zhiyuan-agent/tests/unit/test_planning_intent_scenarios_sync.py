@@ -75,7 +75,8 @@ def _pending_intent_response(
 ) -> dict:
     return {
         "data": {
-            "pendingConfirmation": {
+            "dataVersion": 12,
+            "dataValue": {
                 "status": "active",
                 "kind": "intent_change",
                 "intentMode": intent_mode,
@@ -290,7 +291,7 @@ def test_negative_constraint_ignores_positive_only_constraint_type():
 def test_intent_scenario_interest_followup_candidate_query_with_city_preference_returns_text():
     with (
         patch(
-            "app.tools.explore_followup_tool.get_pending_confirmation",
+            "app.tools.explore_followup_tool.get_last_pending_confirmation",
             new=AsyncMock(return_value=_pending_intent_response({"city_intents": {"province": ["北京"]}})),
         ),
         patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 3200}}}})),
@@ -311,7 +312,7 @@ def test_intent_scenario_interest_followup_candidate_query_with_city_preference_
 def test_intent_scenario_handle_select_plan_analyze_returns_confirmed_analysis_text():
     with (
         patch(
-            "app.tools.explore_followup_tool.get_pending_confirmation",
+            "app.tools.explore_followup_tool.get_last_pending_confirmation",
             new=AsyncMock(return_value=_pending_intent_response({"career_intents": {"positive": ["system_public_service"]}})),
         ),
         patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {}})),
@@ -332,7 +333,7 @@ def test_intent_scenario_handle_select_plan_analyze_returns_confirmed_analysis_t
 def test_intent_scenario_handle_select_prefer_confirm_returns_confirm_text():
     with (
         patch(
-            "app.tools.explore_followup_tool.get_pending_confirmation",
+            "app.tools.explore_followup_tool.get_last_pending_confirmation",
             new=AsyncMock(return_value=_pending_intent_response({"city_intents": {"province": ["北京"]}})),
         ),
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,

@@ -1,0 +1,203 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Explicit admission-tier minimums through one backend Proposal and postcondition.",
+    "notes": "Tier minimums are hard coverage objectives. Exact counts preserve the current plan size unless combined with fill_to_count; unspecified counts remain clarification-only."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "preview_plan_change",
+      "apply_plan_change_proposal"
+    ],
+    "coverage": [
+      "admission_tier_minimum",
+      "preserve_current_count",
+      "single_proposal",
+      "postcondition_verification"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "16",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "action_family",
+        "volunteerId",
+        "软偏好",
+        "草稿"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-tier-protect-minimum-twenty-preserve-count-final-action",
+      "sessionId": "9907420",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": [
+          "orderedPlan",
+          "formalPlan"
+        ]
+      },
+      "prompts": [
+        {
+          "prompt": "当前方案总数不变，保底至少要有20个，先看怎么调整",
+          "assertContains": [
+            "45",
+            "20",
+            "保"
+          ],
+          "assertContainsAny": [
+            "等量替换",
+            "录取档位",
+            "确认"
+          ],
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action",
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "45个专业组",
+            "1条要求",
+            "校验通过"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.targetCount",
+              "equals": 45
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.actualCount",
+              "equals": 45
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementResults.0.domain",
+              "equals": "admission"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementResults.0.key",
+              "equals": "tier"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementResults.0.values",
+              "contains": "保"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementResults.0.minCount",
+              "equals": 20
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementResults.0.matchedCount",
+              "equals": 20
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.requiredCount",
+              "equals": 48
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthEquals": 45
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.coverageRequirements",
+              "contains": {
+                "domain": "admission",
+                "key": "tier",
+                "values": [
+                  "保"
+                ],
+                "minCount": 20
+              }
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-tier-protect-unspecified-count-clarifies",
+      "sessionId": "9907421",
+      "prompts": [
+        {
+          "prompt": "保底再多放一些，其他先别动",
+          "assertContainsAny": [
+            "至少多少",
+            "具体数量",
+            "多少个"
+          ],
+          "assertContains": [
+            "替换"
+          ],
+          "assertNoFollowups": true,
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action"
+          ],
+          "maxToolCallCount": 1
+        }
+      ]
+    }
+  ]
+}

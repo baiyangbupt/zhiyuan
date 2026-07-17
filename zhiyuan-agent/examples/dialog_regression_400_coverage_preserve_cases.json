@@ -1,0 +1,201 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Explicit include coverage targets while preserving the current plan count.",
+    "notes": "Coverage uses the existing fill_missing_count Proposal engine with a frozen current count and persistTargetCount=false. Relative or unspecified coverage counts remain clarification-only."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "preview_plan_change",
+      "apply_plan_change_proposal"
+    ],
+    "coverage": [
+      "explicit_coverage_count",
+      "preserve_current_count",
+      "single_proposal",
+      "postcondition_verification"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "16",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "action_family",
+        "volunteerId",
+        "软偏好",
+        "草稿"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-coverage-shandong-three-preserve-count-priority-final-action",
+      "sessionId": "9907150",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": [
+          "orderedPlan",
+          "formalPlan"
+        ]
+      },
+      "prompts": [
+        {
+          "prompt": "当前方案总数不变，山东的专业组至少保留3个，而且在同一冲稳保档里优先靠前",
+          "assertContains": [
+            "45",
+            "3个山东"
+          ],
+          "assertContainsAny": [
+            "等量替换",
+            "同档",
+            "确认"
+          ],
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action",
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "45个专业组",
+            "1条要求",
+            "1条同档优先规则",
+            "校验通过"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.targetCount",
+              "equals": 45
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.actualCount",
+              "equals": 45
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementResults.0.minCount",
+              "equals": 3
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementResults.0.matchedCount",
+              "equals": 3
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.priorityRuleResults.0.inversionCount",
+              "equals": 0
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.requiredCount",
+              "equals": 48
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthEquals": 45
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.coverageRequirements",
+              "contains": {
+                "domain": "region",
+                "key": "province",
+                "values": [
+                  "山东"
+                ],
+                "minCount": 3
+              }
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.priorityRules",
+              "contains": {
+                "domain": "region",
+                "key": "province",
+                "values": [
+                  "山东"
+                ],
+                "orderingTarget": "rank_before",
+                "scope": "within_tier"
+              }
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-coverage-unspecified-count-clarifies",
+      "sessionId": "9907151",
+      "prompts": [
+        {
+          "prompt": "山东的专业组多放一些，其他不要删",
+          "assertContainsAny": [
+            "至少多少",
+            "具体数量",
+            "多少个"
+          ],
+          "assertContains": [
+            "替换"
+          ],
+          "assertNoFollowups": true,
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action",
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        }
+      ]
+    }
+  ]
+}

@@ -92,7 +92,8 @@ def _pending_intent_response(
 ) -> dict:
     return {
         "data": {
-            "pendingConfirmation": {
+            "dataVersion": 12,
+            "dataValue": {
                 "status": "active",
                 "kind": "intent_change",
                 "intentMode": intent_mode,
@@ -2191,7 +2192,7 @@ async def test_analyze_volunteer_intent_change_returns_structured_payload(empty_
 async def test_handle_intent_select_interest_candidate_query_returns_text_only():
     with (
         patch(
-            "app.tools.explore_followup_tool.get_pending_confirmation",
+            "app.tools.explore_followup_tool.get_last_pending_confirmation",
             new=AsyncMock(return_value=_pending_intent_response({"city_intents": {"province": ["北京"]}})),
         ),
         patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 3200}}}})),
@@ -2210,7 +2211,8 @@ async def test_handle_intent_select_interest_candidate_query_returns_text_only()
 async def test_handle_intent_select_interest_candidate_query_prefers_pending_confirmation():
     pending_payload = {
         "data": {
-            "pendingConfirmation": {
+            "dataVersion": 12,
+            "dataValue": {
                 "status": "active",
                 "kind": "intent_change",
                 "executionPayload": {
@@ -2223,7 +2225,7 @@ async def test_handle_intent_select_interest_candidate_query_prefers_pending_con
         }
     }
     with (
-        patch("app.tools.explore_followup_tool.get_pending_confirmation", new=AsyncMock(return_value=pending_payload)),
+        patch("app.tools.explore_followup_tool.get_last_pending_confirmation", new=AsyncMock(return_value=pending_payload)),
         patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 3200}}}})),
         patch("app.tools.explore_followup_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 88}})) as query_mock,
     ):
@@ -2241,7 +2243,7 @@ async def test_handle_intent_select_interest_candidate_query_prefers_pending_con
 async def test_handle_intent_select_interest_plan_analyze_returns_interest_preview(empty_profile):
     with (
         patch(
-            "app.tools.explore_followup_tool.get_pending_confirmation",
+            "app.tools.explore_followup_tool.get_last_pending_confirmation",
             new=AsyncMock(return_value=_pending_intent_response({"career_intents": {"positive": ["system_public_service"]}})),
         ),
         patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {}})),
@@ -2261,7 +2263,7 @@ async def test_handle_intent_select_interest_plan_analyze_returns_interest_previ
 async def test_handle_intent_select_interest_prefer_confirm_returns_confirm_preview(empty_profile):
     with (
         patch(
-            "app.tools.explore_followup_tool.get_pending_confirmation",
+            "app.tools.explore_followup_tool.get_last_pending_confirmation",
             new=AsyncMock(return_value=_pending_intent_response({"city_intents": {"province": ["北京"]}})),
         ),
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,

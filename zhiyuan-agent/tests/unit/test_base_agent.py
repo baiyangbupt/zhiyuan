@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic_ai import CallToolsNode, RunUsage
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_graph import End
@@ -249,6 +249,50 @@ async def test_run_can_return_directly_after_user_facing_tool_result():
     assert getattr(all_messages[-1], "model_name", "") == "direct-tool-result"
     assert isinstance(all_messages[-1].parts[0], TextPart)
     assert all_messages[-1].parts[0].content == reply
+
+
+async def test_direct_tool_rendering_excludes_tool_returns_from_previous_turn(client, mocker):
+    mocker.patch("app.agent.base_agent.Agent")
+
+    class CurrentTurnOnlyAgent(BaseAgent[str]):
+        def should_return_directly_from_tool(self, tool_names, tool_returns, deps=None) -> bool:
+            return bool(tool_returns)
+
+        def render_direct_tool_output(self, tool_names, tool_returns, deps=None) -> str | None:
+            return " | ".join(str(part.content) for part in tool_returns)
+
+    agent = CurrentTurnOnlyAgent(llm_client=client, instructions="test")
+    call_node = CallToolsNode(
+        model_response=ModelResponse(
+            parts=[ToolCallPart(tool_name="review_plan", args={}, tool_call_id="current-call")]
+        )
+    )
+    current_return = ToolReturnPart(
+        tool_name="review_plan",
+        content="本轮审查结果",
+        tool_call_id="current-call",
+    )
+    return_node = SimpleNamespace(request=ModelRequest(parts=[current_return]))
+    stale_history = ModelRequest(
+        parts=[
+            ToolReturnPart(
+                tool_name="query_plan",
+                content="上一轮上海查询结果",
+                tool_call_id="stale-call",
+            )
+        ]
+    )
+    ctx_mgr, agent_run = _make_agent_run([call_node, return_node])
+    agent_run.all_messages.return_value = [stale_history]
+    agent.agent.iter = MagicMock(return_value=ctx_mgr)
+
+    reply, _, _, _ = await agent.run_with_message_deltas(
+        "现在不够了，有没有可以补充进来的",
+        message_history=[stale_history],
+    )
+
+    assert reply == "本轮审查结果"
+    assert "上一轮上海查询结果" not in reply
 
 
 def test_sanitize_model_output_strips_provider_reasoning_markup():

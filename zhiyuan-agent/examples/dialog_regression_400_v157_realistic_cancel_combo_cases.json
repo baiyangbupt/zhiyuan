@@ -22,7 +22,14 @@
       "ordered_plan_final_action"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "16",
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": [
+        "orderedPlan",
+        "formalPlan"
+      ]
+    },
     "clearBackendPlanningIntentState": true,
     "promptDefaults": {
       "assertNotContains": [
@@ -176,12 +183,14 @@
             {
               "key": "planningState",
               "path": "orderedPlanState.items",
-              "lengthLessThanBefore": true
+              "lengthLessThanBefore": true,
+              "minLength": 1
             },
             {
               "key": "planningState",
               "path": "orderedPlanState.units",
-              "lengthLessThanBefore": true
+              "lengthLessThanBefore": true,
+              "minLength": 1
             }
           ]
         }
@@ -190,6 +199,7 @@
     {
       "name": "400-v157-combo-school-attribute-exclude-final-action",
       "sessionId": "9904572",
+      "cloneBackendStateFromSessionId": "131",
       "coverage": [
         "combo_requirement",
         "school_nature",
@@ -262,17 +272,20 @@
             {
               "key": "planningState",
               "path": "orderedPlanState.items",
-              "lengthLessThanBefore": true
+              "lengthLessThanBefore": true,
+              "minLength": 1
             },
             {
               "key": "planningState",
               "path": "orderedPlanState.units",
+              "minLength": 1,
+              "notContains": "民办"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "minLength": 1,
               "notContains": "中外合作"
-            },
-            {
-              "key": "planningState",
-              "path": "orderedPlanState.units",
-              "notContains": "37020261000269_37020262005080_709"
             }
           ]
         }
@@ -347,25 +360,32 @@
             {
               "key": "planningState",
               "path": "candidatePoolState.items",
-              "contains": [
-                "37020261000315_37020262005917_845",
-                "学制：5年"
-              ]
+              "unchangedFromBefore": true
             },
             {
               "key": "planningState",
               "path": "orderedPlanState.items",
-              "lengthLessThanBefore": true
+              "lengthLessThanBefore": true,
+              "minLength": 1,
+              "notContains": "管理学"
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.items",
+              "minLength": 1,
+              "notContains": "学制：5年"
             },
             {
               "key": "planningState",
               "path": "orderedPlanState.units",
-              "notContains": "37020261000315_37020262005917_845"
+              "minLength": 1,
+              "notContains": "管理学"
             },
             {
               "key": "planningState",
               "path": "orderedPlanState.units",
-              "notContains": "37020261001095_37020262020504_709"
+              "minLength": 1,
+              "notContains": "学制：5年"
             }
           ]
         }
@@ -405,6 +425,10 @@
             "去掉",
             "确认",
             "采纳"
+          ],
+          "assertContains": [
+            "本次实际影响",
+            "专业组"
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
@@ -454,11 +478,13 @@
             {
               "key": "planningState",
               "path": "orderedPlanState.units",
-              "lengthLessThanBefore": true
+              "lengthLessThanBefore": true,
+              "minLength": 1
             },
             {
               "key": "planningState",
               "path": "orderedPlanState.units",
+              "minLength": 1,
               "maxNumericFieldLessThanOrEqual": {
                 "field": "tuitionPerYear",
                 "value": 20000

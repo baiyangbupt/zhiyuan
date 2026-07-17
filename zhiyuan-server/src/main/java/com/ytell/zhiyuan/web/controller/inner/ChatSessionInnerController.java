@@ -7,6 +7,9 @@ import com.ytell.zhiyuan.model.dto.SaveMessageRes;
 import com.ytell.zhiyuan.model.dto.inner.ChatSessionExtraDataReq;
 import com.ytell.zhiyuan.model.dto.inner.MajorSubjectAvailReq;
 import com.ytell.zhiyuan.model.dto.inner.PlanParamAvailReq;
+import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
+import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationResolveReq;
+import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
 import com.ytell.zhiyuan.model.req.UpdateTuitionRangeReq;
 import com.ytell.zhiyuan.model.dto.volunteer.VolunteerSchoolGroup;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
@@ -15,6 +18,7 @@ import com.ytell.zhiyuan.model.vo.MessageVo;
 import com.ytell.zhiyuan.service.biz.ChatMessageBizService;
 import com.ytell.zhiyuan.service.biz.ChatSessionBizService;
 import com.ytell.zhiyuan.service.biz.PlanValidationService;
+import com.ytell.zhiyuan.service.biz.PendingConfirmationBizService;
 import com.ytell.zhiyuan.service.biz.VolunteerBizService;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
@@ -44,6 +48,8 @@ public class ChatSessionInnerController {
     private PlanValidationService planValidationService;
     @Autowired
     private VolunteerBizService volunteerBizService;
+    @Autowired
+    private PendingConfirmationBizService pendingConfirmationBizService;
 
     @GetMapping("/message/list-all")
     @ApiOperation("获取全部对话消息")
@@ -75,6 +81,30 @@ public class ChatSessionInnerController {
                                                                   ChatSessionExtraDataReq extraDataReq) {
         log.info("addSessionExtraData:filterReq:{}", JSONObject.toJSONString(extraDataReq));
         return BaseResponse.success(chatSessionBizService.addOrUpdateSessionExtraData(tenantId, extraDataReq));
+    }
+
+    @GetMapping("/session/pending")
+    @ApiOperation("获取当前待确认快照")
+    public BaseResponse<PendingConfirmationRes> getPendingConfirmation(
+            @PathVariable("tenantId") Long tenantId,
+            @RequestParam("chatSessionId") Long chatSessionId) {
+        return BaseResponse.success(pendingConfirmationBizService.getCurrent(tenantId, chatSessionId));
+    }
+
+    @PostMapping("/session/pending")
+    @ApiOperation("创建或替换当前待确认快照")
+    public BaseResponse<PendingConfirmationRes> upsertPendingConfirmation(
+            @PathVariable("tenantId") Long tenantId,
+            @RequestBody PendingConfirmationUpsertReq req) {
+        return BaseResponse.success(pendingConfirmationBizService.upsert(tenantId, req));
+    }
+
+    @PostMapping("/session/pending/resolve")
+    @ApiOperation("按CAS迁移当前待确认状态")
+    public BaseResponse<PendingConfirmationRes> resolvePendingConfirmation(
+            @PathVariable("tenantId") Long tenantId,
+            @RequestBody PendingConfirmationResolveReq req) {
+        return BaseResponse.success(pendingConfirmationBizService.resolve(tenantId, req));
     }
 
     @PostMapping("/session/update-tuition-range")

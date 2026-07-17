@@ -62,7 +62,7 @@
             "考编",
             "体制内"
           ],
-          "expectedActionFamily": "analyze_current_career_direction",
+          "expectedActionFamily": "explore_topic",
           "expectedKeyPoints": [
             "市场化就业",
             "考公",
@@ -89,7 +89,12 @@
                 "岗位口径"
               ]
             }
-          ]
+          ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true
         }
       ]
     },
@@ -105,7 +110,7 @@
             "稳定就业",
             "就业"
           ],
-          "expectedActionFamily": "analyze_current_career_direction",
+          "expectedActionFamily": "explore_topic",
           "expectedKeyPoints": [
             "读研",
             "稳定就业",
@@ -152,7 +157,7 @@
             "方案",
             "承接"
           ],
-          "expectedActionFamily": "analyze_current_career_direction",
+          "expectedActionFamily": "explore_topic",
           "expectedKeyPoints": [
             "体制内",
             "稳定就业",
@@ -202,7 +207,12 @@
                 "继续深入"
               ]
             }
-          ]
+          ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true
         }
       ]
     }

@@ -42,6 +42,7 @@ final class RepairProposalTaxonomy {
 
     static final class Strategy {
         static final String FILL_MISSING_COUNT = "fill_missing_count";
+        static final String PRIORITIZE_WITHIN_TIER = "prioritize_within_tier";
         static final String ADD_SAFETY_ITEMS = "add_safety_items";
         static final String REBALANCE_TIER_RATIO = "rebalance_tier_ratio";
         static final String FILL_PROBABILITY_GAP = "fill_probability_gap";
@@ -85,6 +86,7 @@ final class RepairProposalTaxonomy {
 
     private static final Set<String> APPLYABLE_STRATEGIES = unmodifiableSet(
             Strategy.FILL_MISSING_COUNT,
+            Strategy.PRIORITIZE_WITHIN_TIER,
             Strategy.SORT_BY_PROBABILITY,
             Strategy.REMOVE_RISK_ITEMS,
             Strategy.REPLACE_RISK_ITEMS,
@@ -92,6 +94,8 @@ final class RepairProposalTaxonomy {
     );
 
     private static final Set<String> USER_GOAL_APPLYABLE_STRATEGIES = unmodifiableSet(
+            Strategy.FILL_MISSING_COUNT,
+            Strategy.PRIORITIZE_WITHIN_TIER,
             Strategy.ONLY_KEEP_SCOPE,
             Strategy.MUST_INCLUDE_SCOPE,
             Strategy.EXCLUDE_SCOPE,
@@ -237,6 +241,7 @@ final class RepairProposalTaxonomy {
 
     private static Map<String, String> buildStrategyAliases() {
         Map<String, String> aliases = new LinkedHashMap<String, String>();
+        aliases.put("fill_to_count", Strategy.FILL_MISSING_COUNT);
         aliases.put("fill_total_count", Strategy.FILL_MISSING_COUNT);
         aliases.put("add_local_protect", Strategy.ADD_SAFETY_ITEMS);
         aliases.put("rebalance_protect_ratio", Strategy.REBALANCE_TIER_RATIO);
@@ -260,7 +265,10 @@ final class RepairProposalTaxonomy {
 
     private static Map<String, Set<String>> buildStrategyActionTypes() {
         Map<String, Set<String>> result = new LinkedHashMap<String, Set<String>>();
-        result.put(Strategy.FILL_MISSING_COUNT, unmodifiableSet(ActionType.FILL_TOTAL_COUNT));
+        result.put(Strategy.FILL_MISSING_COUNT,
+                unmodifiableSet(ActionType.FILL_TOTAL_COUNT, ActionType.REMOVE_VOLUNTEERS));
+        result.put(Strategy.PRIORITIZE_WITHIN_TIER,
+                unmodifiableSet(ActionType.REORDER_VOLUNTEERS));
         result.put(Strategy.ADD_SAFETY_ITEMS, unmodifiableSet(ActionType.ADD_VOLUNTEERS, ActionType.REPLACE_VOLUNTEERS));
         result.put(Strategy.REBALANCE_TIER_RATIO, unmodifiableSet(ActionType.REPLACE_VOLUNTEERS));
         result.put(Strategy.FILL_PROBABILITY_GAP, unmodifiableSet(ActionType.REPLACE_VOLUNTEERS));

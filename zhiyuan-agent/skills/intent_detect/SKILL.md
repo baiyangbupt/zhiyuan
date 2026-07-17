@@ -1,127 +1,51 @@
 ---
 name: intent-detect
-description: 处理用户对志愿方案的调整意向，包括增加/排除学校、专业、地域偏好，需要校验合法性后生成变更预览供用户确认；支持逐项勾选的局部采纳。若识别到方案查询意图则应转交给 plan-query skill。
+description: 处理用户显式表达的报考要求，包括要/不要/只看学校、专业、地域、职业方向或属性标签；4.0 direct 链路统一生成待确认预览，不直接写状态。
 ---
 
-# 意向调整技能
+# 报考要求识别技能
 
 ## 目标
-本技能用于处理用户对**报考意向与偏好**的调整，包括：
-- 增加偏好学校、专业、地域
-- 排除不想要的学校、专业、地域
-- 调整正面/负面意向
 
-本技能只处理**意向层面的识别、抽取和确认**，不直接操作志愿表中的具体行。
+本技能只处理用户显式表达的报考要求：
 
-不属于本技能的典型问法：
+- 想要某些学校、专业、地域、职业方向
+- 不要某些学校、专业、地域、职业方向
+- 只看或只保留某些范围
+- 排除民办、中外合作、高收费、五年制等明确属性
+
+本技能不直接操作志愿表中的具体行。当前方案里的增删、替换、移动、重排由 `preview_plan_action` 处理。
+
+## 不属于本技能
+
+这些仍是只读探索或方案查询，不生成报考要求预览：
+
 - “电子信息工程适合我吗”
 - “网络与新媒体值不值得继续看”
 - “北京的机会多一点吗”
 - “体制内适不适合我”
+- “当前方案里有哪些高收费的”
 
-这些都还是 Explore，不是 Intent。它们应转交给 `explore-chat` skill 或对应 Explore 工具，不要直接进入意向确认链。
+只读探索使用 `explore_topic` 或 `compare_entities`；方案查询和审查使用 `query_plan` 或 `review_plan`。
 
-采纳后的直接影响是：
+## 可用能力
 
-- 更新推荐系数
-- 更新专家优选组合
-- 更新默认推荐顺序倾向
+- `preview_intent_change`：用户明确提出以后要/不要/只看等报考要求时，生成待确认预览。
+- `confirm_pending`：用户确认采纳 active pending 时执行。
+- `query_plan`：需要先只读查看当前方案或候选命中时使用。
+- `review_plan`：需要先只读审查当前方案问题时使用。
+- `read_state`：必要时读取当前成绩、画像、方案摘要或待确认状态。
 
-不会因为采纳意向而直接视为“当前方案已经变化”。
+## 编排规则
 
-## 工具调用流程
-
-下面是推荐编排，不是固定规则。你需要根据用户语义、上下文、是否存在副作用来决定实际工具组合。
-
-### 1. 必要时先校验
-- 如果涉及新增专业，先调用 `validate_major_subjects` 校验选科兼容性
-- 如果涉及新增学校、专业或地域，可调用 `validate_plan_params` 校验在当前分数范围内是否可行
-- 如果校验不通过，先解释原因并引导用户调整，不要直接落状态
-
-### 2. 先拿分析数据，再决定怎么回复
-- 优先调用 `analyze_volunteer_intent_change`
-- 它只返回结构化分析数据，不直接替你生成最终用户文案
-- 它不应用于“适不适合我 / 值不值得继续看 / 先看看”这类只读探索问题；这类问题应停留在 Explore
-- 你需要基于这些数据，结合当前对话语境，自然地向用户解释：
-  - 识别到了哪些偏好/要求
-  - 当前方案和候选里有什么关联
-  - 哪些是新增、哪些本来就已存在
-  - 下一步是继续分析，还是等待用户确认生效
-
-### 3. 生成确认分析，等待用户选择或确认
-- 校验通过后，继续使用 `analyze_volunteer_intent_change`
-- 将用户意图整理为对应的参数格式传入
-- 由模型基于返回的结构化分析数据，自然生成确认说明或分析说明
-- 如果用户只是刚表达一句明确态度，还不值得你手动组装完整结构，可优先调用 `preview_current_intent_confirmation`
-- `preview_current_intent_confirmation` 属于面向 agent 的预览入口；底层仍是围绕 `analyze_volunteer_intent_change` 做确认分析
-
-如果用户只是刚表达一个新的偏好/要求，还在“先看一下”“先分析一下”的阶段，
-优先调用 `preview_current_intent_confirmation` 生成基于当前句子的确认预览，
-不要直接口头记忆，也不要先自己总结成最终结论。
-
-但如果用户句子本身是在问适配度，例如“电子信息工程适合我吗”“这个方向值不值得继续看”，
-不要因为里面出现了专业名或方向词，就误进 `preview_current_intent_confirmation` 或 `analyze_volunteer_intent_change`。
-
-### 4. 等待用户确认
-用户有两种确认方式：
-
-**方式A：通过前端已有交互勾选（推荐）**
-- 用户在 `intentDetectSelectPopup / intentConfirmPopup` 卡片中勾选想要的项目，点击【采纳】
-- 前端发送结构化确认消息，服务端生成统一待采纳内容
-- 用户再点击统一待采纳内容里的【采纳】后，服务端应用选中的子集
-
-**方式B：通过对话确认**
-- 用户在对话中回复确认或拒绝
-- 只有当前会话存在 active `pendingConfirmation(kind=intent_change)`，且服务端校验与最近待采纳内容一致时，短文本确认才会被转换为采纳
-- Agent 不要调用状态更新工具去猜测用户是否确认；没有 active pending 时，应该重新生成预览或继续解释
-
-## 可用工具
-
-### validate_major_subjects
-- **用途**：校验专业与学生选科的兼容性
-- **参数**：`major_names`（三级专业名称列表）
-- **使用场景**：用户要新增专业偏好时，先校验选科是否允许
-
-### validate_plan_params
-- **用途**：校验方案参数是否在学生分数范围内
-- **参数**：`major_names`、`school_names`、`province_names`、`city_names`（均可选）
-- **使用场景**：校验新增的学校/专业/地域在当前分数下是否可行
-
-### analyze_volunteer_intent_change
-- **用途**：只分析意向变化，返回结构化数据，不直接执行更新
-- **参数**：
-  - `major_intents`: `{"level1":[], "level2":[], "level3":[], "negative_level1":[], "negative_level2":[], "negative_level3":[]}`
-  - `school_intents`: `{"colleges":[], "negative_colleges":[]}`
-  - `city_intents`: `{"province":[], "city":[], "negative_province":[], "negative_city":[]}`
-  - `career_intents`: `{"positive":[], "negative":[]}`
-  - `edit_flag`（可选）: `add | delete | move | replace`
-  - `analysis_stage`（可选）: `confirmed | interest`
-  - `recovery_scope`（可选）: 当模型已判断是某一类意向，但暂未组装结构化参数时使用
-  - `confirm_enabled`（可选）: 是否进入确认链路
-  - `intent_mode`（可选）: `preference | constraint`
-- **返回**：JSON 字符串，包含识别项、已有项、关联分析、阶段、偏好/要求模式等事实数据
-
-### apply_selected_intents
-- **用途**：服务端确认后应用用户采纳的意向子集
-- **调用方**：仅由 `pendingConfirmation(kind=intent_change)` 的确认链路调用，Agent 不直接调用
-- **返回**：JSON 字符串，包含是否生效、推荐刷新状态、消息码与结构化结果
-
-### preview_current_intent_confirmation
-- **用途**：直接基于当前这句话生成确认预览
-- **参数**：
-  - `intent_mode`: `"preference"` 或 `"constraint"`
-  - `recovery_scope`（可选）: 当你已明确这是某一类意向，但不想手动组装结构化参数时使用
-- **使用场景**：用户说“更想去北京”“不去上海”“只看北京”“不要中外合作”这类明确表态，但还没正式确认采纳
-- **说明**：这是便捷入口，适合对话层直接承接；不要把它理解成最终答复生成器
-- **不要用于**： “适合我吗 / 值不值得继续看 / 我先了解下” 这类 Explore 问句
-
-## 前提条件
-- 用户已有志愿方案（已生成志愿方案）
-- 如果用户尚未生成方案，引导其先完善信息并生成方案
+1. 用户明确表达要/不要/只看时，调用 `preview_intent_change`，不要直接说“已经记录”。
+2. 同一句里同时有正向和负向要求时，一次性传入 `positive`、`negative` 和 `semantic_requirements`。
+3. “方案里的 X 不要/移出去/换掉”优先属于方案调整，调用 `preview_plan_action`。
+4. “以后 X 不要，当前方案里有的话也处理”属于报考要求并同步影响当前方案，调用 `preview_intent_change(apply_to_current_plan=true)`。
+5. 没有 active pending 时，短文本“确认/执行”不能直接改状态，应重新生成预览或说明当前没有待采纳内容。
 
 ## 输出风格
-- 使用专业高考志愿规划师的口吻
-- 校验不通过时给出具体原因和替代建议
-- 预览时清晰展示哪些是新增、哪些已存在
-- 确认/拒绝后给出明确的后续引导
-- 不要机械复读工具原文；工具提供事实，最终答复由模型结合上下文组织
+
+- 用户侧说“要求/诉求/方案调整”，不要说“约束/硬约束/软约束”。
+- 明确说明需要用户采纳后才会生效。
+- 只读探索和待确认动作要分清楚，不要把建议包装成已经生效的状态。

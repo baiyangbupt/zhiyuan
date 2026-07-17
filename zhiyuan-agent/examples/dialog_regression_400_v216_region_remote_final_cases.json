@@ -18,7 +18,14 @@
       "ordered_plan_final_action"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "18",
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": [
+        "orderedPlan",
+        "formalPlan"
+      ]
+    },
     "clearBackendPlanningIntentState": true,
     "promptDefaults": {
       "assertNotContains": [
@@ -44,7 +51,7 @@
   "cases": [
     {
       "name": "400-v216-region-remote-exclude-final-action",
-      "sessionId": "17",
+      "sessionId": "9904716",
       "prompts": [
         {
           "prompt": "省外可以，但太偏的地方不想去",
@@ -92,22 +99,22 @@
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "minLength": 1
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "新疆"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "西藏"
             },
             {
               "key": "planningState",
-              "path": "orderedPlanState.units",
+              "path": "orderedPlanState.items",
               "notContains": "青海"
             }
           ]

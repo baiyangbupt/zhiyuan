@@ -49,6 +49,14 @@
     {
       "name": "400-direct-confirm-plan-remove-position",
       "sessionId": "9904301",
+      "cloneBackendStateFromSessionId": "16",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": [
+          "orderedPlan",
+          "formalPlan"
+        ]
+      },
       "coverage": [
         "plan_mutation",
         "remove_units",

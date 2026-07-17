@@ -158,6 +158,15 @@
             "就业",
             "建议"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "expectedToolCounts": {
+            "explore_topic": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "英语优势",
             "专业方向",
@@ -198,6 +207,15 @@
             "专科",
             "建议"
           ],
+          "expectedToolNames": [
+            "answer_policy"
+          ],
+          "expectedToolCounts": {
+            "answer_policy": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "本科线",
             "保底",
@@ -306,6 +324,15 @@
             "专业",
             "方向"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "expectedToolCounts": {
+            "explore_topic": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "选科组合",
             "就业面",
@@ -343,6 +370,15 @@
             "方案",
             "预案"
           ],
+          "expectedToolNames": [
+            "answer_policy"
+          ],
+          "expectedToolCounts": {
+            "answer_policy": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "模考预估",
             "批次线",
@@ -637,6 +673,18 @@
             "确认",
             "建议"
           ],
+          "assertNotContains": [
+            "系统后台在生成方案时会自动读取并应用"
+          ],
+          "expectedToolNames": [
+            "answer_policy"
+          ],
+          "expectedToolCounts": {
+            "answer_policy": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "加分项",
             "成绩口径",
@@ -674,6 +722,18 @@
             "审查",
             "建议"
           ],
+          "expectedToolNames": [
+            "answer_policy"
+          ],
+          "assertNotContains": [
+            "系统会预留体检审核环节"
+          ],
+          "expectedToolCounts": {
+            "answer_policy": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "体检表缺失",
             "可先做",
@@ -726,7 +786,8 @@
     },
     {
       "name": "400-dialogue-accounting-audit-ok-civil-no",
-      "sessionId": "17",
+      "sessionId": "9907101",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "intent"
       ],
@@ -801,7 +862,8 @@
     },
     {
       "name": "400-dialogue-not-teacher-remove-normal",
-      "sessionId": "17",
+      "sessionId": "9907102",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "intent",
         "plan"
@@ -859,6 +921,14 @@
             "风险",
             "建议"
           ],
+          "assertNotContains": [
+            "待确认预览",
+            "确认前不会生效",
+            "不要：虚",
+            "不要：偏虚"
+          ],
+          "assertNoFollowups": true,
+          "expectedNoAction": true,
           "expectedKeyPoints": [
             "新闻传播",
             "网络与新媒体",
@@ -913,7 +983,8 @@
     },
     {
       "name": "400-dialogue-medical-nursing-tcm-boundary",
-      "sessionId": "17",
+      "sessionId": "9907103",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "intent",
         "explore"
@@ -938,9 +1009,14 @@
             "医学",
             "护理",
             "中医",
-            "排除边界",
-            "确认前"
+            "层级冲突",
+            "确认前不记录"
           ],
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "preview_confirm_boundary",
             "rich_decision_basis"
@@ -972,13 +1048,14 @@
             "建议"
           ],
           "expectedToolNames": [
-            "get_major_introductions"
+            "explore_topic"
           ],
           "assertToolNamesNotContain": [
-            "get_major_introduction"
+            "get_major_introduction",
+            "get_major_introductions"
           ],
           "expectedToolCounts": {
-            "get_major_introductions": 1
+            "explore_topic": 1
           },
           "maxToolCallCount": 1,
           "assertNoRepeatedToolNames": true,
@@ -989,6 +1066,11 @@
             "学习要求",
             "下一步"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "readonly_boundary",
             "rich_decision_basis"
@@ -1026,6 +1108,11 @@
             "替代方向",
             "下一步"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "readonly_boundary",
             "rich_decision_basis"
@@ -1131,14 +1218,15 @@
             "建议"
           ],
           "expectedToolNames": [
-            "compare_major_options"
+            "compare_entities"
           ],
           "assertToolNamesNotContain": [
             "compare_majors",
+            "compare_major_options",
             "analyze_current_major_interest"
           ],
           "expectedToolCounts": {
-            "compare_major_options": 1
+            "compare_entities": 1
           },
           "maxToolCallCount": 1,
           "assertNoRepeatedToolNames": true,
@@ -1196,7 +1284,8 @@
     },
     {
       "name": "400-dialogue-region-south-only",
-      "sessionId": "17",
+      "sessionId": "9907104",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "intent",
         "plan"
@@ -1234,7 +1323,8 @@
     },
     {
       "name": "400-dialogue-region-outside-ok-not-remote",
-      "sessionId": "17",
+      "sessionId": "9907105",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "intent",
         "plan"
@@ -1272,7 +1362,8 @@
     },
     {
       "name": "400-dialogue-region-beijing-tianjin-safety",
-      "sessionId": "17",
+      "sessionId": "9907106",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "explore",
         "plan"
@@ -1361,6 +1452,15 @@
       "prompts": [
         {
           "prompt": "兰州银川能不能作为兜底",
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "expectedToolCounts": {
+            "explore_topic": 1
+          },
+          "assertToolNamesNotContain": [
+            "clarify_request"
+          ],
           "assertContainsAny": [
             "兰州",
             "银川",
@@ -1575,7 +1675,8 @@
     },
     {
       "name": "400-dialogue-career-civil-service-major",
-      "sessionId": "17",
+      "sessionId": "9907107",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "explore",
         "plan"
@@ -1825,6 +1926,11 @@
             "专业方向",
             "下一步"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "readonly_boundary",
             "rich_decision_basis"
@@ -1947,7 +2053,8 @@
     },
     {
       "name": "400-dialogue-budget-sino-foreign-worth",
-      "sessionId": "17",
+      "sessionId": "9907108",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "explore",
         "plan"
@@ -1986,7 +2093,8 @@
     },
     {
       "name": "400-dialogue-budget-cap-two-three-wan",
-      "sessionId": "17",
+      "sessionId": "9907109",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan",
         "review"
@@ -1999,6 +2107,12 @@
       "prompts": [
         {
           "prompt": "一年学费最多两三万，方案里高收费多吗",
+          "assertContains": [
+            "当前正式方案",
+            "30000",
+            "待确认预览",
+            "确认前"
+          ],
           "assertContainsAny": [
             "学费",
             "高收费",
@@ -2014,8 +2128,14 @@
             "风险",
             "下一步"
           ],
+          "expectedToolNames": [
+            "query_plan",
+            "preview_intent_change"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
           "qualityFocus": [
-            "readonly_boundary",
+            "preview_confirm_boundary",
             "rich_decision_basis",
             "multi_distribution"
           ],
@@ -2101,7 +2221,8 @@
     },
     {
       "name": "400-dialogue-budget-less-sino-foreign",
-      "sessionId": "17",
+      "sessionId": "9907110",
+      "cloneBackendStateFromSessionId": "17",
       "flow": [
         "explore",
         "plan"
@@ -2139,7 +2260,8 @@
     },
     {
       "name": "400-dialogue-budget-high-fee-safety",
-      "sessionId": "17",
+      "sessionId": "9907111",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan",
         "review"
@@ -2215,7 +2337,8 @@
     },
     {
       "name": "400-dialogue-budget-tuition-visible-in-plan",
-      "sessionId": "17",
+      "sessionId": "9907112",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2252,7 +2375,8 @@
     },
     {
       "name": "400-dialogue-plan-too-risky",
-      "sessionId": "17",
+      "sessionId": "9907113",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan",
         "review"
@@ -2291,7 +2415,8 @@
     },
     {
       "name": "400-dialogue-plan-safe-enough",
-      "sessionId": "17",
+      "sessionId": "9907114",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan",
         "review"
@@ -2330,7 +2455,8 @@
     },
     {
       "name": "400-dialogue-plan-review-obvious-pit",
-      "sessionId": "17",
+      "sessionId": "9907115",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "review",
         "plan"
@@ -2369,7 +2495,8 @@
     },
     {
       "name": "400-dialogue-plan-medical-nursing-query",
-      "sessionId": "17",
+      "sessionId": "9907116",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2406,7 +2533,8 @@
     },
     {
       "name": "400-dialogue-plan-accounting-fit",
-      "sessionId": "17",
+      "sessionId": "9907117",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2444,7 +2572,8 @@
     },
     {
       "name": "400-dialogue-plan-region-too-many-outside",
-      "sessionId": "17",
+      "sessionId": "9907118",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2464,6 +2593,22 @@
             "风险",
             "建议"
           ],
+          "assertContains": [
+            "河南"
+          ],
+          "assertNotContains": [
+            "甚至可能没有省外院校",
+            "这些大多是省内或周边省份"
+          ],
+          "expectedToolNames": [
+            "query_plan"
+          ],
+          "expectedToolCounts": {
+            "query_plan": 1
+          },
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
           "expectedKeyPoints": [
             "地域分布",
             "省外",
@@ -2482,7 +2627,8 @@
     },
     {
       "name": "400-dialogue-plan-public-school-ratio",
-      "sessionId": "17",
+      "sessionId": "9907119",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2520,7 +2666,8 @@
     },
     {
       "name": "400-dialogue-plan-high-fee-risk",
-      "sessionId": "17",
+      "sessionId": "9907120",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan",
         "review"
@@ -2559,7 +2706,8 @@
     },
     {
       "name": "400-dialogue-plan-major-vs-school-bias",
-      "sessionId": "17",
+      "sessionId": "9907121",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2597,7 +2745,8 @@
     },
     {
       "name": "400-dialogue-plan-worth-in-plain-language",
-      "sessionId": "17",
+      "sessionId": "9907122",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2635,7 +2784,8 @@
     },
     {
       "name": "400-dialogue-operation-sort-admission-rate",
-      "sessionId": "17",
+      "sessionId": "9907123",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2670,7 +2820,8 @@
     },
     {
       "name": "400-dialogue-operation-sort-good-school",
-      "sessionId": "17",
+      "sessionId": "9907124",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2705,7 +2856,8 @@
     },
     {
       "name": "400-dialogue-operation-sort-recommendation",
-      "sessionId": "17",
+      "sessionId": "9907125",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2740,7 +2892,8 @@
     },
     {
       "name": "400-dialogue-operation-move-index-preview",
-      "sessionId": "17",
+      "sessionId": "9907126",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2778,7 +2931,8 @@
     },
     {
       "name": "400-dialogue-operation-remove-expensive-preview",
-      "sessionId": "17",
+      "sessionId": "9907127",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2809,13 +2963,30 @@
             "preview_confirm_boundary",
             "rich_decision_basis"
           ],
-          "minTextLengthWarn": 160
+          "minTextLengthWarn": 160,
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_action": 1
+          },
+          "assertToolNamesNotContain": [
+            "review_plan",
+            "query_plan",
+            "preview_intent_change"
+          ],
+          "expectedActionFamily": "remove_units",
+          "maxToolCallCount": 1
         }
       ]
     },
     {
       "name": "400-dialogue-operation-add-stable-accounting",
-      "sessionId": "17",
+      "sessionId": "9907128",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2847,13 +3018,31 @@
             "readonly_boundary",
             "rich_decision_basis"
           ],
-          "minTextLengthWarn": 180
+          "minTextLengthWarn": 180,
+          "assertNoFollowups": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "discover_options"
+          ],
+          "expectedToolCounts": {
+            "discover_options": 1
+          },
+          "assertToolNamesNotContain": [
+            "clarify_request",
+            "respond_casual",
+            "query_plan",
+            "review_plan",
+            "preview_intent_change",
+            "preview_plan_action"
+          ],
+          "maxToolCallCount": 1
         }
       ]
     },
     {
       "name": "400-dialogue-operation-school-abbrev-query",
-      "sessionId": "17",
+      "sessionId": "9907129",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2890,7 +3079,8 @@
     },
     {
       "name": "400-dialogue-operation-move-beijing-forward",
-      "sessionId": "17",
+      "sessionId": "9907130",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -2926,7 +3116,8 @@
     },
     {
       "name": "400-dialogue-operation-major-group-keep-safest-major",
-      "sessionId": "16",
+      "sessionId": "9907131",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "explore",
         "plan"
@@ -2940,6 +3131,17 @@
       "prompts": [
         {
           "prompt": "专业组里只保留最稳的专业行不行",
+          "expectedToolNames": [
+            "answer_policy"
+          ],
+          "expectedToolCounts": {
+            "answer_policy": 1
+          },
+          "assertToolNamesNotContain": [
+            "clarify_request",
+            "preview_plan_action",
+            "preview_plan_change"
+          ],
           "assertContainsAny": [
             "专业组",
             "专业",
@@ -2992,6 +3194,10 @@
             "下一步"
           ],
           "expectedNoAction": true,
+          "expectedToolNames": [
+            "confirm_pending"
+          ],
+          "maxToolCallCount": 1,
           "assertNoFollowups": true,
           "qualityFocus": [
             "readonly_boundary",
@@ -3028,6 +3234,10 @@
             "下一步"
           ],
           "expectedNoAction": true,
+          "expectedToolNames": [
+            "acknowledge_readonly"
+          ],
+          "maxToolCallCount": 1,
           "assertNoFollowups": true,
           "qualityFocus": [
             "readonly_boundary",
@@ -3078,7 +3288,8 @@
     },
     {
       "name": "400-dialogue-followup-plain-language",
-      "sessionId": "17",
+      "sessionId": "9907132",
+      "cloneBackendStateFromSessionId": "16",
       "flow": [
         "plan"
       ],
@@ -3217,6 +3428,7 @@
           "qualityFocus": [
             "rich_decision_basis"
           ],
+          "maxToolCallCount": 1,
           "minTextLengthWarn": 160
         }
       ]
@@ -3274,6 +3486,10 @@
       "prompts": [
         {
           "prompt": "我只想先保存这个思路，不要自动改",
+          "assertContains": [
+            "具体内容",
+            "确认前不会记录或改方案"
+          ],
           "assertContainsAny": [
             "思路",
             "确认",
@@ -3290,6 +3506,9 @@
           ],
           "expectedNoAction": true,
           "assertNoFollowups": true,
+          "expectedToolNames": [
+            "clarify_request"
+          ],
           "qualityFocus": [
             "readonly_boundary",
             "preview_confirm_boundary"
@@ -3363,6 +3582,11 @@
             "后续调整",
             "下一步"
           ],
+          "expectedToolNames": [
+            "explore_topic"
+          ],
+          "maxToolCallCount": 1,
+          "assertNoFollowups": true,
           "qualityFocus": [
             "rich_decision_basis"
           ],

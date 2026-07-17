@@ -1,0 +1,263 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Hard priority rank_before/within_tier Proposal and final-action checks.",
+    "notes": "Priority is non-exclusive and only reorders existing matches within each tier. It does not add coverage or cross tier boundaries."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "preview_plan_change",
+      "apply_plan_change_proposal"
+    ],
+    "coverage": [
+      "hard_priority_rule",
+      "rank_before",
+      "within_tier",
+      "single_proposal",
+      "postcondition_verification"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "16",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "action_family",
+        "volunteerId",
+        "软偏好",
+        "草稿"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-priority-guangdong-within-tier-final-action",
+      "sessionId": "9907146",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": [
+          "orderedPlan",
+          "formalPlan"
+        ]
+      },
+      "prompts": [
+        {
+          "prompt": "当前方案里广东的专业组更优先一些，但不是只保留广东",
+          "assertContainsAny": [
+            "广东",
+            "同档",
+            "前移",
+            "确认"
+          ],
+          "assertNotContains": [
+            "48",
+            "补齐",
+            "payload",
+            "action_family",
+            "volunteerId",
+            "软偏好",
+            "草稿"
+          ],
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action",
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "同档优先规则",
+            "排序校验通过",
+            "已按预览调整"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.priorityRuleCount",
+              "equals": 1
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfiedPriorityRuleCount",
+              "equals": 1
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.priorityRules",
+              "contains": {
+                "domain": "region",
+                "key": "province",
+                "values": [
+                  "广东"
+                ],
+                "orderingTarget": "rank_before",
+                "scope": "within_tier"
+              }
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthEquals": 45
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-fill-exclude-priority-composite-final-action",
+      "sessionId": "9907147",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": [
+          "orderedPlan",
+          "formalPlan"
+        ]
+      },
+      "prompts": [
+        {
+          "prompt": "把方案补齐，民办的不要，而且山东的专业组在同档里优先靠前",
+          "assertContains": ["48", "民办", "山东"],
+          "assertContainsAny": ["48", "民办", "山东", "同档", "确认"],
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action",
+            "review_plan"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "48个专业组",
+            "1条要求",
+            "1条同档优先规则",
+            "校验通过"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": ["planningWorkspaceAction"],
+          "assertActionableFollowupTargets": ["ordered", "review"],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementCount",
+              "equals": 1
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.priorityRuleCount",
+              "equals": 1
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfiedPriorityRuleCount",
+              "equals": 1
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": "院校性质:民办"
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.priorityRules",
+              "contains": {
+                "domain": "region",
+                "key": "province",
+                "values": ["山东"],
+                "orderingTarget": "rank_before",
+                "scope": "within_tier"
+              }
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.requiredCount",
+              "equals": 48
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthEquals": 48
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "民办"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

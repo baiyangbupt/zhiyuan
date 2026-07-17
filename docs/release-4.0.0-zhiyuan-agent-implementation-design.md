@@ -1,6 +1,85 @@
 # Release 4.0.0 — Zhiyuan Agent 实施设计
 
-> 版本: v2.18 | 日期: 2026-07-11
+> 版本: v2.77 | 日期: 2026-07-16
+> 变更: v2.77 完成当前 24 包 clone-backed final-action 与 13 包 live 发布门禁。隔离拓扑下 final-action 一次性 `178/178`，`warnings=[]`、`failures=[]`，关闭 v2.76 “尚未执行一次性 24 包全绿”的发布 P0；live 完整初跑为 `227/231`，其中青岛城市学院只读查询错路由已补强 `query_plan` 边界，会计候选 case 已从被替代的 `review_plan` 断言 hard cut 到当前 `discover_options` 契约，另两项一次性模型路由/运行波动原样隔离复验通过。四个原红 step focused 共 `4/4`，证据仍按“完整初跑 + 隔离复验”分层，不能写成同一次 `231/231`。完整 Python 为 `1719 passed, 42 skipped`，完整 Maven 沿用同轮 Java 代码基线 `593 tests, 0 failures/errors, 4 skipped`。两轮门禁的 MySQL、SQLite 和候选副本均已清零；live 验收后仅用 `PURGE BINARY LOGS TO 'binlog.000425'` 清理 10 个封存日志并保留活动文件，磁盘可用空间约 `51GiB -> 65GiB`。详见 §16.23。
+> 版本: v2.76 | 日期: 2026-07-16
+> 变更: v2.76 完成冲稳保精确配额首个纵切。新增独立 `tier_quota_goal={type=exact_counts,sprint_count,stable_count,protect_count}`，三档数量必须完整、非负且合计等于冻结后的最终总数；无 selection goal 时保持当前正式方案总数，有 fill-to-count 时与解析出的目标总数一致。配额只在确定求解阶段临时转成三条档位覆盖，不持久化为普通最低下界；确认后独立写入 `hardPlanningObjectives.tierQuotaGoal`，regenerate 与专用 postcondition 都按专业组/志愿精确等于校验。首版与普通 requirements/priority/repair goal 互斥，比例、最大值和区间继续 fail closed。完整 Python unit `1630 passed, 33 skipped`，完整 Maven `593 tests, 0 failures/errors, 4 skipped`；真实 clone-backed 包 `3/3`，metrics `/private/tmp/zhiyuan_400_v276_tier_quota.json`。验收后两条测试 session、SQLite 和 6 个候选副本清零，binlog 仅有活动 `binlog.000404`。详见 §16.22。
+> 版本: v2.75 | 日期: 2026-07-16
+> 变更: v2.75 完成显式档位最低数量纵切。`PlanChangeSpec.requirements` 新增 `admission.tier` 硬覆盖域，只接受 include 和用户明确给出的 `min_count`；Agent/后端双重 canonical 校验，模糊数量、未知档位及 exclude/only_keep 均 fail closed。无总数目标时冻结当前正式方案数量并等量替换，与 `fill_to_count` 复合时仍只有一个 Proposal/pending/command；目标持久化并由 regenerate 与专业组/志愿 postcondition 继续强制。真实 tier-minimum `3/3`，共享 fill/coverage/priority 三包复跑 `18/18`，合计 `21/21`；final-action 入口补入四个 Proposal 包，由 19 包升级为 23 包，但证据仍按原 19 包与新增四包分层。Python direct `252 passed, 33 skipped`，完整 Maven `581 tests, 0 failures/errors, 4 skipped`。验收后 MySQL/SQLite/候选副本清零，仅用 MySQL SQL 清理三个封存 binlog 并保留活动 `binlog.000404`。详见 §16.21。
+> 版本: v2.74 | 日期: 2026-07-16
+> 变更: v2.74 完成查询/审查 grounding、普通偏好硬要求化、复合预算单 pending、reference 直返和 final-action 夹具收口。19 文件 clone-backed final-action 完整初跑 `150/152`，两个失败均为 WebSocket 前 planning-state 夹具 5 秒超时；夹具专用上限对齐为 30 秒后，两个原 case 隔离复验 `4/4`，当前无可复现最终执行业务缺陷。发布证据继续分层记录，不把两次运行相加成一次全绿。验收后 MySQL/SQLite/候选复制状态全部清零，删除被替代 metrics，并仅通过 `PURGE BINARY LOGS TO 'binlog.000401'` 清理 30 个封存日志，磁盘可用空间 `8.8GiB -> 43GiB`。详见 §16.18-§16.20。
+> 版本: v2.72 | 日期: 2026-07-16
+> 变更: v2.71-v2.72 完成 13 文件 live 与 19 文件 clone-backed final-action 门禁分层收口。`only_keep` 只持久化用户点名的正向 canonical scope，工具基于结构化语义删除模型枚举的“其他/其余/剩余”泛化补集并保留明确命名排除；专业 taxonomy 增加层级保真，管理学/医学/工学等学科门类不得收窄成某个专业类。G3/G22/G31 改为 case 内先真实创建 pending、再只读查询并断言 pending 仍 active，不再依赖源 session 瞬时状态。live 初跑 `221/231`、final-action 初跑 `143/151`，稳定缺陷修复后对应包全部通过，v158 超时和 v173 一次性 TypeError 原样复验均通过；完整 Python unit `1611 passed, 31 skipped`。验收后 990* 数据库/SQLite/候选复制状态清零，封存 binlog 仅用 MySQL `PURGE BINARY LOGS` 清理并保留活动 `binlog.000371`，磁盘可用空间 `18GiB -> 54GiB`。详见 §16.16-§16.17。
+> 版本: v2.70 | 日期: 2026-07-15
+> 变更: v2.70 收口 4.0 首工具、只读 reference、专业对比和回归 fixture 可信度。首个模型响应现在必须恰好调用一个工具，同批多工具在执行前整体拒绝并重试，被拒绝 ToolCall 不进入持久化历史；顺序发生的 schema/参数重试仍保留。用户明确“仅供参考/不记录/不调整”才生成不落状态的 typed `strength=reference`，普通“倾向/重点关注/优先考虑”继续按硬要求处理，不恢复软偏好层。“法学和财经哪个更适合我”固定走 `compare_entities`；“只要电气和气象”只保存 positive only-keep 的 canonical `电气类/大气科学类`，不再把“其他方向”伪造成负向专业。完整 13 文件 live 基线为 `224/231`，7 个失败中 5 个由 3 次 `TimeoutError` 及后续轮次连带产生，另 2 个为 compare 路由和 canonical 断言；修复后 3 个语义 focused、3 条超时链共 9 step 全部通过。进一步发现 production case 用空正式方案 session 17 产生假通过，runner 现对 clone planningState 生成小型 state profile 并在 WebSocket 前校验 `fixtureContract`；相关 case 改用 session 16。移动预览同步显示源位置和目标位置，分档移动同时显示档内与全局位置。完整 Agent unit `1608 passed, 31 skipped`，runner `101 passed`；clone-backed 代表集 G17/v157/v211/学费 requirement-action 共 `9/9`，后端 pending、版本、硬要求、最终方案和 workspace refresh 断言全部通过。
+> 版本: v2.69 | 日期: 2026-07-15
+> 变更: v2.69 关闭“不要医学类的”之后“从候选中选择 7 所放入方案里，先补齐志愿数量”的上下文补齐纵切：`7 所` 只描述本轮候选来源/预计新增，不覆盖 planning state 已冻结的最终目标 48；active `intent_change` 仅在模型显式提交 `pending_resolution=append_to_active_pending` 且 typed requirement 可无损转换时并入同一个 `fill_to_count` Proposal，不支持的职业/学费/复合 only-keep 整体 fail closed，blocked Proposal 保留旧 pending，只有 ready Proposal 冻结成功后才替换。真实 final-action 首次暴露 Proposal dry-run 与确认重建候选事实不一致：候选池与正式专业组使用两套专业 ID，Proposal 未解析到已选医学专业，预演错误给出“移出 0、补入 3”，确认重建实际为 47 并由 postcondition 正确回滚。后端现统一候选事实构建（身份归一、已有 overlay、专业分类补全），正式方案专业再以“专业组 ID + 专业名”做唯一回退解析；专业组按删除不合格专业后的净存活组数投影，并允许被清空组参与重新补入。修复后真实预演为 `45 - 1 + 4 = 48`，确认 pending `applied`、requirements `1/1`、`postcondition.satisfied=true`，最终 48 个专业组且无医学。Python direct/mainline 聚焦 `303 passed, 31 skipped`、runner/quality `111 passed`；完整 Maven `577 tests, 0 failures/errors, 4 skipped`。metrics `/private/tmp/zhiyuan_400_v269_context_fill_pending_merge_after_identity_projection_fix.json`。
+> 版本: v2.68 | 日期: 2026-07-15
+> 变更: v2.68 关闭泛化“把这版调稳点，先看怎么动”的 Proposal 选择可靠性：首次 `preview_plan_change(repair_goal.objective=increase_stability)` 只返回本轮结构化 review Proposal options，并排除属于数量目标的 `fill_missing_count/count_validation`；`ZhiyuanAgent` 将 `review_repair_requires_exact_selection` 转成一次 Pydantic AI `ModelRetry`，携带完整 options 强制模型在同一轮继续。模型仍按 status/source/strategy/sourceCheckCodes/summary/impact 做语义选择，Python 不按列表顺序取第一项、不扫描中文原话映射策略；第二次必须提交 exact `review_issue_code + strategy`，才允许冻结唯一 ready Proposal。完整 Python unit `1593 passed, 31 skipped`，Agent/direct/mainline/hard-cut `300 passed, 31 skipped`。真实 session 16 状态克隆到 `9907046`：预览严格断言两次 `preview_plan_change`、唯一确认卡且无 review/query/action 旁路；确认后 pending `applied`，策略 `sort_by_probability`，实际调整 2 个专业组，`postValidationPassed/satisfied=true`。metrics `/private/tmp/zhiyuan_400_v268_stability_forced_retry_preview.json`、`/private/tmp/zhiyuan_400_v268_stability_forced_retry_confirm.json`。
+> 版本: v2.67 | 日期: 2026-07-14
+> 变更: v2.67 完成 review Proposal 到 pending/confirm 的首个纵切：`PlanChangeSpec` 新增与数量、requirements、priority 互斥的 typed `repair_goal={review_issue_code,strategy}`，Agent 只按 exact issue+strategy 选择后端 `review_check/status=ready` Proposal，不按返回顺序猜第一个建议，也不从 `raw_user_text` 编译动作。专业组内安全垫话术现在冻结 `group_inner_safety_guard + adjust_major_group_inner_safety`，创建一个 `apply_plan_change_proposal` pending；确认命令复用既有 claim/CAS/operationId/事务，复盘 Proposal 单独校验 apply status、proposal ID/source 和 `RepairReport.postValidationPassed`。Proposal 生成可能因重跑过期 review 推进 planning version，因此冻结前强制满足 envelope version、proposal guard 和生成后的 fresh workspace version 三者一致。删除该场景原 `regenerate_order + probability_gap` 路由和专用测试口径；纯 regenerate bridge 只保留不附带临时修复目标的用途。Python unit `1590 passed, 31 skipped`，Agent/direct/mainline/hard-cut `271 passed, 31 skipped`；完整 Maven `575 tests, 0 failures/errors, 4 skipped`。真实 clone-backed final-action `2/2`：一次 `preview_plan_change` 出卡，确认后调整 3 个专业组、补入 3 个专业并复审通过，metrics `/private/tmp/zhiyuan_400_v267_review_repair_exact_proposal.json`。
+> 版本: v2.66 | 日期: 2026-07-14
+> 变更: v2.66 关闭 `preview_intent_change` 的稳定重复调用：模型已输出 `semantic_requirements` 但漏传等价 `positive/negative` 时，工具直接从 `explicit/confirmable` 结构化项补齐 typed payload，再复用既有实体解析、属性归一、歧义校验、pending 和最终 action 链路；`reference` 保持只读，且全程不扫描 `raw_user_text` 恢复业务条件。删除已被替代的 `intent_change_requires_attribute_completion` 返回协议、专用 completion 校验函数和旧重试提示。active pending 场景另通过 Pydantic AI 动态 tool schema 将 `pending_resolution` 标为 required 并移除默认值，append/replace/hold 仍由模型基于状态摘要自主判定，工具不猜关系。`dialog_regression_400_v179_pending_replace_review_quality_cases.json` 的 append 上限从 2 次收紧为 1 次。完整 Python unit `1586 passed, 31 skipped`，正式 local gate `441 passed`；真实 clone-backed 回归 v143 `2/2`、v216 `2/2`、v179 strict `10/10`，所有步骤工具调用均为 1，pending/版本/约束落库/ordered/review/替换结果断言通过。metrics: `/private/tmp/zhiyuan_400_v266_v143_semantic_materialization.json`、`/private/tmp/zhiyuan_400_v266_v216_semantic_materialization.json`、`/private/tmp/zhiyuan_400_v266_v179_strict_single_call.json`。
+> 版本: v2.65 | 日期: 2026-07-14
+> 变更: v2.65 完成“显式覆盖数量并保持当前总数”纵切：无 `selection_goal` 的纯 include 可冻结当前正式方案数量，复用 `fill_missing_count` Proposal 通过等量替换满足显式 `min_count>=2`，并可组合一条用户明确提出的同档 priority；`persistTargetCount=false`，不会覆盖 planning state 原目标数量。工具层将缺失数量和 `min_count=1` 统一退回“明确最终至少数量 + 是否允许等量替换”澄清，阻断模型把“多放一些”擅自补成默认 1 或 priority 后生成假确认卡；`fill_to_count + include(min_count=1)` 既有语义不变。真实 gate `3/3`：显式场景保持 45 个专业组，山东命中 3、同档逆序 0、原目标仍为 48；模糊场景无 pending/确认卡/副作用。完整 Python `1584 passed, 29 skipped`，完整 Maven `571 tests, 0 failures/errors, 4 skipped`；metrics `/private/tmp/zhiyuan_400_coverage_preserve_v265_gate.json`。验收后清理测试会话、SQLite 历史、候选复制文件及旧 metrics，停止隔离服务，purge `binlog.000272/000273` 并保留活动 `binlog.000274`。
+> 版本: v2.64 | 日期: 2026-07-14
+> 变更: v2.64 在单 Proposal 管线内开放 `fill_to_count + include/exclude/only_keep + 一条 priority rule`：requirements 先确定满足硬筛选/覆盖和数量目标的 projected final set，priority 再对该集合执行 `rank_before/within_tier` 稳定前置；同一个 typed `PlanChangeSpec`、后端 Proposal、pending 和 planning command 原子持久化 requirements、冻结目标数量与 priority rule，确认及后续 regenerate 同时校验数量、要求、持久化和同档逆序为 0。priority-only 不因 planning state 存在目标数量而隐式补齐；无显式补齐语义时 `selection_goal=None`。多条/多级优先、跨档移动、priority 自身要求增加覆盖仍整体 blocked。完整 Python unit `1581 passed, 29 skipped`，Agent/direct/mainline/hard-cut 聚焦 `262 passed, 29 skipped`；完整 Maven `565 tests, 0 failures/errors, 4 skipped`。隔离 backend `18080` + Agent `8039` + 真实 LLM strict gate `4/4`：priority-only 保持 45 个专业组与冲/稳/保 `9/17/19` 不变，广东命中 21、逆序 `69 -> 0`；复合话术“把方案补齐，民办的不要，而且山东的专业组在同档里优先靠前”只创建一张确认卡，`45 -> 48`，移出 40、补入 43，最终民办 0、山东命中 1、逆序 0，所有 postcondition 通过；metrics `/private/tmp/zhiyuan_400_priority_composite_v264_strict_final.json`。
+> 版本: v2.63 | 日期: 2026-07-14
+> 变更: v2.63 完成 hard `priority_rules` 首个纵切：开放一条 typed `{domain,key,values,orderingTarget=rank_before,scope=within_tier}` 规则，只在各自冲/稳/保档内稳定前置当前方案已有匹配项，不增加志愿、不跨档、不改变志愿集合；规则持久化到 `constraintState.hardPlanningObjectives.priorityRules`，确认命令与后续 regenerate 都强制执行并校验命中数、规则持久化和同档逆序数为 0。固定位置冲突、档位缺失、方案无命中、多级优先、priority 与数量/筛选复合仍整体 blocked，不拆 pending、不部分执行。完整 Python unit `1580 passed, 29 skipped`，runner/parallel/hard-cut `140 passed`；完整 Maven `559 tests, 0 failures/errors, 4 skipped`。隔离 backend `18080` + Agent `8039` + 真实 LLM gate `2/2`：session 16 克隆方案的 45 个专业组集合与冲/稳/保 `9/17/19` 均不变，广东规则命中 21 组、前移 20 组、同档逆序从 69 降为 0，pending applied、postcondition 和规则持久化均通过；metrics `/private/tmp/zhiyuan_400_priority_rules_v263.json`。
+> 版本: v2.62 | 日期: 2026-07-14
+> 变更: v2.62 在同一个 `fill_to_count` Proposal 中开放非排他 typed `include`：`include` 默认 `minCount=1`，持久化到 `constraintState.hardPlanningObjectives.coverageRequirements`，不写 `mustIncludeXxx`、不裁剪 `effectiveCandidates`；Proposal 和后续 regenerate 都按覆盖数量补入或等量替换，多个覆盖要求用共享最小覆盖求解，同一候选可同时满足多条要求，majorGroup 始终以完整专业组执行，候选不足或锁定项不可替换时整体 blocked。补齐目标不再要求用户每次显式说“50”：优先使用 typed `target_count`，否则读取 planning state 的 `candidate_target_total/ordered_target_total`，两者都不存在才澄清；解析出的目标值与 `target_count_source` 冻结进 pending，确认时不重新猜测。真实 session 16 的当前方案为 45 个专业组、规划目标为 48，“把方案补齐，而且必须有法学”最终只创建一个 Proposal，补入 3 个完整专业组并满足法学覆盖，`requiredCount=48`、`mustIncludeMajors=[]`、coverage objective 持久化且 postcondition 通过。完整 Python unit `1576 passed, 29 skipped`，runner/parallel/hard-cut `140 passed`，完整 Maven `545 tests, 0 failures/errors, 4 skipped`；真实 backend+Agent+LLM gate `8/8`，metrics `/private/tmp/zhiyuan_400_include_context_target_v262.json`、`/private/tmp/zhiyuan_400_include_context_target_v262_full.json`。
+> 版本: v2.61 | 日期: 2026-07-14
+> 变更: v2.61 在 v2.60 单数量 Proposal 纵切上开放 typed projected `exclude/only_keep` 复合硬要求：Agent 将数量目标和完整 requirements 一次提交给 `preview_plan_change`，后端在同一个 Proposal 内投影既有与本轮要求，先移出不满足项、再从符合要求的完整志愿/专业组补齐；确认后在一个 planning command 事务中持久化要求与 `requiredCount`、应用确定动作、重排、复审，并同时校验精确数量、最终方案要求和要求持久化。非排他 `include` 与 `priority_rules` 继续整体 fail closed。修复真实 majorGroup 同时存在 45 个 ordered units/176 条扁平 items 时错误按 176 计数的问题，统一按 volunteer model 选择 ordered/working 事实源；当前已选明细不在 candidatePool 时，从同一 ordered state 的 unit 合并院校性质/地域/层次等结构化事实，major 与 majorGroup 均避免 `排除民办` 错误放行。Agent 保留无 pending 的 terminal `preview_plan_change` 具体回复，候选不足不再被通用 no-preview guard 覆盖；Proposal 摘要从 typed requirements 展示“排除民办（院校性质）”，不解析 `raw_user_text`。完整 Python unit `1573 passed, 29 skipped`，runner+hard-cut `133 passed`，完整 Maven `533 tests, 0 failures/errors, 4 skipped`；真实 backend+Agent+LLM gate `6/6`，复合场景确认后精确 50 个专业组、要求校验通过且 ordered plan 无民办，metrics `/private/tmp/zhiyuan_400_projected_requirements_v261_final_green.json`。
+> 版本: v2.60 | 日期: 2026-07-14
+> 变更: v2.60 完成阶段 1 的 `fill_to_count` 单 Proposal 代码与真实验收闭环：Agent 新增 `preview_plan_change(spec=PlanChangeSpec)`，首版只接受 `selection_goal.type=fill_to_count + target_count`；纯数量目标调用后端 user-goal Proposal dry-run，ready 时只创建一个 `apply_plan_change_proposal` pending，已达标返回 info/no-change 且不出卡，候选不足返回 blocked 且禁止部分补齐，quantity+其他 requirements/priority_rules 整体 fail closed、不拆多个 pending。后端 `UserGoalFixProposalReq` 增 typed `targetCount`，按 major 志愿数/majorGroup unit 数选择未入选且满足已确认硬要求的候选；确认命令在现有 pending owner/CAS/operationId/事务内重新生成 Proposal、应用、强制重排、复审并验证 `actualCount == targetCount` 且新目标已持久化，失败抛错回滚，成功/重放返回 typed postcondition report。完整 Python unit `1570 passed, 29 skipped`；完整 Maven `522 tests, 0 failures/errors, 4 skipped`；真实 backend+Agent+LLM gate `5/5`，确认后 pending applied、postcondition satisfied、planning version 增长、`requiredCount=50` 且 ordered plan 精确为 50 个专业组，metrics `/private/tmp/zhiyuan_400_fill_to_count_v260.json`。隔离服务和测试数据已完整清理。
+> 版本: v2.59 | 日期: 2026-07-13
+> 变更: v2.59 在模型网络恢复后完成 `discover_options` 四语境真实验收，隔离 Agent 8039 回放 `4/4`：裸问“上海的有哪些”只澄清且不调用工具，院校目录调用一次 `discover_options(school,catalog)`，当前可报调用一次 `discover_options(school,eligible)`，当前方案调用一次 `query_plan`；metrics `/private/tmp/zhiyuan_400_discover_options_v258_network_fixed.json`。真实输出同时暴露两个展示/回复边界并已修复：候选专业组通过既有 canonical 实体解析聚合院校和专业，避免同一院校按专业组重复及长项目后缀泄漏；`discover_options` 改为 terminal direct-return，阻止第二次模型调用把有限候选样本扩写成“全部民办/几乎没有公办”等无依据的全局结论，eligible focused 最终回放通过，耗时约 9 秒，metrics `/private/tmp/zhiyuan_400_discover_options_v258_eligible_final.json`。至此阶段 1 读侧纵切关闭，进入 `fill_to_count` 单 Proposal 纵切。
+> 版本: v2.58 | 日期: 2026-07-13
+> 变更: v2.58 完成阶段 1 的查询/发现第一纵切：新增只读 `discover_options(entity_type=school|major, mode=catalog|eligible|recommend)`，院校 catalog 复用后端权威 SchoolManager 复合查询、专业 catalog 复用 Catalog 专业搜索，eligible/recommend 只读当前会话 candidate query（recommend 按 recommendation overlay/finalScore），正式方案事实继续只走 `query_plan`。固化“上海的有哪些”四语境：无实体/数据域上下文先澄清，院校目录走 catalog，当前可报走 eligible，当前正式方案走 query_plan；禁止 `explore_topic` 或模型常识补名单。候选 sandbox 适配层补回后端 `total/totalUnitCount/viewSummary` 并保留数据源错误，空命中与数据源不可用不再混淆。新增 5 个工具单测、分页契约单测和 4-case 真实模型回放资产；direct `204 passed, 29 skipped`，相关组合回归 `384 passed, 29 skipped`，完整 Python unit `1566 passed, 29 skipped`。真实回放已在隔离 Agent 8039 尝试，backend/session/候选克隆均成功，但 4/4 在首次模型请求前因外部 `kimi-k2.6` `ConnectTimeout -> ModelAPIError` 失败、工具调用均为 0，记录为环境失败而非路由结果，metrics `/private/tmp/zhiyuan_400_discover_options_v258.json`。本版同时清理 §13.6/§14.6 的 `priorityBoosts/boost_preference/filters 恢复` 旧计划口径，统一改为 typed `PlanChangeSpec.priority_rules`、structured retry 和单 Proposal。
+> 版本: v2.57 | 日期: 2026-07-13
+> 变更: v2.57 新增 §16 Proposal 执行边界与开工基线，修正 §15 中可能重新引入 3.2 ProposalCompiler 的口径：4.0 继续由单 Agent 负责语义理解，Proposal 仅作为后端 dry-run/唯一预览/幂等原子执行边界；基础 candidatePool 保持全量，要求只在 candidateView/effectiveCandidates/方案派生链路生效；禁止从 raw_user_text 编译业务 filters 或恢复动作；复合诉求必须编译为一个 PlanChangeSpec 和一个 proposal/pending，确认执行复用现有 planning command operation/CAS/lease，不直接拼多步 apply。首批实施从本轮 tool return 隔离和拒绝执行端不消费条件的 generate/regenerate 假预览开始。
+> 版本: v2.56 | 日期: 2026-07-13
+> 变更: v2.56 新增 §15 整体实施蓝图与推进计划（统一口径，取代 §11.6/§12.6/§13.6/§14.6 分散计划）：把 §11-§14 收敛成三条主线（A 需求统一硬化编译、B 约束单一事实源+读侧 grounding、C 确认后可验证）+ 一条端到端管线；给出跨节合并的七层核心实现面（数据模型/编译/预览/执行/校验/后端契约/基础设施修复）、统一分阶段计划（阶段0后端契约→1能力补齐+verify地基→2编译编排+动作鲁棒→3硬序优先+边界→4回归解冻）与统一放量门槛（按 verify 逐类解冻）。
+> 版本: v2.55 | 日期: 2026-07-13
+> 变更: v2.55 新增 §14 产品原则「需求统一硬化」：取消软偏好中间态，用户任何要求一律编译成带可验证目标的 HardRequirement（include/exclude/only_keep/priority/quantity 五类），任何 confirm 必须产生可校验的方案变化。收敛 §3.6/§9.3（取消"弱肯定→explore"层）与 §13 方向 A/D（数量补齐=quantity 硬化、软优先=priority 硬序约束非排他）；给出 HardRequirement/VerifySpec 数据结构、constraintState 扩 priorityBoosts、compile_hard_requirements 编译入口、fix-proposal 一等化、boost_priority 动作、_verify_requirement_applied 统一后置校验的核心代码设计。
+> 版本: v2.54 | 日期: 2026-07-13
+> 变更: v2.54 新增 §13 生产分布实测整体评估：200 条生产回捞回放暴露的是能力覆盖缺口而非架构缺陷；根因为"旧链路清理跑在 4.0 能力重建前面"——fix-proposal（数量补齐）、基于候选池/方案的推荐对比、复合诉求处理被切掉未重建，叠加读工具未 ground 到会话候选池+方案、缺编排层、direct 直返渲染串入全历史；给出方向 A-E（补被切能力/编排/属性兜底/软优先/边界）与阶段 1-4 计划，并将全量放量冻结回已验证子集。定位"院校专业推荐对比好像没有了"= explore/compare 只读 profile 百科 API、未接会话候选池+方案数据。
+> 版本: v2.53 | 日期: 2026-07-12
+> v2.53 发布拓扑与 smoke 收口：正式 local quality gate `433 passed`、runtime hard-cut `36 passed`；开发联调四服务 healthcheck 中 web/server/base-data/agent/rank 全部 PASS。修复 Web `next.config.mjs` 把两个可选 Agent URL 以 `undefined` 注入导致的 Next 配置警告，并将唯一的 Ant Design `Tooltip.overlayStyle` 旧 API 替换为 `styles.root`；`/session` 实际编译无上述警告。`release-smoke --local` 原先固定请求生产 `/assistant-pc`，无法验证 `scripts/start-all.sh` 的空 basePath 开发拓扑；新增 `ZHIYUAN_WEB_BASE_PATH`，默认仍为 `/assistant-pc`，显式空值才检查 `/session` 与 `/sessionDetailV2`，生产检查未放宽。修复后只读 smoke 的 Web、Backend、review rules、Agent HTTP/WebSocket、Rank 全部 PASS，`0 failures`；新增无网络测试覆盖生产/开发两种路径。完整 Python `1631 passed, 38 skipped`。全量 TypeScript 检查仍有 26 个既有错误，均不在本轮修改文件，不登记为本轮通过。
+> v2.52 命名志愿动作与空方案执行闭环：`preview_plan_action(add)` 现在消费模型给出的结构化 `filters.school + filters.major` 或 `学校.专业` target，先查当前候选快照、再调用后端候选查询；唯一专业直接生成 `add_units` pending，同一 `planSchoolDataId` 下多个专业按专业组加入，跨组多解必须列出选项澄清，零命中和已在方案中均明确无副作用返回。工具层没有扫描 `raw_user_text` 或新增中文关键词路由。修复真实志愿身份读取遗漏 `planSchoolDataId`，以及空方案 summary 丢弃 backend `version` 导致确认时 `expectedPlanVersion=0` 的问题。完整拓扑下“厦门大学嘉庚学院·建筑学”预览、确认、pending applied、planning version 增长和目标 volunteerId 入方案全部通过；排序服务未启动时后端生成方案失败被确认是环境依赖，不增加业务兼容降级。命名 move/add/类别澄清聚焦 `4/4`，只读查询后确认 guard `2/2`；完整 Python `1629 passed, 38 skipped`，完整 Maven 509 个测试无失败、4 skipped。session 17 的相关资产从伪 `formal_plan_present` hard cut 为真实 `empty_plan + candidatePool`，并删除被当前统一 thinking 文案替代的旧白名单红项。
+> v2.51 发布门禁旧断言清理：v2.50 完成结构闭环后复核两端长期红项，确认均为已被当前设计替代的测试口径，而非生产实现缺陷。Python admission-policy 已明确输出“家庭预算与可接受学费上限”，删除仍期待模糊“家庭约束”的旧断言；Java constraint intent 按当前候选池全量可恢复设计，只使 overlay/recommendation/ordered/review stale，不使基础 candidatePool stale，`PlanningStateServiceTest.shouldMarkConstraintIntentChangeStaleWithoutCandidatePool` 已提供同层契约，因此将孤立的相反断言改为 without-candidate-pool。聚焦 Python `9 passed`，Java ReviewInvalidationPolicy + PlanningStateService 通过；完整 Python `1535 passed, 29 skipped`，完整 Maven 509 个测试无失败、4 skipped。未修改生产代码，没有新增兼容分支；Release 4.0 当前单元发布门禁从“两个已知红项”收敛为全绿。
+> v2.50 pending command 跨进程恢复 E2E：新增 opt-in `tests/e2e/test_pending_command_recovery.py`，以隔离 session 模拟 Agent 命令请求在 10ms 客户端超时后后端仍提交成功，随后通过 ready/resume 双向屏障精确重启 backend。屏障模式自行读取监听 PID，并断言重启前后 PID 集合不相交，避免“只暂停未重启”的假阳性。本机强断言运行中旧 JVM PID `56306` 提交 operation 后响应写出触发预期 `Broken pipe`，新 JVM PID `56671` 校验 Flyway V12 后恢复服务；测试强制 lease 过期，以新 claim token 接管并重放同一 operationId，返回 `replayed=true`，planning version 始终只增长一次，pending 最终为 applied。finally 清理 operation、pending、planningState 和屏障文件；数据库三类临时行均为 0，18082 无监听。`py_compile`、默认关闭时 `1 skipped`、真实跨进程 `1 passed in 87.96s`。完整 Python `1534 passed, 29 skipped, 1 failed`、完整 Maven 509 个测试中 1 failed/4 skipped，均仍为已登记的无关断言，没有新增失败。至此 v2.45-v2.50 的 pending 独立资源、CAS、lease、幂等命令、latest-only hard cut、日志保留和断连恢复闭环全部完成；后续转入发布门禁与运行观测，不再增加平行兼容实现。
+> v2.49 planning command operation 日志治理：新增 V12 `(status, update_time, id)` 清理索引和配置化 retention scheduler，默认启用、每小时执行、保留 succeeded 30 天、单批最多 500 行。Mapper 删除 SQL 固定包含 `status='succeeded' + update_time cutoff + LIMIT`，shared service 将批量限制在 1-5000；running 永不进入删除条件。任务使用进程内运行锁，异常只记结构日志且 finally 释放，不影响后续周期。真实数据库插入“40 天前 succeeded / 当前 succeeded / 40 天前 running”三条隔离记录，应用成功执行 V12 后调度日志 `deleted=1`，只删除过期 succeeded，当前 succeeded 与过期 running 均保留；V12 三列索引存在，测试记录清零，临时服务停止。retention 聚焦 `7 passed`，command `10 passed`；完整 Maven 509 个测试仍只有既有 ReviewInvalidationPolicy 失败、4 skipped。
+> v2.48 pending 存量回填与旧读 hard cut：本机审计发现旧 `pendingConfirmation` extra-data 共 6861 行，独立 pending 表在此前临时验证清理后为 0；其中 1142 条历史行结构完整且状态为 active/applying，但只有 569 条具备主会话租户归属。V11 首版按“任意历史 active”回填时因同会话多版本撞唯一键而失败，且会有复活墓碑前旧 pending 的风险；确认未插入任何行后仅清除失败的 Flyway 11 记录，没有执行 repair，也未触碰 V7-V10。修订后的 V11 与生产 `data_version DESC` 语义对齐，按 `dataVersion + id` 选择每会话唯一 latest，再过滤 active/applying、校验必填字段/长度、join `assistant_chat_session` 获取 tenant，并移除旧 transport metadata。真实迁移成功校验 11 个版本并回填 552 行；17 条被更高版本终态覆盖的旧 active 未复活，缺主会话的 573 条历史测试夹具未伪造租户，session 17 latest=failed 未回填。回填行均为 revision 1、active，transport metadata 残留为 0，抽样独立 API 可直接读取。随后删除 `pending_legacy_read_fallback` 配置、Agent extra-data 读取分支、`_pendingLegacySnapshot` marker 和兼容测试；无独立资源统一返回空。聚焦 Python `229 passed, 29 skipped`、Java pending/command `20 passed`；完整 Python `1534 passed, 29 skipped, 1` 个既有失败，完整 Maven 502 个测试仍只有 1 个既有失败、4 skipped。
+> v2.47 pending 多步规划命令幂等下沉：后端新增 V9 `assistant_planning_pending_command` 与单事务命令接口，把 `apply constraint/tuition + optional regenerate`、`add select + regenerate`、`replace remove + select + regenerate` 从 Agent 多步调用收敛为一个后端事务。命令校验当前 pending claim owner 和 lease、锁定 pending 与 planningState、校验 `expectedPlanVersion`，以 `operationId` 记录最终结果；同 operationId/同业务载荷重放不再执行副作用，不同载荷返回 `40903`，规划版本漂移返回 `40904`。并发请求在取得 planning 锁后会重读 operation，避免首事务未提交时误报版本冲突；请求 SHA-256 不包含可随租约接管变化的 claim token，允许新 owner 重放同一业务命令。V9 已应用后保持字节不变，请求指纹通过 V10 增量迁移加入，禁止 Flyway repair 或回改已发布 migration。Agent 已删除 intent/add/replace 三条旧多步编排，仅保留单命令调用；只有 `planning command is already running` 的 40903 属于结果不确定，operationId 载荷冲突是确定性失败。真实 backend 验证首次执行 `473 -> 474`、同载荷重放版本不再增长、异载荷 40903、旧版本 40904 且不写 operation；持久化结果保留 ordered plan 但不含 candidate pool，临时数据与服务已清理。聚焦 Java pending + command `20 passed`、Python `228 passed, 29 skipped`；完整 Python `1533 passed, 29 skipped, 1` 个既有文案失败，完整 Maven 502 个测试中 1 个既有 ReviewInvalidationPolicy 失败、4 skipped。
+> v2.46 applying 执行租约与崩溃恢复：在已落地的独立 pending CAS 上新增 V8 `claim_token/claim_expires_at`，后端固定 5 分钟执行租约。confirm 必须携带 UUID claim token；未过期 applying 对其他 token 返回 `transitionApplied=false`，过期后允许新 token 以 `applying -> applying` CAS 接管并递增 revision；complete/fail 必须匹配当前 claim token，旧执行者在租约被接管后返回 `40902 pending claim ownership mismatch`，不能覆盖新 owner。Agent 读取 claim token/expiry 作为运行态传输元数据：未过期 applying 不投影为 active pending并回复“正在处理中”，过期 applying 可重新进入确认投影并触发接管；service 已 claim 的内部 direct 执行上下文不会二次 claim。真实 backend 已执行 Flyway 7 -> 8，并验证 A claim、B 未过期拒绝、B 过期接管、A complete 拒绝、B complete 成功；临时记录和服务已清理。聚焦 Python `399 passed, 29 skipped`，Java pending `10 passed`；完整 Python `1528 passed, 29 skipped, 1` 个既有文案失败，完整 Maven 492 个测试中 1 个既有 ReviewInvalidationPolicy 失败、4 skipped。下一结构性工作是将 intent+regenerate 和 replace 多步动作下沉为带 operationId/expectedPlanVersion 的幂等后端命令。
+> v2.45 pending 独立资源/CAS 第一阶段：后端新增 V7 `assistant_chat_session_pending_confirmation` 单行快照表和 GET/upsert/resolve 内部接口，`revision` 与 planning version 完全解耦；状态链为 `active -> applying -> applied`，确认先原子抢占执行权，重复确认返回 `transitionApplied=false`，取消/过期/完成均校验 `pendingId + expectedRevision + sourceStatus`。Agent 的 service 确认入口和 direct `confirm_pending` 均已接入抢占，未获得执行权时禁止调用任何方案/意向变更 API；新写只走独立资源，迁移期仅在新表无行时保留可配置旧 extra-data 读兜底。runner 的 pending clear/clone/assertion 已迁移到独立资源，旧 version 0/latest 双写清理、按 tool payload 读取 pending version、`save_pending_confirmation(version=...)` 等实现已删除。真实本地后端验证已执行 Flyway V7，并验证 revision `1 -> 2 -> 3 -> 4 -> 5` 的创建、过期写拒绝、claim、重复 claim 幂等、complete、replace、cancel。聚焦 Python `396 passed, 29 skipped`，完整 Python unit `1523 passed, 29 skipped, 1` 个既有 admission-policy 文案失败；Maven pending 用例 `7 passed`，完整 Maven `489` 个测试中 `1` 个既有 ReviewInvalidationPolicy 断言失败、`4 skipped`。剩余边界：`applying` 崩溃恢复尚无租约/超时接管；intent+regenerate 与 replace 多步业务命令尚未下沉为后端幂等原子命令；旧读兜底需在发布迁移完成后删除。
+> v2.44 focused 架构验证与专业组位置修复：修正 v211/v212/v213/v216 地域 final-action 的正式方案源和 major 模式 `orderedPlanState.items` 断言，v173/v179 改用真实含目标 unit 的专业组正式方案源，并迁移已污染目标 session；runner 的 pending backend assertion 删除最后一处 `latest or version 0` fallback。`preview_plan_action` 在模型已选择 remove/move、携带原话但漏传 targets 时复用现有 ordinal parser 恢复源专业组位置，且预览显示专业组序号，不再暴露组内明细扁平位置；显式 targets/filters 始终优先。fresh focused live：v216 `2/2`、v173 remove/move `4/4`、v179 append/no-pending/replace `7/7`。测试：direct 工具 `182 passed, 29 skipped`，runner `93 passed`；完整 unit suite `1520 passed, 29 skipped, 1 failed`，唯一失败为既有 admission-policy “家庭约束”措辞断言，与本轮无关。结论：地域确认、pending 追加、第三专业组位置动作和 ReplacementSpec 在有效 fixture 上闭环；当前结构性边界仍是 pending 暂存于 versioned extra-data，clone/历史高版本墓碑会遮蔽 version 0 新 pending，独立 pending revision/CAS 和多步后端原子命令仍需后续完成。
+> v2.43 pending 生命周期第一阶段加固：生产读取统一为 latest-only，latest 空对象作为墓碑，不再回读 version 0 复活旧 pending；Service 只把通过结构校验的 active pending 投影到 `ConversationPhase` 和本轮 Sandbox，`confirm_pending` 必须持有该运行时投影才有执行权限，并校验运行时 `pendingId` 与 Sandbox 快照一致。前端 follow-up 兼容桥、Sandbox backend adapter 和 regression runner 同步采用 latest-only 语义，删除 version 0 fallback。final-action fixture 禁止 source/target 同 session，v211/v212/v213/v216 及 review/repair 资产改为独立目标 session；pending latest 清理查询失败现在计 environment failure，不再静默继续。相关单测 `594 passed, 29 skipped`。边界：当前 pending 仍暂存于 versioned extra-data，独立 pending revision/CAS 资源和 replace 等多步动作的后端原子命令仍是下一阶段，不在本版本宣称闭环。
+> v2.42 补齐 4.0 final-action/high-signal 专项门禁入口：v2.41 固定默认 live gate 后继续盘点 `examples/` 下全部 4.0 case，确认还有 19 个 4.0 专项/final-action 资产未进入默认 13 文件 live gate，包括 direct confirm、G1-G32、realistic user、v143/v150/v151/v153/v154/v155/v156/v157/v158/v173/v179/v183/v211/v212/v213/v216。这些不是旧资产，很多 metadata 明确要求 `--clone-backend-chat-session`，并包含 `assertBackendExtraData` 最终状态断言；如果直接混入默认 live gate，会因统一命令缺少 chat-session clone/DB 参数而产生环境假失败。本轮在 `dialog_quality_gate.py` 新增独立 `final-action` category，默认 `--execute` 仍只跑 local，`--mode live` 仍只跑 13 个默认 4.0 live 文件；需要验证最终动作闭环时显式运行 `--mode final-action`，命令统一带 `--clear-history-per-case`、`--clear-backend-pending-per-case`、`--clear-backend-planning-intent-per-case`、`--clone-backend-chat-session`、`--keep-response-text`、`--assert-plan-style`、`--response-timeout 180`，并支持透传 `--agent-url`、`--internal-service-url`、`--backend-db-password`。验证：`py_compile examples/dialog_quality_gate.py tests/unit/test_dialog_quality_gate.py` 通过；`tests/unit/test_dialog_quality_gate.py -q` 为 `9 passed`；`dialog_quality_gate.py --mode final-action ...` dry-run 生成 19 条 clone-backed command；默认 `dialog_quality_gate.py --execute` 本地门禁为 `421 passed`。当前结论：4.0 当前 case 资产分为默认质量/只读 live gate 与 clone-backed final-action 专项 gate 两层，避免把高成本最终动作验证隐藏在默认门禁里，同时让所有现存 4.0 专项资产有正式入口。
+> v2.41 4.0 case 资产 hard-cut 清理：按当前 4.0 direct 主链路口径收敛质量门禁，`examples/dialog_quality_gate.py` 不再自动 glob 所有 `dialog_regression_*_cases.json`，live gate 固定只引用 13 个当前 4.0 case 文件：agent smoke、plan operation、explore intent、readonly real session、core/effect perf、open quality、realistic quality、dialogue-derived、career direction、review repair、production abstracted、requirement plan action。已删除 `examples/` 下旧非 400 历史 regression JSON（advanced/comprehensive/enriched/full_journey/lifecycle/mainline/plan/plan_correctness/robust/science/score_tier/special 等），避免 3.x/早期口径继续被自动纳入维护面；`dialog_regression_runner.py` 示例、planning dialog checklist、dialog regression report 和 next session handoff 同步改到当前 4.0 case。新增 hard-cut audit：旧非 400 regression JSON 不应重新存在，当前 gate/mainline 测试不应引用旧文件，gate 不应恢复 glob 自动发现。测试侧同步把 explore intent catalog 的覆盖断言从旧 `positive_*_intent / historical_intent / intent_revision` 标签改为当前 `explicit_requirement / priority_reference_boundary / readonly_no_pending / candidate_explore / plan_impact` 语义。验证：`py_compile` 通过；`examples/dialog_quality_gate.py --metrics-dir /private/tmp/zhiyuan_400_effective_gate_dry_run` dry-run 通过并只列出 13 个 4.0 live 文件；`.venv/bin/python -m pytest tests/unit/test_dialog_quality_gate.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_runtime_hard_cut_audit.py -q` 为 `46 passed`。当前结论：历史积累 case 没有继续作为 live gate 全量维护对象，4.0 有效回归集已固化；历史 release/changelog 文档中的旧文件名保留为历史记录，不作为当前门禁入口。
+> v2.40 131 条 fresh quality observation 验证-only：在 v2.39 小池观察后继续扩大到完整 131 条质量观察池。首次运行目录 `/private/tmp/zhiyuan_400_v240_quality_131_fresh8041` 在第 80 个 case 后因本机磁盘满中断，错误为 `OSError: [Errno 28] No space left on device`，不计业务结果。定位空间大头为 `/opt/homebrew/var/mysql` 约 70G，其中 MySQL binlog `binlog.000144` 到 `binlog.000200` 占约 58G；按用户确认使用 MySQL `PURGE BINARY LOGS TO 'binlog.000201'` 清理，保留当前活跃 `binlog.000201`，磁盘可用空间从约 `230M` 恢复到约 `75G`，MySQL 目录降到约 `12-14G`。随后用 fresh agent `8041`、backend `8080`、真实 LLM、并发 4、完整 chat-session clone、`--backend-db-password 12345678`、`--ignore-thinking-assertions` 重跑 131 条，目录 `/private/tmp/zhiyuan_400_v241_quality_131_after_binlog_cleanup`，有效结果 `130/131`、148 step 中 147 step 通过。工具/路由分布：`zhiyuan_agent_direct=137`、`needs_plan_first_guard=3`、`direct_no_pending_short_text_confirm=4`、`direct_pending_intent_confirm=4`；工具调用 `answer_policy=19`、`explore_topic=25`、`read_state=3`、`preview_intent_change=15`、`compare_entities=12`、`review_plan=20`、`query_plan=15`、`preview_plan_action=10`、`confirm_pending=8`；`pendingConfirmationCard=23`，无工具直答 24 step，多工具调用 3 step。唯一失败仍是已降优先级 `400-open-quality-plan-query-then-confirm-guard`：上一轮 `query_plan` 只读查询青岛城市学院，第二轮“确认”走 `direct_no_pending_short_text_confirm -> confirm_pending`，没有执行副作用，但回复仍为“这类待确认内容还不能由新确认工具执行，请重新生成预览”，没有命中“上一轮只是查询/没有待执行方案动作”的语境文案。额外观察：`400-dialogue-region-beijing-tianjin-safety` 通过但返回“这轮处理没有完成，请稍后重试”，耗时 `32135ms`，无工具、无副作用，记录为低优先级回复质量/模型波动；warnings 主要为 81 条 source volunteer 文件缺失导致的 clone warning，另 1 条 `intent-existing-impact` 第二轮耗时 `10440ms > 10000ms`。本轮结论：full quality observation 没有发现新增稳定 4.0 链路缺口，也没有 pending/confirm/final-action 数据错误；当前剩余主要是已确认低优先级 no-pending 文案、单次只读兜底回复质量、部分验证夹具 volunteer 文件缺失 warning。
+> v2.39 场景观察与验证分析：继续按用户口径扩大 4.0 fresh 小池观察，不处理已降优先级 no-pending 文案。使用 fresh agent `8041`、backend `8080`、真实 LLM、并发 4、完整 chat-session clone、`--backend-db-password 12345678`、`--ignore-thinking-assertions`，运行 28 条高信号观察集，目录 `/private/tmp/zhiyuan_400_v239_fresh_observation_28`，首轮 `25/28`。工具/路由分布：`zhiyuan_agent_direct=29`、`direct_no_pending_short_text_confirm=3`、`direct_pending_intent_confirm=2`；工具调用 `preview_intent_change=9`、`query_plan=5`、`confirm_pending=5`、`compare_entities=4`、`review_plan=4`、`preview_plan_action=3`、`answer_policy=1`，共 12 次 `pendingConfirmationCard`。失败分层：1）`400-open-quality-plan-query-then-confirm-guard` 是已降优先级问题，上一轮只读查询后用户说“确认”时无副作用，但 no-pending 回复仍是“这类待确认内容还不能由新确认工具执行，请重新生成预览”，不贴合“上一轮只是查询、没有待采纳/待执行内容”的语境；2）`400-open-quality-career-multi-direction-readonly` 与 `400-open-quality-civil-service-plan-support-lazy` 均在 step 0 backend planning intent clear 超时，未进入模型。随后单独顺序复核两条环境失败，只读场景均转绿，metrics `/private/tmp/zhiyuan_400_v239_env_failed_two_recheck.json`，两条都走 `zhiyuan_agent_direct -> review_plan`，无 pending、无方案副作用，耗时约 `12-14s`。本轮结论：fresh 当前代码下没有新增稳定 4.0 链路缺口；地域/偏远地区、混合正负专业要求、缩略专业对比、当前方案只读审查、方案调整预览等代表性链路保持可用。剩余可记录但暂不优先修的是 no-pending 文案、少量只读长延迟和环境清理超时。
+> v2.38 focused 验证-only：按用户决策暂不处理低优先级 no-pending 文案，继续复查 v2.37 记录的 `intent-existing-impact` 第二轮 query guard 观察项。临时启动 fresh agent `8041` 加载当前工作区代码，使用 backend `8080`、真实 LLM、完整 chat-session clone 和 `--backend-db-password 12345678`，focused 运行 `400-open-quality-intent-existing-impact-readonly`，metrics `/private/tmp/zhiyuan_400_v238_intent_existing_impact_fresh8041.json`，结果 `2/2`。第一轮“我倾向会计学和审计学，但土木工程不要”正确生成 `preview_intent_change` + `pendingConfirmationCard`，内容为“专业要求：要：会计学、审计学；不要：土木工程”；第二轮“先不确认，看看这个偏好会影响当前方案吗”只调用一次 `query_plan`，返回当前方案命中 4 个志愿，无 followup、无新 pending、无方案副作用，也未复现 query_plan repeat guard。第二轮耗时 `10159ms` 略超 warning 阈值，回复末尾叠加“这轮还没有生成可确认的调整预览”边界文案，归入低优先级回复质量观察。当前结论：该点在 fresh 当前代码下不是稳定链路缺口，本轮不做生产修复；后续可继续进入小规模 fresh 观察池或全量 131 复跑。
+> v2.37 场景观察与验证分析：在旧链路清理后继续跑 4.0 quality observation，不做生产修复。使用既有 agent `8000`、backend `8080`、真实 LLM、并发 4、完整 chat-session clone、`--backend-db-password 12345678`、`--ignore-thinking-assertions`，覆盖 dialogue-derived/open-quality/quality-realistic-user/career/explore/readonly 共 131 个 case，目录 `/private/tmp/zhiyuan_400_v237_quality_observation_after_cleanup`，首轮 `123/131`、147 step 中 139 step 通过；工具分布为 `query_plan=13`、`answer_policy=21`、`explore_topic=27`、`preview_intent_change=18`、`compare_entities=9`、`review_plan=19`、`preview_plan_action=9`、`confirm_pending=8`，3 个 step 出现多工具调用，25 个 step 无工具直答，未发现最终 action 数据错误。失败 8 个分层：4 个是 backend clone/clear `TimeoutError` 环境失败；`南方/北方` 和 `省外可以但不要偏远` 在 8000 首轮未稳定出卡；`query_plan` 后用户只说“确认”走 no-pending guard 但回复为“这类待确认内容还不能由新确认工具执行，请重新生成预览”，无副作用但文案不符合用户语境；`compare_entities` 澄清/收尾在 8000 首轮仍继续追问或补做分析。随后抽 8 个失败顺序复跑 `/private/tmp/zhiyuan_400_v237_failed8_subset_sequential.json`，结果 8/11 step 通过、1 个环境失败、2 个内容失败；`南方/北方` 转绿，`省外可以但不要偏远` 在断言上通过但实际仍未出 pending，`intent-existing-impact` 第一轮出 pending、第二轮触发 query_plan repeat guard 后无稳定结果，`plan-query-then-confirm` 的 no-pending 文案稳定不佳，compare 收尾仍不够自然。为排除 8000 进程非最新代码影响，临时启动 fresh agent `8041` 加载当前工作区代码后复跑同一 8-case 子集，metrics `/private/tmp/zhiyuan_400_v237_failed8_subset_fresh8041.json`，结果 8/10 step 通过、1 个环境失败、1 个内容失败；`南方/北方` 正确生成“地域要求：要：南方；不要：北方”待采纳卡，`省外可以，但太偏的地方不想去` 正确生成“地域要求：不要：偏远地区”待采纳卡，compare 后“嗯那就这样”自然收尾且无副作用，career readonly 转绿。fresh 当前代码下稳定剩余问题只有 `plan-query-then-confirm-guard`：上一轮是只读查询且没有 active pending，用户说“确认”时没有执行副作用，但 no-pending 回复应明确“上一轮只是查询，没有待采纳/待执行内容”，不应说“这类待确认内容还不能由新确认工具执行”。另 `intent-existing-impact` 第二轮 query guard 只在 8000 顺序复跑中观察到，fresh 复核被环境 clone 超时阻断，先记录为待 focused 复核。结论：当前代码下地域集合/偏远地区语义仍可用；本轮没有发现 pending/confirm/final-action 数据错误，主要问题是 no-pending 确认文案、少量自然接续质量、backend clone/clear 超时和旧进程/模型波动。
+> v2.36 验证-only：继续扩大 4.0 direct final-action/取消/组合调整真实回归，覆盖 `dialog_regression_400_v156_realistic_broadened_final_action_cases.json`、`dialog_regression_400_v157_realistic_cancel_combo_cases.json`、`dialog_regression_400_v173_action_expansion_final_cases.json` 共 14 个 case。首轮在沙箱内运行为 `0/14`，失败均为本机 MySQL/HTTP 访问被拦截，表现为 `Operation not permitted` 与 MySQL `127.0.0.1:3306` 连接失败，不计为业务结果。授权本机服务访问后，输出目录 `/private/tmp/zhiyuan_400_v235_action_expansion_parallel_escalated`，结果 `14/14`、32 step 全通过、warnings=0、failures=0；工具分布为 `preview_intent_change=9`、`preview_plan_action=6`、`review_plan=2`、`confirm_pending=15`，所有 step 工具调用数均为 1，没有重复调用；确认轮后端断言合计 76 条，覆盖 `pendingConfirmation.status=applied/cancelled`、`planningState.version` 增长、报考要求落库、candidate pool 保留、ordered/review 刷新、排序/移动/移出/替换后的方案状态变化。当前结论：旧链路清理和命名收敛后，扩展 final-action 链路没有发现新的执行缺口。继续观察但暂不优先修：`v173-review-followup-high-tuition-replace` 预览回复仍露出内部 `high_tuition` code，且“换便宜点”候选更便宜但仍可能保留民办属性；这属于回复质量/候选质量观察，不影响本轮确认后动作生效结论。
+> v2.35 验证-only：在旧 WS chat alias、旧 topic tool/skill 和误导命名清理后，继续补跑 4.0 direct 主集和残余扫描。`dialog_regression_400_g1_g32_direct_cases.json` 为 `20/20`，metrics `/private/tmp/zhiyuan_400_v233_g1_g32_after_ws_alias_cleanup.json`；运行分布为 `intent_pending=6`、`readonly=9`、`plan_preview=3`、`needs_plan_first=2`，覆盖显式报考要求、只读方案查询/审查、方案预览和无正式方案边界。扫描 `plan_next_action|execute_plan_action|planEditCache|plan_orchestration_tool|plan_context_tool|plan_execution_tool|app.handlers|HANDLER_REGISTRY` 等旧链路标识后，生产 app 中未发现仍在执行旧 plan/context/execute 链路的入口；剩余命中主要是 hard-cut 防回退测试、旧 payload 拒绝保护、前端仍在用的 `planEditSelect/intentDetectSelect` 卡片点击协议桥，以及 `draftPlanState -> workingPlanState` 后端状态兼容。G1-G32 本轮有 source session 志愿文件缺失 warning，但这些 case 不依赖 final-action 后端断言，runner 已按 v2.18 口径只记录 warning 并继续执行；未发现新的业务执行缺口。后续继续清理时，只删除已证实不属于当前前后端协议或当前后端状态兼容的旧资产；本轮同时把生产 app 中与旧 agent 链路无关的 `old/legacy` 注释和日志口径收敛为 backend/persisted/current state 表达，不改变运行行为。
+> v2.34 验证-only：旧 WS chat alias / intent popup alias 清理后补跑真实 4.0 链路。首次沙箱内运行因本机 MySQL/HTTP 访问受限且 runner 默认 `internal-service-url=18290` 被记录为无效环境；改用当前 backend `8080` 并授权本机服务访问后，`dialog_regression_400_direct_confirm_execution_cases.json` 为 `4/4`，metrics `/private/tmp/zhiyuan_400_v233_direct_confirm_after_ws_alias_cleanup_escalated.json`，覆盖方案移出与“民办不要”报考要求，确认后 `pendingConfirmation=applied`、`planningState.version` 增长、ordered/review 刷新均通过。`dialog_regression_400_v155_realistic_final_action_cases.json` 为 `6/7`，metrics `/private/tmp/zhiyuan_400_v233_v155_after_ws_alias_cleanup.json`，唯一失败是“山东别去了”首轮重复调用两次 `preview_intent_change`，但已正确生成待采纳卡，下一轮“采纳”后地域要求落库、candidate view 筛选和 ordered/review 刷新均通过，归为低优先级重复调用效率问题，不是最终执行错误。`dialog_regression_400_realistic_user_cases.json` 为 `14/14`，metrics `/private/tmp/zhiyuan_400_v233_realistic_user_after_ws_alias_cleanup.json`，确认无正式方案边界、口语属性报考要求、只读政策/职业咨询和当前方案锚定 fallback 在清理后保持可用。
+> v2.33 继续收敛旧链路清理后的误导性命名：`profile_manager.py` 和 `message_store.py` 中与旧 agent 链路无关的 `legacy` 注释改为 backend/persisted payload 口径，`test_message_store.py` 顶部说明同步改为 backend render message persistence；本轮不改变运行逻辑。
+> v2.32 删除 `intent_state_tool.py` 中未被运行时或测试引用的 `_build_popup_title()` 旧别名，统一保留 `_build_preview_title()` 作为当前意向/要求预览标题生成入口；hard-cut 防回退同步覆盖该旧 popup title alias。
+> v2.31 继续清理同类 WebSocket 旧入站别名：删除 agent-plus compat 协议中的 `inputType=intentDetect -> chat` 映射。当前前端 `intentDetectPopup` 点击已发送普通 `text`，`intentDetectSelectPopup` 与兴趣动作点击走 `intentSelect` 统一 pending/card bridge，因此该别名不再是 4.0 主链路所需协议面。hard-cut 防回退同步覆盖 `planEdit -> chat` 与 `intentDetect -> chat` 两类旧 chat alias。
+> v2.30 继续清理 agent-plus WebSocket 入站协议中的旧 `planEdit -> chat` 别名：当前前端未发送 `inputType=planEdit`，该别名只服务历史软意向确认入口，已与 4.0 的 `pendingConfirmation` / `confirm_pending` 主确认链路背离。本轮删除服务端 `_INPUT_TYPE_MAP` 中的 `planEdit` 映射和对应旧兼容单测，并新增 hard-cut 防回退断言；保留仍有协议意义的 `planEditSelect` / `intentSelect` 卡片点击桥，继续转换为统一 pending 处理。
+> v2.29 继续按 4.0 direct 主链路清理旧学校主题工具：删除未被 `ZhiyuanAgent` 注册或 `app/zhiyuan_agent` 引用的 `app/tools/school_info_tool.py`、`app/tools/school_compare_tool.py`、`app/tools/school_recommend_tool.py` 和旧 `skills/school_chat`。学校科普、学校对比、院校政策问答和推荐式咨询统一由当前 `explore_topic` / `compare_entities` / `answer_policy` / `query_plan` 等 4.0 direct 工具承接，不再维护旧 school tool + skill 并行入口。新增 hard-cut 防回退断言，保证旧 school 工具和 skill 不会重新出现，保留 active skills 不携带旧 school 工具名。
+> v2.28 继续清理 4.0 sandbox 中容易误读的历史命名：`_legacy_volunteer_prefix` 与 `by_legacy_prefix` 重命名为 `_volunteer_group_prefix` / `by_group_prefix`。该逻辑仍用于真实 `volunteerId` 与 `planSchoolDataId` 的分组前缀对齐，属于当前 ordered item enrichment 的数据结构适配，不是旧 agent 链路兼容。行为不变；hard-cut audit 已增加防回退断言。
+> v2.27 继续清理 4.0 direct 生产代码中的历史命名：`_replacement_legacy_auto_select_reason()` 重命名为 `_replacement_auto_select_reason()`，保持 `ReplacementSpec -> auto_select_reason` 的结构化映射行为不变，不调整 payload 字段、候选选择策略或用户回复。该函数服务当前 `preview_plan_action(replace)` 自动替换候选选择，不属于旧链路兼容。
+> v2.26 对 `explore_followup_tool` 做兼容桥边界收紧：确认该模块不是 4.0 主 agent 的旧并行入口，而是前端 `actionType` 卡片点击的兼容适配层；运行时只从 active `pendingConfirmation(kind=intent_change)` 读取已生成的结构化报考要求来源，`candidate_query` 只做候选筛选，`plan_analyze` 只委托 4.0 `query_plan` 做只读方案承接，`prefer_confirm/constrain_confirm` 只生成新的统一 `pendingConfirmationCard`，不直接写状态。同步去掉源码注释中的 `legacy explore follow-up` 表述，并新增 hard-cut 防回退断言，保证该兼容桥不得重新引入 `plan_next_action`、`execute_plan_action`、`planEditCache` 或旧 plan/context 工具链。当前结论：这条桥可暂保留为前端协议兼容层；后续只有当前端不再发送旧 `actionType` 时才整体删除或迁移到更中性的 action handler。
+> v2.25 继续按 4.0 direct 主链路做旧工具/skill 清理：删除未被 `ZhiyuanAgent` 注册或 `app/zhiyuan_agent` 引用的旧专业主题工具入口 `app/tools/major_info_tool.py`、`app/tools/major_compare_tool.py`，同步删除专属单测 `test_major_info_tool.py`、`test_compare_resolution.py` 和旧 `skills/major_chat`。保留 `explore_topic` / `compare_entities` 作为专业了解与专业对比唯一 4.0 入口；`skills/explore_chat`、`skills/career_path_chat`、`skills/intent_detect` 已改为 4.0 direct 工具说明，不再引导 `get_major_introduction`、`compare_majors`、`analyze_current_*`、`preview_current_*` 等旧 wrapper。质量门禁资产 `dialog_regression_400_career_direction_cases.json` 的职业方向 action family 从旧 `analyze_current_career_direction` 切到 `explore_topic`；runner 单测样例也切到 4.0 工具名；`zhiyuan-agent/docs/semantic_layer_structure.md` 同步改为 4.0 direct 结构说明，`skills/plan_query` 与 `prompt.py` 的 `query_plan` 参数说明收敛到 `filters.school` / `filters.major` 口径。新增 hard-cut 防回退断言，保证旧专业工具文件和旧 major skill 不会重新出现，且保留 skill 不再携带旧工具名。验证：`tests/unit/test_zhiyuan_agent_direct.py tests/unit/test_runtime_hard_cut_audit.py tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_quality_gate.py tests/unit/test_dialog_case_evaluation_report.py -q` 为 `364 passed, 29 skipped`；`py_compile` 通过；`examples/dialog_regression_400_career_direction_cases.json` 与 `dialog_regression_400_dialogue_derived_cases.json` JSON 校验通过；`pytest --collect-only -q tests/unit` 为 `1534 tests collected`；`git diff --check` 通过。当前保留边界：`intent_state_tool` 仍作为底层报考要求分析/应用能力存在，`explore_followup_tool` 仍服务前端 actionType 兼容并且只从 active pending 读取来源，本轮未与旧专业工具入口清理混合处理。
+> v2.24 在 v2.23 prompt-only 修复后补跑 72 条高信号主链路，验证报考要求预览、方案动作预览、最终确认执行、地域 final-action、active pending 和 no-pending 防护没有被新 prompt 影响。使用新版 agent `8040`、backend `18081`、真实 LLM、完整 chat-session clone、`--backend-db-password 12345678`、并发 3，目录 `/private/tmp/zhiyuan_400_v224_mainline_72_after_v223_prompt_fix`，首轮 `66/72`。6 个失败分层：`G17` 是 backend planning intent clear `TimeoutError`，未进入对话；`G30`、`v155`、`v157` 是重复调用同一预览工具但业务 pending/最终 action 正确；`G4` 明确专业要求首轮未出卡、`v212` 珠三角地域要求首轮未出卡，归为需要复核的模型波动。抽取 6 条失败子集单并发复跑 `/private/tmp/zhiyuan_400_v224_mainline_failed6_subset_sequential`，结果 `6/6`：G4 正确生成专业要求待采纳卡；G17 正确生成移动方案预览；G30 单次生成强基意向待采纳卡；v155 高收费移出预览和确认后端断言通过；v157 民办/中外合作排除确认后端断言通过；v212 珠三角排除首轮待采纳卡 + 确认后地域要求落库和 ordered/review 刷新均通过。当前结论：v2.23 修复后高信号主链路等效转绿，没有新增稳定 pending/final-action 执行缺口；剩余继续观察项是并发模型偶发无工具、backend clear/clone 超时、少量重复工具调用效率和过严工具次数断言。
+> v2.23 按 v2.22 结论修复“倾向正向专业 + 但明确不要某专业”未稳定生成待采纳预览的问题。实现仍保持 4.0 语义边界：只强化 prompt 里的模型判定规则和示例，不在工具层新增中文字符串匹配；明确“倾向A和B，但Y不要/别碰/不考虑”属于可确认的正向专业方向 + 明确负向专业要求，必须调用 `preview_intent_change`，并在同一次调用中带 `positive`、`negative` 和 `semantic_requirements`。验证：`py_compile app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；目标单测 `test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_followups` 为 `1 passed`；focused 真实 case `/private/tmp/zhiyuan_400_v223_intent_existing_impact_after_fix.json` 为 `2/2`，第一轮生成 `preview_intent_change` + `pendingConfirmationCard`，第二轮只读查询当前方案影响且无 followup、无直接改动。随后并发 4 复跑 131 条 quality observation，目录 `/private/tmp/zhiyuan_400_v223_quality_131_after_intent_fix`，首轮 `125/131`；6 个失败分层为 4 个 backend clone/clear 超时环境失败、2 个自然收尾/只读边界文案断言波动。6 个失败子集单并发顺序复跑 `/private/tmp/zhiyuan_400_v223_quality_failed6_subset_sequential` 为 `6/6`。当前结论：本轮修复未发现新的稳定业务执行缺口或 final-action 数据错误；剩余继续观察项是 backend clone 超时、少量只读收尾文案波动和 query_plan 重复调用 guard 后的回复质量。
+> v2.22 在 v2.21 后对当前 131 条 quality observation 做整组复核，目录 `/private/tmp/zhiyuan_400_v222_quality_131_after_v221_fix`，结果 `128/131`。失败包括：`400-open-quality-career-multi-direction-readonly`、`400-open-quality-no-pending-after-compare-guard`、`400-open-quality-intent-existing-impact-readonly`。补充 no-pending 自然收尾断言“随时跟我说”后，3 条失败子集顺序复跑 `/private/tmp/zhiyuan_400_v222_quality_remaining3_after_assertion_fix.json` 中 career 多方向只读和 compare 后无 pending 收尾均通过，剩余稳定问题是 `400-open-quality-intent-existing-impact-readonly`：用户说“我倾向会计学和审计学，但土木工程不要”时，模型可能不调用工具，只回复“还没有生成可确认的调整预览”；下一轮“先不确认，看看这个偏好会影响当前方案吗”才补建 pending，导致本该是只读影响查询的轮次变成生成待采纳内容。该问题属于模型语义边界漏判，应通过 prompt/schema 让模型把同一句里的可确认正向专业方向和明确负向专业要求一次性结构化输出，不通过工具层扫描原话修补。
+> v2.21 按 v2.20 结论修复“缩略专业对比 + 数学/能力顾虑”误建 pending，并清理旧工具名验证资产。实现保持 4.0 边界：只做 prompt-only 语义边界强化，不在工具层做中文字符串匹配；把“A和B呢/那A和B + 数学/物理/累不累等适配背景”明确归为 `compare_entities`，且该规则优先于“想学/感兴趣”类待确认方向，不能把“数学不太行”写成“不要数学类”。补充真实口语示例“新媒体和跨电呢 数学不太行”和“计科和软工哪个更稳一点，孩子数学还行但不想太累”。同时把 `dialog_regression_400_dialogue_derived_cases.json` 中两条旧工具名断言从 `get_major_introductions/compare_major_options` 切到 4.0 的 `explore_topic/compare_entities`。验证：`py_compile app/zhiyuan_agent/prompt.py`、JSON 格式校验通过；focused `/private/tmp/zhiyuan_400_v221_major_abbrev_compare_after_prompt_fix.json` 为 `1/1`，真实回复走 `compare_entities`、无 pending card；重新抽当前资产 7 条失败子集 `/private/tmp/zhiyuan_400_v221_quality_failed_subset_cases_current.json` 后复跑 `/private/tmp/zhiyuan_400_v221_quality_failed_subset_after_prompt_and_asset_fix.json` 为 `9/9` step 全绿。
+> v2.20 在 v2.19 主链路等效转绿后继续扩大 quality observation，使用 fresh agent `8040` + backend `18081` + 并发 4 跑 dialogue-derived、open-quality、quality-realistic-user、career、explore、readonly 共 131 条，带 `--ignore-thinking-assertions` 聚焦 4.0 链路和回复质量，目录 `/private/tmp/zhiyuan_400_v220_quality_131_after_v219`，首轮 `124/131`。7 条失败子集顺序复跑 `/private/tmp/zhiyuan_400_v220_quality_failed_subset_sequential.json` 后稳定剩 4 条：2 条是旧工具名资产口径（`get_major_introductions/compare_major_options` vs 4.0 `explore_topic/compare_entities`，回复内容可用）；1 条是澄清后用户“嗯那就这样”仍继续追问歧义，无副作用，归为自然接续质量；1 条是真实语义路由问题，`新媒体和跨电呢 数学不太行` 被误建成 `preview_intent_change` 待确认报考要求，应作为专业对比/适配咨询处理，不能因“数学不太行”自动记录为“不要数学类”。首轮另外 3 条转绿，归为模型/并发波动或断言口径。当前结论：quality 池没有发现最终 action 数据错误；后续优先修复“缩略专业对比 + 能力/课程顾虑”误建 pending 的模型语义边界，同时清理旧工具名验证资产。
+> v2.19 使用 fresh agent `8040` + backend `18081` + 并发 3 + 完整 chat-session clone 复跑 v2.18 后的 72 条高信号主链路整组，目录 `/private/tmp/zhiyuan_400_v219_full_72_after_v218`，结果 `71/72`。唯一失败为 `400-v183-review-advice-then-vague-execute-no-pending-guard` 文案断言过窄：第二轮没有生成待确认操作或没有可执行的待确认项，且无工具/无 followup、后端 `planningState.version` 与 `pendingConfirmation` 均无副作用；该结果符合 no-pending 防护目标。已补充资产断言覆盖“没有生成待确认/没有可执行”等同义表达，focused 复跑 `/private/tmp/zhiyuan_400_v219_v183_no_pending_assertion_fix.json` 为 `1/1`，复跑中模型调用 `confirm_pending` 后返回“没有待确认、不执行任何变更”，后端仍无副作用。当前结论：v2.19 整组没有新增确定业务执行缺口；72 条主链路在修正验证资产后等效转绿，剩余低优先级仍是少量重复调用、表达质量和模型波动观察。
 > v2.18 在 v2.17 后继续跑高信号主链路 + 地域集合并发回归，并完成失败分层收敛。首轮使用 backend `18081` + agent `8039` + 并发 3 跑 72 条，结果 `62/72`，目录 `/private/tmp/zhiyuan_400_v217_mainline_region_parallel`；地域 v212/v213/v216 继续通过。10 个失败分层：6 个是 runner 志愿文件 clone fail-fast 过严导致的环境假失败，已把 volunteer data 缺失只在 final-action/ordered/review 后端断言 case 中作为 environment failure，普通观察 case 只保留 warning；`tests/unit/test_dialog_regression_runner.py -q` 更新为 `89 passed`。失败子集复跑 `/private/tmp/zhiyuan_400_v217_failed_subset_after_runner_gate` 为 `6/10`，剩余 G30 重复调用、v153 数字文案断言、v173 固定 unitId 断言、v183 active pending 改口。v183 用 prompt-only 补齐“算了不是这个，改成山东别去，民办也不要”组合改写示例，不做工具层字符串匹配；新版 agent `8040` focused 复跑 `1/1`，目录 `/private/tmp/zhiyuan_400_v217_v183_rewrite_after_prompt_fix.json`，第二轮正确替换旧 pending，第三轮确认后山东/民办要求落库并刷新 ordered/review。随后 10 条失败子集复跑 `/private/tmp/zhiyuan_400_v217_failed_subset_after_v183_prompt_fix` 为 `8/10`，G30 与 v183 转绿；v153 断言从固定“20个相关志愿”改为“相关志愿”，v173 从固定老 unitId 改为首位 unitId changedFromBefore，剩余两条 `/private/tmp/zhiyuan_400_v217_remaining_two_after_assertion_fix` 为 `2/2`。当前结论：本轮没有新增确定业务执行缺口；主链路失败已按环境、低优先级重复调用、资产断言和 v183 prompt-only 语义缺口完成收敛。
 > v2.17 继续验证 v2.16 后的地域 final-action 链路，并校准并发回归运行条件。先用 backend `18081` + agent `8039` 并发跑 v212/v213/v216 地域集合共 11 条时出现 `0/11`，复核后确认是无效环境运行：offset 会话没有带 `--backend-db-password 12345678`，`assistant_chat_session` 主表未克隆完整，后端能写入 `pendingConfirmation=applied` 和 `constraintState`，但 ordered-plan 刷新失败并返回“当前方案暂时没有重新调整成功”。同一 v216 case 在原始 session 17 串行复核 `1/1` 通过。随后使用新的 session offset、完整 chat-session clone、`--backend-db-password 12345678` 和并发 2 复跑 v212/v213/v216 共 11 条，结果 `11/11`，目录 `/private/tmp/zhiyuan_400_v216_region_expanded_clone_db`，确认后后端断言覆盖 pending applied、planningState version 增长、地域要求落库、ordered units 非空、代表性地域剔除以及 ordered/review 刷新。结论：v2.16 修复未破坏已有地域集合/城市圈 final-action；后续所有 offset final-action 回归必须显式带 DB 密码，否则按验证环境问题记录，不计为业务链路失败。同时收敛回归 runner：`--clone-backend-chat-session` 下主表或志愿文件克隆失败会直接标记 environment setup failure，不再进入 websocket 产生误导性业务断言；同源同目标 session 的志愿文件克隆视为 no-op。验证 `tests/unit/test_dialog_regression_runner.py -q` 为 `88 passed`。
 > v2.16 修复 v2.15 暴露的“省外可以，但太偏的地方不想去”稳定缺口，并补齐最终 action 验证。修复保持 4.0 结构化语义边界：不新增工具层原话字符串扫描；prompt 要求模型把“省外可以/不排斥省外”作为 reference 或背景，不单独写成必须省外，把“太偏/偏远/太远的地方不想去/别考虑”压成 `negative={"area":["偏远地区"]}`；Agent 和后端地域 catalog 增加 `偏远地区` area，按新疆、西藏、宁夏、甘肃、青海、内蒙古展开。新增长期回归资产 `examples/dialog_regression_400_v216_region_remote_final_cases.json`，覆盖首轮 pending card 和确认后的 backend final-action。验证：`py_compile app/domain/region_entity_resolver.py app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；focused Python 单测 3 条通过；后端 `mvn -q -Dtest=PlanningStateServiceTest#shouldMatchRemoteRegionScope test` 通过；使用新版 backend `18081` + agent `8039` 跑真实 LLM focused final-action `1/1`，目录 `/private/tmp/zhiyuan_400_v216_remote_region_focused`，确认后 `pendingConfirmation.status=applied`、`planningState.version` 增长、`mustExcludeRegions` 包含“偏远地区”、`orderedPlanState.units minLength>=1` 且 ordered/review 刷新。
@@ -1588,7 +1667,7 @@ direct route 适用条件：
 理由：
 - 成绩/省份/选科是一次性设置操作，生命周期与方案规划工具不同
 - 真实场景中，绝大多数用户通过问卷或前端表单完成成绩录入，oral inline 提取是少数情况
-- 在 9 个工具中加入 `update_profile` 会引入状态写入 + 错误纠正复杂度
+- 在当前只读/规划工具集中加入 `update_profile` 会引入状态写入 + 错误纠正复杂度
 
 **当前方案：**
 1. **direct route 不再因成绩缺失回退旧链路**：如果 `score.json` 没有有效成绩（`available=false`），仍进入 4.0 direct，由 agent 基于已有信息回答或提示用户通过正式渠道补录。
@@ -2790,8 +2869,8 @@ confirm_pending → _apply_plan_pending / _apply_intent_pending   (tools.py)
 - 后端 `getPlanningState()` / 候选生成 / effective candidates 解析已统一补齐候选项 `majorDiscipline/majorCategory`，让旧状态里只有 `majorSubCategoryId` 的专业类数据也能被方案派生链路和 agent 预览消费。
 - Agent 本地影响计数已把 direct 与 nested 的 `majorDiscipline/majorCategory` 纳入专业匹配，避免专业门类预览只按专业名误报影响范围。
 - Agent prompt 已明确非固定枚举标签走 `school_tag/major_tag`；属性注册表将“五年制/5年制”等口语值归一到 `学制：5年`；`preview_intent_change()` 消费 `duration` 作为 `major_tag` 的 schema alias，并在规范化后没有任何可执行报考要求时拒绝保存空 pending。
-- `preview_intent_change` 的组合属性漏传处理已改为模型重试协议：工具不再把 raw text 中识别到的属性/标签自动补写进 pending；当同一句显式诉求里还有属性/标签未进入结构化 `positive/negative` 参数时，返回 `intent_change_requires_attribute_completion` + `next_step=continue`，要求主模型基于当前问和工具返回补齐后重试。`ATTRIBUTE_REGISTRY` 继续用于结构化字段归一、schema alias（如 `duration -> major_tag`）和枚举/标签规范化，不承担 raw text 自动落库。
-- `preview_intent_change` 支持同轮跨领域显式诉求保留在同一次结构化 payload 中：例如用户说“山东别去，民办也算了”时，模型可调用 `intent_type="region"` 且 `negative={"province":["山东"],"school_nature":["民办"]}`，工具会合并成 `city_intents + school_intents` 的单张待确认卡；如果模型只传了山东而漏掉民办，工具返回 `continue` 要求补齐。
+- `preview_intent_change` 的组合属性使用单次结构化语义契约：模型必须在 `semantic_requirements` 中列全本轮 explicit/confirmable 项，工具可将这些已识别项物化进遗漏的 `positive/negative`，再复用实体解析、属性归一和 pending 链路。v2.66 已删除 `intent_change_requires_attribute_completion` 二次调用协议及专用校验函数；`ATTRIBUTE_REGISTRY` 只用于结构化字段归一、schema alias（如 `duration -> major_tag`）和枚举/标签规范化，不扫描 raw text 自动落库。
+- `preview_intent_change` 支持同轮跨领域显式诉求保留在同一次结构化 payload 中：例如用户说“山东别去，民办也算了”时，模型调用 `intent_type="region"`，并在 `negative`/`semantic_requirements` 中同时提交 `province=山东` 与 `school_nature=民办`，工具合并成 `city_intents + school_intents` 的单张待确认卡。如果模型在结构化语义中完全漏掉民办，工具不会从原话猜回；该类缺失由首工具唯一性和真实复合用例门禁发现，不恢复第二套文本扫描实现。
 - active pending 下的新预览关系改为模型语义仲裁：`current_user_text` 和待确认摘要注入 `build_turn_context`；`preview_intent_change` / `preview_plan_action` 均要求模型传 `pending_resolution`。缺失时工具返回 `active_pending_requires_resolution` + `next_step=continue`，由主模型重试；明确替换时取消旧 pending 后创建新 pending；intent 追加时先合并旧 pending 执行 payload，再取消旧 pending 并创建单张合并预览卡。该设计不在工具层用短语表判断“放弃/追加/暂缓”。
 - `preview_plan_action` 的缺参恢复已从工具层字符串补参调整为模型重试协议：缺 action、move selector 或目标位置时返回 `plan_action_requires_explicit_action` / `plan_action_requires_move_selector` / `plan_action_requires_move_target_position` + `next_step=continue`；工具只回传当前用户原话和缺失字段，不再从整句中文里匹配动词、选择器或目标档位。
 - no-pending 短文本确认/取消边界收口到 4.0 `confirm_pending`：无 active pending 时，窄口径“确认/采纳/执行/取消/暂不执行”等只会返回“当前没有待确认操作，不会执行任何变更”，不再进入旧模型路径，也不把这类短文本误解成新报考要求。
@@ -3266,6 +3345,88 @@ confirm_pending → _apply_plan_pending / _apply_intent_pending   (tools.py)
 - 真实验证二（最终 action）：先前 `orderedPlanState.units notContains 北京/山东` 在空数组下可误通过，补 `minLength>=1` 后复测。第一次 offset run 未带 `--backend-db-password`，`assistant_chat_session` 主表未克隆，`confirm_pending` 内部 `generate_planning_ordered_plan()` 返回 `ordered_plan_response={"code":404,"msg":"会话不存在"}`，因此仅作为验证夹具问题记录。有效复跑使用 backend `18080` + agent `8038` + `--backend-db-password 12345678` + session `5093017`，结果 `2/2`，metrics `/private/tmp/zhiyuan_400_v211_region_area_final_action_after_backend_fix_valid.json`。确认后回复“已采纳这次报考要求，并按新要求重新调整了当前方案”，followup 刷新 `ordered/review`；后端状态 `version=1605`、`mustIncludeRegions=["南方"]`、`mustExcludeRegions=["北方"]`、`orderedPlanState.units=12`、`orderedPlanState.items=33`、北方省份计数 0、`staleFlags.orderedPlan=false`。
 - 当前结论：v2.10 唯一稳定语义缺口已闭合，并且验证覆盖到最终 action。剩余 v2.10 其它稳定失败仍按验证资产/低优先级文案口径处理：旧细分工具名断言、只读边界文案断言。下一步可以继续扩大 quality observation，或补充更多地域集合/城市圈样本到长期回归集。
 
+### 12.51 v2.42 final-action/high-signal 专项门禁入口
+
+- 背景：v2.41 后 `examples/` 中只剩 4.0 regression JSON，但其中 19 个是 focused/final-action/high-signal 资产，很多 case metadata 明确要求 `--clone-backend-chat-session`，并通过 `assertBackendExtraData` 校验 pending、planningState、candidate pool、ordered plan、工作台刷新等最终状态。
+- 设计：不把这些 clone-backed case 混入默认 `live` gate，避免默认门禁因为缺 DB clone 参数产生环境假失败；新增独立 `final-action` category，作为真实服务 + DB clone 条件下的专项入口。
+- 实现：`dialog_quality_gate.py` 新增 `FINAL_ACTION_CASE_FILES`，覆盖 direct confirm、G1-G32、realistic user 以及 v143/v150/v151/v153/v154/v155/v156/v157/v158/v173/v179/v183/v211/v212/v213/v216。`build_gate_plan()` 为这些文件生成 `final-action-*` command，统一带 per-case history/backend pending/planning intent 清理、`--clone-backend-chat-session`、plan style、180s timeout，并透传 `--agent-url`、`--internal-service-url`、`--backend-db-password`。
+- 使用边界：默认 `--execute` 仍只跑 local；`--mode live` 仍是 13 个默认质量/只读 live 文件；真实最终动作验证显式运行 `--mode final-action`。
+- 验证：`py_compile examples/dialog_quality_gate.py tests/unit/test_dialog_quality_gate.py` 通过；`tests/unit/test_dialog_quality_gate.py -q` 为 `9 passed`；`dialog_quality_gate.py --mode final-action --metrics-dir /private/tmp/zhiyuan_400_final_action_gate_dry_run --agent-url ... --internal-service-url http://127.0.0.1:8080 --backend-db-password 12345678` dry-run 生成 19 条 clone-backed 命令；默认 `dialog_quality_gate.py --execute` 本地门禁为 `421 passed`。
+- 当前结论：当前所有 4.0 case 资产都有明确归属。默认 gate 控制维护成本，final-action gate 保留最终状态验证能力；后续真实全量验证可以先跑 local + live，再按需要跑 `final-action`。
+
+### 12.50 v2.41 4.0 case 资产 hard-cut 清理
+
+- 清理目标：把当前质量门禁从“自动发现所有历史 dialog regression JSON”收敛到“显式维护 4.0 有效回归集”，避免旧 3.x/早期断言口径继续进入 live gate，降低后续维护成本。
+- 实现：`examples/dialog_quality_gate.py` 的 live case 列表只保留 13 个 `dialog_regression_400_*` 文件，并删除 `_case_file_names()` 对 `EXAMPLES.glob("dialog_regression_*_cases.json")` 的自动发现；旧非 400 历史 regression JSON 从 `examples/` 删除。
+- 同步资产：runner usage、planning dialog checklist、dialog regression report、next session handoff 和 mainline catalog 测试切到当前 4.0 case；explore intent catalog 覆盖断言改为当前显式诉求/优先参考边界/只读不出卡/候选探索语义，不再要求旧 `positive_*_intent`、`historical_intent`、`intent_revision` 标签。
+- 防回退：`test_runtime_hard_cut_audit.py` 增加旧非 400 JSON 不存在、当前 gate/mainline 测试不引用旧文件、gate 不恢复 glob 自动发现的断言。
+- 验证：`py_compile` 通过；`examples/dialog_quality_gate.py --metrics-dir /private/tmp/zhiyuan_400_effective_gate_dry_run` dry-run 通过，live plan 只包含 13 个 4.0 case；`tests/unit/test_dialog_quality_gate.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_runtime_hard_cut_audit.py -q` 为 `46 passed`。
+- 当前结论：131 条 fresh quality observation 已覆盖最新 4.0 效果观察；本次清理解决的是验证资产维护面，不改变生产链路。后续继续扩大/补充 case 时，应进入 `dialog_regression_400_*` 有效集，而不是恢复旧历史文件。
+
+### 12.49 v2.24 高信号主链路复核与失败子集收敛
+
+- 目的：在 v2.23 修复“倾向 A/B，但 Y 不要”混合正负专业要求后，补跑 72 条高信号主链路，确认新增 prompt 规则没有影响报考要求、方案动作、最终确认、地域集合 final-action、active pending 改写/追加和 no-pending 防护。
+- 运行条件：新版 agent `8040`、backend `18081`、真实 LLM、完整 chat-session clone、`--backend-db-password 12345678`、并发 3、`--ignore-thinking-assertions`，case 组合为 G1-G32、readonly、v143/v150/v151/v153/v154/v155/v156/v157/v158/v173/v179/v183、v212/v213/v216，共 72 条。
+- 首轮结果：目录 `/private/tmp/zhiyuan_400_v224_mainline_72_after_v223_prompt_fix`，结果 `66/72`。
+- 首轮失败分层：`400-g17-tier-local-reorder` 是 backend planning intent clear `TimeoutError`，未进入对话；`400-g30-special-admission-path-preservation`、`400-v155-review-reference-remove-high-tuition-final-action`、`400-v157-combo-school-attribute-exclude-final-action` 都是重复调用同一预览工具导致严格工具次数断言失败，但业务输出正确，v155/v157 确认后端断言均通过；`400-g4-explicit-major-entity-display` 首轮无工具无 pending；`400-v212-region-pearl-delta-exclude-final-action` 首轮无工具无 pending，确认轮自然没有可执行对象。
+- 失败子集复核：抽取上述 6 条为 `/private/tmp/zhiyuan_400_v224_failed_subset_*.json`，单并发顺序复跑 `/private/tmp/zhiyuan_400_v224_mainline_failed6_subset_sequential`，结果 `6/6`。G4 正确调用 `preview_intent_change` 并生成“网络与新媒体、跨境电子商务”专业要求待采纳卡；G17 正确生成保底区局部移动预览；G30 单次生成清华/北大/复旦强基意向待采纳卡；v155 高收费移出预览后“确认执行”移出 33 个专业组且后端断言通过；v157 民办/中外合作排除确认后要求落库、candidate pool 保持全量、ordered items/units 裁剪通过；v212 珠三角排除首轮 pending card，确认后 `mustExcludeRegions` 包含“珠三角”，ordered/review 刷新和代表性地域剔除断言通过。
+- 当前结论：v2.24 主链路复核没有发现新增稳定业务执行缺口。v2.23 prompt 修复没有破坏 4.0 direct 的核心闭环；72 条主链路在失败子集收敛后等效转绿。
+- 继续记录但暂不优先修：并发模型偶发无工具或重复调用、backend clone/clear 超时、工具次数断言对重复调用过严。后续可继续推进旧链路清理或做更大规模真实 final-action/quality 回归。
+
+### 12.48 v2.23 混合正负专业要求 prompt-only 修复与 131 质量池复核
+
+- 问题来源：v2.22 复核中 `400-open-quality-intent-existing-impact-readonly` 稳定暴露。“我倾向会计学和审计学，但土木工程不要”有时没有触发工具调用，模型只口头说明没有待确认预览；下一轮用户问“先不确认，看看这个偏好会影响当前方案吗”时才生成 pending，破坏了“首轮出待采纳内容，后续只读看影响”的对话链路。
+- 设计判断：该问题仍属于模型语义判定边界，不应在工具层扫描“倾向/不要”等中文词。4.0 的职责边界保持为：模型负责把本轮诉求压成 `positive/negative/semantic_requirements`，工具只校验和执行结构化 payload。
+- 实现调整：`app/zhiyuan_agent/prompt.py` 第 6 条补齐“倾向A和B，但Y不要/别碰/不考虑”边界，明确这是可确认正向方向 + 明确负向要求，必须调用 `preview_intent_change` 并生成待采纳预览；示例区新增真实失败句：“我倾向会计学和审计学，但土木工程不要” -> `preview_intent_change(intent_type="major", positive={"major":["会计学","审计学"]}, negative={"major":["土木工程"]}, constraint_type="exclude", semantic_requirements=[...])`。
+- 测试守护：`tests/unit/test_zhiyuan_agent_direct.py` 在现有 prompt 静态测试中加入该边界断言，防止后续整理 prompt 时删掉这一类混合正负专业要求。
+- 静态验证：`py_compile app/zhiyuan_agent/prompt.py tests/unit/test_zhiyuan_agent_direct.py` 通过；目标单测 `test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_followups -q` 为 `1 passed`；`dialog_regression_400_open_quality_cases.json` JSON 格式校验通过。
+- Focused 真实验证：使用新版 agent `8040`、backend `18081`、完整 chat-session clone 和 `--backend-db-password 12345678`，跑 `/private/tmp/zhiyuan_400_v223_intent_existing_impact_after_fix.json`，结果 `2/2`。第一轮正确调用 `preview_intent_change`，回复“专业要求：要：会计学、审计学；不要：土木工程”，生成 `pendingConfirmationCard`；第二轮“先不确认，看看这个偏好会影响当前方案吗”走 `query_plan` 只读查询，无 followup、无直接改动。
+- 131 质量池复核：并发 4 复跑当前 131 条 quality observation，目录 `/private/tmp/zhiyuan_400_v223_quality_131_after_intent_fix`，首轮 `125/131`。6 个失败分层：4 个为 backend state clone 或 planning intent clear `TimeoutError`，未进入对话；2 个为内容断言波动，分别是只读边界口语回复“你先问，我听着”和 compare 后收尾“随时问我”没有命中断言词表，均无 pending、无 followup、无方案副作用。
+- 失败子集复核：抽取上述 6 条到 `/private/tmp/zhiyuan_400_v223_failed_dialogue_subset_cases.json` 与 `/private/tmp/zhiyuan_400_v223_failed_open_subset_cases.json`，单并发顺序复跑 `/private/tmp/zhiyuan_400_v223_quality_failed6_subset_sequential`，结果 `6/6`。其中 `intent-existing-impact-readonly` 再次验证首轮出待采纳卡、第二轮只读查询当前方案命中；`sort-score` 继续生成推荐系数排序预览；career 多方向只读走 `review_plan`；compare 后“嗯那就这样”无待采纳卡、无副作用。
+- 当前结论：v2.22 剩余稳定语义缺口已闭合。本轮没有发现新的 final-action 或 pending 执行错误。仍需记录但暂不优先修的观察项：并发 backend clone 超时、query_plan 重复调用被 guard 拦截后的兜底回复质量、部分自然收尾文案断言过窄。
+
+### 12.47 v2.22 131 质量池复核与混合正负专业要求缺口定位
+
+- 目的：在 v2.21 修复缩略专业对比误建 pending 并清理旧工具名资产后，复跑当前 131 条 quality observation，确认 prompt 修复没有造成新的只读/报考要求/方案动作副作用。
+- 首轮结果：使用 agent `8040`、backend `18081`、真实 LLM、完整 chat-session clone、`--backend-db-password 12345678`、并发 4 和 `--ignore-thinking-assertions`，跑 dialogue-derived、open-quality、quality-realistic-user、career、explore、readonly 共 131 条，目录 `/private/tmp/zhiyuan_400_v222_quality_131_after_v221_fix`，结果 `128/131`。
+- 首轮失败：`400-open-quality-career-multi-direction-readonly`、`400-open-quality-no-pending-after-compare-guard`、`400-open-quality-intent-existing-impact-readonly`。其中前两类更接近断言/自然收尾口径，后一类是混合正负专业要求没有稳定生成待采纳内容。
+- 资产口径修正：`dialog_regression_400_open_quality_cases.json` 补充 no-pending 自然收尾断言“随时跟我说”。随后 3 条失败子集顺序复跑 `/private/tmp/zhiyuan_400_v222_quality_remaining3_after_assertion_fix.json`，career 多方向只读通过，compare 后无 pending 收尾通过，剩余 `400-open-quality-intent-existing-impact-readonly`。
+- 稳定问题：第一轮“我倾向会计学和审计学，但土木工程不要”应形成专业要求待采纳预览：正向会计学/审计学为 confirmable，负向土木工程为 explicit；实际模型可能不调用工具，直接回复没有可确认调整预览。第二轮用户说“先不确认，看看这个偏好会影响当前方案吗”时，模型才补建 pending，导致只读影响查询轮次被污染。
+- 修复方向：prompt-only。强化“弱正向表达 + 明确负向要/不要”在同一句出现时必须调用 `preview_intent_change`，并且 `semantic_requirements` 中 explicit/confirmable 项要进入同一次 `positive/negative` payload；不能把该问题下沉到工具层用中文字符串匹配补救。
+
+### 12.46 v2.21 缩略专业对比误建 pending 修复与旧工具资产清理
+
+- 问题来源：v2.20 quality observation 中 `400-real-user-major-abbrev-non-law-compare` 稳定暴露真实语义路由问题。用户说“新媒体和跨电呢 数学不太行”，模型把它误判为报考要求，调用 `preview_intent_change` 并生成“要：新媒体/跨电；不要：数学类”的 pending card。
+- 设计边界：该问题不能在工具层用中文关键词兜底。工具只消费模型结构化输出；语义判断应由模型在当前 turn context + prompt 规则中完成。
+- 实现调整：`app/zhiyuan_agent/prompt.py` 强化第 16a 条：用户同时提到 2 到 5 个专业/院校，并用“A和B呢/那A和B/哪个/怎么选/更稳/更适合”等表达比较，且数学、物理、沟通强弱、累不累只是适配背景时，优先调用 `compare_entities`；这条优先于“想学/感兴趣”类判断。明确“数学不太行/物理弱/不想太累”不能自动写成 negative major 或报考要求，除非用户明确说不要某专业、不要相关专业、记上/采纳/就选某方向。
+- 示例补齐：新增真实口语示例 `新媒体和跨电呢 数学不太行 -> compare_entities(... comparison_focus=数学要求/适配度)`，并明确不要调用 `preview_intent_change`、不要生成“不要数学类”的待确认预览；同时加入 `计科和软工哪个更稳一点，孩子数学还行但不想太累` 示例，覆盖同类缩略专业名 + 学习强度背景。
+- 资产清理：`examples/dialog_regression_400_dialogue_derived_cases.json` 中 `400-dialogue-architecture-art-foundation` 的期望工具从旧 `get_major_introductions` 切到 4.0 `explore_topic`；`400-dialogue-accounting-finance-audit-priority` 从旧 `compare_major_options` 切到 `compare_entities`，并把旧工具名放入 not-contain，避免继续维护旧验证口径。
+- 验证一：`py_compile app/zhiyuan_agent/prompt.py` 通过，`dialog_regression_400_dialogue_derived_cases.json` JSON 格式校验通过。
+- 验证二：focused 复跑 `/private/tmp/zhiyuan_400_v221_major_abbrev_compare_after_prompt_fix.json` 为 `1/1`。真实回复调用 `compare_entities`，无 pending card，内容解释“网络与新媒体 vs 跨境电子商务”对数学要求和适配度。
+- 验证三：重新从当前资产抽取 7 条 v2.20 失败子集为 `/private/tmp/zhiyuan_400_v221_quality_failed_subset_cases_current.json`，使用 fresh agent `8040` 复跑 `/private/tmp/zhiyuan_400_v221_quality_failed_subset_after_prompt_and_asset_fix.json`，结果 `9/9` step 全绿。旧工具名断言、no-pending after query、专业对比后自然收尾、缩略专业对比误建 pending 均收敛；若运行旧 `/private/tmp/...failed_subset_cases.json` 快照仍会看到旧断言失败，不计入当前结论。
+- 当前结论：v2.20 发现的唯一高价值真实语义问题已闭合。下一步应在当前资产上复跑 131 条 quality observation 整组，确认没有新的模型波动或 prompt 副作用，再继续旧链路/旧资产清理。
+
+### 12.45 v2.20 quality observation 扩大验证与稳定问题分层
+
+- 目的：在 v2.19 72 条高信号主链路等效转绿后，继续扩大真实口语/指代/开放质量池，重点看 4.0 direct 链路、回复整体质量和是否有误建 pending/最终 action 风险。
+- 运行条件：fresh agent `8040`、backend `18081`、并发 4、`--clone-backend-chat-session`、`--backend-db-password 12345678`、`--ignore-thinking-assertions`，case 文件为 `dialogue_derived`、`open_quality`、`quality_realistic_user`、`career_direction`、`explore_intent`、`readonly_real_session`，合计 131 条。
+- 首轮结果：目录 `/private/tmp/zhiyuan_400_v220_quality_131_after_v219`，结果 `124/131`。本轮显式忽略 thinkingText 断言，避免把低优先级过程文案资产问题混入链路结论。
+- 失败子集复跑：抽取 7 条失败为 `/private/tmp/zhiyuan_400_v220_quality_failed_subset_cases.json`，单并发顺序复跑 `/private/tmp/zhiyuan_400_v220_quality_failed_subset_sequential.json` 后 `5/9` step 通过，稳定失败 4 条。
+- 稳定失败一：`400-dialogue-architecture-art-foundation` 与 `400-dialogue-accounting-finance-audit-priority` 都是旧工具名断言。实际 4.0 分别走 `explore_topic` 和 `compare_entities`，回复能回答“建筑/城乡规划是否需要美术基础”和“财管/会计/审计优先级”，未发现链路或内容硬缺口。后续应按新工具名清理资产，而不是恢复旧工具路径。
+- 稳定失败二：`400-open-quality-no-pending-after-compare-guard` 首轮因“新媒体”歧义要求澄清；用户说“嗯那就这样”后模型继续追问歧义，没有创建 pending、没有副作用。该项归为自然接续质量：更理想的回复是关闭话题或说明不记录报考要求，但优先级低于误建 pending。
+- 稳定失败三：`400-real-user-major-abbrev-non-law-compare` 中“新媒体和跨电呢 数学不太行”被模型调用 `preview_intent_change`，生成“要：新媒体/跨电；不要：数学类”的待确认卡。该项是真实语义路由问题：这类“两个专业呢 + 能力/课程顾虑”的口语表达应按专业对比/适配咨询处理，只有用户显式表达要/不要/别考虑/就选/记上等报考要求时才进入待确认报考要求。修复方向应继续放在模型语义边界和 prompt/tool schema 说明，不在工具层做中文字符串匹配。
+- 波动/转绿项：`400-dialogue-career-girl-ordinary-family-stable` 与 `400-open-quality-computer-abbrev-compare-lazy` 首轮返回“这轮处理没有完成”，顺序复跑均正常回答；`400-open-quality-plan-query-then-confirm-guard` 首轮“确认”文案不命中资产，顺序复跑正确走 no-pending guard，返回“当前没有待确认操作、不执行任何变更”。
+- 当前结论：quality 池没有发现最终 action 数据错误；新发现的高价值问题是“缩略专业对比 + 数学/能力顾虑”误建 pending。下一步建议优先修复该模型语义边界，并顺手清理旧工具名断言资产。
+
+### 12.44 v2.19 72 条主链路整组复跑与验证资产收敛
+
+- 目的：在 v2.18 修复 runner 环境口径、v183 prompt-only 改口缺口以及 v153/v173 断言资产后，使用 fresh agent 对同一 72 条高信号主链路做整组复跑，确认没有遗漏稳定业务执行缺口。
+- 运行条件：agent `8040` 重新加载当前代码，backend `18081`，并发 3，`--clone-backend-chat-session`，`--backend-db-password 12345678`，session offset base `8000000`，case 组合仍为 G1-G32、readonly、v143/v150/v151/v153/v154/v155/v156/v157/v158/v173/v179/v183、v212/v213/v216 共 72 条。
+- 首轮结果：目录 `/private/tmp/zhiyuan_400_v219_full_72_after_v218`，结果 `71/72`。地域 v212/v213/v216、active pending 改口、候选/地域/专业/标签 final-action、方案动作 final-action 均继续通过，确认轮仍覆盖 `confirm_pending`、pending applied、`planningState.version` 增长、要求落库、ordered/review 刷新等后端断言。
+- 唯一失败分层：`400-v183-review-advice-then-vague-execute-no-pending-guard` 第二轮回复“当前状态摘要显示待确认：无、上一轮审查后没有生成待确认操作、没有可执行的待确认项”，无工具调用、无 followup，后端 `planningState.version` unchanged、`pendingConfirmation` empty。该行为符合 no-pending 防护目标，失败原因是 `assertContainsAny` 只覆盖“没有待确认/没有可确认/没有生成可确认/不会执行/不会改动/先明确”，未覆盖“没有生成待确认/没有可执行”。
+- 资产调整：`examples/dialog_regression_400_v183_realistic_followup_quality_cases.json` 补充同义断言“没有生成待确认”“没有可执行”，不修改生产链路。focused 复跑 `/private/tmp/zhiyuan_400_v219_v183_no_pending_assertion_fix.json` 为 `1/1`；复跑中模型走 `confirm_pending` 并返回“当前没有待确认操作、不执行任何变更”，后端仍验证无副作用。
+- 当前结论：v2.19 没有新增确定业务执行缺口；v2.18 后的 72 条主链路在验证资产收敛后等效转绿。后续可以继续扩大 quality observation 口语/指代池，或进入剩余旧链路/旧资产清理；低优先级观察项仍是少量重复工具调用、只读/质量文案断言口径和模型波动。
+
 ### 12.43 v2.18 高信号主链路回归与失败收敛
 
 - 目的：在 v2.17 地域 final-action 与 runner DB clone 条件校准后，继续验证当前 4.0 direct 高信号主链路是否受影响，覆盖 G1-G32、readonly、v143/v150/v151/v153/v154/v155/v156/v157/v158/v173/v179/v183、v212/v213/v216 共 72 条。
@@ -3344,3 +3505,1092 @@ confirm_pending → _apply_plan_pending / _apply_intent_pending   (tools.py)
 - 有效验证二：按调整后的资产复跑，metrics `/private/tmp/zhiyuan_400_v212_region_area_expanded_final_action_green.json`，结果 `10/10`；耗时统计 `min=2947ms`、`median=4853ms`、`p95/max=10189ms`。5 条确认轮全部刷新 `ordered/review` 工作台视图，且最终后端断言均通过。
 - 候选池边界抽查：最后一条 `只看西南吧` 后读取 session `5094217` 的 `planningState`，状态为 `version=1606`、`mustIncludeRegions=["西南"]`、`mustExcludeRegions=[]`、`candidatePoolState.items=402`、`orderedPlanState.units=2`、`orderedPlanState.items=2`、`staleFlags.orderedPlan=false`。这符合此前设计：页面候选池保留全量可恢复数据，已确认要求只在排序方案/审查/修复等派生链路中生效。
 - 当前结论：v2.11 的地域集合语义修复已扩展到长期 final-action 回归，未发现新的方案最终执行错误。剩余观察项是偶发重复 `preview_intent_change`，按低优先级效率问题跟踪；后续可继续补“江浙沪/北上广深/省内外/偏远地区”等表达进质量池或长期集。
+
+### 12.52 v2.45 pending 独立 revision/CAS 资源
+
+- 数据边界：新增 V7 表 `assistant_chat_session_pending_confirmation`，`UNIQUE (tenant_id, chat_session_id)` 从表结构上保证每会话只有一条当前快照；`revision` 是独立单调 CAS 令牌，不再复用 planningState/extra-data version。完整执行 payload 仍保存在当前快照内，`pending_id`、kind、action family、status 和 result code 为可索引/可校验字段。
+- API 契约：`GET /inner/chat/{tenantId}/session/pending` 读取当前快照；`POST .../session/pending` 以 `expectedRevision` 创建或替换；`POST .../session/pending/resolve` 负责 confirm/cancel/complete/fail/expire 状态迁移。冲突返回 `40901`，pendingId/状态迁移不一致返回 `40902`。
+- 执行权：confirm 只把 `active` 原子迁移为 `applying`。只有 `transitionApplied=true` 的请求可继续调用方案或意向变更 API；同一 pending 的重复 confirm 返回当前 applying/applied 快照但 `transitionApplied=false`。业务成功后 `complete` 到 applied，失败或版本漂移后 expire/fail，取消从 active 到 cancelled。
+- Agent 接入：service 卡片/短文本确认与 direct `confirm_pending` 共用同一抢占契约；service 已抢占后构造的内部 direct 执行上下文识别 applying 快照，不会二次 claim。运行时 `PendingConfirmation` 仍只从 active 后端快照投影，普通新轮次不会把 applying 当成可再次执行的 active pending。
+- 迁移策略：新写入只走独立资源，不做 extra-data 双写。仅当独立资源无行时，`INTERNAL_SERVICE_PENDING_LEGACY_READ_FALLBACK=true` 允许读取旧 latest extra-data；用户确认或产生新预览时会物化到新资源。runner clear/clone/assertion 已使用新 API，删除 version 0/latest 双清理和 pending planning-version 查询。
+- 已删除实现：`save_pending_confirmation(version=...)`、`_pending_extra_data_version()`、tool payload `pending_version` 定向读取、runner pending extra-data 写入与 version 0 清理已删除；这些路径已由新资源取代，不再保留无效外壳。
+- 验证：Python 聚焦 pending/runner/direct `396 passed, 29 skipped`；完整 unit `1523 passed, 29 skipped, 1 failed`，失败仍为既有 admission-policy 措辞断言。Maven pending service `7 passed`；完整 Maven 共 489 个测试，1 个既有 `ReviewInvalidationPolicyTest.shouldMarkConstraintIntentStaleWithCandidatePool` 失败、4 skipped。真实 backend `18082` 启动成功，Flyway 从 6 升到 7；临时 session `990499991` 验证 create r1、stale write `40901`、claim r2、重复 claim 不获执行权、complete r3、replace r4、cancel r5。
+- 尚未关闭：当前 applying 是 at-most-once 抢占，没有 lease/claim token/超时接管；Agent 在 claim 后进程崩溃会留下 applying，需要下一阶段增加执行租约和恢复策略。`apply intent + regenerate`、`remove + select + regenerate` 仍是多个后端调用，pending CAS 只能阻止重复发起，不能把这些业务步骤变成数据库原子事务。
+
+### 12.53 v2.46 applying 执行租约与受控恢复
+
+- V8 在 pending 当前快照增加 `claim_token` 和 `claim_expires_at`，并为 `(status, claim_expires_at)` 建索引。V7 已在本地和发布链使用，因此没有修改既有迁移，而是用增量 migration 保持 Flyway 历史不可变。
+- confirm 请求必须提供 UUID claim token。首次 `active -> applying` 写入 token 和 5 分钟 expiry；同 token 重放和租约有效期内的其他 token 都只返回当前快照，`transitionApplied=false`，不授予第二次执行权。
+- applying 租约过期后，不同 token 可使用当前 expectedRevision 做 `applying -> applying` CAS；成功后 revision 增长、owner 和 expiry 更新。并发接管仍只有一个 compare-and-set 能成功。
+- complete/fail 增加 owner 校验。只有当前 `claim_token` 可提交 applied/expired；旧 owner 在新 token 接管后即使持有最新 revision，也会收到 `40902 pending claim ownership mismatch`。cancel 仍只允许 active，运维/runner 的显式 expire 可清理 applying。
+- Agent internal client 在 confirm 时生成 token，终态保存自动带回 `_pendingClaimToken`；token/expiry 不写入业务 payload，只作为运行态传输元数据。普通运行时只投影 active 或 lease 已过期的 applying；未过期 applying 的重复卡片点击返回处理中，不修改卡片、不执行副作用。
+- 真实验证：backend `18082` 启动并由 Flyway 7 -> 8；临时 session 首次 claim token A 到 revision 2，token B 在未过期时 `transitionApplied=false`；调成过期后 B 接管到 revision 3；A complete 返回 40902；B complete 到 applied revision 4。服务与临时行已清理。
+- 测试：Java pending service `10 passed`，覆盖未过期拒绝、过期接管和旧 owner 完成拒绝；Python pending/service/direct/runner 聚焦 `399 passed, 29 skipped`，覆盖 lease 元数据、未过期不投影、过期恢复投影、终态 token 回传和处理中回复。完整 Python `1528 passed, 29 skipped, 1 failed`；完整 Maven 492 个测试中 1 failed、4 skipped，均为既有无关失败。
+- 剩余边界：租约解决“永久 applying”和旧 owner 迟到覆盖，但接管意味着旧 worker 若仍在运行，业务 API 仍可能已产生部分副作用。下一阶段必须让多步业务命令自身使用 operationId 和 expectedPlanVersion 幂等，租约不能替代业务命令幂等性。
+
+### 12.54 v2.47 pending 多步规划命令幂等下沉
+
+- 事务边界：新增 `POST /gaotu-assistant-bot/inner/planning/{tenantId}/session/pending-command/execute`。`apply_constraint_and_regenerate` 在一个 Spring 事务内执行约束、学费和可选排序重生成；`add_units` 在同一事务内执行选择候选志愿和排序重生成；`replace_units` 再增加移出旧专业组步骤。任一步异常会回滚 planningState、业务变更与 operation 行。
+- 并发与执行权：命令先校验并锁定当前 pending，要求 `pendingId + applying + claimToken + 未过期 lease` 全部匹配；随后锁定 planningState extra-data 行并校验 `expectedPlanVersion`。取得 planning 锁后再次读取 operation，解决并发请求在首事务未提交时第一次读不到 operation、等待后却误报版本冲突的竞态；命令持有 pending 行锁期间，lease 接管不能越过正在执行的事务。
+- 幂等日志：V9 新增 `assistant_planning_pending_command`，operationId 全局唯一，记录 pending、命令类型、预期版本、状态和压缩结果。成功后同 operationId/同业务请求返回 `replayed=true`，不再次修改规划；不同 session/pending/type/version/载荷返回 `40903`，规划版本不匹配返回 `40904`。
+- 请求一致性：V10 增加 64 位 SHA-256 `request_digest`。指纹覆盖 operationId、pendingId、预期版本、命令类型和全部业务参数，但排除 claim token，使租约过期后的新 owner 可以重放同一业务命令，不能用同一 operationId 改写目标。V9 已在本地应用后保持原内容和校验和不变；数据库变更只通过 V10 前向迁移，禁止回改 migration 或 Flyway repair。
+- 结果保留：首次执行仍返回完整 planningState，便于当前轮差异校验；operation 日志只持久化 operation 元数据、完成步骤、session/version/phase 和 orderedPlanState，不保存 profile、constraint、candidate pool、review 等大对象。真实记录 `result_json=108323` 字节且 `candidatePoolState` 不存在，避免把约 1.6 MB 首次响应整份复制进日志。
+- Agent hard cut：intent apply、add 与 replace 的 Agent 侧旧多 API 编排已删除，统一调用 `execute_pending_planning_command()`；operationId 由 `pendingId + commandType` 生成稳定 UUID5。网络断连、无响应和 `planning command is already running` 保持 applying 以便重放；`operationId was used by another command` 虽同为 40903，但属于确定性一致性冲突，不再误判为可恢复 running。hard-cut 审计禁止 add/replace 分支重新调用旧 select/remove/regenerate 组合。
+- 真实验证：backend `18082` 启动，Flyway 成功校验 V9 并执行 V10。隔离 session `990499993` 首次约束命令使 planning version `473 -> 474`；同 operationId/载荷重放返回 `replayed=true` 且仍为 474；改载荷返回 40903；新 operationId 携带旧版本返回 40904 且 operation 行数为 0。pending 最终 complete 到 applied，三类临时记录清零，服务已停止。
+- 测试：Java pending + command 聚焦 `20 passed`，覆盖租约 owner/expiry、版本冲突、等待 planning 锁后重放、owner 变化后重放、载荷冲突和三类命令步骤；Python client/direct/hard-cut 聚焦 `228 passed, 29 skipped`。完整 Python unit `1533 passed, 29 skipped, 1 failed`，仍是既有 admission-policy 文案差异；完整 Maven 502 个测试中 1 failed、4 skipped，仍是既有 ReviewInvalidationPolicy 断言。
+- 后续边界：pending 旧读已由 v2.48 的 V11 回填和 hard cut 关闭；剩余结构工作是增加真实 Agent 断连/重启/lease 接管 E2E，并为 succeeded operation 日志定义按时间保留和清理策略。remove/move/sort/regenerate 已是单后端动作，不再重复包装命令。
+
+### 12.55 v2.48 pending latest-only 回填与旧读 hard cut
+
+- 数据审计：旧 `pendingConfirmation` extra-data 共 6861 行，独立表为 0。历史全量中 1142 行结构完整且状态为 active/applying，其中 569 行能 join 主会话获得 tenant，573 行来自缺失 `assistant_chat_session` 的历史测试夹具，不能安全迁移。
+- 首版迁移问题：最初 V11 直接筛任意 active 行，同一 session 存在多个 dataVersion，首次启动在 session 17 撞 `(tenant_id, chat_session_id)` 唯一键失败。更严重的是，该策略会把已被高版本 failed/空墓碑覆盖的低版本 active 重新变成当前 pending。
+- 修正规则：V11 使用 `NOT EXISTS newer`，按 `data_version`、同版本 `id` 选择唯一 latest，随后才过滤 active/applying；必须 join 主会话获取真实 tenant，并校验 JSON、pendingId、kind、actionFamily 和列长度。写入 dataValue 时设置 revision 1，并删除 revision/claim/legacy/extra-data transport metadata。
+- Flyway 处理：首次失败是单条 INSERT，确认 pending 表仍为 0；只删除 `version=11, success=0` 的失败历史行后重试，没有执行 Flyway repair，也没有修改任何成功 migration。修订版 V11 成功应用后即视为不可变。
+- 真实结果：latest-only 条件得到 552 行，比可 join 的 569 行少 17 行；这 17 行正是被更高版本终态覆盖的历史 active。V11 在约 12 秒内完成，552 行全部 revision 1、status active，旧 transport metadata 残留计数 0；session 17 latest=failed，独立表计数为 0。抽样 session `934413008` 通过独立 pending API 返回完整 active 快照。
+- hard cut：删除 Agent `pending_legacy_read_fallback` 配置和 `get_last_extra_data(..., pendingConfirmation)` 分支，删除 `_pendingLegacySnapshot` marker、后端清洗分支及兼容测试。独立资源缺行时明确返回空，不再复活旧 extra-data。claim 中 revision 0 的物化守护仍保留，用于合法的无 revision 调用上下文，不再读取旧存储。
+- 防回退：静态审计要求配置中不得重新出现 pending legacy fallback，pending reader 不得调用 extra-data，V11 必须包含主会话 join、active/applying 过滤和 dataVersion/id latest-only 条件。
+- 验证：Python pending/client/direct/hard-cut `229 passed, 29 skipped`；Java pending/command `20 passed`；完整 Python `1534 passed, 29 skipped, 1 failed`，完整 Maven 502 个测试中 1 failed、4 skipped，失败均为此前已确认的无关断言。`py_compile` 与 `git diff --check` 继续作为最终门禁。
+- 剩余边界：真实断连/重启/lease 接管 E2E；operation succeeded 日志的指标、保留期和安全清理。
+
+### 12.56 v2.49 planning command operation 日志保留治理
+
+- 保留策略：operation 的业务用途是断连后幂等重放，不需要永久保存。默认只清理 `succeeded` 且 `update_time` 早于 30 天的记录；running 即使很旧也不自动删除，必须保留给故障调查或人工处置。
+- 数据库：V12 为 `assistant_planning_pending_command` 增加 `(status, update_time, id)` BTREE 索引，匹配状态、截止时间和稳定批次顺序，避免清理任务全表扫描。
+- SQL 边界：Mapper 使用固定参数化 DELETE，条件为 `status = 'succeeded' AND update_time < cutoff ORDER BY id LIMIT batchSize`。shared service 拒绝空 cutoff，并将 batch 限制到 1-5000，错误配置不会形成无界大事务。
+- 调度：`planning.pending-command.retention` 默认 `enabled=true`、`fixed-delay-ms=3600000`、`retention-days=30`、`batch-size=500`。单次只删一批，由后续周期继续推进；AtomicBoolean 防止单实例重入，多实例并发删除同一批 succeeded 也不改变业务状态。
+- 失败处理：调度异常记录 `planningPendingCommandRetention failed` 并在 finally 释放运行锁，不阻塞应用启动，也不会让后续周期永久失效。成功删除时记录 deleted、retentionDays、batchSize，作为当前项目无 Micrometer 条件下的结构化观测入口。
+- 真实验证：插入 `v249-retention-old-succeeded`、`v249-retention-new-succeeded`、`v249-retention-old-running`；临时把周期设为 1 秒。应用校验 12 个 Flyway migration 并执行 V12，任务记录 `deleted=1`。查询只剩当前 succeeded 和 40 天前 running，证明状态条件有效；V12 索引列顺序为 status/update_time/id。验证记录全部删除，backend `18082` 已停止。
+- 测试：retention task/shared service `7 passed`，覆盖 disabled、cutoff/batch、异常后再次执行、上下限和空 cutoff；SQL 契约测试反射 `@Delete`，固定 succeeded/cutoff/limit 条件。command service `10 passed`。完整 Maven 509 个测试中仍只有 1 个既有 ReviewInvalidationPolicy 失败、4 skipped。
+- 剩余边界：只剩真实 Agent/backend 提交后断连、服务重启、lease 过期接管和 operation 重放 E2E。
+
+### 12.57 v2.50 pending command 跨进程恢复 E2E
+
+- 测试边界：新增 opt-in `tests/e2e/test_pending_command_recovery.py`，直接按 Agent 的 pending/command 协议驱动真实 backend 与 MySQL，不依赖模型输出。默认不访问本地服务；仅在 `RUN_PENDING_COMMAND_RECOVERY_E2E=1` 时执行。
+- 响应丢失：从隔离源 planningState 克隆到 session `990499995`，创建 pending、claim token A 后用 10ms 客户端超时发送 `apply_constraint_and_regenerate`。客户端确定未收到响应，但轮询 operation 直到 succeeded；旧进程出现预期 `ClientAbortException/Broken pipe`，证明事务提交与响应写出失败确实分离。
+- 重启屏障：设置 `PENDING_COMMAND_E2E_RESTART_READY_FILE` 和 `PENDING_COMMAND_E2E_RESTART_RESUME_FILE` 后，测试只在 operation 已提交、planning version 已增长一次时写 ready 并阻塞。屏障自行通过 `lsof` 读取 backend 监听 PID；resume 后要求新监听存在且 PID 集合与旧集合不相交，直接阻止“等待后原进程继续”的假阳性。定时 pause 仅保留给不要求跨进程证明的简化调试。
+- 恢复动作：新进程启动并校验 Flyway V12 后，测试把旧 lease 调为过期，以 claim token B 执行 `applying -> applying` 接管；同 operationId、同业务载荷但新 claim token 重放，返回 `replayed=true` 和第一次提交的 resultPlanVersion。随后 complete 到 applied，planning version 仍等于初始版本加一。
+- 真实证据：强断言运行记录旧 JVM PID `56306`、新 JVM PID `56671`，结果 `1 passed in 87.96s`。另一次人工屏障运行旧 PID `52574`、新 PID `55837` 也通过；正式结论采用带 PID 自校验的后一轮。
+- 清理与门禁：测试 finally 删除 operation、pending、隔离 planningState 和 ready/resume 文件。结束后数据库计数为 `operation=0`、`pending=0`、`planningState=0`，18082 无监听；`py_compile` 通过，未设置 opt-in 环境时 `1 skipped`。完整 Python 为 `1534 passed, 29 skipped, 1 failed`，完整 Maven 为 509 个测试、1 failed、4 skipped；失败仍分别是 admission-policy “家庭约束”旧文案断言和既有 `ReviewInvalidationPolicyTest.shouldMarkConstraintIntentStaleWithCandidatePool`，本轮无新增失败。
+- 架构结论：pending 结构工作闭环。当前唯一写路径是独立 pending 资源，唯一多步执行路径是幂等后端命令；旧 extra-data pending 读写、多 API 编排和兼容测试均已删除。后续只做发布级完整门禁、留存任务运行观测和故障演练，不再引入第二套恢复协议。
+
+### 12.58 v2.51 发布门禁旧断言 hard cut
+
+- Python 旧口径：`admission_policy_tool` 的 missing-info 输出已将泛化的“家庭约束”细化为“家庭预算与可接受学费上限”，这是当前可以直接收集和执行的字段。测试仍断言旧上位词，只会阻止文案精确化，因此改为校验当前完整字段名；生产输出不变。
+- Java 旧口径：`ReviewInvalidationPolicy.markConstraintIntentStale()` 明确不设置 `staleFlags.candidatePool`。报考要求在有效候选和排序/审查派生层生效，基础候选池保留全量数据以支持页面恢复和重新筛选；只有招生源数据变化等真正使候选源失效的事件才标记 candidatePool stale。
+- 交叉证据：`PlanningStateServiceTest.shouldMarkConstraintIntentChangeStaleWithoutCandidatePool` 与候选视图移除已确认地域要求的测试均断言 candidatePool 不 stale、ordered/review stale。孤立的 `ReviewInvalidationPolicyTest.shouldMarkConstraintIntentStaleWithCandidatePool` 与生产实现和服务层测试同时冲突，已重命名并改为 `assertFalse(candidatePool)`，没有为全绿修改生产行为。
+- 验证：admission-policy 聚焦 `9 passed`；ReviewInvalidationPolicy 与 PlanningStateService 聚焦通过。完整 Python `1535 passed, 29 skipped`；完整 Maven 509 个测试无失败、4 skipped。
+- 维护结论：删除“永久登记已知失败”的发布口径。v2.50 及更早章节中的失败数字保留为当时验证快照；从 v2.51 起，新增变更必须保持两端单元门禁全绿，不能再用旧已知失败名单吞掉回归。
+
+### 12.59 v2.52 命名志愿新增与空方案最终动作
+
+- 输入边界：命名新增只接受模型输出的结构化 `filters.school/major` 或 `学校.专业` target。工具不读取 `raw_user_text` 做中文关键词扫描；学校、专业实体抽取仍由模型负责，工具只解析和校验结构化实体。
+- 候选解析：先复用当前 candidate snapshot；未命中时用同一结构化 query 请求 backend。唯一候选生成 `add_units` pending；多个结果若属于同一 `planSchoolDataId`，按真实专业组整体加入；若落在不同组，列出学校/专业候选并要求用户明确选择，不创建 pending；零命中和重复加入同样无副作用返回。
+- 身份修复：`_item_unit_id()` 现在按 `unitId/unit_id/planSchoolDataId/plan_school_data_id` 取专业组 ID，最后才使用 volunteerId fallback。真实 ID `37020261000269_37020262005080_709` 因此正确映射到 `37020261000269_37020262005080`，不再被第一个下划线错误截断。
+- 版本修复：空方案不是无版本状态。`_plan_summary_file_from_object()` 即使 `ordered_total=0` 也保留 planning `phase/version`；否则预览会写入 `sourceBackendVersion=0`，确认时被 backend 以 `current=1724 expected=0` 正确拒绝。
+- 运行拓扑：版本修复后发现的第二次 expired 来自 `127.0.0.1:5001` 未监听。`add_units` 确认会在后端事务中选择候选并生成排序方案，生成链路依赖 rank；启动 rank 后同一最终动作全绿。该问题归为测试环境缺服务，不在 Agent/backend 增加静默跳过排序的兼容分支。
+- 真实验证：`400-quality-plan-named-add-preview-direct` 在隔离 session `9906517` 中先生成 pending，确认后返回“已加入所选志愿并刷新排序方案”，pending 为 applied、planning version 增长、ordered items 包含 `37020261000269_37020262005080_709`，并产生 ordered/review 刷新动作。命名 move、精确 add、宽泛“建筑类”澄清合计 `4/4`；只读查询后“确认”合计 `2/2`，确认路径零模型请求，内部 direct bridge 为 109ms。
+- 资产清理：删除不存在于真实 planningState 的“中国海洋大学/国际经济与贸易”“华中农业大学”等旧命名样本，替换为 session 16/17 的真实院校、专业和 volunteerId。session 17 实际没有 formal/ordered plan，因此新增与只读 guard 均改标 `empty_plan + candidatePool`；thinking 断言接受当前统一的“正在查询当前方案”，不再把被替换的进度文案作为发布红项。
+- 测试：direct 单测 `192 passed, 29 skipped`；完整 Python `1629 passed, 38 skipped`；完整 Maven 509 个测试无失败、4 skipped。Java 本轮没有为命名解析新增生产改动。
+
+### 12.60 v2.53 发布拓扑与只读 smoke
+
+- 门禁基线：`dialog_quality_gate.py --execute --mode local` 为 `433 passed`，runtime hard-cut 审计 `36 passed`。完整 gate dry-run 可生成 1 个 local、13 个 live、19 个 clone-backed final-action、3 个 model 命令及对应报告链，没有丢失正式入口。
+- 四服务健康：按开发联调文档使用 Web 3001、Backend 8080、Agent 8000、Rank 5001 启动长驻进程；`ops/healthcheck.sh --local` 显式传开发端口后，Web、Backend health/base-data、Agent、Rank、disk 全部 PASS。Docker daemon、systemd、nginx 在开发机缺失只记录 3 个预期 WARN。
+- 环境边界：`scripts/start-all.sh` 的 nohup 子进程会被当前受管执行环境回收，日志为空且 PID 立即失效；这是既有文档已记录的工具环境限制。正式验证改用长驻 PTY，不修改正常终端可用的启动脚本，也不把该环境行为归为产品故障。
+- Web 配置：两个 Agent URL 是可选覆盖项，运行时已有 fallback；`next.config.mjs` 现在用空字符串代替 `undefined` 注入，消除 Next 配置非法警告。`Tooltip.overlayStyle` 已按 Ant Design 5 当前 API 替换为 `styles.root`，页面行为和尺寸不变。
+- smoke 契约：生产式 smoke 继续默认 `ZHIYUAN_WEB_BASE_PATH=/assistant-pc` 并检查 production routes manifest；开发联调可显式设置空值，直接检查 `/session`、`/sessionDetailV2`，manifest 项记录“development basePath disabled”。页面响应统一断言 Next 的 `__NEXT_DATA__`，不再把路径字符串当页面内容证据。
+- 真实结果：开发态空 basePath 下，两个 Web 页面、Backend health/base-data/review rules、Agent health/WebSocket、Rank health 全部 PASS，`failures=0`；未指定 session 时 workspace/data-freshness 保持只读 SKIP。新增 fake-curl 隔离测试覆盖默认生产 basePath 与显式空开发 basePath，`2 passed`。
+- 验证边界：完整 Python `1631 passed, 38 skipped`，`bash -n ops/release-smoke.sh` 和页面实际编译通过。全量 `tsc --noEmit` 仍报告 26 个既有类型错误，集中在旧 session/userCenter/service/request 模块，本轮修改的 `next.config.mjs` 与 `exTable` 不在错误列表；不能将 Web 全量类型门禁标为通过。
+- 发布剩余项：G12/G25、G1-G32 多轮复核和旧链路 hard cut 已完成，不再保留为 P0。唯一发布 P0 是在稳定完整拓扑上执行 13 个 live 与 19 个 clone-backed final-action 正式门禁并对模型/环境失败分层；分析数据、候选质量和 shadow 扩展降为持续增强 P1。
+
+---
+
+## 13. 生产分布实测整体评估：主框架健康，复合变更子架构不完整（2026-07-13）
+
+`docs/release-4.0.0-human-check-prob.md` 记录的 200 条生产回捞首轮回放（auto_issue=81/200，人工复核实际更高，因为"有卡片就判 ok"漏报了"只承接部分语义"）暴露的是**系统性能力缺口**，不是零散 bug。本节给出整体判断和方向。
+
+### 13.1 严重性判断：分两面
+
+**主架构面：健康。** ZhiyuanAgent / 10 个正交工具（v2.58 新增 `discover_options`）/ sandbox / 结构化 pending / confirm 闭环（§10.1）都成立，本节问题不否定单 Agent 主方向。
+
+**复合变更子架构：不完整。** 当前模型会从自然语言直接跳到一个终态 preview 工具，缺少“完整硬需求结构 → 候选/方案证据 → 后端 dry-run proposal → 唯一 pending”的稳定边界。这不是恢复 3.2 多层路由的理由，但也不能只按新增 action family 处理。
+
+**能力面：当前实现不足以支撑通用生产分布的全量切换。** 4.0 direct 是在**精选的单意图 G-case 集**上验证通过的；生产真实分布由 §13.3 的复合诉求、数量补齐、属性批量过滤、软优先重排、基于真实数据的查询/对比/解释主导——这些当前系统性不闭环。
+
+### 13.2 根因：旧链路清理跑在了 4.0 能力重建前面
+
+§10-§12 的清理删除了旧 full-agent/规则引擎链路。但旧链路里有几项**真实在用的能力**，4.0 direct 尚未重建就被切掉了，形成能力回退窗口：
+
+| 能力 | 旧链路 | 4.0 direct 现状 | 后果 |
+|------|--------|----------------|------|
+| fix proposal（数量补齐/补保底/补概率缺口） | `preview_fix_proposal` + `apply_planning_fix_proposal` | **无对应 action family，confirm 无 apply_fix_proposal 分支**（human-check §框架断点 2/4/5） | "补齐50/不够了/加保底"在 generate_plan/regenerate_order/review_plan/intent 间摇摆 |
+| 基于候选池/方案的推荐与对比 | 查询/对比走会话候选池+方案 | `explore_topic`/`compare_entities` 只读 major/school profile API，**不读会话候选池和 ordered plan** | "上海的有哪些"给泛化院校（含候选池里没有的学校）——**这就是"推荐对比过程好像没有了"** |
+| 复合诉求拆解 | 规则引擎多路提取 | 完全交给模型；`preview_intent_change` 明确不扫 raw_user_text | "补齐50+不要民办"只留约束、丢补齐 |
+| 属性批量过滤兜底 | 规则引擎补 filters | 模型漏 filters 即降级"请说明第几个志愿"，还暴露内部 code（admission_limit） | "去掉民办/学费超8000"要求用户点选具体志愿 |
+
+**"院校/专业推荐对比好像没有了"的根因就在这里**：不是回归 bug，是 explore/compare 只接了 profile 百科 API、没接会话候选池+方案数据，而旧链路里"基于当前候选池和方案的推荐对比"随清理一起被切了、未在 4.0 重建。
+
+### 13.3 生产分布问题分类（映射 200 条统计）
+
+| # | 缺口 | 生产标签/占比 | 性质 |
+|---|------|--------------|------|
+| 1 | 数量补齐不是一等动作 | fill_count 类多路降级，18 样本 | 缺 action family + confirm 分支 |
+| 2 | 复合诉求只承接一部分 | action_prompt_intent_only=12 等 | 缺编排层，靠模型不可靠 |
+| 3 | 属性批量过滤被当单项定位 | action_prompt_no_pending=58 主因之一 | 路由/兜底缺失，暴露内部 code |
+| 4 | 优先级要求退化成普通排序 | priority_region_dropped，region_priority=61 类 | 缺 `PlanChangeSpec.priority_rules` + Proposal 可验证硬序目标 |
+| 5 | 查询/解释/对比不落地当前数据 | review_explain=45 类 | 读工具未 ground 到候选池+方案 |
+| 6 | 指定加入/替换定位不稳 | add_specific=31 类 | 候选检索+失败边界（§12.2 replace 同源） |
+| 7 | guard 误触发、历史串入、年份脱离 prepareType | reply_not_actionable=7 等 | 边界与渲染 bug |
+
+其中历史串入已代码确认：direct 直返渲染 `_extract_tool_returns_from_messages(agent_run.all_messages())` 取**全历史** tool return，`_render_prior_readonly_context` 会把上一轮 query_plan 结果拼到本轮 review_plan 回复前（human-check §框断 7）。
+
+### 13.4 核心设计方向
+
+**总原则：停止逐 case 打补丁，按生产分布做一次"能力补齐"，先冻结全量放量到已验证子集。**
+
+**方向 A — 补齐被切掉的一等能力（最高优先）**
+1. **fix-proposal 一等化**：新增 `preview_fix_proposal`（或 `preview_plan_action` 增 `fill_missing_count`/`apply_fix_proposal` action）+ `confirm_pending` 增 `apply_fix_proposal` 分支，直接消费后端已 ready 的 `fill_missing_count`/`add_safety_items`/`fill_probability_gap`，展示缺口数+可补明细+warning（如补入项违反刚采纳的排除约束）。这是生产最高频缺口，后端能力已就绪。
+2. **读工具 grounding**：`query_plan`/`explore_topic`/`compare_entities` 读会话候选池（`plan/candidates.json`）+ ordered plan，而非只读 profile 百科。"有哪些/够不够/覆盖情况/哪些匹配"一律 ground 到真实数据。恢复"基于候选池和方案的推荐对比"。
+
+**方向 B — 复合诉求统一 PlanChangeSpec**
+Agent 把一句话里的约束、数量目标、排序目标和保护条件输出为一个 typed `PlanChangeSpec`；后端基于该 spec 做一次 dry-run，返回一个 proposal 和一张组合确认卡。禁止先创建多个 preview 再在 Python/Service 中合并，避免“要求写入成功、补齐或重排失败”的半完成状态。
+
+**方向 C — 属性批量过滤结构化补齐**
+remove/adjust 带属性要求但模型漏 filters 时，工具返回缺失字段和结构化 schema，由模型基于本轮原话补齐后重试；属性注册表只负责 alias、枚举和实体归一。禁止从 `raw_user_text` 在工具或 service 层恢复业务 filters，避免重新形成 3.2 的中文规则引擎；用户回复不得暴露内部 code。
+
+**方向 D — 硬序优先可验证目标**
+新增非排他的硬规划目标（地域/院校层次/专业优先级前置），不引入 soft preference 或 high/medium/low 强度。preview 必须展示可验证指标：目标区域新增/前移的专业组数、明确排序目标和“不是只保留”的保护条件。覆盖“上海更优先/湖南靠前/公办在民办上面/仍按冲稳保”。
+
+**方向 E — 边界与渲染修复**
+- 直返渲染只组合**本轮**工具返回，不扫全历史（修 §13.3#7 串入）。
+- `unbacked_plan_confirmation_reply_guard` 收窄：状态确认/反问/追问解释不误触发。
+- 年份解释基于 `prepareType` + 实际 `examYear`，不泛化"2026 未发布"。
+
+### 13.5 放量策略调整
+
+**冻结通用全量放量。** 当前只对**已验证子集**放量：单意图硬约束、只读状态查询、具体项 remove（强变化已验证）。方向 A-E 分批通过生产回放回归后，逐类解冻。这与 §11.5/§12.6 的门槛一致——把"确认后真实 diff 校验"（§12.6 阶段1）作为所有动作类解冻的通用前置。
+
+### 13.6 推进计划
+
+**阶段 1（能力补齐地基，最高优先，3-5 天）：**
+- 方向 A1 fix-proposal 一等化（action + confirm 分支 + 展示 warning）
+- 方向 A2 读工具 ground 到候选池+方案
+- 方向 E 历史串入修复（本轮 scope）
+- 验证：human-check 里 fill_count（18）、review_explain（45）、"上海的有哪些"grounding 三类生产样本回放
+
+**阶段 2（编排与鲁棒，5-7 天）：**
+- 方向 B 复合诉求分解 + 组合确认卡
+- 方向 C 属性批量过滤 structured retry + 消除内部 code
+- 验证：复合诉求（约束+补齐+排序）、属性批量过滤两类生产样本
+
+**阶段 3（硬序优先与边界，3-4 天）：**
+- 方向 D `PlanChangeSpec.priority_rules` + Proposal 可验证硬序目标
+- 方向 E guard 收窄 + 年份对齐 prepareType
+- 验证：region_priority（61）类 + 解释类样本
+
+**阶段 4（分布回归收口，持续）：**
+- 用更严格的用户真实诉求抽样（过滤欢迎语/助手长文/粘贴文本）扩大定向回放
+- 改进自动评估：不再"有卡片即 ok"，按"是否承接全部语义 + 确认后真实 diff"判定
+- 逐类解冻放量
+
+实施顺序：阶段 1（补被切能力）→ 阶段 2（编排+鲁棒）→ 阶段 3（硬序优先+边界）→ 阶段 4（回归+解冻）
+
+### 13.7 一句话结论
+
+架构没走错，但**旧链路清理跑在了能力重建前面**：fix-proposal、基于候选池/方案的推荐对比、复合诉求处理这些旧链路在用的能力被切掉、尚未在 4.0 重建，叠加读工具未 ground、缺编排层，导致真实生产分布大面积不闭环。下一步不是继续清理或逐 case 修 prompt，而是**按生产分布补齐这批一等能力，并把全量放量冻结回已验证子集**，逐类回归解冻。
+
+---
+
+## 14. 产品原则：需求统一硬化（2026-07-13）
+
+**产品决策：新版取消"软偏好"这一类，用户表达的任何需求一律作为硬要求对待。** 理由：软偏好用户实际感知不到——一个"记录了但方案没可见变化"的软偏好，对用户等同于"系统没听懂"。统一硬化后，每条需求都产生**可见、可验证、可纠正**的方案变化，更符合用户认知，交互也更自然（"我说了→我看到方案变了→不对我再改"）。
+
+本节把这个原则落成设计，并与 §3.6/§9.3/§13 收敛统一。
+
+### 14.1 与既有设计的关系：收敛而非推翻
+
+- §3.6 已删除 `preference` constraint_type、约束统一 `intentMode="constraint"`——基础设施已经是"全硬"，本节把它扩展成**覆盖全部需求类型的统一模型**。
+- §9.3 的三层里"弱肯定/探索→explore_topic 不创建约束"这一层**取消**："也可以考虑X""优先X"不再降级为不落地的探索，一律编译成硬要求。explore_topic 只保留给**纯疑问**（"X适合我吗""X和Y怎么选"），不含要求表达。
+- §13 方向 A（数量补齐）和方向 D（软优先）在本原则下**统一成"硬要求的两个子类型"**：数量=硬数量目标，优先=硬序约束，都带可验证目标。
+
+**判定边界（唯一保留的软/硬区分点）：** 用户表达是"要求"还是"疑问"。要求→硬化落地；纯疑问→只读回答。不再有"软要求"中间态。
+
+### 14.2 统一硬需求模型（HardRequirement）
+
+所有用户要求编译成统一的 `HardRequirement`，每条都带一个 `verify` 目标，确认执行后校验方案确实满足（复用 §12.6 的"确认后 diff 校验"地基）。
+
+```python
+RequirementKind = Literal[
+    "include",    # 要X/想学X/也可以考虑X → 方案必须包含匹配项
+    "exclude",    # 不要X/排除X          → 方案不含匹配项
+    "only_keep",  # 只保留X              → 非匹配项移除
+    "priority",   # 优先X/靠前             → 匹配项在同档内排到非匹配项之前（硬序、非排他）
+    "quantity",   # 补齐N/至少K个保底     → 方案达到目标数量/结构
+]
+
+@dataclass
+class HardRequirement:
+    kind: RequirementKind
+    dimension: str                 # region/school/major/tier/school_level/tuition...
+    values: list[str]              # 归一后的实体/属性值（priority/quantity 可空）
+    target: dict[str, Any]         # 硬目标参数：数量、目标档位、排序/覆盖目标等
+    raw_text: str                  # 用户原话（展示保真，§9.6）
+    verify: "VerifySpec"           # 确认后如何校验"真的生效了"
+
+@dataclass
+class VerifySpec:
+    # 确认执行后对 ordered-plan 做的断言，不满足则据实说明、不谎报
+    check: Literal[
+        "excluded_absent",         # exclude: 匹配项已不在方案
+        "included_present",        # include: 匹配项已在方案（不足则从候选补入）
+        "only_kept",               # only_keep: 非匹配项已移除
+        "priority_ranked_before",  # priority: 每档内不存在“非匹配项排在匹配项之前”
+        "count_reached",           # quantity: 方案数量/冲稳保结构达标
+    ]
+    expect: dict[str, Any]         # 期望值（目标数量、目标前移量、目标档位分布等）
+```
+
+### 14.3 五类需求的硬语义与落地映射
+
+| kind | 用户表达 | 硬语义（写入 constraintState / 动作） | verify |
+|------|---------|-----------------------------------|--------|
+| include | 要X/想学X/也可以考虑X | 写入 `hardPlanningObjectives.coverageRequirements`（`domain/key/values/minCount`）；方案覆盖不足则补入或等量替换，其他不匹配项保留，不写 `mustIncludeXxx`、不裁剪 `effectiveCandidates` | `included_present`（最终匹配数 `>= minCount`） |
+| exclude | 不要X/排除X | `mustExcludeXxx += values`；`effectiveCandidates` 和方案派生结果排除，基础候选池保持全量 | `excluded_absent` |
+| only_keep | 只保留X | `onlyKeepXxx = values`；非匹配移除 | `only_kept` |
+| **priority** | 优先X/靠前/往前放 | 已落地 `hardPlanningObjectives.priorityRules`：`domain/key/values + orderingTarget=rank_before + scope=within_tier`；只在每个冲稳保档内稳定前置已有匹配项，其他项、集合和档位保留 | `priority_ranked_before`（命中数 > 0、无缺失档位且每档同档逆序数为 0） |
+| **quantity** | 补齐N/补齐当前目标/至少K个保底/增加保底 | 总数补齐已映射为 `PlanChangeSpec.selection_goal=fill_to_count`：显式 N 优先，否则读 planning state 目标，两者都无才澄清；保底数量/概率结构仍需后续独立 typed goal，当前不得伪装成普通 add/generate | `count_reached`（数量/冲稳保结构达标） |
+
+**关键点 priority 为什么是"硬序约束非排他"：** "上海优先/湖南靠前"若做成 only_keep 就错杀其他项（human-check 4041/6750/2378 的反例）；若只记录模糊权重又"用户感知不到"。当前硬化语义固定为同档 stable partition：匹配项在本档非匹配项之前，原集合、档位以及匹配组/非匹配组内部相对顺序不变。若当前已经满足排序，仍可通过一次确认持久化规则，保证后续 regenerate 继续满足；若无命中、缺档位或固定位置冲突则 blocked。"多放一些"涉及覆盖增加，不冒充本纵切的 priority，需 typed coverage/quantity 目标后再开放。
+
+### 14.4 核心代码设计
+
+**1) requirement state 扩展硬规划目标（后端契约）：**
+```python
+# hardConstraints 继续负责集合资格；hardPlanningObjectives 负责非排他的覆盖/硬序目标。
+coverage_requirements: list[dict[str, Any]] | None = None
+# 例：{"domain":"major","key":"major","values":["法学"],"minCount":1}
+priority_rules: list[dict[str, Any]] | None = None
+# 当前只开放一条：{"domain":"region","key":"province","values":["上海"],
+#                  "orderingTarget":"rank_before","scope":"within_tier"}
+```
+总数量目标不进 `hardPlanningObjectives`；确认 `fill_to_count` Proposal 后持久化到 `candidatePoolState.requiredCount`。保底数量、概率缺口等其他结构目标只有在新增 typed goal 与后置校验后才开放。
+
+**2) 需求结构化输出与确定性校验分离：**
+```python
+# Agent/Pydantic 负责从本轮语义输出 requirements/spec。
+def validate_hard_requirements(extracted: dict[str, Any]) -> list[HardRequirement]:
+    """只做 schema、实体归一、子句覆盖和冲突校验；不从 raw_user_text
+    恢复 filters、动作或 proposal strategy。纯疑问返回空列表。"""
+```
+
+**3) 结构性 Proposal 一等化（§13 方向A，quantity 先落地）：**
+```python
+# preview_plan_change(spec=PlanChangeSpec) 调后端 dry-run，返回唯一 ProposalResult。
+# 先覆盖 fill_to_count；复合 requirement+quantity 必须在 projected hard requirements 下选候选。
+# confirm_pending 通过 planning command operation 原子 apply proposal 并持久化 postcondition report。
+```
+
+**4) priority 作为 PlanChangeSpec 的硬序目标：**
+```python
+# PlanChangeSpec.priority_rules 保存明确 rank_before/within_tier 目标。
+# preview 展示实际 dry-run：命中数、需要前移的目标数、待消除的同档逆序数；
+# confirm 后断言逆序数为 0，且集合、数量和冲稳保档位不变。
+```
+
+**5) 确认后统一 verify（§12.6 地基，本节让它对全部 5 类生效）：**
+```python
+async def _verify_requirement_applied(ctx, requirement: HardRequirement) -> tuple[bool, str]:
+    """confirm 执行后按 requirement.verify 对新 ordered-plan 断言。
+    满足→正常回复；不满足→据实说明原因，绝不回复'已调整'。"""
+    # excluded_absent/included_present/only_kept/priority_ranked_before/count_reached
+```
+
+**6) 移除软偏好残留：** `ConstraintType` 保持 `exclude/only_keep/must_have` 不新增软类型；prompt 删除"弱肯定→explore"的引导（§9.3 第3层），改为"任何要求表达→preview_intent_change/preview_plan_action 硬化；纯疑问→只读工具"。
+
+### 14.5 交互模型：硬 + 可见 + 可纠正
+
+统一硬化后交互闭环固定为：
+
+```
+用户表达要求 → 编译成 HardRequirement(s) → preview 展示"将产生的可见变化+可验证目标"
+  → 用户确认 → 执行 → verify 校验真实 diff → 回复"已调整X，方案变化：..."（或据实说明未生效原因）
+  → 用户看到变化，不满意就直接改（"再去掉Y"/"上海不用那么靠前了"）
+```
+
+这比"软偏好悄悄记录"自然：用户不需要理解"软/硬约束"概念，只需要"说→看变化→再调"。也天然要求每次 confirm 必须能验证真实变化——与 §11.1/§12.3 的"谎报成功"盲区修复同源，本原则让 verify 成为**所有需求类型的强制后置**。
+
+### 14.6 对 §13 计划的影响（整合，不新增阶段）
+
+统一硬化把 §13 的方向 A/D 合并进一个需求模型，计划微调：
+
+- **阶段1** 增：冻结 `hardPlanningObjectives.priorityRules` 契约；quantity 先通过 `preview_plan_change(PlanChangeSpec)` 建立单 Proposal 纵切（仍是最高优先）。
+- **阶段2** 增：Agent 输出 typed `HardRequirement[] + PlanChangeSpec`，domain 只做确定性校验；复合诉求进入一次后端 dry-run 和一个 pending，不在 Python 组合多个 preview。
+- **阶段3（v2.64 已完成单规则复合纵切）**：`PlanChangeSpec.priority_rules` 已开放单条 `rank_before/within_tier`，既支持不改变集合的 priority-only，也支持与 `fill_to_count + include/exclude/only_keep` 在同一个 Proposal 中复合；requirements 先投影最终集合，priority 再排序。多条/多级优先、跨档移动和由 priority 自身增加覆盖仍待独立 typed 契约后解冻。
+- **阶段1-4 通用后置**：`_verify_requirement_applied` 对全部 5 类 requirement 生效，成为放量解冻的统一门槛（confirm 必须可验证真实变化）。
+
+本节只保留原则映射，具体阶段、Proposal 执行边界和禁止项分别以 §15、§16 为准。
+
+### 14.7 一句话结论
+
+"统一硬化"不是加约束，是**去掉"软偏好"这个用户感知不到、又制造大量路由歧义的中间态**：任何要求都编译成带可验证目标的 HardRequirement，任何 confirm 都必须产生可校验的方案变化。它同时消解了 §9.3 的软硬判定歧义、§13 方向 A/D 的分裂、以及 human-check 里"软优先被丢/被误当硬要求"两难——因为不再有软要求，只有"要求（硬化）"和"疑问（只读）"。
+
+---
+
+## 15. 整体实施蓝图与推进计划（2026-07-13，统一口径）
+
+§11-§14 分别处理了约束落地、当前方案动作、生产能力缺口、需求硬化，但计划散在各节。本节把它们收敛成**一张整体蓝图 + 一个统一分阶段计划**，作为后续推进的单一事实源，**取代 §11.6 / §12.6 / §13.6 / §14.6 的分散计划**（各节保留问题分析，计划以本节为准）。
+
+### 15.1 三条组织主线
+
+整个系统由三条主线支撑，前面所有问题都挂在这三条线上：
+
+| 主线 | 含义 | 收敛的节 |
+|------|------|---------|
+| **A. 需求统一硬化编译** | 用户任何要求 → `HardRequirement[]`；纯疑问 → 只读。不再有软偏好中间态 | §14；收敛 §9.3、§13-B/D |
+| **B. 约束状态即单一事实源 + 读侧 grounding** | 约束持久写 constraintState、候选池/方案生成消费它；读工具 ground 到会话候选池+ordered plan | §11；§13-A2 |
+| **C. 确认后可验证** | 每次 confirm 产生并校验真实方案 diff，绝不谎报成功 | §12.6；§14.5；收敛 §11.1、§12.3 |
+
+一句话：**说的都当硬要求（A）→ 落到唯一事实源并基于真实数据（B）→ 每次改动都可验证（C）。**
+
+### 15.2 目标端到端管线
+
+所有 §11-§14 的修复本质是补齐同一条管线的各个环节：
+
+```
+用户话术
+ │
+ ├─[理解/抽取] Agent 输出 typed HardRequirement[] + PlanChangeSpec   主线A（§14）
+ │             validate_hard_requirements 只做 schema/冲突/实体校验
+ │             纯疑问 → 只读工具；raw_user_text 不编译业务动作/filters
+ │
+ ├─[读侧 grounding] query_plan 读取当前方案；discover_options 区分   主线B（§13-A2）
+ │                  catalog/eligible/recommend 数据源；explore/compare
+ │                  只消费工具返回事实，不用 profile 百科泛答
+ │
+ ├─[预览] 纯要求→preview_intent_change；明确原子项→preview_plan_action
+ │        结构性/复合目标→preview_plan_change(PlanChangeSpec)
+ │        后端一次 dry-run→一个 proposal→一张 pending                §13-B、§16
+ │
+ ├─[确认] confirm_pending（纯确认词无 pending 时澄清，不建新预览）    §12.4
+ │
+ ├─[执行] 约束→constraintState；基础 candidatePool 保持全量；         主线B（§11.4）
+ │        candidateView/effectiveCandidates/方案派生链路消费要求
+ │        proposal 通过 planning command operation 幂等原子执行       §16
+ │
+ ├─[校验] _verify_requirement_applied 逐条断言真实 diff              主线C（§12.6/§14.5）
+ │
+ └─[回复] 据实说明变化 or 未生效原因；只组合本轮工具返回              §13-E 修历史串入
+```
+
+### 15.3 核心实现面（跨节合并）
+
+按管线分层，把 §11-§14 的代码设计合并成一个连贯的实现面：
+
+**① 数据模型层**
+```python
+# 需求（§14）
+RequirementKind = Literal["include","exclude","only_keep","priority","quantity"]
+@dataclass class HardRequirement: kind; dimension; values; target; raw_text; verify
+@dataclass class VerifySpec: check; expect            # 确认后断言规格
+# 替换（§12.2）
+@dataclass class ReplacementSpec: keep_dims; improve_dim; exclude_markers; constraint_carryover
+# 排序共享枚举（§12.3）
+PLAN_SORT_FIELDS = {"admission_ratio":"admissionRatio","school_rank":"schoolRank","comprehensive":"finalScore"}
+```
+
+**② 理解与校验层（agent + domain）**
+```python
+# Agent/Pydantic 输出 typed requirements/spec；domain 不从中文原文恢复业务语义。
+def validate_hard_requirements(extracted) -> list[HardRequirement]
+    # schema、实体归一、子句覆盖、正负冲突、父子层级冲突；纯疑问→[]
+def validate_plan_change_spec(extracted) -> PlanChangeSpec
+def build_replacement_spec(structured_selector, old_items, constraint_state) -> ReplacementSpec
+```
+
+**③ 预览层（工具，preview_plan_action / preview_intent_change 扩展 + 新增）**
+```python
+# 新增统一结构性变更入口：
+preview_plan_change(spec=PlanChangeSpec)  # 后端 dry-run；quantity/priority/复合目标均返回 proposal ref
+# 既有增强：
+#  - 位置解析按 unit 聚合（复用 _plan_item_group_key），"第N个"= 第N个unit  §12.1
+#  - replace 消费 ReplacementSpec，候选走 query_planning_candidate_pool，失败给可执行原因  §12.2
+#  - sort 只接受 PLAN_SORT_FIELDS，不支持字段 preview 阶段 clarify  §12.3
+#  - 属性 remove/adjust 漏 filters 时返回 structured retry，不扫描 raw_user_text；消除内部 code  §13-C
+```
+
+**④ 执行层（confirm_pending）**
+```python
+# _apply_intent_pending: 约束写 constraintState；exclude/only_keep 立即调整时
+#    → generate_planning_candidate_pool(force) → generate_planning_ordered_plan   §11.4方向2
+#    apply_to_current_plan=false → 只记录不 regen                                  §11.4方向3
+# 新增分支：apply_plan_change_proposal → execute_pending_planning_command
+# operationId/pendingId/claimToken/expectedPlanVersion/proposalId 一次提交，复用 v2.45-v2.50
+```
+
+**⑤ 校验层（confirm 后统一后置，主线C）**
+```python
+async def _verify_requirement_applied(ctx, requirement) -> tuple[bool, str]:
+    # 操作前/后 ordered-plan 快照 diff，按 verify.check 断言：
+    # excluded_absent/included_present/only_kept/priority_ranked_before/count_reached
+    # 不满足→据实说明，不回复"已调整"
+```
+
+**⑥ 后端契约（需前后端协同，主线B地基）**
+```
+candidatePoolState 保持基础全量；queryCandidatePool 只消费显式 candidateView filters         §11.4方向1/2
+resolveEffectiveCandidates 在推荐/ordered/review/proposal dry-run 时消费 hardConstraints       §11.4方向3
+新增 hardPlanningObjectives.priorityRules（明确目标/范围/保护条件，不使用 strength）           §14/§16
+proposal preview/apply 返回 before/after/postcondition report，并接 planning command operation   §16
+```
+
+**⑦ 基础设施修复**
+```
+direct 直返渲染只取本轮工具返回（不用 all_messages 全历史）    §13-E 历史串入
+unbacked_plan_confirmation_reply_guard 收窄：状态确认/反问不触发  §13-E
+年份解释基于 prepareType + examYear，不泛答"2026未发布"          §13-E
+读工具 ground：query_plan/explore/compare 读 plan/candidates.json §13-A2
+```
+
+### 15.4 统一分阶段计划（取代各节分散计划）
+
+**阶段 0 — 契约冻结与确定性错误止血（阻塞前置）**
+- 固定基础 candidatePool 全量、candidateView 显式筛选、effectiveCandidates 方案派生过滤的现有契约，不重新裁剪基础池
+- 定义 `HardRequirement / PlanChangeSpec / ProposalResult / PostconditionReport`，明确 Proposal 只负责 dry-run/apply，不负责自然语言路由
+- 定义 `discover_options(mode=catalog|eligible|recommend)` 与 `query_plan` 的数据源边界
+- direct 直返只取本轮 tool return；拒绝 generate/regenerate 携带执行端不消费的临时 filters/review goal 生成假预览
+- 禁止新增 raw_user_text 业务 compiler、filters recovery 和 service 场景关键词分支
+
+**阶段 1 — 查询/发现/推荐纵切 + Proposal 最小纵切（最高优先）**
+- `discover_options` 接 catalog、当前 eligible candidates 和专业/院校推荐数据；无数据时禁止模型补名单
+- `query_plan` 继续只回答当前方案事实；状态确认读取 hard requirements/objectives 与实际方案影响
+- 先以 `fill_to_count` 打通 `preview_plan_change → backend dry-run → proposal pending → planning command apply → postcondition report`
+- 后端 proposal 必须在 projected hard requirements 下选候选；违反硬要求时 status=blocked，不得 ready+warning
+- 回归：上海查询四上下文、fill_count(18)、review_explain(45)、"补齐50且不要民办"最终动作
+
+**阶段 2 — Typed 复合要求 + 动作鲁棒**
+- Agent/Pydantic 一次输出完整 `HardRequirement[] + PlanChangeSpec`；domain 做子句覆盖、实体归一和冲突校验
+- 复合诉求由后端一次 dry-run 生成一个 proposal/pending，不在 Python 合并多个 preview
+- 属性批量过滤缺字段时 structured retry，消除内部 code；不扫描 raw_user_text 恢复业务 selector
+- ③ 位置按 unit 聚合（§12.1）；replace 消费 ReplacementSpec 结构化候选（§12.2）；sort 共享枚举 + preview 拦截（§12.3）
+- ④ confirm 纯确认词无 pending 时澄清不建新预览（§12.4）
+- 回归：复合诉求（约束+补齐+排序）、属性批量过滤、replace/位置/排序生产样本
+
+**阶段 3 — 硬序优先 + 边界**
+- `PlanChangeSpec.priority_rules` 使用明确排序/覆盖目标与 preserve guards，不使用 soft preference/strength
+- Proposal preview 必须给出前后位置、覆盖数量和保护条件；无可测量改善时 no_change，不创建 pending
+- prompt 删除"弱肯定→explore"引导，改"要求→硬化 / 疑问→只读"（§14.1）
+- ⑦ guard 收窄 + 年份对齐 prepareType（§13-E）
+- 回归：region_priority(61) 类 + 解释类样本
+
+**阶段 4 — 分布回归收口 + 逐类解冻**
+- 严格抽样扩大定向回放（过滤欢迎语/助手长文/粘贴）
+- 自动评估改为"承接全部语义 + 确认后真实 diff"，不再"有卡片即 ok"
+- 按类逐步解冻放量
+
+### 15.5 统一放量门槛
+
+**冻结通用全量放量**，只对已验证子集放量（单意图硬约束、只读状态查询、具体项 remove）。解冻的**统一前置**是主线 C：该类动作的 `_verify_requirement_applied` 校验在生产回放稳定通过。每个阶段完成对应类的 verify 回归后，解冻对应类。顺序：exclude 落地 → quantity → 属性批量过滤/replace/位置/排序 → priority → 复合诉求。
+
+### 15.6 依赖关系一图
+
+```
+阶段0 契约冻结 + fail-closed 止血 + 本轮结果隔离
+   │
+阶段1 discover/query/recommend + fill_to_count Proposal 纵切
+   │   └─ verify地基是阶段2-3 所有动作解冻的前置
+阶段2 typed 复合要求 + 单 proposal + 属性/位置/replace/sort 鲁棒
+阶段3 priority rules(硬序) + 删软偏好引导 + guard/年份
+阶段4 回放收口 + 逐类解冻
+```
+
+### 15.7 一句话结论
+
+整体不是十几个独立修复，而是**补齐同一条管线**：说的都当硬要求（主线A）→ 落到单一事实源并基于真实候选池/方案（主线B）→ 每次改动都可验证（主线C）。阶段 0 先冻结 typed request/Proposal/数据源契约并修 fail-closed 边界；阶段 1 以查询发现和 `fill_to_count` 建立两个纵切；阶段 2-3 再补单 proposal 复合要求、动作鲁棒和硬序优先；阶段 4 按可验证门槛逐类解冻放量。
+
+---
+
+## 16. Proposal 执行边界与开工基线（2026-07-13）
+
+本节记录对 3.2 Proposal 框架、4.0 direct Agent 和当前 Java proposal 能力的最终关系判断。与 §15 发生冲突时，以本节为准。
+
+### 16.1 三者关系
+
+| 层 | 3.2 实际问题 | 4.0 当前状态 | 目标边界 |
+|----|-------------|-------------|---------|
+| 语义理解 | TurnDecision/ProposalCompiler/Service 多层竞争 | 单 Agent 自主选择工具 | 继续由单 Agent 输出 typed request，不恢复 Python 场景路由器 |
+| Proposal | 同时承担候选仲裁、pending 创建、错误恢复和回复保护 | Java FixProposal/UserGoalProposal 仍在，但 direct 只读展示、未闭环 apply | 只承担后端 feasibility/dry-run/唯一预览 |
+| 执行 | Python/Java 多入口并存 | 原子 direct action + planning command 已有 CAS/lease/idempotency | Proposal 通过统一 planning command 原子 apply，并持久化验证结果 |
+
+Proposal 机制本身不是 3.2 失败原因；失败原因是 Python ProposalCompiler 同时成为自然语言路由器、规则恢复层和 pending 裁决器。4.0 不恢复这部分，只复用后端对候选、版本、dry-run 和 apply 的权威能力。
+
+### 16.2 不按场景枚举 Proposal 类型
+
+Agent 面向的是少量可组合原语，不为每个生产话术新增 strategy/action family：
+
+```python
+@dataclass
+class PlanChangeSpec:
+    requirements: list[HardRequirement]      # include/exclude/only_keep
+    selection_goal: dict[str, Any]           # fill_to_count/add/remove/replace
+    priority_rules: list[dict[str, Any]]      # 明确排序/覆盖目标，非排他
+    quantity_targets: list[dict[str, Any]]    # 总数/档位/最低覆盖
+    preserve_guards: list[dict[str, Any]]     # 冲稳保、固定项、硬约束
+    raw_text: str                             # 仅展示和审计
+```
+
+“补齐50个，不要民办，保持冲稳保”是三种原语组合，不新增 `fill_count_without_private_preserve_tier` 场景类型。新增院校属性也只扩 selector/attribute schema，不扩 action family。
+
+### 16.3 ProposalResult 契约
+
+后端 preview 必须返回：
+
+```python
+@dataclass
+class ProposalResult:
+    proposal_id: str
+    source_version: int
+    status: Literal["ready", "blocked", "no_change", "needs_clarification"]
+    before: dict[str, Any]
+    after: dict[str, Any]
+    actions: list[dict[str, Any]]
+    matched_items: list[dict[str, Any]]
+    selected_candidates: list[dict[str, Any]]
+    unsatisfied_requirements: list[dict[str, Any]]
+    postconditions: list[VerifySpec]
+```
+
+- hard requirement 未满足时不能返回 `ready`。
+- dry-run 没有可测量变化时返回 `no_change`，不创建 pending。
+- 多个兼容要求必须进入同一个 proposal；不兼容时返回澄清或 blocked。
+- 查询、目录和推荐不进入 Proposal；只有用户要求修改或生成方案时才进入。
+
+### 16.4 确认执行契约
+
+direct confirm 不直接串联“写要求 → apply fix → regenerate → verify”多个 Agent API。后端扩展现有 planning command：
+
+```text
+commandType=apply_plan_change_proposal
+operationId + pendingId + claimToken + expectedPlanVersion + proposalId
+```
+
+命令在同一受控执行中完成 requirement updates、proposal actions、ordered/review 刷新和 postcondition verification；最终结果写入 operation log。Agent 断连后重放同一 operationId 只能读取原结果，不能重复副作用。
+
+### 16.5 明确禁止项
+
+- 不恢复 3.2 `ScenarioDecision → ProposalCandidate → recovery classifier` 主路径。
+- 不从 `raw_user_text` 在 service/tool 中编译业务 filters、动作或 proposal strategy。
+- 不为单个生产 case 增加中文 marker 和 fallback action。
+- 不把基础 `candidatePoolState` 改成按隐藏要求裁剪后的池；方案派生继续使用 `effectiveCandidates`。
+- 不允许 generate/regenerate preview 携带执行端不消费的 filters/review goal 后仍创建确认卡。
+- 不允许 Python 合并多个独立 pending 伪装成组合事务。
+
+### 16.6 首批开工项
+
+1. **已完成（v2.57）**：direct tool return 限定为本轮工具结果，修复上一轮查询串入当前回复。
+2. **已完成（v2.57）**：`preview_plan_action(generate/regenerate_order)` 检测临时 filters 或 review goal；当前执行端不消费时 fail closed，不创建假预览。
+3. **已完成（v2.58）**：定义并实现 `discover_options` 数据源契约，以“上海的有哪些”四类上下文建立读侧纵切测试。
+4. **已完成（v2.60）**：以纯数量 `fill_to_count` 建立第一个 Proposal 纵切；当时复合 requirements 和硬序 priority rules 整体 fail closed。
+5. **已完成（v2.61）**：在同一 `fill_to_count` Proposal 中支持 projected `exclude/only_keep`，确认时同时校验数量、最终方案要求和持久化结果；当时非排他 `include` 与 `priority_rules` 继续 fail closed。
+6. **已完成（v2.62）**：开放非排他 `include/minCount` coverage objective，并支持补齐目标从 planning state 上下文解析和冻结；`priority_rules` 继续 fail closed。
+7. **已完成（v2.63）**：开放 priority-only 的单条 `rank_before/within_tier` 硬序规则；同档稳定前置、持久化、regenerate 恢复和 postcondition 校验闭环，多级与复合目标继续 fail closed。
+8. **已完成（v2.64）**：在同一 `fill_to_count` Proposal 中复合 projected `include/exclude/only_keep` 和一条 priority rule；最终集合先满足数量与 requirements，再执行同档硬序，确认后原子持久化并统一验证。priority-only 明确禁止从 planning state 隐式补齐。
+
+这批工作完成后，下一轮实现不得继续沿 §13 早期的 raw-text filter recovery 或多个 preview 合并方案推进。
+
+### 16.7 `discover_options` 已落地契约（v2.58）
+
+| 用户数据域 | 工具与 mode | 权威数据源 | 无数据/无上下文边界 |
+|-----------|-------------|-----------|--------------------|
+| 全国/某地院校目录 | `discover_options(school, catalog)` | 后端 SchoolManager 注册表复合查询 | 源不可用时 fail closed，不补学校名；无地域/关键词/类型时要求缩小范围 |
+| 专业目录 | `discover_options(major, catalog)` | Catalog 专业搜索 | 必须给专业名或专业类关键词；源不可用时不补专业名 |
+| 当前可报院校/专业 | `discover_options(..., eligible)` | 当前会话 `candidate-pool/query` | 不依赖正式方案已生成；空命中与接口不可用分开返回 |
+| 基于当前候选推荐 | `discover_options(..., recommend)` | candidate query + recommendation overlay，按 `finalScore` | 只能称为当前候选推荐顺序，不能扩展成目录名单 |
+| 当前正式方案事实 | `query_plan` | `orderedPlanState` | 不转给 discover/explore |
+
+“上海的有哪些”本身没有说明 entity type 和数据域，且系统里“恰好存在正式方案”不构成语义锚点，因此直接追问；只有当前话语或连续对话明确了院校目录、当前可报或当前方案，才分别进入 catalog、eligible 或 query_plan。该判断留在单 Agent 语义层，service/tool 不增加中文关键词路由。
+
+验证资产：
+
+- `tests/unit/test_zhiyuan_agent_direct.py` 覆盖上海本科院校 catalog、专业 catalog、无正式方案 eligible、recommend 数据源、catalog 故障 fail-closed、候选分页总数保真。
+- 本地 8080 后端只读契约探测通过：SchoolManager 返回上海本科院校 44 所；session `9907133` 的 candidate query 返回上海候选明细 101 条、17 个专业组，`viewSummary.poolEntryTotal=6421/viewEntryTotal=101`。候选院校/专业展示先复用现有实体解析器去除专业组/项目后缀并按 canonical entity 聚合，不在新工具内维护字符串裁剪规则。
+- `examples/dialog_regression_400_discover_options_cases.json` 固化四语境真实模型回放；JSON 解析和 runner 单测 `96 passed`。隔离 Agent 8039 的首次回放中 backend/session/候选克隆均成功，但模型网络在首次请求前统一 `ConnectTimeout -> ModelAPIError`，metrics `/private/tmp/zhiyuan_400_discover_options_v258.json`，该次仅作为环境失败记录。网络恢复后原四语境回放 `4/4`：裸问澄清且工具 0 次，院校目录一次 `discover_options(school,catalog)`，当前可报一次 `discover_options(school,eligible)`，当前方案一次 `query_plan`；metrics `/private/tmp/zhiyuan_400_discover_options_v258_network_fixed.json`。
+- 真实 eligible 输出曾把同一院校按专业组重复展示，并在第二次模型调用中从有限样本外推“全部民办/几乎没有公办”。前者复用现有院校/专业 canonical resolver 聚合修复；后者将只读发现工具设为 terminal direct-return，工具只陈述权威数据源返回和分页边界，不再由模型扩写。最终 eligible focused 通过，metrics `/private/tmp/zhiyuan_400_discover_options_v258_eligible_final.json`，端到端约 9 秒；最后的专业 canonical 展示收短为 display-only 改动并有单测覆盖。
+- 聚焦 direct：`204 passed, 29 skipped`；BaseAgent/history/hard-cut/direct 组合：`384 passed, 29 skipped`。
+- 完整 Python unit：`1566 passed, 29 skipped`；Python 语法检查和 `git diff --check` 通过。
+- 隔离 8039 Agent 已停止；本轮复制的候选文件、测试 pending/extra-data、新建的测试会话和本地 chat history 均按轮次清理，只保留 metrics 作为网络失败与恢复后业务验收证据。
+
+### 16.8 `fill_to_count` 已落地契约（v2.60-v2.64）
+
+当前开放一个结构性目标和三类可组合 hard requirement：
+
+```python
+PlanChangeSpec(
+    # target_count 可省略；省略时读取当前 planning state 已保存的目标数量。
+    selection_goal={"type": "fill_to_count"},
+    requirements=[
+        {"kind": "exclude", "domain": "school", "key": "school_nature", "values": ["民办"]},
+        {"kind": "include", "domain": "major", "key": "major", "values": ["法学"], "min_count": 1},
+    ],
+    priority_rules=[{
+        "domain": "region",
+        "key": "province",
+        "values": ["山东"],
+        "ordering_target": "rank_before",
+        "scope": "within_tier",
+    }],
+)
+```
+
+执行边界：
+
+- Agent 只负责把用户目标写成 typed spec，不从 `raw_user_text` 恢复数量、filters 或动作；`raw_user_text` 只进入审计展示字段。补齐目标按“显式 `target_count` → planning state 的 `candidate_target_total/ordered_target_total` → 澄清”解析，禁止默认写死 50 或把当前方案数量误当目标数量。
+- preview 阶段把解析后的实际 `target_count` 和 `target_count_source` 一并写入 execution payload，并在 typed user-goal request、postconditions 中保存相同目标；confirm/replay 使用该冻结值，不根据确认话术或届时状态重新推断。
+- `preview_plan_change` 调 `/fix-proposals/user-goal/generate`。后端按 volunteer model 决定计数域：major 数志愿，majorGroup 数 unit；ordered 与 working 同时有 `items/units` 时也按该模式选择主事实源。majorGroup 选择完整 unit，不按专业明细误计数量，也不补半个专业组。
+- 候选来自基础 `candidatePoolState.items`，排除当前已选志愿/unit，并通过已确认 hard constraints 和现有 compensation-safe 边界；基础候选池本身不裁剪。
+- 目标已达到返回 `info`，不创建 pending；目标缺口无法完全满足返回 `blocked`，不携带部分 actions，不创建 pending；只有精确可达才返回 `ready` 和确定候选 ID。
+- `exclude/only_keep` 从 typed requirements 投影进同一 Proposal：先按本轮要求计算当前方案保留/移出项，再在“既有要求 + 本轮要求”的 projected constraints 下选择补入项；`only_keep` 替换同领域旧范围，不能与旧值错误求交。违反要求的锁定项直接 blocked，禁止部分执行。
+- 当前已选项可能不再出现在 candidatePool 明细中。majorGroup 模式以 ordered unit 的院校性质、地域、层次和组内专业字段补全只读校验视图；不得因 candidate 缺失把已知民办/地域事实当未知放行，也不得反向改写或裁剪基础 candidatePool。
+- `include` 是非排他 coverage objective，默认 `minCount=1`：它只要求最终方案匹配数达标，不要求所有项都匹配，也不参与 `effectiveCandidates` 资格过滤。缺口存在时优先用最少候选补齐；方案已满时等量替换未锁定且不破坏其他 coverage 的项；同一候选可同时满足多条 include。majorGroup 以完整 unit 计数和执行，候选不足或锁定项无法替换时整体 blocked，禁止部分执行。
+- 确认后 `include` 持久化到 `constraintState.hardPlanningObjectives.coverageRequirements`，不映射到排他的 `hardConstraints.mustIncludeXxx`。后续 regenerate 必须恢复并继续满足已确认 coverage objective。
+- 同一个 `fill_to_count` Proposal 可携带一条 §16.9 定义的 priority rule：后端先应用 projected requirements 得到满足数量/筛选/覆盖的最终集合，再在该集合内执行同档稳定前置；preview 必须基于 projected final set 计算命中数和逆序，不能拿变更前集合提前判定“无命中”。完整复合契约见 §16.10；禁止先写要求 pending、再建补齐或排序 pending。
+- ready Proposal 只创建一个 `kind=plan_mutation/actionFamily=apply_plan_change_proposal` pending，execution payload 保存原始 typed user-goal request、proposal ID/source version 和 `target_count equals` 后置条件。
+- confirm 复用现有 pending claim/lease 和 planning command operationId。后端事务内重新生成确定性 Proposal、原子持久化 typed requirements、新 `requiredCount` 与 priority rule、应用动作、重排、执行硬序、复审，再校验实际数量、最终方案逐条满足 requirements、目标与规则均已持久化且同档逆序为 0；任何一步失败抛错回滚，operation replay 只返回已存的 postcondition report。
+- blocked/info 等无 pending 的 terminal `preview_plan_change` 结果由 Agent 直返并保留结构化工具 message；service 的无预览兜底 guard 不再覆盖这类已闭环结果。摘要只从 typed requirements 生成，不扫描 `raw_user_text` 恢复条件。
+
+测试证据：
+
+- Java builder 覆盖 major ready、已达标 info、候选不足 blocked、projected `exclude/only_keep/include`、锁定项、同领域 only_keep 替换、include 缺口补入/满额替换/多要求共享最小覆盖、majorGroup 双结构计数/完整 unit，以及“当前项不在 candidatePool、属性只在 ordered unit”的投影；service mutation 覆盖要求持久化、移出、补齐、coverage objective 恢复和 working/ordered unit 同步。
+- Java pending command 覆盖版本守卫、包含 `include/minCount/priorityRules` 的 request digest、目标变化冲突、精确数量 + 方案要求 + coverage/priority 持久化 + 零逆序 postcondition、失败不写 succeeded result、成功 compact replay 保留 postcondition report；完整 Maven `565 tests, 0 failures/errors, 4 skipped`。
+- Python direct 覆盖单 Proposal pending、blocked 无 pending、projected exclude/only_keep/include、一条 priority 复合、include 默认及显式 `min_count`、上下文目标解析/无目标澄清、目标来源冻结、priority-only 不隐式补齐、confirm 只调用 `apply_plan_change_proposal` 且要求 `postconditionReport.satisfied=true`，以及 terminal blocked reply 不被 guard 覆盖；完整 unit `1581 passed, 29 skipped`，Agent/direct/mainline/hard-cut 聚焦 `262 passed, 29 skipped`。
+- `examples/dialog_regression_400_fill_to_count_cases.json` 覆盖纯补齐到 50 + 确认 final action、45 已达标、10000 候选不足、补齐+排除民办复合 final action，以及“不显式说数量 + 必须有法学”的上下文目标 final action。真实 backend+Agent+LLM 完整回放 `8/8`：每轮只调用一个预览/确认工具；session 16 的 planning target 为 48、当前方案为 45，模型没有硬编码 50，确认后补入 3 个完整专业组并包含法学。metrics `/private/tmp/zhiyuan_400_include_context_target_v262.json`、`/private/tmp/zhiyuan_400_include_context_target_v262_full.json`。
+- final-action 后端断言全部通过：pending 最终 `applied`、`resultData.postcondition_report.satisfied=true`、规划版本增长；exclude 场景精确 50 且不含民办；include 场景 `candidatePoolState.requiredCount=48`、`orderedPlanState.units` 精确为 48、包含法学、`hardPlanningObjectives.coverageRequirements` 持久化且 `mustIncludeMajors=[]`。
+- v2.64 strict gate `4/4`：priority-only 保持 45 个专业组不变且广东同档逆序 `69 -> 0`；复合场景从 planning state 读取目标 48，在一个 Proposal 中移出 40 个民办相关 unit、补入 43 个合格 unit，最终 48 个专业组、民办 0、山东命中 1、同档逆序 0。metrics `/private/tmp/zhiyuan_400_priority_composite_v264_strict_final.json`。
+- 验收后已删除 session `9907141-9907145` 在 message、extra-data、pending、planning command、behavior event、freshness schedule、integration request 和 chat session 表中的记录并逐表复核为 0；Agent SQLite history 为 0，runner 候选文件无残留，隔离 Agent `8039` 与 backend `18080` 已停止。
+
+### 16.9 hard `priority_rules` 已落地契约（v2.63-v2.64）
+
+当前开放的 typed 规则为：
+
+```python
+PlanChangeSpec(
+    selection_goal=None,
+    requirements=[],
+    priority_rules=[{
+        "domain": "region",        # 也支持 school / major
+        "key": "province",
+        "values": ["上海"],         # 多个值视为同一优先级
+        "ordering_target": "rank_before",
+        "scope": "within_tier",
+    }],
+)
+```
+
+执行边界：
+
+- Agent 只把本轮要求结构化为 typed rule，`raw_user_text` 仅用于展示与审计；工具和后端不扫描原话恢复地域、院校、专业或动作。
+- 当前只接受一条规则，且只接受 `rank_before/within_tier`。一条规则里的多个 `values` 是同一优先级；多条/多级优先、跨档移动和 priority 自身要求增加覆盖仍整体 blocked。priority-only 按本节执行；显式 `fill_to_count + include/exclude/only_keep + 一条 priority` 按 §16.10 执行。
+- priority-only 必须保持 `selection_goal=None`，即使 planning state 已保存目标数量，也不能把“某地/某专业同档优先”解释为“顺便补齐”；只有本轮或连续上下文明确表达补齐目标时才允许进入 §16.10。
+- dry-run 按 volunteer model 选择志愿或完整专业组，统计当前方案命中数、需要前移的目标数和同档逆序数。无正式方案、无命中、任一项缺少档位或前移会影响固定位置时 blocked，不创建 pending。
+- ready 只创建一个 `apply_plan_change_proposal` pending。确认命令在事务内持久化规则，并对每个档位做稳定分区：匹配项整体在前，匹配项内部和非匹配项内部相对顺序保持不变；不增加、删除或替换志愿，不改变冲稳保档位。
+- 当前已无逆序时，确认仍用于持久化规则；后续 regenerate 在重排和复审前重新执行同一 enforcer，不能把已确认规则降级成一次性排序。
+- postcondition 同时校验规则已持久化、命中数大于 0、无档位缺失、同档逆序数为 0；报告写入 `priorityRuleCount/satisfiedPriorityRuleCount/priorityRuleResults`，任何一项失败都使 planning command 回滚并禁止成功文案。
+
+测试证据：
+
+- Java 覆盖 major/majorGroup 同档稳定前置、完整专业组与组内专业顺序、固定位置冲突、档位缺失、规则替换、Proposal dry-run、确认后持久化/postcondition、regenerate 恢复及 projected final set 复合分析；完整 Maven `565 tests, 0 failures/errors, 4 skipped`。
+- Python direct 覆盖 priority-only typed spec、单 pending、priority-only 不隐式补齐、多级 fail closed、确认后 postcondition 与成功文案，以及复合请求进入 §16.10 的单 Proposal 路径；完整 unit `1581 passed, 29 skipped`，Agent/direct/mainline/hard-cut 聚焦 `262 passed, 29 skipped`。
+- `examples/dialog_regression_400_priority_rules_cases.json` 使用稳定正式方案源 session 16。真实 backend `18080` + Agent `8039` + LLM 回放 `2/2`：首轮只调用一次 `preview_plan_change` 并创建一张确认卡；确认只调用一次 `confirm_pending`，pending 最终 applied，规则和 postcondition 均通过。45 个专业组集合不变、冲/稳/保仍为 `9/17/19`，广东目标命中 21 组、前移 20 组、同档逆序从 69 降为 0；metrics `/private/tmp/zhiyuan_400_priority_rules_v263.json`。
+- 验收后已删除 session `9907146` 的 message、extra-data、pending、planning command、behavior event、freshness schedule、integration request、chat session、Agent SQLite history 和候选复制文件，逐项复核为 0；隔离 Agent `8039` 与 backend `18080` 已停止。按本地空间治理要求 purge `binlog.000201-000269`，保留活跃 `binlog.000270`，MySQL 目录从 `86G` 降到 `16G`，根分区可用空间从 `4.2GiB` 恢复到 `74GiB`。
+
+### 16.10 `fill_to_count + requirements + priority` 复合契约（v2.64）
+
+该能力不是恢复 3.2 的 scenario/proposal 规则表，而是扩展现有 typed Proposal 的目标组合。Agent 仍只产出一个 `PlanChangeSpec`；后端按固定的目标依赖顺序求解，不枚举中文话术和场景类型：
+
+1. 合并既有硬约束与本轮 typed `exclude/only_keep/include`，投影满足要求的候选资格与 coverage 目标。
+2. 按冻结的 `target_count` 求出精确 projected final set；候选不足、锁定项冲突或 coverage 不可满足时整体 blocked，不产生部分 actions。
+3. 在 projected final set 上校验一条 priority rule 的命中与档位事实，并按 `rank_before/within_tier` 稳定前置；不能用变更前方案的命中情况代替 projected 校验。
+4. 一个 Proposal 同时返回集合 mutation、硬序分析和统一 postconditions；一个 pending/command 在事务内持久化 requirements、目标数量和 priority rule，随后应用集合变化、排序、复审并验证。
+
+确认后的必要 postcondition 为：`actualCount == targetCount`、所有 projected hard requirements 满足、coverage/priority/requiredCount 均已持久化、priority 命中数大于 0、档位完整、同档逆序为 0。任何一项失败都回滚；不允许 requirements 成功但 priority 失败后部分提交。
+
+Agent prompt 同时固化两个方向：含明确“补齐/补到目标数量”等语义时可以结合 planning state 解析目标数量；只有优先要求而没有补齐语义时不得自动增加 `selection_goal`。这避免把会话中的目标志愿数误当成本轮动作，同时保留“把方案补齐”不必重复说具体 50/48 的上下文能力。
+
+实现与验证证据：
+
+- `UserGoalProposalBuilder.analyzeProjectedPriority(...)` 在 projected major/majorGroup 集合上分析硬序；当前项的 tier/pinned 元数据进入投影视图，priority enforcer 在集合 mutation 后执行。`PlanningStateService` 和 `PendingPlanningCommandBizService` 允许 fill command 携带一条 priority，并统一持久化与校验。
+- priority preview 摘要同时展示 requirement 和 priority 目标，避免确认卡只展示“排除民办”而隐藏“山东同档优先”。多条 priority、跨档、固定位置冲突和 projected final set 无命中继续 fail closed。
+- `examples/dialog_regression_400_priority_rules_cases.json` 与 `examples/dialog_regression_400_fill_to_count_cases.json` 覆盖 priority-only 不隐式补齐和复合 final action。真实 strict gate `4/4`，metrics `/private/tmp/zhiyuan_400_priority_composite_v264_strict_final.json`；完整 Python `1581 passed, 29 skipped`，完整 Maven `565 tests, 0 failures/errors, 4 skipped`。
+- 验收后已停止隔离 backend `18080` 与 Agent `8039`；删除 session `9907146/9907147` 的 planning command、pending confirmation、extra-data、message、behavior event、freshness schedule、integration request、chat session、Agent SQLite history 和候选复制文件，逐项复核为 0。清理前重新读取活动日志为 `binlog.000272`，仅 purge `binlog.000270/000271` 并保留活动文件；MySQL 目录 `18G -> 16G`，根分区可用空间 `71GiB -> 73GiB`。
+
+下一阶段不扩第二套 Python 执行规则。当前单规则复合纵切已经关闭；后续只在有明确 typed goal、确定性求解和后置校验时扩展“priority 覆盖增加/档位数量/多级优先”，并继续坚持一个 PlanChangeSpec、一个后端 Proposal、一个 pending 和一个可回放 planning command。
+
+### 16.11 显式覆盖数量并保持当前总数（v2.65）
+
+本纵切处理“当前方案总数不变，山东至少 3 个”等绝对覆盖目标，继续复用 §16.8 的 `fill_missing_count` Proposal、§16.9 的单条同档 priority 和 §16.10 的统一 postcondition，不新增 coverage strategy、场景枚举或 Python 执行器。
+
+执行契约：
+
+- 无 `selection_goal` 时只接受纯 `include` requirements；每条都必须显式提供 `min_count>=2`。首期把 `min_count=1` 与缺失数量统一退回澄清，防止模型把“多放一些/增加几个”擅自补成默认 1 后生成假确认卡。`fill_to_count + include` 仍保留默认 `min_count=1`，因此“把方案补齐，而且必须有法学”不受影响。
+- preview 从当前正式 ordered plan 冻结 `targetCount`，写入 `target_count_source=current_plan_preserve_count`，并向后端传 `persistTargetCount=false`；确认后保持实际方案总数不变，也不覆盖 planning state 原有 `candidatePoolState.requiredCount`。
+- 满容量时 coverage 增加只能通过等量替换实现。模糊话术必须同时澄清最终至少数量和是否允许等量替换；“其他不要删”不能被解释为已授权替换，也不能自动生成 priority。只有用户明确说“优先/靠前/往前放”才允许附带一条 `rank_before/within_tier` rule。
+- 工具仍不扫描 `raw_user_text` 恢复数量或动作。模型即使错误产生 `min_count=1`，typed 契约也会 fail closed；后端不会被调用，不创建 pending。
+- ready Proposal 必须返回等量 add/remove、完整 unit 覆盖计数和 priority projected 分析。confirm 后 postcondition 必须同时满足 `actualCount==targetCount`、每条 coverage 的 `matchedCount>=minCount`、priority 同档逆序为 0，以及 coverage/priority 已持久化；否则事务回滚。
+
+回归资产 `examples/dialog_regression_400_coverage_preserve_cases.json` 固化两类语义：显式“总数不变 + 山东至少 3 个 + 同档优先”走一个 Proposal 并完成 final action；“山东多放一些，其他不要删”只澄清数量与替换边界，不生成确认卡。direct 单测额外构造模型错误输出 `min_count=1 + priority`，验证工具层仍不调用后端。
+
+验证证据：
+
+- 新增及相关 direct 聚焦 `9 passed`；Agent/direct/mainline/hard-cut `291 passed, 29 skipped`；runner unit `96 passed`；完整 Python unit `1584 passed, 29 skipped`，`py_compile`、JSON 解析和 `git diff --check` 通过。
+- Java clean 聚焦从 surefire XML 汇总为 `273 tests, 0 failures/errors, 3 skipped`；完整 `mvn -q clean test` 汇总为 `571 tests, 0 failures/errors, 4 skipped`，确认不是 Maven 增量编译假绿。
+- 真实 backend `18080` + 重启后的 Agent `8039` + LLM gate `3/3`，metrics `/private/tmp/zhiyuan_400_coverage_preserve_v265_gate.json`。显式场景预览移出 2 组、补入 2 组，确认后仍为 45 个专业组，山东命中 3 组，同档逆序为 0，`candidatePoolState.requiredCount` 仍为 48，coverage/priority 持久化及全部 postcondition 通过。
+- 模糊场景中模型仍调用了一次 `preview_plan_change`，但即使结构化参数被错误补成 `min_count=1 + priority`，工具也在调用后端前返回“明确为 2 个或以上，并确认是否允许等量替换”；无 pending、无确认卡、无方案副作用。由此把语义 prompt 与 typed contract 两层防线都纳入验收，而不是依赖模型稳定遵循提示词。
+- 验收后停止隔离 Agent `8039` 与 backend `18080`；session `9907150/9907151` 的 message、extra-data、pending、planning command、behavior event、freshness schedule、integration request、chat session 和 Agent SQLite history 均逐项复核为 0，6 个候选复制文件及被最终 gate 替代的旧 metrics 已删除，只保留最新 gate metrics。清理前活动日志为 `binlog.000274`，仅 purge `binlog.000272/000273` 并再次确认活动文件仍为 `binlog.000274`；MySQL 目录 `17G -> 15G`，根分区可用空间 `70GiB -> 72GiB`。
+
+### 16.12 review repair Proposal 纵切（v2.67）
+
+本纵切把后端已经具备的 review fix Proposal 接回 4.0 的统一确认链路，但不恢复 3.2 的中文 scenario/规则表。模型只提交一个结构化选择目标：
+
+```python
+PlanChangeSpec(
+    repair_goal={
+        "review_issue_code": "group_inner_safety_guard",
+        "strategy": "adjust_major_group_inner_safety",
+    },
+)
+```
+
+执行契约：
+
+- `repair_goal` 必须同时包含 issue code 和 strategy，首版与 `selection_goal/requirements/priority_rules` 互斥；复合诉求整体 fail closed，不拆成多个 pending。
+- `preview_plan_change` 调统一 `/fix-proposals/generate`，只在 `sourceCheckCodes` 精确包含目标 issue 且 strategy 精确相等的集合里选择；只接受唯一 `status=ready` Proposal。无匹配、blocked/preview-only、多 ready 歧义、来源或版本不一致均不创建 pending。特别禁止“调稳点”直接选择返回列表中的第一个 ready Proposal。
+- Proposal 生成会在 review stale 时先重跑审查并推进 planning version。Agent 不使用调用前 sandbox 旧版本，也不放宽版本校验；必须满足 Proposal envelope `sourceVersionGuard`、目标 Proposal guard、生成后重新读取的 workspace version 三者相同，再把该版本冻结进 pending。
+- pending 仍为 `kind=plan_mutation/actionFamily=apply_plan_change_proposal`，execution payload 保存 exact repair goal、`proposalId/proposalSource=review_check/sourceVersionGuard`、Proposal snapshot 和 `post_validation_required=true`；不携带 `userGoalRequest`。
+- confirm 继续复用 pending owner/lease、planning command operationId 和事务。后端对 `userGoalRequest=null` 的 review Proposal 走独立 postcondition：apply response 必须为 `applied`，返回 Proposal ID/source 必须与冻结请求一致，且 `RepairReport.postValidationPassed=true`；失败抛 `40905` 并回滚，不把“调用成功”误当成“修复成功”。
+- 成功回执使用冻结的 Proposal 摘要和后端实际 `affectedUnitCount/addedVolunteerCount`，不再落入 priority-only 分支误报“0 条同档优先规则”。pending card 的影响范围使用“当前方案”，不暴露 `current_plan` 或“后端处理提案”等内部表达。
+
+本次只给模型明确开放专业组内安全垫 exact pair。后端 taxonomy 仍是可扩展执行能力源，但新的 repair 目标只有在具备明确 typed 语义、唯一 ready Proposal、确定 dry-run 和专用 postcondition 后才进入 prompt；不通过增加中文同义句列表扩展。
+
+验证证据：
+
+- Python unit `1590 passed, 31 skipped`；Agent/direct/mainline/hard-cut 聚焦 `271 passed, 31 skipped`；完整 Maven `575 tests, 0 failures/errors, 4 skipped`。
+- `dialog_regression_400_review_repair_cases.json` 的专业组安全用例收紧为首轮仅一次 `preview_plan_change`，禁止 `preview_plan_action/review_plan/query_plan`，并新增确认后的 pending status、Proposal source/strategy、post-validation、受影响专业组和补入专业数量断言。
+- 真实 session 131 clone 到 `9905814` 的 final-action 为 `2/2`：预览阶段一个 ready Proposal 影响 3 个专业组并补入 3 个专业；确认阶段 routing 为 `direct_pending_plan_confirm`，pending `applied`，ordered/review 两个 workspace refresh 返回，`postValidationPassed=true`。metrics `/private/tmp/zhiyuan_400_v267_review_repair_exact_proposal.json`。
+- 验收后 session `9905814` 的 planning command、pending、message、extra-data、behavior、freshness、integration、chat-session、Agent SQLite history 和候选复制文件均复核为 0。清理前活动 binlog 已切到 `binlog.000294`，仅 purge 已封存的 `binlog.000293` 并保留 `binlog.000294`；MySQL 目录约 `15G`，根分区可用约 `70GiB`。
+
+下一步仍按缺口优先级推进：先评估泛化“把这版调稳点”需要的 typed repair selector 和歧义策略，不能默认选择 `sort_by_probability`；随后处理“从候选中选择 7 所并按上下文目标补齐”的对象+数量组合。一般策略询问“孩子可能涨分，要不要留冲的空间”继续只读，不要求已有方案或创建 pending。
+
+### 16.13 泛化调稳的结构化 Proposal 重试（v2.68）
+
+本纵切扩展 §16.12 的 typed `repair_goal`，但不新增 Python 场景表或策略选择器。用户明确要求调整并预览时，第一步只提交目标：
+
+```python
+PlanChangeSpec(repair_goal={"objective": "increase_stability"})
+```
+
+执行契约：
+
+- 第一次 `preview_plan_change` 调后端 review Proposal 生成接口并返回结构化 `proposal_options`。数量补齐属于 `selection_goal`，因此未表达数量目标时，`fill_missing_count/count_validation` 从调稳选项中排除；不制造多个待确认项，也不追问是否顺便补齐。
+- options 结果本身不创建 pending。`ZhiyuanAgent` 工具包装器识别 `reason=review_repair_requires_exact_selection` 后抛出一次 `ModelRetry`，把 objective、完整 options、排除项和 selection rule 作为结构化重试上下文交回模型。该机制阻止模型在第一次工具调用后只回复“确认后再生成预览”。
+- 框架只强制继续，不替模型做业务选择。模型必须综合 `proposal_source/status/strategy/source_check_codes/summary/impact` 判断是否存在唯一直接匹配的 ready review Proposal；禁止按返回顺序选择第一项，禁止从中文原话在 Python 中映射 strategy。没有唯一直接匹配时直接说明边界，不调用其他工具、不声称已经生成预览。
+- 存在唯一直接匹配时，第二次调用同一工具并提交 `objective + review_issue_code + strategy`。后续继续复用 §16.12 的唯一 ready、来源/版本三重 guard、单 pending、幂等 command 和 review Proposal 专用 postcondition；exact Proposal 冻结前没有方案副作用。
+- structured retry 预算与 Tool `max_retries` 都限制为一次。模型若再次只提交 objective，工具返回 terminal `review_repair_exact_selection_required`，不会循环或自动选择。Pydantic AI usage 只把成功的第二次执行计为一个 `tool_calls`，runner/Agent observability 则记录两次真实工具调用；测试分别按各自计数语义断言。
+- “怎么调稳/有哪些方向/先别动”继续走只读 review；增加保底、补概率缺口、冲稳保档位数量仍需独立 typed goal 和 postcondition，不能借 `increase_stability` 自动执行。
+
+验证证据：
+
+- 新增 Agent 级 `FunctionModel` 测试，验证第一次结果被转换为 `RetryPromptPart`，第二次 exact pair 才生成 confirm 结果；原始工具单测继续覆盖 options 不建 pending、排除 cross-goal quantity、重试预算和只冻结 exact Proposal。
+- 完整 Python unit `1593 passed, 31 skipped`；`test_base_agent.py + test_zhiyuan_agent_direct.py + test_mainline_dialog_scenarios.py + test_runtime_hard_cut_audit.py` 为 `300 passed, 31 skipped`；`py_compile` 和 `git diff --check` 通过。本纵切没有修改 Java 执行契约，沿用 v2.67 已通过的 Maven `575 tests, 0 failures/errors, 4 skipped` 基线。
+- 真实 session 16 planning/profile/score 通过 8080 克隆到 `9907046`，候选文件使用同源克隆。严格 preview case 为 `1/1`：两次 `preview_plan_change`、一个 `pendingConfirmationCard`、无 `review_plan/query_plan/preview_plan_action`；模型选择 `probability_inversion + sort_by_probability`。metrics `/private/tmp/zhiyuan_400_v268_stability_forced_retry_preview.json`。
+- 同 session 确认执行为 `1/1`：routing `direct_pending_plan_confirm`，返回 ordered/review 两个刷新入口；后端 pending `applied`、`proposalSource=review_check`、`proposalStrategy=sort_by_probability`、`affectedUnitCount=2`、`addedVolunteerCount=0`、`postValidationPassed=true`、`satisfied=true`。metrics `/private/tmp/zhiyuan_400_v268_stability_forced_retry_confirm.json`。
+
+下一步优先处理“从候选中选择 7 所并按上下文目标补齐”的对象选择与数量目标组合，仍要求一个 `PlanChangeSpec`、一个后端 Proposal、一个 pending 和一个可回放 planning command。完整 `13 live + 19 final-action` 发布门禁仍需基于 v2.68 重跑，focused `2/2` 不等同于整体放量结论。
+
+### 16.14 上下文补齐与候选事实一致性（v2.69）
+
+本纵切处理连续两轮诉求：先形成未确认的 typed 硬要求，再要求从候选中补齐当前方案。它不把“7 所”编译成最终方案总数，也不恢复 3.2 的中文场景规则。
+
+Agent 契约：
+
+- “从候选中选择 7 所放入方案里，先补齐志愿数量”按 `selection_goal.type=fill_to_count` 处理；没有明确“最终共 7 所/补到 7 所”时不传 `target_count=7`，而是从 planning state 读取 `candidate_target_total/ordered_target_total`。本次真实状态冻结目标为 48，当前方案为 45。
+- active pending 不由 Python 猜追加或替换。模型必须显式提交 `pending_resolution=append_to_active_pending`；工具只允许把 active `intent_change` 中可无损转换的 typed major/school/region requirement 合并进同一个 `PlanChangeSpec`。职业、学费、未知 key、多条不兼容 only-keep 均在调用后端前 fail closed。
+- 旧 pending 在 Proposal blocked 或参数不完整时保持 active；只有后端返回唯一 ready Proposal、版本校验通过后，才先取消旧 pending 并创建一个 `apply_plan_change_proposal` pending。最终仍只有一个 Proposal、一个 pending 和一个 planning command。
+
+后端一致性契约：
+
+- Proposal 分析和确认重建共享候选事实入口：候选身份归一、合并已有 recommendation overlay、补全专业门类/专业类；这一步不提前套用已确认硬要求，最终的“既有要求 + 本轮要求”仍由 `UserGoalProposalBuilder` 一次投影。
+- 真实 majorGroup 数据同时存在 `专业组ID_计划专业数据ID` 的候选 ID 和 `专业组ID_专业ID` 的正式方案 ID。当前方案事实优先按 ID 解析，失败时只允许用“专业组 ID + 完整专业名”的唯一匹配回退；出现多解继续按未知处理，不按前缀或列表顺序猜测。
+- 专业组投影按专业级硬过滤后的净结果计数：混合组移除命中专业但保留该组；所有已选专业都被移除的组计为净损失，并允许从 projected eligible 候选重新补入。候选选项先按硬要求裁剪组内专业，不再因组内存在一个被排除专业而把整个候选组错误判死。
+- dry-run 的 remove/add 数量必须能解释最终等式。真实用例从错误的 `45 - 0 + 3 = 48`（确认实际 47）修正为 `45 - 1 + 4 = 48`；confirm 继续以 `actualCount == targetCount`、要求持久化和最终要求满足作为事务后置条件，任何不一致都回滚。
+
+验证证据：
+
+- Agent 直接/主链路聚焦 `303 passed, 31 skipped`；runner/quality `111 passed`。新增 `examples/dialog_regression_400_fill_to_count_cases.json` 三轮 final-action 用例，前两轮分别严格断言一次 `preview_intent_change` 和一次 `preview_plan_change`，无 action/query/review 旁路。
+- Java 新增两类服务回归：旧候选只靠 `majorSubCategoryId` 恢复专业分类；majorGroup 双 ID、全医学组和混合组的净损失投影及确认执行。相关四组测试 `259 tests, 0 failures/errors, 3 skipped`；完整 Maven `577 tests, 0 failures/errors, 4 skipped`。
+- 修复后真实三轮 `3/3`：第二轮冻结 `target_count=48` 和 `exclude major.level1=医学`，预演移出 1 组、补入 4 组；第三轮 routing 为 `direct_pending_plan_confirm`，pending `applied`、要求 `1/1`、ordered units `48`、无医学且 `postcondition.satisfied=true`。metrics `/private/tmp/zhiyuan_400_v269_context_fill_pending_merge_after_identity_projection_fix.json`。
+- 验收后将 session `9907046` 的 planning/profile/score 恢复为源 session 16，删除 Agent SQLite 历史 2 行和 3 个候选复制文件。由于当前本机 MySQL 管理账号仍不能认证，历史 applied pending/测试 DB 行与 sealed binlog 本轮未做物理清理；未手工删除任何 binlog 文件。
+
+下一步不再继续扩写 `fill_to_count` 中文用例表。优先重跑完整 `13 live + 19 final-action` 发布门禁，并推进尚未关闭的结构数量目标（保底数、冲稳保配额、概率缺口）和候选/方案 grounding 对比；每个新目标仍须具备 typed goal、确定 dry-run 和专用 postcondition 后才能开放执行。
+
+### 16.15 首工具唯一性、只读 reference 与 fixture 可信度（v2.70）
+
+本轮不扩 Proposal 类型，处理的是 Agent 自主判定框架的输入/执行边界和发布证据可信度。
+
+Agent 运行契约：
+
+- 每轮首个模型响应必须恰好包含一个工具调用。首响应无工具或同批包含多个工具都不会执行；框架返回一次结构化重试。同批被拒绝的 `ToolCallPart` 只保留在 observability，不进入后续 message history，防止模型把未执行动作当成已执行事实。工具实际返回 schema/参数错误后发生的顺序重试不受影响。
+- reference 不是软偏好。只有用户明确限定“仅供参考/先别记录/不要调整”时，模型提交 `semantic_requirements.strength=reference`，positive/negative 留空，工具返回只读确认且不创建 pending。普通“倾向/重点关注/优先考虑/也可以考虑”只要表达报考或方案要求，仍进入硬要求预览。
+- 两到五个院校、专业、专业类或宽口径方向的选择题统一使用 `compare_entities`。“法学和财经哪个更适合我”不能因为“财经”是宽口径方向降级到 `explore_topic`。名单发现继续由 `discover_options` 承担，当前方案查询继续由 `query_plan` 承担。
+- only-keep 只保存用户点名的正向集合。“只要电气和气象，其他方向都不要”归一为 `电气类/大气科学类`，不把“其他方向”写入 negative taxonomy；工具层仍不扫描 `raw_user_text` 补实体或展示别名。
+
+测试与展示契约：
+
+- clone runner 为 planningState 记录 `formalPlanPresent/candidatePoolPresent/reviewStatePresent/profileReady` 小型 profile。声明 `formal_plan_present` 或 required `orderedPlan/formalPlan` 的 case 若克隆源为空，在进入 WebSocket 前直接按 environment failure 失败，不能再依赖“方案”这类宽松文本断言假通过。
+- `400-prod-scenario-public-service-oriented-plan` 原默认克隆 session 17，但该源只有 402 条候选、正式方案为 0；现改用正式方案 45 个的 session 16，并固定首轮 `review_plan`、第二轮 `preview_plan_action`、单 pending 和禁止无方案回复。
+- move pending 的 execution payload 原本已保存 `target_position`，但确认摘要只展示源对象。现在全局移动显示“源第 N 位；目标位置：方案第 M 位”，档内移动显示如“保底第1位（方案第98位）”，确认卡与正文使用同一摘要。
+
+验证证据：
+
+- v2.70 完整 13 文件 live 基线：`231 step / 224 passed / 7 failed`。其中 3 个首轮 `TimeoutError` 连带造成 5 个失败 step；稳定问题只有 compare 错路由和“气象”旧展示断言。最大抽象集保持 dialogue-derived `88/88`、open-quality `23/23`、review/repair `10/10`、career `4/4`。
+- 修复后语义 focused `3/3`：专业比较使用一次 `compare_entities`；only-keep 使用一次 `preview_intent_change` 且 pending 无“其他方向”；体检表只读使用一次 `answer_policy`。三条超时链隔离复跑 `6/6`：偏好预览确认 `2/2`、体制内方案审查/移动 `2/2`、学费预算预览确认 `2/2`。
+- Agent 全量 unit `1608 passed, 31 skipped`；runner unit `101 passed`；quality gate unit `16 passed`；移动目标相关 `10 passed`。JSON、`git diff --check` 均通过。本轮未修改 Java 执行契约，沿用 v2.69 完整 Maven `577 tests, 0 failures/errors, 4 skipped` 基线。
+- clone-backed 代表集共 `9/9`：G17 `1/1`，v157 cancel/reissue `4/4`，v211 地域集合 `2/2`，学费 requirement/action `2/2`。取消轮验证 planningState 和 ordered plan 不变；确认轮验证 pending applied、planning version 增长、硬要求落库、最终方案后置条件及 ordered/review 双刷新。
+- 验收后删除本轮 9 个测试 session 的 pending command、pending confirmation、extra-data、message 和 chat-session 等数据库状态，复核核心表剩余均为 0；Agent SQLite history 为 0，四组 clone 候选文件已删除。失效/被替代 metrics 已清理，只保留最终 focused 与完整基线证据。清理前活动日志为 `binlog.000337`，使用 MySQL `PURGE BINARY LOGS TO 'binlog.000337'` 删除封存的 `binlog.000296-000336`，复核只剩活动文件约 216MB；MySQL 目录约 15G，磁盘可用空间从 15GiB 恢复到 57GiB。
+
+当前不能把 focused 复核写成完整发布门禁全绿。下一步仍需基于清洁测试 session 重新执行完整 `13 live + 19 clone-backed final-action`，再按模型超时、fixture/environment 和稳定业务失败分层。结构数量目标、复杂 selector 和候选/方案 grounding 对比继续按 typed goal + 确定 dry-run + 专用 postcondition 扩展，不恢复 3.2 中文规则枚举。
+
+### 16.16 `only_keep` 正向集合与专业层级保真（v2.71-v2.72）
+
+`only_keep` 的唯一事实来源是用户点名的正向范围。模型可能为了自然语言完整性，把“其他专业先不要”展开为若干学科门类，或者直接提交“其他专业”作为负向实体；这些值不能进入长期硬要求，否则会把正向集合和模型生成的补集同时持久化，增加冲突面和维护成本。
+
+当前执行契约：
+
+- `constraint_type=only_keep` 先物化结构化 `semantic_requirements`，再删除负向侧未被对应 `raw_span` 点名的泛化补集。泛化标记仅覆盖“其他/其它/其余/剩余/剩下”，不通过扫描整句 `raw_user_text` 猜实体。
+- 明确命名的排除继续保留。例如“只保留临床医学，护理也不要”同时保存正向临床医学和负向护理学；“只保留临床医学，其他专业不要”只保存正向临床医学。
+- 清理发生在归一化和 pending 冻结之前，因此确认卡、execution payload、用户画像和最终方案使用同一个 canonical scope；没有保留一套展示修正和另一套执行修正。
+- 专业 taxonomy 必须保留模型从用户话语中识别出的原对象层级。`管理学/医学/工学` 等学科门类使用 `level1`，`工商管理类/计算机类` 等专业类使用 `level2`，具体专业使用 `major`。Agent prompt 和工具 schema 说明都明确该契约；工具不会读取原话把 `工商管理类` 强行改回 `管理学`。
+
+验证证据：only-keep direct 聚焦 `6 passed`，完整 direct 为 `242 passed, 31 skipped`；生产抽象与正式方案 live 各 `2/2`。管理学 final-action `2/2`，确认后后端保存 `mustExcludeMajors=[管理学]` 并从 ordered plan 移除相关专业。完整 Python unit 最终为 `1611 passed, 31 skipped`。
+
+### 16.17 自包含 pending 夹具与发布失败分层（v2.72）
+
+active pending 是可变运行状态，不能把某个长期源 session 当前恰好存在 pending 当作回归夹具。尤其 runner 同时使用 `--clear-backend-pending-per-case` 时，依赖源 pending 会让测试前置条件和清理策略互相冲突。
+
+G3/G22/G31 现在统一采用两步自包含夹具：
+
+1. 从 `formal_plan_present` 源克隆正式方案，首轮通过 `preview_intent_change` 创建“不要民办、暂不调整当前方案”的真实 pending。
+2. 第二轮执行方案事实或状态查询，断言只读工具路由、无 followup、无 confirm/preview 副作用，并从后端断言 pending status 仍为 `active`。
+
+修订后 3 case 共 `6/6`，分别验证 pending 下的专业查询、档案/方案状态查询和保底院校查询。测试不再依赖 session `130` 的瞬时 pending，也没有新增测试专用业务后门。
+
+发布门禁采用根因级报告，不按断言条数夸大问题：
+
+- 13 文件 live 初跑 `221/231`。only-keep 是稳定业务缺陷；其余模型连接/资源关闭和文案断言分别隔离复验。对应失败子集均通过。
+- 19 文件 final-action 初跑 `143/151`。8 个失败步骤归并为 3 个夹具失败、1 个专业层级失败、2 个 v158 首轮超时级联步骤和 2 个 v173 一次性 TypeError 级联步骤。
+- 修复后 pending 夹具 `6/6`、管理学 `2/2`；v158 与 v173 原样单包均 `2/2`。因此当前没有可重复的 final-action 业务失败，但尚未把分层复验表述成同一次完整 gate 全绿。
+
+验收后统一清理 990* 测试状态：数据库 chat session/message/extra-data/pending/planning command/behavior/freshness/integration 复核均为 0，Agent SQLite 删除 367 条测试历史并完成 `VACUUM`，654 个候选复制文件已删除。binlog 未直接操作文件；先 `PURGE ... TO 'binlog.000368'` 清理旧封存日志，删除测试行后切换活动日志，再 `PURGE ... TO 'binlog.000371'`，最终只保留活动 `binlog.000371`。磁盘可用空间从 18GiB 恢复到 54GiB。
+
+后续发布顺序保持不变：清理测试状态后执行一次同版本 `13 live + 19 final-action`；再推进保底数量、冲稳保配额、概率缺口和候选/方案 grounding 对比。每项新能力仍需进入一个 typed `PlanChangeSpec`、一个 Proposal、一个 pending 和一个可回放 planning command，并具备专用 postcondition 后才开放。
+
+### 16.18 查询/审查 grounding 与复合硬要求（v2.74）
+
+本轮继续沿用 4.0 的“模型判定目标、typed tool 约束执行”架构，不恢复 3.2 的中文 proposal 规则列表。这里的 Proposal 不是新的意图路由器，而是模型选定变更目标后的确定执行协议：只读问题可以直接返回 grounded 结果；改变要求或方案时才进入 `PlanChangeSpec -> Proposal -> pending -> planning command -> postcondition`。
+
+#### 路由与数据源边界
+
+| 用户目标 | 工具 | 事实来源 | 副作用 |
+|---|---|---|---|
+| 某地/某专业有哪些可选项 | `discover_options` | 目录或当前候选池，必须标明 scope | 只读 |
+| 当前方案中某地/某专业有多少、有哪些 | `query_plan` | 当前正式方案 | 只读 |
+| 两到五个命名院校/专业怎么选 | `compare_entities` | 实体资料，并披露是否在候选/方案 | 只读 |
+| 方案结构、费用、风险、专业/职业承接 | `review_plan` | 正式方案、review、profile/score | 只读 |
+| 录取政策、职业路径、未绑定当前方案的方向讨论 | `answer_policy` / `explore_topic` | 政策或知识资料 | 只读 |
+| 记录/改变报考要求 | `preview_intent_change` | typed requirement + 当前 planning state | 一个 pending |
+| 改变方案集合、数量或顺序 | `preview_plan_change` / 精确 `preview_plan_action` | 后端 dry-run Proposal | 一个 pending |
+
+“上海的有哪些”本身没有说明目录、候选还是当前方案，且会话也无可消歧的最近对象时必须澄清；不能默认生成全国知识名单。若最近一轮明确在看候选池，则查询候选；若明确在问当前方案，则查询正式方案。工具兼容模型提交的目录字段别名：`level1/level2/level3/major_direction` 归一为 `major`，`admission_stability` 归一为 `tier`，`stable` 归一为 `稳/保`，但不会扫描 `raw_user_text` 发明范围。
+
+候选结果为空时采用事实逐层退化，而不是语言模板退化：先判断精确专业在其他档位是否存在，再查父专业类的真实候选，返回命中范围、代表项和可继续收窄的条件。精确专业存在但指定档位没有，与当前候选完全没有该专业，必须使用不同结论。
+
+#### `review_plan` 证据契约
+
+直接审查回复必须由同一轮工具结果完整承接，至少包含适用的以下字段：结论、当前/目标总数、冲稳保数量、issue 数量与受影响范围、真实代表项、费用阈值统计、专业/职业承接、可执行 Proposal、blocked 原因和只读声明。renderer 不再依赖模型二次概括，因此不能只返回“有风险/建议优化”一类空结论。
+
+issue 识别优先使用后端 code 和结构字段，禁止用“保”“贵”等单字符扫描自然语言描述。专业方向只匹配专业名称/分类；职业方向使用 `app/domain/career_alignment.py` 的共享 canonical marker，并由 `intent_relation_tool.py` 和 `review_plan` 共同消费。代表项按“专业字段证据数、全部结构字段证据数”排序，再按 `_plan_item_group_key` 去重，避免一个专业组的多条明细重复占满示例。
+
+职业证据只说明方案里存在相关培养或院校线索，不承诺就业、考公或录用结果。若同时识别到体制内/考公和稳定就业，两个 canonical slot 可分别展示，不将它们压成一个模糊标签。
+
+#### 普通偏好统一硬化
+
+用户通常用“倾向、优先、希望、最多、尽量”表达真实要求，默认均按硬要求进入判断和过滤，不建立 soft-preference 执行分支。只有明确的“仅供参考、不要记录、先不要调整”将本轮限定为只读；其中“先不要改方案”并不否定用户同时明确要求记录长期报考条件，需要根据作用对象区分。
+
+例如“一年学费最多两三万，方案里高收费多吗”包含两个目标：先查询当前方案的费用影响，再把明确上限 `30000` 冻结为 tuition hard requirement。允许的链路是一次 `query_plan` 后一次 `preview_intent_change`，最终只有一个 pending；确认前不写状态。影响数量必须区分专业组与组内专业明细，如 `26 个专业组、85 条专业志愿`。
+
+普通硬要求与 Proposal 的关系是：要求负责定义必须满足的后置条件，Proposal 负责给出基于当前版本和候选事实的确定变更。Proposal 不按中文场景枚举类型，也不能把“好考公”“更稳定”之类自然语言直接编译成任意排序公式。只有进入 canonical typed requirement/priority/repair goal 且后端有确定 dry-run 与 postcondition 时才能生成确认卡；否则说明缺少的执行语义并 fail closed。
+
+#### 假执行与闲聊防护
+
+- generate/regenerate 携带当前执行接口不会消费的临时 filters 或 review target 时，返回 `plan_generation_goal_requires_proposal`，不创建 pending。不能用一次普通重排伪装完成地域前置、费用过滤、补保底或职业导向调整。
+- Proposal preview 展示标题、专业组影响数和专业明细影响数；blocked/no-change/多解时不出确认卡。
+- `respond_casual` 仅用于真实闲聊，查询、审查、比较、要求采纳和方案变更均不得走该工具。模型没有提交可识别目标时返回 `missing_intent_content` 澄清，不输出看似处理完成的泛化话术。
+- direct renderer 只消费本轮工具结果；旧历史中的查询结果不能串入当前审查回复。
+
+#### 验证与发布状态
+
+聚焦回归为：direct `248 passed, 31 skipped`，职业/意向 `80 passed`，runner/质量门禁 `121 passed`，`py_compile`、JSON 校验和 `git diff --check` 通过。重启 Agent 后职业承接 live `1/1`：财会真实专业命中 `1` 个专业组，体制内/考公证据命中 `10` 个专业组，代表项去重与强证据排序生效；metrics 为 `/private/tmp/zhiyuan_400_v274_career_fit_probe_restarted.json`。预算复合链路 live `1/1`，exact tools 为 `query_plan -> preview_intent_change`，只创建一个 pending；metrics 为 `/private/tmp/zhiyuan_400_v274_budget_hard_composite_final.json`。
+
+当前仍是架构验证状态，不是发布全绿状态。下一步按顺序执行 open-quality、realistic-user、explore、review-repair、dialogue-derived 受影响包，再在显式 `8080` 后端、有效 MySQL 凭据和完整 rank 拓扑下执行 19 包 final-action gate。环境失败和旧进程结果必须从业务失败/通过中剔除。门禁结束后清理测试状态与候选副本，并仅用 `PURGE BINARY LOGS` 清理封存日志。
+
+### 16.19 v2.74 超时、复合审查与发布证据收口
+
+运行时总超时采用两层边界：direct 单轮总预算从 30 秒提高到 60 秒，用于容纳真实但健康的 36.18 秒 Proposal；60 秒内上游连首个 HTTP 响应都没有时仍按 provider hang 终止，不继续提高到 90 秒。原 open-quality 4 个超时用例在 60 秒下 `4/4`，realistic-user 完整包 `8/9`，唯一失败属于上述无首响应 provider timeout。
+
+reference 继续是明确只读强度，不是 soft preference。`reference_only_semantic_requirements` 现在从 `preview_intent_change` 直接返回，链路由 `5 nodes / 2 requests` 降为 `3 nodes / 1 request`；active pending 下的 reference/查询不会创建或覆盖 pending，也不会渲染假的“没有生成预览”。普通倾向、优先、希望和预算上限仍按硬要求处理。
+
+费用审查保持一个 `review_plan` 工具，不新增“中外合作审查”路由类型。工具从同一正式方案事实计算两个可审计集合：`tuition_evidence` 按本轮阈值统计超预算专业组/专业明细，`cooperative_evidence` 按 canonical `program_type=中外合作` 统计专业组/专业明细，并明确集合可能重叠。零命中和正式方案实测分别验证 `0/0` 与 `39组/131条 + 6组/14条`，避免模型用“费用类”概念吞掉中外合作目标。
+
+对话路由仍由模型完成，但回归契约不再允许宽松文本假通过：
+
+- 明确移出“太贵的那几个”必须是一次 `preview_plan_action(remove)`、一个 `remove_units` pending，禁止只读 `review_plan`。
+- 要求把方案结论改成大白话、但 runtime history 没有可重述正文时，若状态已有正式方案则重新调用 `review_plan`；不能把它识别成缺少新报考要求，也不能调用 `clarify_request/respond_casual`。
+- 没有正式方案的“候选和方案里有没有这些学校”调用 `discover_options(mode="eligible")`，由工具同时披露候选结果和正式方案为空的边界。
+
+发布证据按完整包和隔离复验分开记录：explore `22/22`；review-repair 完整初跑 `9/10`、受影响严格子集 `2/2`；dialogue-derived 完整初跑 `87/88`、收紧后的相关子集 `2/2`。不得相加成同一次 `10/10` 或 `88/88`。并发 4 的 affected-live 运行只生成 `130/152` metrics，包含 clone/cleanup 资源竞争，整组无效。
+
+最新 Python 基线为 direct `249 passed, 31 skipped`、history/Proposal/base `184 passed`、runner/quality/report `121 passed`。当前仍未执行同版本 19 包 clone-backed final-action gate；在该门禁验证 pending CAS、Proposal apply、planning version、要求落库和 postcondition 前，v2.74 不能标记发布全绿。完成后清理所有测试状态与副本，并且只通过 MySQL `PURGE BINARY LOGS` 清理封存日志。
+
+### 16.20 v2.74 clone-backed final-action 门禁与夹具超时收口
+
+同版本 19 文件 final-action gate 已在 Agent `8037`、后端 `8080`、rank `5001` 和有效 MySQL clone 条件下串行执行。完整初跑共 `152 step`，结果 `150 passed / 2 failed`，17 个文件全绿；两个失败均为 `stepIndex=0` 的 planning-intent fixture clear `TimeoutError`，未进入 WebSocket。业务缺陷、provider/runtime 失败和 assertion contract 失败均为 0。全量 metrics 位于 `/private/tmp/zhiyuan_400_v274_final_action_gate`。
+
+夹具根因是 runner 使用 5 秒读取并回写完整 `planningState`，而正式源 session 16 的单次响应约 `18.4 MB`。连续 destructive final action 后读取会偶发超过 5 秒；同一 runner 的 state clone 已使用 30 秒。实现将 `_clear_backend_planning_intent_state` 的专用默认超时对齐为 `BACKEND_FIXTURE_STATE_TIMEOUT_SECONDS=30`，不修改 Agent/provider 的 60 秒总预算、后端业务接口超时或 Proposal 执行语义。新增单测验证 planningState/userprofile 的 get/write 均消费 30 秒上限；runner 完整单测 `102 passed`，`py_compile` 与 `git diff --check` 通过。
+
+两个原失败 case 使用新 session offset、完整 clone 和相同后端断言隔离复验：
+
+- `400-v156-deferred-region-no-plan-change` 为 `2/2`；要求和 candidate view 写入，planning version 增长，ordered items/units 不变，无 workspace refresh。metrics `/private/tmp/zhiyuan_400_v274_v156_deferred_region_after_fixture_timeout_fix_valid.json`。
+- `400-v158-do-not-confirm-means-cancel-active-pending` 为 `2/2`；pending `cancelled`，planning version、正式方案和要求状态均不变。metrics `/private/tmp/zhiyuan_400_v274_v158_cancel_pending_after_fixture_timeout_fix_valid.json`。
+
+发布证据仍必须写成“完整初跑 `150/152` + 两个原 case 隔离 `4/4`”，不能相加成一次 `154/154`。v173 `11/11`、v179 `10/10`、v183 `13/13` 进一步确认 unit 位置语义、replace/move/sort、active pending 追加/替换、review 承接和 no-pending 防护；适用 case 的 pending CAS、Proposal apply、planning version、硬要求落库、ordered-plan postcondition 和 ordered/review refresh 均通过。
+
+因此 v2.74 的 final-action P0 已完成，当前没有可复现的最终执行业务缺陷。整体发布仍保留 live 证据分层：realistic-user 的无首响应 provider timeout，以及 review-repair/dialogue-derived 完整初跑与隔离复验的差异，不能被 final-action 结果覆盖。
+
+验收清理已经完成：MySQL `990*`/`880*` 测试命名空间删除 pending command `51`、pending confirmation `107`、session extra data `678`、chat message `12604`、planning behavior event `188`、freshness schedule `239`、integration request `0` 和 chat session `171` 条，八张表复查均为 `0`；Agent SQLite `chat_session_history` 删除 `279` 行并 `VACUUM`，测试 session 为 `0`；删除候选复制文件 `449` 个，复查为 `0`；删除作废或已替换 v2.74 metrics `21` 份，保留文档引用的有效证据 `17` 份。MySQL `9.6.0` 确认活动日志 `binlog.000401` 后，仅执行 `PURGE BINARY LOGS TO 'binlog.000401'`，清理 `binlog.000371` 至 `binlog.000400` 共 `30` 个封存日志并保留活动日志；工作盘可用空间由 `8.8GiB` 增至 `43GiB`。
+
+清理后的最终聚焦验证为 direct `249 passed, 33 skipped`（全部 skip 均为真实 LLM opt-in）、history/Proposal/base `184 passed`、runner/quality/report `122 passed`；完整 Python 语法编译、examples JSON 结构化解析和 `git diff --check` 通过。验证后再次复查 MySQL、SQLite、候选副本和 binlog，分别保持全零、全零、全零和仅活动 `binlog.000401`。能力开发继续按 typed goal、确定 Proposal、单 pending、可回放 command 和专用 postcondition 推进。
+
+### 16.21 显式档位最低数量与 Proposal 门禁补齐（v2.75）
+
+#### Schema 与执行边界
+
+“保底至少 N 个”属于正式方案结构的硬覆盖目标，不是 soft preference，也不等于泛化 `increase_stability` review repair。Agent 使用：
+
+```json
+{
+  "requirements": [
+    {
+      "kind": "include",
+      "domain": "admission",
+      "key": "tier",
+      "values": ["保"],
+      "min_count": 20
+    }
+  ]
+}
+```
+
+该域只允许 `include`，且 `min_count` 必须由用户明确给出。Agent 将 `admission_stability/risk_tier` 归一为 `tier`，并把 `sprint/stable/protect`、“冲刺/稳妥/保底”等归一为 `冲/稳/保`；后端再次独立校验和归一，不能依赖模型正确。未知档位、档位 exclude/only_keep、缺失数量都不会进入后端 Proposal；其中缺失数量返回明确澄清，要求用户给出最终至少数量和是否允许等量替换。
+
+无 `selection_goal` 时沿用 coverage-preserve 协议：从正式方案读取当前 unit/volunteer 总数，冻结为本次 `targetCount`，设置 `persistTargetCount=false`，只通过等量替换改变档位覆盖，不把当前总数覆盖为新的长期规划目标。与 `fill_to_count` 同时出现时，总数目标和一个或多个显式档位最低数进入同一个 `UserGoalFixProposalReq`；不拆 pending，不先补数量再二次调档。
+
+后端继续使用 `CoverageSelectionSolver` 选择能满足全部最低覆盖的最小候选集合。`CoverageRequirementSupport` 对 `admission.tier` 使用 candidate canonical tier 匹配；majorGroup 模式以完整 unit 计数和增删。确认时 `ProjectedHardRequirementSupport.persist` 将目标写入 `constraintState.hardPlanningObjectives.coverageRequirements`，后续 `CoverageObjectiveEnforcer` 在 regenerate 中继续执行。`PendingPlanningCommandBizService` 的 requirement postcondition 同时要求最终 `matchedCount >= minCount` 和 persisted objective 存在，否则事务失败并回滚。
+
+当前 schema 可以用多条单档 include 表示多个档位的最低下界，但本版真实 final-action 只开放并验证了保档最低数量。精确等于、最大值、比例分配和概率缺口不复用该下界语义，继续 fail closed，后续需要新的 typed quota/postcondition。
+
+#### 回归与发布证据
+
+真实隔离拓扑为当前后端 `18080`、当前 Agent `8037`、rank `5001` 和完整 MySQL clone。tier-minimum 包 `3/3`：源方案 45 个专业组、保档 19 组；“保底至少 20 个”生成一个 Proposal，预览移出/补入各 1 组，确认后总数仍为 45、保档为 20，pending applied、version 增长、coverage objective、postcondition 与 ordered/review refresh 全部通过；模糊数量 case 无 pending。
+
+共享 Proposal 回归同步通过：fill-to-count `11/11`、coverage-preserve `3/3`、priority-rules `4/4`，与 tier-minimum 合计 `21/21`。metrics：
+
+- `/private/tmp/zhiyuan_400_v275_tier_minimum.json`
+- `/private/tmp/zhiyuan_400_v275_fill_to_count.json`
+- `/private/tmp/zhiyuan_400_v275_coverage_preserve.json`
+- `/private/tmp/zhiyuan_400_v275_priority_rules.json`
+
+`dialog_quality_gate.py` 之前没有纳入 v2.60-v2.65 的 fill-to-count、coverage-preserve 和 priority-rules 长期资产；本版连同 tier-minimum 一起加入 `FINAL_ACTION_CASE_FILES`，正式入口由 19 包升级为 23 包。证据必须继续写成“v2.74 原 19 包门禁 + v2.75 新纳入四包 `21/21`”，不能表述为一次未执行过的 23 包全绿。
+
+自动验证：direct `252 passed, 33 skipped`，runner/quality/gate `122 passed`；完整 Maven `581 tests, 0 failures/errors, 4 skipped`；Python 编译、JSON 解析和 `git diff --check` 通过。验收后删除本轮 12 个测试 session：MySQL 八表分别删除 `8/8/36/67/0/12/0/12` 行并复查为 0，SQLite 删除 12 行并 `VACUUM`，36 个候选副本删除并复查为 0。binlog 只通过 `FLUSH BINARY LOGS` 与 `PURGE BINARY LOGS TO 'binlog.000404'` 清理 `000401` 至 `000403`，保留活动 `000404`；隔离 `8037/18080` 服务已停止。
+
+### 16.22 冲稳保精确配额独立目标（v2.76）
+
+#### 与档位最低数量的关系
+
+v2.75 的 `admission.tier + min_count` 表示单档最低下界，例如“保底至少 20 个”；它允许其他档位自由分配。v2.76 的精确配额表示三档最终数量同时相等，不能持久化成三条普通 coverage 下界，否则状态层无法区分“至少”与“精确”，后续最大值、区间和覆盖目标组合也会失去类型边界。
+
+Agent 新增独立 schema：
+
+```json
+{
+  "tier_quota_goal": {
+    "type": "exact_counts",
+    "sprint_count": 9,
+    "stable_count": 17,
+    "protect_count": 19
+  }
+}
+```
+
+三个数量必须由用户完整给出，且均为非负整数。无 `selection_goal` 时从当前正式方案冻结总数并设置 `persistTargetCount=false`；有 `fill_to_count` 时使用显式或 planning state 中解析出的最终目标。三档合计与最终总数不一致、缺少任一档、比例或相对表达都只澄清，不创建 pending。工具不扫描 `raw_user_text` 猜数量。
+
+#### Proposal、持久化与再生成
+
+- Agent 和后端分别校验 `exact_counts`、三个整数及合计。首版不允许与本轮普通 `requirements`、`priority_rules` 或 `repair_goal` 混合；不拆多个 pending，也不部分执行。
+- `UserGoalProposalBuilder` 只在 dry-run 求解阶段把配额临时映射成冲/稳/保三条覆盖目标，复用 `CoverageSelectionSolver` 求最小补入和等量替换；这些 synthetic requirements 不进入 `coverageRequirements`。dry-run 返回调整前后的 unit/volunteer 档位计数。
+- 确认后原始 typed goal 独立写入 `constraintState.hardPlanningObjectives.tierQuotaGoal`，Proposal ID 和 pending command digest 都包含该字段。已有普通 coverage 目标在 regenerate 中与配额一次求解，避免两个 enforcer 依次改写集合。
+- `TierQuotaObjectiveEnforcer` 在执行后再次校验三个实际计数精确相等；专业组异常混入多个档位标签时直接失败。`PlanChangePostconditionReportDTO.tierQuotaResult` 同时返回期望/实际冲稳保数量、目标是否持久化和总 satisfied，失败事务回滚。
+- 当前只开放三档完整精确数量。最大值、区间、比例、概率缺口以及与本轮其他新要求的联合原子求解仍保持 fail closed，后续按独立 typed goal 逐项开放。
+
+#### 验证与证据分层
+
+自动验证为 Python unit `1630 passed, 33 skipped`；相关 direct/gate 聚焦 `273 passed, 33 skipped`（新增确认测试已包含在完整 unit）；完整 Maven `593 tests, 0 failures/errors, 4 skipped`；44 个 examples JSON 解析、Python 编译和 `git diff --check` 通过。
+
+真实隔离拓扑使用 backend `18080`、Agent `8037`、rank `5001`，runner 显式启用 chat-session 与候选源文件 clone。`dialog_regression_400_tier_quota_cases.json` 为 `3/3`：
+
+- 当前 45 个专业组原本就是 `冲9/稳17/保19`，预览明确回显总数和三档精确目标，只创建一个 pending；确认后 pending `applied`、planning version 增长、独立 quota goal 持久化，实际计数 `9/17/19`，专用 postcondition 和 ordered/review 双刷新全部通过。
+- `冲9/稳17/保18=44` 与冻结总数 45 不一致时，工具明确指出 `44 != 45`，无 pending、无方案副作用。
+- Java Proposal/enforcer 测试另覆盖实际等量替换、锁定项冲突、非 fill Proposal 注入、专业组多档异常和后续 regenerate，避免只验证“当前已经满足”的 no-op 路径。
+
+有效 metrics 为 `/private/tmp/zhiyuan_400_v276_tier_quota.json`。两次前置环境失败分别来自 runner backend 默认端口和未启用候选文件 clone，均未进入有效业务证据，最终结果已覆盖同一路径。`dialog_quality_gate.py` 新增该包后长期 final-action 入口由 23 包变为 24 包；发布证据仍写成“v2.74 原 19 包 + v2.75 新纳入四包 `21/21` + v2.76 quota 包 `3/3`”，不能声称执行过一次 24 包全绿。
+
+验收后 MySQL 两条测试 session 的 pending command、pending confirmation、extra-data、message、behavior event、freshness schedule、integration request 和 chat session 八类状态均复查为 0；Agent SQLite 对应 session 删除并 `VACUUM`，6 个候选副本删除且复查为 0。MySQL 仅存在活动 `binlog.000404`，没有可 purge 的封存日志，因此未人为切换活动日志；隔离 `8037/18080` 已停止。
+
+### 16.23 一次性全量 Final-Action 与 Live 发布门禁（v2.77）
+
+本轮不再按历史分段结果推断当前发布状态，而是在隔离 backend `18080`、Agent `8037`、既有 rank `5001` 和 MySQL `sales_bot` 上重新执行长期门禁。测试串行运行，并继续启用 session/state/候选文件 clone、per-case history/pending/planning-intent 清理、fixture contract 和最终后端状态断言。
+
+#### 24 包 Final-Action P0
+
+- `/private/tmp/zhiyuan_400_v277_full_final_action_gate` 中 24 个包一次性执行 `178/178`，`warnings=[]`、`failures=[]`，最慢 step 为 `22.178s`；没有 provider、runtime、fixture、environment、content、tool 或后端断言失败。
+- 包级结果为 direct-confirm `4/4`、G1-G32 `23/23`、realistic `14/14`、v143 `2/2`、v150 `2/2`、v151 `8/8`、v153 `2/2`、v154 `4/4`、v155 `7/7`、v156 `10/10`、v157 `11/11`、v158 `9/9`、v173 `11/11`、v179 `10/10`、v183 `13/13`、v211 `2/2`、v212 `10/10`、v213 `10/10`、v216 `2/2`、fill-to-count `11/11`、coverage-preserve `3/3`、priority-rules `4/4`、tier-minimum `3/3`、tier-quota `3/3`。
+- 该结果关闭 §16.22 和人工检查文档中“尚未执行一次性 24 包全绿门禁”的旧状态。当前 final-action 发布 P0 已真实覆盖 pending CAS、单 Proposal apply、planning version、硬要求/目标落库、正式方案 postcondition、ordered/review workspace 刷新以及失败回滚，不再需要把 v2.74-v2.76 的分段数字相加作为替代证据。
+
+#### 13 包 Live 与四个红项分层
+
+- `/private/tmp/zhiyuan_400_v277_full_live_gate` 完整初跑共 `231 step`，结果 `227 passed / 4 failed`。包级为 agent-smoke `6/6`、plan-operation `8/8`、explore `22/22`、readonly `2/2`、core-effect/perf `11/11`、effect/perf `15/16`、open-quality `23/23`、realistic `9/9`、dialogue-derived `86/88`、career `4/4`、review-repair `10/10`、production-abstracted `21/22`、requirement/action `10/10`。
+- effect/perf 的“青岛城市学院是不是放多了，先别直接改方案”在已有正式方案摘要下先后误走 `explore_topic`/`discover_options`。prompt 现明确：命名院校/专业的数量或是否有多个，只要锚定当前方案且要求先别改，就必须调用 `query_plan`。修复后 focused `1/1`，metrics `/private/tmp/zhiyuan_400_v277_live_effect_after_query_prompt_fix.json`。
+- dialogue-derived 的“候选里更稳一点的会计审计”实际正确走 `discover_options(mode=recommend)`，失败来自资产仍要求旧 `review_plan`。该 case 已 hard cut 到当前发现候选契约，并明确禁止 `query_plan/review_plan` 旁路；focused `1/1`，metrics `/private/tmp/zhiyuan_400_v277_live_accounting_asset_hardcut.json`。这不是恢复旧推荐 Agent 或 3.2 中文规则枚举，而是让当前统一 Agent 调用 typed discovery 工具。
+- readonly case 一次出现 `UnexpectedModelBehavior`，原 case 隔离复验 `1/1`；production 本专科纠错首轮误走带不支持 filter 的 `discover_options`，隔离复验正确调用 `answer_policy` 并 `1/1`。两项均未形成稳定代码缺陷，metrics 分别为 `/private/tmp/zhiyuan_400_v277_live_readonly_runtime_isolated.json` 和 `/private/tmp/zhiyuan_400_v277_live_junior_correction_isolated.json`，继续作为模型运行/路由波动风险观察。
+- 四个原红 step 隔离复验合计 `4/4`。发布证据必须写成“完整初跑 `227/231` + 原红项 focused `4/4`”，不能合并为不存在的同一次 `231/231`。因此 final-action P0 已全绿，live 的剩余风险是一次性模型稳定性，而不是已知可复现的最终动作业务缺陷。
+
+#### 自动验证与清理
+
+- 修改后完整 Python 结果为 `1719 passed, 42 skipped in 7.36s`；44 个 examples JSON 全部解析，相关 Python 编译和 `git diff --check` 通过。完整 Maven 最近同轮 Java 代码基线为 `593 tests, 0 failures/errors, 4 skipped`；本轮 live 收口只修改 Agent prompt 和一个 JSON 契约，没有新的 Java 改动。
+- final-action 清理精确覆盖 99 个测试 session：MySQL 删除 pending command `52`、pending confirmation `79`、extra data `287`、message `552`、behavior event `176`、freshness schedule `94`、integration request `0`、chat session `94`，八表复查为 `0`；SQLite 删除 `99` 行并 `VACUUM`；候选副本删除 `247` 个。仅通过 MySQL SQL purge 到活动 `binlog.000415`，当时只保留该活动文件。
+- live 清理精确覆盖 metrics 中的 160 个 `990*`/`880*` session：MySQL 删除 pending command `8`、pending confirmation `37`、extra data `259`、message `446`、behavior event `8`、freshness schedule `86`、integration request `0`、chat session `86`，八表复查为 `0`。主 history SQLite 另包含 25 个固定只读 fixture，共删除 `185` 行并 `VACUUM`；另两个 stage/semantic SQLite 原本即为 `0`。通过 runner `_clear_backend_volunteer_data_files` 按 86 个 session 删除 `231` 个候选副本，无失败，复查为 `0`。
+- live 事务后活动日志为 `binlog.000425`；仅执行 `PURGE BINARY LOGS TO 'binlog.000425'`，删除 `binlog.000415` 至 `binlog.000424` 共 10 个封存日志，最终只保留 `198B` 的活动 `binlog.000425`。磁盘可用空间由约 `51GiB` 回到 `65GiB`。隔离 Agent `8037` 和 backend `18080` 已停止，既有 rank `5001` 与基线 `8000/8080` 保持运行。
+- 删除被完整初跑和修复后结果替代的失败探针 metrics 与临时门禁计划，只保留 24 份 final-action、13 份完整 live 和 4 份 focused 有效证据。
+
+#### 当前边界与后续顺序
+
+- 查询/发现/分析边界保持为：当前正式方案事实走 `query_plan`，院校/专业目录、可报候选和推荐名单走 typed `discover_options`，地域适配与方向判断走 `explore_topic`；“上海的有哪些”在缺少实体类型和数据范围时仍走 `clarify_request(discovery_scope)`。普通偏好继续默认硬要求，不恢复 soft preference 执行层。
+- 下一阶段优先补 typed 能力，而不是增加中文触发规则：冲稳保比例、单档最大值/区间、概率缺口/安全垫目标、精确配额与 requirements/priority 的联合求解、复杂 selector，以及多条或多级 priority。每项仍需进入同一个 `PlanChangeSpec`、一个 Proposal、一个 pending、一个 command，并有确定 dry-run、持久化和专用 postcondition；未开放组合继续整体 fail closed。

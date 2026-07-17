@@ -46,21 +46,36 @@ PINNED_LIVE_CASE_FILES = [
     "dialog_regression_400_quality_realistic_user_cases.json",
     "dialog_regression_400_dialogue_derived_cases.json",
     "dialog_regression_400_career_direction_cases.json",
-    "dialog_regression_mainline_cases.json",
-    "dialog_regression_full_journey_cases.json",
-    "dialog_regression_plan_correctness_cases.json",
-    "dialog_regression_plan_cases.json",
-    "dialog_regression_robust_cases.json",
-    "dialog_regression_advanced_cases.json",
-    "dialog_regression_lifecycle_cases.json",
-    "dialog_regression_enriched_cases.json",
-    "dialog_regression_score_tier_cases.json",
-    "dialog_regression_science_cases.json",
-    "dialog_regression_special_cases.json",
-    "dialog_regression_comprehensive_cases.json",
     "dialog_regression_400_review_repair_cases.json",
     "dialog_regression_400_production_abstracted_cases.json",
     "dialog_regression_400_requirement_plan_action_cases.json",
+]
+
+FINAL_ACTION_CASE_FILES = [
+    "dialog_regression_400_direct_confirm_execution_cases.json",
+    "dialog_regression_400_g1_g32_direct_cases.json",
+    "dialog_regression_400_realistic_user_cases.json",
+    "dialog_regression_400_v143_constraint_apply_cases.json",
+    "dialog_regression_400_v150_candidate_view_cases.json",
+    "dialog_regression_400_v151_attribute_final_action_cases.json",
+    "dialog_regression_400_v153_major_final_action_cases.json",
+    "dialog_regression_400_v154_tag_final_action_cases.json",
+    "dialog_regression_400_v155_realistic_final_action_cases.json",
+    "dialog_regression_400_v156_realistic_broadened_final_action_cases.json",
+    "dialog_regression_400_v157_realistic_cancel_combo_cases.json",
+    "dialog_regression_400_v158_pending_combo_negation_cases.json",
+    "dialog_regression_400_v173_action_expansion_final_cases.json",
+    "dialog_regression_400_v179_pending_replace_review_quality_cases.json",
+    "dialog_regression_400_v183_realistic_followup_quality_cases.json",
+    "dialog_regression_400_v211_region_area_final_cases.json",
+    "dialog_regression_400_v212_region_area_expanded_final_cases.json",
+    "dialog_regression_400_v213_region_area_quality_final_cases.json",
+    "dialog_regression_400_v216_region_remote_final_cases.json",
+    "dialog_regression_400_fill_to_count_cases.json",
+    "dialog_regression_400_coverage_preserve_cases.json",
+    "dialog_regression_400_priority_rules_cases.json",
+    "dialog_regression_400_tier_minimum_cases.json",
+    "dialog_regression_400_tier_quota_cases.json",
 ]
 
 MODEL_PROVIDER_CASE_FILES = [
@@ -95,18 +110,32 @@ def _python() -> str:
     return str(local) if local.exists() else sys.executable
 
 
+def _required_existing_case_files(case_files: list[str], *, label: str) -> list[str]:
+    existing = [name for name in case_files if (EXAMPLES / name).exists()]
+    missing = [name for name in case_files if not (EXAMPLES / name).exists()]
+    if missing:
+        raise FileNotFoundError(f"missing {label} dialog regression case files: {missing}")
+    return existing
+
+
 def _case_file_names() -> list[str]:
-    discovered = {path.name for path in EXAMPLES.glob("dialog_regression_*_cases.json")}
-    pinned = [name for name in PINNED_LIVE_CASE_FILES if (EXAMPLES / name).exists()]
-    missing_pinned = [name for name in PINNED_LIVE_CASE_FILES if name not in discovered]
-    if missing_pinned:
-        raise FileNotFoundError(f"missing pinned dialog regression case files: {missing_pinned}")
-    extra = sorted(discovered - set(pinned))
-    return [*pinned, *extra]
+    return _required_existing_case_files(PINNED_LIVE_CASE_FILES, label="pinned live")
+
+
+def _final_action_case_file_names() -> list[str]:
+    return _required_existing_case_files(FINAL_ACTION_CASE_FILES, label="final-action")
 
 
 def _metrics_path(metrics_dir: Path, stem: str, suffix: str) -> Path:
     return metrics_dir / f"{stem}_{suffix}"
+
+
+def _case_uses_backend_clone(case_name: str) -> bool:
+    case_path = EXAMPLES / case_name
+    if not case_path.exists():
+        return False
+    text = case_path.read_text(encoding="utf-8")
+    return "cloneBackendStateFromSessionId" in text or "cloneBackendScoreFromSessionId" in text
 
 
 def _existing_local_pytest_targets() -> list[str]:
@@ -118,6 +147,8 @@ def build_gate_plan(
     *,
     metrics_dir: Path = DEFAULT_METRICS_DIR,
     agent_url: str | None = None,
+    internal_service_url: str | None = None,
+    backend_db_password: str | None = None,
     provider_config: str = "examples/model_provider_benchmark.providers.example.json",
     provider_names: list[str] | None = None,
 ) -> list[GateCommand]:
@@ -133,12 +164,14 @@ def build_gate_plan(
     )
 
     ws_args = ["--url", agent_url] if agent_url else []
+    internal_service_args = ["--internal-service-url", internal_service_url] if internal_service_url else []
+    backend_db_args = ["--backend-db-password", backend_db_password] if backend_db_password else []
     for case_name in _case_file_names():
         case_path = f"examples/{case_name}"
         stem = Path(case_name).stem
         metrics_output = _metrics_path(metrics_dir, stem, "live.json")
         report_output = _metrics_path(metrics_dir, stem, "report.md")
-        clear_arg = "--clear-history-per-case" if case_name == "dialog_regression_400_dialogue_derived_cases.json" else "--clear-history"
+        clone_args = ["--clone-backend-chat-session", *backend_db_args] if _case_uses_backend_clone(case_name) else []
         commands.append(
             GateCommand(
                 name=f"live-{stem}",
@@ -148,7 +181,9 @@ def build_gate_plan(
                     "examples/dialog_regression_runner.py",
                     "--cases",
                     case_path,
-                    clear_arg,
+                    "--clear-history-per-case",
+                    "--clear-backend-pending-per-case",
+                    "--clear-backend-planning-intent-per-case",
                     "--keep-response-text",
                     "--assert-plan-style",
                     "--response-timeout",
@@ -156,6 +191,8 @@ def build_gate_plan(
                     "--metrics-output",
                     str(metrics_output),
                     *ws_args,
+                    *internal_service_args,
+                    *clone_args,
                 ],
                 description=f"Run WebSocket dialog regression cases from {case_path}.",
                 output=str(metrics_output),
@@ -202,6 +239,38 @@ def build_gate_plan(
             )
         )
 
+    for case_name in _final_action_case_file_names():
+        case_path = f"examples/{case_name}"
+        stem = Path(case_name).stem
+        metrics_output = _metrics_path(metrics_dir, stem, "final-action-live.json")
+        commands.append(
+            GateCommand(
+                name=f"final-action-{stem}",
+                category="final-action",
+                command=[
+                    py,
+                    "examples/dialog_regression_runner.py",
+                    "--cases",
+                    case_path,
+                    "--clear-history-per-case",
+                    "--clear-backend-pending-per-case",
+                    "--clear-backend-planning-intent-per-case",
+                    "--clone-backend-chat-session",
+                    "--keep-response-text",
+                    "--assert-plan-style",
+                    "--response-timeout",
+                    "180",
+                    "--metrics-output",
+                    str(metrics_output),
+                    *ws_args,
+                    *internal_service_args,
+                    *backend_db_args,
+                ],
+                description=f"Run clone-backed final-action/high-signal WebSocket regression cases from {case_path}.",
+                output=str(metrics_output),
+            )
+        )
+
     provider_args: list[str] = []
     for provider in provider_names or []:
         provider_args.extend(["--provider", provider])
@@ -240,6 +309,29 @@ def _filter_commands(commands: list[GateCommand], modes: set[str]) -> list[GateC
     return [command for command in commands if command.category in modes]
 
 
+_SENSITIVE_COMMAND_OPTIONS = {"--backend-db-password"}
+
+
+def _command_for_display(command: list[str]) -> list[str]:
+    rendered: list[str] = []
+    redact_next = False
+    for part in command:
+        if redact_next:
+            rendered.append("<redacted>")
+            redact_next = False
+            continue
+        rendered.append(part)
+        if part in _SENSITIVE_COMMAND_OPTIONS:
+            redact_next = True
+    return rendered
+
+
+def _command_dict_for_display(command: GateCommand) -> dict[str, Any]:
+    payload = command.as_dict()
+    payload["command"] = _command_for_display(command.command)
+    return payload
+
+
 def _render_markdown(commands: list[GateCommand]) -> str:
     lines = [
         "# Agent Dialog Quality Gate",
@@ -251,7 +343,7 @@ def _render_markdown(commands: list[GateCommand]) -> str:
         "| --- | --- | --- | --- |",
     ]
     for command in commands:
-        rendered = " ".join(command.command)
+        rendered = " ".join(_command_for_display(command.command))
         lines.append(
             f"| {command.category} | {command.name} | {command.output or '-'} | `{rendered}` |"
         )
@@ -262,7 +354,11 @@ def _write_plan(path: str | None, commands: list[GateCommand], *, markdown: bool
     if markdown:
         text = _render_markdown(commands)
     else:
-        text = json.dumps({"commands": [command.as_dict() for command in commands]}, ensure_ascii=False, indent=2) + "\n"
+        text = json.dumps(
+            {"commands": [_command_dict_for_display(command) for command in commands]},
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
     if path:
         Path(path).write_text(text, encoding="utf-8")
     else:
@@ -272,7 +368,7 @@ def _write_plan(path: str | None, commands: list[GateCommand], *, markdown: bool
 def _run_commands(commands: list[GateCommand], *, stop_on_failure: bool) -> int:
     exit_code = 0
     for command in commands:
-        print(f"[gate] running {command.name}: {' '.join(command.command)}", flush=True)
+        print(f"[gate] running {command.name}: {' '.join(_command_for_display(command.command))}", flush=True)
         result = subprocess.run(command.command, cwd=ROOT, text=True)
         if result.returncode != 0:
             exit_code = result.returncode
@@ -288,12 +384,14 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         action="append",
-        choices=["local", "live", "report", "model", "all"],
+        choices=["local", "live", "final-action", "report", "model", "all"],
         default=None,
         help="command category to include; repeatable. Default dry-run includes all, execute defaults to local.",
     )
     parser.add_argument("--metrics-dir", default=str(DEFAULT_METRICS_DIR), help="where live/report/model outputs are written")
     parser.add_argument("--agent-url", help="override WebSocket URL for live dialog runner")
+    parser.add_argument("--internal-service-url", help="backend base URL passed to clone-backed final-action runners")
+    parser.add_argument("--backend-db-password", help="database password passed to clone-backed final-action runners")
     parser.add_argument("--provider-config", default="examples/model_provider_benchmark.providers.example.json")
     parser.add_argument("--provider", action="append", default=[], help="provider name passed to model_provider_benchmark")
     parser.add_argument("--output", help="write the dry-run plan to this path")
@@ -305,6 +403,8 @@ def main() -> None:
     commands = build_gate_plan(
         metrics_dir=metrics_dir,
         agent_url=args.agent_url,
+        internal_service_url=args.internal_service_url,
+        backend_db_password=args.backend_db_password,
         provider_config=args.provider_config,
         provider_names=list(args.provider or []),
     )

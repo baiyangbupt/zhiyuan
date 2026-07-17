@@ -298,18 +298,14 @@
 | 文件 | 用途 |
 |------|------|
 | `examples/dialog_regression_runner.py` | WebSocket 客户端 + 风格断言 + 内容断言 |
-| `examples/dialog_regression_plan_cases.json` | 6 个 plan 操作场景 |
-| `examples/dialog_regression_mainline_cases.json` | 31 个主线场景 |
-| `examples/dialog_regression_science_cases.json` | 40 个理科场景 |
-| `examples/dialog_regression_score_tier_cases.json` | 12 个分数段人格 |
-| `examples/dialog_regression_lifecycle_cases.json` | 6 个全 lifecycle |
-| `examples/dialog_regression_advanced_cases.json` | 8 个高复杂度边界 |
-| `examples/dialog_regression_special_cases.json` | 9 个特殊政策 |
-| `examples/dialog_regression_robust_cases.json` | 10 个健壮性压测 |
-| `examples/dialog_regression_plan_correctness_cases.json` | 15 个方案正确性验证 |
-| `examples/dialog_regression_comprehensive_cases.json` | 20 个综合端到端（15 省份 × 多画像 + 业务正确性） |
-| `examples/dialog_regression_enriched_cases.json` | 15 个模糊/精确目标深化（收敛流程 + 委托决策 + 混合链） |
-| `examples/dialog_regression_*_output.log` | 各批次回归转录 |
+| `examples/dialog_regression_400_g1_g32_direct_cases.json` | 4.0 direct G1-G32 主链路 |
+| `examples/dialog_regression_400_plan_operation_cases.json` | 4.0 方案操作和确认边界 |
+| `examples/dialog_regression_400_review_repair_cases.json` | 4.0 审查与修复承接 |
+| `examples/dialog_regression_400_requirement_plan_action_cases.json` | 4.0 报考要求与方案动作边界 |
+| `examples/dialog_regression_400_dialogue_derived_cases.json` | 4.0 真实口语/指代质量观察 |
+| `examples/dialog_regression_400_open_quality_cases.json` | 4.0 开放质量观察 |
+| `examples/dialog_regression_400_quality_realistic_user_cases.json` | 4.0 真实用户质量观察 |
+| `examples/dialog_regression_400_*_cases.json` | 当前 4.0 有效回归资产；3.x 历史 regression JSON 已从当前门禁移除 |
 
 ---
 

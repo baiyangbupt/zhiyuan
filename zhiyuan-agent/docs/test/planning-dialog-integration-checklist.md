@@ -496,8 +496,8 @@
 ## 建议执行顺序
 
 0. 优先跑真实 websocket 自动回归：
-   - `./.venv/bin/python examples/dialog_regression_runner.py --cases examples/dialog_regression_plan_cases.json --assert-plan-style`
-   - 覆盖方案状态、审查、调整建议、重排确认
+   - `./.venv/bin/python examples/dialog_regression_runner.py --cases examples/dialog_regression_400_plan_operation_cases.json --assert-plan-style`
+   - 覆盖 4.0 方案状态、排序预览、专业组移动和确认边界
    - 重点确认 Plan 回复没有退化为粗体标题、emoji、编号菜单或“选哪个”式决策题
 1. 场景 1：初始方案稳定性
 2. 场景 7：候选加入方案 / 草稿

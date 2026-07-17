@@ -1,7 +1,8 @@
 [
   {
     "name": "400-smoke-plan-status-major",
-    "sessionId": "17",
+    "sessionId": "9907001",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "query_state"
     ],
@@ -39,7 +40,8 @@
   },
   {
     "name": "400-smoke-review-plan-major",
-    "sessionId": "17",
+    "sessionId": "9907002",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "review_plan"
     ],
@@ -76,7 +78,8 @@
   },
   {
     "name": "400-smoke-sort-school-rank-major-group",
-    "sessionId": "16",
+    "sessionId": "9907003",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "sort_ordered_plan",
       "confirm"
@@ -135,7 +138,8 @@
   },
   {
     "name": "400-smoke-unit-move-major-group",
-    "sessionId": "16",
+    "sessionId": "9907004",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "move_ordered_unit",
       "confirm"

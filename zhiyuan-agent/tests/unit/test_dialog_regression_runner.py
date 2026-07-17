@@ -33,6 +33,39 @@ def test_runner_defaults_use_isolated_320_debug_ports(monkeypatch):
     assert module.DEFAULT_INTERNAL_SERVICE_URL == "http://127.0.0.1:18290"
 
 
+def test_clear_backend_planning_intent_uses_large_fixture_timeout(monkeypatch):
+    observed_timeouts = []
+
+    def fake_get(_base_url, _session_id, key, *, timeout_seconds):
+        observed_timeouts.append(("get", key, timeout_seconds))
+        return {"profileState": {}} if key == "planningState" else {"college_info": {}}
+
+    def fake_write(_base_url, _session_id, key, _value, *, timeout_seconds):
+        observed_timeouts.append(("write", key, timeout_seconds))
+        return {"status": 200}
+
+    monkeypatch.setattr(runner, "_get_backend_extra_data", fake_get)
+    monkeypatch.setattr(runner, "_write_backend_extra_data", fake_write)
+
+    result = runner._clear_backend_planning_intent_state("http://backend.test", ["9904565"])
+
+    assert result == [
+        {
+            "session": "9904565",
+            "ok": True,
+            "keys": ["planningState", "userprofile"],
+            "planningStateStatus": 200,
+            "userprofileStatus": 200,
+        }
+    ]
+    assert observed_timeouts == [
+        ("get", "planningState", 30),
+        ("write", "planningState", 30),
+        ("get", "userprofile", 30),
+        ("write", "userprofile", 30),
+    ]
+
+
 def test_plan_reply_style_accepts_markdown_sections_and_lists():
     text = (
         "**审查结论**\n\n"
@@ -219,6 +252,58 @@ def test_clone_results_have_active_pending_requires_non_empty_active_source():
     )
 
 
+def test_clone_backend_session_state_reads_dedicated_pending_snapshot(monkeypatch):
+    pending_calls = []
+    writes = []
+
+    def fake_pending(base_url, session_id, timeout_seconds=5):
+        pending_calls.append((base_url, session_id))
+        return {
+            "status": "active",
+            "kind": "intent_change",
+            "actionFamily": "apply_selected_intents",
+            "pendingId": "pending-latest",
+            "_pendingRevision": 7,
+        }
+
+    def fake_write(base_url, session_id, value, timeout_seconds=5):
+        writes.append((session_id, value))
+        return {"status": 200, "ok": True}
+
+    monkeypatch.setattr(runner, "_get_backend_pending_state", fake_pending)
+    monkeypatch.setattr(runner, "_write_backend_pending_state", fake_write)
+
+    results = runner._clone_backend_session_state(
+        "http://backend.test",
+        source_session_id="17",
+        target_session_id="9904791",
+        keys=("pendingConfirmation",),
+    )
+
+    assert pending_calls == [("http://backend.test", "17")]
+    assert writes[0][1]["pendingId"] == "pending-latest"
+    assert results[0]["sourcePendingStatus"] == "active"
+
+
+def test_backend_pending_assertion_reads_dedicated_snapshot(monkeypatch):
+    pending_calls = []
+
+    def fake_pending(base_url, session_id, timeout_seconds=5):
+        pending_calls.append((base_url, session_id))
+        return {}
+
+    monkeypatch.setattr(runner, "_get_backend_pending_state", fake_pending)
+
+    result = runner._get_backend_assertion_data(
+        "http://backend.test",
+        "9904791",
+        "pendingConfirmation",
+    )
+
+    assert result == {}
+    assert pending_calls == [("http://backend.test", "9904791")]
+
+
 def test_run_cases_can_clone_score_from_separate_backend_source(monkeypatch, tmp_path, capsys):
     clone_calls = []
     ask_calls = []
@@ -334,6 +419,13 @@ def test_backend_extra_data_assertions_support_nested_numeric_field_max():
     )
     assert not passed
     assert any("tuitionPerYear<=10000" in item for item in failures)
+
+
+def test_backend_assertion_failure_value_is_bounded_for_large_collections():
+    rendered = runner._format_json_assert_value([{"value": "x" * 100} for _ in range(100)])
+
+    assert len(rendered) < 1200
+    assert "truncated list size=100" in rendered
 
 
 def test_run_cases_supports_backend_extra_data_assertions(monkeypatch, tmp_path):
@@ -666,6 +758,34 @@ def test_clone_backend_chat_session_row_rejects_non_numeric_ids():
     assert "numeric" in result["error"]
 
 
+def test_reset_backend_test_session_state_deletes_mutable_fixture_rows(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner._reset_backend_test_session_state(
+        target_session_id="9904301",
+        db_host="127.0.0.1",
+        db_port="3306",
+        db_user="root",
+        db_password="secret",
+        db_name="sales_bot",
+    )
+
+    assert result["ok"] is True
+    cmd, kwargs = calls[0]
+    sql = cmd[cmd.index("-e") + 1]
+    assert kwargs["env"]["MYSQL_PWD"] == "secret"
+    assert "assistant_planning_pending_command" in sql
+    assert "assistant_chat_session_pending_confirmation" in sql
+    assert "assistant_chat_session_extra_data" in sql
+    assert "chat_session_id=9904301" in sql
+
+
 def test_clone_backend_volunteer_data_files_copies_local_source_files(tmp_path):
     (tmp_path / "session_volunteer_17.json").write_text('{"detailList":[]}', encoding="utf-8")
     (tmp_path / "session_volunteer_17_temp.json").write_text('{"temp":true}', encoding="utf-8")
@@ -697,6 +817,8 @@ def test_clone_backend_volunteer_data_files_skips_same_session(tmp_path):
 
 
 def test_clone_backend_volunteer_data_files_requires_original_source(tmp_path):
+    stale_target = tmp_path / "session_volunteer_9903101.json"
+    stale_target.write_text('{"stale":true}', encoding="utf-8")
     (tmp_path / "session_volunteer_17_temp.json").write_text('{"temp":true}', encoding="utf-8")
 
     result = runner._clone_backend_volunteer_data_files(
@@ -707,6 +829,24 @@ def test_clone_backend_volunteer_data_files_requires_original_source(tmp_path):
 
     assert result["ok"] is False
     assert "original" in result["error"]
+    assert not stale_target.exists()
+
+
+def test_clear_backend_volunteer_data_files_removes_all_target_variants(tmp_path):
+    original = tmp_path / "session_volunteer_9903101.json"
+    temporary = tmp_path / "session_volunteer_9903101_temp.json"
+    original.write_text('{"detailList":[]}', encoding="utf-8")
+    temporary.write_text('{"temp":true}', encoding="utf-8")
+
+    result = runner._clear_backend_volunteer_data_files(
+        target_session_id="9903101",
+        data_dir=tmp_path,
+    )
+
+    assert result["ok"] is True
+    assert len(result["removedFiles"]) == 2
+    assert not original.exists()
+    assert not temporary.exists()
 
 
 def test_run_cases_supports_per_case_history_clear(monkeypatch, tmp_path):
@@ -776,7 +916,41 @@ def test_run_cases_supports_per_case_backend_pending_clear(monkeypatch, tmp_path
     assert calls == [("http://backend.test", ["17"])]
 
 
-def test_clear_backend_pending_state_clears_latest_version(monkeypatch):
+def test_run_cases_rejects_same_clone_source_and_target_without_cloning(monkeypatch, tmp_path):
+    clone_calls = []
+
+    async def fail_if_asked(*args, **kwargs):
+        raise AssertionError("dialogue must not run after invalid clone setup")
+
+    def fake_clone(*args, **kwargs):
+        clone_calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr(runner, "_ask_once", fail_if_asked)
+    monkeypatch.setattr(runner, "_clone_backend_session_state", fake_clone)
+
+    with pytest.raises(SystemExit):
+        asyncio.run(
+            runner._run_cases(
+                "ws://test",
+                "user",
+                [
+                    {
+                        "name": "same-session-clone",
+                        "sessionId": "17",
+                        "cloneBackendStateFromSessionId": "17",
+                        "prompts": [{"prompt": "看看方案"}],
+                    }
+                ],
+                history_db=str(tmp_path / "missing.db"),
+                internal_service_url="http://backend.test",
+            )
+        )
+
+    assert clone_calls == []
+
+
+def test_clear_backend_pending_state_resolves_active_resource(monkeypatch):
     requests_seen = []
 
     class FakeResponse:
@@ -795,23 +969,61 @@ def test_clear_backend_pending_state_clears_latest_version(monkeypatch):
             return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
 
     def fake_urlopen(req, timeout=5):
-        if isinstance(req, str):
-            return FakeResponse({"code": 0, "data": {"dataVersion": 248}})
         body = json.loads(req.data.decode("utf-8"))
         requests_seen.append(body)
         return FakeResponse({"code": 0, "data": body})
 
     monkeypatch.setattr(runner.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        runner,
+        "_get_backend_pending_state",
+        lambda *_args, **_kwargs: {
+            "pendingId": "pending-248",
+            "status": "active",
+            "_pendingRevision": 248,
+        },
+    )
 
     results = runner._clear_backend_pending_state("http://backend.test", ["9904301"])
 
-    pending_versions = [
-        item["version"]
-        for item in requests_seen
-        if item["dataKey"] == "pendingConfirmation"
+    assert requests_seen == [
+        {
+            "chatSessionId": "9904301",
+            "pendingId": "pending-248",
+            "expectedRevision": 248,
+            "action": "cancel",
+            "resultCode": "regression_fixture_clear",
+        }
     ]
-    assert pending_versions == [0, 248]
     assert all(item["ok"] for item in results)
+
+
+def test_clear_backend_pending_state_reports_resource_lookup_failure(monkeypatch):
+    requests_seen = []
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"code":0}'
+
+    monkeypatch.setattr(
+        runner,
+        "_get_backend_pending_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("resource lookup timed out")),
+    )
+
+    results = runner._clear_backend_pending_state("http://backend.test", ["9904301"])
+
+    assert results[0]["ok"] is False
+    assert "resource lookup timed out" in results[0]["error"]
+    assert requests_seen == []
 
 
 def test_run_cases_keeps_cloned_active_backend_pending(monkeypatch, tmp_path, capsys):
@@ -934,6 +1146,57 @@ def test_run_cases_fails_fast_when_backend_clone_fails(monkeypatch, tmp_path):
     assert "backend state clone had failures" in record["error"]
 
 
+def test_fixture_clone_preflight_rejects_empty_formal_plan():
+    failures = runner._fixture_clone_preflight_failures(
+        {
+            "fixtureContract": {
+                "type": "formal_plan_present",
+                "requiredState": ["orderedPlan", "formalPlan"],
+            }
+        },
+        [
+            {
+                "key": "planningState",
+                "ok": True,
+                "stateProfile": {
+                    "formalPlanPresent": False,
+                    "candidatePoolPresent": True,
+                    "reviewStatePresent": False,
+                    "profileReady": True,
+                },
+            }
+        ],
+    )
+
+    assert failures
+    assert all("formalPlan" in item or "orderedPlan" in item for item in failures)
+
+
+def test_fixture_clone_preflight_accepts_non_empty_formal_plan():
+    failures = runner._fixture_clone_preflight_failures(
+        {
+            "fixtureContract": {
+                "type": "formal_plan_present",
+                "requiredState": ["orderedPlan", "formalPlan"],
+            }
+        },
+        [
+            {
+                "key": "planningState",
+                "ok": True,
+                "stateProfile": {
+                    "formalPlanPresent": True,
+                    "candidatePoolPresent": True,
+                    "reviewStatePresent": True,
+                    "profileReady": True,
+                },
+            }
+        ],
+    )
+
+    assert failures == []
+
+
 def test_run_cases_fails_fast_when_backend_chat_session_clone_fails(monkeypatch, tmp_path):
     metrics_path = tmp_path / "metrics.json"
     ask_calls = []
@@ -1009,6 +1272,9 @@ def test_run_cases_fails_fast_when_backend_volunteer_clone_fails(monkeypatch, tm
             "insertedRows": 1,
         }
 
+    def fake_reset_backend_test_session_state(**kwargs):
+        return {"targetSession": kwargs["target_session_id"], "ok": True}
+
     def fake_clone_backend_volunteer_data_files(**kwargs):
         return {"ok": False, "error": "required original session_volunteer file is missing"}
 
@@ -1016,6 +1282,7 @@ def test_run_cases_fails_fast_when_backend_volunteer_clone_fails(monkeypatch, tm
         return [{"sourceSession": source_session_id, "targetSession": target_session_id, "key": key, "ok": True} for key in keys]
 
     monkeypatch.setattr(runner, "_ask_once", fake_ask_once)
+    monkeypatch.setattr(runner, "_reset_backend_test_session_state", fake_reset_backend_test_session_state)
     monkeypatch.setattr(runner, "_clone_backend_chat_session_row", fake_clone_backend_chat_session_row)
     monkeypatch.setattr(runner, "_clone_backend_volunteer_data_files", fake_clone_backend_volunteer_data_files)
     monkeypatch.setattr(runner, "_clone_backend_session_state", fake_clone_backend_session_state)
@@ -1074,6 +1341,11 @@ def test_run_cases_allows_missing_volunteer_clone_for_non_final_action_case(monk
     def fake_clone_backend_session_state(base_url, *, source_session_id, target_session_id, keys):
         return [{"sourceSession": source_session_id, "targetSession": target_session_id, "key": key, "ok": True} for key in keys]
 
+    monkeypatch.setattr(
+        runner,
+        "_reset_backend_test_session_state",
+        lambda **kwargs: {"targetSession": kwargs["target_session_id"], "ok": True},
+    )
     monkeypatch.setattr(runner, "_ask_once", fake_ask_once)
     monkeypatch.setattr(runner, "_clone_backend_chat_session_row", fake_clone_backend_chat_session_row)
     monkeypatch.setattr(runner, "_clone_backend_volunteer_data_files", fake_clone_backend_volunteer_data_files)
@@ -2307,7 +2579,7 @@ def test_tool_assertions_can_require_exact_tool_sequence():
             "actionFamilies": ["query_ordered"],
             "resultKinds": ["ordered_snapshot"],
             "toolCalls": [
-                {"name": "compare_major_options"},
+                {"name": "compare_entities"},
             ]
         },
         {
@@ -2315,9 +2587,9 @@ def test_tool_assertions_can_require_exact_tool_sequence():
             "expectedRoutingPath": "zhiyuan_agent_direct",
             "assertActionFamiliesContain": ["query_ordered"],
             "assertResultKindsContain": ["ordered_snapshot"],
-            "expectedToolNames": ["compare_major_options"],
-            "expectedToolCounts": {"compare_major_options": 1},
-            "assertToolNamesNotContain": ["compare_major_options_legacy"],
+            "expectedToolNames": ["compare_entities"],
+            "expectedToolCounts": {"compare_entities": 1},
+            "assertToolNamesNotContain": ["compare_entities_legacy"],
             "assertNoRepeatedToolNames": True,
         },
         "case-tools",
@@ -2334,8 +2606,8 @@ def test_tool_assertions_report_repeated_or_forbidden_tools():
             "actionFamilies": ["query_state"],
             "resultKinds": ["status_overview"],
             "toolCalls": [
-                {"name": "get_major_introduction"},
-                {"name": "get_major_introduction"},
+                {"name": "explore_topic"},
+                {"name": "explore_topic"},
             ]
         },
         {
@@ -2343,8 +2615,8 @@ def test_tool_assertions_report_repeated_or_forbidden_tools():
             "expectedRoutingPath": "zhiyuan_agent_direct",
             "assertActionFamiliesContain": ["query_ordered"],
             "assertResultKindsContain": ["ordered_snapshot"],
-            "expectedToolNames": ["get_major_introductions"],
-            "assertToolNamesNotContain": ["get_major_introduction"],
+            "expectedToolNames": ["compare_entities"],
+            "assertToolNamesNotContain": ["explore_topic"],
             "maxToolCallCount": 1,
             "assertNoRepeatedToolNames": True,
         },
@@ -2380,6 +2652,59 @@ def test_tool_assertions_accept_any_expected_routing_path():
     )
 
     assert violations == []
+
+
+def test_structured_runtime_failures_reject_route_decision_error_even_when_reply_is_text():
+    violations = runner._check_structured_runtime_failures(
+        {
+            "routingPath": "zhiyuan_agent_direct",
+            "routeDecision": {
+                "route": "direct",
+                "error": "TimeoutError",
+            },
+        },
+        "case-timeout-fallback",
+        "9901",
+        "上海的有哪些",
+    )
+
+    assert len(violations) == 1
+    assert "routeDecision.error=TimeoutError" in violations[0]
+
+
+def test_structured_runtime_failures_reject_agent_run_error_once():
+    violations = runner._check_structured_runtime_failures(
+        {
+            "routeDecision": {
+                "agentRun": {
+                    "errorType": "ModelHTTPError",
+                    "errorMessage": "upstream unavailable",
+                }
+            }
+        },
+        "case-model-error",
+        "9902",
+        "方案怎么样",
+    )
+
+    assert len(violations) == 1
+    assert "agentRun.errorType=ModelHTTPError" in violations[0]
+    assert "upstream unavailable" in violations[0]
+
+
+def test_metrics_summary_counts_structured_runtime_failure_reason():
+    summary = runner._build_metrics_summary(
+        [
+            {
+                "case": "case-timeout-fallback",
+                "elapsedMs": 30000,
+                "runtimeViolations": ["routeDecision.error=TimeoutError"],
+            }
+        ]
+    )
+
+    assert summary["failedSteps"] == 1
+    assert summary["failedByReason"] == {"runtime": 1}
 
 
 def test_tool_assertions_accept_any_expected_result_kind():

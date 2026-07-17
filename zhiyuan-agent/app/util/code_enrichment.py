@@ -542,7 +542,7 @@ async def normalize_candidate_filters_async(candidate_filters: dict[str, Any], b
 
 
 def add_codes_to_profile(user_profile: dict[str, Any], batch: str) -> dict[str, Any]:
-    """Enrich user profile with code fields (old format)."""
+    """Enrich user profile with backend-compatible code fields."""
     enriched = user_profile.copy()
 
     # Enrich major codes

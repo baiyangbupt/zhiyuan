@@ -435,6 +435,26 @@ def test_needs_plan_first_guard_blocks_plan_mutation_without_formal_plan_referen
     assert resolution.blocking_reasons == ["missing_formal_plan"]
 
 
+def test_needs_plan_first_guard_allows_pre_score_adjustment_policy_question():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "批次线出来前先按模考估，后面咋调整",
+        planning_summary={},
+    )
+
+    assert resolution.side_effect == "none"
+    assert resolution.target_issues == []
+
+
+def test_needs_plan_first_guard_still_blocks_current_plan_pre_score_mutation():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "当前方案按模考位次调整",
+        planning_summary={},
+    )
+
+    assert resolution.side_effect == "needs_plan_first"
+    assert resolution.target_issues == ["plan_mutation_without_referent"]
+
+
 def test_needs_plan_first_guard_blocks_plan_add_without_formal_plan_referent():
     resolution = proposal_compiler.resolve_needs_plan_first_guard(
         "把广西师大统计加进来",
@@ -514,6 +534,17 @@ def test_needs_plan_first_guard_preserves_recent_intent_conflict_focus():
     assert "冲稳保或风险" not in resolution.primary_reply
     assert resolution.display_payload["recentIntentSummary"] == "偏好专业类：财经类；排除专业：护理学、中西医结合类"
     assert resolution.reply_plan["focus"] == ["intent_conflict_check_without_referent"]
+
+
+def test_needs_plan_first_guard_allows_mixed_candidate_and_plan_readonly_query():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "候选和方案里有没有这些学校",
+        planning_summary={"ordered_total": 0, "working_total": 0},
+        recent_intent_summary="重点院校：天津商业大学、河北经贸大学",
+    )
+
+    assert resolution.side_effect == "none"
+    assert resolution.requires_model_decision is True
 
 
 def test_no_formal_plan_review_boundary_blocks_special_path_review_generation():

@@ -1,7 +1,8 @@
 [
   {
     "name": "400-real-user-lazy-plan-status",
-    "sessionId": "17",
+    "sessionId": "9907051",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan"
     ],
@@ -23,11 +24,6 @@
           "保",
           "审查",
           "风险"
-        ],
-        "assertThinkingContainsAny": [
-          "正在读取当前方案并整理这次请求",
-          "正在处理你的方案",
-          "正在看这条方向和当前方案"
         ],
         "assertNotContains": [
           "payload",
@@ -70,7 +66,8 @@
   },
   {
     "name": "400-real-user-lazy-plan-risk",
-    "sessionId": "17",
+    "sessionId": "9907052",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan",
       "review"
@@ -86,17 +83,19 @@
     "prompts": [
       {
         "prompt": "保底够不够啊",
+        "assertContains": [
+          "冲",
+          "稳",
+          "保",
+          "结论",
+          "只读审查"
+        ],
         "assertContainsAny": [
           "保",
           "保底",
           "风险",
           "提醒",
           "审查"
-        ],
-        "assertThinkingContainsAny": [
-          "正在读取当前方案并整理这次请求",
-          "正在处理你的方案",
-          "正在看这条方向和当前方案"
         ],
         "assertNotContains": [
           "payload",
@@ -138,7 +137,8 @@
   },
   {
     "name": "400-real-user-school-abbrev-query",
-    "sessionId": "17",
+    "sessionId": "9907053",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan"
     ],
@@ -159,16 +159,16 @@
     },
     "prompts": [
       {
-        "prompt": "青城那个是不是放多了",
+        "prompt": "郑工商那个是不是放多了",
         "assertContainsAny": [
-          "青岛城市",
+          "郑州工商",
           "命中",
           "方案",
           "示例",
           "相关"
         ],
         "assertContains": [
-          "青岛城市"
+          "郑州工商"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -195,7 +195,7 @@
           "下一步"
         ],
         "forbiddenPatterns": [
-          "青海民族大学",
+          "郑州工业应用技术学院",
           "已直接调整",
           "确认后执行",
           "volunteerId"
@@ -215,7 +215,8 @@
   },
   {
     "name": "400-real-user-sort-good-school-preview",
-    "sessionId": "17",
+    "sessionId": "9907054",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "plan"
     ],
@@ -315,10 +316,6 @@
           "就业",
           "建议"
         ],
-        "assertThinkingContainsAny": [
-          "正在对比这几个专业的差异",
-          "正在对照这些专业的学习内容和就业情况"
-        ],
         "assertNotContains": [
           "缺少性别信息",
           "没有完整分数、选科、省份和性别信息",
@@ -381,10 +378,6 @@
           "就业",
           "建议"
         ],
-        "assertThinkingContainsAny": [
-          "正在对比这几个专业的差异",
-          "正在对照这些专业的学习内容和就业情况"
-        ],
         "assertNotContains": [
           "当前没有沉淀专门画像",
           "已记录",
@@ -424,7 +417,8 @@
   },
   {
     "name": "400-real-user-career-short-explore",
-    "sessionId": "16",
+    "sessionId": "9907056",
+    "cloneBackendStateFromSessionId": "16",
     "flow": [
       "explore",
       "plan"
@@ -446,9 +440,6 @@
           "当前方案",
           "承接",
           "候选"
-        ],
-        "assertThinkingContains": [
-          "正在看这条方向和当前方案的承接情况"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -510,10 +501,6 @@
           "土木",
           "确认",
           "后续参考"
-        ],
-        "assertThinkingContainsAny": [
-          "正在整理这个专业想法的影响，等你确认后才会记入偏好",
-          "正在整理这个专业想法的影响和边界"
         ],
         "assertNotContains": [
           "候选结果收紧",

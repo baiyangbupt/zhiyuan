@@ -26,7 +26,14 @@
       "ordered_plan_final_action"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "131",
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": [
+        "orderedPlan",
+        "formalPlan"
+      ]
+    },
     "clearBackendPlanningIntentState": true,
     "promptDefaults": {
       "assertNotContains": [
@@ -58,7 +65,7 @@
   "cases": [
     {
       "name": "400-v179-active-pending-append-region-and-private-final-action",
-      "sessionId": "9904791",
+      "sessionId": "9904891",
       "coverage": [
         "active_pending",
         "append_requirement",
@@ -98,7 +105,7 @@
           "assertToolNamesContain": [
             "preview_intent_change"
           ],
-          "maxToolCallCount": 2,
+          "maxToolCallCount": 1,
           "assertBackendExtraData": [
             {
               "key": "pendingConfirmation",
@@ -198,7 +205,7 @@
     },
     {
       "name": "400-v179-active-pending-replace-current-requirement-final-action",
-      "sessionId": "9904792",
+      "sessionId": "9904892",
       "coverage": [
         "active_pending",
         "same_turn_rewrite",
@@ -325,7 +332,7 @@
     },
     {
       "name": "400-v179-review-then-execute-without-pending-guard",
-      "sessionId": "9904793",
+      "sessionId": "9904893",
       "coverage": [
         "review_readonly",
         "no_pending_execute_guard",
@@ -382,7 +389,7 @@
     },
     {
       "name": "400-v179-targeted-replace-cheaper-non-cooperative-final-action",
-      "sessionId": "9904794",
+      "sessionId": "9904894",
       "coverage": [
         "replace_units",
         "replacement_spec",
@@ -392,7 +399,7 @@
       ],
       "prompts": [
         {
-          "prompt": "青岛理工那个中外合作建筑太贵了，换个正常收费的，最好不是中外合作",
+          "prompt": "青岛理工那个中外合作财务管理太贵了，换个正常收费的，最好不是中外合作",
           "assertContainsAny": [
             "青岛理工",
             "中外合作",

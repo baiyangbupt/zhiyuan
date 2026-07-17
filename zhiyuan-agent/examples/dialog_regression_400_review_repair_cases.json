@@ -57,7 +57,7 @@
   "cases": [
     {
       "name": "400-review-summary-user-friendly",
-      "sessionId": "132",
+      "sessionId": "9904811",
       "coverage": [
         "review_workspace",
         "risk_summary",
@@ -108,7 +108,7 @@
     },
     {
       "name": "400-review-shortage-honesty",
-      "sessionId": "132",
+      "sessionId": "9904812",
       "coverage": [
         "review_workspace",
         "candidate_shortage",
@@ -119,6 +119,12 @@
       "prompts": [
         {
           "prompt": "如果稳和保不够，能不能直接帮我补齐？候选不够也要直接说",
+          "assertContains": [
+            "稳",
+            "保",
+            "结论",
+            "只读审查"
+          ],
           "assertContainsAny": [
             "稳",
             "保",
@@ -164,7 +170,7 @@
     },
     {
       "name": "400-review-fix-preview-then-apply",
-      "sessionId": "130",
+      "sessionId": "9904813",
       "flow": [
         "review",
         "plan"
@@ -188,6 +194,12 @@
             "人工",
             "取舍",
             "预览"
+          ],
+          "assertContains": [
+            "当前正式方案",
+            "高收费",
+            "中外合作",
+            "不会改动方案"
           ],
           "assertNotContains": [
             "已直接替换",
@@ -218,7 +230,17 @@
             "actionable_next_step",
             "user_language"
           ],
-          "assertNoFollowups": true
+          "assertNoFollowups": true,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "assertToolNamesContain": [
+            "review_plan"
+          ],
+          "assertToolNamesNotContain": [
+            "preview_plan_action",
+            "preview_plan_change",
+            "preview_intent_change",
+            "query_plan"
+          ]
         }
       ],
       "sourceSessionId": "130",
@@ -226,7 +248,7 @@
     },
     {
       "name": "400-review-major-group-inner-safety",
-      "sessionId": "131",
+      "sessionId": "9904814",
       "coverage": [
         "majorGroup_model",
         "major_group_inner_safety",
@@ -252,6 +274,20 @@
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertToolNamesNotContain": [
+            "preview_plan_action",
+            "review_plan",
+            "query_plan"
+          ],
+          "maxToolCallCount": 1,
+          "expectedActionFamily": "apply_plan_change_proposal",
           "expectedKeyPoints": [
             "专业组",
             "安全垫",
@@ -275,6 +311,67 @@
             "actionable_next_step",
             "user_language"
           ]
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "安全垫",
+            "3个专业组",
+            "补入3个专业",
+            "复审校验通过"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.proposalSource",
+              "equals": "review_check"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.proposalStrategy",
+              "equals": "adjust_major_group_inner_safety"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.postValidationPassed",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.affectedUnitCount",
+              "equals": 3
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.addedVolunteerCount",
+              "equals": 3
+            }
+          ]
         }
       ],
       "sourceSessionId": "131",
@@ -282,7 +379,7 @@
     },
     {
       "name": "400-review-fix-unavailable-guidance",
-      "sessionId": "132",
+      "sessionId": "9904815",
       "coverage": [
         "review_then_fix",
         "candidate_shortage",
@@ -295,6 +392,7 @@
           "assertContainsAny": [
             "处理不了",
             "不能直接处理",
+            "不能直接补或调",
             "不能直接改",
             "候选",
             "可替换机会不够",
@@ -348,7 +446,7 @@
     },
     {
       "name": "400-review-professional-mode-export-boundary",
-      "sessionId": "130",
+      "sessionId": "9904816",
       "flow": [
         "plan"
       ],
@@ -393,7 +491,7 @@
     },
     {
       "name": "400-review-fix-explain-hierarchy",
-      "sessionId": "131",
+      "sessionId": "9904817",
       "coverage": [
         "review_workspace",
         "user_friendly_review_copy",
@@ -448,7 +546,7 @@
     },
     {
       "name": "400-review-repair-after-manual-move-stale",
-      "sessionId": "131",
+      "sessionId": "9904818",
       "coverage": [
         "review_stale",
         "move_operation",

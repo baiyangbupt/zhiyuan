@@ -1,0 +1,486 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Release 4.0 fill_to_count single-Proposal preview, coverage and final-action checks.",
+    "notes": "Pure quantity and projected exclude/only_keep/include goals use one preview_plan_change Proposal. Non-exclusive include persists as a coverage objective; one rank_before/within_tier priority rule can join the same fill Proposal."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "preview_plan_change",
+      "apply_plan_change_proposal"
+    ],
+    "coverage": [
+      "fill_to_count",
+      "single_proposal",
+      "projected_hard_requirement",
+      "postcondition_verification"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "16",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "action_family",
+        "volunteerId",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-fill-to-count-50-final-action",
+      "sessionId": "9907141",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": [
+          "orderedPlan",
+          "formalPlan"
+        ]
+      },
+      "prompts": [
+        {
+          "prompt": "把方案补齐到50个，先给我看预览",
+          "assertContainsAny": [
+            "50",
+            "补齐",
+            "确认"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertToolNamesNotContain": [
+            "preview_plan_action",
+            "preview_intent_change",
+            "review_plan",
+            "query_plan"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "已按预览补齐",
+            "50个专业组",
+            "数量校验通过"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.requiredCount",
+              "equals": 50
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthEquals": 50
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-fill-to-count-already-at-target-no-pending",
+      "sessionId": "9907142",
+      "prompts": [
+        {
+          "prompt": "把方案补齐到45个",
+          "assertContainsAny": [
+            "已经达到",
+            "不需要新增",
+            "45"
+          ],
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertNoFollowups": true,
+          "maxToolCallCount": 1
+        }
+      ]
+    },
+    {
+      "name": "400-fill-to-count-candidate-insufficient-no-partial-pending",
+      "sessionId": "9907143",
+      "prompts": [
+        {
+          "prompt": "把方案补齐到10000个，候选不够就直接告诉我",
+          "assertContainsAny": [
+            "候选",
+            "不能生成部分执行预览",
+            "不能"
+          ],
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertNoFollowups": true,
+          "maxToolCallCount": 1
+        }
+      ]
+    },
+    {
+      "name": "400-fill-to-count-composite-exclude-final-action",
+      "sessionId": "9907144",
+      "prompts": [
+        {
+          "prompt": "补齐到50个，而且民办的不要",
+          "assertContainsAny": [
+            "50",
+            "民办",
+            "确认"
+          ],
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "50个专业组",
+            "要求校验通过",
+            "已按预览调整"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementCount",
+              "equals": 1
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": "院校性质:民办"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.requiredCount",
+              "equals": 50
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthEquals": 50
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "民办"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-fill-context-target-composite-include-final-action",
+      "sessionId": "9907145",
+      "prompts": [
+        {
+          "prompt": "把方案补齐，而且必须有法学",
+          "assertContainsAny": [
+            "48",
+            "法学",
+            "确认"
+          ],
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action"
+          ],
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "48个专业组",
+            "要求校验通过",
+            "已按预览调整"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementCount",
+              "equals": 1
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.coverageRequirements",
+              "contains": {
+                "domain": "major",
+                "key": "major",
+                "values": [
+                  "法学"
+                ],
+                "minCount": 1
+              }
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustIncludeMajors",
+              "lengthEquals": 0
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.requiredCount",
+              "equals": 48
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthEquals": 48
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "contains": "法学"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-fill-context-target-merge-active-intent-final-action",
+      "sessionId": "9907148",
+      "prompts": [
+        {
+          "prompt": "不要医学类的",
+          "assertContainsAny": [
+            "医学",
+            "报考要求",
+            "确认"
+          ],
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedToolCounts": {
+            "preview_intent_change": 1
+          },
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "从候选中选择7所放入方案里，先补齐志愿数量",
+          "assertContainsAny": [
+            "48",
+            "医学",
+            "补齐",
+            "确认"
+          ],
+          "expectedToolNames": [
+            "preview_plan_change"
+          ],
+          "expectedToolCounts": {
+            "preview_plan_change": 1
+          },
+          "assertToolNamesNotContain": [
+            "preview_intent_change",
+            "preview_plan_action",
+            "review_plan",
+            "query_plan"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "active"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.plan_change_spec.selection_goal.target_count",
+              "equals": 48
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.plan_change_spec.requirements",
+              "contains": {
+                "kind": "exclude",
+                "domain": "major",
+                "key": "level1",
+                "values": [
+                  "医学"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "48个专业组",
+            "要求校验通过",
+            "已按预览调整"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.requirementCount",
+              "equals": 1
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeMajors",
+              "contains": "医学"
+            },
+            {
+              "key": "planningState",
+              "path": "candidatePoolState.requiredCount",
+              "equals": 48
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthEquals": 48
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "notContains": "医学"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -83,6 +83,7 @@ def _record_violation_messages(record: dict[str, Any]) -> list[str]:
     for key in (
         "contentViolations",
         "toolViolations",
+        "runtimeViolations",
         "performanceViolations",
         "styleViolations",
         "warnings",
@@ -118,14 +119,19 @@ def _record_result_kinds(record: dict[str, Any]) -> list[str]:
 
 
 def _record_has_failure(record: dict[str, Any]) -> bool:
+    route_decision = _record_route_decision(record)
+    agent_run = _as_dict(route_decision.get("agentRun"))
     return bool(
         record.get("contentViolations")
         or record.get("toolViolations")
+        or record.get("runtimeViolations")
         or record.get("performanceViolations")
         or record.get("styleViolations")
         or record.get("failureReason")
         or record.get("error")
         or record.get("wsError")
+        or route_decision.get("error")
+        or agent_run.get("errorType")
     )
 
 
@@ -141,6 +147,8 @@ def _infer_record_root_causes(record: dict[str, Any]) -> list[str]:
     prompt = str(record.get("prompt") or "")
     observability = _record_observability(record)
     route_decision = _record_route_decision(record)
+    agent_run = _as_dict(route_decision.get("agentRun"))
+    runtime_error = str(route_decision.get("error") or agent_run.get("errorType") or "").strip()
     turn_decision = _as_dict(route_decision.get("turnDecision"))
     routing_path = str(observability.get("routingPath") or "")
     blocking_reasons = [str(item) for item in _as_list(route_decision.get("blockingReasons"))]
@@ -160,6 +168,7 @@ def _infer_record_root_causes(record: dict[str, Any]) -> list[str]:
             violations,
             routing_path,
             str(route_decision.get("route") or ""),
+            runtime_error,
             str(turn_decision.get("sideEffect") or ""),
             str(turn_decision.get("scenario") or ""),
             " ".join(blocking_reasons),
@@ -181,6 +190,9 @@ def _infer_record_root_causes(record: dict[str, Any]) -> list[str]:
     ):
         causes.append("environment_setup")
         return causes
+
+    if runtime_error:
+        causes.append("runtime_timeout" if "timeout" in runtime_error.lower() else "agent_runtime_error")
 
     formal_fixture_expected = fixture_type == "formal_plan_present" or bool(
         required_state & {"orderedPlan", "formalPlan"}
@@ -350,6 +362,7 @@ def build_report(output_dir: Path, case_files: list[str]) -> dict[str, Any]:
     failed_by_file: Counter[str] = Counter()
     failed_by_category: Counter[str] = Counter()
     failed_by_root_cause: Counter[str] = Counter()
+    failed_record_count = 0
     root_cause_mentions: Counter[str] = Counter()
     examples_by_root_cause: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
@@ -399,18 +412,20 @@ def build_report(output_dir: Path, case_files: list[str]) -> dict[str, Any]:
                         "metricsPath": str(path),
                     }
                 )
+        failed_record_count += len(record_root_causes)
+        effective_failed_steps = max(failed_steps, len(record_root_causes))
         records.append(
             {
                 "caseFile": case_file,
                 "caseName": case_name,
                 "steps": steps,
-                "failedSteps": failed_steps,
+                "failedSteps": effective_failed_steps,
                 "elapsedMaxMs": elapsed.get("maxMs"),
                 "rootCauses": record_root_causes,
                 "metricsPath": str(path),
             }
         )
-        if failed_steps:
+        if effective_failed_steps:
             failed_by_file[case_file] += 1
         for item in payload.get("failures") or []:
             message = str(item)
@@ -470,6 +485,7 @@ def build_report(output_dir: Path, case_files: list[str]) -> dict[str, Any]:
         "failureRootCauseMentions": dict(sorted(root_cause_mentions.items())),
         "failureRootCauseExamples": dict(sorted(examples_by_root_cause.items())),
         "failureCount": len(failures),
+        "failedRecordCount": failed_record_count,
         "warningCount": len(warnings),
         "slowest": slowest_sorted[:20],
         "records": records,

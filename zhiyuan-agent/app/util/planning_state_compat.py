@@ -4,7 +4,7 @@ from typing import Any
 
 
 def get_working_plan_state(planning_state: dict[str, Any] | None) -> dict[str, Any]:
-    """Return the active working-plan payload with legacy fallback.
+    """Return the active working-plan payload with persisted-state fallback.
 
     New sessions should use ``workingPlanState``. Older persisted sessions may
     still expose ``draftPlanState`` during the migration window.

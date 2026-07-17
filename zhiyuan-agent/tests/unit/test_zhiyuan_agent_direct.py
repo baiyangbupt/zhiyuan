@@ -6,13 +6,23 @@ import json
 import os
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import ToolDefinition
 
 from app.agent.context import PlanningSummary, RequestContext
 from app.llm.client import LLMClient
@@ -23,20 +33,26 @@ from app.service import (
     _direct_confirm_workspace_refresh_targets,
     _observability_timing_fields,
 )
-from app.zhiyuan_agent.agent import ZhiyuanAgent
+from app.zhiyuan_agent.agent import ZhiyuanAgent, _is_casual_only_user_text, _prepare_preview_intent_change_tool
 from app.zhiyuan_agent.prompt import build_turn_context, build_zhiyuan_agent_instructions
 from app.zhiyuan_agent.tools import (
     _item_major_names,
     _plan_item_matches_intent_payload,
+    _pending_command_execution_uncertain,
     _item_unit_id,
+    acknowledge_readonly,
     answer_policy,
+    clarify_request,
     compare_entities,
     confirm_pending,
+    discover_options,
     explore_topic,
     preview_intent_change,
+    preview_plan_change,
     preview_plan_action,
     query_plan,
     read_state,
+    respond_casual,
     review_plan,
 )
 from app.zhiyuan_agent.sandbox import (
@@ -49,8 +65,1770 @@ from app.zhiyuan_agent.sandbox import (
 from tests.factories import make_request_context, make_run_context, make_user_profile
 
 
+@pytest.fixture(autouse=True)
+def _stub_pending_claim(mocker):
+    async def claim(_session_id, state):
+        claimed = dict(state or {})
+        revision = int(claimed.get("_pendingRevision") or claimed.get("revision") or 1) + 1
+        claimed["status"] = "applying"
+        claimed["revision"] = revision
+        claim_token = "claim-test-token"
+        claim_expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+        return {
+            "code": 0,
+            "data": {
+                "pendingId": claimed.get("pendingId"),
+                "revision": revision,
+                "status": "applying",
+                "claimToken": claim_token,
+                "claimExpiresAt": claim_expires_at,
+                "dataValue": claimed,
+                "transitionApplied": True,
+            },
+        }
+
+    tool_claim = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.claim_pending_confirmation",
+        AsyncMock(side_effect=claim),
+    )
+    service_claim = mocker.patch(
+        "app.service.claim_pending_confirmation",
+        AsyncMock(side_effect=claim),
+    )
+    return tool_claim, service_claim
+
+
+@pytest.fixture(autouse=True)
+def _stub_pending_planning_command(mocker):
+    async def execute(_tenant_id, _session_id, **kwargs):
+        command_type = kwargs.get("command_type")
+        postcondition_report = None
+        if command_type == "apply_plan_change_proposal":
+            proposal_apply = kwargs.get("proposal_apply") or {}
+            user_goal_request = proposal_apply.get("userGoalRequest") or {}
+            steps = ["proposal_applied", "ordered_plan_regenerated", "review_rerun", "postcondition_verified"]
+            if proposal_apply.get("proposalSource") == "review_check":
+                postcondition_report = {
+                    "proposalSource": "review_check",
+                    "proposalId": proposal_apply.get("proposalId"),
+                    "proposalStrategy": "adjust_major_group_inner_safety",
+                    "sourceReviewIssueCodes": ["group_inner_safety_guard"],
+                    "postValidationPassed": True,
+                    "appliedActionCount": 3,
+                    "affectedUnitCount": 3,
+                    "addedVolunteerCount": 3,
+                    "satisfied": True,
+                }
+            else:
+                goal_type = str(user_goal_request.get("goalType") or "fill_to_count")
+                target_count = int(user_goal_request.get("targetCount") or 0)
+                priority_rule_count = len(user_goal_request.get("priorityRules") or [])
+                tier_quota_goal = user_goal_request.get("tierQuotaGoal") or {}
+                postcondition_report = {
+                    "goalType": goal_type,
+                    "countMode": "volunteer",
+                    "targetCount": target_count if target_count > 0 else None,
+                    "actualCount": target_count if target_count > 0 else 45,
+                    "priorityRuleCount": priority_rule_count,
+                    "satisfiedPriorityRuleCount": priority_rule_count,
+                    "satisfied": True,
+                }
+                if tier_quota_goal:
+                    postcondition_report["tierQuotaResult"] = {
+                        **tier_quota_goal,
+                        "actualSprintCount": tier_quota_goal.get("sprintCount"),
+                        "actualStableCount": tier_quota_goal.get("stableCount"),
+                        "actualProtectCount": tier_quota_goal.get("protectCount"),
+                        "persisted": True,
+                        "satisfied": True,
+                    }
+        elif command_type in {"add_units", "replace_units"}:
+            steps = [
+                *(["ordered_units_removed"] if command_type == "replace_units" else []),
+                "working_plan_items_selected",
+                "ordered_plan_regenerated",
+            ]
+        else:
+            steps = [
+                *(["constraint_updated"] if kwargs.get("constraint_update") else []),
+                *(["tuition_updated"] if kwargs.get("max_tuition_per_year") is not None else []),
+                *(["ordered_plan_regenerated"] if kwargs.get("regenerate_ordered_plan") else []),
+            ]
+        return {
+            "code": 0,
+            "data": {
+                "operationId": kwargs.get("operation_id"),
+                "pendingId": kwargs.get("pending_id"),
+                "commandType": command_type,
+                "sourcePlanVersion": kwargs.get("expected_plan_version"),
+                "resultPlanVersion": int(kwargs.get("expected_plan_version") or 0) + max(1, len(steps)),
+                "completedSteps": steps,
+                "replayed": False,
+                **({"postconditionReport": postcondition_report} if postcondition_report else {}),
+                "planningState": {
+                    "version": int(kwargs.get("expected_plan_version") or 0) + max(1, len(steps)),
+                    "orderedPlanState": {"units": [], "items": []},
+                },
+            },
+        }
+
+    return mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.execute_pending_planning_command",
+        AsyncMock(side_effect=execute),
+    )
+
+
 def _load(text: str) -> dict[str, Any]:
     return json.loads(text)
+
+
+def test_pending_command_running_conflict_is_treated_as_uncertain():
+    assert _pending_command_execution_uncertain({"code": 40903, "msg": "planning command is already running"})
+    assert not _pending_command_execution_uncertain(
+        {"code": 40903, "msg": "operationId was used by another command"}
+    )
+    assert not _pending_command_execution_uncertain({"code": 40904, "msg": "planning version conflict"})
+
+
+async def test_preview_plan_change_creates_one_backend_proposal_pending(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "status": "ready",
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-50",
+                            "proposalSource": "user_goal",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "当前方案有45个志愿；本次补入5个，达到50个。",
+                            "impact": "确认后重新生成和审查方案。",
+                            "dryRunResult": {
+                                "beforeVolunteerTotal": 45,
+                                "afterVolunteerTotal": 50,
+                                "addVolunteerCount": 5,
+                            },
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+    ctx = _direct_context()
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={"selection_goal": {"type": "fill_to_count", "target_count": 50}},
+            raw_user_text="把方案补齐到50个",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["pending_created"] is True
+    assert result["data"]["proposal"]["proposal_id"] == "ugp-fill-50"
+    request = generate_mock.await_args.args[2]
+    assert request["goalType"] == "fill_to_count"
+    assert request["targetCount"] == 50
+    assert request["sourceVersionGuard"] == 12
+    pending = save_mock.await_args.args[1]
+    assert pending["actionFamily"] == "apply_plan_change_proposal"
+    assert pending["sourceBackendVersion"] == 12
+    assert pending["executionPayload"]["proposal_apply"]["userGoalRequest"] == request
+    assert pending["executionPayload"]["postconditions"]["target_count"] == 50
+
+
+async def test_preview_plan_change_creates_exact_review_repair_proposal_pending(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "status": "ready",
+                    "sourceVersionGuard": 12,
+                    "proposals": [
+                        {
+                            "proposalId": "fp-unrelated-sort",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "sort_by_probability",
+                            "sourceCheckCodes": ["probability_inversion"],
+                        },
+                        {
+                            "proposalId": "fp-group-safety",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "adjust_major_group_inner_safety",
+                            "title": "补足专业组内安全垫",
+                            "summary": "3个专业组各补入1个录取率更高的专业作为安全垫。",
+                            "impact": "保持专业组不变，补充组内专业。",
+                            "sourceCheckCodes": ["group_inner_safety_guard"],
+                            "dryRunResult": {
+                                "status": "ready",
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 45,
+                                "beforeVolunteerTotal": 176,
+                                "afterVolunteerTotal": 179,
+                                "affectedUnitCount": 3,
+                                "addVolunteerCount": 3,
+                            },
+                        },
+                    ],
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_planning_workspace_state",
+        AsyncMock(return_value={"code": 0, "data": {"version": 12}}),
+    )
+    ctx = _direct_context()
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={
+                "repair_goal": {
+                    "review_issue_code": "group_inner_safety_guard",
+                    "strategy": "adjust_major_group_inner_safety",
+                }
+            },
+            raw_user_text="专业组里面有没有录取率太悬的？能不能补一个安全一点的专业，先给我看预览",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["pending_created"] is True
+    assert result["data"]["proposal"]["proposal_id"] == "fp-group-safety"
+    assert result["data"]["plan_impact"]["affected_unit_count"] == 3
+    assert result["data"]["plan_impact"]["add_volunteer_count"] == 3
+    pending = save_mock.await_args.args[1]
+    assert pending["kind"] == "plan_mutation"
+    assert pending["actionFamily"] == "apply_plan_change_proposal"
+    assert pending["affectedScope"] == "保持专业组不变，补充组内专业。"
+    assert "具体影响：保持专业组不变，补充组内专业。" in result["message"]
+    assert pending["executionPayload"]["proposal_apply"] == {
+        "proposalId": "fp-group-safety",
+        "proposalSource": "review_check",
+        "sourceVersionGuard": 12,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+    }
+    assert "userGoalRequest" not in pending["executionPayload"]["proposal_apply"]
+    assert "后端处理提案" not in result["message"]
+    assert pending["executionPayload"]["plan_change_spec"]["repair_goal"] == {
+        "review_issue_code": "group_inner_safety_guard",
+        "strategy": "adjust_major_group_inner_safety",
+    }
+    generate_mock.assert_awaited_once_with(1, ctx.sessionid)
+
+
+async def test_preview_plan_change_does_not_select_unrelated_ready_review_proposal(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "fp-unrelated-sort",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "sort_by_probability",
+                            "sourceCheckCodes": ["probability_inversion"],
+                        },
+                        {
+                            "proposalId": "fp-group-safety-blocked",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "blocked",
+                            "strategy": "adjust_major_group_inner_safety",
+                            "sourceCheckCodes": ["group_inner_safety_guard"],
+                            "blockingReason": "当前候选里没有可补入的组内安全专业。",
+                        },
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "repair_goal": {
+                    "review_issue_code": "group_inner_safety_guard",
+                    "strategy": "adjust_major_group_inner_safety",
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["reason"] == "review_repair_proposal_unavailable"
+    assert result["data"]["pending_created"] is False
+    assert "没有可补入" in result["message"]
+    save_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_stability_objective_returns_options_without_guessing(mocker):
+    proposal_response = {
+        "code": 0,
+        "data": {
+            "sourceVersionGuard": 12,
+            "proposals": [
+                {
+                    "proposalId": "fp-unrelated-count",
+                    "proposalSource": "review_check",
+                    "sourceVersionGuard": 12,
+                    "status": "ready",
+                    "strategy": "fill_missing_count",
+                    "sourceCheckCodes": ["count_validation"],
+                    "summary": "补齐方案数量。",
+                },
+                {
+                    "proposalId": "fp-probability-order",
+                    "proposalSource": "review_check",
+                    "sourceVersionGuard": 12,
+                    "status": "ready",
+                    "strategy": "sort_by_probability",
+                    "sourceCheckCodes": ["probability_inversion"],
+                    "summary": "按录取概率重新排序，消除顺序倒挂。",
+                    "impact": "不改变志愿集合，只降低顺序风险。",
+                },
+                {
+                    "proposalId": "fp-probability-gap",
+                    "proposalSource": "review_check",
+                    "sourceVersionGuard": 12,
+                    "status": "preview_only",
+                    "strategy": "fill_probability_gap",
+                    "sourceCheckCodes": ["probability_gap"],
+                    "summary": "补足概率缺口。",
+                },
+            ],
+        },
+    }
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        AsyncMock(return_value=proposal_response),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={"repair_goal": {"objective": "increase_stability"}},
+            raw_user_text="就按别太冒险的思路把这版调稳点，先给我看看会怎么动",
+        )
+    )
+
+    assert result["next_step"] == "continue"
+    assert result["data"]["reason"] == "review_repair_requires_exact_selection"
+    assert result["data"]["ready_option_count"] == 1
+    assert [item["strategy"] for item in result["data"]["proposal_options"]] == [
+        "sort_by_probability",
+        "fill_probability_gap",
+    ]
+    assert [item["strategy"] for item in result["data"]["excluded_cross_goal_options"]] == [
+        "fill_missing_count"
+    ]
+    assert result["data"]["pending_created"] is False
+    assert "Never select by list order" in result["data"]["selection_rule"]
+    assert "unrequested fill_missing_count/count_validation" in result["data"]["selection_rule"]
+    save_mock.assert_not_awaited()
+    generate_mock.assert_awaited_once_with(1, ctx.sessionid)
+
+    repeated = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={"repair_goal": {"objective": "increase_stability"}},
+        )
+    )
+    assert repeated["next_step"] == "respond"
+    assert repeated["data"]["reason"] == "review_repair_exact_selection_required"
+    assert repeated["data"]["pending_created"] is False
+    save_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_stability_exact_selection_freezes_only_selected_proposal(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "sourceVersionGuard": 12,
+                    "proposals": [
+                        {
+                            "proposalId": "fp-unrelated-count",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["count_validation"],
+                        },
+                        {
+                            "proposalId": "fp-probability-order",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "sort_by_probability",
+                            "sourceCheckCodes": ["probability_inversion"],
+                            "summary": "按录取概率重新排序，消除顺序倒挂。",
+                            "impact": "不改变志愿集合，只降低顺序风险。",
+                            "dryRunResult": {"status": "ready", "affectedUnitCount": 2},
+                        },
+                    ],
+                },
+            }
+        ),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_planning_workspace_state",
+        AsyncMock(return_value={"code": 0, "data": {"version": 12}}),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "repair_goal": {
+                    "objective": "increase_stability",
+                    "review_issue_code": "probability_inversion",
+                    "strategy": "sort_by_probability",
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["proposal"]["proposal_id"] == "fp-probability-order"
+    pending = save_mock.await_args.args[1]
+    assert pending["executionPayload"]["plan_change_spec"]["repair_goal"] == {
+        "objective": "increase_stability",
+        "review_issue_code": "probability_inversion",
+        "strategy": "sort_by_probability",
+    }
+    assert pending["executionPayload"]["proposal_apply"]["proposalId"] == "fp-probability-order"
+
+
+def _prime_active_negative_major_intent_pending(ctx: RequestContext, *, section=None) -> None:
+    merged = section or {"major_intents": {"negative_level1": ["医学"]}}
+    execution_payload = {
+        "toolName": "confirm_pending",
+        "selectedData": {
+            "selected": [{key: value} for key, value in merged.items()],
+            "intentMode": "constraint",
+            "constraintIntentType": "exclude",
+            "applyToCurrentPlan": True,
+            "batch": ctx.batch or "01",
+        },
+        "merged": merged,
+        "intentMode": "constraint",
+        "constraintIntentType": "exclude",
+        "applyToCurrentPlan": True,
+        "batch": ctx.batch or "01",
+    }
+    raw = {
+        "type": "pendingConfirmation",
+        "pendingId": "pending-negative-major",
+        "sessionId": ctx.sessionid,
+        "kind": "intent_change",
+        "status": "active",
+        "actionFamily": "apply_selected_intents",
+        "summary": "专业要求：不要医学",
+        "executionPayload": execution_payload,
+        "sourceBackendVersion": 12,
+    }
+    ctx.conversation_phase = ConversationPhase(
+        state=PhaseState.INTENT_PREVIEWING,
+        pending=PendingConfirmation(
+            kind="intent_change",
+            pending_id="pending-negative-major",
+            action_family="apply_selected_intents",
+            preview_summary="专业要求：不要医学",
+            execution_payload=execution_payload,
+            source_backend_version=12,
+        ),
+    )
+    ctx.sandbox.prime(
+        "pending.json",
+        {
+            "active": True,
+            "pending_id": "pending-negative-major",
+            "kind": "intent_change",
+            "action_family": "apply_selected_intents",
+            "summary": "专业要求：不要医学",
+            "execution_payload": execution_payload,
+            "source_backend_version": 12,
+            "status": "active",
+            "raw": raw,
+        },
+        version=12,
+    )
+
+
+async def test_preview_plan_change_appends_typed_intent_pending_to_context_target(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-context-with-medical-exclusion",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "排除医学类并补齐到50个。",
+                            "dryRunResult": {"beforeUnitTotal": 43, "afterUnitTotal": 50},
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 2}}),
+    )
+    ctx = _direct_context()
+    ctx.sandbox.prime(
+        "plan/summary.json",
+        {
+            "has_plan": True,
+            "version": 12,
+            "ordered_total": 43,
+            "candidate_target_total": 50,
+            "ordered_target_total": 50,
+        },
+        version=12,
+    )
+    _prime_active_negative_major_intent_pending(ctx)
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={"selection_goal": {"type": "fill_to_count"}},
+            pending_resolution="append_to_active_pending",
+            raw_user_text="从候选中选择7所放入方案里，先补齐志愿数量",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["target_count"] == 50
+    assert result["data"]["target_count_source"] == "planning_state_required_count"
+    assert result["data"]["merged_active_intent_pending"] is True
+    request = generate_mock.await_args.args[2]
+    assert request["targetCount"] == 50
+    assert request["requirements"] == [
+        {
+            "kind": "exclude",
+            "domain": "major",
+            "key": "level1",
+            "values": ["医学"],
+            "rawText": "专业要求：不要医学",
+        }
+    ]
+    assert save_mock.await_count == 2
+    assert save_mock.await_args_list[0].args[1]["status"] == "cancelled"
+    assert save_mock.await_args_list[0].args[1]["resultCode"] == "merged_into_plan_change_preview"
+    new_pending = save_mock.await_args_list[1].args[1]
+    assert new_pending["status"] == "active"
+    assert new_pending["executionPayload"]["plan_change_spec"]["selection_goal"] == {
+        "type": "fill_to_count",
+        "target_count": 50,
+    }
+    assert new_pending["executionPayload"]["postconditions"]["requirements"] == request[
+        "requirements"
+    ]
+
+
+async def test_preview_plan_change_keeps_intent_pending_when_combined_proposal_is_blocked(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-blocked",
+                            "sourceVersionGuard": 12,
+                            "status": "blocked",
+                            "strategy": "fill_missing_count",
+                            "blockingReason": "排除医学类后候选不足，不能完整补齐。",
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+    ctx.sandbox.prime(
+        "plan/summary.json",
+        {"has_plan": True, "version": 12, "ordered_total": 43, "candidate_target_total": 50},
+        version=12,
+    )
+    _prime_active_negative_major_intent_pending(ctx)
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={"selection_goal": {"type": "fill_to_count"}},
+            pending_resolution="append_to_active_pending",
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["pending_created"] is False
+    assert "候选不足" in result["message"]
+    assert ctx.conversation_phase.pending is not None
+    save_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_rejects_unrepresentable_intent_pending_append(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+    _prime_active_negative_major_intent_pending(
+        ctx,
+        section={"career_intents": {"positive": ["stable_employment"]}},
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={"selection_goal": {"type": "fill_to_count"}},
+            pending_resolution="append_to_active_pending",
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["reason"] == "plan_change_composite_not_supported"
+    assert result["data"]["requirement_errors"][0]["reason"] == "unsupported_intent_section"
+    generate_mock.assert_not_awaited()
+
+
+async def test_agent_forces_stability_options_into_one_exact_proposal_retry(mocker):
+    tool_mock = mocker.patch(
+        "app.zhiyuan_agent.agent.preview_plan_change",
+        AsyncMock(
+            side_effect=[
+                json.dumps(
+                    {
+                        "data": {
+                            "reason": "review_repair_requires_exact_selection",
+                            "objective": "increase_stability",
+                            "retry_required_fields": [
+                                "repair_goal.review_issue_code",
+                                "repair_goal.strategy",
+                            ],
+                            "proposal_options": [
+                                {
+                                    "proposal_id": "fp-probability-order",
+                                    "proposal_source": "review_check",
+                                    "status": "ready",
+                                    "strategy": "sort_by_probability",
+                                    "source_check_codes": ["probability_inversion"],
+                                    "summary": "按录取概率重新排序，消除顺序倒挂。",
+                                    "impact": "不改变志愿集合，只降低顺序风险。",
+                                }
+                            ],
+                            "excluded_cross_goal_options": [],
+                            "selection_rule": "Select the unique direct ready match.",
+                        },
+                        "next_step": "continue",
+                        "message": "请选择精确 Proposal。",
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "data": {
+                            "pending_created": True,
+                            "requires_confirmation": True,
+                        },
+                        "next_step": "confirm",
+                        "message": "已生成调稳预览，确认前不会修改方案。",
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        ),
+    )
+    saw_retry_prompt = False
+
+    async def retrying_model(messages, agent_info):  # noqa: ARG001
+        nonlocal saw_retry_prompt
+        retry_parts = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, RetryPromptPart)
+        ]
+        if retry_parts:
+            saw_retry_prompt = True
+            retry_payload = json.loads(str(retry_parts[-1].content))
+            assert retry_payload["required_tool"] == "preview_plan_change"
+            assert retry_payload["proposal_options"][0]["strategy"] == "sort_by_probability"
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="preview_plan_change",
+                        args={
+                            "spec": {
+                                "repair_goal": {
+                                    "objective": "increase_stability",
+                                    "review_issue_code": "probability_inversion",
+                                    "strategy": "sort_by_probability",
+                                }
+                            }
+                        },
+                        tool_call_id="exact-repair",
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="preview_plan_change",
+                    args={"spec": {"repair_goal": {"objective": "increase_stability"}}},
+                    tool_call_id="objective-repair",
+                )
+            ]
+        )
+
+    agent = ZhiyuanAgent(
+        SimpleNamespace(model=FunctionModel(retrying_model), model_settings={})
+    )
+    deps = _direct_context()
+
+    reply, _, _, usage = await agent.run_with_message_deltas("把这版调稳点，先看预览", deps=deps)
+
+    assert saw_retry_prompt is True
+    assert "已生成调稳预览" in reply
+    assert usage.requests == 2
+    assert usage.tool_calls == 1
+    assert deps.agent_observability["toolNameCounts"]["preview_plan_change"] == 2
+    assert tool_mock.await_count == 2
+    assert tool_mock.await_args_list[0].kwargs["spec"] == {
+        "repair_goal": {"objective": "increase_stability"}
+    }
+    assert tool_mock.await_args_list[1].kwargs["spec"] == {
+        "repair_goal": {
+            "objective": "increase_stability",
+            "review_issue_code": "probability_inversion",
+            "strategy": "sort_by_probability",
+        }
+    }
+
+
+async def test_preview_plan_change_uses_planning_target_when_user_only_says_fill(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-context-target",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "按当前目标补齐到45个。",
+                            "dryRunResult": {
+                                "beforeVolunteerTotal": 40,
+                                "afterVolunteerTotal": 45,
+                                "addVolunteerCount": 5,
+                            },
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={"selection_goal": {"type": "fill_to_count"}},
+            raw_user_text="把方案补齐",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["target_count"] == 45
+    assert result["data"]["target_count_source"] == "planning_state_required_count"
+    request = generate_mock.await_args.args[2]
+    assert request["targetCount"] == 45
+    pending = save_mock.await_args.args[1]
+    assert pending["executionPayload"]["target_count_source"] == "planning_state_required_count"
+    assert pending["executionPayload"]["postconditions"]["target_count"] == 45
+
+
+async def test_preview_plan_change_clarifies_when_neither_user_nor_state_has_target(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context(with_plan=False)),
+            spec={"selection_goal": {"type": "fill_to_count"}},
+            raw_user_text="把方案补齐",
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "plan_change_goal_invalid"
+    assert "当前规划状态里还没有目标志愿数量" in result["message"]
+    generate_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_blocks_insufficient_candidate_proposal_without_pending(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "status": "blocked",
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-blocked",
+                            "sourceVersionGuard": 12,
+                            "status": "blocked",
+                            "strategy": "fill_missing_count",
+                            "summary": "还需要5个，按已确认硬要求过滤后只有2个可补入。",
+                            "blockingReason": "候选不足，不能生成部分执行预览。",
+                            "candidateShortages": [{"reasonCode": "candidate_pool_insufficient"}],
+                            "dryRunResult": {"status": "blocked"},
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={"selection_goal": {"type": "fill_to_count", "target_count": 50}},
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["pending_created"] is False
+    assert result["data"]["proposal"]["status"] == "blocked"
+    assert "不能生成部分执行预览" in result["message"]
+    save_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_creates_one_proposal_for_projected_exclude_requirement(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "status": "ready",
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-50-no-private",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "移出1个民办专业组，再补入6个非民办专业组，达到50个。",
+                            "dryRunResult": {
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 50,
+                                "removeUnitCount": 1,
+                                "addUnitCount": 6,
+                            },
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "selection_goal": {"type": "fill_to_count", "target_count": 50},
+                "requirements": [
+                    {
+                        "domain": "school",
+                        "side": "negative",
+                        "strength": "explicit",
+                        "key": "school_nature",
+                        "values": ["民办"],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["pending_created"] is True
+    request = generate_mock.await_args.args[2]
+    assert request["requirements"] == [
+        {
+            "kind": "exclude",
+            "domain": "school",
+            "key": "school_nature",
+            "values": ["民办"],
+            "rawText": "",
+        }
+    ]
+    pending = save_mock.await_args.args[1]
+    assert pending["actionFamily"] == "apply_plan_change_proposal"
+    assert pending["executionPayload"]["proposal_apply"]["userGoalRequest"]["requirements"] == request[
+        "requirements"
+    ]
+    assert pending["executionPayload"]["postconditions"]["requirements"] == request["requirements"]
+
+
+async def test_preview_plan_change_creates_one_proposal_for_nonexclusive_include_requirement(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-50-with-law",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "补齐到50个，且至少包含1个法学专业组。",
+                            "dryRunResult": {
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 50,
+                                "addUnitCount": 5,
+                            },
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "selection_goal": {"type": "fill_to_count", "target_count": 50},
+                "requirements": [
+                    {
+                        "kind": "include",
+                        "domain": "major",
+                        "key": "major",
+                        "values": ["法学"],
+                        "min_count": 1,
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["pending_created"] is True
+    request = generate_mock.await_args.args[2]
+    assert request["requirements"] == [
+        {
+            "kind": "include",
+            "domain": "major",
+            "key": "major",
+            "values": ["法学"],
+            "minCount": 1,
+            "rawText": "",
+        }
+    ]
+    pending = save_mock.await_args.args[1]
+    assert pending["executionPayload"]["proposal_apply"]["userGoalRequest"]["requirements"] == request[
+        "requirements"
+    ]
+    assert pending["executionPayload"]["postconditions"]["requirements"] == request["requirements"]
+
+
+async def test_preview_plan_change_rejects_invalid_include_min_count(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "selection_goal": {"type": "fill_to_count", "target_count": 50},
+                "requirements": [
+                    {
+                        "kind": "include",
+                        "domain": "major",
+                        "key": "major",
+                        "values": ["法学"],
+                        "min_count": 0,
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["reason"] == "plan_change_composite_not_supported"
+    assert result["data"]["requirement_errors"][0]["reason"] == "min_count_must_be_positive_integer"
+    generate_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_accepts_projected_only_keep_requirement(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-50-shanghai",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "只保留上海范围并补齐到50个。",
+                            "dryRunResult": {"afterUnitTotal": 50},
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "selection_goal": {"type": "fill_to_count", "target_count": 50},
+                "requirements": [
+                    {
+                        "kind": "only_keep",
+                        "domain": "region",
+                        "key": "province",
+                        "values": ["上海"],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert generate_mock.await_args.args[2]["requirements"] == [
+        {
+            "kind": "only_keep",
+            "domain": "region",
+            "key": "province",
+            "values": ["上海"],
+            "rawText": "",
+        }
+    ]
+
+
+async def test_preview_plan_change_creates_priority_only_proposal(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-priority-shanghai",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "prioritize_within_tier",
+                            "summary": "将2个上海专业组在各自档位内前移。",
+                            "dryRunResult": {
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 45,
+                                "priorityMatchedCount": 4,
+                                "priorityBeforeInversionCount": 8,
+                                "priorityAfterInversionCount": 0,
+                                "priorityMovedTargetCount": 2,
+                            },
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "priority_rules": [
+                    {
+                        "domain": "region",
+                        "key": "province",
+                        "values": ["上海"],
+                        "ordering_target": "rank_before",
+                        "scope": "within_tier",
+                    }
+                ]
+            },
+            raw_user_text="上海的更优先一些，但不是只保留上海",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["pending_created"] is True
+    assert result["data"]["target_count"] is None
+    assert result["data"]["plan_impact"]["priority_after_inversion_count"] == 0
+    request = generate_mock.await_args.args[2]
+    assert request["goalType"] == "prioritize_within_tier"
+    assert request["targetCount"] is None
+    assert request["priorityRules"] == [
+        {
+            "domain": "region",
+            "key": "province",
+            "values": ["上海"],
+            "orderingTarget": "rank_before",
+            "scope": "within_tier",
+            "rawText": "",
+        }
+    ]
+    pending = save_mock.await_args.args[1]
+    assert pending["executionPayload"]["plan_change_spec"]["priority_rules"] == request[
+        "priorityRules"
+    ]
+    assert pending["executionPayload"]["postconditions"]["priority_rules"] == request[
+        "priorityRules"
+    ]
+
+
+async def test_preview_plan_change_creates_one_proposal_for_fill_priority_composite(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-priority",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "补齐到50个，并在同档内前置上海专业组。",
+                            "dryRunResult": {
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 50,
+                                "addUnitCount": 5,
+                                "priorityMatchedCount": 4,
+                                "priorityBeforeInversionCount": 8,
+                                "priorityAfterInversionCount": 0,
+                            },
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "selection_goal": {"type": "fill_to_count", "target_count": 50},
+                "requirements": [
+                    {
+                        "kind": "exclude",
+                        "domain": "school",
+                        "key": "school_nature",
+                        "values": ["民办"],
+                    }
+                ],
+                "priority_rules": [
+                    {
+                        "domain": "region",
+                        "key": "province",
+                        "values": ["上海"],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["target_count"] == 50
+    assert result["data"]["plan_impact"]["priority_after_inversion_count"] == 0
+    request = generate_mock.await_args.args[2]
+    assert request["goalType"] == "fill_to_count"
+    assert request["targetCount"] == 50
+    assert request["requirements"][0]["values"] == ["民办"]
+    assert request["priorityRules"][0]["values"] == ["上海"]
+    pending = save_mock.await_args.args[1]
+    assert pending["executionPayload"]["plan_change_spec"]["selection_goal"] == {
+        "type": "fill_to_count",
+        "target_count": 50,
+    }
+    assert pending["executionPayload"]["postconditions"]["priority_rules"] == request[
+        "priorityRules"
+    ]
+
+
+async def test_preview_plan_change_preserves_current_count_for_explicit_coverage_with_priority(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-coverage-priority",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "保持45个专业组，上海至少5个并在同档内靠前。",
+                            "dryRunResult": {
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 45,
+                                "addUnitCount": 2,
+                                "removeUnitCount": 2,
+                                "priorityMatchedCount": 5,
+                                "priorityBeforeInversionCount": 4,
+                                "priorityAfterInversionCount": 0,
+                            },
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "requirements": [
+                    {
+                        "kind": "include",
+                        "domain": "region",
+                        "key": "province",
+                        "values": ["上海"],
+                        "min_count": 5,
+                    }
+                ],
+                "priority_rules": [
+                    {
+                        "domain": "region",
+                        "key": "province",
+                        "values": ["上海"],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["target_count"] == 45
+    assert result["data"]["target_count_source"] == "current_plan_preserve_count"
+    assert result["data"]["preserve_current_count"] is True
+    request = generate_mock.await_args.args[2]
+    assert request["goalType"] == "fill_to_count"
+    assert request["targetCount"] == 45
+    assert request["persistTargetCount"] is False
+    assert request["requirements"][0]["minCount"] == 5
+    pending = save_mock.await_args.args[1]
+    assert "selection_goal" not in pending["executionPayload"]["plan_change_spec"]
+    assert pending["executionPayload"]["target_count_source"] == "current_plan_preserve_count"
+
+
+async def test_preview_plan_change_clarifies_coverage_without_explicit_min_count(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "requirements": [
+                    {
+                        "kind": "include",
+                        "domain": "region",
+                        "key": "province",
+                        "values": ["上海"],
+                    }
+                ]
+            },
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "coverage_target_count_required"
+    assert result["data"]["coverage_count_explicit"] is False
+    assert result["data"]["minimum_supported_count"] == 2
+    assert "等量替换" in result["message"]
+    generate_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_clarifies_preserve_coverage_min_count_one(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "requirements": [
+                    {
+                        "kind": "include",
+                        "domain": "region",
+                        "key": "province",
+                        "values": ["山东"],
+                        "min_count": 1,
+                    }
+                ],
+                "priority_rules": [
+                    {
+                        "domain": "region",
+                        "key": "province",
+                        "values": ["山东"],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "coverage_target_count_required"
+    assert result["data"]["coverage_count_explicit"] is True
+    assert result["data"]["minimum_supported_count"] == 2
+    assert "2个或以上" in result["message"]
+    assert "等量替换" in result["message"]
+    generate_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_preserves_count_for_explicit_admission_tier_minimum(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-protect-minimum",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "保持45个专业组，保底至少18个。",
+                            "dryRunResult": {
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 45,
+                                "addUnitCount": 3,
+                                "removeUnitCount": 3,
+                            },
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "requirements": [
+                    {
+                        "kind": "include",
+                        "domain": "admission",
+                        "key": "admission_stability",
+                        "values": ["protect"],
+                        "min_count": 18,
+                    }
+                ]
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["target_count"] == 45
+    assert result["data"]["preserve_current_count"] is True
+    request = generate_mock.await_args.args[2]
+    assert request["persistTargetCount"] is False
+    assert request["requirements"] == [
+        {
+            "kind": "include",
+            "domain": "admission",
+            "key": "tier",
+            "values": ["保"],
+            "rawText": "",
+            "minCount": 18,
+        }
+    ]
+    pending = save_mock.await_args.args[1]
+    assert pending["executionPayload"]["postconditions"]["requirements"] == request[
+        "requirements"
+    ]
+
+
+async def test_preview_plan_change_clarifies_admission_tier_without_explicit_minimum(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "requirements": [
+                    {
+                        "kind": "include",
+                        "domain": "admission",
+                        "key": "tier",
+                        "values": ["保底"],
+                    }
+                ]
+            },
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "tier_min_count_required"
+    assert "不会替你猜" in result["message"]
+    generate_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_rejects_admission_tier_exclusion(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "selection_goal": {"type": "fill_to_count", "target_count": 45},
+                "requirements": [
+                    {
+                        "kind": "exclude",
+                        "domain": "admission",
+                        "key": "tier",
+                        "values": ["冲"],
+                        "min_count": 5,
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["requirement_errors"][0]["reason"] == (
+        "tier_only_supported_for_include"
+    )
+    generate_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_preserves_count_for_exact_tier_quota(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-tier-quota",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "保持45个专业组，调整为冲9稳17保19。",
+                            "dryRunResult": {
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 45,
+                                "addUnitCount": 4,
+                                "removeUnitCount": 4,
+                            },
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "tier_quota_goal": {
+                    "type": "exact_counts",
+                    "sprint_count": 9,
+                    "stable_count": 17,
+                    "protect_count": 19,
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["target_count"] == 45
+    assert result["data"]["preserve_current_count"] is True
+    request = generate_mock.await_args.args[2]
+    assert request["persistTargetCount"] is False
+    assert request["tierQuotaGoal"] == {
+        "type": "exact_counts",
+        "sprintCount": 9,
+        "stableCount": 17,
+        "protectCount": 19,
+    }
+    assert request["requirements"] == []
+    pending = save_mock.await_args.args[1]
+    assert pending["executionPayload"]["plan_change_spec"]["tier_quota_goal"] == {
+        "type": "exact_counts",
+        "sprint_count": 9,
+        "stable_count": 17,
+        "protect_count": 19,
+    }
+    assert pending["executionPayload"]["postconditions"]["tier_quota_goal"] == request[
+        "tierQuotaGoal"
+    ]
+
+
+async def test_preview_plan_change_clarifies_exact_tier_quota_total_mismatch(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "selection_goal": {"type": "fill_to_count", "target_count": 45},
+                "tier_quota_goal": {
+                    "type": "exact_counts",
+                    "sprint_count": 9,
+                    "stable_count": 17,
+                    "protect_count": 18,
+                },
+            },
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "tier_quota_total_mismatch"
+    assert result["data"]["tier_quota_total"] == 44
+    generate_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_clarifies_partial_exact_tier_quota(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "tier_quota_goal": {
+                    "type": "exact_counts",
+                    "sprint_count": 9,
+                    "stable_count": 17,
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "tier_quota_invalid"
+    assert result["data"]["tier_quota_errors"][0]["reason"] == "all_tier_counts_required"
+    generate_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_rejects_tier_quota_requirement_composite(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "tier_quota_goal": {
+                    "type": "exact_counts",
+                    "sprint_count": 9,
+                    "stable_count": 17,
+                    "protect_count": 19,
+                },
+                "requirements": [
+                    {
+                        "kind": "exclude",
+                        "domain": "school",
+                        "key": "school_nature",
+                        "values": ["民办"],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["reason"] == "plan_change_composite_not_supported"
+    assert result["data"]["tier_quota_composite_not_supported"] is True
+    generate_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_rejects_priority_requirement_without_fill_goal(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "requirements": [
+                    {
+                        "kind": "exclude",
+                        "domain": "school",
+                        "key": "school_nature",
+                        "values": ["民办"],
+                    }
+                ],
+                "priority_rules": [
+                    {
+                        "domain": "region",
+                        "key": "province",
+                        "values": ["上海"],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["priority_composite_not_supported"] is True
+    generate_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_rejects_cross_tier_priority_rule(mocker):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "priority_rules": [
+                    {
+                        "domain": "region",
+                        "key": "province",
+                        "values": ["上海"],
+                        "scope": "all_tiers",
+                    }
+                ]
+            },
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["priority_rule_errors"][0]["reason"] == "only_within_tier_supported"
+    generate_mock.assert_not_awaited()
 
 
 def test_item_unit_id_matches_backend_ordered_unit_id_from_nested_volunteer_id():
@@ -62,6 +1840,32 @@ def test_item_unit_id_matches_backend_ordered_unit_id_from_nested_volunteer_id()
     }
 
     assert _item_unit_id(item) == "37020261000734"
+
+
+def test_item_unit_id_prefers_plan_school_data_id_over_volunteer_prefix():
+    item = {
+        "planSchoolDataId": "37020261000269_37020262005080",
+        "volunteerId": "37020261000269_37020262005080_709",
+    }
+
+    assert _item_unit_id(item) == "37020261000269_37020262005080"
+
+
+def test_no_plan_sandbox_summary_preserves_backend_version():
+    summary = PlanningSummary(
+        phase="profile_ready",
+        version=1724,
+        ordered_total=0,
+        ordered_target_total=0,
+    )
+
+    sandbox = build_request_sandbox(session_id="no-plan-version", planning_summary=summary)
+
+    plan_summary = sandbox.peek("plan/summary.json")
+    assert plan_summary is not None
+    assert plan_summary["has_plan"] is False
+    assert plan_summary["phase"] == "profile_ready"
+    assert plan_summary["version"] == 1724
 
 
 def test_item_major_names_includes_direct_major_taxonomy_fields():
@@ -129,6 +1933,51 @@ def test_ordered_items_enrichment_keeps_real_ordered_unit_id_for_execution():
     assert items_file["items"][0]["unitId"] == "37020261000734"
     assert items_file["items"][0]["planSchoolDataId"] == "37020261000734_37020262013962"
     assert items_file["items"][0]["majorName"] == "数学与应用数学(师范类)"
+
+
+def test_ordered_items_enrichment_resolves_legacy_major_identity_by_unique_names():
+    response = {
+        "code": 0,
+        "data": {
+            "version": 384,
+            "orderedPlanState": {
+                "items": [
+                    {
+                        "position": 1,
+                        "volunteerId": "41020261005650_553",
+                        "schoolName": "电子科技大学中山学院第101组(普通组)",
+                        "majorName": "光电信息科学与工程",
+                    }
+                ],
+                "units": [
+                    {
+                        "position": 1,
+                        "unitId": "41020261005650",
+                        "planSchoolDataId": "41020261005650",
+                    }
+                ],
+            },
+            "candidatePoolState": {
+                "items": [
+                    {
+                        "volunteerId": "41020261005650_41020262033139",
+                        "planSchoolDataId": "41020261005650",
+                        "majorId": "553",
+                        "schoolName": "电子科技大学中山学院第101组(普通组)",
+                        "majorName": "光电信息科学与工程",
+                        "schoolNature": "民办",
+                        "tuitionPerYear": 32000,
+                    }
+                ]
+            },
+        },
+    }
+
+    items_file = _ordered_items_file_from_response(response)
+
+    assert items_file["items"][0]["unitId"] == "41020261005650"
+    assert items_file["items"][0]["schoolNature"] == "民办"
+    assert items_file["items"][0]["tuitionPerYear"] == 32000
 
 
 def test_direct_confirm_result_maps_to_pending_route_and_workspace_refresh():
@@ -245,6 +2094,7 @@ def _direct_context(*, with_plan: bool = True, pending: bool = False) -> Request
                         "unitId": "unit-hnlg",
                         "volunteerId": "unit-hnlg_001",
                         "schoolName": "华南理工大学",
+                        "schoolUnitCode": "1000-101",
                         "majorName": "计算机科学与技术",
                         "schoolNature": "公办",
                         "schoolCategory": "理工",
@@ -314,6 +2164,21 @@ def test_zhiyuan_agent_disables_parallel_tool_calls():
 def _context_with_backend_pending(pending_state: dict[str, Any], *, plan_version: int = 12) -> RequestContext:
     ctx = _direct_context(with_plan=True)
     ctx.planning_summary.version = plan_version
+    ctx.conversation_phase = ConversationPhase(
+        state=(
+            PhaseState.INTENT_PREVIEWING
+            if str(pending_state.get("kind") or "") == "intent_change"
+            else PhaseState.PLAN_PREVIEWING
+        ),
+        pending=PendingConfirmation(
+            kind=str(pending_state.get("kind") or "plan_mutation"),
+            pending_id=str(pending_state.get("pending_id") or pending_state.get("pendingId") or ""),
+            action_family=str(pending_state.get("action_family") or pending_state.get("actionFamily") or ""),
+            preview_summary=str(pending_state.get("summary") or ""),
+            execution_payload=dict(pending_state.get("execution_payload") or {}),
+            source_backend_version=int(pending_state.get("source_backend_version") or 0),
+        ),
+    )
     ctx.sandbox.prime(
         "plan/summary.json",
         {
@@ -442,6 +2307,127 @@ def test_build_turn_context_injects_core_state():
     assert "pending_resolution" in text
 
 
+async def test_bounded_non_business_tools_never_claim_state_changes():
+    ctx = make_run_context(request_context=_direct_context())
+
+    clarification = _load(await clarify_request(ctx, kind="discovery_scope"))
+    casual = _load(await respond_casual(ctx))
+    readonly = _load(await acknowledge_readonly(ctx))
+
+    assert clarification["next_step"] == "respond"
+    assert "院校目录" in clarification["message"]
+    assert clarification["data"]["state_mutation"] is False
+    assert clarification["data"]["plan_mutation"] is False
+    missing_intent = _load(await clarify_request(ctx, kind="missing_intent_content"))
+    assert "具体内容" in missing_intent["message"]
+    assert "确认前不会记录或改方案" in missing_intent["message"]
+    assert casual["next_step"] == "respond"
+    assert casual["data"]["state_mutation"] is False
+    assert casual["data"]["plan_mutation"] is False
+    assert readonly["next_step"] == "respond"
+    assert "没有待确认" in readonly["message"]
+    assert readonly["data"]["state_mutation"] is False
+    assert readonly["data"]["plan_mutation"] is False
+
+
+def test_casual_only_guard_rejects_business_stage_decisions():
+    assert _is_casual_only_user_text("你好") is True
+    assert _is_casual_only_user_text("我只想先保存这个思路，不要自动改") is False
+    assert _is_casual_only_user_text("你好，我想问上海有哪些院校") is False
+
+
+async def test_zhiyuan_agent_rejects_first_text_and_requires_bounded_tool_retry():
+    request_count = 0
+
+    async def model(messages, agent_info):  # noqa: ARG001
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            assert agent_info.allow_text_output is False
+            return ModelResponse(parts=[TextPart(content="我已经生成了待确认内容，请确认。")])
+        assert agent_info.allow_text_output is False
+        assert any(
+            isinstance(part, RetryPromptPart)
+            for message in messages
+            for part in message.parts
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="clarify_request",
+                    args={"kind": "discovery_scope"},
+                    tool_call_id="clarify-after-text-rejected",
+                )
+            ]
+        )
+
+    agent = ZhiyuanAgent(SimpleNamespace(model=FunctionModel(model), model_settings={}))
+    deps = _direct_context()
+
+    reply, _, all_messages, usage = await agent.run_with_message_deltas("上海的有哪些", deps=deps)
+
+    assert "院校目录" in reply
+    assert "我已经生成了待确认内容" not in reply
+    assert [call.tool_name for call in _tool_calls(all_messages)] == ["clarify_request"]
+    assert usage.requests == 2
+    assert usage.tool_calls == 1
+    assert deps.agent_observability["firstModelToolCallRequired"] is True
+    assert deps.agent_observability["firstModelTextRejected"] is True
+    assert deps.agent_observability["firstModelToolCallSatisfied"] is True
+
+
+async def test_zhiyuan_agent_rejects_multiple_first_tool_calls_before_execution():
+    request_count = 0
+
+    async def model(messages, agent_info):  # noqa: ARG001
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="clarify_request",
+                        args={"kind": "discovery_scope"},
+                        tool_call_id="duplicate-clarify-1",
+                    ),
+                    ToolCallPart(
+                        tool_name="clarify_request",
+                        args={"kind": "discovery_scope"},
+                        tool_call_id="duplicate-clarify-2",
+                    ),
+                ]
+            )
+        assert any(
+            isinstance(part, RetryPromptPart)
+            for message in messages
+            for part in message.parts
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="clarify_request",
+                    args={"kind": "discovery_scope"},
+                    tool_call_id="single-clarify-after-retry",
+                )
+            ]
+        )
+
+    agent = ZhiyuanAgent(SimpleNamespace(model=FunctionModel(model), model_settings={}))
+    deps = _direct_context()
+
+    reply, _, all_messages, usage = await agent.run_with_message_deltas("上海的有哪些", deps=deps)
+
+    assert "院校目录" in reply
+    assert [call.tool_name for call in _tool_calls(all_messages)] == ["clarify_request"]
+    assert usage.requests == 2
+    assert usage.tool_calls == 1
+    assert deps.agent_observability["firstModelMultipleToolCallsRejected"] is True
+    assert deps.agent_observability["firstModelRejectedToolNames"] == [
+        "clarify_request",
+        "clarify_request",
+    ]
+
+
 def test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_followups():
     text = build_zhiyuan_agent_instructions(make_run_context(request_context=_direct_context(with_plan=True)))
 
@@ -461,6 +2447,37 @@ def test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_fol
     assert "地域集合也是地域要求" in text
     assert "positive={\"area\":[\"南方\"]}" in text
     assert "negative={\"area\":[\"北方\"]}" in text
+    assert "倾向A和B，但Y不要" in text
+    assert "我倾向会计学和审计学，但土木工程不要" in text
+    assert "positive={\"major\":[\"会计学\",\"审计学\"]}" in text
+    assert "negative={\"major\":[\"土木工程\"]}" in text
+    assert "discover_options(entity_type=\"school\", mode=\"catalog\"" in text
+    assert "discover_options(..., mode=\"eligible\")" in text
+    assert "query_plan(scope=\"plan\", filters={\"province\":[\"上海\"]})" in text
+    assert "上海的有哪些" in text
+    assert "候选和方案里有没有这些学校/专业" in text
+    assert "禁止调用 query_plan 后口头猜候选结果" in text
+    assert "不要猜 entity_type/mode" in text
+    assert "不要调用 explore_topic" in text
+    assert "兰州银川能不能作为兜底" in text
+    assert 'explore_topic(topic_type="region")' in text
+    assert "专业组里只保留最稳的专业行不行" in text
+    assert "必须调用 answer_policy" in text
+    assert "方案里必须有法学，其他专业可以先保留" in text
+    assert "不因为句子提到\"方案里\"就升级成结构性 coverage Proposal" in text
+    assert "绝不能调用 preview_plan_change" in text
+    assert 'repair_goal":{"review_issue_code":"group_inner_safety_guard"' in text
+    assert '"strategy":"adjust_major_group_inner_safety"' in text
+    assert "不要退回 regenerate_order" in text
+    assert 'repair_goal":{"objective":"increase_stability"' in text
+    assert "不能按列表顺序选第一个 ready" in text
+    assert "从候选中选择7所放入方案里，先补齐志愿数量" in text
+    assert "不能传 target_count=7" in text
+    assert 'pending_resolution="append_to_active_pending"' in text
+    assert "北京天津只作为参考，先别记录也别调整" in text
+    assert "重点关注/优先考虑/倾向”本身不是 reference" in text
+    assert "法学和财经哪个更适合我" in text
+    assert 'compare_entities(entity_type="major", entities=["法学","财经"])' in text
 
 
 async def test_sandbox_cache_hit_uses_adapter_once():
@@ -638,6 +2655,37 @@ async def test_backend_adapter_maps_eight_virtual_paths(mocker):
     assert pending["action_family"] == "remove_units"
     assert planning_state_mock.await_count == 3
     ordered_plan_mock.assert_not_awaited()
+
+
+async def test_backend_adapter_preserves_candidate_query_totals(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.sandbox.internal_client.query_planning_candidate_pool",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [],
+                    "page": 1,
+                    "pageSize": 20,
+                    "total": 7,
+                    "totalUnitCount": 5,
+                    "viewSummary": {
+                        "poolEntryTotal": 100,
+                        "viewEntryTotal": 7,
+                    },
+                },
+            }
+        ),
+    )
+    adapter = BackendAdapter("candidate-pagination")
+
+    result = (await adapter.read("plan/candidates.json", query={"province_names": ["上海"]})).data
+
+    assert result["available"] is True
+    assert result["total"] == 7
+    assert result["total_unit_count"] == 5
+    assert result["page"] == {"page": 1, "page_size": 20, "total": 7, "total_unit_count": 5}
+    assert result["view_summary"] == {"poolEntryTotal": 100, "viewEntryTotal": 7}
 
 
 async def test_backend_adapter_enriches_plan_items_from_candidate_pool(mocker):
@@ -1289,6 +3337,103 @@ async def test_review_plan_no_issue_message_keeps_existing_plan_fact(mocker):
     assert "还没有生成具体志愿" not in result["message"]
 
 
+async def test_review_plan_tuition_returns_cap_count_and_examples(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.run_planning_review",
+        AsyncMock(return_value={"code": 0, "data": {}}),
+    )
+    ctx = _context_with_review()
+
+    result = _load(
+        await review_plan(
+            make_run_context(request_context=ctx),
+            focus="tuition",
+            tuition_max_per_year=30000,
+            force_refresh=False,
+        )
+    )
+
+    assert result["data"]["tuition_evidence"]["max_tuition_per_year"] == 30000
+    assert result["data"]["tuition_evidence"]["matched_plan_item_total"] == 1
+    assert result["data"]["cooperative_evidence"]["matched_plan_item_total"] == 1
+    assert result["data"]["cooperative_evidence"]["matched_detail_total"] == 1
+    assert "按每年不超过30000元" in result["message"]
+    assert "中外合作项目命中1个专业组" in result["message"]
+    assert "北京师范大学-香港浸会大学联合国际学院" in result["message"]
+    assert "确认前不会改动方案" in result["message"]
+
+
+async def test_review_plan_tuition_reports_zero_fee_and_cooperative_results_separately(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.run_planning_review",
+        AsyncMock(return_value={"code": 0, "data": {}}),
+    )
+    ctx = _direct_context(with_plan=True)
+    ctx.sandbox.prime(
+        "plan/items.json",
+        {
+            "available": True,
+            "items": [
+                {
+                    "unitId": "unit-ordinary",
+                    "volunteerId": "unit-ordinary_001",
+                    "schoolName": "普通公办大学",
+                    "majorName": "法学",
+                    "programType": "普通类",
+                    "tier": "稳",
+                    "position": 1,
+                    "tuitionPerYear": 5000,
+                }
+            ],
+        },
+        version=12,
+    )
+    ctx.sandbox.prime(
+        "plan/review.json",
+        {
+            "available": True,
+            "version": 12,
+            "summary": {"riskCount": 0, "warnCount": 0, "passedCount": 8},
+            "checks": [],
+        },
+        version=12,
+    )
+
+    result = _load(
+        await review_plan(
+            make_run_context(request_context=ctx),
+            focus="tuition",
+            force_refresh=False,
+        )
+    )
+
+    assert result["data"]["tuition_evidence"]["matched_plan_item_total"] == 0
+    assert result["data"]["cooperative_evidence"]["matched_plan_item_total"] == 0
+    assert "没有发现超出该预算的项目" in result["message"]
+    assert "中外合作项目命中0个专业组" in result["message"]
+
+
+async def test_review_plan_tier_balance_gives_direct_verdict_and_evidence(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.run_planning_review",
+        AsyncMock(return_value={"code": 0, "data": {}}),
+    )
+
+    result = _load(
+        await review_plan(
+            make_run_context(request_context=_context_with_review()),
+            focus="tier_balance",
+            force_refresh=False,
+        )
+    )
+
+    assert "当前冲12、稳18、保15" in result["message"]
+    assert "保底承接不足" in result["message"]
+    assert "本省保底不足" in result["message"]
+    assert "高收费" not in result["message"]
+    assert "只读审查" in result["message"]
+
+
 async def test_review_plan_can_include_fix_proposals(mocker):
     mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.run_planning_review",
@@ -1363,6 +3508,43 @@ async def test_review_plan_career_fit_includes_structured_career_slots(mocker):
     assert result["data"]["plan_mutation"] is False
 
 
+async def test_review_plan_career_fit_keeps_named_major_direction(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.run_planning_review",
+        AsyncMock(return_value={"code": 0, "data": {}}),
+    )
+    ctx = _context_with_review()
+    ctx.sandbox.peek("plan/items.json")["items"].append(
+        {
+            "unitId": "unit-accounting",
+            "volunteerId": "unit-accounting_001",
+            "schoolName": "广东财经大学",
+            "majorName": "会计学",
+            "majorCategory": "工商管理类",
+            "schoolCategory": "财经",
+            "tier": "稳",
+            "position": 25,
+        }
+    )
+
+    result = _load(
+        await review_plan(
+            make_run_context(request_context=ctx),
+            focus="career_fit",
+            career_slots=["system_public_service"],
+            major_keywords=["财会"],
+            force_refresh=False,
+        )
+    )
+
+    assert {"工商管理类", "会计学", "财务管理", "审计学"}.issubset(
+        set(result["data"]["major_keywords"])
+    )
+    assert result["data"]["career_evidence"]["major_matched_plan_item_total"] == 1
+    assert "广东财经大学-会计学" in result["message"]
+    assert "体制内/考公导向" in result["message"]
+
+
 async def test_review_plan_no_plan_is_readonly_guard(mocker):
     run_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.run_planning_review",
@@ -1405,7 +3587,7 @@ async def test_preview_negative_major_level1(mocker):
         )
     )
 
-    assert result["next_step"] == "confirm"
+    assert result["next_step"] == "confirm", result
     assert result["data"]["constraint_type"] == "exclude"
     assert result["data"]["normalized"]["negative"]["level1"] == ["医学"]
     assert result["data"]["normalized"]["positive"]["level1"] == []
@@ -1648,7 +3830,6 @@ async def test_preview_region_remote_area_creates_pending(mocker):
         await preview_intent_change(
             make_run_context(request_context=_direct_context()),
             intent_type="region",
-            negative={"area": ["偏远地区"]},
             constraint_type="exclude",
             raw_user_text="省外可以，但太偏的地方不想去",
             semantic_requirements=[
@@ -1675,6 +3856,15 @@ async def test_preview_region_remote_area_creates_pending(mocker):
     assert result["next_step"] == "confirm"
     assert result["data"]["normalized"]["positive"]["area"] == []
     assert result["data"]["normalized"]["negative"]["area"] == ["偏远地区"]
+    assert result["data"]["materialized_semantic_requirements"] == [
+        {
+            "domain": "region",
+            "side": "negative",
+            "key": "area",
+            "values": ["偏远地区"],
+            "target_payload_path": "negative.area",
+        }
+    ]
     assert "偏远地区" in result["message"]
     saved_state = save_mock.await_args.args[1]
     assert saved_state["summary"] == "地域要求：不要：偏远地区"
@@ -1711,7 +3901,7 @@ async def test_preview_intent_preserves_raw_display_alias_for_resolved_major(moc
     assert selected == [{"major_intents": {"negative_level3": ["口腔医学"]}}]
 
 
-async def test_preview_intent_preserves_user_text_major_alias_after_model_canonicalizes(mocker):
+async def test_preview_intent_does_not_infer_display_aliases_from_raw_user_text(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
@@ -1742,14 +3932,11 @@ async def test_preview_intent_preserves_user_text_major_alias_after_model_canoni
     )
 
     assert result["next_step"] == "confirm"
-    assert "电气（电气类）" in result["message"]
-    assert "气象（大气科学类）" in result["message"]
+    assert "电气类" in result["message"]
+    assert "大气科学类" in result["message"]
     saved_state = save_mock.await_args.args[1]
-    assert "气象（大气科学类）" in saved_state["summary"]
-    assert saved_state["executionPayload"]["merged"]["_display_aliases"] == {
-        "电气类": "电气",
-        "大气科学类": "气象",
-    }
+    assert "大气科学类" in saved_state["summary"]
+    assert "_display_aliases" not in saved_state["executionPayload"]["merged"]
 
 
 async def test_preview_intent_merges_same_turn_positive_and_negative_pending(mocker):
@@ -1896,7 +4083,7 @@ async def test_preview_intent_major_key_resolves_to_specific_major_level(mocker)
     assert saved_state["executionPayload"]["merged"]["major_intents"] == {"level3": ["法学"]}
 
 
-async def test_preview_intent_major_semantic_completion_accepts_refined_specific_major(mocker):
+async def test_preview_intent_major_keeps_structured_parent_scope_instead_of_reparsing_raw_text(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
@@ -1927,11 +4114,46 @@ async def test_preview_intent_major_semantic_completion_accepts_refined_specific
     )
 
     assert result["next_step"] == "confirm"
-    assert result["data"]["normalized"]["positive"]["level2"] == []
-    assert result["data"]["normalized"]["positive"]["level3"] == ["法学"]
-    assert result["data"]["merged"]["major_intents"] == {"level3": ["法学"]}
+    assert result["data"]["normalized"]["positive"]["level2"] == ["法学类"]
+    assert result["data"]["normalized"]["positive"]["level3"] == []
+    assert result["data"]["merged"]["major_intents"] == {"level2": ["法学类"]}
     saved_state = save_mock.await_args.args[1]
-    assert saved_state["executionPayload"]["merged"]["major_intents"] == {"level3": ["法学"]}
+    assert saved_state["executionPayload"]["merged"]["major_intents"] == {"level2": ["法学类"]}
+
+
+async def test_preview_intent_major_rejects_positive_child_of_excluded_parent(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_intent_change(
+            make_run_context(request_context=_direct_context()),
+            intent_type="major",
+            positive={"level2": ["中医学类"]},
+            negative={"level1": ["医学"], "major": ["护理学"]},
+            constraint_type="exclude",
+            raw_user_text="医学护理都别碰，但中医到底算不算",
+            semantic_requirements=[
+                {
+                    "domain": "major",
+                    "side": "positive",
+                    "strength": "confirmable",
+                    "key": "level2",
+                    "values": ["中医学类"],
+                    "raw_span": "中医到底算不算",
+                }
+            ],
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "major_requirement_conflict"
+    assert result["data"]["pending_created"] is False
+    assert result["data"]["conflicts"][0]["negative"] == "医学"
+    assert "属于已排除的医学范围" in result["message"]
+    save_mock.assert_not_awaited()
 
 
 async def test_preview_intent_major_semantic_completion_accepts_parent_level2_covering_child(mocker):
@@ -2004,7 +4226,7 @@ async def test_preview_intent_accepts_major_duration_as_tag_alias(mocker):
     }
 
 
-async def test_preview_intent_requires_model_retry_for_missing_major_tag_from_semantic_requirements(mocker):
+async def test_preview_intent_materializes_missing_major_tag_from_semantic_requirements(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
@@ -2042,11 +4264,14 @@ async def test_preview_intent_requires_model_retry_for_missing_major_tag_from_se
         )
     )
 
-    assert result["next_step"] == "continue"
-    assert result["data"]["reason"] == "intent_change_requires_attribute_completion"
+    assert result["next_step"] == "confirm"
     assert result["data"]["normalized"]["negative"]["level1"] == ["管理学"]
-    assert result["data"]["merged"]["major_intents"] == {"negative_level1": ["管理学"]}
-    assert result["data"]["missing_attributes"] == [
+    assert result["data"]["normalized"]["negative"]["major_tag"] == ["学制：5年"]
+    assert result["data"]["merged"]["major_intents"] == {
+        "negative_level1": ["管理学"],
+        "negative_major_tag": ["学制：5年"],
+    }
+    assert result["data"]["materialized_semantic_requirements"] == [
         {
             "domain": "major",
             "side": "negative",
@@ -2055,11 +4280,10 @@ async def test_preview_intent_requires_model_retry_for_missing_major_tag_from_se
             "target_payload_path": "negative.major_tag",
         }
     ]
-    assert result["data"]["current_user_text"] == "管理学和五年制的都别要了"
-    save_mock.assert_not_awaited()
+    save_mock.assert_awaited_once()
 
 
-async def test_preview_intent_requires_model_retry_for_missing_cross_domain_school_attribute_from_semantics(mocker):
+async def test_preview_intent_materializes_missing_cross_domain_school_attribute_from_semantics(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
@@ -2097,11 +4321,10 @@ async def test_preview_intent_requires_model_retry_for_missing_cross_domain_scho
         )
     )
 
-    assert result["next_step"] == "continue"
-    assert result["data"]["reason"] == "intent_change_requires_attribute_completion"
+    assert result["next_step"] == "confirm"
     assert result["data"]["merged"]["city_intents"] == {"negative_province": ["山东"]}
-    assert "school_intents" not in result["data"]["merged"]
-    assert result["data"]["missing_attributes"] == [
+    assert result["data"]["merged"]["school_intents"] == {"negative_school_nature": ["民办"]}
+    assert result["data"]["materialized_semantic_requirements"] == [
         {
             "domain": "school",
             "side": "negative",
@@ -2110,11 +4333,11 @@ async def test_preview_intent_requires_model_retry_for_missing_cross_domain_scho
             "target_payload_path": "negative.school_nature",
         }
     ]
-    assert result["data"]["current_user_text"] == "山东别去，民办也算了"
-    save_mock.assert_not_awaited()
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["summary"] == "院校要求：不要：民办；地域要求：不要：山东"
 
 
-async def test_preview_intent_requires_model_retry_for_missing_region_payload_from_semantics(mocker):
+async def test_preview_intent_materializes_region_payload_for_shandong_rejection(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
@@ -2128,52 +4351,74 @@ async def test_preview_intent_requires_model_retry_for_missing_region_payload_fr
         await preview_intent_change(
             make_run_context(request_context=_direct_context()),
             intent_type="region",
-            constraint_type="only_keep",
-            raw_user_text="北京先不要了，只看天津和河北",
+            constraint_type="exclude",
+            raw_user_text="山东别去了",
             semantic_requirements=[
                 {
                     "domain": "region",
                     "side": "negative",
                     "strength": "explicit",
                     "key": "province",
-                    "values": ["北京"],
-                    "raw_span": "北京先不要了",
-                },
-                {
-                    "domain": "region",
-                    "side": "positive",
-                    "strength": "explicit",
-                    "key": "province",
-                    "values": ["天津", "河北"],
-                    "raw_span": "只看天津和河北",
+                    "values": ["山东"],
+                    "raw_span": "山东别去了",
                 },
             ],
         )
     )
 
-    assert result["next_step"] == "continue"
-    assert result["data"]["reason"] == "intent_change_requires_attribute_completion"
-    assert result["data"]["missing_attributes"] == [
+    assert result["next_step"] == "confirm"
+    assert result["data"]["normalized"]["negative"]["province"] == ["山东"]
+    assert result["data"]["merged"] == {"city_intents": {"negative_province": ["山东"]}}
+    assert result["data"]["materialized_semantic_requirements"] == [
         {
             "domain": "region",
             "side": "negative",
             "key": "province",
-            "values": ["北京"],
+            "values": ["山东"],
             "target_payload_path": "negative.province",
         },
-        {
-            "domain": "region",
-            "side": "positive",
-            "key": "province",
-            "values": ["天津", "河北"],
-            "target_payload_path": "positive.province",
-        },
     ]
-    assert result["data"]["current_user_text"] == "北京先不要了，只看天津和河北"
-    save_mock.assert_not_awaited()
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["summary"] == "地域要求：不要：山东"
 
 
-async def test_preview_intent_reference_major_direction_is_not_completed_as_school_attribute(mocker):
+async def test_preview_intent_materializes_school_nature_for_private_school_rejection(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.simulate_plan_diff",
+        AsyncMock(return_value={"code": 500}),
+    )
+
+    result = _load(
+        await preview_intent_change(
+            make_run_context(request_context=_direct_context()),
+            intent_type="school",
+            constraint_type="exclude",
+            raw_user_text="民办就算了",
+            semantic_requirements=[
+                {
+                    "domain": "school",
+                    "side": "negative",
+                    "strength": "explicit",
+                    "key": "school_nature",
+                    "values": ["民办"],
+                    "raw_span": "民办就算了",
+                },
+            ],
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["normalized"]["negative"]["school_nature"] == ["民办"]
+    assert result["data"]["merged"] == {"school_intents": {"negative_school_nature": ["民办"]}}
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["summary"] == "院校要求：不要：民办"
+
+
+async def test_preview_intent_explicit_reference_major_direction_is_not_completed_as_school_attribute(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
@@ -2189,7 +4434,7 @@ async def test_preview_intent_reference_major_direction_is_not_completed_as_scho
             intent_type="major",
             negative={"major": ["护理学"], "level2": ["中西医结合类"]},
             constraint_type="exclude",
-            raw_user_text="财经类可以优先，但是护理和中西医结合不要",
+            raw_user_text="财经类只作为参考，护理和中西医结合不要",
             semantic_requirements=[
                 {
                     "domain": "major",
@@ -2197,7 +4442,7 @@ async def test_preview_intent_reference_major_direction_is_not_completed_as_scho
                     "strength": "reference",
                     "key": "level2",
                     "values": ["财经类"],
-                    "raw_span": "财经类可以优先",
+                    "raw_span": "财经类只作为参考",
                 },
                 {
                     "domain": "major",
@@ -2242,16 +4487,16 @@ async def test_preview_intent_reference_only_semantic_requirements_do_not_create
     result = _load(
         await preview_intent_change(
             make_run_context(request_context=_direct_context()),
-            intent_type="school",
-            raw_user_text="天津商业大学和河北经贸大学先记为重点关注学校，后面生成方案时优先考虑",
+            intent_type="region",
+            raw_user_text="北京天津只作为参考，先别记录也别调整",
             semantic_requirements=[
                 {
-                    "domain": "school",
+                    "domain": "region",
                     "side": "positive",
                     "strength": "reference",
-                    "key": "schools",
-                    "values": ["天津商业大学", "河北经贸大学"],
-                    "raw_span": "重点关注学校",
+                    "key": "province",
+                    "values": ["北京", "天津"],
+                    "raw_span": "只作为参考，先别记录也别调整",
                 }
             ],
         )
@@ -2260,7 +4505,7 @@ async def test_preview_intent_reference_only_semantic_requirements_do_not_create
     assert result["next_step"] == "respond"
     assert result["data"]["reason"] == "reference_only_semantic_requirements"
     assert result["data"]["pending_created"] is False
-    assert "院校参考：天津商业大学、河北经贸大学" in result["message"]
+    assert "地域参考：北京、天津" in result["message"]
     assert "没有识别到明确" not in result["message"]
     save_mock.assert_not_awaited()
     simulate_mock.assert_not_awaited()
@@ -2392,7 +4637,7 @@ async def test_preview_intent_requires_semantic_requirements_before_empty_payloa
     simulate_mock.assert_not_awaited()
 
 
-async def test_preview_intent_refines_broad_major_display_from_latest_user_text(mocker):
+async def test_preview_intent_does_not_narrow_structured_major_scope_from_latest_user_text(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
@@ -2415,19 +4660,18 @@ async def test_preview_intent_refines_broad_major_display_from_latest_user_text(
     )
 
     assert result["next_step"] == "confirm"
-    assert result["data"]["normalized"]["positive"]["level2"] == []
+    assert result["data"]["normalized"]["positive"]["level2"] == ["工商管理类"]
     assert result["data"]["normalized"]["positive"]["level3"] == ["会计学", "审计学"]
-    assert result["data"]["normalized"]["negative"]["level2"] == []
-    assert result["data"]["normalized"]["negative"]["level3"] == ["土木工程"]
-    assert "工商管理类" not in result["message"]
-    assert "土木类" not in result["message"]
-    assert "要：会计学、审计学" in result["message"]
-    assert "不要：土木工程" in result["message"]
+    assert result["data"]["normalized"]["negative"]["level2"] == ["土木类"]
+    assert result["data"]["normalized"]["negative"]["level3"] == []
+    assert "要：工商管理类、会计学、审计学" in result["message"]
+    assert "不要：土木类" in result["message"]
     saved_state = save_mock.await_args.args[1]
-    assert saved_state["summary"] == "专业要求：要：会计学、审计学；不要：土木工程"
+    assert saved_state["summary"] == "专业要求：要：工商管理类、会计学、审计学；不要：土木类"
     assert saved_state["executionPayload"]["merged"]["major_intents"] == {
+        "level2": ["工商管理类"],
         "level3": ["会计学", "审计学"],
-        "negative_level3": ["土木工程"],
+        "negative_level2": ["土木类"],
     }
 
 
@@ -2464,7 +4708,7 @@ async def test_preview_intent_keeps_broad_major_scope_when_user_says_related(moc
     }
 
 
-async def test_preview_intent_requires_model_retry_when_semantic_negative_missing_payload(mocker):
+async def test_preview_intent_materializes_semantic_negative_missing_from_payload(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
@@ -2502,23 +4746,14 @@ async def test_preview_intent_requires_model_retry_when_semantic_negative_missin
         )
     )
 
-    assert result["next_step"] == "continue"
-    assert result["data"]["reason"] == "intent_change_requires_attribute_completion"
+    assert result["next_step"] == "confirm"
     assert result["data"]["normalized"]["positive"]["level3"] == ["生物医学工程", "智能医学工程"]
-    assert result["data"]["normalized"]["negative"]["level3"] == []
+    assert result["data"]["normalized"]["negative"]["level3"] == ["临床医学", "口腔医学"]
     assert result["data"]["merged"]["major_intents"] == {
-        "level3": ["生物医学工程", "智能医学工程"]
+        "level3": ["生物医学工程", "智能医学工程"],
+        "negative_level3": ["临床医学", "口腔医学"],
     }
-    assert result["data"]["missing_attributes"] == [
-        {
-            "domain": "major",
-            "side": "negative",
-            "key": "major",
-            "values": ["临床医学", "口腔医学"],
-            "target_payload_path": "negative.major",
-        }
-    ]
-    save_mock.assert_not_awaited()
+    save_mock.assert_awaited_once()
 
 
 async def test_preview_intent_creates_structured_pending_payload(mocker):
@@ -2853,7 +5088,7 @@ async def test_preview_tuition_budget_creates_independent_requirement_pending(mo
     simulate_mock.assert_not_awaited()
 
 
-async def test_confirm_pending_applies_school_attribute_constraint(mocker):
+async def test_confirm_pending_applies_school_attribute_constraint(mocker, _stub_pending_planning_command):
     update_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.update_planning_constraint_state",
         AsyncMock(return_value={"code": 0}),
@@ -2902,18 +5137,17 @@ async def test_confirm_pending_applies_school_attribute_constraint(mocker):
     assert result["data"]["result"]["plan_regenerated"] is True
     assert "重新调整" in result["message"]
     assert "约束" not in result["message"]
-    update_mock.assert_awaited_once_with(
-        ctx.sessionid,
-        intent_mode="constraint",
-        major_preferences=None,
-        school_preferences={"positive": [], "negative": ["院校性质:民办"]},
-        region_preferences=None,
-    )
+    assert _stub_pending_planning_command.await_args.kwargs["constraint_update"] == {
+        "intentMode": "constraint",
+        "schoolPreferences": {"positive": [], "negative": ["院校性质:民办"]},
+    }
+    assert _stub_pending_planning_command.await_args.kwargs["regenerate_ordered_plan"] is True
+    update_mock.assert_not_awaited()
     candidate_pool_mock.assert_not_awaited()
-    ordered_mock.assert_awaited_once_with(1, ctx.sessionid)
+    ordered_mock.assert_not_awaited()
 
 
-async def test_confirm_pending_applies_tuition_budget_without_old_constraint_state(mocker):
+async def test_confirm_pending_applies_tuition_budget_without_old_constraint_state(mocker, _stub_pending_planning_command):
     update_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.update_planning_constraint_state",
         AsyncMock(return_value={"code": 0}),
@@ -2961,11 +5195,15 @@ async def test_confirm_pending_applies_tuition_budget_without_old_constraint_sta
     assert result["data"]["result"]["plan_regenerated"] is True
     assert "重新调整" in result["message"]
     update_mock.assert_not_awaited()
-    tuition_mock.assert_awaited_once_with(ctx.sessionid, min_tuition=0, max_tuition=20000)
-    ordered_mock.assert_awaited_once_with(1, ctx.sessionid)
+    command_args = _stub_pending_planning_command.await_args.kwargs
+    assert command_args["constraint_update"] is None
+    assert command_args["min_tuition_per_year"] == 0
+    assert command_args["max_tuition_per_year"] == 20000
+    tuition_mock.assert_not_awaited()
+    ordered_mock.assert_not_awaited()
 
 
-async def test_confirm_pending_intent_reports_when_excluded_items_remain(mocker):
+async def test_confirm_pending_intent_reports_when_excluded_items_remain(mocker, _stub_pending_planning_command):
     mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.update_planning_constraint_state",
         AsyncMock(return_value={"code": 0}),
@@ -3006,6 +5244,35 @@ async def test_confirm_pending_intent_reports_when_excluded_items_remain(mocker)
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
     )
+    _stub_pending_planning_command.side_effect = None
+    _stub_pending_planning_command.return_value = {
+        "code": 0,
+        "data": {
+            "operationId": "op-remain",
+            "completedSteps": ["constraint_updated", "ordered_plan_regenerated"],
+            "replayed": False,
+            "planningState": {
+                "version": 14,
+                "orderedPlanState": {
+                    "items": [{
+                        "unitId": "unit-nanfang",
+                        "volunteerId": "unit-nanfang_001",
+                        "schoolName": "广州南方学院",
+                        "majorName": "软件工程",
+                        "schoolNature": "民办",
+                        "tier": "稳",
+                        "position": 18,
+                    }],
+                    "units": [{
+                        "unitId": "unit-nanfang",
+                        "volunteerId": "unit-nanfang_001",
+                        "schoolName": "广州南方学院",
+                        "schoolNature": "民办",
+                    }],
+                },
+            },
+        },
+    }
     ctx = _context_with_backend_pending(
         {
             "active": True,
@@ -3041,7 +5308,7 @@ async def test_confirm_pending_intent_reports_when_excluded_items_remain(mocker)
     assert saved_state["resultData"]["ordered_plan_diff"]["remaining_count"] == 1
 
 
-async def test_confirm_pending_can_record_requirement_without_current_plan_apply(mocker):
+async def test_confirm_pending_can_record_requirement_without_current_plan_apply(mocker, _stub_pending_planning_command):
     update_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.update_planning_constraint_state",
         AsyncMock(return_value={"code": 0}),
@@ -3096,18 +5363,17 @@ async def test_confirm_pending_can_record_requirement_without_current_plan_apply
     assert result["data"]["result"]["candidate_pool_regenerated"] is False
     assert result["data"]["result"]["plan_regenerated"] is False
     assert "这次先不改当前方案" in result["message"]
-    update_mock.assert_awaited_once_with(
-        ctx.sessionid,
-        intent_mode="constraint",
-        major_preferences=None,
-        school_preferences=None,
-        region_preferences={"positive": [], "negative": ["山东"]},
-    )
+    assert _stub_pending_planning_command.await_args.kwargs["constraint_update"] == {
+        "intentMode": "constraint",
+        "regionPreferences": {"positive": [], "negative": ["山东"]},
+    }
+    assert _stub_pending_planning_command.await_args.kwargs["regenerate_ordered_plan"] is False
+    update_mock.assert_not_awaited()
     candidate_pool_mock.assert_not_awaited()
     ordered_mock.assert_not_awaited()
 
 
-async def test_confirm_pending_applies_strongbase_program_type_constraint(mocker):
+async def test_confirm_pending_applies_strongbase_program_type_constraint(mocker, _stub_pending_planning_command):
     update_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.update_planning_constraint_state",
         AsyncMock(return_value={"code": 0}),
@@ -3159,18 +5425,16 @@ async def test_confirm_pending_applies_strongbase_program_type_constraint(mocker
     assert result["data"]["result"]["requires_candidate_pool_rebuild"] is False
     assert result["data"]["result"]["candidate_pool_regenerated"] is False
     assert result["data"]["result"]["plan_regenerated"] is True
-    update_mock.assert_awaited_once_with(
-        ctx.sessionid,
-        intent_mode="constraint",
-        major_preferences=None,
-        school_preferences={
+    assert _stub_pending_planning_command.await_args.kwargs["constraint_update"] == {
+        "intentMode": "constraint",
+        "schoolPreferences": {
             "positive": ["清华大学", "北京大学", "复旦大学", "招生类型:强基"],
             "negative": [],
         },
-        region_preferences=None,
-    )
+    }
+    update_mock.assert_not_awaited()
     candidate_pool_mock.assert_not_awaited()
-    ordered_mock.assert_awaited_once_with(1, ctx.sessionid)
+    ordered_mock.assert_not_awaited()
 
 
 async def test_preview_plan_action_creates_remove_pending(mocker):
@@ -3642,8 +5906,8 @@ async def test_preview_plan_action_remove_supports_admission_limit_review_issue(
     assert "planPayload" not in saved_state["executionPayload"]
 
 
-async def test_preview_plan_action_review_issue_requires_units(mocker):
-    mocker.patch(
+async def test_preview_plan_action_remove_review_issue_without_units_falls_back_to_structured_filter(mocker):
+    save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
     )
@@ -3660,9 +5924,72 @@ async def test_preview_plan_action_review_issue_requires_units(mocker):
         )
     )
 
-    assert result["next_step"] == "clarify"
-    assert result["data"]["reason"] == "review_issue_without_units"
-    assert "唯一定位" in result["message"]
+    assert result["next_step"] == "confirm", result
+    assert result["data"]["execution_payload"]["unit_ids"] == ["unit-nanfang", "unit-coop"]
+    assert result["data"]["execution_payload"]["filters"] == {"program_type": ["高收费"]}
+    save_mock.assert_awaited_once()
+
+
+async def test_preview_plan_action_remove_discloses_total_when_scope_is_truncated(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_review()
+    review = ctx.sandbox.peek("plan/review.json")
+    review["checks"][0].pop("affectedUnitIds")
+    plan = ctx.sandbox.peek("plan/items.json")
+    for index in range(4):
+        plan["items"].append(
+            {
+                "unitId": f"unit-high-tuition-{index}",
+                "volunteerId": f"unit-high-tuition-{index}_001",
+                "schoolName": f"高收费院校{index}",
+                "majorName": f"高收费专业{index}",
+                "tuitionPerYear": 30000 + index,
+            }
+        )
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="remove",
+            review_issue_code="high_tuition",
+            raw_user_text="把审查里的高收费项移出去",
+        )
+    )
+
+    assert result["next_step"] == "confirm", result
+    assert result["data"]["plan_impact"]["affected_count"] == 6
+    assert "以上仅展示前5个，本次实际影响6个专业组" in result["message"]
+    saved_state = save_mock.await_args.args[1]
+    assert "以上仅展示前5个，本次实际影响6个专业组" in saved_state["affectedScope"]
+
+
+async def test_preview_plan_action_remove_missing_review_issue_falls_back_to_structured_filter(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools._review_issue_by_code",
+        AsyncMock(return_value=None),
+    )
+    ctx = _context_with_review()
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="remove",
+            review_issue_code="high_tuition",
+            raw_user_text="把审查里的高收费项移出去",
+        )
+    )
+
+    assert result["next_step"] == "confirm", result
+    assert result["data"]["execution_payload"]["unit_ids"] == ["unit-nanfang", "unit-coop"]
+    assert result["data"]["execution_payload"]["filters"] == {"program_type": ["高收费"]}
+    save_mock.assert_awaited_once()
 
 
 async def test_preview_plan_action_replace_review_issue_requires_candidate_when_pool_empty(mocker):
@@ -4211,7 +6538,7 @@ async def test_preview_plan_action_replace_review_issue_falls_back_to_issue_filt
     assert "planPayload" not in saved_state["executionPayload"]
 
 
-async def test_preview_plan_action_regenerate_order_can_target_tier_gap_review_issue(mocker):
+async def test_preview_plan_action_regenerate_order_rejects_tier_gap_without_executable_proposal(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
@@ -4227,16 +6554,14 @@ async def test_preview_plan_action_regenerate_order_can_target_tier_gap_review_i
         )
     )
 
-    assert result["next_step"] == "confirm"
-    assert result["data"]["kind"] == "plan_generation"
+    assert result["next_step"] == "clarify"
     assert result["data"]["action_family"] == "regenerate_order"
+    assert result["data"]["reason"] == "plan_generation_goal_requires_proposal"
+    assert result["data"]["pending_created"] is False
     assert result["data"]["review_issue_target"]["code"] == "tier_gap"
     assert result["data"]["review_issue_target"]["source_code"] == "ratio_distribution"
-    assert result["data"]["execution_payload"]["review_issue_target"]["code"] == "tier_gap"
-    assert result["data"]["execution_payload"]["filters"]["review_issue_code"] == "tier_gap"
-    saved_state = save_mock.await_args.args[1]
-    assert saved_state["executionPayload"]["atomic_actions"][0]["review_issue_target"]["code"] == "tier_gap"
-    assert "planPayload" not in saved_state["executionPayload"]
+    assert "不会生成确认卡" in result["message"]
+    save_mock.assert_not_awaited()
 
 
 async def test_preview_plan_action_sort_can_target_probability_inversion_review_issue(mocker):
@@ -4315,7 +6640,7 @@ async def test_preview_plan_action_sort_rejects_unsupported_school_level(mocker)
     save_mock.assert_not_awaited()
 
 
-async def test_preview_plan_action_regenerate_order_can_target_safety_guard_review_issue(mocker):
+async def test_preview_plan_action_regenerate_order_rejects_safety_guard_without_executable_proposal(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
@@ -4331,14 +6656,37 @@ async def test_preview_plan_action_regenerate_order_can_target_safety_guard_revi
         )
     )
 
-    assert result["next_step"] == "confirm"
-    assert result["data"]["kind"] == "plan_generation"
+    assert result["next_step"] == "clarify"
     assert result["data"]["action_family"] == "regenerate_order"
+    assert result["data"]["reason"] == "plan_generation_goal_requires_proposal"
+    assert result["data"]["pending_created"] is False
     assert result["data"]["review_issue_target"]["code"] == "safety_guard"
-    assert result["data"]["execution_payload"]["filters"]["review_issue_code"] == "safety_guard"
-    saved_state = save_mock.await_args.args[1]
-    assert saved_state["executionPayload"]["atomic_actions"][0]["review_issue_target"]["code"] == "safety_guard"
-    assert "planPayload" not in saved_state["executionPayload"]
+    assert "不会生成确认卡" in result["message"]
+    save_mock.assert_not_awaited()
+
+
+@pytest.mark.parametrize("action", ["generate", "regenerate_order"])
+async def test_preview_plan_action_generation_rejects_temporary_filters_not_consumed_by_apply(mocker, action):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=_direct_context()),
+            action=action,
+            filters={"province": ["上海"]},
+            raw_user_text="上海的更优先一些",
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "plan_generation_goal_requires_proposal"
+    assert result["data"]["filters"] == {"province": ["上海"]}
+    assert result["data"]["requires_confirmation"] is False
+    assert "不会执行这次临时附带的筛选" in result["message"]
+    save_mock.assert_not_awaited()
 
 
 async def test_preview_plan_action_move_can_resolve_position_range(mocker):
@@ -4381,6 +6729,30 @@ async def test_preview_plan_action_position_targets_ordered_unit_not_detail_item
 
     assert result["next_step"] == "confirm"
     assert result["data"]["execution_payload"]["unit_ids"] == ["unit-gamma"]
+    assert "第3位" in result["message"]
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["executionPayload"]["atomic_actions"][0]["unit_ids"] == ["unit-gamma"]
+
+
+async def test_preview_plan_action_position_recovers_target_from_raw_user_text(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+    _prime_expanded_ordered_unit_plan(ctx)
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="remove",
+            raw_user_text="第三个专业组先不要了，拿掉看看",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["execution_payload"]["unit_ids"] == ["unit-gamma"]
+    assert "第3位" in result["message"]
     saved_state = save_mock.await_args.args[1]
     assert saved_state["executionPayload"]["atomic_actions"][0]["unit_ids"] == ["unit-gamma"]
 
@@ -4433,6 +6805,36 @@ async def test_preview_plan_action_remove_position_group_filter_accepts_alias(mo
     assert saved_state["executionPayload"]["atomic_actions"][0]["unit_ids"] == ["unit-gamma"]
 
 
+async def test_preview_plan_action_move_resolves_structured_major_group_code_filter(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="move",
+            filters={
+                "school": ["华南理工大学"],
+                "major": ["计算机科学与技术"],
+                "group": ["101"],
+            },
+            target_position=3,
+            raw_user_text="把华南理工大学第101组的计算机科学与技术改到第3位",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["execution_payload"]["unit_ids"] == ["unit-hnlg"]
+    assert result["data"]["execution_payload"]["target_position"] == 3
+    assert result["data"]["execution_payload"]["filters"]["group_code"] == ["101"]
+    assert "目标位置：方案第3位" in result["message"]
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["executionPayload"]["atomic_actions"][0]["unit_ids"] == ["unit-hnlg"]
+
+
 async def test_preview_plan_action_move_position_targets_ordered_unit_not_detail_item(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
@@ -4454,6 +6856,34 @@ async def test_preview_plan_action_move_position_targets_ordered_unit_not_detail
     assert result["next_step"] == "confirm"
     assert result["data"]["execution_payload"]["unit_ids"] == ["unit-gamma"]
     assert result["data"]["execution_payload"]["target_position"] == 1
+    assert "第3位" in result["message"]
+    assert "目标位置：方案第1位" in result["message"]
+    saved_state = save_mock.await_args.args[1]
+    atomic = saved_state["executionPayload"]["atomic_actions"][0]
+    assert atomic["unit_ids"] == ["unit-gamma"]
+    assert atomic["target_position"] == 1
+
+
+async def test_preview_plan_action_move_recovers_source_position_from_raw_user_text(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+    _prime_expanded_ordered_unit_plan(ctx)
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="move",
+            target_position=1,
+            raw_user_text="把第三个专业组挪到最前面",
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["execution_payload"]["unit_ids"] == ["unit-gamma"]
+    assert "第3位" in result["message"]
     saved_state = save_mock.await_args.args[1]
     atomic = saved_state["executionPayload"]["atomic_actions"][0]
     assert atomic["unit_ids"] == ["unit-gamma"]
@@ -4511,6 +6941,7 @@ async def test_preview_plan_action_move_supports_tier_local_reorder_filters(mock
     assert result["data"]["execution_payload"]["target_position"] == 31
     assert result["data"]["execution_payload"]["filters"]["tier"] == ["保"]
     assert result["data"]["execution_payload"]["filters"]["target_tier"] == ["保"]
+    assert "目标位置：保底第1位（方案第31位）" in result["message"]
     saved_state = save_mock.await_args.args[1]
     atomic = saved_state["executionPayload"]["atomic_actions"][0]
     assert atomic["unit_ids"] == ["unit-guanggong"]
@@ -4668,6 +7099,482 @@ async def test_preview_plan_action_add_uses_candidate_ids(mocker):
     assert save_mock.await_args.args[1]["executionPayload"]["atomic_actions"][0]["volunteer_ids"] == ["cand-szu-001"]
 
 
+async def test_preview_plan_action_add_queries_named_school_and_major_target(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+    ctx.sandbox.prime("plan/candidates.json", {"available": True, "items": []}, version=12)
+    original_read = ctx.sandbox.read
+
+    async def read_with_query(path, query=None):
+        if query is not None:
+            assert query["school_keywords"] == ["厦门大学嘉庚学院"]
+            assert query["major_keywords"] == ["建筑学"]
+            return {
+                "available": True,
+                "items": [
+                    {
+                        "volunteerId": "cand-xujc-architecture",
+                        "planSchoolDataId": "unit-xujc-architecture",
+                        "schoolName": "厦门大学嘉庚学院",
+                        "majorName": "建筑学",
+                        "majorCategory": "建筑类",
+                        "tier": "冲",
+                    }
+                ],
+            }
+        return await original_read(path)
+
+    mocker.patch.object(ctx.sandbox, "read", side_effect=read_with_query)
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="add",
+            targets=["厦门大学嘉庚学院.建筑学"],
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["execution_payload"]["volunteer_ids"] == ["cand-xujc-architecture"]
+    assert save_mock.await_count == 1
+
+
+async def test_preview_plan_action_add_selects_single_matching_candidate_group(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+    ctx.sandbox.prime(
+        "plan/candidates.json",
+        {
+            "available": True,
+            "items": [
+                {
+                    "volunteerId": "school-1_unit-architecture_major-1",
+                    "planSchoolDataId": "school-1_unit-architecture",
+                    "schoolName": "厦门大学嘉庚学院",
+                    "majorName": "建筑学",
+                    "majorCategory": "建筑类",
+                    "tier": "稳",
+                },
+                {
+                    "volunteerId": "school-1_unit-architecture_major-2",
+                    "planSchoolDataId": "school-1_unit-architecture",
+                    "schoolName": "厦门大学嘉庚学院",
+                    "majorName": "城乡规划",
+                    "majorCategory": "建筑类",
+                    "tier": "稳",
+                },
+            ],
+        },
+        version=12,
+    )
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="add",
+            filters={"school": ["厦门大学嘉庚学院"], "major": ["建筑类"]},
+        )
+    )
+
+    assert result["next_step"] == "confirm", result
+    assert result["data"]["execution_payload"]["volunteer_ids"] == [
+        "school-1_unit-architecture_major-1",
+        "school-1_unit-architecture_major-2",
+    ]
+    assert save_mock.await_count == 1
+
+
+async def test_preview_plan_action_add_clarifies_multiple_candidate_groups(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+    ctx.sandbox.prime(
+        "plan/candidates.json",
+        {
+            "available": True,
+            "items": [
+                {
+                    "volunteerId": "school-1_unit-architecture_major-1",
+                    "planSchoolDataId": "school-1_unit-architecture",
+                    "schoolName": "厦门大学嘉庚学院",
+                    "majorName": "建筑学",
+                    "majorCategory": "建筑类",
+                    "tier": "冲",
+                },
+                {
+                    "volunteerId": "school-1_unit-planning_major-1",
+                    "planSchoolDataId": "school-1_unit-planning",
+                    "schoolName": "厦门大学嘉庚学院",
+                    "majorName": "城乡规划",
+                    "majorCategory": "建筑类",
+                    "tier": "稳",
+                },
+            ],
+        },
+        version=12,
+    )
+
+    result = _load(
+        await preview_plan_action(
+            make_run_context(request_context=ctx),
+            action="add",
+            filters={"school": ["厦门大学嘉庚学院"], "major": ["建筑类"]},
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "candidate_ambiguous"
+    assert result["data"]["matched_total"] == 2
+    assert "建筑学" in result["message"]
+    assert "城乡规划" in result["message"]
+    save_mock.assert_not_awaited()
+
+
+async def test_discover_options_catalog_lists_authoritative_shanghai_schools(mocker):
+    catalog_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.catalog_list_schools",
+        AsyncMock(
+            return_value=[
+                {
+                    "schoolId": "sh-2",
+                    "schoolName": "上海交通大学",
+                    "province": "上海",
+                    "city": "上海",
+                    "ownership": "公办",
+                    "educationLevel": "本科",
+                },
+                {
+                    "schoolId": "sh-1",
+                    "schoolName": "复旦大学",
+                    "province": "上海",
+                    "city": "上海",
+                    "ownership": "公办",
+                    "educationLevel": "本科",
+                },
+            ]
+        ),
+    )
+
+    result = _load(
+        await discover_options(
+            make_run_context(request_context=_direct_context()),
+            entity_type="school",
+            mode="catalog",
+            filters={"province": ["上海"]},
+            limit=10,
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["data_source"] == "authoritative_school_catalog"
+    assert result["data"]["matched_total"] == 2
+    assert [item["school"] for item in result["data"]["items"]] == ["上海交通大学", "复旦大学"]
+    assert "权威院校目录" in result["message"]
+    catalog_mock.assert_awaited_once_with(
+        province="上海",
+        city=None,
+        school_type=None,
+        ownership=None,
+        education_level="本科",
+    )
+
+
+async def test_discover_options_catalog_searches_major_keyword(mocker):
+    catalog_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.catalog_search_major",
+        AsyncMock(
+            return_value={
+                "resultType": "MULTI",
+                "data": [
+                    {
+                        "majorId": "080901",
+                        "majorName": "计算机科学与技术",
+                        "subCategoryName": "计算机类",
+                        "categoryName": "工学",
+                        "educationLevel": "本科",
+                    },
+                    {
+                        "majorId": "080902",
+                        "majorName": "软件工程",
+                        "subCategoryName": "计算机类",
+                        "categoryName": "工学",
+                        "educationLevel": "本科",
+                    },
+                ],
+            }
+        ),
+    )
+
+    result = _load(
+        await discover_options(
+            make_run_context(request_context=_direct_context()),
+            entity_type="major",
+            mode="catalog",
+            filters={"major": ["计算机"]},
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["data_source"] == "authoritative_major_catalog"
+    assert {item["major"] for item in result["data"]["items"]} == {"计算机科学与技术", "软件工程"}
+    catalog_mock.assert_awaited_once_with("计算机", "本科")
+
+
+async def test_discover_options_eligible_uses_candidates_without_formal_plan():
+    adapter = FakeSandboxAdapter()
+    adapter.add(
+        "plan/candidates.json",
+        BackendReadResult(
+            {
+                "available": True,
+                "total": 5,
+                "items": [
+                    {
+                        "schoolName": "上海大学第101组(普通组)",
+                        "majorName": "计算机科学与技术(中外合作办学)(合作方另见招生章程)",
+                        "provinceName": "上海",
+                        "schoolNature": "公办",
+                        "tier": "稳",
+                        "finalScore": 91,
+                    },
+                    {
+                        "schoolName": "上海大学第102组(普通组)",
+                        "majorName": "软件工程",
+                        "provinceName": "上海",
+                        "schoolNature": "公办",
+                        "tier": "稳",
+                        "finalScore": 89,
+                    },
+                    {
+                        "schoolName": "上海师范大学天华学院第102组(普通组)",
+                        "majorName": "计算机科学与技术",
+                        "provinceName": "上海",
+                        "schoolNature": "民办",
+                        "tier": "保",
+                        "finalScore": 88,
+                    },
+                    {
+                        "schoolName": "上海师范大学天华学院第103组(普通组)",
+                        "majorName": "人工智能",
+                        "provinceName": "上海",
+                        "schoolNature": "民办",
+                        "tier": "保",
+                        "finalScore": 87,
+                    },
+                    {
+                        "schoolName": "东华大学",
+                        "majorName": "电子信息工程",
+                        "provinceName": "上海",
+                        "schoolNature": "公办",
+                        "tier": "冲",
+                        "finalScore": 86,
+                    },
+                ],
+            },
+            12,
+        ),
+    )
+    ctx = _direct_context(with_plan=False)
+    ctx.sandbox = SandboxFileCache(ctx.sessionid, adapter, latest_backend_version=12)
+
+    result = _load(
+        await discover_options(
+            make_run_context(request_context=ctx),
+            entity_type="school",
+            mode="eligible",
+            filters={"province": ["上海"]},
+            limit=5,
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["data_source"] == "eligible_candidate_pool"
+    assert result["data"]["matched_candidate_entry_total"] == 5
+    assert result["data"]["global_distribution_available"] is False
+    assert [item["school"] for item in result["data"]["items"]] == [
+        "上海大学",
+        "上海师范大学天华学院",
+        "东华大学",
+    ]
+    assert "专业：计算机科学与技术、软件工程" in result["message"]
+    assert "不能据此概括全量院校性质、专业或档位分布" in result["message"]
+    assert result["data"]["formal_plan_present"] is False
+    assert "当前尚未生成正式方案，本结果只来自候选池" in result["message"]
+    assert adapter.calls == [
+        (
+            "plan/candidates.json",
+            {
+                "tiers": [],
+                "province_names": ["上海"],
+                "city_names": [],
+                "school_keywords": [],
+                "major_keywords": [],
+                "school_tags": [],
+                "major_tags": [],
+                "page_size": 25,
+                "sort_field": "finalScore",
+                "sort_order": "desc",
+            },
+        ),
+        ("plan/summary.json", None),
+    ]
+
+
+async def test_discover_options_normalizes_major_level_and_stability_aliases():
+    adapter = FakeSandboxAdapter()
+    adapter.add(
+        "plan/candidates.json",
+        BackendReadResult(
+            {
+                "available": True,
+                "total": 1,
+                "items": [
+                    {
+                        "schoolName": "上海大学",
+                        "majorName": "计算机科学与技术",
+                        "majorCategory": "计算机类",
+                        "tier": "稳",
+                        "finalScore": 91,
+                    }
+                ],
+            },
+            12,
+        ),
+    )
+    ctx = _direct_context(with_plan=False)
+    ctx.sandbox = SandboxFileCache(ctx.sessionid, adapter, latest_backend_version=12)
+
+    result = _load(
+        await discover_options(
+            make_run_context(request_context=ctx),
+            entity_type="major",
+            mode="recommend",
+            filters={"level2": ["计算机类"], "admission_stability": "stable"},
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["filters"] == {"major": ["计算机类"], "tier": ["稳", "保"]}
+    assert result["data"]["items"][0]["major"] == "计算机科学与技术"
+    assert adapter.calls[0][1]["major_keywords"] == ["计算机类"]
+    assert adapter.calls[0][1]["tiers"] == ["稳", "保"]
+
+
+async def test_discover_options_empty_major_query_checks_tier_and_broader_category():
+    adapter = FakeSandboxAdapter()
+    adapter.add(
+        "plan/candidates.json",
+        BackendReadResult({"available": True, "total": 0, "items": []}, 12),
+        BackendReadResult({"available": True, "total": 0, "items": []}, 12),
+        BackendReadResult(
+            {
+                "available": True,
+                "total": 1,
+                "items": [
+                    {
+                        "schoolName": "某财经学院",
+                        "majorName": "工商管理",
+                        "majorCategory": "工商管理类",
+                        "tier": "稳",
+                    }
+                ],
+            },
+            12,
+        ),
+    )
+    ctx = _direct_context(with_plan=False)
+    ctx.sandbox = SandboxFileCache(ctx.sessionid, adapter, latest_backend_version=12)
+
+    result = _load(
+        await discover_options(
+            make_run_context(request_context=ctx),
+            entity_type="major",
+            mode="recommend",
+            filters={"major": ["会计学", "审计学"], "tier": ["稳", "保"]},
+        )
+    )
+
+    analysis = result["data"]["empty_result_analysis"]
+    assert analysis["exact_major_without_tier_total"] == 0
+    assert analysis["broader_major_keywords"] == ["工商管理类"]
+    assert analysis["broader_matched_candidate_entry_total"] == 1
+    assert "具体专业分别查过" not in result["message"]
+    assert "放宽到更宽的专业类“工商管理类”后有1条候选记录" in result["message"]
+    assert "本轮只查询，没有把任何候选加入方案" in result["message"]
+    candidate_queries = [query for path, query in adapter.calls if path == "plan/candidates.json"]
+    assert candidate_queries[1]["tiers"] == []
+    assert candidate_queries[2]["major_keywords"] == ["工商管理类"]
+
+
+async def test_discover_options_recommend_uses_candidate_ranking_only():
+    adapter = FakeSandboxAdapter()
+    adapter.add(
+        "plan/candidates.json",
+        BackendReadResult(
+            {
+                "available": True,
+                "total": 1,
+                "items": [
+                    {
+                        "schoolName": "上海大学",
+                        "majorName": "计算机科学与技术",
+                        "provinceName": "上海",
+                        "tier": "稳",
+                        "finalScore": 93,
+                    }
+                ],
+            },
+            12,
+        ),
+    )
+    ctx = _direct_context()
+    ctx.sandbox = SandboxFileCache(ctx.sessionid, adapter, latest_backend_version=12)
+
+    result = _load(
+        await discover_options(
+            make_run_context(request_context=ctx),
+            entity_type="major",
+            mode="recommend",
+            filters={"province": ["上海"]},
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["data_source"] == "candidate_pool_recommendation_overlay"
+    assert result["data"]["recommendation_basis"] == "finalScore"
+    assert result["data"]["items"][0]["major"] == "计算机科学与技术"
+    assert "当前候选推荐顺序" in result["message"]
+
+
+async def test_discover_options_fails_closed_when_catalog_is_unavailable(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.catalog_list_schools",
+        AsyncMock(return_value={"success": False, "error": "connection refused"}),
+    )
+
+    result = _load(
+        await discover_options(
+            make_run_context(request_context=_direct_context()),
+            entity_type="school",
+            mode="catalog",
+            filters={"province": ["上海"]},
+        )
+    )
+
+    assert result["next_step"] == "clarify"
+    assert result["data"]["reason"] == "catalog_school_source_unavailable"
+    assert result["data"].get("items") is None
+    assert "不能可靠列出院校名单" in result["message"]
+
+
 async def test_query_plan_with_plan():
     result = _load(
         await query_plan(
@@ -4730,6 +7637,38 @@ async def test_query_plan_accepts_contextual_school_abbreviation():
     assert result["data"]["matched_total"] == 1
     assert result["data"]["items"][0]["school"] == "青岛城市学院"
     assert "青岛城市学院" in result["message"]
+
+
+async def test_query_plan_resolves_outside_province_relative_to_score_context():
+    ctx = _direct_context()
+    plan_file = ctx.sandbox.peek("plan/items.json")
+    plan_file["items"].append(
+        {
+            "unitId": "unit-zhengzhou",
+            "volunteerId": "unit-zhengzhou_001",
+            "schoolName": "郑州大学",
+            "majorName": "计算机科学与技术",
+            "schoolNature": "公办",
+            "provinceName": "河南",
+            "tier": "稳",
+            "position": 33,
+        }
+    )
+
+    result = _load(
+        await query_plan(
+            make_run_context(request_context=ctx),
+            scope="plan",
+            filters={"province": "省外"},
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["home_province"] == "河北"
+    assert result["data"]["relative_province_scope"] == "outside"
+    assert result["data"]["matched_total"] == 5
+    assert {item["province"] for item in result["data"]["items"]} == {"广东", "河南"}
+    assert "省外（相对高考省份河北）" in result["message"]
 
 
 async def test_query_plan_filters_by_tuition_and_major_items():
@@ -4928,6 +7867,51 @@ async def test_confirm_pending_no_active_pending():
     assert result["next_step"] == "respond"
     assert result["data"]["active"] is False
     assert "没有待确认操作" in result["message"]
+    assert "上一轮只是查询或分析" in result["message"]
+    assert "没有待采纳或待执行的内容" in result["message"]
+    assert "不会执行任何变更" in result["message"]
+    assert "下一步" in result["message"]
+    assert "生成具体调整预览" in result["message"]
+
+
+async def test_confirm_pending_rejects_runtime_and_sandbox_pending_id_mismatch(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    update_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.update_planning_constraint_state",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_backend_pending(
+        {
+            "active": True,
+            "pending_id": "pending-sandbox-new",
+            "kind": "intent_change",
+            "action_family": "apply_selected_intents",
+            "execution_payload": {
+                "merged": {"city_intents": {"negative_province": ["山东"]}},
+            },
+        }
+    )
+    ctx.conversation_phase = ConversationPhase(
+        state=PhaseState.INTENT_PREVIEWING,
+        pending=PendingConfirmation(
+            kind="intent_change",
+            pending_id="pending-runtime-old",
+            action_family="apply_selected_intents",
+            execution_payload={
+                "merged": {"school_intents": {"negative_school_nature": ["民办"]}},
+            },
+        ),
+    )
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["error"] == "pending_snapshot_mismatch"
+    assert "不会执行" in result["message"]
+    update_mock.assert_not_awaited()
+    save_mock.assert_not_awaited()
 
 
 async def test_confirm_pending_cancel_marks_pending_cancelled(mocker):
@@ -5004,7 +7988,7 @@ async def test_confirm_pending_blocks_stale_version(mocker):
     assert saved_state["resultCode"] == "version_mismatch"
 
 
-async def test_confirm_pending_applies_intent_payload_directly(mocker):
+async def test_confirm_pending_applies_intent_payload_directly(mocker, _stub_pending_planning_command):
     update_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.update_planning_constraint_state",
         AsyncMock(return_value={"code": 0}),
@@ -5051,21 +8035,283 @@ async def test_confirm_pending_applies_intent_payload_directly(mocker):
     assert result["data"]["result"]["requires_candidate_pool_rebuild"] is False
     assert result["data"]["result"]["candidate_pool_regenerated"] is False
     assert result["data"]["result"]["plan_regenerated"] is True
-    update_mock.assert_awaited_once_with(
-        ctx.sessionid,
-        intent_mode="constraint",
-        major_preferences={"positive": ["法学"], "negative": ["医学"]},
-        school_preferences=None,
-        region_preferences=None,
-    )
+    assert _stub_pending_planning_command.await_args.kwargs["constraint_update"] == {
+        "intentMode": "constraint",
+        "majorPreferences": {"positive": ["法学"], "negative": ["医学"]},
+    }
+    update_mock.assert_not_awaited()
     candidate_pool_mock.assert_not_awaited()
-    ordered_mock.assert_awaited_once_with(1, ctx.sessionid)
+    ordered_mock.assert_not_awaited()
     saved_state = save_mock.await_args.args[1]
     assert saved_state["status"] == "applied"
     assert saved_state["resultCode"] == "applied"
 
 
-async def test_confirm_pending_intent_without_plan_does_not_regenerate_order(mocker):
+async def test_confirm_pending_applies_plan_change_proposal_and_requires_postcondition(
+    mocker, _stub_pending_planning_command
+):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    proposal_apply = {
+        "proposalId": "ugp-fill-50",
+        "proposalSource": "user_goal",
+        "sourceVersionGuard": 12,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+        "userGoalRequest": {
+            "proposalSource": "user_goal",
+            "goalType": "fill_to_count",
+            "targetCount": 50,
+            "sourceVersionGuard": 12,
+        },
+    }
+    ctx = _context_with_backend_pending(
+        {
+            "active": True,
+            "pending_id": "pending-fill-50",
+            "kind": "plan_mutation",
+            "action_family": "apply_plan_change_proposal",
+            "summary": "把当前方案补齐到50个",
+            "source_backend_version": 12,
+            "execution_payload": {
+                "action_family": "apply_plan_change_proposal",
+                "proposal_apply": proposal_apply,
+                "postconditions": {"target_count": 50, "operator": "equals"},
+            },
+            "raw": {
+                "pendingId": "pending-fill-50",
+                "kind": "plan_mutation",
+                "actionFamily": "apply_plan_change_proposal",
+                "status": "active",
+                "sourceBackendVersion": 12,
+            },
+        }
+    )
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["applied"] is True
+    assert result["data"]["result"]["postcondition_report"]["satisfied"] is True
+    assert "50个志愿" in result["message"]
+    command = _stub_pending_planning_command.await_args.kwargs
+    assert command["command_type"] == "apply_plan_change_proposal"
+    assert command["proposal_apply"] == proposal_apply
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["status"] == "applied"
+    assert saved_state["resultData"]["postcondition_report"]["actualCount"] == 50
+
+
+async def test_confirm_pending_applies_priority_proposal_with_priority_postcondition(
+    mocker, _stub_pending_planning_command
+):
+    proposal_apply = {
+        "proposalId": "ugp-priority-shanghai",
+        "proposalSource": "user_goal",
+        "sourceVersionGuard": 12,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+        "userGoalRequest": {
+            "proposalSource": "user_goal",
+            "goalType": "prioritize_within_tier",
+            "targetCount": None,
+            "priorityRules": [
+                {
+                    "domain": "region",
+                    "key": "province",
+                    "values": ["上海"],
+                    "orderingTarget": "rank_before",
+                    "scope": "within_tier",
+                }
+            ],
+            "sourceVersionGuard": 12,
+        },
+    }
+    ctx = _context_with_backend_pending(
+        {
+            "active": True,
+            "pending_id": "pending-priority-shanghai",
+            "kind": "plan_mutation",
+            "action_family": "apply_plan_change_proposal",
+            "summary": "上海专业组同档优先靠前",
+            "source_backend_version": 12,
+            "execution_payload": {
+                "action_family": "apply_plan_change_proposal",
+                "proposal_apply": proposal_apply,
+                "postconditions": {"priority_rules": proposal_apply["userGoalRequest"]["priorityRules"]},
+            },
+            "raw": {
+                "pendingId": "pending-priority-shanghai",
+                "kind": "plan_mutation",
+                "actionFamily": "apply_plan_change_proposal",
+                "status": "active",
+                "sourceBackendVersion": 12,
+            },
+        }
+    )
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["applied"] is True
+    assert result["data"]["result"]["postcondition_report"]["priorityRuleCount"] == 1
+    assert "1条同档优先规则" in result["message"]
+    assert "排序校验通过" in result["message"]
+    assert _stub_pending_planning_command.await_args.kwargs["proposal_apply"] == proposal_apply
+
+
+async def test_confirm_pending_reports_exact_tier_quota_postcondition(
+    mocker, _stub_pending_planning_command
+):
+    proposal_apply = {
+        "proposalId": "ugp-tier-quota",
+        "proposalSource": "user_goal",
+        "sourceVersionGuard": 12,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+        "userGoalRequest": {
+            "proposalSource": "user_goal",
+            "goalType": "fill_to_count",
+            "targetCount": 45,
+            "persistTargetCount": False,
+            "tierQuotaGoal": {
+                "type": "exact_counts",
+                "sprintCount": 9,
+                "stableCount": 17,
+                "protectCount": 19,
+            },
+            "sourceVersionGuard": 12,
+        },
+    }
+    ctx = _context_with_backend_pending(
+        {
+            "active": True,
+            "pending_id": "pending-tier-quota",
+            "kind": "plan_mutation",
+            "action_family": "apply_plan_change_proposal",
+            "summary": "调整为冲9稳17保19",
+            "source_backend_version": 12,
+            "execution_payload": {
+                "action_family": "apply_plan_change_proposal",
+                "proposal_apply": proposal_apply,
+                "postconditions": {"tier_quota_goal": proposal_apply["userGoalRequest"]["tierQuotaGoal"]},
+            },
+            "raw": {
+                "pendingId": "pending-tier-quota",
+                "kind": "plan_mutation",
+                "actionFamily": "apply_plan_change_proposal",
+                "status": "active",
+                "sourceBackendVersion": 12,
+            },
+        }
+    )
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["applied"] is True
+    quota_result = result["data"]["result"]["postcondition_report"]["tierQuotaResult"]
+    assert quota_result["satisfied"] is True
+    assert "冲稳保精确配额" in result["message"]
+
+
+async def test_confirm_pending_applies_review_repair_proposal_and_reports_actual_target(
+    mocker, _stub_pending_planning_command
+):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    proposal_apply = {
+        "proposalId": "fp-group-safety",
+        "proposalSource": "review_check",
+        "sourceVersionGuard": 12,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+    }
+    ctx = _context_with_backend_pending(
+        {
+            "active": True,
+            "pending_id": "pending-group-safety",
+            "kind": "plan_mutation",
+            "action_family": "apply_plan_change_proposal",
+            "summary": "3个专业组各补入1个录取率更高的专业作为安全垫。",
+            "source_backend_version": 12,
+            "execution_payload": {
+                "action_family": "apply_plan_change_proposal",
+                "proposal_apply": proposal_apply,
+                "postconditions": {"post_validation_required": True},
+            },
+            "raw": {
+                "pendingId": "pending-group-safety",
+                "kind": "plan_mutation",
+                "actionFamily": "apply_plan_change_proposal",
+                "status": "active",
+                "sourceBackendVersion": 12,
+            },
+        }
+    )
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["applied"] is True
+    assert result["data"]["result"]["postcondition_report"]["postValidationPassed"] is True
+    assert "3个专业组" in result["message"]
+    assert "补入3个专业" in result["message"]
+    assert "复审校验通过" in result["message"]
+    assert "0条同档优先规则" not in result["message"]
+    assert _stub_pending_planning_command.await_args.kwargs["proposal_apply"] == proposal_apply
+    assert save_mock.await_args.args[1]["status"] == "applied"
+
+
+async def test_confirm_pending_rejects_review_repair_when_post_validation_fails(
+    mocker, _stub_pending_planning_command
+):
+    _stub_pending_planning_command.side_effect = None
+    _stub_pending_planning_command.return_value = {
+        "code": 40905,
+        "msg": "review fix postcondition failed",
+    }
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_backend_pending(
+        {
+            "active": True,
+            "pending_id": "pending-group-safety-failed",
+            "kind": "plan_mutation",
+            "action_family": "apply_plan_change_proposal",
+            "summary": "补足专业组内安全垫。",
+            "source_backend_version": 12,
+            "execution_payload": {
+                "action_family": "apply_plan_change_proposal",
+                "proposal_apply": {
+                    "proposalId": "fp-group-safety",
+                    "proposalSource": "review_check",
+                    "sourceVersionGuard": 12,
+                    "regenerateOrderedPlan": True,
+                    "rerunReview": True,
+                },
+            },
+            "raw": {
+                "pendingId": "pending-group-safety-failed",
+                "kind": "plan_mutation",
+                "actionFamily": "apply_plan_change_proposal",
+                "status": "active",
+                "sourceBackendVersion": 12,
+            },
+        }
+    )
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["applied"] is False
+    assert result["data"]["result"]["reason"] == "plan_change_postcondition_not_satisfied"
+    assert "没有通过最终目标校验" in result["message"]
+    assert save_mock.await_args.args[1]["status"] == "expired"
+
+
+async def test_confirm_pending_intent_without_plan_does_not_regenerate_order(mocker, _stub_pending_planning_command):
     update_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.update_planning_constraint_state",
         AsyncMock(return_value={"code": 0}),
@@ -5098,6 +8344,16 @@ async def test_confirm_pending_intent_without_plan_does_not_regenerate_order(moc
             "sourceBackendVersion": 0,
         },
     }
+    ctx.conversation_phase = ConversationPhase(
+        state=PhaseState.INTENT_PREVIEWING,
+        pending=PendingConfirmation(
+            kind="intent_change",
+            pending_id="pending-intent-no-plan",
+            action_family="apply_selected_intents",
+            preview_summary="排除民办",
+            execution_payload=pending_state["execution_payload"],
+        ),
+    )
     ctx.sandbox.prime("pending.json", pending_state, version=0)
 
     result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
@@ -5107,7 +8363,8 @@ async def test_confirm_pending_intent_without_plan_does_not_regenerate_order(moc
     assert result["data"]["result"]["plan_regenerated"] is False
     assert "后续生成方案" in result["message"]
     assert "约束" not in result["message"]
-    update_mock.assert_awaited_once()
+    update_mock.assert_not_awaited()
+    assert _stub_pending_planning_command.await_args.kwargs["regenerate_ordered_plan"] is False
     ordered_mock.assert_not_awaited()
 
 
@@ -5148,7 +8405,8 @@ async def test_confirm_pending_applies_remove_units_directly(mocker):
     assert result["data"]["applied"] is True
     remove_mock.assert_awaited_once_with(1, ctx.sessionid, ["u1", "u2"])
     assert save_mock.await_args.args[1]["status"] == "applied"
-    assert save_mock.await_args.kwargs["version"] == 12
+    assert save_mock.await_args.args[1]["_pendingClaimToken"] == "claim-test-token"
+    assert save_mock.await_args.kwargs == {}
 
 
 async def test_confirm_pending_marks_plan_action_failed_when_diff_misses_target(mocker):
@@ -5204,7 +8462,7 @@ async def test_confirm_pending_marks_plan_action_failed_when_diff_misses_target(
     assert "预期变化" in result["message"]
     remove_mock.assert_awaited_once_with(1, ctx.sessionid, ["unit-nanfang"])
     saved_state = save_mock.await_args.args[1]
-    assert saved_state["status"] == "failed"
+    assert saved_state["status"] == "expired"
     assert saved_state["resultCode"] == "removed_units_still_present"
     assert saved_state["resultData"]["ordered_plan_diff"]["remaining_unit_ids"] == ["unit-nanfang"]
 
@@ -5267,7 +8525,7 @@ async def test_confirm_pending_sort_reports_no_change_when_order_unchanged(mocke
     assert saved_state["resultData"]["ordered_plan_diff"]["changed"] is False
 
 
-async def test_confirm_pending_replace_accepts_selected_candidate_in_ordered_items(mocker):
+async def test_confirm_pending_replace_accepts_selected_candidate_in_ordered_items(mocker, _stub_pending_planning_command):
     remove_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.remove_planning_ordered_plan_units",
         AsyncMock(return_value={"code": 0}),
@@ -5302,6 +8560,29 @@ async def test_confirm_pending_replace_accepts_selected_candidate_in_ordered_ite
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
         AsyncMock(return_value={"code": 0}),
     )
+    _stub_pending_planning_command.side_effect = None
+    _stub_pending_planning_command.return_value = {
+        "code": 0,
+        "data": {
+            "operationId": "op-replace",
+            "completedSteps": ["ordered_units_removed", "working_plan_items_selected", "ordered_plan_regenerated"],
+            "replayed": False,
+            "planningState": {
+                "version": 15,
+                "orderedPlanState": {
+                    "units": [
+                        {"unitId": "unit-hnlg", "volunteerId": "unit-hnlg_001"},
+                        {"unitId": "unit-jnu", "volunteerId": "unit-jnu_001"},
+                    ],
+                    "items": [
+                        {"unitId": "unit-hnlg", "volunteerId": "unit-hnlg_001"},
+                        {"unitId": "unit-jnu", "volunteerId": "unit-jnu_001"},
+                        {"unitId": "unit-new", "volunteerId": "cand-new"},
+                    ],
+                },
+            },
+        },
+    }
     ctx = _context_with_backend_pending(
         {
             "active": True,
@@ -5332,13 +8613,16 @@ async def test_confirm_pending_replace_accepts_selected_candidate_in_ordered_ite
     assert result["data"]["applied"] is True
     assert result["data"]["result"]["ordered_plan_diff"]["passed"] is True
     assert result["data"]["result"]["ordered_plan_diff"]["missing_selected_volunteer_ids"] == []
-    remove_mock.assert_awaited_once_with(1, ctx.sessionid, ["unit-nanfang"])
-    select_mock.assert_awaited_once_with(1, ctx.sessionid, ["cand-new"])
-    order_mock.assert_awaited_once_with(1, ctx.sessionid)
+    command_args = _stub_pending_planning_command.await_args.kwargs
+    assert command_args["unit_ids"] == ["unit-nanfang"]
+    assert command_args["volunteer_ids"] == ["cand-new"]
+    remove_mock.assert_not_awaited()
+    select_mock.assert_not_awaited()
+    order_mock.assert_not_awaited()
     assert save_mock.await_args.args[1]["status"] == "applied"
 
 
-async def test_confirm_pending_applies_replace_units_directly(mocker):
+async def test_confirm_pending_applies_replace_units_directly(mocker, _stub_pending_planning_command):
     remove_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.remove_planning_ordered_plan_units",
         AsyncMock(return_value={"code": 0}),
@@ -5383,9 +8667,62 @@ async def test_confirm_pending_applies_replace_units_directly(mocker):
 
     assert result["next_step"] == "respond"
     assert result["data"]["applied"] is True
-    remove_mock.assert_awaited_once_with(1, ctx.sessionid, ["unit-old"])
-    select_mock.assert_awaited_once_with(1, ctx.sessionid, ["cand-new"])
-    order_mock.assert_awaited_once_with(1, ctx.sessionid)
+    command_args = _stub_pending_planning_command.await_args.kwargs
+    assert command_args["command_type"] == "replace_units"
+    assert command_args["unit_ids"] == ["unit-old"]
+    assert command_args["volunteer_ids"] == ["cand-new"]
+    remove_mock.assert_not_awaited()
+    select_mock.assert_not_awaited()
+    order_mock.assert_not_awaited()
+    assert save_mock.await_args.args[1]["status"] == "applied"
+
+
+async def test_confirm_pending_applies_add_units_as_single_command(mocker, _stub_pending_planning_command):
+    select_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.select_working_plan_items",
+        AsyncMock(return_value={"code": 0}),
+    )
+    order_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_ordered_plan",
+        AsyncMock(return_value={"code": 0}),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_backend_pending(
+        {
+            "active": True,
+            "pending_id": "pending-add",
+            "kind": "plan_mutation",
+            "action_family": "add_units",
+            "summary": "加入一个志愿",
+            "source_backend_version": 12,
+            "execution_payload": {
+                "action_family": "add_units",
+                "atomic_actions": [
+                    {"action_type": "add_units", "volunteer_ids": ["cand-new"]}
+                ],
+            },
+            "raw": {
+                "pendingId": "pending-add",
+                "kind": "plan_mutation",
+                "actionFamily": "add_units",
+                "status": "active",
+                "sourceBackendVersion": 12,
+            },
+        }
+    )
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["applied"] is True
+    command_args = _stub_pending_planning_command.await_args.kwargs
+    assert command_args["command_type"] == "add_units"
+    assert command_args["volunteer_ids"] == ["cand-new"]
+    select_mock.assert_not_awaited()
+    order_mock.assert_not_awaited()
     assert save_mock.await_args.args[1]["status"] == "applied"
 
 
@@ -5423,7 +8760,132 @@ async def test_confirm_pending_rejects_non_structured_plan_payload(mocker):
     assert result["data"]["result"]["reason"] == "missing_structured_plan_payload"
     assert "缺少可执行结构" in result["message"]
     remove_mock.assert_not_awaited()
-    assert save_mock.await_args.args[1]["status"] == "failed"
+    assert save_mock.await_args.args[1]["status"] == "expired"
+
+
+async def test_confirm_pending_does_not_mutate_when_claim_was_not_acquired(mocker, _stub_pending_claim):
+    tool_claim, _ = _stub_pending_claim
+    tool_claim.return_value = {
+        "code": 0,
+        "data": {
+            "pendingId": "pending-concurrent",
+            "revision": 9,
+            "status": "applying",
+            "transitionApplied": False,
+            "dataValue": {"pendingId": "pending-concurrent", "status": "applying"},
+        },
+    }
+    tool_claim.side_effect = None
+    remove_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.remove_planning_ordered_plan_units",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_backend_pending(
+        {
+            "active": True,
+            "pending_id": "pending-concurrent",
+            "kind": "plan_mutation",
+            "action_family": "remove_units",
+            "source_backend_version": 12,
+            "execution_payload": {
+                "action_family": "remove_units",
+                "atomic_actions": [{"action_type": "remove_units", "unit_ids": ["u1"]}],
+            },
+            "raw": {
+                "pendingId": "pending-concurrent",
+                "kind": "plan_mutation",
+                "actionFamily": "remove_units",
+                "status": "active",
+                "sourceBackendVersion": 12,
+                "_pendingRevision": 8,
+            },
+        }
+    )
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["error"] == "pending_claim_conflict"
+    remove_mock.assert_not_awaited()
+
+
+async def test_service_pending_confirmation_reports_unexpired_claim_in_progress(mocker, _stub_pending_claim):
+    _, service_claim = _stub_pending_claim
+    pending_state = {
+        "pendingId": "pending-in-progress",
+        "kind": "plan_mutation",
+        "status": "applying",
+        "actionFamily": "remove_units",
+        "executionPayload": {
+            "action_family": "remove_units",
+            "atomic_actions": [{"action_type": "remove_units", "unit_ids": ["u1"]}],
+        },
+        "_pendingClaimToken": "claim-owner",
+        "_pendingClaimExpiresAt": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+    }
+    mocker.patch(
+        "app.service._load_pending_confirmation_state",
+        AsyncMock(return_value=pending_state),
+    )
+    service = object.__new__(ChatService)
+
+    reply = await service.handle_pending_confirmation(
+        "session-in-progress",
+        "user-in-progress",
+        json.dumps(
+            {
+                "action": "confirm",
+                "kind": "plan_mutation",
+                "pendingId": "pending-in-progress",
+            }
+        ),
+    )
+
+    assert "正在处理中" in reply
+    assert "不会重复执行" in reply
+    service_claim.assert_not_awaited()
+
+
+async def test_confirm_pending_keeps_applying_when_command_result_is_uncertain(
+    mocker,
+    _stub_pending_planning_command,
+):
+    _stub_pending_planning_command.side_effect = None
+    _stub_pending_planning_command.return_value = {"error": "connection reset", "success": False}
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _context_with_backend_pending(
+        {
+            "active": True,
+            "pending_id": "pending-command-uncertain",
+            "kind": "plan_mutation",
+            "action_family": "replace_units",
+            "source_backend_version": 12,
+            "execution_payload": {
+                "action_family": "replace_units",
+                "atomic_actions": [{
+                    "action_type": "replace_units",
+                    "unit_ids": ["unit-old"],
+                    "volunteer_ids": ["candidate-new"],
+                }],
+            },
+            "raw": {
+                "pendingId": "pending-command-uncertain",
+                "kind": "plan_mutation",
+                "actionFamily": "replace_units",
+                "status": "active",
+                "sourceBackendVersion": 12,
+            },
+        }
+    )
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["execution_uncertain"] is True
+    assert result["data"]["active"] is True
+    assert "不会重复执行" in result["message"]
+    save_mock.assert_not_awaited()
 
 
 async def test_confirm_pending_dry_run_does_not_apply_or_save(mocker):
@@ -5568,13 +9030,12 @@ async def test_service_pending_confirmation_executes_plan_generation_bridge(mock
         "kind": "plan_generation",
         "status": "active",
         "actionFamily": "regenerate_order",
-        "summary": "补一个安全一点的专业并重新生成排序方案",
+        "summary": "按当前已确认要求和当前候选重新生成排序方案",
         "executionPayload": {
             "action_family": "regenerate_order",
             "atomic_actions": [
                 {
                     "action_type": "regenerate_order",
-                    "filters": {"review_issue_code": "probability_gap"},
                 }
             ],
         },
@@ -5682,6 +9143,45 @@ def test_zhiyuan_agent_direct_tool_output_uses_next_step():
         )
     ]
     assert agent.should_return_directly_from_tool(["query_plan"], readonly_returns, None) is False
+
+    discover_returns = [
+        _tool_return(
+            {
+                "next_step": "respond",
+                "data": {
+                    "mode": "eligible",
+                    "returned_items_are_sample": True,
+                    "global_distribution_available": False,
+                },
+                "message": "上海候选展示前4所；这些只是样例，不能判断整体分布。",
+            },
+            tool_name="discover_options",
+        )
+    ]
+    assert agent.should_return_directly_from_tool(["discover_options"], discover_returns, None) is True
+    assert (
+        agent.render_direct_tool_output(["discover_options"], discover_returns, None)
+        == "上海候选展示前4所；这些只是样例，不能判断整体分布。"
+    )
+
+    reference_returns = [
+        _tool_return(
+            {
+                "next_step": "respond",
+                "data": {
+                    "reason": "reference_only_semantic_requirements",
+                    "pending_created": False,
+                    "requires_confirmation": False,
+                },
+                "message": "这次只作为参考，不会记录或调整方案。",
+            },
+            tool_name="preview_intent_change",
+        )
+    ]
+    assert agent.should_return_directly_from_tool(["preview_intent_change"], reference_returns, None) is True
+    assert agent.render_direct_tool_output(["preview_intent_change"], reference_returns, None) == (
+        "这次只作为参考，不会记录或调整方案。"
+    )
 
     review_returns = [
         _tool_return(
@@ -5869,6 +9369,35 @@ async def test_preview_intent_change_blocks_new_pending_when_turn_started_with_p
     save_mock.assert_not_awaited()
 
 
+async def test_preview_intent_tool_schema_requires_pending_resolution_only_with_active_pending():
+    tool_def = ToolDefinition(
+        name="preview_intent_change",
+        parameters_json_schema={
+            "type": "object",
+            "properties": {
+                "intent_type": {"type": "string"},
+                "pending_resolution": {"type": "string", "default": "none"},
+            },
+            "required": ["intent_type"],
+        },
+    )
+
+    unchanged = await _prepare_preview_intent_change_tool(
+        make_run_context(request_context=_direct_context()),
+        tool_def,
+    )
+    assert unchanged is tool_def
+    assert unchanged.parameters_json_schema["properties"]["pending_resolution"]["default"] == "none"
+
+    prepared = await _prepare_preview_intent_change_tool(
+        make_run_context(request_context=_direct_context(pending=True)),
+        tool_def,
+    )
+    assert "pending_resolution" in prepared.parameters_json_schema["required"]
+    assert "default" not in prepared.parameters_json_schema["properties"]["pending_resolution"]
+    assert "active pending" in prepared.parameters_json_schema["properties"]["pending_resolution"]["description"]
+
+
 async def test_preview_intent_change_can_replace_active_pending_when_explicit(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
@@ -5927,6 +9456,155 @@ async def test_preview_intent_change_only_keep_school_nature_drops_redundant_neg
     new_pending_state = save_mock.await_args_list[1].args[1]
     assert new_pending_state["executionPayload"]["merged"]["school_intents"]["school_nature"] == ["公办"]
     assert "negative_school_nature" not in new_pending_state["executionPayload"]["merged"]["school_intents"]
+
+
+async def test_preview_intent_change_only_keep_drops_model_enumerated_generic_complement(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.simulate_plan_diff",
+        AsyncMock(return_value={"code": 500}),
+    )
+
+    result = _load(
+        await preview_intent_change(
+            make_run_context(request_context=_direct_context()),
+            intent_type="major",
+            positive={"major": ["临床医学"]},
+            negative={"level1": ["经济学", "法学", "教育学", "文学", "历史学", "理学"]},
+            constraint_type="only_keep",
+            raw_user_text="我只想学临床医学，其他专业先不要",
+            semantic_requirements=[
+                {
+                    "domain": "major",
+                    "side": "positive",
+                    "strength": "explicit",
+                    "key": "major",
+                    "values": ["临床医学"],
+                    "raw_span": "只想学临床医学",
+                },
+                {
+                    "domain": "major",
+                    "side": "negative",
+                    "strength": "explicit",
+                    "key": "level1",
+                    "values": ["经济学", "法学", "教育学", "文学", "历史学", "理学"],
+                    "raw_span": "其他专业先不要",
+                },
+            ],
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["normalized"]["negative"]["level1"] == []
+    assert result["data"]["merged"] == {"major_intents": {"level3": ["临床医学"]}}
+    assert "不要：" not in result["message"]
+    assert result["data"]["parameter_warnings"]
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["executionPayload"]["merged"] == {
+        "major_intents": {"level3": ["临床医学"]}
+    }
+
+
+async def test_preview_intent_change_only_keep_drops_literal_generic_complement(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.simulate_plan_diff",
+        AsyncMock(return_value={"code": 500}),
+    )
+
+    result = _load(
+        await preview_intent_change(
+            make_run_context(request_context=_direct_context()),
+            intent_type="major",
+            positive={"major": ["临床医学"]},
+            negative={"major": ["其他专业"]},
+            constraint_type="only_keep",
+            raw_user_text="我只想学临床医学，其他专业先不要",
+            semantic_requirements=[
+                {
+                    "domain": "major",
+                    "side": "positive",
+                    "strength": "explicit",
+                    "key": "major",
+                    "values": ["临床医学"],
+                    "raw_span": "只想学临床医学",
+                },
+                {
+                    "domain": "major",
+                    "side": "negative",
+                    "strength": "explicit",
+                    "key": "major",
+                    "values": ["其他专业"],
+                    "raw_span": "其他专业先不要",
+                },
+            ],
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["normalized"]["negative"]["level3"] == []
+    assert result["data"]["merged"] == {"major_intents": {"level3": ["临床医学"]}}
+    assert "不要：" not in result["message"]
+    assert result["data"]["parameter_warnings"]
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["executionPayload"]["merged"] == {
+        "major_intents": {"level3": ["临床医学"]}
+    }
+
+
+async def test_preview_intent_change_only_keep_preserves_explicit_named_exclusion(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.simulate_plan_diff",
+        AsyncMock(return_value={"code": 500}),
+    )
+
+    result = _load(
+        await preview_intent_change(
+            make_run_context(request_context=_direct_context()),
+            intent_type="major",
+            positive={"major": ["临床医学"]},
+            negative={"major": ["护理学"]},
+            constraint_type="only_keep",
+            semantic_requirements=[
+                {
+                    "domain": "major",
+                    "side": "positive",
+                    "strength": "explicit",
+                    "key": "major",
+                    "values": ["临床医学"],
+                    "raw_span": "只保留临床医学",
+                },
+                {
+                    "domain": "major",
+                    "side": "negative",
+                    "strength": "explicit",
+                    "key": "major",
+                    "values": ["护理学"],
+                    "raw_span": "护理也不要",
+                },
+            ],
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["normalized"]["negative"]["level3"] == ["护理学"]
+    assert result["data"]["merged"]["major_intents"] == {
+        "level3": ["临床医学"],
+        "negative_level3": ["护理学"],
+    }
+    assert "不要：护理学" in result["message"]
+    assert result["data"]["parameter_warnings"] == []
+    assert save_mock.await_count == 1
 
 
 async def test_preview_intent_change_can_append_to_active_intent_pending(mocker):
@@ -6281,6 +9959,49 @@ async def test_service_zhiyuan_agent_direct_guards_unbacked_confirmation_preview
     assert all("是否确认" not in text for text in saved_texts)
 
 
+async def test_service_zhiyuan_agent_direct_preserves_terminal_plan_change_block_reason():
+    tool_message = (
+        "应用本轮及已确认要求过滤后，只有2个候选可补入，"
+        "不能生成部分执行预览。"
+    )
+    tool_payload = {
+        "next_step": "respond",
+        "data": {
+            "pending_created": False,
+            "requires_confirmation": False,
+            "proposal": {"status": "blocked"},
+        },
+        "message": tool_message,
+    }
+
+    class FakeDirectAgent:
+        async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):  # noqa: ARG002
+            new_messages = _direct_messages(
+                tool_name="preview_plan_change",
+                tool_payload=tool_payload,
+                reply=tool_message,
+            )
+            return tool_message, new_messages, [*(message_history or []), *new_messages], _direct_usage()
+
+    service, history_store = _direct_service(FakeDirectAgent())
+    ctx = _direct_context()
+
+    reply = await service._maybe_handle_zhiyuan_agent_direct_route(
+        session_id=ctx.sessionid,
+        user_id=ctx.userid,
+        content="把方案补齐到10000个，候选不够就直接告诉我",
+        history=[],
+        request_context=ctx,
+        message_history=[],
+        turn_started_at=time.monotonic(),
+        on_progress=None,
+    )
+
+    assert reply == tool_message
+    assert "还没有生成可确认的调整预览" not in reply
+    assert history_store.saved is not None
+
+
 async def test_service_zhiyuan_agent_direct_error_does_not_fallback_to_legacy_agent():
     class FakeDirectAgent:
         async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):  # noqa: ARG002
@@ -6412,24 +10133,25 @@ async def test_service_zhiyuan_agent_direct_plan_pending_card():
     assert service.get_usage_summary(ctx.sessionid)["total_tool_calls"] == 1
 
 
-async def test_service_zhiyuan_agent_direct_plan_generation_pending_card():
-    pending_id = "pending-direct-plan-generation"
+async def test_service_zhiyuan_agent_direct_review_repair_pending_card():
+    pending_id = "pending-direct-review-repair"
     pending_state = {
         "type": "pendingConfirmation",
         "pendingId": pending_id,
-        "sessionId": "session-direct-plan-generation",
-        "kind": "plan_generation",
+        "sessionId": "session-direct-review-repair",
+        "kind": "plan_mutation",
         "status": "active",
-        "actionFamily": "regenerate_order",
-        "summary": "补一个更安全的专业并重新生成排序方案。",
+        "actionFamily": "apply_plan_change_proposal",
+        "summary": "3个专业组各补入1个录取率更高的专业作为安全垫。",
         "executionPayload": {
-            "action_family": "regenerate_order",
-            "atomic_actions": [
-                {
-                    "action_type": "regenerate_order",
-                    "filters": {"review_issue_code": "probability_gap"},
-                }
-            ],
+            "action_family": "apply_plan_change_proposal",
+            "proposal_apply": {
+                "proposalId": "fp-group-safety",
+                "proposalSource": "review_check",
+                "sourceVersionGuard": 12,
+                "regenerateOrderedPlan": True,
+                "rerunReview": True,
+            },
         },
         "sourceBackendVersion": 12,
     }
@@ -6442,7 +10164,7 @@ async def test_service_zhiyuan_agent_direct_plan_generation_pending_card():
     class FakeDirectAgent:
         async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):  # noqa: ARG002
             new_messages = _direct_messages(
-                tool_name="preview_plan_action",
+                tool_name="preview_plan_change",
                 tool_payload=tool_payload,
                 reply="已列出调整预览。",
             )
@@ -6473,9 +10195,9 @@ async def test_service_zhiyuan_agent_direct_plan_generation_pending_card():
     assert getattr(reply, "primary", "").startswith("已列出调整预览")
     assert len(reply.followups) == 1
     card_payload = json.loads(reply.followups[0].content)
-    assert card_payload["kind"] == "plan_generation"
-    assert card_payload["actionFamily"] == "regenerate_order"
-    assert card_payload["title"] == "确认重排方案"
+    assert card_payload["kind"] == "plan_mutation"
+    assert card_payload["actionFamily"] == "apply_plan_change_proposal"
+    assert card_payload["title"] == "确认调整方案"
     assert card_payload["pendingId"] == pending_id
     assert history_store.saved is not None
 
@@ -6789,13 +10511,41 @@ class TestZhiyuanAgentLLMSelection:
         assert _contains_text(args.get("negative"), "民办")
 
     async def test_spoken_private_school_attribute_intent(self):
-        _, calls, _ = await self._run_case("民办就算了")
+        _, calls, usage = await self._run_case("民办就算了")
         assert calls
         assert calls[0].tool_name == "preview_intent_change"
+        assert usage.tool_calls == 1
+        assert len([call for call in calls if call.tool_name == "preview_intent_change"]) == 1
         args = _tool_args(calls[0])
         assert args.get("intent_type") == "school"
         assert args.get("constraint_type") in {None, "exclude"}
-        assert _contains_text(args.get("negative"), "民办")
+        assert _contains_text(args.get("negative"), "民办") or _contains_text(
+            args.get("semantic_requirements"), "民办"
+        )
+
+    async def test_spoken_shandong_rejection_uses_one_intent_preview(self):
+        _, calls, usage = await self._run_case("山东别去了")
+        assert calls
+        assert calls[0].tool_name == "preview_intent_change"
+        assert usage.tool_calls == 1
+        assert len([call for call in calls if call.tool_name == "preview_intent_change"]) == 1
+        args = _tool_args(calls[0])
+        assert args.get("intent_type") == "region"
+        assert _contains_text(args.get("negative"), "山东") or _contains_text(
+            args.get("semantic_requirements"), "山东"
+        )
+
+    async def test_remote_region_rejection_uses_one_intent_preview(self):
+        _, calls, usage = await self._run_case("省外可以，但太偏的地方不想去")
+        assert calls
+        assert calls[0].tool_name == "preview_intent_change"
+        assert usage.tool_calls == 1
+        assert len([call for call in calls if call.tool_name == "preview_intent_change"]) == 1
+        args = _tool_args(calls[0])
+        assert args.get("intent_type") == "region"
+        assert _contains_text(args.get("negative"), "偏远地区") or _contains_text(
+            args.get("semantic_requirements"), "偏远地区"
+        )
 
     async def test_only_keep_public_school_attribute_intent(self):
         _, calls, _ = await self._run_case("只看公办学校")
@@ -6908,6 +10658,27 @@ class TestZhiyuanAgentLLMSelection:
         args = _tool_args(calls[0])
         assert args.get("focus") == "tuition"
         assert args.get("generate_fix_proposals") is True
+
+    async def test_remove_expensive_deictic_request_is_plan_action(self):
+        _, calls, _ = await self._run_case(
+            "把太贵的那几个先去掉看看",
+            deps=_direct_context(with_plan=True),
+        )
+        assert calls
+        assert calls[0].tool_name == "preview_plan_action"
+        args = _tool_args(calls[0])
+        assert args.get("action") == "remove"
+        assert _contains_text(args.get("filters"), "高收费") or _contains_text(
+            args.get("filters"), "tuition"
+        )
+
+    async def test_plain_language_plan_request_reviews_plan_instead_of_clarifying(self):
+        _, calls, _ = await self._run_case(
+            "能不能说人话，别一堆系统词",
+            deps=_direct_context(with_plan=True),
+        )
+        assert calls
+        assert calls[0].tool_name == "review_plan"
 
     async def test_g21_readonly_review_does_not_generate_plan(self):
         _, calls, _ = await self._run_case("现在这版强基+普通批方案合理不")

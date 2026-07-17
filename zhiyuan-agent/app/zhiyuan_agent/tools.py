@@ -19,6 +19,7 @@ from pydantic_ai import RunContext
 from app.agent.context import RequestContext, resolve_pending_confirmation
 from app.config import BochaSearchConfig
 from app.domain import proposal_compiler
+from app.domain.career_alignment import matching_career_evidence, matches_career_slot
 from app.domain.career_slots import normalize_career_slots, to_career_label
 from app.domain.entity_resolution import EntityResolutionCandidate, EntityResolutionResult
 from app.domain.attribute_registry import (
@@ -29,13 +30,13 @@ from app.domain.attribute_registry import (
     normalize_attribute_filter_values,
 )
 from app.domain.major_entity_resolver import (
-    canonicalize_major_intent_payload,
-    major_alias_variants_for_name,
     major_parent_mappings_for_batch,
     resolve_major_entity,
+    resolve_major_mentions_from_text,
 )
 from app.domain.region_entity_resolver import REGION_AREA_PROVINCES, resolve_region_entity
-from app.domain.school_entity_resolver import resolve_school_entity
+from app.domain.school_major_ref_resolver import resolve_school_major_ref
+from app.domain.school_entity_resolver import resolve_school_entity, resolve_school_mentions_from_text
 from app.schemas.user_profile import UserProfile
 from app.tools.review_issue_registry import normalize_review_issue_code
 from app.util import internal_client
@@ -52,6 +53,14 @@ NextStep = Literal["respond", "confirm", "clarify", "continue"]
 StatePath = Literal["score", "profile", "plan/summary", "pending"]
 TopicType = Literal["career", "major", "school", "region"]
 CompareEntityType = Literal["major", "school"]
+DiscoveryMode = Literal["catalog", "eligible", "recommend"]
+DiscoveryEntityType = Literal["major", "school"]
+ClarificationKind = Literal[
+    "discovery_scope",
+    "missing_subject",
+    "missing_intent_content",
+    "ambiguous_request",
+]
 PolicyDomain = Literal[
     "score_batch",
     "eligibility",
@@ -104,6 +113,50 @@ class ReplacementSpec(TypedDict, total=False):
     old_max_tuition: int
     old_best_school_rank: int
     old_min_admission_ratio: int
+
+
+class PlanSelectionGoal(TypedDict, total=False):
+    type: Literal["fill_to_count"]
+    target_count: int
+
+
+class PlanHardRequirement(TypedDict, total=False):
+    kind: Literal["exclude", "only_keep", "include"]
+    domain: Literal["school", "region", "major", "admission"]
+    key: str
+    values: list[str]
+    min_count: int
+    raw_text: str
+
+
+class PlanPriorityRule(TypedDict, total=False):
+    domain: Literal["school", "region", "major"]
+    key: str
+    values: list[str]
+    ordering_target: Literal["rank_before"]
+    scope: Literal["within_tier"]
+    raw_text: str
+
+
+class PlanTierQuotaGoal(TypedDict, total=False):
+    type: Literal["exact_counts"]
+    sprint_count: int
+    stable_count: int
+    protect_count: int
+
+
+class PlanRepairGoal(TypedDict, total=False):
+    objective: Literal["increase_stability"]
+    review_issue_code: ReviewIssueCode
+    strategy: str
+
+
+class PlanChangeSpec(TypedDict, total=False):
+    selection_goal: PlanSelectionGoal
+    tier_quota_goal: PlanTierQuotaGoal
+    requirements: list[PlanHardRequirement]
+    priority_rules: list[PlanPriorityRule]
+    repair_goal: PlanRepairGoal
 
 
 _DEFAULT_PLAN_QUERY_LIMIT = 5
@@ -278,6 +331,73 @@ class ToolResult(TypedDict):
 
 def _json(payload: ToolResult) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+async def clarify_request(
+    ctx: RunContext[RequestContext],  # noqa: ARG001
+    kind: ClarificationKind,
+) -> str:
+    """Ask a bounded clarification when no business tool can safely choose scope.
+
+    This is only for genuinely ambiguous requests. It cannot create pending state,
+    record requirements, query business data, or mutate a plan.
+    """
+    messages = {
+        "discovery_scope": "你想查的是院校目录、当前可报候选，还是当前正式方案里的项目？请明确一下范围。",
+        "missing_subject": "请再说明要了解的是院校、专业、地域、报考规则，还是当前志愿方案。",
+        "missing_intent_content": (
+            "可以先保存思路且不自动改方案，但这句话里还没有具体内容。"
+            "请补充要保留或排除的专业、院校、地域或预算要求；我会先列成待确认预览，确认前不会记录或改方案。"
+        ),
+        "ambiguous_request": "这轮还不能唯一确定要查询或处理的对象，请补充具体院校、专业、地域或方案范围。",
+    }
+    normalized_kind = str(kind or "ambiguous_request").strip()
+    if normalized_kind not in messages:
+        normalized_kind = "ambiguous_request"
+    return _json(
+        {
+            "data": {
+                "kind": normalized_kind,
+                "state_mutation": False,
+                "plan_mutation": False,
+            },
+            "next_step": "respond",
+            "message": messages[normalized_kind],
+        }
+    )
+
+
+async def respond_casual(ctx: RunContext[RequestContext]) -> str:  # noqa: ARG001
+    """Reply to a greeting or non-business social message without making claims."""
+    return _json(
+        {
+            "data": {
+                "kind": "casual",
+                "state_mutation": False,
+                "plan_mutation": False,
+            },
+            "next_step": "respond",
+            "message": "你好，请告诉我想了解院校、专业、报考规则，还是当前志愿方案。",
+        }
+    )
+
+
+async def acknowledge_readonly(ctx: RunContext[RequestContext]) -> str:  # noqa: ARG001
+    """Close a readonly discussion without claiming that anything was saved or changed."""
+    return _json(
+        {
+            "data": {
+                "kind": "readonly_acknowledgement",
+                "state_mutation": False,
+                "plan_mutation": False,
+            },
+            "next_step": "respond",
+            "message": (
+                "先按刚才的只读分析结论理解。当前没有待确认的报考要求或方案动作，"
+                "不会记录要求，也不会改动当前方案。"
+            ),
+        }
+    )
 
 
 def _turn_started_active_pending(ctx: RunContext[RequestContext]) -> Any | None:
@@ -545,41 +665,6 @@ def _plan_action_requires_replace_targets_payload(
     }
 
 
-def _intent_change_requires_attribute_completion_payload(
-    *,
-    reason: str,
-    intent_type: str,
-    constraint_type: str,
-    requested_text: str = "",
-    normalized: dict[str, Any] | None = None,
-    merged: dict[str, Any] | None = None,
-    missing_attributes: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    current_user_text = str(requested_text or "").strip()
-    return {
-        "data": {
-            "reason": reason,
-            "intent_type": intent_type,
-            "constraint_type": constraint_type,
-            "normalized": normalized or {},
-            "merged": merged or {},
-            "current_user_text": current_user_text,
-            "missing_attributes": missing_attributes or [],
-            "retry_required_fields": ["positive", "negative", "semantic_requirements"],
-            "pending_created": False,
-            "requires_confirmation": False,
-        },
-        "next_step": "continue" if current_user_text else "clarify",
-        "message": (
-            "请基于 semantic_requirements 重新整理 preview_intent_change 参数，补齐遗漏的明确要/不要属性或标签。"
-            "同一句跨多个领域时，可以在同一次 positive/negative payload 中保留跨领域结构化字段，"
-            "例如地域诉求同时带院校属性时传 negative={\"province\":[...],\"school_nature\":[...]}。"
-            if current_user_text
-            else "这次报考要求里有属性或标签没有补齐，请说明完整的要或不要对象。"
-        ),
-    }
-
-
 def _intent_change_requires_semantic_requirements_payload(
     *,
     intent_type: str,
@@ -721,12 +806,300 @@ def _response_data(response: Any) -> dict[str, Any]:
     return response
 
 
-async def _sandbox_data(ctx: RunContext[RequestContext], path: str) -> dict[str, Any]:
+_DISCOVERY_FILTER_ALIASES = {
+    "provinceNames": "province",
+    "province_names": "province",
+    "cityNames": "city",
+    "city_names": "city",
+    "schoolType": "school_type",
+    "schoolTypes": "school_type",
+    "school_type": "school_type",
+    "school_types": "school_type",
+    "ownership": "school_nature",
+    "educationLevel": "education_level",
+    "educationLevels": "education_level",
+    "education_levels": "education_level",
+    "keyword": "keyword",
+    "keywords": "keyword",
+    "query": "keyword",
+    "majorCategory": "major",
+    "major_category": "major",
+    "majorDiscipline": "major",
+    "major_discipline": "major",
+    "majorDirection": "major",
+    "major_direction": "major",
+    "level1": "major",
+    "level2": "major",
+    "level3": "major",
+    "majorLevel1": "major",
+    "majorLevel2": "major",
+    "majorLevel3": "major",
+    "major_level1": "major",
+    "major_level2": "major",
+    "major_level3": "major",
+    "admissionStability": "admission_stability",
+    "riskPreference": "admission_stability",
+    "risk_preference": "admission_stability",
+    "schoolTags": "school_tags",
+    "majorTags": "major_tags",
+}
+
+
+def _discovery_stability_tiers(value: Any) -> list[str]:
+    tiers: list[str] = []
+    for item in _as_list(value):
+        text = _compact_text(item)
+        if text in {"stable", "safe", "safer", "morestable", "稳", "稳妥", "更稳", "稳一点"}:
+            for tier in ("稳", "保"):
+                _append_unique(tiers, tier)
+        elif text in {"protect", "protective", "safety", "保", "保底", "兜底"}:
+            _append_unique(tiers, "保")
+        elif text in {"sprint", "reach", "冲", "冲刺"}:
+            _append_unique(tiers, "冲")
+    return tiers
+_DISCOVERY_LIST_FILTERS = {
+    "province",
+    "city",
+    "school",
+    "major",
+    "school_nature",
+    "school_type",
+    "education_level",
+    "keyword",
+    "tier",
+    "school_tags",
+    "major_tags",
+}
+
+
+def _normalize_discovery_filters(filters: dict[str, Any] | None) -> tuple[dict[str, Any], int]:
+    remapped: dict[str, Any] = {}
+    for raw_key, value in (filters or {}).items():
+        key = _DISCOVERY_FILTER_ALIASES.get(str(raw_key or "").strip(), str(raw_key or "").strip())
+        if not key:
+            continue
+        if key == "admission_stability":
+            stability_tiers = _discovery_stability_tiers(value)
+            if stability_tiers:
+                remapped["tier"] = [*_as_list(remapped.get("tier")), *stability_tiers]
+            continue
+        if key in remapped:
+            remapped[key] = [*_as_list(remapped[key]), *_as_list(value)]
+        else:
+            remapped[key] = value
+    normalized, embedded_limit = _normalize_plan_query_filters(remapped)
+    for key in _DISCOVERY_LIST_FILTERS:
+        if key not in normalized:
+            continue
+        values: list[str] = []
+        for value in _as_list(normalized[key]):
+            _append_unique(values, str(value or "").strip())
+        if values:
+            normalized[key] = values
+        else:
+            normalized.pop(key, None)
+    return normalized, embedded_limit
+
+
+def _catalog_response_items(response: Any) -> tuple[list[dict[str, Any]], bool]:
+    if isinstance(response, list):
+        return [item for item in response if isinstance(item, dict)], True
+    if not isinstance(response, dict):
+        return [], False
+    if response.get("error") or response.get("success") is False:
+        return [], False
+    data = response.get("data")
+    if data is None:
+        return [], True
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)], True
+    if isinstance(data, dict):
+        return [data], True
+    return [], False
+
+
+def _discovery_unsupported_filters(filters: dict[str, Any], allowed: set[str]) -> list[str]:
+    return sorted(key for key, value in filters.items() if value not in (None, "", [], {}) and key not in allowed)
+
+
+def _catalog_school_brief(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "school_id": str(item.get("schoolId") or item.get("school_id") or "").strip(),
+        "school": str(item.get("schoolName") or item.get("school_name") or "").strip(),
+        "province": str(item.get("province") or item.get("provinceName") or "").strip(),
+        "city": str(item.get("city") or item.get("cityName") or "").strip(),
+        "school_type": str(item.get("schoolType") or item.get("school_type") or "").strip(),
+        "school_nature": str(item.get("ownership") or item.get("schoolNature") or "").strip(),
+        "education_level": str(item.get("educationLevel") or item.get("education_level") or "").strip(),
+        "school_rank": _as_int(item.get("schoolRank") or item.get("school_rank")),
+    }
+
+
+def _catalog_major_brief(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "major_id": str(item.get("majorId") or item.get("major_id") or "").strip(),
+        "major": str(item.get("majorName") or item.get("major_name") or "").strip(),
+        "major_category": str(item.get("subCategoryName") or item.get("sub_category_name") or "").strip(),
+        "major_discipline": str(item.get("categoryName") or item.get("category_name") or "").strip(),
+        "education_level": str(item.get("educationLevel") or item.get("education_level") or "").strip(),
+    }
+
+
+def _deduplicate_discovery_items(items: list[dict[str, Any]], *, entity_type: str) -> list[dict[str, Any]]:
+    deduplicated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        key = str(item.get(entity_type) or item.get(f"{entity_type}_id") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(item)
+    return deduplicated
+
+
+def _canonical_discovery_major_name(value: str, *, batch: str | None) -> str:
+    raw_name = str(value or "").strip()
+    mentions = resolve_major_mentions_from_text(raw_name, batch)
+    if mentions:
+        return mentions[0].canonical_name
+    result = resolve_major_entity(raw_name, batch)
+    if result.best is not None and not result.ambiguous:
+        return result.best.canonical_name
+    return raw_name
+
+
+def _broader_discovery_major_keywords(values: list[str], *, batch: str | None) -> list[str]:
+    mappings = major_parent_mappings_for_batch(batch or "01")
+    level3_to_level2 = mappings.get("level3_to_level2") if isinstance(mappings, dict) else {}
+    if not isinstance(level3_to_level2, dict):
+        level3_to_level2 = {}
+    result: list[str] = []
+    for value in values:
+        resolved = resolve_major_entity(value, batch)
+        candidates = list(resolved.candidates) or []
+        for candidate in candidates:
+            canonical = str(candidate.canonical_name or "").strip()
+            level = str(candidate.level or "").strip()
+            if level == "level2" and canonical:
+                _append_unique(result, canonical)
+            parent = str(level3_to_level2.get(canonical) or "").strip()
+            if parent:
+                _append_unique(result, parent)
+    return result
+
+
+def _candidate_discovery_items(
+    candidates: list[dict[str, Any]],
+    *,
+    entity_type: str,
+    limit: int,
+    batch: str | None,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for candidate in candidates:
+        raw_school = str(_item_value(candidate, "schoolName", "school_name", "collegeName") or "").strip()
+        school_mentions = resolve_school_mentions_from_text(raw_school, batch)
+        if len(school_mentions) == 1:
+            school = school_mentions[0]
+        else:
+            school_result = resolve_school_entity(raw_school, batch)
+            school = (
+                school_result.best.canonical_name
+                if school_result.best is not None and not school_result.ambiguous
+                else raw_school
+        )
+        majors = _item_major_names(candidate)
+        raw_major = majors[0] if majors else ""
+        major = _canonical_discovery_major_name(raw_major, batch=batch)
+        key = school if entity_type == "school" else major
+        if not key:
+            continue
+        if key not in grouped:
+            order.append(key)
+            grouped[key] = {
+                entity_type: key,
+                "province": str(_item_value(candidate, "provinceName", "province_name", "province") or "").strip(),
+                "city": str(_item_value(candidate, "cityName", "city_name", "city") or "").strip(),
+                "school_nature": str(
+                    _item_value(candidate, "schoolNature", "school_nature", "ownership") or ""
+                ).strip(),
+                "tiers": [],
+                "schools": [],
+                "majors": [],
+                "best_admission_ratio": 0,
+                "best_final_score": 0,
+            }
+        entry = grouped[key]
+        _append_unique(entry["schools"], school)
+        for name in majors:
+            _append_unique(entry["majors"], _canonical_discovery_major_name(name, batch=batch))
+        tier = _normalize_tier(_item_value(candidate, "tier", "riskTier", "risk_tier"))
+        if tier:
+            _append_unique(entry["tiers"], tier)
+        entry["best_admission_ratio"] = max(
+            _as_int(entry.get("best_admission_ratio")),
+            _as_int(_item_value(candidate, "admissionRatio", "admission_ratio", "schoolEnrollRatio")),
+        )
+        entry["best_final_score"] = max(
+            _as_int(entry.get("best_final_score")),
+            _as_int(_item_value(candidate, "finalScore", "final_score")),
+        )
+    result: list[dict[str, Any]] = []
+    for key in order[:limit]:
+        item = grouped[key]
+        item["schools"] = item["schools"][:5]
+        item["majors"] = item["majors"][:5]
+        result.append(item)
+    return result
+
+
+def _discovery_snippet(item: dict[str, Any], *, entity_type: str) -> str:
+    name = str(item.get(entity_type) or "").strip()
+    if not name:
+        return ""
+    suffixes: list[str] = []
+    if entity_type == "school":
+        for value in (item.get("city") or item.get("province"), item.get("school_nature"), item.get("education_level")):
+            if value and value not in suffixes:
+                suffixes.append(str(value))
+        tiers = [str(value) for value in item.get("tiers") or [] if value]
+        if tiers:
+            suffixes.append("/".join(tiers))
+        majors = [str(value) for value in item.get("majors") or [] if value]
+        if majors:
+            suffixes.append("专业：" + "、".join(majors[:2]))
+    else:
+        category = item.get("major_category") or item.get("major_discipline")
+        if category:
+            suffixes.append(str(category))
+        schools = [str(value) for value in item.get("schools") or [] if value]
+        if schools:
+            suffixes.append("院校：" + "、".join(schools[:2]))
+    return f"{name}（{'，'.join(suffixes)}）" if suffixes else name
+
+
+def _discovery_clarify(*, reason: str, message: str, data: dict[str, Any] | None = None) -> str:
+    return _json(
+        {
+            "data": {"reason": reason, "state_mutation": False, **(data or {})},
+            "next_step": "clarify",
+            "message": message,
+        }
+    )
+
+
+async def _sandbox_data(
+    ctx: RunContext[RequestContext],
+    path: str,
+    *,
+    query: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     sandbox = getattr(ctx.deps, "sandbox", None)
     normalized_path = normalize_sandbox_path(path)
     if sandbox is None:
         return _sandbox_unavailable(normalized_path)
-    data = await sandbox.read(normalized_path)
+    data = await sandbox.read(normalized_path, query=query)
     return data if isinstance(data, dict) else {}
 
 
@@ -1003,6 +1376,375 @@ async def read_state(
     )
 
 
+async def discover_options(
+    ctx: RunContext[RequestContext],
+    entity_type: DiscoveryEntityType,
+    mode: DiscoveryMode,
+    filters: dict[str, Any] | None = None,
+    limit: int = 10,
+) -> str:
+    """List catalog, eligible, or recommended schools/majors from an explicit data source."""
+    normalized_entity = str(entity_type or "").strip().lower()
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_entity not in {"school", "major"}:
+        return _discovery_clarify(
+            reason="discovery_entity_type_required",
+            message="需要先说明要查院校还是专业。",
+            data={"allowed_entity_types": ["school", "major"]},
+        )
+    if normalized_mode not in {"catalog", "eligible", "recommend"}:
+        return _discovery_clarify(
+            reason="discovery_mode_required",
+            message="需要先说明要查完整目录、当前可报候选，还是基于当前候选做推荐。",
+            data={"allowed_modes": ["catalog", "eligible", "recommend"]},
+        )
+
+    normalized_filters, embedded_limit = _normalize_discovery_filters(filters)
+    requested_limit = _as_int(limit, 10)
+    if requested_limit == 10 and filters and any(key in filters for key in ("limit", "pageSize", "page_size")):
+        requested_limit = embedded_limit
+    requested_limit = max(1, min(requested_limit, 20))
+
+    if normalized_mode == "catalog":
+        if normalized_entity == "school":
+            allowed = {
+                "keyword",
+                "school",
+                "province",
+                "city",
+                "school_nature",
+                "school_type",
+                "education_level",
+            }
+            unsupported = _discovery_unsupported_filters(normalized_filters, allowed)
+            if unsupported:
+                return _discovery_clarify(
+                    reason="catalog_school_filters_unsupported",
+                    message="院校目录查询暂不支持这些筛选字段，请改用地域、院校名称、院校性质、院校类型或学历层次。",
+                    data={"unsupported_filters": unsupported, "filters": normalized_filters},
+                )
+            has_explicit_selector = any(normalized_filters.get(key) for key in allowed)
+            if not has_explicit_selector:
+                return _discovery_clarify(
+                    reason="catalog_school_scope_required",
+                    message="请补充要查的地域、院校关键词或院校类型，避免直接返回没有边界的全国院校列表。",
+                    data={"filters": normalized_filters},
+                )
+            for key in ("school_nature", "school_type", "education_level"):
+                if len(normalized_filters.get(key) or []) > 1:
+                    return _discovery_clarify(
+                        reason="catalog_school_single_filter_required",
+                        message="院校目录本次只能按一个院校性质、类型或学历层次查询，请先缩小范围。",
+                        data={"field": key, "values": normalized_filters.get(key)},
+                    )
+
+            effective_filters = dict(normalized_filters)
+            education_levels = list(effective_filters.get("education_level") or [])
+            if not education_levels:
+                education_levels = ["本科" if (getattr(ctx.deps, "batch", None) or "01") == "01" else "专科"]
+                effective_filters["education_level"] = education_levels
+            provinces = list(effective_filters.get("province") or [])
+            cities = list(effective_filters.get("city") or [])
+            scopes: list[tuple[str | None, str | None]] = []
+            if provinces and cities:
+                scopes = [(province, city) for province in provinces for city in cities]
+            elif provinces:
+                scopes = [(province, None) for province in provinces]
+            elif cities:
+                scopes = [(None, city) for city in cities]
+            else:
+                scopes = [(None, None)]
+            responses = await asyncio.gather(
+                *(
+                    internal_client.catalog_list_schools(
+                        province=province,
+                        city=city,
+                        school_type=(effective_filters.get("school_type") or [None])[0],
+                        ownership=(effective_filters.get("school_nature") or [None])[0],
+                        education_level=education_levels[0],
+                    )
+                    for province, city in scopes
+                )
+            )
+            raw_items: list[dict[str, Any]] = []
+            for response in responses:
+                response_items, available = _catalog_response_items(response)
+                if not available:
+                    return _discovery_clarify(
+                        reason="catalog_school_source_unavailable",
+                        message="权威院校目录当前不可用，暂时不能可靠列出院校名单。",
+                        data={"filters": effective_filters, "data_source": "school_catalog"},
+                    )
+                raw_items.extend(response_items)
+            keywords = [
+                *list(effective_filters.get("keyword") or []),
+                *list(effective_filters.get("school") or []),
+            ]
+            items = [_catalog_school_brief(item) for item in raw_items]
+            if keywords:
+                items = [
+                    item
+                    for item in items
+                    if any(_compact_text(keyword) in _compact_text(item.get("school")) for keyword in keywords)
+                ]
+            items = _deduplicate_discovery_items(items, entity_type="school")
+            items.sort(key=lambda item: str(item.get("school") or ""))
+            returned = items[:requested_limit]
+            description = _describe_filters(effective_filters) or "当前目录范围"
+            snippet = "；".join(_discovery_snippet(item, entity_type="school") for item in returned)
+            return _json(
+                {
+                    "data": {
+                        "entity_type": "school",
+                        "mode": "catalog",
+                        "filters": effective_filters,
+                        "data_source": "authoritative_school_catalog",
+                        "matched_total": len(items),
+                        "returned_total": len(returned),
+                        "items": returned,
+                        "state_mutation": False,
+                    },
+                    "next_step": "respond",
+                    "message": (
+                        f"权威院校目录按“{description}”共找到{len(items)}所，展示前{len(returned)}所：{snippet}"
+                        if returned
+                        else f"权威院校目录按“{description}”暂时没有找到院校。"
+                    ),
+                }
+            )
+
+        allowed = {"keyword", "major", "education_level"}
+        unsupported = _discovery_unsupported_filters(normalized_filters, allowed)
+        if unsupported:
+            return _discovery_clarify(
+                reason="catalog_major_filters_unsupported",
+                message="专业目录查询暂不支持这些筛选字段，请改用专业名称、专业类或学历层次。",
+                data={"unsupported_filters": unsupported, "filters": normalized_filters},
+            )
+        keywords = [*list(normalized_filters.get("keyword") or []), *list(normalized_filters.get("major") or [])]
+        if not keywords:
+            return _discovery_clarify(
+                reason="catalog_major_keyword_required",
+                message="请补充专业名称或专业类关键词，例如“计算机”或“电子信息”。",
+                data={"filters": normalized_filters},
+            )
+        education_levels = list(normalized_filters.get("education_level") or [])
+        if len(education_levels) > 1:
+            return _discovery_clarify(
+                reason="catalog_major_single_education_level_required",
+                message="专业目录本次只能查询一个学历层次，请先说明本科或专科。",
+                data={"education_levels": education_levels},
+            )
+        education_level = (
+            education_levels[0]
+            if education_levels
+            else ("本科" if (getattr(ctx.deps, "batch", None) or "01") == "01" else "专科")
+        )
+        responses = await asyncio.gather(
+            *(internal_client.catalog_search_major(keyword, education_level) for keyword in keywords)
+        )
+        raw_items = []
+        for response in responses:
+            response_items, available = _catalog_response_items(response)
+            if not available:
+                return _discovery_clarify(
+                    reason="catalog_major_source_unavailable",
+                    message="权威专业目录当前不可用，暂时不能可靠列出专业名单。",
+                    data={"filters": normalized_filters, "data_source": "major_catalog"},
+                )
+            raw_items.extend(response_items)
+        items = _deduplicate_discovery_items(
+            [_catalog_major_brief(item) for item in raw_items],
+            entity_type="major",
+        )
+        items.sort(key=lambda item: str(item.get("major") or ""))
+        returned = items[:requested_limit]
+        effective_filters = {**normalized_filters, "education_level": [education_level]}
+        description = _describe_filters(effective_filters) or "当前目录范围"
+        snippet = "；".join(_discovery_snippet(item, entity_type="major") for item in returned)
+        return _json(
+            {
+                "data": {
+                    "entity_type": "major",
+                    "mode": "catalog",
+                    "filters": effective_filters,
+                    "data_source": "authoritative_major_catalog",
+                    "matched_total": len(items),
+                    "returned_total": len(returned),
+                    "items": returned,
+                    "state_mutation": False,
+                },
+                "next_step": "respond",
+                "message": (
+                    f"权威专业目录按“{description}”共找到{len(items)}个，展示前{len(returned)}个：{snippet}"
+                    if returned
+                    else f"权威专业目录按“{description}”暂时没有找到专业。"
+                ),
+            }
+        )
+
+    allowed = {"school", "major", "province", "city", "school_nature", "tier", "school_tags", "major_tags"}
+    unsupported = _discovery_unsupported_filters(normalized_filters, allowed)
+    if unsupported:
+        return _discovery_clarify(
+            reason="candidate_discovery_filters_unsupported",
+            message="当前可报候选查询暂不支持这些筛选字段，请改用院校、专业、地域、档位或候选标签。",
+            data={"unsupported_filters": unsupported, "filters": normalized_filters},
+        )
+    sandbox = getattr(ctx.deps, "sandbox", None)
+    if sandbox is None:
+        return _discovery_clarify(
+            reason="candidate_source_unavailable",
+            message="当前会话候选池不可用，暂时不能判断哪些院校或专业可报。",
+            data={"filters": normalized_filters, "data_source": "candidate_pool"},
+        )
+    school_tags = [
+        *list(normalized_filters.get("school_tags") or []),
+        *list(normalized_filters.get("school_nature") or []),
+    ]
+    page_size = min(50, max(requested_limit, requested_limit * (5 if normalized_entity == "school" else 3)))
+    candidate_query = {
+        "tiers": normalized_filters.get("tier") or [],
+        "province_names": normalized_filters.get("province") or [],
+        "city_names": normalized_filters.get("city") or [],
+        "school_keywords": normalized_filters.get("school") or [],
+        "major_keywords": normalized_filters.get("major") or [],
+        "school_tags": school_tags,
+        "major_tags": normalized_filters.get("major_tags") or [],
+        "page_size": page_size,
+        "sort_field": "finalScore",
+        "sort_order": "desc",
+    }
+    candidate_data = await sandbox.read("plan/candidates.json", query=candidate_query)
+    if candidate_data.get("error") or candidate_data.get("available") is False:
+        return _discovery_clarify(
+            reason="candidate_source_unavailable",
+            message="当前会话候选池不可用，暂时不能可靠列出可报或推荐名单。",
+            data={"filters": normalized_filters, "data_source": "candidate_pool"},
+        )
+    candidates = _candidate_items(candidate_data)
+    items = _candidate_discovery_items(
+        candidates,
+        entity_type=normalized_entity,
+        limit=requested_limit,
+        batch=getattr(ctx.deps, "batch", None) or "01",
+    )
+    matched_total = _as_int(candidate_data.get("total") or (candidate_data.get("page") or {}).get("total"))
+    if matched_total <= 0:
+        matched_total = len(candidates)
+    description = _describe_filters(normalized_filters) or "当前候选范围"
+    snippet = "；".join(_discovery_snippet(item, entity_type=normalized_entity) for item in items)
+    mode_label = "当前可报候选" if normalized_mode == "eligible" else "当前候选推荐顺序"
+    entity_label = "院校" if normalized_entity == "school" else "专业"
+    plan_summary = await _plan_summary_data(ctx)
+    formal_plan_present = bool(plan_summary.get("has_plan") and _as_int(plan_summary.get("ordered_total")) > 0)
+    formal_plan_boundary = (
+        " 当前尚未生成正式方案，本结果只来自候选池。"
+        if not formal_plan_present
+        else ""
+    )
+    empty_result_analysis: dict[str, Any] = {}
+    empty_message = f"{mode_label}按“{description}”暂时没有命中的{entity_label}。"
+    if not items and normalized_entity == "major" and normalized_filters.get("major"):
+        requested_majors = list(normalized_filters.get("major") or [])
+        requested_tiers = list(normalized_filters.get("tier") or [])
+        if requested_tiers:
+            without_tier_query = {**candidate_query, "tiers": []}
+            without_tier_data = await sandbox.read("plan/candidates.json", query=without_tier_query)
+            if not without_tier_data.get("error") and without_tier_data.get("available") is not False:
+                without_tier_candidates = _candidate_items(without_tier_data)
+                without_tier_total = _as_int(
+                    without_tier_data.get("total") or (without_tier_data.get("page") or {}).get("total")
+                ) or len(without_tier_candidates)
+                available_tiers: list[str] = []
+                for candidate in without_tier_candidates:
+                    tier = _normalize_tier(_item_value(candidate, "tier", "riskTier", "risk_tier"))
+                    if tier:
+                        _append_unique(available_tiers, tier)
+                empty_result_analysis["exact_major_without_tier_total"] = without_tier_total
+                empty_result_analysis["exact_major_available_tiers"] = available_tiers
+                if without_tier_total > 0:
+                    empty_message += (
+                        f" 去掉稳/保档限制后，这些专业有{without_tier_total}条候选记录"
+                        f"（当前页档位：{'、'.join(available_tiers) or '未标明'}），说明缺的是稳/保机会，不是专业名称。"
+                    )
+
+        if not empty_result_analysis.get("exact_major_without_tier_total"):
+            broader_keywords = _broader_discovery_major_keywords(
+                requested_majors,
+                batch=getattr(ctx.deps, "batch", None) or "01",
+            )
+            broader_keywords = [value for value in broader_keywords if value not in requested_majors]
+            if broader_keywords:
+                broader_query = {**candidate_query, "major_keywords": broader_keywords}
+                broader_data = await sandbox.read("plan/candidates.json", query=broader_query)
+                if not broader_data.get("error") and broader_data.get("available") is not False:
+                    broader_candidates = _candidate_items(broader_data)
+                    broader_total = _as_int(
+                        broader_data.get("total") or (broader_data.get("page") or {}).get("total")
+                    ) or len(broader_candidates)
+                    broader_items = _candidate_discovery_items(
+                        broader_candidates,
+                        entity_type="major",
+                        limit=min(requested_limit, 3),
+                        batch=getattr(ctx.deps, "batch", None) or "01",
+                    )
+                    empty_result_analysis.update(
+                        {
+                            "broader_major_keywords": broader_keywords,
+                            "broader_matched_candidate_entry_total": broader_total,
+                            "broader_items": broader_items,
+                        }
+                    )
+                    if broader_items:
+                        broader_snippet = "；".join(
+                            _discovery_snippet(item, entity_type="major") for item in broader_items
+                        )
+                        empty_message += (
+                            f" 放宽到更宽的专业类“{'、'.join(broader_keywords)}”后有{broader_total}条候选记录，"
+                            f"例如：{broader_snippet}。"
+                        )
+                    else:
+                        empty_message += f" 放宽到“{'、'.join(broader_keywords)}”后也没有稳/保档命中。"
+        if empty_result_analysis.get("broader_major_keywords"):
+            next_step = "下一步可以按更宽的专业类或其他档位继续看。"
+        else:
+            next_step = "下一步可以改查具体专业名称，或先刷新候选池再看。"
+        empty_message += f" 本轮只查询，没有把任何候选加入方案；{next_step}"
+    sample_boundary = (
+        "这些只是当前页聚合样例，不能据此概括全量院校性质、专业或档位分布。"
+    )
+    return _json(
+        {
+            "data": {
+                "entity_type": normalized_entity,
+                "mode": normalized_mode,
+                "filters": normalized_filters,
+                "data_source": "eligible_candidate_pool"
+                if normalized_mode == "eligible"
+                else "candidate_pool_recommendation_overlay",
+                "recommendation_basis": "finalScore" if normalized_mode == "recommend" else "",
+                "matched_candidate_entry_total": matched_total,
+                "returned_items_are_sample": matched_total > len(candidates) or len(items) < matched_total,
+                "global_distribution_available": False,
+                "returned_total": len(items),
+                "items": items,
+                "view_summary": candidate_data.get("view_summary") or {},
+                "empty_result_analysis": empty_result_analysis,
+                "formal_plan_present": formal_plan_present,
+                "state_mutation": False,
+            },
+            "next_step": "respond",
+            "message": (
+                f"{mode_label}按“{description}”命中{matched_total}条候选记录，"
+                f"展示前{len(items)}个{entity_label}：{snippet}。{sample_boundary}"
+                if items
+                else empty_message
+            ) + formal_plan_boundary,
+        }
+    )
+
+
 async def explore_topic(
     ctx: RunContext[RequestContext],
     topic_type: TopicType,
@@ -1109,7 +1851,7 @@ async def compare_entities(
     entities: list[str],
     comparison_focus: str | None = None,
 ) -> str:
-    """Compare 2-5 majors or schools with structured facts and no state mutation."""
+    """Compare 2-5 majors, major categories/directions, or schools with no state mutation."""
     normalized_type = str(entity_type or "").strip().lower()
     if normalized_type not in {"major", "school"}:
         return _json(
@@ -1902,7 +2644,7 @@ def _review_affected_count(check: dict[str, Any]) -> int:
         "affected_volunteer_count",
     ):
         count = _as_int(check.get(key), -1)
-        if count >= 0:
+        if count > 0:
             return count
     for key in ("affectedUnitIds", "affected_unit_ids", "affectedVolunteerIds", "affected_volunteer_ids"):
         value = check.get(key)
@@ -2006,50 +2748,42 @@ def _review_focus_matches(issue: dict[str, Any], focus: str) -> bool:
         return True
     if focus == "risk_only":
         return issue.get("severity") == "risk"
+    code = str(issue.get("code") or "").strip()
     text = " ".join(
         str(issue.get(key) or "")
-        for key in ("code", "summary", "suggested_action", "scope_kind")
+        for key in ("summary", "suggested_action", "scope_kind")
     ).lower()
     if focus == "tuition":
+        if code in {"high_tuition", "cooperative_program"}:
+            return True
         return any(token in text for token in ("tuition", "学费", "高收费", "费用", "中外合作", "cooperative"))
     if focus == "tier_balance":
-        return any(token in text for token in ("tier", "ratio", "probability", "count", "梯度", "冲", "稳", "保", "数量"))
+        if code in {
+            "probability_inversion",
+            "probability_gap",
+            "count_validation",
+            "tier_gap",
+            "safety_guard",
+            "low_safety",
+            "edge_score",
+            "group_inner_safety_guard",
+            "major_group_safety_intent_alignment",
+        }:
+            return True
+        return any(
+            token in text
+            for token in ("tier", "ratio", "probability", "count", "录取概率", "梯度", "冲稳保", "保底", "安全垫", "志愿数量")
+        )
     if focus == "career_fit":
+        if code in {"career_mismatch", "major_group_safety_intent_alignment"}:
+            return True
         return any(token in text for token in ("career", "intent", "专业", "职业", "偏好", "适配"))
     return True
-
-
-def _review_focus_label(focus: str) -> str:
-    return {
-        "risk_only": "风险项",
-        "tier_balance": "冲稳保梯度",
-        "tuition": "学费、高收费/中外合作",
-        "career_fit": "发展方向适配",
-    }.get(str(focus or "").strip(), "当前重点")
 
 
 def _review_career_labels(career_slots: list[str] | None) -> tuple[list[str], list[str]]:
     normalized = normalize_career_slots([str(value or "").strip() for value in career_slots or []])
     return normalized, [to_career_label(value) for value in normalized]
-
-
-def _review_fix_proposal_message(fix_proposals: dict[str, Any], *, limit: int = 4) -> str:
-    proposals = fix_proposals.get("proposals") if isinstance(fix_proposals, dict) else None
-    if not isinstance(proposals, list):
-        return ""
-    lines: list[str] = []
-    for proposal in proposals[:limit]:
-        if not isinstance(proposal, dict):
-            continue
-        title = str(proposal.get("title") or "处理方向").strip()
-        summary = str(proposal.get("summary") or "").strip()
-        status = str(proposal.get("status") or "").strip()
-        status_label = f"，{status}" if status else ""
-        if summary:
-            lines.append(f"{title}（{summary}{status_label}）")
-        elif title:
-            lines.append(f"{title}{status_label}")
-    return "；".join(lines)
 
 
 def _review_summary_counts(review_file: dict[str, Any], issues: list[dict[str, Any]]) -> dict[str, int]:
@@ -2094,6 +2828,372 @@ def _tier_balance_from_plan_summary(plan_summary: dict[str, Any]) -> dict[str, A
     }
 
 
+def _review_issue_examples_from_plan(issue: dict[str, Any], plan_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    existing = issue.get("examples") if isinstance(issue.get("examples"), list) else []
+    if existing:
+        return existing[:5]
+    unit_ids = {str(value or "").strip() for value in issue.get("unit_ids") or [] if str(value or "").strip()}
+    volunteer_ids = {
+        str(value or "").strip()
+        for value in issue.get("volunteer_ids") or []
+        if str(value or "").strip()
+    }
+    if not unit_ids and not volunteer_ids:
+        return []
+    matched: list[dict[str, Any]] = []
+    for item in plan_items:
+        if _item_unit_id(item) not in unit_ids and _item_volunteer_id(item) not in volunteer_ids:
+            continue
+        matched.append(_plan_item_brief(item))
+        if len(matched) >= 5:
+            break
+    return matched
+
+
+def _review_item_search_values(item: dict[str, Any]) -> list[Any]:
+    values: list[Any] = [
+        _item_value(item, "schoolName", "school_name", "collegeName"),
+        _item_value(item, "schoolCategory", "school_category"),
+        _item_value(item, "schoolNature", "school_nature", "ownership"),
+        *_item_major_names(item),
+    ]
+    for key in (
+        "schoolRankTags",
+        "schoolBasicTags",
+        "schoolPopupTags",
+        "schoolTags",
+        "majorRankTags",
+        "majorPlanTags",
+        "majorTags",
+        "tags",
+    ):
+        values.extend(_as_list(item.get(key)))
+    return values
+
+
+def _review_resolved_major_keywords(values: list[str] | None, *, batch: str | None) -> list[str]:
+    resolved: list[str] = []
+    for value in values or []:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        result = resolve_major_entity(raw, batch)
+        for candidate in result.candidates:
+            _append_unique(resolved, candidate.canonical_name)
+        _append_unique(resolved, raw)
+    return resolved
+
+
+def _review_career_evidence(
+    plan_items: list[dict[str, Any]],
+    *,
+    career_slots: list[str],
+    major_keywords: list[str],
+    plan_total: int,
+) -> dict[str, Any]:
+    def ranked_examples(items: list[dict[str, Any]], slot: str, *, limit: int = 3) -> list[dict[str, Any]]:
+        ranked = sorted(
+            items,
+            key=lambda item: (
+                len(matching_career_evidence(_item_major_names(item), slot)),
+                len(matching_career_evidence(_review_item_search_values(item), slot)),
+            ),
+            reverse=True,
+        )
+        unique: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for index, item in enumerate(ranked):
+            key = _plan_item_group_key(item, index)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(_plan_item_brief(item))
+            if len(unique) >= limit:
+                break
+        return unique
+
+    slot_results: list[dict[str, Any]] = []
+    for slot in career_slots:
+        matched = [item for item in plan_items if matches_career_slot(_review_item_search_values(item), slot)]
+        metrics = _plan_query_count_metrics(
+            plan_items=plan_items,
+            matched_items=matched,
+            declared_total=plan_total,
+        )
+        markers: list[str] = []
+        for item in matched[:10]:
+            for marker in matching_career_evidence(_review_item_search_values(item), slot):
+                _append_unique(markers, marker)
+        slot_results.append(
+            {
+                "slot": slot,
+                "label": to_career_label(slot),
+                "matched_plan_item_total": metrics["matched_plan_item_total"],
+                "matched_detail_total": metrics["matched_detail_total"],
+                "evidence_markers": markers[:8],
+                "examples": ranked_examples(matched, slot),
+            }
+        )
+
+    major_matched = [
+        item for item in plan_items
+        if major_keywords and _matches_any_text(_item_major_names(item), major_keywords)
+    ]
+    major_metrics = _plan_query_count_metrics(
+        plan_items=plan_items,
+        matched_items=major_matched,
+        declared_total=plan_total,
+    )
+    return {
+        "available": bool(plan_items),
+        "slots": slot_results,
+        "major_keywords": major_keywords,
+        "major_matched_plan_item_total": major_metrics["matched_plan_item_total"],
+        "major_matched_detail_total": major_metrics["matched_detail_total"],
+        "major_examples": ranked_examples(major_matched, "", limit=3),
+    }
+
+
+def _review_tuition_evidence(
+    plan_items: list[dict[str, Any]],
+    *,
+    max_tuition_per_year: int,
+    plan_total: int,
+) -> dict[str, Any]:
+    known = [item for item in plan_items if _item_tuition(item) > 0]
+    over_budget = [item for item in known if _item_tuition(item) > max_tuition_per_year]
+    over_budget.sort(key=_item_tuition, reverse=True)
+    metrics = _plan_query_count_metrics(
+        plan_items=plan_items,
+        matched_items=over_budget,
+        declared_total=plan_total,
+    )
+    return {
+        "available": bool(plan_items),
+        "max_tuition_per_year": max_tuition_per_year,
+        "known_detail_total": len(known),
+        "matched_plan_item_total": metrics["matched_plan_item_total"],
+        "matched_detail_total": metrics["matched_detail_total"],
+        "plan_item_total": metrics["plan_item_total"],
+        "examples": [_plan_item_brief(item) for item in over_budget[:3]],
+    }
+
+
+def _review_cooperative_evidence(
+    plan_items: list[dict[str, Any]],
+    *,
+    plan_total: int,
+) -> dict[str, Any]:
+    matched = [item for item in plan_items if match_attribute_item("program_type", item, ["中外合作"])]
+    metrics = _plan_query_count_metrics(
+        plan_items=plan_items,
+        matched_items=matched,
+        declared_total=plan_total,
+    )
+    examples: list[dict[str, Any]] = []
+    seen_groups: set[str] = set()
+    for index, item in enumerate(matched):
+        group_key = _plan_item_group_key(item, index)
+        if group_key in seen_groups:
+            continue
+        seen_groups.add(group_key)
+        examples.append(_plan_item_brief(item))
+        if len(examples) >= 3:
+            break
+    return {
+        "available": bool(plan_items),
+        "matched_plan_item_total": metrics["matched_plan_item_total"],
+        "matched_detail_total": metrics["matched_detail_total"],
+        "plan_item_total": metrics["plan_item_total"],
+        "examples": examples,
+    }
+
+
+def _review_example_text(examples: list[dict[str, Any]], *, limit: int = 2) -> str:
+    rendered: list[str] = []
+    for item in examples[:limit]:
+        parts = [str(item.get("school") or "").strip(), str(item.get("major") or "").strip()]
+        name = "-".join(part for part in parts if part) or str(item.get("summary") or "").strip()
+        suffixes: list[str] = []
+        if item.get("tier"):
+            suffixes.append(str(item["tier"]))
+        if _as_int(item.get("tuition_per_year")) > 0:
+            suffixes.append(f"{_as_int(item['tuition_per_year'])}元/年")
+        text = f"{name}（{'，'.join(suffixes)}）" if name and suffixes else name
+        if text:
+            rendered.append(text)
+    return "；".join(rendered)
+
+
+def _review_proposal_matches_focus(proposal: dict[str, Any], focus: str) -> bool:
+    if focus in {"full_review", "risk_only"}:
+        return True
+    codes = " ".join(str(code or "") for code in proposal.get("source_check_codes") or [])
+    text = f"{codes} {proposal.get('strategy') or ''} {proposal.get('title') or ''} {proposal.get('summary') or ''}"
+    if focus == "tuition":
+        return any(token in text for token in ("tuition", "cooperative", "高收费", "中外合作", "学费"))
+    if focus == "tier_balance":
+        return any(
+            token in text
+            for token in ("tier", "probability", "count", "safety", "梯度", "冲稳保", "保底", "安全垫", "数量")
+        )
+    if focus == "career_fit":
+        return any(token in text for token in ("career", "intent", "专业", "职业", "意向"))
+    return True
+
+
+def _review_proposal_lines(fix_proposals: dict[str, Any], focus: str) -> tuple[list[str], list[str]]:
+    ready: list[str] = []
+    blocked: list[str] = []
+    for proposal in fix_proposals.get("proposals") or []:
+        if not isinstance(proposal, dict) or not _review_proposal_matches_focus(proposal, focus):
+            continue
+        title = str(proposal.get("title") or "处理方向").strip()
+        impact = str(proposal.get("impact") or "").strip()
+        summary = str(proposal.get("summary") or "").strip()
+        reason = str(proposal.get("blocking_reason") or "").strip()
+        reason = reason.removeprefix("当前不可以先看调整预览：").removeprefix("当前不能直接处理：")
+        detail = (impact or summary).rstrip("。；")
+        line = f"{title}：{detail}" if detail else title
+        if str(proposal.get("status") or "").strip() == "ready":
+            ready.append(line)
+        else:
+            blocked.append(
+                f"{line}；当前不能直接处理：{(reason or '还需要明确取舍或补充候选').rstrip('。；')}"
+            )
+    return ready[:3], blocked[:3]
+
+
+def _review_plan_message(
+    *,
+    focus: str,
+    counts: dict[str, int],
+    ordered_total: int,
+    target_total: int,
+    tier_balance: dict[str, Any],
+    issues: list[dict[str, Any]],
+    tuition_evidence: dict[str, Any],
+    cooperative_evidence: dict[str, Any],
+    career_evidence: dict[str, Any],
+    fix_proposals: dict[str, Any],
+    generate_fix_proposals: bool,
+) -> str:
+    lines: list[str] = []
+    if focus == "tuition":
+        cap = _as_int(tuition_evidence.get("max_tuition_per_year"), 20000)
+        matched = _as_int(tuition_evidence.get("matched_plan_item_total"))
+        detail_total = _as_int(tuition_evidence.get("matched_detail_total"))
+        total = _as_int(tuition_evidence.get("plan_item_total"), ordered_total)
+        if tuition_evidence.get("available"):
+            ratio = round(matched * 100 / total) if total > 0 else 0
+            if matched <= 0:
+                verdict = "没有发现超出该预算的项目"
+            elif ratio >= 20:
+                verdict = "偏多，需要按预算处理"
+            else:
+                verdict = "占比不高，但仍要逐项确认是否可承受"
+            lines.append(
+                f"当前正式方案有{ordered_total}个志愿。先说结论：按每年不超过{cap}元看，"
+                f"当前方案有{matched}个专业组超出预算，约占{ratio}%，{verdict}。"
+            )
+            if detail_total != matched:
+                lines.append(f"这些专业组共涉及{detail_total}条专业志愿。")
+            examples = _review_example_text(tuition_evidence.get("examples") or [])
+            if examples:
+                lines.append(f"例如：{examples}。")
+        else:
+            lines.append(f"先说结论：当前没有拿到逐项学费数据，暂时不能按每年{cap}元准确统计高收费数量。")
+        cooperative_total = _as_int(cooperative_evidence.get("matched_plan_item_total"))
+        cooperative_detail_total = _as_int(cooperative_evidence.get("matched_detail_total"))
+        if cooperative_evidence.get("available"):
+            cooperative_line = f"中外合作项目命中{cooperative_total}个专业组"
+            if cooperative_detail_total != cooperative_total:
+                cooperative_line += f"、{cooperative_detail_total}条专业志愿"
+            cooperative_examples = _review_example_text(cooperative_evidence.get("examples") or [])
+            if cooperative_examples:
+                cooperative_line += f"，例如{cooperative_examples}"
+            lines.append(cooperative_line + "；与高收费统计可能重叠。")
+        else:
+            lines.append("当前没有拿到逐项项目类型，暂时不能准确统计中外合作项目。")
+    elif focus == "career_fit":
+        slot_results = career_evidence.get("slots") or []
+        major_total = _as_int(career_evidence.get("major_matched_plan_item_total"))
+        major_keywords = career_evidence.get("major_keywords") or []
+        if not career_evidence.get("available"):
+            lines.append("当前方案承接结论：没有拿到方案明细，暂时不能用具体志愿判断发展方向承接。")
+        else:
+            lines.append("当前方案承接结论：对这些方向有一定承接，但只能说明方案里存在相关专业或院校证据，不等于对应职业一定录用。")
+            if major_keywords:
+                lines.append(f"专业方向：按{'、'.join(major_keywords[:4])}统计，命中{major_total}个专业组。")
+                examples = _review_example_text(career_evidence.get("major_examples") or [])
+                if examples:
+                    lines.append(f"代表项：{examples}。")
+            for result in slot_results:
+                count = _as_int(result.get("matched_plan_item_total"))
+                markers = "、".join(result.get("evidence_markers") or [])
+                line = f"{result.get('label') or '发展方向'}：命中{count}个专业组"
+                if markers:
+                    line += f"，主要证据是{markers}"
+                examples = _review_example_text(result.get("examples") or [], limit=1)
+                if examples:
+                    line += f"，例如{examples}"
+                lines.append(line + "。")
+    elif focus == "tier_balance":
+        sprint = _as_int(tier_balance.get("冲"))
+        safe = _as_int(tier_balance.get("稳"))
+        protect = _as_int(tier_balance.get("保"))
+        issue_codes = {str(issue.get("code") or "") for issue in issues}
+        if not tier_balance.get("available"):
+            lines.append("先说结论：当前没拿到冲稳保数量，不能直接判断这版是否太冲或保底是否够。")
+        elif protect <= 0 or "safety_guard" in issue_codes or "low_safety" in issue_codes:
+            lines.append(f"先说结论：当前冲{sprint}、稳{safe}、保{protect}，保底承接不足，不能按现状判断为稳妥。")
+        elif sprint > safe + protect:
+            lines.append(f"先说结论：当前冲{sprint}、稳{safe}、保{protect}，冲档数量明显偏高。")
+        elif issue_codes & {"probability_inversion", "probability_gap", "tier_gap"}:
+            lines.append(
+                f"先说结论：当前冲{sprint}、稳{safe}、保{protect}，数量上不算太冲，但排序或录取概率梯度仍有问题，不能只看保档数量就说保底够。"
+            )
+        else:
+            lines.append(f"先说结论：当前冲{sprint}、稳{safe}、保{protect}，数量结构不偏冲，保档也不算少。")
+        if target_total > ordered_total > 0:
+            lines.append(f"当前方案是{ordered_total}/{target_total}个，还缺{target_total - ordered_total}个；数量未补齐也会影响最终判断。")
+    else:
+        lines.append(
+            f"方案审查结论：当前正式方案有{ordered_total}个志愿，发现风险{counts['risk_count']}项、提醒{counts['warn_count']}项。"
+        )
+        if tier_balance.get("available"):
+            lines.append(
+                f"冲稳保为{_as_int(tier_balance.get('冲'))}/{_as_int(tier_balance.get('稳'))}/{_as_int(tier_balance.get('保'))}。"
+            )
+
+    if issues:
+        details: list[str] = []
+        for issue in issues[:3]:
+            detail = str(issue.get("summary") or "").strip()
+            affected = _as_int(issue.get("affected_count"))
+            if affected > 0:
+                detail += f"（涉及{affected}项）"
+            examples = _review_example_text(issue.get("examples") or [], limit=1)
+            if examples:
+                detail += f"，例如{examples}"
+            if detail:
+                details.append(detail)
+        if details:
+            lines.append("重点问题：" + "；".join(details) + "。")
+
+    if generate_fix_proposals:
+        ready, blocked = _review_proposal_lines(fix_proposals, focus)
+        if ready:
+            lines.append("可以继续生成调整预览的方向：" + "；".join(ready) + "。")
+        if blocked:
+            lines.append("暂时不能直接补或调的方向：" + "；".join(blocked) + "。")
+        if not ready and not blocked:
+            lines.append("当前没有与这次关注点直接匹配的可执行处理提案，不能为了凑答案自动改方案。")
+
+    lines.append("本轮只是只读审查，不会记录新要求，确认前不会改动方案；需要调整时会先给你确认预览。")
+    return "\n".join(lines)
+
+
 def _normalize_fix_proposals_payload(payload: dict[str, Any]) -> dict[str, Any]:
     data = _response_data(payload)
     proposals = data.get("proposals") if isinstance(data.get("proposals"), list) else []
@@ -2106,6 +3206,13 @@ def _normalize_fix_proposals_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if status:
             status_counts[status] = status_counts.get(status, 0) + 1
         actions = proposal.get("actions") if isinstance(proposal.get("actions"), list) else []
+        shortages = (
+            proposal.get("candidateShortages")
+            if isinstance(proposal.get("candidateShortages"), list)
+            else proposal.get("candidate_shortages")
+            if isinstance(proposal.get("candidate_shortages"), list)
+            else []
+        )
         normalized.append(
             {
                 "proposal_id": str(proposal.get("proposalId") or proposal.get("proposal_id") or "").strip(),
@@ -2128,6 +3235,20 @@ def _normalize_fix_proposals_payload(payload: dict[str, Any]) -> dict[str, Any]:
                     for action in actions[:3]
                     if isinstance(action, dict)
                 ],
+                "action_summaries": [
+                    str(action.get("summary") or "").strip()
+                    for action in actions[:3]
+                    if isinstance(action, dict) and str(action.get("summary") or "").strip()
+                ],
+                "candidate_shortages": [
+                    {
+                        "code": str(shortage.get("code") or "").strip(),
+                        "message": str(shortage.get("message") or shortage.get("summary") or "").strip(),
+                        "tier": str(shortage.get("tier") or "").strip(),
+                    }
+                    for shortage in shortages[:5]
+                    if isinstance(shortage, dict)
+                ],
             }
         )
     return {
@@ -2143,6 +3264,8 @@ async def review_plan(
     ctx: RunContext[RequestContext],
     focus: ReviewFocus | None = None,
     career_slots: list[CareerSlot] | None = None,
+    major_keywords: list[str] | None = None,
+    tuition_max_per_year: int | None = None,
     generate_fix_proposals: bool = False,
     force_refresh: bool = True,
 ) -> str:
@@ -2152,6 +3275,10 @@ async def review_plan(
     "这版稳不稳", or "高收费风险大吗". If the user explicitly asks to remove,
     delete, replace, add, sort, or handle a review issue, call
     `preview_plan_action` instead and pass the related `review_issue_code`.
+    For career-fit questions, pass canonical `career_slots` and any explicitly
+    named major direction through `major_keywords`. For tuition questions with
+    a concrete user cap, pass `tuition_max_per_year`; otherwise 20000 yuan is
+    used as the high-tuition review threshold.
     """
     normalized_focus = str(focus or "full_review").strip().lower() or "full_review"
     if normalized_focus not in {"full_review", "risk_only", "tier_balance", "tuition", "career_fit"}:
@@ -2175,6 +3302,8 @@ async def review_plan(
             }
         )
 
+    plan_file = await _sandbox_data(ctx, "plan/items.json")
+    plan_items = _items_from_plan_file(plan_file)
     review_source = "sandbox"
     review_error = ""
     if force_refresh:
@@ -2219,6 +3348,16 @@ async def review_plan(
     review_file = await _sandbox_data(ctx, "plan/review.json")
     checks = review_file.get("checks") if isinstance(review_file.get("checks"), list) else []
     issues = [_normalize_review_issue(check) for check in checks if isinstance(check, dict)]
+    for issue in issues:
+        examples = _review_issue_examples_from_plan(issue, plan_items)
+        if examples:
+            issue["examples"] = examples
+        if _as_int(issue.get("affected_count")) <= 0:
+            unit_count = len({str(value or "").strip() for value in issue.get("unit_ids") or [] if value})
+            volunteer_count = len(
+                {str(value or "").strip() for value in issue.get("volunteer_ids") or [] if value}
+            )
+            issue["affected_count"] = unit_count or volunteer_count or len(examples)
     filtered_issues = [
         issue for issue in issues
         if not issue.get("passed") and _review_focus_matches(issue, normalized_focus)
@@ -2226,6 +3365,29 @@ async def review_plan(
     counts = _review_summary_counts(review_file, issues)
     tier_balance = _tier_balance_from_plan_summary(plan_summary)
     normalized_career_slots, career_labels = _review_career_labels(career_slots)
+    ordered_total = _as_int(plan_summary.get("ordered_total") or plan_summary.get("ordered_target_total"))
+    target_total = _as_int(plan_summary.get("ordered_target_total") or ordered_total)
+    resolved_major_keywords = _review_resolved_major_keywords(
+        [str(value or "").strip() for value in major_keywords or [] if str(value or "").strip()],
+        batch=getattr(ctx.deps, "batch", None) or "01",
+    )
+    requested_tuition_cap = _as_int(tuition_max_per_year)
+    tuition_cap = requested_tuition_cap if requested_tuition_cap > 0 else 20000
+    tuition_evidence = _review_tuition_evidence(
+        plan_items,
+        max_tuition_per_year=tuition_cap,
+        plan_total=ordered_total,
+    )
+    cooperative_evidence = _review_cooperative_evidence(
+        plan_items,
+        plan_total=ordered_total,
+    )
+    career_evidence = _review_career_evidence(
+        plan_items,
+        career_slots=normalized_career_slots,
+        major_keywords=resolved_major_keywords,
+        plan_total=ordered_total,
+    )
 
     fix_proposals: dict[str, Any] = {"available": False, "reason": "not_requested"}
     if generate_fix_proposals:
@@ -2238,40 +3400,19 @@ async def review_plan(
         except Exception as exc:
             fix_proposals = {"available": False, "status": "error", "error": str(exc)}
 
-    ordered_total = _as_int(plan_summary.get("ordered_total") or plan_summary.get("ordered_target_total"))
-    plan_fact = f"当前正式方案有{ordered_total}个志愿" if ordered_total else "当前正式方案已存在"
-    career_scope = ""
-    if normalized_focus == "career_fit":
-        if career_labels:
-            career_scope = f"这轮按{'、'.join(career_labels)}看当前方案承接。"
-        else:
-            career_scope = "这轮按发展方向适配看当前方案承接。"
-    if counts["risk_count"] or counts["warn_count"]:
-        message = f"已完成方案审查，{plan_fact}，风险{counts['risk_count']}项，提醒{counts['warn_count']}项。"
-        if career_scope:
-            message += f" {career_scope}"
-        if filtered_issues:
-            main = "；".join(issue["summary"] for issue in filtered_issues[:3] if issue.get("summary"))
-            if main:
-                if career_scope:
-                    message += f" 当前能直接看到的短板主要是：{main}。"
-                else:
-                    message += f" 这轮重点看到：{main}。"
-    else:
-        message = f"已完成方案审查，{plan_fact}，当前没有明显风险或提醒。"
-        if career_scope:
-            message += f" {career_scope}"
-    if career_scope and not filtered_issues:
-        message += " 当前通用审查没有直接暴露对应方向的明显冲突；职业方向承接还需要继续结合专业、院校和后续发展路径细看。"
-    if normalized_focus != "full_review":
-        message += f" 已按{_review_focus_label(normalized_focus)}聚焦过滤。"
-    if generate_fix_proposals and fix_proposals.get("total"):
-        message += f" 已整理{fix_proposals.get('total')}个处理方向，确认前不会改动方案。"
-        proposal_message = _review_fix_proposal_message(fix_proposals)
-        if proposal_message:
-            message += f" 处理方向包括：{proposal_message}。"
-    else:
-        message += " 这只是只读审查，确认前不会改动方案。"
+    message = _review_plan_message(
+        focus=normalized_focus,
+        counts=counts,
+        ordered_total=ordered_total,
+        target_total=target_total,
+        tier_balance=tier_balance,
+        issues=filtered_issues,
+        tuition_evidence=tuition_evidence,
+        cooperative_evidence=cooperative_evidence,
+        career_evidence=career_evidence,
+        fix_proposals=fix_proposals,
+        generate_fix_proposals=generate_fix_proposals,
+    )
 
     return _json(
         {
@@ -2282,8 +3423,13 @@ async def review_plan(
                 "summary": counts,
                 "has_plan": True,
                 "ordered_total": ordered_total,
+                "target_total": target_total,
                 "career_slots": normalized_career_slots,
                 "career_labels": career_labels,
+                "major_keywords": resolved_major_keywords,
+                "career_evidence": career_evidence,
+                "tuition_evidence": tuition_evidence,
+                "cooperative_evidence": cooperative_evidence,
                 "issues": filtered_issues[:10],
                 "all_issue_count": len([issue for issue in issues if not issue.get("passed")]),
                 "tier_balance": tier_balance,
@@ -2490,17 +3636,19 @@ def _semantic_reference_summary(semantic_requirements: list[dict[str, Any]] | No
     return "；".join(parts)
 
 
-def _semantic_attribute_completion_candidates(
+def _materialize_actionable_semantic_requirements(
     intent_type: str,
-    merged: dict[str, Any],
     *,
+    positive: dict[str, Any] | None,
+    negative: dict[str, Any] | None,
     semantic_requirements: list[dict[str, Any]] | None,
     batch: str | None = None,
-    raw_user_text: str = "",
-) -> list[dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    positive_payload = dict(positive) if isinstance(positive, dict) else {}
+    negative_payload = dict(negative) if isinstance(negative, dict) else {}
     if not isinstance(semantic_requirements, list):
-        return []
-    missing: list[dict[str, Any]] = []
+        return positive_payload, negative_payload, []
+    materialized: list[dict[str, Any]] = []
     for item in semantic_requirements:
         if not isinstance(item, dict) or not _semantic_requirement_is_actionable(item):
             continue
@@ -2515,51 +3663,132 @@ def _semantic_attribute_completion_candidates(
         keys = _INTENT_DOMAIN_SEMANTIC_KEYS.get(domain)
         if not keys or key not in keys:
             continue
-        if domain != intent_type and key in _CROSS_DOMAIN_ATTRIBUTE_SUPPLEMENT_EXCLUDED_KEYS:
-            continue
+        if domain != intent_type:
+            cross_domain_keys = _INTENT_DOMAIN_ATTRIBUTE_KEYS.get(domain, ())
+            if key not in cross_domain_keys or key in _CROSS_DOMAIN_ATTRIBUTE_SUPPLEMENT_EXCLUDED_KEYS:
+                continue
         values = _semantic_requirement_values(item, key, domain=domain, batch=batch)
-        check_pairs = [(key, value) for value in values]
-        if domain == "major" and values:
-            semantic_payload_key = f"negative_{key}" if side == "negative" else key
-            refined = canonicalize_major_intent_payload(
-                {semantic_payload_key: values},
-                raw_user_text,
-                batch,
-            ) or {}
-            refined_pairs: list[tuple[str, str]] = []
-            for refined_key, refined_values in refined.items():
-                refined_side = "negative" if str(refined_key).startswith("negative_") else "positive"
-                if refined_side != side:
-                    continue
-                base_key = str(refined_key).removeprefix("negative_")
-                if base_key in {"level1", "level2", "level3", *_MAJOR_INTENT_ATTRIBUTE_KEYS}:
-                    refined_pairs.extend((base_key, value) for value in _as_list(refined_values))
-            if refined_pairs:
-                check_pairs = refined_pairs
-        missing_values = [
-            value
-            for check_key, value in check_pairs
-            if not _merged_contains_attribute_value(
-                merged,
-                domain=domain,
-                side=side,
-                key=check_key,
-                value=value,
-                batch=batch,
-            )
-        ]
-        if not missing_values:
+        if not values:
             continue
-        missing.append(
+        payload_key = key
+        if domain == "school" and key in _SCHOOL_ENTITY_SEMANTIC_KEYS:
+            payload_key = "schools"
+        elif domain == "major" and key in _MAJOR_ENTITY_SEMANTIC_KEYS:
+            payload_key = "major"
+        target = negative_payload if side == "negative" else positive_payload
+        existing = _as_list(target.get(payload_key))
+        added: list[str] = []
+        for value in values:
+            if value not in existing:
+                existing.append(value)
+                added.append(value)
+        if not added:
+            continue
+        target[payload_key] = existing
+        materialized.append(
             {
                 "domain": domain,
                 "side": side,
-                "key": key,
-                "values": missing_values,
-                "target_payload_path": f"{side}.{key}",
+                "key": payload_key,
+                "values": added,
+                "target_payload_path": f"{side}.{payload_key}",
             }
         )
-    return missing
+    return positive_payload, negative_payload, materialized
+
+
+_GENERIC_COMPLEMENT_MARKERS = ("其他", "其它", "其余", "剩余", "剩下")
+_SEMANTIC_VALUE_SUFFIXES = ("专业", "方向", "地区", "地域", "学校", "院校", "类别", "门类", "类", "学")
+
+
+def _semantic_value_is_generic_complement(value: Any) -> bool:
+    compact_value = _compact_text(value)
+    return bool(compact_value) and any(marker in compact_value for marker in _GENERIC_COMPLEMENT_MARKERS)
+
+
+def _semantic_value_is_named_in_span(value: Any, raw_span: str) -> bool:
+    compact_value = _compact_text(value)
+    compact_span = _compact_text(raw_span)
+    if not compact_value or not compact_span:
+        return False
+    candidates = {compact_value}
+    for suffix in _SEMANTIC_VALUE_SUFFIXES:
+        if compact_value.endswith(suffix) and len(compact_value) - len(suffix) >= 2:
+            candidates.add(compact_value[: -len(suffix)])
+    return any(candidate in compact_span for candidate in candidates)
+
+
+def _drop_synthetic_only_keep_complement(
+    intent_type: str,
+    negative: dict[str, Any],
+    semantic_requirements: list[dict[str, Any]] | None,
+    *,
+    batch: str | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Drop model-enumerated complements that were not named by the user.
+
+    `only_keep` already expresses the complement through its positive scope. A
+    semantic item such as raw_span="其他专业" must therefore not expand into a
+    maintained list of negative disciplines. Explicitly named exclusions remain.
+    """
+    if not isinstance(negative, dict) or not isinstance(semantic_requirements, list):
+        return negative, []
+
+    dropped_by_key: dict[str, set[str]] = {}
+    dropped: list[dict[str, Any]] = []
+    for item in semantic_requirements:
+        if not isinstance(item, dict) or not _semantic_requirement_is_actionable(item):
+            continue
+        side = _semantic_requirement_side(item.get("side") or item.get("polarity"))
+        if side != "negative":
+            continue
+        raw_span = str(item.get("raw_span") or item.get("rawSpan") or "").strip()
+        if not raw_span or not any(marker in raw_span for marker in _GENERIC_COMPLEMENT_MARKERS):
+            continue
+        domain = _semantic_requirement_domain(item.get("domain") or item.get("intent_type") or item.get("intentType"))
+        key = str(item.get("key") or item.get("attribute_key") or item.get("attributeKey") or "").strip()
+        if key.startswith("negative_"):
+            key = key.removeprefix("negative_")
+        key = _canonical_semantic_requirement_key(domain, key)
+        if not domain or not key:
+            continue
+        if domain != intent_type:
+            cross_domain_keys = _INTENT_DOMAIN_ATTRIBUTE_KEYS.get(domain, ())
+            if key not in cross_domain_keys or key in _CROSS_DOMAIN_ATTRIBUTE_SUPPLEMENT_EXCLUDED_KEYS:
+                continue
+        payload_key = key
+        if domain == "school" and key in _SCHOOL_ENTITY_SEMANTIC_KEYS:
+            payload_key = "schools"
+        elif domain == "major" and key in _MAJOR_ENTITY_SEMANTIC_KEYS:
+            payload_key = "major"
+        ungrounded = [
+            value
+            for value in _semantic_requirement_values(item, key, domain=domain, batch=batch)
+            if _semantic_value_is_generic_complement(value)
+            or not _semantic_value_is_named_in_span(value, raw_span)
+        ]
+        if not ungrounded:
+            continue
+        dropped_by_key.setdefault(payload_key, set()).update(_compact_text(value) for value in ungrounded)
+        dropped.append(
+            {
+                "domain": domain,
+                "key": payload_key,
+                "values": ungrounded,
+                "raw_span": raw_span,
+            }
+        )
+
+    if not dropped_by_key:
+        return negative, []
+    canonical = dict(negative)
+    for key, compact_values in dropped_by_key.items():
+        values = [value for value in _as_list(canonical.get(key)) if _compact_text(value) not in compact_values]
+        if values:
+            canonical[key] = values
+        else:
+            canonical.pop(key, None)
+    return canonical, dropped
 
 
 def _attribute_values_from_payload(payload: dict[str, Any] | None, keys: tuple[str, ...]) -> dict[str, list[str]]:
@@ -2659,63 +3888,55 @@ def _canonicalize_merged_intents_for_constraint(
     return canonical
 
 
-def _merged_contains_attribute_value(
-    merged: dict[str, Any],
+def _major_requirement_conflicts(
+    normalized: dict[str, Any],
     *,
-    domain: str,
-    side: str,
-    key: str,
-    value: str,
-    batch: str | None = None,
-) -> bool:
-    section = _INTENT_DOMAIN_SECTION.get(domain)
-    if not section:
-        return False
-    section_payload = merged.get(section) if isinstance(merged.get(section), dict) else {}
-    if domain == "tuition_budget":
-        candidate_key = _normalize_tuition_budget_key(key)
-        expected_amount = _as_int(value)
-        if not candidate_key or expected_amount <= 0:
-            return False
-        return expected_amount in {
-            _as_int(item)
-            for item in _as_list(section_payload.get(candidate_key))
-            if _as_int(item) > 0
-        }
-    if domain == "major" and key in _MAJOR_ENTITY_SEMANTIC_KEYS:
-        candidate_keys = ("level1", "level2", "level3")
-    elif domain == "school" and key in _SCHOOL_ENTITY_SEMANTIC_KEYS:
-        candidate_keys = ("colleges",)
-    else:
-        candidate_keys = (key,)
-    expected = str(value or "").strip()
-    if not expected:
-        return False
-    if domain == "major" and key in {"level1", "level2", "level3"}:
-        target_key = f"negative_{key}" if side == "negative" else key
-        if expected in set(_as_list(section_payload.get(target_key))):
-            return True
-        mappings = major_parent_mappings_for_batch(batch)
-        level3_to_level2 = mappings.get("level3_to_level2", {})
-        level2_to_level1 = mappings.get("level2_to_level1", {})
-        if key == "level2":
-            parent_level1 = level2_to_level1.get(expected)
-            parent_key = "negative_level1" if side == "negative" else "level1"
-            return bool(parent_level1 and parent_level1 in set(_as_list(section_payload.get(parent_key))))
-        if key == "level3":
-            parent_level2 = level3_to_level2.get(expected)
-            parent_level1 = level2_to_level1.get(parent_level2 or "")
-            parent_level2_key = "negative_level2" if side == "negative" else "level2"
-            parent_level1_key = "negative_level1" if side == "negative" else "level1"
-            return bool(
-                (parent_level2 and parent_level2 in set(_as_list(section_payload.get(parent_level2_key))))
-                or (parent_level1 and parent_level1 in set(_as_list(section_payload.get(parent_level1_key))))
-            )
-    for candidate_key in candidate_keys:
-        target_key = f"negative_{candidate_key}" if side == "negative" else candidate_key
-        if expected in set(_as_list(section_payload.get(target_key))):
-            return True
-    return False
+    batch: str | None,
+) -> list[dict[str, str]]:
+    positive = normalized.get("positive") if isinstance(normalized.get("positive"), dict) else {}
+    negative = normalized.get("negative") if isinstance(normalized.get("negative"), dict) else {}
+    negative_by_level = {
+        level: {str(value) for value in _as_list(negative.get(level)) if str(value or "").strip()}
+        for level in ("level1", "level2", "level3")
+    }
+    mappings = major_parent_mappings_for_batch(batch)
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+    conflicts: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def append(positive_value: str, negative_value: str, relation: str) -> None:
+        key = (positive_value, negative_value, relation)
+        if key in seen:
+            return
+        seen.add(key)
+        conflicts.append(
+            {
+                "positive": positive_value,
+                "negative": negative_value,
+                "relation": relation,
+            }
+        )
+
+    for level in ("level1", "level2", "level3"):
+        for raw_value in _as_list(positive.get(level)):
+            value = str(raw_value or "").strip()
+            if not value:
+                continue
+            if value in negative_by_level[level]:
+                append(value, value, "same_entity")
+            if level == "level2":
+                parent_level1 = level2_to_level1.get(value)
+                if parent_level1 in negative_by_level["level1"]:
+                    append(value, str(parent_level1), "excluded_parent")
+            elif level == "level3":
+                parent_level2 = level3_to_level2.get(value)
+                parent_level1 = level2_to_level1.get(parent_level2 or "")
+                if parent_level2 in negative_by_level["level2"]:
+                    append(value, str(parent_level2), "excluded_parent")
+                if parent_level1 in negative_by_level["level1"]:
+                    append(value, str(parent_level1), "excluded_parent")
+    return conflicts
 
 
 def _add_display_alias(display_aliases: dict[str, str], raw_text: Any, canonical_name: Any) -> None:
@@ -2737,34 +3958,6 @@ def _merge_display_aliases(*aliases: dict[str, str] | None) -> dict[str, str]:
             if canonical_text and raw_text and canonical_text not in merged:
                 merged[canonical_text] = raw_text
     return merged
-
-
-def _major_display_aliases_from_user_text(
-    merged: dict[str, Any],
-    raw_user_text: str,
-    *,
-    batch: str | None,
-) -> dict[str, str]:
-    compact_user_text = _compact_text(raw_user_text)
-    if not compact_user_text:
-        return {}
-    major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
-    if not major_intents:
-        return {}
-    aliases: dict[str, str] = {}
-    for key in ("level1", "level2", "level3", "negative_level1", "negative_level2", "negative_level3"):
-        for canonical in _as_list(major_intents.get(key)):
-            canonical_text = str(canonical or "").strip()
-            if not canonical_text:
-                continue
-            if _compact_text(canonical_text) in compact_user_text:
-                continue
-            for alias in sorted(major_alias_variants_for_name(canonical_text, batch), key=len, reverse=True):
-                compact_alias = _compact_text(alias)
-                if compact_alias and compact_alias in compact_user_text:
-                    _add_display_alias(aliases, alias, canonical_text)
-                    break
-    return aliases
 
 
 def _normalize_major_payload(
@@ -2996,45 +4189,6 @@ def _normalize_intent_side(
     if intent_type == "tuition_budget":
         return _normalize_tuition_budget_payload(payload)
     return {}, [], {}
-
-
-def _major_text_requests_broad_scope(raw_user_text: str) -> bool:
-    text = _compact_text(raw_user_text)
-    return any(marker in text for marker in ("相关", "有关", "类似", "这类", "一类", "之类", "方向", "大类"))
-
-
-def _refine_major_payload_by_user_text(
-    normalized: dict[str, Any],
-    *,
-    raw_user_text: str,
-    batch: str | None,
-) -> dict[str, Any]:
-    if not str(raw_user_text or "").strip():
-        return normalized
-    if _major_text_requests_broad_scope(raw_user_text):
-        return normalized
-    positive = normalized.get("positive") if isinstance(normalized.get("positive"), dict) else {}
-    negative = normalized.get("negative") if isinstance(normalized.get("negative"), dict) else {}
-    major_payload: dict[str, Any] = {}
-    for level in ("level1", "level2", "level3"):
-        values = _as_list(positive.get(level))
-        if values:
-            major_payload[level] = values
-        negative_values = _as_list(negative.get(level))
-        if negative_values:
-            major_payload[f"negative_{level}"] = negative_values
-    if not major_payload:
-        return normalized
-    refined = canonicalize_major_intent_payload(major_payload, raw_user_text, batch) or {}
-    refined_positive = dict(positive)
-    refined_negative = dict(negative)
-    for level in ("level1", "level2", "level3"):
-        refined_positive[level] = _as_list(refined.get(level))
-        refined_negative[level] = _as_list(refined.get(f"negative_{level}"))
-    return {
-        "positive": refined_positive,
-        "negative": refined_negative,
-    }
 
 
 def _preview_message(
@@ -3441,14 +4595,18 @@ async def _local_plan_impact(
         for item in items
         if _plan_item_matches_intent(item, intent_type, normalized, constraint_type)
     ]
+    matched_groups: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(matched):
+        matched_groups.setdefault(_plan_item_group_key(item, index), item)
     tier_counts: dict[str, int] = {}
-    for item in matched:
+    for item in matched_groups.values():
         tier = _normalize_tier(_item_value(item, "tier", "riskTier", "risk_tier")) or "未分层"
         tier_counts[tier] = tier_counts.get(tier, 0) + 1
     return {
         "source": "local_plan_items",
         "available": bool(items),
-        "affected_count": len(matched),
+        "affected_count": len(matched_groups),
+        "affected_detail_count": len(matched),
         "affected_items": [_plan_item_snippet(item) for item in matched[:8]],
         "tier_impact": {key: -value for key, value in tier_counts.items()},
     }
@@ -3883,7 +5041,7 @@ async def _create_intent_pending(
             "state": pending_state,
             "backend_response": {},
         }
-    response = await internal_client.save_pending_confirmation(ctx.deps.sessionid, pending_state, version=source_version)
+    response = await internal_client.save_pending_confirmation(ctx.deps.sessionid, pending_state)
     if not _is_success_response(response):
         return {
             "created": False,
@@ -3966,10 +5124,13 @@ def _item_tuition(item: dict[str, Any]) -> int:
 
 def _normalize_tier(value: Any) -> str:
     text = str(value or "").strip()
-    if text in {"保底", "兜底", "保险"}:
+    lowered = text.lower()
+    if lowered in {"protect", "protective", "safety", "保底", "兜底", "保险"}:
         return "保"
-    if text in {"冲刺"}:
+    if lowered in {"sprint", "reach", "冲刺"}:
         return "冲"
+    if lowered in {"stable", "safe", "稳妥"}:
+        return "稳"
     return text
 
 
@@ -4047,6 +5208,14 @@ def _normalize_plan_query_filters(filters: dict[str, Any]) -> tuple[dict[str, An
             "unit_position": "position_group",
             "orderedPosition": "position_group",
             "ordered_position": "position_group",
+            "group": "group_code",
+            "groupCode": "group_code",
+            "majorGroup": "group_code",
+            "major_group": "group_code",
+            "majorGroupCode": "group_code",
+            "major_group_code": "group_code",
+            "schoolUnitCode": "group_code",
+            "school_unit_code": "group_code",
             "pageSize": "limit",
             "page_size": "limit",
         }.get(normalized_key, normalized_key)
@@ -4054,7 +5223,7 @@ def _normalize_plan_query_filters(filters: dict[str, Any]) -> tuple[dict[str, An
         if normalized_key == "tier":
             values = [_normalize_tier(item) for item in normalize_attribute_filter_values("tier", _as_list(value))]
             normalized["tier"] = [item for item in values if item]
-        elif normalized_key in {"school_nature", "school", "major", "province"}:
+        elif normalized_key in {"school_nature", "school", "major", "province", "group_code"}:
             normalized[normalized_key] = normalize_attribute_filter_values(normalized_key, _as_list(value))
         elif normalized_key == "tuition_max":
             max_value = _as_int(value)
@@ -4217,6 +5386,45 @@ def _extract_plan_query_controls(filters: dict[str, Any]) -> tuple[dict[str, Any
     return query_filters, controls
 
 
+def _extract_relative_province_scope(filters: dict[str, Any]) -> str:
+    aliases = {
+        "省内": "inside",
+        "本省": "inside",
+        "inside": "inside",
+        "in_province": "inside",
+        "省外": "outside",
+        "外省": "outside",
+        "outside": "outside",
+        "out_of_province": "outside",
+    }
+    scope = ""
+    explicit_values = _as_list(filters.pop("province_scope", None))
+    provinces = _as_list(filters.get("province"))
+    concrete_provinces: list[str] = []
+    for value in [*explicit_values, *provinces]:
+        text = str(value or "").strip()
+        relative = aliases.get(text.lower())
+        if relative:
+            scope = relative
+        elif value in provinces:
+            _append_unique(concrete_provinces, text)
+    if concrete_provinces:
+        filters["province"] = concrete_provinces
+    else:
+        filters.pop("province", None)
+    return scope
+
+
+def _matches_relative_province_scope(item: dict[str, Any], *, home_province: str, scope: str) -> bool:
+    if not scope:
+        return True
+    actual = _compact_text(_item_value(item, "provinceName", "province_name", "province"))
+    home = _compact_text(home_province)
+    if not actual or not home:
+        return False
+    return actual == home if scope == "inside" else actual != home
+
+
 def _matches_any_text(target_values: list[str], query_values: list[str]) -> bool:
     if not query_values:
         return True
@@ -4269,6 +5477,30 @@ def _resolve_major_filter_values(values: list[str], *, batch: str | None) -> lis
     return resolved
 
 
+def _item_group_codes(item: dict[str, Any]) -> set[str]:
+    result: set[str] = set()
+    for raw_value in (
+        _item_value(
+            item,
+            "schoolUnitCode",
+            "school_unit_code",
+            "majorGroupCode",
+            "major_group_code",
+            "groupCode",
+            "group_code",
+            "unitCode",
+            "unit_code",
+        ),
+    ):
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        result.add(value)
+        if "-" in value:
+            result.add(value.rsplit("-", 1)[-1])
+    return result
+
+
 def _matches_plan_item(item: dict[str, Any], filters: dict[str, Any], *, batch: str | None) -> bool:
     school_nature = filters.get("school_nature") or []
     if school_nature:
@@ -4297,6 +5529,10 @@ def _matches_plan_item(item: dict[str, Any], filters: dict[str, Any], *, batch: 
         if not _matches_any_text(_item_major_names(item), major_values):
             return False
 
+    group_codes = {str(value or "").strip() for value in _as_list(filters.get("group_code")) if str(value or "").strip()}
+    if group_codes and not (_item_group_codes(item) & group_codes):
+        return False
+
     provinces = filters.get("province") or []
     if provinces:
         actual_province = str(_item_value(item, "provinceName", "province_name", "province") or "").strip()
@@ -4315,7 +5551,16 @@ def _matches_plan_item(item: dict[str, Any], filters: dict[str, Any], *, batch: 
         if tuition <= 0 or tuition < tuition_min:
             return False
 
-    handled = {"school_nature", "tier", "school", "major", "province", "tuition_max", "tuition_min"}
+    handled = {
+        "school_nature",
+        "tier",
+        "school",
+        "major",
+        "group_code",
+        "province",
+        "tuition_max",
+        "tuition_min",
+    }
     for key, value in filters.items():
         if key in handled:
             continue
@@ -4330,7 +5575,10 @@ def _matches_plan_item(item: dict[str, Any], filters: dict[str, Any], *, batch: 
 def _plan_item_brief(item: dict[str, Any]) -> dict[str, Any]:
     majors = _item_major_names(item)
     return {
-        "position": _as_int(_item_value(item, "position", "rank", "order")),
+        "position": _as_int(
+            item.get("_group_ordinal_position")
+            or _item_value(item, "position", "rank", "order")
+        ),
         "school": str(_item_value(item, "schoolName", "school_name", "collegeName") or "").strip(),
         "major": majors[0] if majors else "",
         "tier": _normalize_tier(_item_value(item, "tier", "riskTier", "risk_tier")),
@@ -4360,6 +5608,21 @@ def _plan_item_snippet(item: dict[str, Any], *, include_fields: list[str] | None
     if brief.get("tuition_per_year"):
         suffixes.append(f"{brief['tuition_per_year']}元/年")
     return f"{name}（{'，'.join(suffixes)}）" if suffixes else name
+
+
+def _plan_item_scope_summary(
+    items: list[dict[str, Any]],
+    *,
+    limit: int,
+    total: int | None = None,
+    noun: str = "专业组",
+) -> str:
+    visible_limit = max(1, limit)
+    actual_total = max(len(items), _as_int(total))
+    summary = "；".join(_plan_item_snippet(item) for item in items[:visible_limit])
+    if actual_total > visible_limit:
+        summary += f"；以上仅展示前{visible_limit}个，本次实际影响{actual_total}个{noun}"
+    return summary
 
 
 def _describe_filters(filters: dict[str, Any]) -> str:
@@ -4801,7 +6064,7 @@ def _replacement_spec_is_actionable(spec: ReplacementSpec) -> bool:
     return bool(spec.get("improve_dims") or spec.get("exclude_markers"))
 
 
-def _replacement_legacy_auto_select_reason(spec: ReplacementSpec) -> str:
+def _replacement_auto_select_reason(spec: ReplacementSpec) -> str:
     markers = set(spec.get("exclude_markers") or [])
     dims = set(spec.get("improve_dims") or [])
     if "high_tuition" in markers or "tuition_decrease" in dims:
@@ -5085,7 +6348,7 @@ async def _auto_select_replacement_candidates(
 
 
 def _item_unit_id(item: dict[str, Any]) -> str:
-    for key in ("unitId", "unit_id", "id"):
+    for key in ("unitId", "unit_id", "planSchoolDataId", "plan_school_data_id", "id"):
         text = str(item.get(key) or "").strip()
         if text:
             return text
@@ -5301,7 +6564,9 @@ def _items_by_unit_positions(items: list[dict[str, Any]], positions: list[int]) 
         if item_id in seen:
             continue
         seen.add(item_id)
-        result.append(item)
+        resolved_item = dict(item)
+        resolved_item["_group_ordinal_position"] = position
+        result.append(resolved_item)
     return result
 
 
@@ -5452,6 +6717,105 @@ async def _resolve_plan_targets(
     resolved = _dedupe_items_by_id(resolved, id_getter)
     reason = "ok" if not missing else "missing_targets"
     return resolved, missing, reason
+
+
+def _add_candidate_reference_filters(
+    ctx: RunContext[RequestContext],
+    targets: list[str] | None,
+    filters: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized_filters, _ = _normalize_plan_query_filters(filters if isinstance(filters, dict) else {})
+    if normalized_filters.get("school") and normalized_filters.get("major"):
+        return normalized_filters
+
+    raw_targets = _as_list(targets)
+    batch = getattr(ctx.deps, "batch", None) or "01"
+    if len(raw_targets) == 1:
+        reference = resolve_school_major_ref(raw_targets[0], batch)
+        if reference.can_query:
+            normalized_filters.setdefault("school", reference.school_keywords)
+            normalized_filters.setdefault("major", reference.major_keywords)
+            return normalized_filters
+
+    schools: list[str] = []
+    majors: list[str] = []
+    for target in raw_targets:
+        school_result = resolve_school_entity(target, batch)
+        if school_result.best is not None and not school_result.ambiguous:
+            _append_unique(schools, school_result.best.canonical_name)
+        major_result = resolve_major_entity(target, batch)
+        if major_result.best is not None and not major_result.ambiguous:
+            _append_unique(majors, major_result.best.canonical_name)
+    if len(schools) == 1 and len(majors) == 1:
+        normalized_filters.setdefault("school", schools)
+        normalized_filters.setdefault("major", majors)
+    return normalized_filters
+
+
+def _candidate_query_for_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tiers": _as_list(filters.get("tier")),
+        "province_names": _as_list(filters.get("province")),
+        "school_keywords": _as_list(filters.get("school")),
+        "major_keywords": _as_list(filters.get("major")),
+        "page": 1,
+        "page_size": 50,
+        "sort_field": "finalScore",
+        "sort_order": "desc",
+    }
+
+
+async def _resolve_add_candidate_targets(
+    ctx: RunContext[RequestContext],
+    targets: list[str] | None,
+    filters: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+    resolved, missing, direct_reason = await _resolve_plan_targets(ctx, targets, source="candidates")
+    if direct_reason == "ok" and not missing and resolved:
+        return resolved, {}, "ok"
+
+    normalized_filters = _add_candidate_reference_filters(ctx, targets, filters)
+    if not normalized_filters.get("school") or not normalized_filters.get("major"):
+        return [], normalized_filters, direct_reason
+
+    batch = getattr(ctx.deps, "batch", None) or "01"
+    cached = await _sandbox_data(ctx, "plan/candidates.json")
+    matches = [
+        item
+        for item in _candidate_items(cached)
+        if _matches_plan_item(item, normalized_filters, batch=batch)
+    ]
+    if not matches:
+        queried = await _sandbox_data(
+            ctx,
+            "plan/candidates.json",
+            query=_candidate_query_for_filters(normalized_filters),
+        )
+        matches = [
+            item
+            for item in _candidate_items(queried)
+            if _matches_plan_item(item, normalized_filters, batch=batch)
+        ]
+    matches = _dedupe_items_by_id(matches, _item_volunteer_id)
+    if not matches:
+        return [], normalized_filters, "candidate_no_match"
+
+    plan_data = await _sandbox_data(ctx, "plan/items.json")
+    selected_volunteer_ids = {
+        _item_volunteer_id(item)
+        for item in _items_from_plan_file(plan_data)
+        if _item_volunteer_id(item)
+    }
+    matches = [item for item in matches if _item_volunteer_id(item) not in selected_volunteer_ids]
+    if not matches:
+        return [], normalized_filters, "candidate_already_selected"
+    if len(matches) == 1:
+        return matches, normalized_filters, "ok"
+
+    unit_ids = {_item_unit_id(item) for item in matches if _item_unit_id(item)}
+    if len(unit_ids) == 1:
+        return matches, normalized_filters, "ok"
+    return matches, normalized_filters, "candidate_ambiguous"
 
 
 async def _plan_items_for_target_position(
@@ -5747,6 +7111,15 @@ def _action_label(action: str) -> str:
     }.get(action, "调整方案")
 
 
+def _move_target_scope(filters: dict[str, Any], target_position: int) -> str:
+    target_tiers = _as_list(filters.get("target_tier") or filters.get("targetTier"))
+    target_ordinal = _as_int(filters.get("target_ordinal") or filters.get("targetOrdinal"))
+    if target_tiers and target_ordinal > 0:
+        tier_label = _tier_display_label([_normalize_tier(target_tiers[0])])
+        return f"{tier_label}第{target_ordinal}位（方案第{target_position}位）"
+    return f"方案第{target_position}位"
+
+
 def _plan_impact_for_action(action_family: str, summary: dict[str, Any], count: int) -> dict[str, Any]:
     tier_counts = summary.get("tier_counts") if isinstance(summary.get("tier_counts"), dict) else {}
     delta = count if action_family == "add_units" else -count if action_family in {"remove_units", "remove_ordered_unit"} else 0
@@ -5805,8 +7178,11 @@ async def _create_plan_pending(
     payload: dict[str, Any],
     affected_scope: str,
     plan_impact: dict[str, Any],
+    source_version: int | None = None,
 ) -> dict[str, Any]:
-    source_version = _as_int((await _plan_summary_data(ctx)).get("version"))
+    source_version = _as_int(source_version)
+    if source_version <= 0:
+        source_version = _as_int((await _plan_summary_data(ctx)).get("version"))
     pending_id = f"pending_{uuid.uuid4().hex}"
     now = _now_iso()
     pending_state = {
@@ -5862,7 +7238,7 @@ async def _create_plan_pending(
             "state": pending_state,
             "backend_response": {},
         }
-    response = await internal_client.save_pending_confirmation(ctx.deps.sessionid, pending_state, version=source_version)
+    response = await internal_client.save_pending_confirmation(ctx.deps.sessionid, pending_state)
     if not _is_success_response(response):
         return {
             "created": False,
@@ -5962,33 +7338,6 @@ def _tuition_budget_bounds(merged: dict[str, Any]) -> tuple[int, int]:
     return min_tuition, max_tuition
 
 
-async def _sync_tuition_budget_direct(ctx: RunContext[RequestContext], merged: dict[str, Any]) -> dict[str, Any] | None:
-    min_tuition, max_tuition = _tuition_budget_bounds(merged)
-    if min_tuition <= 0 and max_tuition <= 0:
-        return None
-    try:
-        response = await internal_client.update_session_tuition_range(
-            ctx.deps.sessionid,
-            min_tuition=min_tuition,
-            max_tuition=max_tuition,
-        )
-    except Exception as exc:
-        return {
-            "triggered": True,
-            "success": False,
-            "min_tuition_per_year": min_tuition,
-            "max_tuition_per_year": max_tuition,
-            "error": str(exc),
-        }
-    return {
-        "triggered": True,
-        "success": _is_success_response(response),
-        "min_tuition_per_year": min_tuition,
-        "max_tuition_per_year": max_tuition,
-        "backend_response": response,
-    }
-
-
 def _selected_values_from_pending_payload(execution_payload: dict[str, Any]) -> list[dict[str, Any]]:
     selected_data = execution_payload.get("selectedData") or execution_payload.get("selected_data")
     if isinstance(selected_data, dict):
@@ -6068,9 +7417,33 @@ def _pending_source_version(pending: dict[str, Any]) -> int:
     )
 
 
-async def _mark_pending_status(ctx: RunContext[RequestContext], pending: dict[str, Any], status: str, **extra: Any) -> None:
+def _pending_command_operation_id(pending: dict[str, Any], command_type: str) -> str:
+    raw = pending.get("raw") if isinstance(pending.get("raw"), dict) else {}
+    pending_id = str(pending.get("pending_id") or pending.get("pendingId") or raw.get("pendingId") or "").strip()
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"zhiyuan:{pending_id}:{command_type}"))
+
+
+def _pending_claim_token(pending: dict[str, Any]) -> str:
+    raw = pending.get("raw") if isinstance(pending.get("raw"), dict) else {}
+    return str(raw.get("_pendingClaimToken") or raw.get("claimToken") or "").strip()
+
+
+def _pending_command_execution_uncertain(response: dict[str, Any] | None) -> bool:
+    if not isinstance(response, dict):
+        return True
+    if response.get("error") or response.get("success") is False:
+        return True
+    if _as_int(response.get("code"), -1) == 40903:
+        message = str(response.get("msg") or response.get("message") or "").strip().lower()
+        return "already running" in message
+    return "code" not in response
+
+
+async def _mark_pending_status(
+    ctx: RunContext[RequestContext], pending: dict[str, Any], status: str, **extra: Any
+) -> dict[str, Any]:
     if _dry_run_state_mutations(ctx):
-        return
+        return {"code": 0, "data": {"transitionApplied": False}}
     raw = pending.get("raw")
     state = dict(raw) if isinstance(raw, dict) and raw else {
         "type": "pendingConfirmation",
@@ -6082,17 +7455,7 @@ async def _mark_pending_status(ctx: RunContext[RequestContext], pending: dict[st
     state["status"] = status
     state["updatedAt"] = _now_iso()
     state.update({key: value for key, value in extra.items() if value is not None})
-    version = _as_int(
-        pending.get("_extraDataVersion")
-        or pending.get("dataVersion")
-        or state.get("_extraDataVersion")
-        or state.get("dataVersion")
-        or pending.get("source_backend_version")
-        or pending.get("sourceBackendVersion")
-        or state.get("sourceBackendVersion")
-        or state.get("source_backend_version")
-    )
-    await internal_client.save_pending_confirmation(ctx.deps.sessionid, state, version=version)
+    return await internal_client.save_pending_confirmation(ctx.deps.sessionid, state)
 
 
 def _invalidate_after_pending_action(ctx: RunContext[RequestContext], kind: str, action_family: str) -> None:
@@ -6180,35 +7543,45 @@ async def _apply_intent_pending(
 
     major_preferences, school_preferences, region_preferences = _intent_constraint_payloads(merged)
     has_constraint_payload = any((major_preferences, school_preferences, region_preferences))
-    response: dict[str, Any] = {"skipped": "no_constraint_payload"}
-    constraint_success = True
+    constraint_update: dict[str, Any] | None = None
     if has_constraint_payload:
-        response = await internal_client.update_planning_constraint_state(
-            ctx.deps.sessionid,
-            intent_mode="constraint",
-            major_preferences=major_preferences,
-            school_preferences=school_preferences,
-            region_preferences=region_preferences,
-        )
-        constraint_success = _is_success_response(response)
-    tuition_budget_response = await _sync_tuition_budget_direct(ctx, merged)
-    tuition_budget_applied = (
-        True
-        if tuition_budget_response is None
-        else bool(tuition_budget_response.get("success"))
-    )
-    success = constraint_success and tuition_budget_applied
+        constraint_update = {"intentMode": "constraint"}
+        if major_preferences is not None:
+            constraint_update["majorPreferences"] = major_preferences
+        if school_preferences is not None:
+            constraint_update["schoolPreferences"] = school_preferences
+        if region_preferences is not None:
+            constraint_update["regionPreferences"] = region_preferences
     tenant_id = getattr(ctx.deps, "tenant_id", 1)
-    candidate_pool_regenerated = False
-    ordered_response = None
-    plan_regenerated = False
-    requires_candidate_pool_rebuild = False
-    if success and has_plan and apply_to_current_plan:
-        ordered_response = await internal_client.generate_planning_ordered_plan(
-            tenant_id,
-            ctx.deps.sessionid,
-        )
-        plan_regenerated = _is_success_response(ordered_response)
+    min_tuition, max_tuition = _tuition_budget_bounds(merged)
+    command_type = "apply_constraint_and_regenerate"
+    response = await internal_client.execute_pending_planning_command(
+        tenant_id,
+        ctx.deps.sessionid,
+        operation_id=_pending_command_operation_id(pending, command_type),
+        pending_id=str(pending.get("pending_id") or pending.get("pendingId") or ""),
+        claim_token=_pending_claim_token(pending),
+        expected_plan_version=_pending_source_version(pending),
+        command_type=command_type,
+        constraint_update=constraint_update,
+        min_tuition_per_year=min_tuition if max_tuition > 0 else None,
+        max_tuition_per_year=max_tuition if max_tuition > 0 else None,
+        regenerate_ordered_plan=has_plan and apply_to_current_plan,
+    )
+    if _pending_command_execution_uncertain(response):
+        return False, {
+            "reason": "pending_command_result_uncertain",
+            "execution_uncertain": True,
+            "backend_response": response,
+        }, "这次操作结果还在确认中，不会重复执行；请稍后刷新后再确认状态。"
+    success = _is_success_response(response)
+    command_data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    completed_steps = command_data.get("completedSteps") if isinstance(command_data.get("completedSteps"), list) else []
+    planning_state = command_data.get("planningState") if isinstance(command_data.get("planningState"), dict) else {}
+    ordered_response = {"code": 0, "data": planning_state} if success and planning_state else None
+    constraint_success = success and (not has_constraint_payload or "constraint_updated" in completed_steps)
+    tuition_budget_applied = success and (max_tuition <= 0 or "tuition_updated" in completed_steps)
+    plan_regenerated = success and has_plan and apply_to_current_plan and "ordered_plan_regenerated" in completed_steps
 
     data = {
         "intent_mode": intent_mode,
@@ -6216,13 +7589,16 @@ async def _apply_intent_pending(
         "merged": merged,
         "backend_response": response,
         "constraint_state_applied": constraint_success,
-        "tuition_budget_response": tuition_budget_response,
+        "tuition_budget_response": response if max_tuition > 0 else None,
         "tuition_budget_applied": tuition_budget_applied,
         "has_plan": has_plan,
         "apply_to_current_plan": apply_to_current_plan,
-        "requires_candidate_pool_rebuild": requires_candidate_pool_rebuild,
-        "candidate_pool_regenerated": candidate_pool_regenerated,
+        "requires_candidate_pool_rebuild": False,
+        "candidate_pool_regenerated": False,
         "plan_regenerated": plan_regenerated,
+        "operation_id": command_data.get("operationId"),
+        "operation_replayed": bool(command_data.get("replayed")),
+        "completed_steps": completed_steps,
     }
     if ordered_response is not None:
         data["ordered_plan_response"] = ordered_response
@@ -6594,6 +7970,96 @@ async def _apply_plan_pending(
         or execution_payload.get("actionFamily")
         or ""
     ).strip()
+    if action_family == "apply_plan_change_proposal":
+        proposal_apply = (
+            execution_payload.get("proposal_apply")
+            if isinstance(execution_payload.get("proposal_apply"), dict)
+            else {}
+        )
+        if not proposal_apply:
+            return (
+                False,
+                {"reason": "missing_plan_change_proposal_apply"},
+                "这次方案调整预览缺少后端 Proposal 执行结构，请重新生成预览。",
+            )
+        command_type = "apply_plan_change_proposal"
+        command_response = await internal_client.execute_pending_planning_command(
+            getattr(ctx.deps, "tenant_id", 1),
+            ctx.deps.sessionid,
+            operation_id=_pending_command_operation_id(pending, command_type),
+            pending_id=str(pending.get("pending_id") or pending.get("pendingId") or ""),
+            claim_token=_pending_claim_token(pending),
+            expected_plan_version=_pending_source_version(pending),
+            command_type=command_type,
+            proposal_apply=proposal_apply,
+        )
+        if _pending_command_execution_uncertain(command_response):
+            return False, {
+                "reason": "pending_command_result_uncertain",
+                "execution_uncertain": True,
+                "backend_response": command_response,
+            }, "这次方案调整结果还在确认中，不会重复执行；请稍后刷新后再确认状态。"
+        command_data = command_response.get("data") if isinstance(command_response.get("data"), dict) else {}
+        postcondition = (
+            command_data.get("postconditionReport")
+            if isinstance(command_data.get("postconditionReport"), dict)
+            else {}
+        )
+        success = _is_success_response(command_response) and postcondition.get("satisfied") is True
+        data = {
+            "action_family": action_family,
+            "operation_id": command_data.get("operationId"),
+            "operation_replayed": bool(command_data.get("replayed")),
+            "completed_steps": command_data.get("completedSteps") or [],
+            "postcondition_report": postcondition,
+            "backend_response": command_response,
+        }
+        if success:
+            target_count = _as_int(postcondition.get("targetCount"))
+            count_mode = str(postcondition.get("countMode") or "").strip()
+            domain = "专业组" if count_mode == "unit" else "志愿"
+            requirement_count = _as_int(postcondition.get("requirementCount"))
+            priority_rule_count = _as_int(postcondition.get("priorityRuleCount"))
+            tier_quota_result = (
+                postcondition.get("tierQuotaResult")
+                if isinstance(postcondition.get("tierQuotaResult"), dict)
+                else {}
+            )
+            proposal_source = str(postcondition.get("proposalSource") or "").strip()
+            if proposal_source == "review_check":
+                summary = str(pending.get("summary") or "").strip().rstrip("。")
+                affected_unit_count = _as_int(postcondition.get("affectedUnitCount"))
+                added_volunteer_count = _as_int(postcondition.get("addedVolunteerCount"))
+                impact_parts: list[str] = []
+                if affected_unit_count > 0:
+                    impact_parts.append(f"调整{affected_unit_count}个专业组")
+                if added_volunteer_count > 0:
+                    impact_parts.append(f"补入{added_volunteer_count}个专业")
+                result_text = "已按预览完成方案调整"
+                if summary:
+                    result_text += f"：{summary}"
+                if impact_parts:
+                    result_text += f"；{'、'.join(impact_parts)}"
+                return True, data, f"{result_text}；复审校验通过。"
+            if target_count > 0:
+                checks = ["数量"]
+                if requirement_count > 0:
+                    checks.append(f"{requirement_count}条要求")
+                if priority_rule_count > 0:
+                    checks.append(f"{priority_rule_count}条同档优先规则")
+                if tier_quota_result.get("satisfied") is True:
+                    checks.append("冲稳保精确配额")
+                return True, data, (
+                    f"已按预览调整方案，当前共{target_count}个{domain}，"
+                    f"{'和'.join(checks)}校验通过。"
+                )
+            return True, data, (
+                f"已按预览调整方案，{priority_rule_count}条同档优先规则"
+                "已持久化且排序校验通过。"
+            )
+        data["reason"] = "plan_change_postcondition_not_satisfied"
+        return False, data, "这次调整没有通过最终目标校验，操作未完成，请按最新方案重新生成预览。"
+
     payload = proposal_compiler.ensure_structured_plan_payload(execution_payload, action_family=action_family)
     if not proposal_compiler.is_structured_plan_payload(payload):
         return (
@@ -6623,43 +8089,82 @@ async def _apply_plan_pending(
         volunteer_ids = _plan_volunteer_ids(payload, atomic)
         if not volunteer_ids:
             return False, {"reason": "missing_volunteer_ids"}, "这次添加方案缺少可执行的志愿标识，请重新生成预览。"
-        select_response = await internal_client.select_working_plan_items(tenant_id, ctx.deps.sessionid, volunteer_ids)
-        if not _is_success_response(select_response):
-            return False, {"action_family": action_family, "backend_response": select_response}, "这次加入方案没有执行成功，请重新生成预览。"
-        ordered_response = await internal_client.generate_planning_ordered_plan(tenant_id, ctx.deps.sessionid)
+        command_type = "add_units"
+        command_response = await internal_client.execute_pending_planning_command(
+            tenant_id,
+            ctx.deps.sessionid,
+            operation_id=_pending_command_operation_id(pending, command_type),
+            pending_id=str(pending.get("pending_id") or pending.get("pendingId") or ""),
+            claim_token=_pending_claim_token(pending),
+            expected_plan_version=_pending_source_version(pending),
+            command_type=command_type,
+            volunteer_ids=volunteer_ids,
+            regenerate_ordered_plan=True,
+        )
+        if _pending_command_execution_uncertain(command_response):
+            return False, {
+                "reason": "pending_command_result_uncertain",
+                "execution_uncertain": True,
+                "backend_response": command_response,
+            }, "这次加入结果还在确认中，不会重复执行；请稍后刷新后再确认状态。"
+        command_data = command_response.get("data") if isinstance(command_response.get("data"), dict) else {}
+        planning_state = command_data.get("planningState") if isinstance(command_data.get("planningState"), dict) else {}
+        ordered_response = (
+            {"code": 0, "data": planning_state}
+            if _is_success_response(command_response) and planning_state
+            else command_response
+        )
         success = _is_success_response(ordered_response)
         return success, {
             "action_family": action_family,
             "selected_volunteer_ids": volunteer_ids,
-            "select_response": select_response,
+            "operation_id": command_data.get("operationId"),
+            "operation_replayed": bool(command_data.get("replayed")),
+            "completed_steps": command_data.get("completedSteps") or [],
             "backend_response": ordered_response,
-        }, ("已加入所选志愿并刷新排序方案。" if success else "志愿已加入，但刷新排序方案失败，请稍后查看。")
+        }, ("已加入所选志愿并刷新排序方案。" if success else "这次加入方案没有执行成功，请重新生成预览。")
     if action_family == "replace_units":
         unit_ids = _plan_unit_ids(payload, atomic)
         volunteer_ids = _plan_volunteer_ids(payload, atomic)
         if not unit_ids or not volunteer_ids:
             return False, {"reason": "missing_replace_args"}, "这次替换方案缺少要移出的志愿组或要加入的候选志愿，请重新生成预览。"
-        remove_response = await internal_client.remove_planning_ordered_plan_units(tenant_id, ctx.deps.sessionid, unit_ids)
-        if not _is_success_response(remove_response):
-            return False, {"action_family": action_family, "backend_response": remove_response}, "这次替换中的移出操作没有执行成功，请重新生成预览。"
-        select_response = await internal_client.select_working_plan_items(tenant_id, ctx.deps.sessionid, volunteer_ids)
-        if not _is_success_response(select_response):
+        command_type = "replace_units"
+        command_response = await internal_client.execute_pending_planning_command(
+            tenant_id,
+            ctx.deps.sessionid,
+            operation_id=_pending_command_operation_id(pending, command_type),
+            pending_id=str(pending.get("pending_id") or pending.get("pendingId") or ""),
+            claim_token=_pending_claim_token(pending),
+            expected_plan_version=_pending_source_version(pending),
+            command_type=command_type,
+            unit_ids=unit_ids,
+            volunteer_ids=volunteer_ids,
+            regenerate_ordered_plan=True,
+        )
+        if _pending_command_execution_uncertain(command_response):
             return False, {
-                "action_family": action_family,
-                "remove_response": remove_response,
-                "backend_response": select_response,
-            }, "已移出原志愿组，但新候选加入失败，请查看当前方案后重新调整。"
-        ordered_response = await internal_client.generate_planning_ordered_plan(tenant_id, ctx.deps.sessionid)
+                "reason": "pending_command_result_uncertain",
+                "execution_uncertain": True,
+                "backend_response": command_response,
+            }, "这次替换结果还在确认中，不会重复执行；请稍后刷新后再确认状态。"
+        command_data = command_response.get("data") if isinstance(command_response.get("data"), dict) else {}
+        planning_state = command_data.get("planningState") if isinstance(command_data.get("planningState"), dict) else {}
+        ordered_response = (
+            {"code": 0, "data": planning_state}
+            if _is_success_response(command_response) and planning_state
+            else command_response
+        )
         success = _is_success_response(ordered_response)
         data = {
             "action_family": action_family,
             "unit_ids": unit_ids,
             "selected_volunteer_ids": volunteer_ids,
-            "remove_response": remove_response,
-            "select_response": select_response,
+            "operation_id": command_data.get("operationId"),
+            "operation_replayed": bool(command_data.get("replayed")),
+            "completed_steps": command_data.get("completedSteps") or [],
             "backend_response": ordered_response,
         }
-        message = "已完成替换并刷新排序方案。" if success else "已完成替换，但刷新排序方案失败，请稍后查看。"
+        message = "已完成替换并刷新排序方案。" if success else "这次替换没有执行成功，请重新生成预览。"
         if success:
             validation = _ordered_plan_diff_validation(
                 action_family,
@@ -6756,14 +8261,18 @@ async def preview_intent_change(
     """Preview a model-interpreted include/exclude user requirement.
 
     The model must decide the domain and polarity before calling this tool. The
-    tool normalizes structured payloads and checks them against
+    tool normalizes structured payloads and materializes actionable items from
     semantic_requirements; it does not infer extra requirements from raw_user_text.
 
     Args:
         intent_type: Domain being changed. Must be major, school, region, career, or tuition_budget.
-        positive: Things the user explicitly wants, keeps, or requires.
+        positive: Things the user explicitly wants, keeps, or requires. For major
+            requirements preserve the named taxonomy level: level1 for a named
+            discipline such as 管理学/医学/工学, level2 for a named category such as
+            工商管理类/计算机类, and major for a specific major.
         negative: Things the user explicitly rejects. Use this for phrases like
-            "不要X", "排除X", "不考虑X", and "避开X".
+            "不要X", "排除X", "不考虑X", and "避开X". Preserve the same major
+            taxonomy level and never narrow a named discipline to one category.
         constraint_type: use exclude for direct rejection, only_keep for "只看/只保留X",
             and must_have for "要/必须有/至少有X".
         apply_to_current_plan: True means confirming this pending should immediately
@@ -6775,16 +8284,17 @@ async def preview_intent_change(
             when the new requirement should be merged into an active intent preview,
             or hold_new_request when the relationship is not clear enough to create
             another pending item.
-        raw_user_text: The original user message. Used only to warn when the
-            tool call appears to omit a negative side; do not rely on it to fill
-            entities.
+        raw_user_text: The original user message. Used for display refinement and
+            diagnostics; do not rely on it to fill entities.
         semantic_requirements: Model-interpreted requirement/reference items from
             this turn. Each item should include domain, side, strength, key, values,
             and raw_span when available. Use strength=explicit or confirmable for
-            items that should be included in the pending preview; use
-            strength=reference for "优先/倾向/重点关注/参考方向" items that should not
-            be forced into the payload. Attribute completion only uses this
-            structured list, never raw_user_text scanning.
+            items that should be included in the pending preview. Use
+            strength=reference only when the user explicitly limits an item to
+            reference/read-only use and says not to record or adjust it; ordinary
+            "优先/倾向/重点关注" wording remains actionable. Recognized items are materialized
+            into missing positive/negative fields from this structured list, never
+            from raw_user_text scanning.
     """
     normalized_type = str(intent_type or "").strip().lower()
     if normalized_type not in {"major", "school", "region", "career", "tuition_budget"}:
@@ -6804,6 +8314,21 @@ async def preview_intent_change(
 
     batch = ctx.deps.batch or "01"
     effective_raw_user_text = _effective_raw_user_text(ctx, raw_user_text)
+    positive, negative, materialized_semantic_requirements = _materialize_actionable_semantic_requirements(
+        normalized_type,
+        positive=positive,
+        negative=negative,
+        semantic_requirements=semantic_requirements,
+        batch=batch,
+    )
+    dropped_only_keep_complement: list[dict[str, Any]] = []
+    if normalized_constraint == "only_keep":
+        negative, dropped_only_keep_complement = _drop_synthetic_only_keep_complement(
+            normalized_type,
+            negative,
+            semantic_requirements,
+            batch=batch,
+        )
     positive_payload, positive_ambiguities, positive_display_aliases = _normalize_intent_side(
         normalized_type, positive, batch=batch
     )
@@ -6815,13 +8340,11 @@ async def preview_intent_change(
         "positive": positive_payload,
         "negative": negative_payload,
     }
-    if normalized_type == "major":
-        normalized = _refine_major_payload_by_user_text(
-            normalized,
-            raw_user_text=effective_raw_user_text,
-            batch=batch,
-        )
     parameter_warnings: list[str] = []
+    if dropped_only_keep_complement:
+        parameter_warnings.append(
+            "only_keep 已由正向范围表达，已忽略未在原始语义片段中点名的负向补集"
+        )
     ambiguities = positive_ambiguities + negative_ambiguities
     if ambiguities:
         first = ambiguities[0]
@@ -6839,6 +8362,33 @@ async def preview_intent_change(
             }
         )
 
+    if normalized_type == "major":
+        requirement_conflicts = _major_requirement_conflicts(normalized, batch=batch)
+        if requirement_conflicts:
+            first = requirement_conflicts[0]
+            if first["relation"] == "same_entity":
+                detail = f"{first['positive']}同时出现在要和不要中"
+            else:
+                detail = f"{first['positive']}属于已排除的{first['negative']}范围"
+            return _json(
+                {
+                    "data": {
+                        "intent_type": normalized_type,
+                        "constraint_type": normalized_constraint,
+                        "normalized": normalized,
+                        "conflicts": requirement_conflicts,
+                        "pending_created": False,
+                        "requires_confirmation": False,
+                        "reason": "major_requirement_conflict",
+                    },
+                    "next_step": "clarify",
+                    "message": (
+                        f"这次专业要求存在冲突：{detail}。请先确认这个专业是要保留为例外，还是也要排除；"
+                        "确认前不会记录要求，也不会调整方案。"
+                    ),
+                }
+            )
+
     merged = _merge_merged_intents(
         _merged_intents_from_normalized(normalized_type, normalized),
         _structured_cross_domain_attributes_from_payloads(
@@ -6849,25 +8399,6 @@ async def preview_intent_change(
     )
     if display_aliases:
         merged["_display_aliases"] = display_aliases
-    attribute_completion_candidates = _semantic_attribute_completion_candidates(
-        normalized_type,
-        merged,
-        semantic_requirements=semantic_requirements,
-        batch=batch,
-        raw_user_text=effective_raw_user_text,
-    )
-    if attribute_completion_candidates:
-        return _json(
-            _intent_change_requires_attribute_completion_payload(
-                reason="intent_change_requires_attribute_completion",
-                intent_type=normalized_type,
-                constraint_type=normalized_constraint,
-                requested_text=effective_raw_user_text,
-                normalized=normalized,
-                merged=merged,
-                missing_attributes=attribute_completion_candidates,
-            )
-        )
     replaced_active_pending = False
     merged_existing_pending = False
     if not _merged_intents_have_values(merged):
@@ -6992,14 +8523,6 @@ async def preview_intent_change(
         merged,
         constraint_type=normalized_constraint,
     )
-    display_aliases = _merge_display_aliases(
-        display_aliases,
-        _major_display_aliases_from_user_text(
-            merged,
-            effective_raw_user_text,
-            batch=batch,
-        ),
-    )
     if display_aliases:
         merged["_display_aliases"] = display_aliases
     display_aliases = _display_aliases_from_merged(merged, display_aliases)
@@ -7023,11 +8546,15 @@ async def preview_intent_change(
     )
     message = _preview_message_from_merged(merged, display_aliases)
     affected_count = _as_int(plan_impact.get("affected_count"))
+    affected_detail_count = _as_int(plan_impact.get("affected_detail_count"))
     if affected_count > 0:
+        affected_text = f"{affected_count}个相关专业组"
+        if affected_detail_count > affected_count:
+            affected_text += f"、涉及{affected_detail_count}条专业志愿"
         if apply_to_current_plan:
-            message += f" 当前方案里初步看到{affected_count}个相关志愿，采纳后会按这个要求重新调整方案。"
+            message += f" 当前方案里初步看到{affected_text}，采纳后会按这个要求重新调整方案。"
         else:
-            message += f" 当前方案里初步看到{affected_count}个相关志愿；采纳后会先记为报考要求，这次不改当前方案。"
+            message += f" 当前方案里初步看到{affected_text}；采纳后会先记为报考要求，这次不改当前方案。"
     elif not apply_to_current_plan:
         message += " 采纳后会先记为报考要求，这次不改当前方案。"
     if not pending_result.get("created"):
@@ -7044,6 +8571,7 @@ async def preview_intent_change(
                 "plan_impact": plan_impact,
                 "apply_to_current_plan": bool(apply_to_current_plan),
                 "parameter_warnings": parameter_warnings,
+                "materialized_semantic_requirements": materialized_semantic_requirements,
                 "pending_id": pending_result.get("pending_id"),
                 "pending_version": pending_result.get("pending_version"),
                 "pending_created": bool(pending_result.get("created")),
@@ -7112,6 +8640,1313 @@ def _intent_fallback_from_plan_filters(filters: dict[str, Any]) -> dict[str, Any
     return {}
 
 
+_PLAN_CHANGE_REQUIREMENT_KEYS = {
+    "school": {
+        "school",
+        "schools",
+        "school_nature",
+        "program_type",
+        "school_category",
+        "school_level",
+        "school_tag",
+    },
+    "region": {"province", "city", "area", "region_group"},
+    "major": {"major", "level1", "level2", "level3", "major_tag"},
+    "admission": {"tier"},
+}
+_PLAN_CHANGE_REQUIREMENT_KEY_ALIASES = {
+    "schoolnature": "school_nature",
+    "schoolnaturetype": "school_nature",
+    "programtype": "program_type",
+    "enrollment_type": "program_type",
+    "enrollmenttype": "program_type",
+    "schoolcategory": "school_category",
+    "schoollevel": "school_level",
+    "schooltag": "school_tag",
+    "regiongroup": "region_group",
+    "majorname": "major",
+    "major_name": "major",
+    "majortag": "major_tag",
+    "admissionstability": "tier",
+    "admission_stability": "tier",
+    "risktier": "tier",
+    "risk_tier": "tier",
+}
+
+
+def _plan_change_requirements_from_active_intent_pending(
+    ctx: RunContext[RequestContext],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    execution_payload = _active_intent_pending_execution_payload(ctx)
+    if not isinstance(execution_payload, dict):
+        return [], [{"reason": "active_pending_is_not_mergeable_intent"}]
+    merged = execution_payload.get("merged")
+    if not isinstance(merged, dict) or not _merged_intents_have_values(merged):
+        merged = _merge_selected_values(_selected_values_from_pending_payload(execution_payload))
+    if not _merged_intents_have_values(merged):
+        return [], [{"reason": "active_intent_payload_empty"}]
+
+    constraint_type = _constraint_type_from_execution_payload(execution_payload)
+    pending = _turn_started_active_pending(ctx)
+    raw_text = str(getattr(pending, "preview_summary", "") or "").strip()
+    section_specs = {
+        "major_intents": (
+            "major",
+            {"level1": "level1", "level2": "level2", "level3": "level3", "major_tag": "major_tag"},
+        ),
+        "school_intents": (
+            "school",
+            {
+                "colleges": "school",
+                "school_nature": "school_nature",
+                "program_type": "program_type",
+                "school_category": "school_category",
+                "school_level": "school_level",
+                "school_tag": "school_tag",
+            },
+        ),
+        "city_intents": (
+            "region",
+            {"province": "province", "city": "city", "area": "area"},
+        ),
+    }
+    requirements: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    only_keep_domains: set[str] = set()
+    for section, payload in merged.items():
+        if str(section or "").startswith("_") or not isinstance(payload, dict):
+            continue
+        section_spec = section_specs.get(section)
+        if section_spec is None:
+            if _payload_has_values(payload):
+                errors.append({"reason": "unsupported_intent_section", "section": section})
+            continue
+        domain, key_map = section_spec
+        for raw_key, raw_values in payload.items():
+            values = _as_list(raw_values)
+            if not values:
+                continue
+            negative = str(raw_key or "").startswith("negative_")
+            base_key = str(raw_key or "").removeprefix("negative_")
+            key = key_map.get(base_key)
+            if key is None:
+                errors.append({"reason": "unsupported_intent_key", "section": section, "key": raw_key})
+                continue
+            kind = "exclude" if negative else "only_keep" if constraint_type == "only_keep" else "include"
+            if kind == "only_keep" and domain in only_keep_domains:
+                errors.append(
+                    {"reason": "multiple_only_keep_keys_in_domain", "domain": domain, "key": key}
+                )
+                continue
+            if kind == "only_keep":
+                only_keep_domains.add(domain)
+            requirement = {
+                "kind": kind,
+                "domain": domain,
+                "key": key,
+                "values": values,
+                "raw_text": raw_text,
+            }
+            if kind == "include":
+                requirement["min_count"] = 1
+            requirements.append(requirement)
+    return requirements, errors
+
+
+def _merge_normalized_plan_change_requirements(
+    current: list[dict[str, Any]],
+    carried: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    only_keep_by_domain: dict[str, str] = {}
+    errors: list[dict[str, Any]] = []
+    for item in [*current, *carried]:
+        identity = _json(
+            {
+                "kind": item.get("kind"),
+                "domain": item.get("domain"),
+                "key": item.get("key"),
+                "values": item.get("values") or [],
+                "minCount": item.get("minCount"),
+            }
+        )
+        if identity in seen:
+            continue
+        if item.get("kind") == "only_keep":
+            domain = str(item.get("domain") or "").strip()
+            previous = only_keep_by_domain.get(domain)
+            if previous is not None and previous != identity:
+                errors.append({"reason": "duplicate_only_keep_domain", "domain": domain})
+                continue
+            only_keep_by_domain[domain] = identity
+        seen.add(identity)
+        merged.append(item)
+    return merged, errors
+
+
+def _normalize_plan_change_requirements(
+    requirements: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if requirements in (None, []):
+        return [], []
+    if not isinstance(requirements, list):
+        return [], [{"reason": "requirements_must_be_list"}]
+    normalized: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    only_keep_domains: set[str] = set()
+    for index, requirement in enumerate(requirements):
+        if not isinstance(requirement, dict):
+            errors.append({"index": index, "reason": "requirement_must_be_object"})
+            continue
+        unsupported_fields = sorted(
+            key
+            for key, value in requirement.items()
+            if key not in {
+                "kind", "domain", "side", "strength", "key", "values", "min_count", "minCount",
+                "raw_text", "rawText",
+            }
+            and value not in (None, "", [], {})
+        )
+        raw_kind = str(requirement.get("kind") or "").strip().lower()
+        side = str(requirement.get("side") or "").strip().lower()
+        if not raw_kind and side == "negative":
+            raw_kind = "exclude"
+        domain = str(requirement.get("domain") or "").strip().lower()
+        raw_key = str(requirement.get("key") or "").strip()
+        compact_key = raw_key.replace("-", "_").replace(" ", "")
+        key = _PLAN_CHANGE_REQUIREMENT_KEY_ALIASES.get(
+            compact_key.lower(), compact_key.lower()
+        )
+        values = []
+        for raw_value in _as_list(requirement.get("values")):
+            value = str(raw_value or "").strip()
+            if value and value not in values:
+                values.append(value)
+        invalid_tier_values: list[str] = []
+        if domain == "admission" and key == "tier":
+            normalized_tiers: list[str] = []
+            for value in values:
+                tier = _normalize_tier(value)
+                if tier not in {"冲", "稳", "保"}:
+                    invalid_tier_values.append(value)
+                elif tier not in normalized_tiers:
+                    normalized_tiers.append(tier)
+            values = normalized_tiers
+        strength = str(requirement.get("strength") or "explicit").strip().lower()
+        raw_min_count = requirement.get("min_count", requirement.get("minCount"))
+        min_count = 1 if raw_min_count is None else _as_int(raw_min_count)
+        reason = ""
+        if unsupported_fields:
+            reason = "unsupported_fields"
+        elif raw_kind not in {"exclude", "only_keep", "include"}:
+            reason = "unsupported_kind"
+        elif domain not in _PLAN_CHANGE_REQUIREMENT_KEYS:
+            reason = "unsupported_domain"
+        elif key not in _PLAN_CHANGE_REQUIREMENT_KEYS.get(domain, set()):
+            reason = "unsupported_key"
+        elif domain == "admission" and raw_kind != "include":
+            reason = "tier_only_supported_for_include"
+        elif domain == "admission" and raw_min_count is None:
+            reason = "tier_min_count_required"
+        elif invalid_tier_values:
+            reason = "unsupported_tier_value"
+        elif not values:
+            reason = "values_required"
+        elif raw_kind != "include" and raw_min_count is not None:
+            reason = "min_count_only_supported_for_include"
+        elif raw_kind == "include" and (
+            isinstance(raw_min_count, bool) or min_count <= 0
+        ):
+            reason = "min_count_must_be_positive_integer"
+        elif strength == "reference":
+            reason = "reference_is_not_hard_requirement"
+        elif raw_kind == "only_keep" and domain in only_keep_domains:
+            reason = "duplicate_only_keep_domain"
+        if reason:
+            errors.append(
+                {
+                    "index": index,
+                    "reason": reason,
+                    "kind": raw_kind,
+                    "domain": domain,
+                    "key": key,
+                    "invalid_tier_values": invalid_tier_values,
+                    "unsupported_fields": unsupported_fields,
+                }
+            )
+            continue
+        if raw_kind == "only_keep":
+            only_keep_domains.add(domain)
+        normalized_requirement = {
+            "kind": raw_kind,
+            "domain": domain,
+            "key": key,
+            "values": values,
+            "rawText": str(requirement.get("raw_text") or requirement.get("rawText") or "").strip(),
+        }
+        if raw_kind == "include":
+            normalized_requirement["minCount"] = min_count
+        normalized.append(normalized_requirement)
+    return normalized, errors
+
+
+def _normalize_plan_priority_rules(
+    priority_rules: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if priority_rules in (None, []):
+        return [], []
+    if not isinstance(priority_rules, list):
+        return [], [{"reason": "priority_rules_must_be_list"}]
+    if len(priority_rules) != 1:
+        return [], [{"reason": "exactly_one_priority_rule_supported"}]
+    rule = priority_rules[0]
+    if not isinstance(rule, dict):
+        return [], [{"index": 0, "reason": "priority_rule_must_be_object"}]
+    allowed_fields = {
+        "domain", "key", "values", "ordering_target", "orderingTarget",
+        "scope", "raw_text", "rawText",
+    }
+    unsupported_fields = sorted(
+        str(key)
+        for key, value in rule.items()
+        if key not in allowed_fields and value not in (None, "", [], {})
+    )
+    domain = str(rule.get("domain") or "").strip().lower()
+    raw_key = str(rule.get("key") or "").strip()
+    compact_key = raw_key.replace("-", "_").replace(" ", "")
+    key = _PLAN_CHANGE_REQUIREMENT_KEY_ALIASES.get(
+        compact_key.lower(), compact_key.lower()
+    )
+    values: list[str] = []
+    for raw_value in _as_list(rule.get("values")):
+        value = str(raw_value or "").strip()
+        if value and value not in values:
+            values.append(value)
+    ordering_target = str(
+        rule.get("ordering_target") or rule.get("orderingTarget") or "rank_before"
+    ).strip().lower()
+    scope = str(rule.get("scope") or "within_tier").strip().lower()
+    reason = ""
+    if unsupported_fields:
+        reason = "unsupported_fields"
+    elif domain not in _PLAN_CHANGE_REQUIREMENT_KEYS:
+        reason = "unsupported_domain"
+    elif key not in _PLAN_CHANGE_REQUIREMENT_KEYS.get(domain, set()):
+        reason = "unsupported_key"
+    elif not values:
+        reason = "values_required"
+    elif ordering_target != "rank_before":
+        reason = "only_rank_before_supported"
+    elif scope != "within_tier":
+        reason = "only_within_tier_supported"
+    if reason:
+        return [], [{
+            "index": 0,
+            "reason": reason,
+            "domain": domain,
+            "key": key,
+            "unsupported_fields": unsupported_fields,
+        }]
+    return [{
+        "domain": domain,
+        "key": key,
+        "values": values,
+        "orderingTarget": "rank_before",
+        "scope": "within_tier",
+        "rawText": str(rule.get("raw_text") or rule.get("rawText") or "").strip(),
+    }], []
+
+
+def _normalize_plan_tier_quota_goal(
+    tier_quota_goal: Any,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    if tier_quota_goal in (None, {}):
+        return None, []
+    if not isinstance(tier_quota_goal, dict):
+        return None, [{"reason": "tier_quota_goal_must_be_object"}]
+    allowed_fields = {
+        "type", "sprint_count", "sprintCount", "stable_count", "stableCount",
+        "protect_count", "protectCount",
+    }
+    unsupported_fields = sorted(
+        str(key)
+        for key, value in tier_quota_goal.items()
+        if key not in allowed_fields and value not in (None, "", [], {})
+    )
+    quota_type = str(tier_quota_goal.get("type") or "").strip().lower()
+    raw_counts = {
+        "sprintCount": tier_quota_goal.get("sprint_count", tier_quota_goal.get("sprintCount")),
+        "stableCount": tier_quota_goal.get("stable_count", tier_quota_goal.get("stableCount")),
+        "protectCount": tier_quota_goal.get("protect_count", tier_quota_goal.get("protectCount")),
+    }
+    missing_fields = [key for key, value in raw_counts.items() if value is None]
+    invalid_fields = [
+        key for key, value in raw_counts.items()
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0)
+    ]
+    errors: list[dict[str, Any]] = []
+    if unsupported_fields:
+        errors.append({"reason": "unsupported_fields", "unsupported_fields": unsupported_fields})
+    if quota_type != "exact_counts":
+        errors.append({"reason": "only_exact_counts_supported", "type": quota_type})
+    if missing_fields:
+        errors.append({"reason": "all_tier_counts_required", "missing_fields": missing_fields})
+    if invalid_fields:
+        errors.append({"reason": "tier_counts_must_be_nonnegative_integers", "invalid_fields": invalid_fields})
+    if errors:
+        return None, errors
+    return {
+        "type": "exact_counts",
+        "sprintCount": raw_counts["sprintCount"],
+        "stableCount": raw_counts["stableCount"],
+        "protectCount": raw_counts["protectCount"],
+    }, []
+
+
+async def _prepare_plan_change_pending_resolution(
+    ctx: RunContext[RequestContext],
+    *,
+    pending_resolution: PendingResolution,
+    effective_raw_user_text: str,
+    allow_intent_append: bool = False,
+) -> tuple[bool, dict[str, Any] | None]:
+    if _turn_started_active_pending(ctx) is None:
+        return False, None
+    kind = "plan_mutation"
+    action_family = "apply_plan_change_proposal"
+    normalized_pending_resolution = _normalize_pending_resolution(pending_resolution)
+    if normalized_pending_resolution == "none":
+        return False, _pending_resolution_required_payload(
+            ctx,
+            requested_kind=kind,
+            requested_action_family=action_family,
+            requested_text=effective_raw_user_text,
+        )
+    if normalized_pending_resolution == "hold_new_request":
+        conflict = _active_pending_conflict_payload(
+            ctx,
+            requested_kind=kind,
+            requested_action_family=action_family,
+            requested_text=effective_raw_user_text,
+        )
+        return False, conflict
+    if normalized_pending_resolution == "replace_active_pending":
+        return await _replace_active_pending_for_new_preview(ctx), None
+    if normalized_pending_resolution == "append_to_active_pending":
+        if allow_intent_append:
+            return False, None
+        return False, _active_pending_append_unsupported_payload(
+            ctx,
+            requested_kind=kind,
+            requested_action_family=action_family,
+            requested_text=effective_raw_user_text,
+        )
+    return False, None
+
+
+def _review_repair_proposal_view(proposal: dict[str, Any]) -> dict[str, Any]:
+    dry_run = proposal.get("dryRunResult") if isinstance(proposal.get("dryRunResult"), dict) else {}
+    return {
+        "proposal_id": str(proposal.get("proposalId") or proposal.get("proposal_id") or "").strip(),
+        "proposal_source": str(
+            proposal.get("proposalSource") or proposal.get("proposal_source") or ""
+        ).strip(),
+        "source_version": _as_int(
+            proposal.get("sourceVersionGuard")
+            or proposal.get("source_version_guard")
+            or proposal.get("sourceVersion")
+            or proposal.get("source_version")
+        ),
+        "status": str(proposal.get("status") or "").strip(),
+        "strategy": str(proposal.get("strategy") or "").strip(),
+        "title": str(proposal.get("title") or "").strip(),
+        "summary": str(proposal.get("summary") or "").strip(),
+        "impact": str(proposal.get("impact") or "").strip(),
+        "blocking_reason": str(
+            proposal.get("blockingReason") or proposal.get("blocking_reason") or ""
+        ).strip(),
+        "source_check_codes": [
+            str(code or "").strip()
+            for code in proposal.get("sourceCheckCodes", proposal.get("source_check_codes", [])) or []
+            if str(code or "").strip()
+        ],
+        "dry_run": dry_run,
+        "candidate_shortages": proposal.get("candidateShortages") or [],
+    }
+
+
+async def _generate_review_repair_proposals(
+    ctx: RunContext[RequestContext],
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    response = await internal_client.generate_planning_fix_proposals(
+        getattr(ctx.deps, "tenant_id", 1),
+        ctx.deps.sessionid,
+    )
+    data = _response_data(response)
+    proposals = data.get("proposals") if isinstance(data.get("proposals"), list) else []
+    return response, data, [item for item in proposals if isinstance(item, dict)]
+
+
+async def _preview_review_repair_goal_selection(
+    ctx: RunContext[RequestContext],
+    *,
+    objective: str,
+) -> str:
+    backend_response, backend_data, proposals = await _generate_review_repair_proposals(ctx)
+    proposal_views = [_review_repair_proposal_view(item) for item in proposals]
+    excluded_options: list[dict[str, Any]] = []
+    if objective == "increase_stability":
+        # Quantity belongs to selection_goal/user-goal Proposal, not repair-goal selection.
+        retained_options: list[dict[str, Any]] = []
+        for item in proposal_views:
+            source_codes = item.get("source_check_codes") or []
+            if item.get("strategy") == "fill_missing_count" or "count_validation" in source_codes:
+                excluded_options.append(item)
+            else:
+                retained_options.append(item)
+        proposal_views = retained_options
+    ready_options = [
+        item for item in proposal_views
+        if item.get("proposal_source") == "review_check" and item.get("status") == "ready"
+    ]
+    if not proposal_views:
+        return _json(
+            {
+                "data": {
+                    "reason": "review_repair_options_unavailable",
+                    "objective": objective,
+                    "backend_response": backend_response,
+                    "pending_created": False,
+                    "requires_confirmation": False,
+                },
+                "next_step": "respond",
+                "message": "当前审查没有返回可核验的处理选项，本轮不会创建待确认操作。",
+            }
+        )
+    if not _consume_structured_retry_budget(ctx, "preview_plan_change.repair_goal_selection"):
+        return _json(
+            {
+                "data": {
+                    "reason": "review_repair_exact_selection_required",
+                    "objective": objective,
+                    "proposal_options": proposal_views,
+                    "excluded_cross_goal_options": excluded_options,
+                    "ready_option_count": len(ready_options),
+                    "pending_created": False,
+                    "requires_confirmation": False,
+                },
+                "next_step": "respond",
+                "message": (
+                    "当前处理方向还没有收敛到一个与本轮目标直接一致的可执行预览，"
+                    "系统不会按列表顺序猜选，也不会改动方案。"
+                ),
+            }
+        )
+    return _json(
+        {
+            "data": {
+                "reason": "review_repair_requires_exact_selection",
+                "objective": objective,
+                "proposal_source_version": _as_int(
+                    backend_data.get("sourceVersionGuard") or backend_data.get("sourceVersion")
+                ),
+                "proposal_options": proposal_views,
+                "excluded_cross_goal_options": excluded_options,
+                "ready_option_count": len(ready_options),
+                "retry_required_fields": ["repair_goal.review_issue_code", "repair_goal.strategy"],
+                "selection_rule": (
+                    "Only select one status=ready review_check proposal whose summary and impact directly "
+                    "advance the user's objective. Never select by list order. If no ready option directly "
+                    "matches, explain the available boundary without another preview call. For "
+                    "increase_stability, an unrequested fill_missing_count/count_validation quantity goal is "
+                    "not a direct match. Never propose combining multiple options because repair_goal is atomic."
+                ),
+                "pending_created": False,
+                "requires_confirmation": False,
+            },
+            "next_step": "continue",
+            "message": (
+                "请根据本轮用户目标与 proposal_options 的结构化 strategy、source_check_codes、summary、"
+                "impact 和 status 做语义选择；只有唯一直接匹配的 ready 选项才能用 exact repair_goal 重试。"
+            ),
+        }
+    )
+
+
+async def _preview_review_repair_plan_change(
+    ctx: RunContext[RequestContext],
+    *,
+    repair_goal: dict[str, Any],
+    replaced_active_pending: bool,
+) -> str:
+    requested_issue = str(repair_goal.get("review_issue_code") or "").strip()
+    canonical_issue = _canonical_review_issue_code(requested_issue) or requested_issue
+    requested_strategy = str(repair_goal.get("strategy") or "").strip()
+    backend_response, backend_data, proposals = await _generate_review_repair_proposals(ctx)
+    proposal_envelope_version = _as_int(
+        backend_data.get("sourceVersionGuard") or backend_data.get("sourceVersion")
+    )
+    matching: list[dict[str, Any]] = []
+    for item in proposals:
+        if not isinstance(item, dict):
+            continue
+        strategy = str(item.get("strategy") or "").strip()
+        source_codes = [
+            _canonical_review_issue_code(str(code or "").strip()) or str(code or "").strip()
+            for code in item.get("sourceCheckCodes", item.get("source_check_codes", [])) or []
+            if str(code or "").strip()
+        ]
+        if strategy == requested_strategy and canonical_issue in source_codes:
+            matching.append(item)
+
+    ready_matching = [
+        item for item in matching
+        if str(item.get("status") or "").strip() == "ready"
+    ]
+    if len(ready_matching) > 1:
+        return _json(
+            {
+                "data": {
+                    "reason": "review_repair_proposal_ambiguous",
+                    "repair_goal": repair_goal,
+                    "matching_proposals": [_review_repair_proposal_view(item) for item in ready_matching],
+                    "pending_created": False,
+                    "requires_confirmation": False,
+                },
+                "next_step": "respond",
+                "message": "当前审查结果返回了多个同目标处理预览，暂时不能可靠选择，本轮不会创建待确认操作。",
+            }
+        )
+    if not ready_matching:
+        proposal_views = [_review_repair_proposal_view(item) for item in matching]
+        blocked_message = ""
+        if proposal_views:
+            blocked_message = str(
+                proposal_views[0].get("blocking_reason") or proposal_views[0].get("summary") or ""
+            ).strip()
+        return _json(
+            {
+                "data": {
+                    "reason": "review_repair_proposal_unavailable",
+                    "repair_goal": repair_goal,
+                    "matching_proposals": proposal_views,
+                    "backend_response": backend_response,
+                    "pending_created": False,
+                    "requires_confirmation": False,
+                },
+                "next_step": "respond",
+                "message": blocked_message or "当前审查结果还不能形成这个目标的可执行预览，本轮不会改动方案。",
+            }
+        )
+
+    proposal = ready_matching[0]
+    proposal_view = _review_repair_proposal_view(proposal)
+    proposal_id = str(proposal_view.get("proposal_id") or "")
+    proposal_source = str(proposal_view.get("proposal_source") or "")
+    proposal_source_version = _as_int(proposal_view.get("source_version"))
+    dry_run = proposal_view.get("dry_run") if isinstance(proposal_view.get("dry_run"), dict) else {}
+    dry_run_status = str(dry_run.get("status") or "").strip()
+    workspace_response = await internal_client.get_planning_workspace_state(ctx.deps.sessionid)
+    workspace_data = _response_data(workspace_response)
+    current_source_version = _as_int(workspace_data.get("version"))
+    if (
+        not proposal_id
+        or proposal_source != "review_check"
+        or proposal_source_version <= 0
+        or proposal_source_version != proposal_envelope_version
+        or proposal_source_version != current_source_version
+        or (dry_run_status and dry_run_status != "ready")
+    ):
+        return _json(
+            {
+                "data": {
+                    "reason": "review_repair_proposal_contract_mismatch",
+                    "repair_goal": repair_goal,
+                    "proposal_envelope_version": proposal_envelope_version,
+                    "current_source_version": current_source_version,
+                    "proposal": proposal_view,
+                    "pending_created": False,
+                    "requires_confirmation": False,
+                },
+                "next_step": "respond",
+                "message": "处理预览与当前方案版本或审查来源不一致，本轮不会创建待确认操作。",
+            }
+        )
+
+    action_family = "apply_plan_change_proposal"
+    frozen_repair_goal = {
+        **(
+            {"objective": str(repair_goal.get("objective") or "").strip()}
+            if str(repair_goal.get("objective") or "").strip()
+            else {}
+        ),
+        "review_issue_code": canonical_issue,
+        "strategy": requested_strategy,
+    }
+    proposal_apply = {
+        "proposalId": proposal_id,
+        "proposalSource": "review_check",
+        "sourceVersionGuard": proposal_source_version,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+    }
+    execution_payload = {
+        "action_family": action_family,
+        "plan_change_spec": {"repair_goal": frozen_repair_goal},
+        "proposal_apply": proposal_apply,
+        "proposal_snapshot": proposal_view,
+        "postconditions": {
+            "proposal_id": proposal_id,
+            "proposal_source": "review_check",
+            "review_issue_code": canonical_issue,
+            "strategy": requested_strategy,
+            "post_validation_required": True,
+        },
+    }
+    plan_impact = {
+        "source": "preview_plan_change",
+        "repair_goal": frozen_repair_goal,
+        "before_unit_total": _as_int(dry_run.get("beforeUnitTotal")),
+        "after_unit_total": _as_int(dry_run.get("afterUnitTotal")),
+        "before_volunteer_total": _as_int(dry_run.get("beforeVolunteerTotal")),
+        "after_volunteer_total": _as_int(dry_run.get("afterVolunteerTotal")),
+        "affected_unit_count": _as_int(dry_run.get("affectedUnitCount")),
+        "affected_volunteer_count": _as_int(dry_run.get("affectedVolunteerCount")),
+        "add_unit_count": _as_int(dry_run.get("addUnitCount")),
+        "add_volunteer_count": _as_int(dry_run.get("addVolunteerCount")),
+        "remove_unit_count": _as_int(dry_run.get("removeUnitCount")),
+        "remove_volunteer_count": _as_int(dry_run.get("removeVolunteerCount")),
+    }
+    title = str(proposal_view.get("title") or "").strip()
+    summary = str(proposal_view.get("summary") or title or "").strip()
+    impact = str(proposal_view.get("impact") or "").strip()
+    fallback_summary = "按当前审查结果调整方案并重新校验"
+    pending_result = await _create_plan_pending(
+        ctx,
+        kind="plan_mutation",
+        action_family=action_family,
+        summary=summary or fallback_summary,
+        payload=execution_payload,
+        affected_scope=impact or title or "当前方案",
+        plan_impact=plan_impact,
+        source_version=proposal_source_version,
+    )
+    message = f"{title}：{summary}" if title and summary and title != summary else summary
+    message = message or f"已生成{fallback_summary}的预览。"
+    if impact:
+        message += f" 具体影响：{impact}"
+    affected_unit_count = _as_int(plan_impact.get("affected_unit_count"))
+    affected_volunteer_count = _as_int(plan_impact.get("affected_volunteer_count"))
+    if not impact and (affected_unit_count or affected_volunteer_count):
+        message += f" 具体影响：{affected_unit_count}个专业组、{affected_volunteer_count}条专业志愿。"
+    if pending_result.get("created"):
+        message += " 确认后会按这次预览调整方案、重新生成排序并复审；确认前不会改动方案。"
+    else:
+        message += " 但待确认状态保存失败，本轮不会执行。"
+    return _json(
+        {
+            "data": {
+                "repair_goal": frozen_repair_goal,
+                "proposal": proposal_view,
+                "plan_impact": plan_impact,
+                "replaced_active_pending": replaced_active_pending,
+                "pending_id": pending_result.get("pending_id"),
+                "pending_version": pending_result.get("pending_version"),
+                "pending_created": bool(pending_result.get("created")),
+                "requires_confirmation": bool(pending_result.get("created")),
+            },
+            "next_step": "confirm" if pending_result.get("created") else "respond",
+            "message": message,
+        }
+    )
+
+
+async def preview_plan_change(
+    ctx: RunContext[RequestContext],
+    spec: PlanChangeSpec,
+    pending_resolution: PendingResolution = "none",
+    raw_user_text: str = "",
+) -> str:
+    """Preview one backend-verified structural plan goal.
+
+    Supported vertical slices are `fill_to_count` with projected hard
+    requirements and an optional non-exclusive `rank_before/within_tier`
+    priority rule, explicit entity or admission-tier minimum coverage while
+    preserving the current plan size, one complete exact sprint/stable/protect
+    quota, the same priority rule on its own, or one exact backend review-repair
+    Proposal selected by issue code and strategy.
+    """
+    effective_raw_user_text = _effective_raw_user_text(ctx, raw_user_text)
+    normalized_spec = spec if isinstance(spec, dict) else {}
+    selection_goal = (
+        normalized_spec.get("selection_goal")
+        if isinstance(normalized_spec.get("selection_goal"), dict)
+        else {}
+    )
+    repair_goal = (
+        normalized_spec.get("repair_goal")
+        if isinstance(normalized_spec.get("repair_goal"), dict)
+        else {}
+    )
+    raw_tier_quota_goal = normalized_spec.get("tier_quota_goal")
+    unsupported_top_level = [
+        str(key)
+        for key, value in normalized_spec.items()
+        if key not in {
+            "selection_goal", "tier_quota_goal", "requirements", "priority_rules", "repair_goal"
+        }
+        and value not in (None, "", [], {})
+    ]
+    unsupported_goal_fields = [
+        str(key)
+        for key, value in selection_goal.items()
+        if key not in {"type", "target_count"} and value not in (None, "", [], {})
+    ]
+    unsupported_repair_goal_fields = [
+        str(key)
+        for key, value in repair_goal.items()
+        if key not in {"objective", "review_issue_code", "strategy"}
+        and value not in (None, "", [], {})
+    ]
+    requirements = normalized_spec.get("requirements")
+    priority_rules = normalized_spec.get("priority_rules")
+    normalized_pending_resolution = _normalize_pending_resolution(pending_resolution)
+    append_active_intent_pending = False
+    carried_requirement_specs: list[dict[str, Any]] = []
+    carried_requirement_errors: list[dict[str, Any]] = []
+    if (
+        normalized_pending_resolution == "append_to_active_pending"
+        and _turn_started_active_pending(ctx) is not None
+    ):
+        goal_type_for_append = str(selection_goal.get("type") or "").strip()
+        if not repair_goal and not raw_tier_quota_goal and goal_type_for_append == "fill_to_count":
+            carried_requirement_specs, carried_requirement_errors = (
+                _plan_change_requirements_from_active_intent_pending(ctx)
+            )
+            append_active_intent_pending = bool(carried_requirement_specs) and not carried_requirement_errors
+        else:
+            carried_requirement_errors = [{"reason": "intent_append_requires_fill_to_count"}]
+    normalized_requirements, requirement_errors = _normalize_plan_change_requirements(requirements)
+    carried_requirements, carried_normalization_errors = _normalize_plan_change_requirements(
+        carried_requirement_specs
+    )
+    normalized_requirements, carried_merge_errors = _merge_normalized_plan_change_requirements(
+        normalized_requirements,
+        carried_requirements,
+    )
+    requirement_errors = (
+        requirement_errors
+        + carried_requirement_errors
+        + carried_normalization_errors
+        + carried_merge_errors
+    )
+    normalized_priority_rules, priority_errors = _normalize_plan_priority_rules(priority_rules)
+    normalized_tier_quota_goal, tier_quota_errors = _normalize_plan_tier_quota_goal(
+        raw_tier_quota_goal
+    )
+    goal_type = str(selection_goal.get("type") or "").strip()
+    repair_issue_code = str(repair_goal.get("review_issue_code") or "").strip()
+    repair_strategy = str(repair_goal.get("strategy") or "").strip()
+    repair_objective = str(repair_goal.get("objective") or "").strip()
+    repair_goal_requested = bool(repair_goal)
+    repair_exact_pair_complete = bool(repair_issue_code and repair_strategy)
+    repair_exact_pair_partial = bool(repair_issue_code) != bool(repair_strategy)
+    repair_selection_requested = repair_objective == "increase_stability" and not repair_exact_pair_complete
+    invalid_repair_goal = repair_goal_requested and (
+        repair_exact_pair_partial
+        or bool(repair_objective and repair_objective != "increase_stability")
+        or (not repair_exact_pair_complete and not repair_selection_requested)
+        or bool(selection_goal)
+        or bool(requirements)
+        or bool(priority_rules)
+        or bool(raw_tier_quota_goal)
+    )
+    tier_quota_requested = raw_tier_quota_goal not in (None, {})
+    tier_quota_composite_not_supported = bool(normalized_tier_quota_goal) and (
+        bool(normalized_requirements) or bool(normalized_priority_rules) or bool(repair_goal)
+        or (bool(selection_goal) and goal_type != "fill_to_count")
+    )
+    coverage_preserve_requested = (
+        not selection_goal
+        and bool(normalized_requirements)
+        and all(item.get("kind") == "include" for item in normalized_requirements)
+    )
+    coverage_counts_explicit = (
+        coverage_preserve_requested
+        and isinstance(requirements, list)
+        and all(
+            isinstance(item, dict)
+            and (item.get("min_count") is not None or item.get("minCount") is not None)
+            for item in requirements
+        )
+    )
+    coverage_counts_supported = (
+        coverage_counts_explicit
+        and all(_as_int(item.get("minCount")) >= 2 for item in normalized_requirements)
+    )
+    unsupported_priority_composite = bool(normalized_priority_rules) and (
+        (bool(selection_goal) and goal_type != "fill_to_count")
+        or (
+            bool(normalized_requirements)
+            and goal_type != "fill_to_count"
+            and not coverage_preserve_requested
+        )
+    )
+    unsupported_requirements_without_fill = (
+        bool(normalized_requirements)
+        and goal_type != "fill_to_count"
+        and not coverage_preserve_requested
+    )
+    if tier_quota_errors:
+        return _json(
+            {
+                "data": {
+                    "reason": "tier_quota_invalid",
+                    "tier_quota_errors": tier_quota_errors,
+                    "pending_created": False,
+                    "requires_confirmation": False,
+                },
+                "next_step": "clarify",
+                "message": (
+                    "请同时明确最终冲、稳、保三个档位各需要多少个；数量必须是非负整数。"
+                    "系统只执行三档完整的精确配额，不会补猜缺失数量。"
+                ),
+            }
+        )
+    if requirement_errors and all(
+        item.get("reason") == "tier_min_count_required" for item in requirement_errors
+    ):
+        return _json(
+            {
+                "data": {
+                    "reason": "tier_min_count_required",
+                    "requirement_errors": requirement_errors,
+                    "pending_created": False,
+                    "requires_confirmation": False,
+                },
+                "next_step": "clarify",
+                "message": (
+                    "请明确希望最终至少保留多少个冲、稳或保档项目；"
+                    "方案已满时还需要允许等量替换，系统不会替你猜档位数量。"
+                ),
+            }
+        )
+    if (
+        unsupported_top_level
+        or unsupported_goal_fields
+        or unsupported_repair_goal_fields
+        or requirement_errors
+        or priority_errors
+        or invalid_repair_goal
+        or tier_quota_composite_not_supported
+        or unsupported_priority_composite
+        or unsupported_requirements_without_fill
+    ):
+        return _json(
+            {
+                "data": {
+                    "reason": "plan_change_composite_not_supported",
+                    "unsupported_fields": (
+                        unsupported_top_level
+                        + unsupported_goal_fields
+                        + unsupported_repair_goal_fields
+                    ),
+                    "has_repair_goal": repair_goal_requested,
+                    "repair_goal_invalid_or_composite": invalid_repair_goal,
+                    "has_requirements": bool(normalized_requirements or requirements),
+                    "has_priority_rules": bool(priority_rules),
+                    "has_tier_quota_goal": tier_quota_requested,
+                    "tier_quota_composite_not_supported": tier_quota_composite_not_supported,
+                    "requirement_errors": requirement_errors,
+                    "priority_rule_errors": priority_errors,
+                    "priority_composite_not_supported": unsupported_priority_composite,
+                    "requirements_without_fill_not_supported": unsupported_requirements_without_fill,
+                },
+                "next_step": "respond",
+                "message": (
+                    "这次诉求包含当前复合 Proposal 还不能可靠执行的要求；系统不会拆开执行，"
+                    "也不会创建只承接部分条件的待确认操作。"
+                ),
+            }
+        )
+    if repair_goal_requested:
+        if repair_selection_requested:
+            return await _preview_review_repair_goal_selection(
+                ctx,
+                objective=repair_objective,
+            )
+        replaced_active_pending, pending_terminal = await _prepare_plan_change_pending_resolution(
+            ctx,
+            pending_resolution=pending_resolution,
+            effective_raw_user_text=effective_raw_user_text,
+        )
+        if pending_terminal is not None:
+            return _json(pending_terminal)
+        return await _preview_review_repair_plan_change(
+            ctx,
+            repair_goal={
+                **({"objective": repair_objective} if repair_objective else {}),
+                "review_issue_code": repair_issue_code,
+                "strategy": repair_strategy,
+            },
+            replaced_active_pending=replaced_active_pending,
+        )
+    if coverage_preserve_requested and not coverage_counts_supported:
+        return _json(
+            {
+                "data": {
+                    "reason": "coverage_target_count_required",
+                    "requirements": normalized_requirements,
+                    "coverage_count_explicit": coverage_counts_explicit,
+                    "minimum_supported_count": 2,
+                },
+                "next_step": "clarify",
+                "message": (
+                    "请说明希望最终至少保留多少个匹配项目（当前需明确为2个或以上），"
+                    "并确认若方案已满，是否允许等量替换其他项目；"
+                    "系统需要明确数量和替换边界才能生成可验证的调整预览。"
+                ),
+            }
+        )
+    raw_target_count = selection_goal.get("target_count")
+    target_count: int | None = None
+    target_count_source = "not_applicable"
+    backend_goal_type = (
+        "fill_to_count"
+        if goal_type == "fill_to_count" or coverage_preserve_requested or tier_quota_requested
+        else "prioritize_within_tier" if normalized_priority_rules else goal_type
+    )
+    expected_strategy = (
+        "fill_missing_count"
+        if backend_goal_type == "fill_to_count"
+        else "prioritize_within_tier"
+    )
+    if goal_type == "fill_to_count":
+        target_count = _as_int(raw_target_count)
+        target_count_source = "explicit"
+        if raw_target_count is None:
+            plan_summary = await _plan_summary_data(ctx)
+            target_count = _as_int(
+                plan_summary.get("candidate_target_total")
+                or plan_summary.get("ordered_target_total")
+            )
+            target_count_source = "planning_state_required_count"
+    elif coverage_preserve_requested or tier_quota_requested:
+        plan_summary = await _plan_summary_data(ctx)
+        target_count = _as_int(plan_summary.get("ordered_total"))
+        target_count_source = "current_plan_preserve_count"
+    invalid_fill_goal = goal_type == "fill_to_count" and (
+        isinstance(raw_target_count, bool) or not target_count or target_count <= 0
+    )
+    invalid_coverage_preserve = coverage_preserve_requested and (
+        not target_count or target_count <= 0
+    )
+    invalid_tier_quota_preserve = tier_quota_requested and not selection_goal and (
+        not target_count or target_count <= 0
+    )
+    tier_quota_total = (
+        _as_int((normalized_tier_quota_goal or {}).get("sprintCount"))
+        + _as_int((normalized_tier_quota_goal or {}).get("stableCount"))
+        + _as_int((normalized_tier_quota_goal or {}).get("protectCount"))
+    )
+    tier_quota_total_mismatch = (
+        bool(normalized_tier_quota_goal)
+        and bool(target_count)
+        and tier_quota_total != target_count
+    )
+    if tier_quota_total_mismatch:
+        return _json(
+            {
+                "data": {
+                    "reason": "tier_quota_total_mismatch",
+                    "tier_quota_goal": normalized_tier_quota_goal,
+                    "tier_quota_total": tier_quota_total,
+                    "target_count": target_count,
+                    "target_count_source": target_count_source,
+                    "pending_created": False,
+                    "requires_confirmation": False,
+                },
+                "next_step": "clarify",
+                "message": (
+                    f"冲稳保三个数量合计为{tier_quota_total}，但当前最终方案总数目标是{target_count}。"
+                    "请把三档数量调整到与最终总数完全一致。"
+                ),
+            }
+        )
+    if (
+        invalid_fill_goal
+        or invalid_coverage_preserve
+        or invalid_tier_quota_preserve
+        or (
+            goal_type != "fill_to_count"
+            and not coverage_preserve_requested
+            and not tier_quota_requested
+            and not normalized_priority_rules
+        )
+    ):
+        return _json(
+            {
+                "data": {
+                    "reason": "plan_change_goal_invalid",
+                    "supported_goals": ["fill_to_count", "prioritize_within_tier"],
+                    "goal_type": goal_type,
+                    "target_count": raw_target_count,
+                    "target_count_source": target_count_source,
+                },
+                "next_step": "clarify",
+                "message": (
+                    "当前还没有可保持总数的正式方案，请先生成方案。"
+                    if invalid_coverage_preserve or invalid_tier_quota_preserve
+                    else
+                    "当前规划状态里还没有目标志愿数量，请先说明希望补齐到多少个。"
+                    if raw_target_count is None
+                    else "补齐目标必须是大于0的整数。"
+                ),
+            }
+        )
+
+    replaced_active_pending, pending_terminal = await _prepare_plan_change_pending_resolution(
+        ctx,
+        pending_resolution=pending_resolution,
+        effective_raw_user_text=effective_raw_user_text,
+        allow_intent_append=append_active_intent_pending,
+    )
+    if pending_terminal is not None:
+        return _json(pending_terminal)
+    kind = "plan_mutation"
+    action_family = "apply_plan_change_proposal"
+
+    source_version = await _latest_planning_version(ctx)
+    user_goal_request = {
+        "proposalSource": "user_goal",
+        "goalType": backend_goal_type,
+        "targetCount": target_count,
+        "requirements": normalized_requirements,
+        "priorityRules": normalized_priority_rules,
+        "userOriginalText": effective_raw_user_text,
+        "confidence": "high",
+        "sourceVersionGuard": source_version,
+        "targetScopes": [],
+        "negativeScopes": [],
+        "qualityGuards": [],
+        "tradeoffGuards": [],
+        "sourceReviewIssueCodes": [],
+    }
+    if normalized_tier_quota_goal:
+        user_goal_request["tierQuotaGoal"] = normalized_tier_quota_goal
+    if coverage_preserve_requested or (tier_quota_requested and not selection_goal):
+        user_goal_request["persistTargetCount"] = False
+    tenant_id = getattr(ctx.deps, "tenant_id", 1)
+    backend_response = await internal_client.generate_user_goal_planning_fix_proposals(
+        tenant_id,
+        ctx.deps.sessionid,
+        user_goal_request,
+    )
+    backend_data = _response_data(backend_response)
+    proposals = backend_data.get("proposals") if isinstance(backend_data.get("proposals"), list) else []
+    proposal = next((item for item in proposals if isinstance(item, dict)), None)
+    if proposal is None:
+        return _json(
+            {
+                "data": {
+                    "reason": "plan_change_proposal_unavailable",
+                    "target_count": target_count,
+                    "backend_response": backend_response,
+                },
+                "next_step": "respond",
+                "message": "后端没有返回可核验的方案调整 Proposal，本轮不会创建待确认操作。",
+            }
+        )
+
+    proposal_id = str(proposal.get("proposalId") or proposal.get("proposal_id") or "").strip()
+    proposal_status = str(proposal.get("status") or "").strip()
+    proposal_strategy = str(proposal.get("strategy") or "").strip()
+    proposal_source_version = _as_int(
+        proposal.get("sourceVersionGuard")
+        or proposal.get("source_version_guard")
+        or proposal.get("sourceVersion")
+        or proposal.get("source_version")
+    )
+    summary = str(proposal.get("summary") or "").strip()
+    blocking_reason = str(proposal.get("blockingReason") or proposal.get("blocking_reason") or "").strip()
+    dry_run = proposal.get("dryRunResult") if isinstance(proposal.get("dryRunResult"), dict) else {}
+    proposal_view = {
+        "proposal_id": proposal_id,
+        "status": proposal_status,
+        "strategy": proposal_strategy,
+        "summary": summary,
+        "impact": str(proposal.get("impact") or "").strip(),
+        "blocking_reason": blocking_reason,
+        "dry_run": dry_run,
+        "candidate_shortages": proposal.get("candidateShortages") or [],
+    }
+    if proposal_status != "ready":
+        message = blocking_reason or summary or "当前候选和方案状态不能形成可执行的调整预览。"
+        return _json(
+            {
+                "data": {
+                    "target_count": target_count,
+                    "proposal": proposal_view,
+                    "pending_created": False,
+                    "requires_confirmation": False,
+                },
+                "next_step": "respond",
+                "message": message,
+            }
+        )
+    if (
+        not proposal_id
+        or proposal_strategy != expected_strategy
+        or proposal_source_version != source_version
+    ):
+        return _json(
+            {
+                "data": {
+                    "reason": "plan_change_proposal_contract_mismatch",
+                    "target_count": target_count,
+                    "source_version": source_version,
+                    "proposal": proposal_view,
+                },
+                "next_step": "respond",
+                "message": "方案调整 Proposal 与当前方案版本或策略不一致，本轮不会创建待确认操作。",
+            }
+        )
+
+    proposal_apply = {
+        "proposalId": proposal_id,
+        "proposalSource": "user_goal",
+        "sourceVersionGuard": source_version,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+        "userGoalRequest": user_goal_request,
+    }
+    frozen_spec: dict[str, Any] = {
+        "requirements": normalized_requirements,
+        "priority_rules": normalized_priority_rules,
+    }
+    if goal_type == "fill_to_count":
+        frozen_spec["selection_goal"] = {"type": "fill_to_count", "target_count": target_count}
+    if normalized_tier_quota_goal:
+        frozen_spec["tier_quota_goal"] = {
+            "type": "exact_counts",
+            "sprint_count": normalized_tier_quota_goal["sprintCount"],
+            "stable_count": normalized_tier_quota_goal["stableCount"],
+            "protect_count": normalized_tier_quota_goal["protectCount"],
+        }
+    execution_payload = {
+        "action_family": action_family,
+        "target_count_source": target_count_source,
+        "plan_change_spec": frozen_spec,
+        "proposal_apply": proposal_apply,
+        "proposal_snapshot": proposal_view,
+        "postconditions": {
+            "count_mode": "backend_volunteer_model",
+            "target_count": target_count,
+            "operator": "equals",
+            "requirements": normalized_requirements,
+            "priority_rules": normalized_priority_rules,
+            "tier_quota_goal": normalized_tier_quota_goal,
+        },
+    }
+    plan_impact = {
+        "source": "preview_plan_change",
+        "target_count": target_count,
+        "before_unit_total": _as_int(dry_run.get("beforeUnitTotal")),
+        "after_unit_total": _as_int(dry_run.get("afterUnitTotal")),
+        "before_volunteer_total": _as_int(dry_run.get("beforeVolunteerTotal")),
+        "after_volunteer_total": _as_int(dry_run.get("afterVolunteerTotal")),
+        "add_unit_count": _as_int(dry_run.get("addUnitCount")),
+        "add_volunteer_count": _as_int(dry_run.get("addVolunteerCount")),
+        "remove_unit_count": _as_int(dry_run.get("removeUnitCount")),
+        "remove_volunteer_count": _as_int(dry_run.get("removeVolunteerCount")),
+        "before_unit_tier_counts": dry_run.get("beforeUnitTierCounts") or {},
+        "after_unit_tier_counts": dry_run.get("afterUnitTierCounts") or {},
+        "before_volunteer_tier_counts": dry_run.get("beforeVolunteerTierCounts") or {},
+        "after_volunteer_tier_counts": dry_run.get("afterVolunteerTierCounts") or {},
+        "priority_matched_count": _as_int(dry_run.get("priorityMatchedCount")),
+        "priority_before_inversion_count": _as_int(dry_run.get("priorityBeforeInversionCount")),
+        "priority_after_inversion_count": _as_int(dry_run.get("priorityAfterInversionCount")),
+        "priority_moved_target_count": _as_int(dry_run.get("priorityMovedTargetCount")),
+    }
+    fallback_summary = (
+        f"把当前方案补齐到{target_count}个"
+        if backend_goal_type == "fill_to_count"
+        and not coverage_preserve_requested and not tier_quota_requested
+        else f"落实覆盖数量要求并保持当前{target_count}个项目不变"
+        if coverage_preserve_requested
+        else f"把方案调整为冲{normalized_tier_quota_goal['sprintCount']}、稳{normalized_tier_quota_goal['stableCount']}、保{normalized_tier_quota_goal['protectCount']}"
+        if normalized_tier_quota_goal
+        else "在各冲稳保档内前置目标项目"
+    )
+    merged_active_intent_pending = False
+    if append_active_intent_pending:
+        active_pending = await _pending_data(ctx)
+        kind_before_merge = str(active_pending.get("kind") or "").strip()
+        action_before_merge = str(
+            active_pending.get("action_family") or active_pending.get("actionFamily") or ""
+        ).strip()
+        cancel_response = await _mark_pending_status(
+            ctx,
+            active_pending,
+            "cancelled",
+            resultCode="merged_into_plan_change_preview",
+        )
+        if not _is_success_response(cancel_response):
+            return _json(
+                {
+                    "data": {
+                        "reason": "active_intent_pending_merge_failed",
+                        "pending_created": False,
+                        "requires_confirmation": False,
+                    },
+                    "next_step": "respond",
+                    "message": "原待确认报考要求暂时无法安全合并，本轮不会创建新的方案调整操作。",
+                }
+            )
+        _invalidate_after_pending_action(ctx, kind_before_merge, action_before_merge)
+        _clear_context_pending(ctx)
+        merged_active_intent_pending = True
+    pending_result = await _create_plan_pending(
+        ctx,
+        kind=kind,
+        action_family=action_family,
+        summary=summary or fallback_summary,
+        payload=execution_payload,
+        affected_scope="当前方案",
+        plan_impact=plan_impact,
+        source_version=source_version,
+    )
+    message = summary or f"已生成{fallback_summary}的方案调整预览。"
+    if pending_result.get("created"):
+        message += " 确认后会原子执行并校验最终目标；确认前不会改动方案。"
+    else:
+        message += " 但待确认状态保存失败，本轮不会执行。"
+    return _json(
+        {
+            "data": {
+                "target_count": target_count,
+                "target_count_source": target_count_source,
+                "preserve_current_count": coverage_preserve_requested
+                or (tier_quota_requested and not selection_goal),
+                "tier_quota_goal": normalized_tier_quota_goal,
+                "requirements": normalized_requirements,
+                "priority_rules": normalized_priority_rules,
+                "proposal": proposal_view,
+                "plan_impact": plan_impact,
+                "replaced_active_pending": replaced_active_pending,
+                "merged_active_intent_pending": merged_active_intent_pending,
+                "pending_id": pending_result.get("pending_id"),
+                "pending_version": pending_result.get("pending_version"),
+                "pending_created": bool(pending_result.get("created")),
+                "requires_confirmation": bool(pending_result.get("created")),
+            },
+            "next_step": "confirm" if pending_result.get("created") else "respond",
+            "message": message,
+        }
+    )
+
+
 async def preview_plan_action(
     ctx: RunContext[RequestContext],
     action: PlanAction,
@@ -7130,6 +9965,11 @@ async def preview_plan_action(
     `review_issue_code="high_tuition"`; for "中外合作" review issues, pass
     `review_issue_code="cooperative_program"`. This tool only creates a
     confirmation preview; it does not apply the change until `confirm_pending`.
+    The first call must include a locator in targets, filters, review_issue_code,
+    or a position/tier selector; never call with action alone. For a request such
+    as moving the highest-admission-rate item in the safe tier to that tier's
+    first position, pass filters with tier, selector_sort, selector_rank,
+    target_tier, and target_ordinal in the first call.
     For replace actions without explicit candidate targets, pass
     replacement_spec to describe the replacement direction, for example
     {"improve_dims":["tuition_decrease"],"exclude_markers":["high_tuition"]}.
@@ -7278,7 +10118,22 @@ async def preview_plan_action(
                     "message": "当前还没有正式方案，不能预览移出或移动操作。可以先生成方案。",
                 }
             )
-        if not _as_list(targets) and review_issue_code and normalized_action == "remove":
+        effective_targets = _as_list(targets)
+        if not effective_targets and not normalized_filters and raw_user_text:
+            inferred_positions = _target_position_values(raw_user_text) or _target_position_range(raw_user_text)
+            if not inferred_positions:
+                single_position = _target_position_value(raw_user_text)
+                if single_position > 0:
+                    inferred_positions = [single_position]
+            if not inferred_positions and normalized_action == "move" and _as_int(target_position) > 0:
+                source_match = re.search(r"第([一二两三四五六七八九十]+|\d+)", raw_user_text)
+                if source_match:
+                    source_position = _as_int(source_match.group(1)) or _chinese_ordinal_value(source_match.group(1))
+                    if source_position > 0:
+                        inferred_positions = [source_position]
+            if inferred_positions:
+                effective_targets = [f"第{position}个" for position in inferred_positions]
+        if not effective_targets and review_issue_code and normalized_action == "remove":
             issue, resolved, reason = await _review_issue_action_target(ctx, review_issue_code)
             missing = [] if reason in {"ok", "review_issue_units_not_in_plan"} else [str(review_issue_code)]
             if issue:
@@ -7286,17 +10141,22 @@ async def preview_plan_action(
             if reason == "ok" and normalized_filters:
                 resolved, normalized_filters, reason = _filter_resolved_plan_items(ctx, resolved, normalized_filters)
                 missing = [] if reason == "ok" else [_describe_filters(normalized_filters)]
-        elif not _as_list(targets) and normalized_filters and normalized_action == "remove":
+            elif reason != "ok":
+                fallback_filters = normalized_filters or _review_issue_fallback_filters(review_issue_code)
+                if fallback_filters:
+                    resolved, normalized_filters, reason = await _resolve_plan_filter_targets(ctx, fallback_filters)
+                    missing = [] if reason == "ok" else [_describe_filters(normalized_filters)]
+        elif not effective_targets and normalized_filters and normalized_action == "remove":
             resolved, normalized_filters, reason = await _resolve_plan_filter_targets(ctx, normalized_filters)
             missing = [] if reason == "ok" else [_describe_filters(normalized_filters)]
-        elif not _as_list(targets) and normalized_filters and normalized_action == "move":
+        elif not effective_targets and normalized_filters and normalized_action == "move":
             resolved, normalized_filters, reason = await _resolve_plan_filter_selector_target(
                 ctx,
                 normalized_filters,
             )
             missing = [] if reason == "ok" else [_describe_filters(normalized_filters)]
         else:
-            resolved, missing, reason = await _resolve_plan_targets(ctx, targets, source="plan")
+            resolved, missing, reason = await _resolve_plan_targets(ctx, effective_targets, source="plan")
         if reason == "filter_no_match":
             return _json(
                 {
@@ -7355,7 +10215,7 @@ async def preview_plan_action(
         unit_ids = [_item_unit_id(item) for item in resolved if _item_unit_id(item)]
         affected_items = [_plan_item_brief(item) for item in resolved if item]
         count = len(unit_ids)
-        affected_scope = "；".join(_plan_item_snippet(item) for item in resolved[:5])
+        affected_scope = _plan_item_scope_summary(resolved, limit=5, total=count)
         if normalized_filters and normalized_action == "remove" and not _as_list(targets) and not review_issue_meta:
             affected_scope = f"{_describe_filters(normalized_filters)}：{affected_scope}"
         if review_issue_meta:
@@ -7393,26 +10253,78 @@ async def preview_plan_action(
                     "message": "已经定位到要移动的方案项，还需要说明要移动到第几位。",
                 }
             )
+        if normalized_action == "move":
+            affected_scope = (
+                f"{affected_scope}；目标位置："
+                f"{_move_target_scope(normalized_filters, _as_int(target_position))}"
+            )
 
     elif normalized_action == "add":
-        resolved, missing, reason = await _resolve_plan_targets(ctx, targets, source="candidates")
-        if reason != "ok" or missing or not resolved:
+        resolved, add_filters, reason = await _resolve_add_candidate_targets(ctx, targets, normalized_filters)
+        if add_filters:
+            normalized_filters = add_filters
+        if reason == "candidate_ambiguous":
+            options = [_plan_item_brief(item) for item in resolved[:5]]
             return _json(
                 {
                     "data": {
                         "action": "add",
                         "targets": targets or [],
-                        "missing_targets": missing,
+                        "filters": normalized_filters,
+                        "candidate_options": options,
+                        "matched_total": len(resolved),
                         "reason": reason,
                     },
                     "next_step": "clarify",
-                    "message": "还没有唯一定位到要加入的候选志愿，请说明候选里的学校和专业。",
+                    "message": (
+                        "当前候选池里找到多个符合条件的志愿："
+                        + "；".join(_plan_item_snippet(item) for item in resolved[:5])
+                        + "。请说明要加入其中哪个具体专业。"
+                    ),
+                }
+            )
+        if reason in {"candidate_no_match", "candidate_already_selected"}:
+            description = _describe_filters(normalized_filters) or "、".join(_as_list(targets))
+            message = (
+                f"当前候选池里没有命中“{description}”的可加入志愿。"
+                if reason == "candidate_no_match"
+                else f"“{description}”对应的候选已经在当前方案中，不需要重复加入。"
+            )
+            return _json(
+                {
+                    "data": {
+                        "action": "add",
+                        "targets": targets or [],
+                        "filters": normalized_filters,
+                        "candidate_options": [],
+                        "reason": reason,
+                    },
+                    "next_step": "respond",
+                    "message": message,
+                }
+            )
+        if reason != "ok" or not resolved:
+            return _json(
+                {
+                    "data": {
+                        "action": "add",
+                        "targets": targets or [],
+                        "filters": normalized_filters,
+                        "reason": reason,
+                    },
+                    "next_step": "clarify",
+                    "message": "还没有唯一定位到要加入的候选志愿，请同时说明候选里的学校和专业。",
                 }
             )
         volunteer_ids = [_item_volunteer_id(item) for item in resolved if _item_volunteer_id(item)]
         affected_items = [_plan_item_brief(item) for item in resolved if item]
         count = len(volunteer_ids)
-        affected_scope = "；".join(_plan_item_snippet(item) for item in resolved[:5])
+        affected_scope = _plan_item_scope_summary(
+            resolved,
+            limit=5,
+            total=count,
+            noun="候选志愿",
+        )
 
     elif normalized_action == "replace":
         candidate_targets = _as_list(
@@ -7469,7 +10381,7 @@ async def preview_plan_action(
             filters=old_filter_payload or replacement_filter_input,
             old_items=old_resolved if old_reason == "ok" else [],
         )
-        auto_select_reason = _replacement_legacy_auto_select_reason(replacement_spec)
+        auto_select_reason = _replacement_auto_select_reason(replacement_spec)
         if candidate_targets:
             new_resolved, new_missing, new_reason = await _resolve_plan_targets(ctx, candidate_targets, source="candidates")
         elif old_reason == "ok" and old_resolved:
@@ -7537,8 +10449,17 @@ async def preview_plan_action(
         volunteer_ids = [_item_volunteer_id(item) for item in new_resolved if _item_volunteer_id(item)]
         affected_items = [_plan_item_brief(item) for item in old_resolved + new_resolved if item]
         count = len(unit_ids) + len(volunteer_ids)
-        affected_scope = "移出：" + "；".join(_plan_item_snippet(item) for item in old_resolved[:3])
-        affected_scope += "；加入：" + "；".join(_plan_item_snippet(item) for item in new_resolved[:3])
+        affected_scope = "移出：" + _plan_item_scope_summary(
+            old_resolved,
+            limit=3,
+            total=len(unit_ids),
+        )
+        affected_scope += "；加入：" + _plan_item_scope_summary(
+            new_resolved,
+            limit=3,
+            total=len(volunteer_ids),
+            noun="候选志愿",
+        )
         if review_issue_meta:
             affected_scope = f"审查问题 {review_issue_meta.get('code')}：" + affected_scope
 
@@ -7617,14 +10538,35 @@ async def preview_plan_action(
                     }
                 )
             review_issue_meta = _review_issue_target_meta(issue)
-            normalized_filters = {
-                **normalized_filters,
-                "review_issue_code": review_issue_meta.get("code"),
-            }
+        if normalized_filters or review_issue_meta:
+            action_label = "生成方案" if normalized_action == "generate" else "重新生成排序方案"
+            requested_scope = _describe_filters(normalized_filters)
+            if review_issue_meta:
+                issue_label = str(review_issue_meta.get("label") or review_issue_meta.get("code") or "审查问题")
+                requested_scope = f"{requested_scope}；{issue_label}" if requested_scope else issue_label
+            return _json(
+                {
+                    "data": {
+                        "action": normalized_action,
+                        "action_family": action_family,
+                        "filters": normalized_filters,
+                        "review_issue_code": review_issue_code or "",
+                        "review_issue_target": review_issue_meta or {},
+                        "reason": "plan_generation_goal_requires_proposal",
+                        "pending_created": False,
+                        "requires_confirmation": False,
+                    },
+                    "next_step": "clarify",
+                    "message": (
+                        f"已经听清这次要围绕“{requested_scope}”{action_label}，"
+                        "但当前生成接口只会消费已经确认的报考要求和当前候选，"
+                        "不会执行这次临时附带的筛选或修复目标，因此不会生成确认卡，也不会改动方案。"
+                        "需要先生成包含具体新增、移出或排序变化的可执行处理提案。"
+                    ),
+                }
+            )
         if normalized_action == "generate":
             affected_scope = "生成新的正式方案"
-        elif review_issue_meta:
-            affected_scope = f"围绕审查问题 {review_issue_meta.get('code')}，基于当前候选重新生成排序方案"
         else:
             affected_scope = "基于当前候选重新生成排序方案"
         count = _as_int(summary.get("ordered_total") or summary.get("ordered_target_total"))
@@ -7690,6 +10632,9 @@ async def query_plan(
     raw_user_text = _latest_user_text(ctx)
     normalized_filters, limit = _normalize_plan_query_filters(filters if isinstance(filters, dict) else {})
     query_filters, query_controls = _extract_plan_query_controls(normalized_filters)
+    relative_province_scope = _extract_relative_province_scope(query_filters)
+    score = await _score_data(ctx) if relative_province_scope else {}
+    home_province = str(score.get("province") or "").strip()
     summary = await _plan_summary_data(ctx)
     if not summary.get("has_plan"):
         no_plan_message = summary.get("guidance") or "当前还没有生成正式方案。"
@@ -7715,8 +10660,51 @@ async def query_plan(
     total = summary.get("ordered_total") or 0
     risk_count = ((summary.get("review") or {}).get("risk_count") or 0)
     description = _describe_filters(query_filters)
+    if relative_province_scope:
+        scope_label = "省内" if relative_province_scope == "inside" else "省外"
+        relative_description = f"{scope_label}（相对高考省份{home_province}）" if home_province else scope_label
+        description = f"{relative_description}；{description}" if description else relative_description
+
+    if relative_province_scope and not home_province:
+        return _json(
+            {
+                "data": {
+                    "has_plan": True,
+                    "scope": normalized_scope,
+                    "filters": query_filters,
+                    "relative_province_scope": relative_province_scope,
+                    "home_province": "",
+                    "matched_total": 0,
+                    "returned_total": 0,
+                    "items": [],
+                    **_post_query_instruction(raw_user_text),
+                },
+                "next_step": "clarify",
+                "message": "暂时没有拿到高考省份，不能准确计算方案里的省内/省外数量。请先补充高考省份。",
+            }
+        )
 
     if normalized_scope == "candidates":
+        if relative_province_scope == "outside":
+            return _json(
+                {
+                    "data": {
+                        "has_plan": True,
+                        "scope": "candidates",
+                        "filters": query_filters,
+                        "relative_province_scope": relative_province_scope,
+                        "home_province": home_province,
+                        "matched_total": 0,
+                        "returned_total": 0,
+                        "items": [],
+                        **_post_query_instruction(raw_user_text),
+                    },
+                    "next_step": "clarify",
+                    "message": "候选池暂不支持一次性统计全部省外机会；可以指定具体省份继续查询。",
+                }
+            )
+        if relative_province_scope == "inside":
+            query_filters["province"] = [home_province]
         sandbox = getattr(ctx.deps, "sandbox", None)
         if sandbox is None:
             candidate_data = _sandbox_unavailable("plan/candidates.json")
@@ -7783,6 +10771,11 @@ async def query_plan(
         item
         for item in plan_items
         if _matches_plan_item(item, query_filters, batch=batch)
+        and _matches_relative_province_scope(
+            item,
+            home_province=home_province,
+            scope=relative_province_scope,
+        )
     ]
     count_metrics = _plan_query_count_metrics(
         plan_items=plan_items,
@@ -7808,7 +10801,7 @@ async def query_plan(
         if school_snippet:
             display_scope = f"前{len(school_summary)}所院校"
             snippet = school_snippet
-    if query_filters:
+    if query_filters or relative_province_scope:
         matched_phrase = (
             f"命中{count_metrics['matched_plan_item_total']}个志愿，涉及{count_metrics['matched_detail_total']}条专业明细"
             if count_metrics.get("detail_granularity") and count_metrics["matched_detail_total"] != count_metrics["matched_plan_item_total"]
@@ -7835,6 +10828,8 @@ async def query_plan(
                 "scope": "plan",
                 "filters": query_filters,
                 "query_controls": query_controls,
+                "relative_province_scope": relative_province_scope,
+                "home_province": home_province,
                 "limit": limit,
                 "summary": summary,
                 **count_metrics,
@@ -7848,6 +10843,13 @@ async def query_plan(
             "next_step": "respond",
             "message": message,
         }
+    )
+
+
+def _no_active_pending_confirmation_message() -> str:
+    return (
+        "当前没有待确认操作；上一轮只是查询或分析，没有待采纳或待执行的内容，因此不会执行任何变更。"
+        "下一步可以直接说明想查看什么，或者先让我生成具体调整预览。"
     )
 
 
@@ -7876,6 +10878,19 @@ async def confirm_pending(
             }
         )
 
+    runtime_pending = _turn_started_active_pending(ctx)
+    if runtime_pending is None:
+        return _json(
+            {
+                "data": {
+                    "active": False,
+                    "action": normalized_action,
+                },
+                "next_step": "respond",
+                "message": _no_active_pending_confirmation_message(),
+            }
+        )
+
     pending = await _pending_data(ctx)
     if not pending.get("active"):
         return _json(
@@ -7885,14 +10900,39 @@ async def confirm_pending(
                     "action": normalized_action,
                 },
                 "next_step": "respond",
-                "message": "当前没有待确认操作；没有上一轮待确认内容，也没有待执行的方案调整或报考要求，不会执行任何变更。",
+                "message": _no_active_pending_confirmation_message(),
+            }
+        )
+
+    runtime_pending_id = str(getattr(runtime_pending, "pending_id", "") or "").strip()
+    snapshot_pending_id = str(pending.get("pending_id") or pending.get("pendingId") or "").strip()
+    if not runtime_pending_id or not snapshot_pending_id or runtime_pending_id != snapshot_pending_id:
+        return _json(
+            {
+                "data": {
+                    "active": False,
+                    "action": normalized_action,
+                    "error": "pending_snapshot_mismatch",
+                    "runtime_pending_id": runtime_pending_id,
+                    "snapshot_pending_id": snapshot_pending_id,
+                },
+                "next_step": "respond",
+                "message": "当前待确认内容已经变化，这次不会执行。请刷新后按最新预览重新确认。",
             }
         )
 
     kind = str(pending.get("kind") or "").strip()
     action_family = str(pending.get("action_family") or pending.get("actionFamily") or "").strip()
     if normalized_action == "cancel":
-        await _mark_pending_status(ctx, pending, "cancelled")
+        cancel_response = await _mark_pending_status(ctx, pending, "cancelled")
+        if not _is_success_response(cancel_response):
+            return _json(
+                {
+                    "data": {"active": True, "action": "cancel", "error": "pending_cas_conflict"},
+                    "next_step": "respond",
+                    "message": "当前待确认内容已经变化，这次未取消。请刷新后以最新预览为准。",
+                }
+            )
         _invalidate_after_pending_action(ctx, kind, action_family)
         _clear_context_pending(ctx)
         return _json(
@@ -7959,6 +10999,32 @@ async def confirm_pending(
             }
         )
 
+    raw_pending = pending.get("raw") if isinstance(pending.get("raw"), dict) else {}
+    if str(raw_pending.get("status") or "").strip() != "applying":
+        claim_response = await internal_client.claim_pending_confirmation(ctx.deps.sessionid, raw_pending)
+        claim_data = claim_response.get("data") if isinstance(claim_response.get("data"), dict) else {}
+        if not _is_success_response(claim_response) or claim_data.get("transitionApplied") is not True:
+            return _json(
+                {
+                    "data": {
+                        "active": False,
+                        "action": "confirm",
+                        "kind": kind,
+                        "action_family": action_family,
+                        "error": "pending_claim_conflict",
+                    },
+                    "next_step": "respond",
+                    "message": "这次待确认内容已被处理或已经变化，不会重复执行。请刷新后以最新状态为准。",
+                }
+            )
+        claimed_raw = claim_data.get("dataValue") if isinstance(claim_data.get("dataValue"), dict) else {}
+        if claimed_raw:
+            claimed_raw["_pendingRevision"] = claim_data.get("revision")
+            claimed_raw["revision"] = claim_data.get("revision")
+            claimed_raw["_pendingClaimToken"] = claim_data.get("claimToken")
+            claimed_raw["_pendingClaimExpiresAt"] = claim_data.get("claimExpiresAt")
+            pending["raw"] = claimed_raw
+
     if kind == "intent_change":
         success, data, message = await _apply_intent_pending(
             ctx,
@@ -7972,7 +11038,27 @@ async def confirm_pending(
         data = {"reason": "unsupported_pending_kind", "kind": kind}
         message = "这类待确认内容还不能由新确认工具执行，请重新生成预览。"
 
-    status = "applied" if success else "failed"
+    if data.get("execution_uncertain"):
+        _invalidate_after_pending_action(ctx, kind, action_family)
+        _clear_context_pending(ctx)
+        return _json(
+            {
+                "data": {
+                    "active": True,
+                    "action": "confirm",
+                    "kind": kind,
+                    "action_family": action_family,
+                    "pending_id": pending.get("pending_id"),
+                    "applied": False,
+                    "execution_uncertain": True,
+                    "result": data,
+                },
+                "next_step": "respond",
+                "message": message,
+            }
+        )
+
+    status = "applied" if success else "expired"
     await _mark_pending_status(
         ctx,
         pending,
