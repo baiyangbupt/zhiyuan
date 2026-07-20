@@ -9,5 +9,8 @@ public class FixProposalApplyReq {
     private Integer sourceVersionGuard;
     private Boolean regenerateOrderedPlan = true;
     private Boolean rerunReview = true;
+    private String canonicalObjectiveDigest;
+    private String solverVersion;
+    private String solverInputDigest;
     private UserGoalFixProposalReq userGoalRequest;
 }

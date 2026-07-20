@@ -10,12 +10,14 @@ import com.ytell.zhiyuan.model.dto.planning.OrderedPlanGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanChangePostconditionReportDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandReq;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalRequestDTO;
 import com.ytell.zhiyuan.model.dto.planning.RepairReportDTO;
 import com.ytell.zhiyuan.model.dto.planning.UpdateConstraintStateReq;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
@@ -329,12 +331,22 @@ public class PendingPlanningCommandBizServiceTest {
 
     @Test
     void shouldApplyPlanChangeProposalAndVerifyExactCount() {
-        PendingPlanningCommandReq req = planChangeReq(3);
+        PendingPlanningCommandReq req = canonicalPlanChangeReq(3);
         when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
         when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
         when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        FixProposalApplyRes applied = planChangeApplyResult(3, 16);
+        applied.getState().getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(3);
+        String persistedDigest = PlanningObjectiveCompiler.compileConfirmed(
+                applied.getState()).getObjectiveDigest();
+        req.getProposalApply().setCanonicalObjectiveDigest(persistedDigest);
+        FixProposalDTO proposal = canonicalProposal(
+                Arrays.asList("v-0", "v-1", "v-2"),
+                Arrays.asList("v-0", "v-1", "v-2"), 3);
+        proposal.setCanonicalObjectiveDigest(persistedDigest);
+        applied.setProposal(proposal);
         when(planningStateService.applyFixProposal(1L, 101L, req.getProposalApply()))
-                .thenReturn(planChangeApplyResult(3, 16));
+                .thenReturn(applied);
 
         PendingPlanningCommandRes response = service.execute(1L, 101L, req);
 
@@ -345,12 +357,85 @@ public class PendingPlanningCommandBizServiceTest {
         assertTrue(response.getPostconditionReport().getSatisfied());
         assertEquals(Integer.valueOf(3), response.getPostconditionReport().getActualCount());
         assertEquals("volunteer", response.getPostconditionReport().getCountMode());
+        assertEquals(persistedDigest, response.getPostconditionReport().getCanonicalObjectiveDigest());
+        assertEquals("ojalgo-48.4.2-m1", response.getPostconditionReport().getSolverVersion());
+        assertEquals("input-digest", response.getPostconditionReport().getSolverInputDigest());
+        assertEquals(1, response.getPostconditionReport().getObjectiveResults().size());
+        assertEquals("selection_target", response.getPostconditionReport()
+                .getObjectiveResults().get(0).getObjectiveType());
+        assertTrue(response.getPostconditionReport().getObjectiveResults().get(0).getSatisfied());
         verify(planningStateService).applyFixProposal(1L, 101L, req.getProposalApply());
         ArgumentCaptor<PlanningPendingCommandEntity> commandCaptor =
                 ArgumentCaptor.forClass(PlanningPendingCommandEntity.class);
         verify(commandSharedService).updateById(commandCaptor.capture());
         assertTrue(commandCaptor.getValue().getResultJson().contains("postconditionReport"));
         assertFalse(commandCaptor.getValue().getResultJson().contains("candidatePoolState"));
+    }
+
+    @Test
+    void shouldRejectCanonicalPostconditionWhenFrozenOrderDoesNotMatchFinalPlan() {
+        PendingPlanningCommandReq req = canonicalPlanChangeReq(3);
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        FixProposalApplyRes applied = planChangeApplyResult(3, 16);
+        FixProposalDTO proposal = canonicalProposal(
+                Arrays.asList("v-0", "v-1", "v-2"),
+                Arrays.asList("v-1", "v-0", "v-2"), 3);
+        applied.setProposal(proposal);
+        when(planningStateService.applyFixProposal(1L, 101L, req.getProposalApply())).thenReturn(applied);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, error.getStatus());
+        verify(commandSharedService, never()).updateById(any());
+    }
+
+    @Test
+    void shouldRejectCanonicalPostconditionWhenPersistedObjectiveDigestDoesNotMatchProposal() {
+        PendingPlanningCommandReq req = canonicalPlanChangeReq(3);
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        FixProposalApplyRes applied = planChangeApplyResult(3, 16);
+        applied.getState().getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(3);
+        applied.setProposal(canonicalProposal(
+                Arrays.asList("v-0", "v-1", "v-2"),
+                Arrays.asList("v-0", "v-1", "v-2"), 3));
+        when(planningStateService.applyFixProposal(1L, 101L, req.getProposalApply())).thenReturn(applied);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, error.getStatus());
+        verify(commandSharedService, never()).updateById(any());
+    }
+
+    @Test
+    void shouldRejectCanonicalPostconditionWhenFrozenObjectiveResultDoesNotMatchFinalFacts() {
+        PendingPlanningCommandReq req = canonicalPlanChangeReq(3);
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        FixProposalApplyRes applied = planChangeApplyResult(3, 16);
+        applied.getState().getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(3);
+        String persistedDigest = PlanningObjectiveCompiler.compileConfirmed(
+                applied.getState()).getObjectiveDigest();
+        req.getProposalApply().setCanonicalObjectiveDigest(persistedDigest);
+        FixProposalDTO proposal = canonicalProposal(
+                Arrays.asList("v-0", "v-1", "v-2"),
+                Arrays.asList("v-0", "v-1", "v-2"), 3);
+        proposal.setCanonicalObjectiveDigest(persistedDigest);
+        proposal.getSolverResult().getObjectiveResults().get(0).setActualCount(2);
+        applied.setProposal(proposal);
+        when(planningStateService.applyFixProposal(1L, 101L, req.getProposalApply())).thenReturn(applied);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, error.getStatus());
+        verify(commandSharedService, never()).updateById(any());
     }
 
     @Test
@@ -434,6 +519,32 @@ public class PendingPlanningCommandBizServiceTest {
         assertEquals(Integer.valueOf(0),
                 response.getPostconditionReport().getPriorityRuleResults().get(0).getInversionCount());
         assertTrue(response.getPostconditionReport().getPriorityRuleResults().get(0).getPersisted());
+    }
+
+    @Test
+    void shouldVerifyCanonicalPriorityAgainstFrozenSelectionAndObjectiveResults() {
+        PendingPlanningCommandReq req = priorityPlanChangeReq("上海");
+        req.getProposalApply().setSolverVersion("ojalgo-48.4.2-m1");
+        req.getProposalApply().setSolverInputDigest("input-digest");
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        FixProposalApplyRes applied = priorityApplyResult("上海", true);
+        String persistedDigest = PlanningObjectiveCompiler.compileConfirmed(
+                applied.getState()).getObjectiveDigest();
+        req.getProposalApply().setCanonicalObjectiveDigest(persistedDigest);
+        FixProposalDTO proposal = canonicalPriorityProposal(persistedDigest);
+        applied.setProposal(proposal);
+        when(planningStateService.applyFixProposal(1L, 101L, req.getProposalApply())).thenReturn(applied);
+
+        PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+        assertTrue(response.getPostconditionReport().getSatisfied());
+        assertEquals(2, response.getPostconditionReport().getObjectiveResults().size());
+        assertEquals("selection_target", response.getPostconditionReport()
+                .getObjectiveResults().get(0).getObjectiveId());
+        assertEquals("priority:0", response.getPostconditionReport()
+                .getObjectiveResults().get(1).getObjectiveId());
     }
 
     @Test
@@ -581,7 +692,7 @@ public class PendingPlanningCommandBizServiceTest {
     void shouldVerifyExactTierQuotaAndPersistedObjective() {
         PendingPlanningCommandReq req = planChangeReq(3);
         req.getProposalApply().getUserGoalRequest().setPersistTargetCount(false);
-        req.getProposalApply().getUserGoalRequest().setTierQuotaGoal(tierQuota(1, 1, 1));
+        req.getProposalApply().getUserGoalRequest().setTierQuotaGoal(tierQuotaRequest(1, 1, 1));
         when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
         when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
         when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
@@ -598,6 +709,8 @@ public class PendingPlanningCommandBizServiceTest {
         assertEquals(Integer.valueOf(1), quotaResult.getActualSprintCount());
         assertEquals(Integer.valueOf(1), quotaResult.getActualStableCount());
         assertEquals(Integer.valueOf(1), quotaResult.getActualProtectCount());
+        assertEquals(3, response.getPostconditionReport().getObjectiveResults().stream()
+                .filter(item -> "tier_exact".equals(item.getObjectiveType())).count());
     }
 
     @Test
@@ -717,6 +830,14 @@ public class PendingPlanningCommandBizServiceTest {
         return req;
     }
 
+    private PendingPlanningCommandReq canonicalPlanChangeReq(int targetCount) {
+        PendingPlanningCommandReq req = planChangeReq(targetCount);
+        req.getProposalApply().setCanonicalObjectiveDigest("objective-digest");
+        req.getProposalApply().setSolverVersion("ojalgo-48.4.2-m1");
+        req.getProposalApply().setSolverInputDigest("input-digest");
+        return req;
+    }
+
     private PendingPlanningCommandReq reviewFixPlanChangeReq() {
         PendingPlanningCommandReq req = baseReq();
         req.setOperationId("pending:p-1:apply_plan_change_proposal");
@@ -763,6 +884,53 @@ public class PendingPlanningCommandBizServiceTest {
         result.setStatus("applied");
         result.setState(state);
         return result;
+    }
+
+    private FixProposalDTO canonicalProposal(java.util.List<String> selected,
+                                              java.util.List<String> ordered,
+                                              int targetCount) {
+        PlanSolverResultDTO solverResult = new PlanSolverResultDTO();
+        solverResult.setStatus("ready");
+        solverResult.setSelectedEntityIds(selected);
+        solverResult.setOrderedEntityIds(ordered);
+        solverResult.setSolverVersion("ojalgo-48.4.2-m1");
+        solverResult.setInputDigest("input-digest");
+        PlanSolverResultDTO.ObjectiveResultDTO objective = new PlanSolverResultDTO.ObjectiveResultDTO();
+        objective.setObjectiveId("selection_target");
+        objective.setObjectiveType("selection_target");
+        objective.setRequiredMin(targetCount);
+        objective.setRequiredMax(targetCount);
+        objective.setActualCount(targetCount);
+        objective.setSatisfied(true);
+        solverResult.getObjectiveResults().add(objective);
+        FixProposalDTO proposal = new FixProposalDTO();
+        proposal.setProposalId("ugp-fill");
+        proposal.setProposalSource("user_goal");
+        proposal.setStrategy("fill_missing_count");
+        proposal.setCanonicalObjectiveDigest("objective-digest");
+        proposal.setSolverVersion("ojalgo-48.4.2-m1");
+        proposal.setSolverInputDigest("input-digest");
+        proposal.setSolverResult(solverResult);
+        return proposal;
+    }
+
+    private FixProposalDTO canonicalPriorityProposal(String objectiveDigest) {
+        FixProposalDTO proposal = canonicalProposal(
+                Arrays.asList("v-shanghai", "v-beijing"),
+                Arrays.asList("v-shanghai", "v-beijing"), 2);
+        proposal.setProposalId("ugp-priority");
+        proposal.setStrategy("prioritize_within_tier");
+        proposal.setCanonicalObjectiveDigest(objectiveDigest);
+        proposal.getSolverResult().setStatus("no_change");
+        PlanSolverResultDTO.ObjectiveResultDTO priority = new PlanSolverResultDTO.ObjectiveResultDTO();
+        priority.setObjectiveId("priority:0");
+        priority.setObjectiveType("priority_within_tier");
+        priority.setRequiredMin(0);
+        priority.setRequiredMax(0);
+        priority.setActualCount(0);
+        priority.setSatisfied(true);
+        proposal.getSolverResult().getObjectiveResults().add(priority);
+        return proposal;
     }
 
     private FixProposalApplyRes reviewFixApplyResult(boolean postValidationPassed) {
@@ -886,6 +1054,15 @@ public class PendingPlanningCommandBizServiceTest {
 
     private TierQuotaGoalDTO tierQuota(int sprint, int stable, int protect) {
         TierQuotaGoalDTO goal = new TierQuotaGoalDTO();
+        goal.setType("exact_counts");
+        goal.setSprintCount(sprint);
+        goal.setStableCount(stable);
+        goal.setProtectCount(protect);
+        return goal;
+    }
+
+    private TierQuotaGoalRequestDTO tierQuotaRequest(int sprint, int stable, int protect) {
+        TierQuotaGoalRequestDTO goal = new TierQuotaGoalRequestDTO();
         goal.setType("exact_counts");
         goal.setSprintCount(sprint);
         goal.setStableCount(stable);

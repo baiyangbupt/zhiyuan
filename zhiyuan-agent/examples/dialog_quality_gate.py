@@ -22,6 +22,7 @@ EXAMPLES = ROOT / "examples"
 DEFAULT_METRICS_DIR = Path("/private/tmp/zhiyuan-agent-dialog-quality-gate")
 
 LOCAL_PYTEST_TARGETS = [
+    "tests/unit/test_release_410_m0_contract.py",
     "tests/unit/models/test_semantic_router.py",
     "tests/unit/test_semantic_frame_evaluator.py",
     "tests/unit/test_semantic_frame_probe.py",

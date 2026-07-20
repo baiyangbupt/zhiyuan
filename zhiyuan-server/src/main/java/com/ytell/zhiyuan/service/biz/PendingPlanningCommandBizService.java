@@ -5,6 +5,7 @@ import com.google.common.base.Strings;
 import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftSelectReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
@@ -15,6 +16,7 @@ import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitRemoveReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanChangePostconditionReportDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandReq;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
@@ -35,6 +37,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -176,6 +179,9 @@ public class PendingPlanningCommandBizService {
         if (userGoal == null) {
             return verifyReviewFixPostcondition(req, applyRes);
         }
+        FixProposalDTO authoritativeProposal = applyRes == null ? null : applyRes.getProposal();
+        PlanSolverResultDTO frozenResult = validateCanonicalFrozenResult(
+                req.getProposalApply(), state, authoritativeProposal);
         boolean countRequired = RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(
                 RepairProposalTaxonomy.normalizeStrategy(userGoal.getGoalType()));
         Integer targetCount = userGoal.getTargetCount();
@@ -204,6 +210,13 @@ public class PendingPlanningCommandBizService {
         boolean persistTargetCount = !Boolean.FALSE.equals(userGoal.getPersistTargetCount());
         PlanChangePostconditionReportDTO report = new PlanChangePostconditionReportDTO();
         report.setGoalType(userGoal.getGoalType());
+        report.setCanonicalObjectiveDigest(frozenResult == null
+                ? req.getProposalApply().getCanonicalObjectiveDigest()
+                : authoritativeProposal.getCanonicalObjectiveDigest());
+        report.setSolverVersion(frozenResult == null
+                ? req.getProposalApply().getSolverVersion() : frozenResult.getSolverVersion());
+        report.setSolverInputDigest(frozenResult == null
+                ? req.getProposalApply().getSolverInputDigest() : frozenResult.getInputDigest());
         report.setCountMode(majorGroupMode ? "unit" : "volunteer");
         report.setTargetCount(targetCount);
         report.setActualCount(actualCount);
@@ -280,14 +293,12 @@ public class PendingPlanningCommandBizService {
         TierQuotaGoalDTO tierQuota = userGoal.getTierQuotaGoal();
         boolean tierQuotaSatisfied = true;
         if (tierQuota != null) {
-            List<UserGoalFixProposalReq.RequirementDTO> quotaRequirements =
-                    TierQuotaSupport.syntheticRequirements(tierQuota);
-            int actualSprintCount = postconditionRequirementMatchedCount(
-                    state, majorGroupMode, planCandidates, quotaRequirements.get(0));
-            int actualStableCount = postconditionRequirementMatchedCount(
-                    state, majorGroupMode, planCandidates, quotaRequirements.get(1));
-            int actualProtectCount = postconditionRequirementMatchedCount(
-                    state, majorGroupMode, planCandidates, quotaRequirements.get(2));
+            int actualSprintCount = postconditionTierCount(
+                    state, majorGroupMode, planCandidates, "sprint");
+            int actualStableCount = postconditionTierCount(
+                    state, majorGroupMode, planCandidates, "stable");
+            int actualProtectCount = postconditionTierCount(
+                    state, majorGroupMode, planCandidates, "protect");
             PlanChangePostconditionReportDTO.TierQuotaResultDTO quotaResult =
                     new PlanChangePostconditionReportDTO.TierQuotaResultDTO();
             quotaResult.setType(tierQuota.getType());
@@ -312,6 +323,8 @@ public class PendingPlanningCommandBizService {
         boolean countSatisfied = !countRequired || (targetCount != null
                 && actualCount == targetCount
                 && (!persistTargetCount || targetCount.equals(persistedTarget)));
+        populateCanonicalObjectiveResults(report, countRequired, countSatisfied);
+        validateCanonicalObjectiveResults(report, frozenResult);
         report.setSatisfied(countSatisfied && requirementsSatisfied && priorityRulesSatisfied && tierQuotaSatisfied);
         if (!Boolean.TRUE.equals(report.getSatisfied())) {
             throw new BusinessException(POSTCONDITION_FAILED_CODE,
@@ -322,6 +335,159 @@ public class PendingPlanningCommandBizService {
                             + " tierQuota=" + tierQuotaSatisfied);
         }
         return report;
+    }
+
+    private PlanSolverResultDTO validateCanonicalFrozenResult(FixProposalApplyReq applyReq,
+                                                               PlanningStateDTO state,
+                                                               FixProposalDTO proposal) {
+        if (!RepairProposalApplyPolicy.hasCanonicalMetadata(applyReq)) {
+            return null;
+        }
+        PlanSolverResultDTO frozen = proposal == null ? null : proposal.getSolverResult();
+        boolean metadataMatches = proposal != null && frozen != null
+                && applyReq.getCanonicalObjectiveDigest() != null
+                && applyReq.getCanonicalObjectiveDigest().equals(proposal.getCanonicalObjectiveDigest())
+                && applyReq.getSolverVersion() != null
+                && applyReq.getSolverVersion().equals(proposal.getSolverVersion())
+                && applyReq.getSolverInputDigest() != null
+                && applyReq.getSolverInputDigest().equals(proposal.getSolverInputDigest())
+                && proposal.getSolverVersion().equals(frozen.getSolverVersion())
+                && proposal.getSolverInputDigest().equals(frozen.getInputDigest());
+        if (!metadataMatches) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "plan change postcondition failed: canonical frozen result metadata mismatch");
+        }
+        CanonicalPlanningObjectiveSetDTO persistedObjectives;
+        try {
+            persistedObjectives = PlanningObjectiveCompiler.compileConfirmed(state);
+        } catch (RuntimeException ex) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "plan change postcondition failed: persisted canonical objective invalid");
+        }
+        if (persistedObjectives == null || !proposal.getCanonicalObjectiveDigest().equals(
+                persistedObjectives.getObjectiveDigest())) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "plan change postcondition failed: persisted canonical objective digest mismatch");
+        }
+        try {
+            CanonicalPlanningRuntime.verifyFrozenState(state, frozen);
+        } catch (BusinessException ex) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "plan change postcondition failed: " + ex.getMessage());
+        }
+        return frozen;
+    }
+
+    private void populateCanonicalObjectiveResults(PlanChangePostconditionReportDTO report,
+                                                   boolean countRequired,
+                                                   boolean countSatisfied) {
+        if (countRequired) {
+            PlanSolverResultDTO.ObjectiveResultDTO selection = objectiveResult(
+                    "selection_target", "selection_target",
+                    report.getTargetCount(), report.getTargetCount(), report.getActualCount(), countSatisfied);
+            report.getObjectiveResults().add(selection);
+        }
+        int coverageIndex = 0;
+        int eligibilityIndex = 0;
+        for (PlanChangePostconditionReportDTO.RequirementResultDTO requirement
+                : report.getRequirementResults()) {
+            boolean coverage = ProjectedHardRequirementSupport.KIND_INCLUDE.equalsIgnoreCase(
+                    requirement.getKind());
+            report.getObjectiveResults().add(objectiveResult(
+                    coverage ? "coverage:" + coverageIndex++ : "eligibility:" + eligibilityIndex++,
+                    coverage ? "coverage" : "eligibility",
+                    coverage ? requirement.getMinCount() : null,
+                    ProjectedHardRequirementSupport.KIND_EXCLUDE.equalsIgnoreCase(requirement.getKind())
+                            ? 0 : null,
+                    requirement.getMatchedCount(),
+                    Boolean.TRUE.equals(requirement.getSatisfied())));
+        }
+        for (int index = 0; index < report.getPriorityRuleResults().size(); index++) {
+            PlanChangePostconditionReportDTO.PriorityRuleResultDTO priority =
+                    report.getPriorityRuleResults().get(index);
+            report.getObjectiveResults().add(objectiveResult(
+                    "priority:" + index, "priority_within_tier",
+                    0, 0, priority.getInversionCount(), Boolean.TRUE.equals(priority.getSatisfied())));
+        }
+        PlanChangePostconditionReportDTO.TierQuotaResultDTO quota = report.getTierQuotaResult();
+        if (quota != null) {
+            report.getObjectiveResults().add(objectiveResult(
+                    "tier:sprint", "tier_exact", quota.getSprintCount(), quota.getSprintCount(),
+                    quota.getActualSprintCount(), Boolean.TRUE.equals(quota.getSatisfied())));
+            report.getObjectiveResults().add(objectiveResult(
+                    "tier:stable", "tier_exact", quota.getStableCount(), quota.getStableCount(),
+                    quota.getActualStableCount(), Boolean.TRUE.equals(quota.getSatisfied())));
+            report.getObjectiveResults().add(objectiveResult(
+                    "tier:protect", "tier_exact", quota.getProtectCount(), quota.getProtectCount(),
+                    quota.getActualProtectCount(), Boolean.TRUE.equals(quota.getSatisfied())));
+        }
+    }
+
+    private void validateCanonicalObjectiveResults(PlanChangePostconditionReportDTO report,
+                                                   PlanSolverResultDTO frozen) {
+        if (frozen == null) {
+            return;
+        }
+        for (PlanSolverResultDTO.ObjectiveResultDTO expected : defaultList(frozen.getObjectiveResults())) {
+            PlanSolverResultDTO.ObjectiveResultDTO actual = report.getObjectiveResults().stream()
+                    .filter(item -> item != null && expected != null
+                            && Objects.equals(expected.getObjectiveId(), item.getObjectiveId()))
+                    .findFirst().orElse(null);
+            if (actual == null && expected != null
+                    && "selection_target".equals(expected.getObjectiveType())) {
+                Integer actualCount = report.getActualCount();
+                boolean satisfied = actualCount != null
+                        && (expected.getRequiredMin() == null || actualCount >= expected.getRequiredMin())
+                        && (expected.getRequiredMax() == null || actualCount <= expected.getRequiredMax());
+                actual = objectiveResult(expected.getObjectiveId(), expected.getObjectiveType(),
+                        expected.getRequiredMin(), expected.getRequiredMax(), actualCount, satisfied);
+            }
+            if (expected == null || actual == null
+                    || !Objects.equals(expected.getObjectiveType(), actual.getObjectiveType())
+                    || !Objects.equals(expected.getRequiredMin(), actual.getRequiredMin())
+                    || !Objects.equals(expected.getRequiredMax(), actual.getRequiredMax())
+                    || !Objects.equals(expected.getActualCount(), actual.getActualCount())
+                    || !Boolean.TRUE.equals(expected.getSatisfied())
+                    || !Boolean.TRUE.equals(actual.getSatisfied())) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "plan change postcondition failed: frozen objective result mismatch");
+            }
+        }
+        report.setObjectiveResults(new ArrayList<PlanSolverResultDTO.ObjectiveResultDTO>(
+                defaultList(frozen.getObjectiveResults())));
+    }
+
+    private PlanSolverResultDTO.ObjectiveResultDTO objectiveResult(String id,
+                                                                   String type,
+                                                                   Integer requiredMin,
+                                                                   Integer requiredMax,
+                                                                   Integer actual,
+                                                                   boolean satisfied) {
+        PlanSolverResultDTO.ObjectiveResultDTO result = new PlanSolverResultDTO.ObjectiveResultDTO();
+        result.setObjectiveId(id);
+        result.setObjectiveType(type);
+        result.setRequiredMin(requiredMin);
+        result.setRequiredMax(requiredMax);
+        result.setActualCount(actual);
+        result.setSatisfied(satisfied);
+        return result;
+    }
+
+    private int postconditionTierCount(PlanningStateDTO state,
+                                       boolean majorGroupMode,
+                                       List<CandidateItemDTO> planCandidates,
+                                       String expectedTier) {
+        if (majorGroupMode && state != null && state.getOrderedPlanState() != null
+                && !defaultList(state.getOrderedPlanState().getUnits()).isEmpty()) {
+            return (int) defaultList(state.getOrderedPlanState().getUnits()).stream()
+                    .filter(unit -> expectedTier.equals(TierQuotaSupport.canonicalTierKey(
+                            unit == null ? null : unit.getTier())))
+                    .count();
+        }
+        return (int) defaultList(planCandidates).stream()
+                .filter(candidate -> expectedTier.equals(TierQuotaSupport.canonicalTierKey(
+                        candidate == null ? null : candidate.getTier())))
+                .count();
     }
 
     private PlanChangePostconditionReportDTO verifyReviewFixPostcondition(PendingPlanningCommandReq req,

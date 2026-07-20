@@ -634,7 +634,7 @@ public class PlanningStateService {
         userGoalRequest.setSourceVersionGuard(req.getSourceVersionGuard());
         FixProposalStateDTO proposalState = generateUserGoalFixProposals(chatSessionId, userGoalRequest);
         FixProposalDTO proposal = RepairProposalStateBuilder.findProposal(proposalState, req.getProposalId());
-        if (proposal == null) {
+        if (proposal == null && !RepairProposalApplyPolicy.hasCanonicalMetadata(req)) {
             proposal = findReadyUserGoalProposalByStrategy(proposalState, userGoalRequest.getGoalType());
         }
         if (proposal == null) {
@@ -670,15 +670,22 @@ public class PlanningStateService {
                 RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy()))) {
             return;
         }
+        Integer targetCount = userGoalRequest.getTargetCount();
+        if (targetCount == null || targetCount <= 0) {
+            throw new BusinessException(400, "补齐目标数量必须是大于 0 的整数");
+        }
+        if (state.getConstraintState() == null) {
+            state.setConstraintState(new ConstraintStateDTO());
+        }
+        if (state.getConstraintState().getHardPlanningObjectives() == null) {
+            state.getConstraintState().setHardPlanningObjectives(new HardPlanningObjectivesDTO());
+        }
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(targetCount);
         if (Boolean.FALSE.equals(userGoalRequest.getPersistTargetCount())) {
             return;
         }
         if (state.getCandidatePoolState() == null) {
             throw new BusinessException(400, "当前候选池不可用，不能应用补齐目标");
-        }
-        Integer targetCount = userGoalRequest.getTargetCount();
-        if (targetCount == null || targetCount <= 0) {
-            throw new BusinessException(400, "补齐目标数量必须是大于 0 的整数");
         }
         state.getCandidatePoolState().setRequiredCount(targetCount);
     }
@@ -691,6 +698,7 @@ public class PlanningStateService {
         return proposalState.getProposals().stream()
                 .filter(proposal -> RepairProposalTaxonomy.isUserGoalSource(proposal.getProposalSource()))
                 .filter(proposal -> RepairProposalTaxonomy.isReadyStatus(proposal.getStatus()))
+                .filter(RepairProposalApplyPolicy::isLegacyCanonicalProposal)
                 .filter(proposal -> targetStrategy.equals(RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy())))
                 .findFirst()
                 .orElse(null);
@@ -738,7 +746,12 @@ public class PlanningStateService {
         if (RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER.equals(strategy)) {
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(
                     tenantId, chatSessionId, state, true);
-            PriorityObjectiveEnforcer.enforce(state, effectiveCandidates);
+            if (proposal.getSolverResult() == null) {
+                CanonicalPlanningRuntime.enforceOrdering(state, effectiveCandidates);
+            } else {
+                CanonicalPlanningRuntime.applyFrozenOrdering(state, proposal.getSolverResult());
+                CanonicalPlanningRuntime.verifyFrozenState(state, proposal.getSolverResult());
+            }
             recalculateOrderedSummary(state.getOrderedPlanState(), state.getCandidatePoolState());
             state = saveOrderedState(chatSessionId, state);
             return rerunReviewAfterFixApplyIfRequested(tenantId, chatSessionId, req, state);
@@ -747,6 +760,12 @@ public class PlanningStateService {
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
             RepairApplyMutationBuilder.MutationResult result;
             if (RepairProposalTaxonomy.isUserGoalSource(proposal.getProposalSource())) {
+                if (proposal.getSolverResult() != null) {
+                    CanonicalPlanningRuntime.applyFrozenSelection(
+                            state, effectiveCandidates, proposal.getSolverResult());
+                    return saveAndRefreshAfterFixApply(
+                            tenantId, chatSessionId, req, state, proposal.getSolverResult());
+                }
                 result = RepairApplyMutationBuilder.applyUserGoalActions(state, effectiveCandidates, proposal);
                 boolean objectiveOnly = req.getUserGoalRequest() != null
                         && ((req.getUserGoalRequest().getRequirements() != null
@@ -832,13 +851,21 @@ public class PlanningStateService {
                                                          Long chatSessionId,
                                                          FixProposalApplyReq req,
                                                          PlanningStateDTO state) {
+        return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state, null);
+    }
+
+    private PlanningStateDTO saveAndRefreshAfterFixApply(Long tenantId,
+                                                         Long chatSessionId,
+                                                         FixProposalApplyReq req,
+                                                         PlanningStateDTO state,
+                                                         PlanSolverResultDTO frozenResult) {
         state = saveWorkingPlanState(chatSessionId, state);
 
         if (Boolean.TRUE.equals(req.getRegenerateOrderedPlan())) {
             OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
             generateReq.setForceRegenerate(true);
             generateReq.setRegroupByTier(true);
-            state = generateOrderedPlan(tenantId, chatSessionId, generateReq);
+            state = generateOrderedPlan(tenantId, chatSessionId, generateReq, frozenResult);
         }
         return rerunReviewAfterFixApplyIfRequested(tenantId, chatSessionId, req, state);
     }
@@ -1735,6 +1762,13 @@ public class PlanningStateService {
     }
 
     public PlanningStateDTO generateOrderedPlan(Long tenantId, Long chatSessionId, OrderedPlanGenerateReq req) {
+        return generateOrderedPlan(tenantId, chatSessionId, req, null);
+    }
+
+    private PlanningStateDTO generateOrderedPlan(Long tenantId,
+                                                 Long chatSessionId,
+                                                 OrderedPlanGenerateReq req,
+                                                 PlanSolverResultDTO frozenResult) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         normalizeCandidatePoolForPlanning(state);
         OrderedPlanGenerateReq safeReq = req == null ? new OrderedPlanGenerateReq() : req;
@@ -1750,10 +1784,10 @@ public class PlanningStateService {
                 .collect(Collectors.toMap(OrderedItemDTO::getVolunteerId, item -> item, (left, right) -> left, LinkedHashMap::new));
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
         syncWorkingPlanWithEffectiveCandidatesForConfirmedRequirements(state, effectiveCandidates);
-        if (TierQuotaObjectiveEnforcer.hasConfirmedGoal(state)) {
-            TierQuotaObjectiveEnforcer.enforce(state, effectiveCandidates);
+        if (frozenResult == null) {
+            CanonicalPlanningRuntime.enforceSelection(state, effectiveCandidates);
         } else {
-            CoverageObjectiveEnforcer.enforce(state, effectiveCandidates);
+            CanonicalPlanningRuntime.verifyFrozenWorkingSelection(state, effectiveCandidates, frozenResult);
         }
         List<OrderedItemDTO> items = buildOrderedItemsFromWorkingPlan(state.getDraftPlanState(), state.getCandidatePoolState(), effectiveCandidates, existing,
                 Boolean.TRUE.equals(safeReq.getRegroupByTier()));
@@ -1762,7 +1796,12 @@ public class PlanningStateService {
             orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(items, state.getDraftPlanState(), effectiveCandidates));
         }
         syncOrderedPlanWithEffectiveCandidatesForConfirmedRequirements(state, effectiveCandidates);
-        PriorityObjectiveEnforcer.enforce(state, effectiveCandidates);
+        if (frozenResult == null) {
+            CanonicalPlanningRuntime.enforceOrdering(state, effectiveCandidates);
+        } else {
+            CanonicalPlanningRuntime.applyFrozenOrdering(state, frozenResult);
+            CanonicalPlanningRuntime.verifyFrozenState(state, frozenResult);
+        }
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
         return saveOrderedState(chatSessionId, state);
@@ -7808,7 +7847,7 @@ public class PlanningStateService {
         return RepairCandidateEligibility.hasConfirmedHardConstraints(state)
                 || !CoverageRequirementSupport.confirmedRequirements(state).isEmpty()
                 || !PriorityRuleSupport.confirmedRules(state).isEmpty()
-                || TierQuotaObjectiveEnforcer.hasConfirmedGoal(state)
+                || TierQuotaSupport.confirmedGoal(state) != null
                 || hasActiveTuitionRange(loadSessionTuitionRange(state == null ? null : state.getSessionId()));
     }
 

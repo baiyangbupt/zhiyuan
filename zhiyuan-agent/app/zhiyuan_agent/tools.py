@@ -4085,6 +4085,23 @@ def _normalize_school_payload(
     return normalized, ambiguities, display_aliases
 
 
+_CANONICAL_REGION_AREA_MEMBERS = {
+    "北上广深": frozenset({"北京", "上海", "广州", "深圳"}),
+}
+
+
+def _collapse_canonical_region_area_members(normalized: dict[str, list[str]]) -> None:
+    if normalized["area"]:
+        return
+    explicit_members = frozenset(normalized["province"] + normalized["city"])
+    for area, members in _CANONICAL_REGION_AREA_MEMBERS.items():
+        if explicit_members == members:
+            normalized["province"] = []
+            normalized["city"] = []
+            normalized["area"] = [area]
+            return
+
+
 def _normalize_region_payload(payload: dict[str, Any] | None) -> tuple[dict[str, list[str]], list[dict[str, Any]], dict[str, str]]:
     normalized = {"province": [], "city": [], "area": []}
     ambiguities: list[dict[str, Any]] = []
@@ -4130,6 +4147,7 @@ def _normalize_region_payload(payload: dict[str, Any] | None) -> tuple[dict[str,
                 _add_display_alias(display_aliases, name or candidate.raw_text, candidate.canonical_name)
             else:
                 _append_unique(normalized["province"], name)
+    _collapse_canonical_region_area_members(normalized)
     return normalized, ambiguities, display_aliases
 
 
@@ -9770,6 +9788,16 @@ async def preview_plan_change(
     )
     summary = str(proposal.get("summary") or "").strip()
     blocking_reason = str(proposal.get("blockingReason") or proposal.get("blocking_reason") or "").strip()
+    canonical_objective_digest = str(
+        proposal.get("canonicalObjectiveDigest") or proposal.get("canonical_objective_digest") or ""
+    ).strip()
+    solver_version = str(proposal.get("solverVersion") or proposal.get("solver_version") or "").strip()
+    solver_input_digest = str(
+        proposal.get("solverInputDigest") or proposal.get("solver_input_digest") or ""
+    ).strip()
+    canonical_metadata_count = sum(
+        bool(value) for value in (canonical_objective_digest, solver_version, solver_input_digest)
+    )
     dry_run = proposal.get("dryRunResult") if isinstance(proposal.get("dryRunResult"), dict) else {}
     proposal_view = {
         "proposal_id": proposal_id,
@@ -9778,6 +9806,9 @@ async def preview_plan_change(
         "summary": summary,
         "impact": str(proposal.get("impact") or "").strip(),
         "blocking_reason": blocking_reason,
+        "canonical_objective_digest": canonical_objective_digest,
+        "solver_version": solver_version,
+        "solver_input_digest": solver_input_digest,
         "dry_run": dry_run,
         "candidate_shortages": proposal.get("candidateShortages") or [],
     }
@@ -9799,6 +9830,7 @@ async def preview_plan_change(
         not proposal_id
         or proposal_strategy != expected_strategy
         or proposal_source_version != source_version
+        or canonical_metadata_count != 3
     ):
         return _json(
             {
@@ -9807,6 +9839,8 @@ async def preview_plan_change(
                     "target_count": target_count,
                     "source_version": source_version,
                     "proposal": proposal_view,
+                    "pending_created": False,
+                    "requires_confirmation": False,
                 },
                 "next_step": "respond",
                 "message": "方案调整 Proposal 与当前方案版本或策略不一致，本轮不会创建待确认操作。",
@@ -9821,6 +9855,14 @@ async def preview_plan_change(
         "rerunReview": True,
         "userGoalRequest": user_goal_request,
     }
+    if canonical_metadata_count == 3:
+        proposal_apply.update(
+            {
+                "canonicalObjectiveDigest": canonical_objective_digest,
+                "solverVersion": solver_version,
+                "solverInputDigest": solver_input_digest,
+            }
+        )
     frozen_spec: dict[str, Any] = {
         "requirements": normalized_requirements,
         "priority_rules": normalized_priority_rules,

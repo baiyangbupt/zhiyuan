@@ -21,17 +21,6 @@ def _positive_int(value: Any) -> int:
     return parsed if parsed > 0 else 0
 
 
-def _tier_summary(tier_counts: dict[str, Any] | None) -> str:
-    if not tier_counts:
-        return ""
-    parts: list[str] = []
-    for key in ("冲", "稳", "保"):
-        value = _positive_int((tier_counts or {}).get(key))
-        if value > 0:
-            parts.append(f"{key}{value}")
-    return "/".join(parts)
-
-
 def _peek_sandbox(deps: RequestContext, path: str) -> dict[str, Any]:
     sandbox = getattr(deps, "sandbox", None)
     if sandbox is None:
@@ -132,12 +121,9 @@ def build_turn_context(deps: RequestContext) -> str:
         lines.append("方案：尚未生成")
     else:
         target_total = _positive_int(summary.get("ordered_target_total")) or ordered_total
-        tier_text = _tier_summary(summary.get("tier_counts"))
         plan_line = f"方案：{ordered_total}个志愿"
         if target_total and target_total != ordered_total:
             plan_line += f"（目标{target_total}个）"
-        if tier_text:
-            plan_line += f" ({tier_text})"
         lines.append(plan_line)
 
         review = summary.get("review") if isinstance(summary.get("review"), dict) else {}

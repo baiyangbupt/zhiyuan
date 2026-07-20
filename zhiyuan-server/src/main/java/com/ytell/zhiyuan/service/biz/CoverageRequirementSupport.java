@@ -138,6 +138,10 @@ final class CoverageRequirementSupport {
         return safeMinCount(requirement == null ? null : requirement.getMinCount());
     }
 
+    static CoverageRequirementDTO canonicalize(UserGoalFixProposalReq.RequirementDTO requirement) {
+        return from(requirement);
+    }
+
     private static CoverageRequirementDTO from(UserGoalFixProposalReq.RequirementDTO requirement) {
         CoverageRequirementDTO objective = new CoverageRequirementDTO();
         objective.setDomain(normalized(requirement == null ? null : requirement.getDomain()));
@@ -229,15 +233,14 @@ final class CoverageRequirementSupport {
     }
 
     private static String normalizeTier(String value) {
-        String text = Strings.nullToEmpty(value).trim();
-        String lowered = text.toLowerCase(Locale.ROOT);
-        if (in(lowered, "protect", "protective", "safety") || in(text, "保", "保底", "兜底", "保险")) {
+        String key = TierQuotaSupport.canonicalTierKey(value);
+        if ("protect".equals(key)) {
             return "保";
         }
-        if (in(lowered, "stable", "safe") || in(text, "稳", "稳妥")) {
+        if ("stable".equals(key)) {
             return "稳";
         }
-        if (in(lowered, "sprint", "reach") || in(text, "冲", "冲刺")) {
+        if ("sprint".equals(key)) {
             return "冲";
         }
         return "";

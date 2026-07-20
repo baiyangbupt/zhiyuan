@@ -41,12 +41,24 @@ public class TierQuotaSupportTest {
     }
 
     @Test
-    void shouldBuildOnlySyntheticSolveRequirements() {
-        assertEquals(3, TierQuotaSupport.syntheticRequirements(goal(0, 2, 3)).size());
-        assertEquals(Integer.valueOf(0), TierQuotaSupport.syntheticRequirements(goal(0, 2, 3))
-                .get(0).getMinCount());
-        assertEquals("保", TierQuotaSupport.syntheticObjectives(goal(0, 2, 3))
-                .get(2).getValues().get(0));
+    void shouldNormalizeAllSupportedTierAliasesToInternalKeys() {
+        assertTierAliases("sprint", "冲", "冲刺", "sprint", " SPRINT ", "reach");
+        assertTierAliases("stable", "稳", "稳妥", "stable", " STABLE ", "safe");
+        assertTierAliases("protect", "保", "保底", "兜底", "保险",
+                "protect", " PROTECTIVE ", "safety");
+    }
+
+    @Test
+    void shouldReturnEmptyCanonicalKeyForMissingOrUnknownTier() {
+        assertEquals("", TierQuotaSupport.canonicalTierKey(null));
+        assertEquals("", TierQuotaSupport.canonicalTierKey("  CUSTOM  "));
+        assertEquals("", TierQuotaSupport.canonicalTierKey("超稳"));
+    }
+
+    private void assertTierAliases(String expected, String... aliases) {
+        for (String alias : aliases) {
+            assertEquals(expected, TierQuotaSupport.canonicalTierKey(alias), alias);
+        }
     }
 
     private TierQuotaGoalDTO goal(Integer sprint, Integer stable, Integer protect) {

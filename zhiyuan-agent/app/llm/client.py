@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 import logfire
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -9,6 +10,9 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.settings import ModelSettings
 
 from app.config import LLMConfig, LogfireConfig
+
+
+_OPENAI_DEFAULT_REQUEST_TIMEOUT_SECONDS = 600.0
 
 
 def configure_logfire(logfire_config: LogfireConfig | None = None) -> None:
@@ -40,7 +44,7 @@ class LLMClient:
             case "openai":
                 return OpenAIChatModel(
                     cfg.model_name,
-                    provider=OpenAIProvider(api_key=cfg.api_key),
+                    provider=self._create_openai_provider(),
                 )
             case "anthropic":
                 provider_kwargs = {"api_key": cfg.api_key}
@@ -53,13 +57,21 @@ class LLMClient:
             case "openai_compatible":
                 return OpenAIChatModel(
                     cfg.model_name,
-                    provider=OpenAIProvider(
-                        base_url=cfg.base_url,
-                        api_key=cfg.api_key,
-                    ),
+                    provider=self._create_openai_provider(base_url=cfg.base_url),
                 )
             case _:
                 raise ValueError(f"Unsupported provider: {cfg.provider}")
+
+    def _create_openai_provider(self, *, base_url: str | None = None) -> OpenAIProvider:
+        if base_url is None:
+            provider = OpenAIProvider(api_key=self.config.api_key)
+        else:
+            provider = OpenAIProvider(base_url=base_url, api_key=self.config.api_key)
+        provider.client.timeout = httpx.Timeout(
+            _OPENAI_DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            connect=self.config.connect_timeout_seconds,
+        )
+        return provider
 
     def get_model(self) -> Model:
         """返回配置好的 Model 实例。"""

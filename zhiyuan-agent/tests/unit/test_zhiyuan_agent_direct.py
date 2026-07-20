@@ -182,6 +182,13 @@ def _load(text: str) -> dict[str, Any]:
     return json.loads(text)
 
 
+_CANONICAL_PROPOSAL_METADATA = {
+    "canonicalObjectiveDigest": "objective-digest",
+    "solverVersion": "ojalgo-48.4.2-m1",
+    "solverInputDigest": "input-digest",
+}
+
+
 def test_pending_command_running_conflict_is_treated_as_uncertain():
     assert _pending_command_execution_uncertain({"code": 40903, "msg": "planning command is already running"})
     assert not _pending_command_execution_uncertain(
@@ -203,6 +210,7 @@ async def test_preview_plan_change_creates_one_backend_proposal_pending(mocker):
                             "proposalId": "ugp-fill-50",
                             "proposalSource": "user_goal",
                             "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "fill_missing_count",
                             "summary": "当前方案有45个志愿；本次补入5个，达到50个。",
@@ -243,7 +251,46 @@ async def test_preview_plan_change_creates_one_backend_proposal_pending(mocker):
     assert pending["actionFamily"] == "apply_plan_change_proposal"
     assert pending["sourceBackendVersion"] == 12
     assert pending["executionPayload"]["proposal_apply"]["userGoalRequest"] == request
+    assert pending["executionPayload"]["proposal_apply"]["canonicalObjectiveDigest"] == "objective-digest"
     assert pending["executionPayload"]["postconditions"]["target_count"] == 50
+
+
+async def test_preview_plan_change_rejects_new_ready_proposal_without_canonical_metadata(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-without-metadata",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "补齐到50个。",
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={"selection_goal": {"type": "fill_to_count", "target_count": 50}},
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["reason"] == "plan_change_proposal_contract_mismatch"
+    assert result["data"]["pending_created"] is False
+    save_mock.assert_not_awaited()
 
 
 async def test_preview_plan_change_creates_exact_review_repair_proposal_pending(mocker):
@@ -606,8 +653,9 @@ async def test_preview_plan_change_appends_typed_intent_pending_to_context_targe
                 "data": {
                     "proposals": [
                         {
-                            "proposalId": "ugp-fill-context-with-medical-exclusion",
-                            "sourceVersionGuard": 12,
+                                "proposalId": "ugp-fill-context-with-medical-exclusion",
+                                "sourceVersionGuard": 12,
+                                **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "fill_missing_count",
                             "summary": "排除医学类并补齐到50个。",
@@ -869,8 +917,9 @@ async def test_preview_plan_change_uses_planning_target_when_user_only_says_fill
                 "data": {
                     "proposals": [
                         {
-                            "proposalId": "ugp-fill-context-target",
-                            "sourceVersionGuard": 12,
+                                "proposalId": "ugp-fill-context-target",
+                                "sourceVersionGuard": 12,
+                                **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "fill_missing_count",
                             "summary": "按当前目标补齐到45个。",
@@ -983,6 +1032,7 @@ async def test_preview_plan_change_creates_one_proposal_for_projected_exclude_re
                         {
                             "proposalId": "ugp-fill-50-no-private",
                             "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "fill_missing_count",
                             "summary": "移出1个民办专业组，再补入6个非民办专业组，达到50个。",
@@ -1038,6 +1088,9 @@ async def test_preview_plan_change_creates_one_proposal_for_projected_exclude_re
     assert pending["executionPayload"]["proposal_apply"]["userGoalRequest"]["requirements"] == request[
         "requirements"
     ]
+    assert pending["executionPayload"]["proposal_apply"]["canonicalObjectiveDigest"] == "objective-digest"
+    assert pending["executionPayload"]["proposal_apply"]["solverVersion"] == "ojalgo-48.4.2-m1"
+    assert pending["executionPayload"]["proposal_apply"]["solverInputDigest"] == "input-digest"
     assert pending["executionPayload"]["postconditions"]["requirements"] == request["requirements"]
 
 
@@ -1052,6 +1105,7 @@ async def test_preview_plan_change_creates_one_proposal_for_nonexclusive_include
                         {
                             "proposalId": "ugp-fill-50-with-law",
                             "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "fill_missing_count",
                             "summary": "补齐到50个，且至少包含1个法学专业组。",
@@ -1150,6 +1204,7 @@ async def test_preview_plan_change_accepts_projected_only_keep_requirement(mocke
                         {
                             "proposalId": "ugp-fill-50-shanghai",
                             "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "fill_missing_count",
                             "summary": "只保留上海范围并补齐到50个。",
@@ -1205,6 +1260,7 @@ async def test_preview_plan_change_creates_priority_only_proposal(mocker):
                         {
                             "proposalId": "ugp-priority-shanghai",
                             "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "prioritize_within_tier",
                             "summary": "将2个上海专业组在各自档位内前移。",
@@ -1282,6 +1338,7 @@ async def test_preview_plan_change_creates_one_proposal_for_fill_priority_compos
                         {
                             "proposalId": "ugp-fill-priority",
                             "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "fill_missing_count",
                             "summary": "补齐到50个，并在同档内前置上海专业组。",
@@ -1357,6 +1414,7 @@ async def test_preview_plan_change_preserves_current_count_for_explicit_coverage
                         {
                             "proposalId": "ugp-coverage-priority",
                             "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "fill_missing_count",
                             "summary": "保持45个专业组，上海至少5个并在同档内靠前。",
@@ -1498,6 +1556,7 @@ async def test_preview_plan_change_preserves_count_for_explicit_admission_tier_m
                         {
                             "proposalId": "ugp-protect-minimum",
                             "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "fill_missing_count",
                             "summary": "保持45个专业组，保底至少18个。",
@@ -1626,6 +1685,7 @@ async def test_preview_plan_change_preserves_count_for_exact_tier_quota(mocker):
                         {
                             "proposalId": "ugp-tier-quota",
                             "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
                             "status": "ready",
                             "strategy": "fill_missing_count",
                             "summary": "保持45个专业组，调整为冲9稳17保19。",
@@ -2300,7 +2360,8 @@ def test_build_turn_context_injects_core_state():
     text = build_turn_context(_direct_context(with_plan=True, pending=True))
 
     assert "河北 550分 物理/化学/生物 男" in text
-    assert "方案：45个志愿 (冲12/稳18/保15)" in text
+    assert "方案：45个志愿" in text
+    assert "冲12/稳18/保15" not in text
     assert "风险：2项，提醒：3项" in text
     assert "待确认：有，类型=当前方案调整，动作=remove_units" in text
     assert "待确认内容：移出3个高收费志愿" in text
@@ -2426,6 +2487,133 @@ async def test_zhiyuan_agent_rejects_multiple_first_tool_calls_before_execution(
         "clarify_request",
         "clarify_request",
     ]
+
+
+async def test_zhiyuan_agent_rejects_locatorless_replace_call_before_tool_execution(mocker):
+    request_count = 0
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    async def model(messages, agent_info):  # noqa: ARG001
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="query_plan",
+                        args={"scope": "plan", "filters": {"program_type": ["高收费"]}},
+                        tool_call_id="query-high-tuition",
+                    )
+                ]
+            )
+        if request_count == 2:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="preview_plan_action",
+                        args={"action": "replace"},
+                        tool_call_id="replace-without-locator",
+                    )
+                ]
+            )
+        assert any(
+            isinstance(part, RetryPromptPart)
+            for message in messages
+            for part in message.parts
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="preview_plan_action",
+                    args={
+                        "action": "replace",
+                        "filters": {"tuition_min": 20000},
+                        "replacement_spec": {
+                            "improve_dims": ["tuition_decrease"],
+                            "exclude_markers": ["high_tuition"],
+                        },
+                    },
+                    tool_call_id="replace-with-locator",
+                )
+            ]
+        )
+
+    agent = ZhiyuanAgent(SimpleNamespace(model=FunctionModel(model), model_settings={}))
+    deps = _direct_context()
+    candidates = [
+        {
+            "volunteerId": "cand-low-tuition",
+            "schoolName": "深圳技术大学",
+            "majorName": "软件工程",
+            "tier": "稳",
+            "provinceName": "广东",
+            "schoolNature": "公办",
+            "tuitionPerYear": 5000,
+            "admissionRatio": 76,
+        }
+    ]
+    deps.sandbox.prime("plan/candidates.json", {"available": True, "items": candidates}, version=12)
+    _mock_candidate_pool_query(mocker, candidates)
+
+    _, _, all_messages, usage = await agent.run_with_message_deltas(
+        "高收费的志愿占比多少，能不能换成便宜的",
+        deps=deps,
+    )
+
+    assert [call.tool_call_id for call in _tool_calls(all_messages)] == [
+        "query-high-tuition",
+        "replace-with-locator",
+    ]
+    assert usage.requests == 3
+    assert usage.tool_calls == 2
+    assert deps.agent_observability["invalidPlanActionLocatorRejected"] is True
+
+
+async def test_zhiyuan_agent_rejects_invalid_first_tool_arguments_before_execution():
+    request_count = 0
+
+    async def model(messages, agent_info):  # noqa: ARG001
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="clarify_request",
+                        args='{"kind": "discovery_scope", "invalid": True}',
+                        tool_call_id="invalid-json-clarify",
+                    )
+                ]
+            )
+        assert any(
+            isinstance(part, RetryPromptPart)
+            for message in messages
+            for part in message.parts
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="clarify_request",
+                    args={"kind": "discovery_scope"},
+                    tool_call_id="valid-json-clarify",
+                )
+            ]
+        )
+
+    agent = ZhiyuanAgent(SimpleNamespace(model=FunctionModel(model), model_settings={}))
+    deps = _direct_context()
+
+    reply, _, all_messages, usage = await agent.run_with_message_deltas("上海的有哪些", deps=deps)
+
+    assert "院校目录" in reply
+    assert [call.tool_call_id for call in _tool_calls(all_messages)] == ["valid-json-clarify"]
+    assert usage.requests == 2
+    assert usage.tool_calls == 1
+    assert deps.agent_observability["firstModelInvalidToolArgumentsRejected"] is True
+    assert deps.agent_observability["firstModelToolCallSatisfied"] is True
 
 
 def test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_followups():
@@ -3810,6 +3998,45 @@ async def test_preview_region_first_tier_area_creates_pending(mocker):
     assert result["next_step"] == "confirm"
     assert result["data"]["normalized"]["positive"]["area"] == ["北上广深"]
     assert result["data"]["normalized"]["negative"]["area"] == []
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["executionPayload"]["merged"]["city_intents"] == {"area": ["北上广深"]}
+
+
+async def test_preview_region_first_tier_members_are_canonicalized_to_area(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.simulate_plan_diff",
+        AsyncMock(return_value={"code": 500}),
+    )
+
+    result = _load(
+        await preview_intent_change(
+            make_run_context(request_context=_direct_context()),
+            intent_type="region",
+            positive={"province": ["北京", "上海", "广州", "深圳"]},
+            constraint_type="only_keep",
+            semantic_requirements=[
+                {
+                    "domain": "region",
+                    "side": "positive",
+                    "strength": "explicit",
+                    "key": "province",
+                    "values": ["北京", "上海", "广州", "深圳"],
+                    "raw_span": "北上广深就行",
+                }
+            ],
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["normalized"]["positive"] == {
+        "province": [],
+        "city": [],
+        "area": ["北上广深"],
+    }
     saved_state = save_mock.await_args.args[1]
     assert saved_state["executionPayload"]["merged"]["city_intents"] == {"area": ["北上广深"]}
 
@@ -9387,15 +9614,91 @@ async def test_preview_intent_tool_schema_requires_pending_resolution_only_with_
         tool_def,
     )
     assert unchanged is tool_def
+    assert unchanged.strict is None
     assert unchanged.parameters_json_schema["properties"]["pending_resolution"]["default"] == "none"
 
     prepared = await _prepare_preview_intent_change_tool(
         make_run_context(request_context=_direct_context(pending=True)),
         tool_def,
     )
+    assert prepared.strict is None
     assert "pending_resolution" in prepared.parameters_json_schema["required"]
     assert "default" not in prepared.parameters_json_schema["properties"]["pending_resolution"]
     assert "active pending" in prepared.parameters_json_schema["properties"]["pending_resolution"]["description"]
+
+
+async def test_zhiyuan_agent_rejects_missing_required_pending_resolution_before_tool_execution():
+    request_count = 0
+
+    async def model(messages, agent_info):  # noqa: ARG001
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="preview_intent_change",
+                        args={
+                            "intent_type": "region",
+                            "negative": {"province": ["山东"]},
+                            "constraint_type": "exclude",
+                            "raw_user_text": "改成山东也别去",
+                            "semantic_requirements": [
+                                {
+                                    "domain": "region",
+                                    "side": "negative",
+                                    "strength": "explicit",
+                                    "key": "province",
+                                    "values": ["山东"],
+                                    "raw_span": "山东也别去",
+                                }
+                            ],
+                        },
+                        tool_call_id="missing-pending-resolution",
+                    )
+                ]
+            )
+        assert any(
+            isinstance(part, RetryPromptPart)
+            for message in messages
+            for part in message.parts
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="preview_intent_change",
+                    args={
+                        "intent_type": "region",
+                        "negative": {"province": ["山东"]},
+                        "constraint_type": "exclude",
+                        "pending_resolution": "hold_new_request",
+                        "raw_user_text": "改成山东也别去",
+                        "semantic_requirements": [
+                            {
+                                "domain": "region",
+                                "side": "negative",
+                                "strength": "explicit",
+                                "key": "province",
+                                "values": ["山东"],
+                                "raw_span": "山东也别去",
+                            }
+                        ],
+                    },
+                    tool_call_id="explicit-pending-resolution",
+                )
+            ]
+        )
+
+    agent = ZhiyuanAgent(SimpleNamespace(model=FunctionModel(model), model_settings={}))
+    deps = _direct_context(pending=True)
+
+    _, _, all_messages, usage = await agent.run_with_message_deltas("改成山东也别去", deps=deps)
+
+    calls = _tool_calls(all_messages)
+    assert [call.tool_call_id for call in calls] == ["explicit-pending-resolution"]
+    assert usage.requests == 2
+    assert usage.tool_calls == 1
+    assert deps.agent_observability["missingRequiredPendingResolutionRejected"] is True
 
 
 async def test_preview_intent_change_can_replace_active_pending_when_explicit(mocker):

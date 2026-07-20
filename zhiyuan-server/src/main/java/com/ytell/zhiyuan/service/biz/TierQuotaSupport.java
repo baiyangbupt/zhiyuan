@@ -1,15 +1,11 @@
 package com.ytell.zhiyuan.service.biz;
 
 import com.google.common.base.Strings;
-import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.model.dto.planning.ConstraintStateDTO;
-import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardPlanningObjectivesDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
-import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 
-import java.util.List;
 import java.util.Locale;
 
 final class TierQuotaSupport {
@@ -54,26 +50,23 @@ final class TierQuotaSupport {
                 + safe(goal.getStableCount()) + "个、保" + safe(goal.getProtectCount()) + "个";
     }
 
-    static List<UserGoalFixProposalReq.RequirementDTO> syntheticRequirements(TierQuotaGoalDTO goal) {
-        List<UserGoalFixProposalReq.RequirementDTO> result = Lists.newArrayList();
-        if (goal == null) {
-            return result;
+    static String canonicalTierKey(String value) {
+        String text = Strings.nullToEmpty(value).trim();
+        String normalized = text.toLowerCase(Locale.ROOT);
+        if ("冲".equals(text) || "冲刺".equals(text)
+                || "sprint".equals(normalized) || "reach".equals(normalized)) {
+            return "sprint";
         }
-        result.add(requirement("冲", safe(goal.getSprintCount())));
-        result.add(requirement("稳", safe(goal.getStableCount())));
-        result.add(requirement("保", safe(goal.getProtectCount())));
-        return result;
-    }
-
-    static List<CoverageRequirementDTO> syntheticObjectives(TierQuotaGoalDTO goal) {
-        List<CoverageRequirementDTO> result = Lists.newArrayList();
-        if (goal == null) {
-            return result;
+        if ("稳".equals(text) || "稳妥".equals(text)
+                || "stable".equals(normalized) || "safe".equals(normalized)) {
+            return "stable";
         }
-        result.add(objective("冲", safe(goal.getSprintCount())));
-        result.add(objective("稳", safe(goal.getStableCount())));
-        result.add(objective("保", safe(goal.getProtectCount())));
-        return result;
+        if ("保".equals(text) || "保底".equals(text) || "兜底".equals(text) || "保险".equals(text)
+                || "protect".equals(normalized)
+                || "protective".equals(normalized) || "safety".equals(normalized)) {
+            return "protect";
+        }
+        return "";
     }
 
     static void persist(PlanningStateDTO state, TierQuotaGoalDTO goal) {
@@ -97,25 +90,6 @@ final class TierQuotaSupport {
 
     static boolean isPersisted(PlanningStateDTO state, TierQuotaGoalDTO expected) {
         return same(confirmedGoal(state), expected);
-    }
-
-    private static UserGoalFixProposalReq.RequirementDTO requirement(String tier, int count) {
-        UserGoalFixProposalReq.RequirementDTO result = new UserGoalFixProposalReq.RequirementDTO();
-        result.setKind(ProjectedHardRequirementSupport.KIND_INCLUDE);
-        result.setDomain("admission");
-        result.setKey("tier");
-        result.setValues(Lists.newArrayList(tier));
-        result.setMinCount(count);
-        return result;
-    }
-
-    private static CoverageRequirementDTO objective(String tier, int count) {
-        CoverageRequirementDTO result = new CoverageRequirementDTO();
-        result.setDomain("admission");
-        result.setKey("tier");
-        result.setValues(Lists.newArrayList(tier));
-        result.setMinCount(count);
-        return result;
     }
 
     private static TierQuotaGoalDTO copy(TierQuotaGoalDTO source) {

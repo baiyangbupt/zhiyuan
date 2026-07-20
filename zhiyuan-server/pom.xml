@@ -35,6 +35,7 @@
         <httpclient.version>4.5.7</httpclient.version>
         <mysql.driver.version>8.0.11</mysql.driver.version>
         <okhttp.version>4.9.1</okhttp.version>
+        <ojalgo.version>48.4.2</ojalgo.version>
     </properties>
 
     <dependencies>
@@ -53,6 +54,11 @@
                     <artifactId>junit-vintage-engine</artifactId>
                 </exclusion>
             </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.ojalgo</groupId>
+            <artifactId>ojalgo</artifactId>
+            <version>${ojalgo.version}</version>
         </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>

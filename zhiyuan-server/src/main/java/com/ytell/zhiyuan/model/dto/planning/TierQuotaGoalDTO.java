@@ -8,4 +8,10 @@ public class TierQuotaGoalDTO {
     private Integer sprintCount;
     private Integer stableCount;
     private Integer protectCount;
+    private TierCountRangeDTO sprint;
+    private TierCountRangeDTO stable;
+    private TierCountRangeDTO protect;
+    private Integer sprintWeight;
+    private Integer stableWeight;
+    private Integer protectWeight;
 }

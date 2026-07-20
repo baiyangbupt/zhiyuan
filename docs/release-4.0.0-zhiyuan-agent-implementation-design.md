@@ -4594,3 +4594,4 @@ Agent 新增独立 schema：
 
 - 查询/发现/分析边界保持为：当前正式方案事实走 `query_plan`，院校/专业目录、可报候选和推荐名单走 typed `discover_options`，地域适配与方向判断走 `explore_topic`；“上海的有哪些”在缺少实体类型和数据范围时仍走 `clarify_request(discovery_scope)`。普通偏好继续默认硬要求，不恢复 soft preference 执行层。
 - 下一阶段优先补 typed 能力，而不是增加中文触发规则：冲稳保比例、单档最大值/区间、概率缺口/安全垫目标、精确配额与 requirements/priority 的联合求解、复杂 selector，以及多条或多级 priority。每项仍需进入同一个 `PlanChangeSpec`、一个 Proposal、一个 pending、一个 command，并有确定 dry-run、持久化和专用 postcondition；未开放组合继续整体 fail closed。
+- 上述功能增量正式转入 [Release 4.1.0 实施计划](./release-4.1.0-zhiyuan-agent-implementation-plan.md)。4.0.0 以本节门禁结果作为冻结基线，后续 `4.0.x` 只处理已有能力缺陷、安全、兼容和必要运维修复，不再继续扩展新的方案目标类型。

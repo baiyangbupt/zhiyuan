@@ -88,6 +88,28 @@ def _first_tool_requirement_active(ctx: RunContext[RequestContext]) -> bool:
     return ctx.run_step == 1 or retry_required
 
 
+def _replace_call_has_old_item_locator(tool_args: dict[str, Any]) -> bool:
+    targets = tool_args.get("targets")
+    if isinstance(targets, (list, tuple)) and any(str(value or "").strip() for value in targets):
+        return True
+    if str(tool_args.get("review_issue_code") or "").strip():
+        return True
+    filters = tool_args.get("filters")
+    if not isinstance(filters, dict):
+        return False
+    candidate_only_keys = {
+        "candidates",
+        "candidate_targets",
+        "candidateTargets",
+        "replacement_spec",
+        "replacementSpec",
+    }
+    return any(
+        key not in candidate_only_keys and value not in (None, "", [], {})
+        for key, value in filters.items()
+    )
+
+
 async def _require_first_model_tool_call(
     ctx: RunContext[RequestContext],
     request_context: ModelRequestContext,
@@ -109,14 +131,69 @@ async def _require_first_model_tool_call(
 async def _reject_first_model_text_response(
     ctx: RunContext[RequestContext],
     *,
-    request_context: ModelRequestContext,  # noqa: ARG001
+    request_context: ModelRequestContext,
     response: ModelResponse,
 ) -> ModelResponse:
+    observability = getattr(ctx.deps, "agent_observability", None)
+    tool_calls = [part for part in response.parts if isinstance(part, ToolCallPart)]
+    for tool_call in tool_calls:
+        if tool_call.tool_name != "preview_plan_action":
+            continue
+        try:
+            tool_args = tool_call.args_as_dict(raise_if_invalid=True)
+        except (TypeError, ValueError):
+            continue
+        if str(tool_args.get("action") or "").strip().lower() != "replace":
+            continue
+        if _replace_call_has_old_item_locator(tool_args):
+            continue
+        if isinstance(observability, dict):
+            observability[_FIRST_TOOL_RETRY_FLAG] = True
+            observability["invalidPlanActionLocatorRejected"] = True
+        response.parts = []
+        raise ModelRetry(
+            "Call preview_plan_action again with action='replace' and include an old-plan item locator in "
+            "targets, filters, or review_issue_code. Candidate targets and replacement_spec do not locate "
+            "the old item; preserve replacement_spec when the user gave a replacement direction."
+        )
     if not _first_tool_requirement_active(ctx):
         return response
-    tool_names = [part.tool_name for part in response.parts if isinstance(part, ToolCallPart)]
-    observability = getattr(ctx.deps, "agent_observability", None)
+    tool_names = [part.tool_name for part in tool_calls]
     if len(tool_names) == 1:
+        tool_call = tool_calls[0]
+        try:
+            tool_args = tool_call.args_as_dict(raise_if_invalid=True)
+        except (TypeError, ValueError):
+            if isinstance(observability, dict):
+                observability[_FIRST_TOOL_RETRY_FLAG] = True
+                observability["firstModelInvalidToolArgumentsRejected"] = True
+                observability["firstModelRejectedToolNames"] = list(tool_names)
+            response.parts = []
+            raise ModelRetry(
+                "Call the same tool again with one complete, valid JSON object. Use JSON literals such as "
+                "true, false, and null, and close every object and array."
+            )
+        tool_def = next(
+            (
+                item
+                for item in request_context.model_request_parameters.function_tools
+                if item.name == tool_call.tool_name
+            ),
+            None,
+        )
+        required = (tool_def.parameters_json_schema.get("required") or []) if tool_def else []
+        if "pending_resolution" in required:
+            pending_resolution = tool_args.get("pending_resolution")
+            if str(pending_resolution or "").strip().lower() in {"", "none"}:
+                if isinstance(observability, dict):
+                    observability[_FIRST_TOOL_RETRY_FLAG] = True
+                    observability["missingRequiredPendingResolutionRejected"] = True
+                response.parts = []
+                raise ModelRetry(
+                    "This turn started with an active pending item. Call the same preview tool again and "
+                    "explicitly pass pending_resolution as replace_active_pending, "
+                    "append_to_active_pending, or hold_new_request."
+                )
         if tool_names[0] == "respond_casual" and not _is_casual_only_user_text(
             getattr(ctx.deps, "current_user_text", "")
         ):

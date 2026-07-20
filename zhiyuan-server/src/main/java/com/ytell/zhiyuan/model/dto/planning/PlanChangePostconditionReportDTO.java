@@ -11,6 +11,10 @@ public class PlanChangePostconditionReportDTO {
     private String proposalSource;
     private String proposalId;
     private String proposalStrategy;
+    private String canonicalObjectiveDigest;
+    private String solverVersion;
+    private String solverInputDigest;
+    private List<PlanSolverResultDTO.ObjectiveResultDTO> objectiveResults = Lists.newArrayList();
     private List<String> sourceReviewIssueCodes = Lists.newArrayList();
     private Boolean postValidationPassed;
     private Integer appliedActionCount = 0;
