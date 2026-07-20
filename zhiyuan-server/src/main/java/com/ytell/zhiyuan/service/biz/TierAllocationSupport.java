@@ -56,6 +56,7 @@ final class TierAllocationSupport {
                 && !sameResolution(confirmedResolution, source.resolution);
 
         CompiledTierAllocation result = new CompiledTierAllocation();
+        result.setRequestedGoal(minimalRequestDelta(confirmed, request));
         result.setEffectiveSourceGoal(stateChanged || confirmed == null
                 ? effectiveSource : copyGoal(confirmed));
         result.setCanonicalGoal(source.canonicalGoal);
@@ -63,6 +64,40 @@ final class TierAllocationSupport {
         result.setResolution(source.resolution);
         result.setStateChanged(stateChanged);
         return result;
+    }
+
+    private static TierQuotaGoalRequestDTO minimalRequestDelta(
+            TierQuotaGoalDTO confirmed,
+            TierQuotaGoalRequestDTO request) {
+        TierQuotaGoalRequestDTO result = copyRequest(request);
+        if (result == null || !TYPE_COUNT_RANGES.equals(normalized(result.getType()))
+                || !UPDATE_PATCH.equals(normalized(result.getUpdateMode()))
+                || confirmed != null
+                && !TYPE_COUNT_RANGES.equals(normalized(confirmed.getType()))) {
+            return result;
+        }
+        result.setSprint(changedBound(
+                confirmed == null ? null : confirmed.getSprint(), request.getSprint()));
+        result.setStable(changedBound(
+                confirmed == null ? null : confirmed.getStable(), request.getStable()));
+        result.setProtect(changedBound(
+                confirmed == null ? null : confirmed.getProtect(), request.getProtect()));
+        return result;
+    }
+
+    private static TierCountRangeDTO changedBound(TierCountRangeDTO confirmed,
+                                                  TierCountRangeDTO requested) {
+        if (requested == null) {
+            return null;
+        }
+        Integer confirmedMin = confirmed == null || confirmed.getMinCount() == null
+                ? 0 : confirmed.getMinCount();
+        Integer confirmedMax = confirmed == null ? null : confirmed.getMaxCount();
+        Integer changedMin = requested.getMinCount() != null
+                && !equal(requested.getMinCount(), confirmedMin) ? requested.getMinCount() : null;
+        Integer changedMax = requested.getMaxCount() != null
+                && !equal(requested.getMaxCount(), confirmedMax) ? requested.getMaxCount() : null;
+        return changedMin == null && changedMax == null ? null : bound(changedMin, changedMax);
     }
 
     static CompiledTierAllocation compileConfirmed(PlanningStateDTO state, Integer targetCount) {
@@ -77,6 +112,30 @@ final class TierAllocationSupport {
     static TierAllocationResolutionDTO confirmedResolution(PlanningStateDTO state) {
         HardPlanningObjectivesDTO objectives = objectives(state);
         return objectives == null ? null : objectives.getTierQuotaResolution();
+    }
+
+    static String summarize(TierQuotaGoalDTO goal) {
+        return goal == null ? "" : "冲" + safe(goal.getSprintCount()) + "个、稳"
+                + safe(goal.getStableCount()) + "个、保" + safe(goal.getProtectCount()) + "个";
+    }
+
+    static String canonicalTierKey(String value) {
+        String text = Strings.nullToEmpty(value).trim();
+        String normalized = text.toLowerCase(Locale.ROOT);
+        if ("冲".equals(text) || "冲刺".equals(text)
+                || "sprint".equals(normalized) || "reach".equals(normalized)) {
+            return "sprint";
+        }
+        if ("稳".equals(text) || "稳妥".equals(text)
+                || "stable".equals(normalized) || "safe".equals(normalized)) {
+            return "stable";
+        }
+        if ("保".equals(text) || "保底".equals(text) || "兜底".equals(text) || "保险".equals(text)
+                || "protect".equals(normalized)
+                || "protective".equals(normalized) || "safety".equals(normalized)) {
+            return "protect";
+        }
+        return "";
     }
 
     static void persist(PlanningStateDTO state,
@@ -104,7 +163,17 @@ final class TierAllocationSupport {
         return sameCanonicalGoal(
                 compileSource(confirmed, targetCount).canonicalGoal,
                 compileSource(effectiveSourceGoal, targetCount).canonicalGoal)
-                && sameResolution(confirmedResolution(state), resolution);
+                && samePersistedResolution(confirmedResolution(state), resolution);
+    }
+
+    static boolean isLegacyExactPersisted(PlanningStateDTO state, TierQuotaGoalDTO expected) {
+        TierQuotaGoalDTO confirmed = confirmedGoal(state);
+        return confirmed != null && expected != null
+                && TYPE_EXACT_COUNTS.equals(normalized(confirmed.getType()))
+                && TYPE_EXACT_COUNTS.equals(normalized(expected.getType()))
+                && equal(confirmed.getSprintCount(), expected.getSprintCount())
+                && equal(confirmed.getStableCount(), expected.getStableCount())
+                && equal(confirmed.getProtectCount(), expected.getProtectCount());
     }
 
     private static TierQuotaGoalDTO applyRequest(TierQuotaGoalDTO confirmed,
@@ -420,9 +489,28 @@ final class TierAllocationSupport {
         return equal(left.getTargetCount(), right.getTargetCount())
                 && sameConstraint(left.getEffectiveBounds(), right.getEffectiveBounds())
                 && sameWeights(left.getCanonicalWeights(), right.getCanonicalWeights())
-                && sameCounts(left.getResolvedCounts(), right.getResolvedCounts())
+                && (bothRangeResolutions(left, right)
+                || sameCounts(left.getResolvedCounts(), right.getResolvedCounts()))
                 && normalized(left.getResolutionMethod()).equals(normalized(right.getResolutionMethod()))
                 && defaultList(left.getTieBreakOrder()).equals(defaultList(right.getTieBreakOrder()));
+    }
+
+    private static boolean samePersistedResolution(TierAllocationResolutionDTO left,
+                                                   TierAllocationResolutionDTO right) {
+        return sameResolution(left, right)
+                && sameCounts(left == null ? null : left.getResolvedCounts(),
+                right == null ? null : right.getResolvedCounts())
+                && equal(left == null ? null : left.getObjectiveDigest(),
+                right == null ? null : right.getObjectiveDigest())
+                && equal(left == null ? null : left.getSolverVersion(),
+                right == null ? null : right.getSolverVersion());
+    }
+
+    private static boolean bothRangeResolutions(TierAllocationResolutionDTO left,
+                                                TierAllocationResolutionDTO right) {
+        return left.getEffectiveBounds() != null && right.getEffectiveBounds() != null
+                && TYPE_COUNT_RANGES.equals(normalized(left.getEffectiveBounds().getSourceType()))
+                && TYPE_COUNT_RANGES.equals(normalized(right.getEffectiveBounds().getSourceType()));
     }
 
     private static boolean sameConstraint(TierAllocationConstraintDTO left,
@@ -458,6 +546,10 @@ final class TierAllocationSupport {
         return left == null ? right == null : left.equals(right);
     }
 
+    private static int safe(Integer value) {
+        return value == null ? 0 : value;
+    }
+
     static TierQuotaGoalDTO copyGoal(TierQuotaGoalDTO source) {
         if (source == null) {
             return null;
@@ -473,6 +565,26 @@ final class TierAllocationSupport {
         result.setSprintWeight(source.getSprintWeight());
         result.setStableWeight(source.getStableWeight());
         result.setProtectWeight(source.getProtectWeight());
+        return result;
+    }
+
+    static TierQuotaGoalRequestDTO copyRequest(TierQuotaGoalRequestDTO source) {
+        if (source == null) {
+            return null;
+        }
+        TierQuotaGoalDTO goal = copyGoal(source);
+        TierQuotaGoalRequestDTO result = new TierQuotaGoalRequestDTO();
+        result.setType(goal.getType());
+        result.setSprintCount(goal.getSprintCount());
+        result.setStableCount(goal.getStableCount());
+        result.setProtectCount(goal.getProtectCount());
+        result.setSprint(goal.getSprint());
+        result.setStable(goal.getStable());
+        result.setProtect(goal.getProtect());
+        result.setSprintWeight(goal.getSprintWeight());
+        result.setStableWeight(goal.getStableWeight());
+        result.setProtectWeight(goal.getProtectWeight());
+        result.setUpdateMode(source.getUpdateMode());
         return result;
     }
 
@@ -571,6 +683,7 @@ final class TierAllocationSupport {
 
     @Data
     static final class CompiledTierAllocation {
+        private TierQuotaGoalRequestDTO requestedGoal;
         private TierQuotaGoalDTO effectiveSourceGoal;
         private TierQuotaGoalDTO canonicalGoal;
         private TierAllocationConstraintDTO constraint;

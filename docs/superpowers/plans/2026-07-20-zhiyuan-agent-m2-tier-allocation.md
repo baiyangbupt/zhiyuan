@@ -367,7 +367,7 @@ git commit -m "feat: solve bounded tier allocations"
 
 **文件：** Proposal DTO、dry-run DTO、builder 和 builder 测试。
 
-- [ ] **步骤 1：编写失败的 Proposal 测试**
+- [x] **步骤 1：编写失败的 Proposal 测试**
 
 增加以下具名测试：
 
@@ -399,7 +399,7 @@ void shouldReturnInfoWhenPlanAndEffectiveGoalAreBothUnchanged() {
 
 再增加准确矩阵：range replace 展示被移除的历史目标；ratio 同时展示 submitted/canonical/resolved 值；dry-run 使用实际 selected counts 而不是请求 maxima；跨类型 patch blocked 且无 actions；候选不足透出 solver diagnostic。
 
-- [ ] **步骤 2：运行 RED**
+- [x] **步骤 2：运行 RED**
 
 ```bash
 cd zhiyuan-server
@@ -408,7 +408,7 @@ mvn -q -Dtest=UserGoalProposalBuilderTest test
 
 预期：`TierQuotaChangeDTO` 字段缺失，或已满足的 max-only 被错误返回为不持久化的 `info`。
 
-- [ ] **步骤 3：增加权威 Proposal 信封**
+- [x] **步骤 3：增加权威 Proposal 信封**
 
 ```java
 @Data
@@ -423,7 +423,7 @@ public class TierQuotaChangeDTO {
 
 在 `FixProposalDTO` 增加 `private TierQuotaChangeDTO tierQuotaChange;`。从 solver 实际选中的 entities 填充 `resolution.resolvedCounts`，绝不能使用 range maximum。
 
-- [ ] **步骤 4：实现方案状态和目标状态的二维判定**
+- [x] **步骤 4：实现方案状态和目标状态的二维判定**
 
 ```java
 boolean planChanged = "ready".equals(selection.solverResult.getStatus());
@@ -440,7 +440,7 @@ proposal.setRequiresConfirmation(true);
 
 纯目标更新时 actions 保持空，并在 Proposal 中说明只保存档位硬目标。replace 必须展示 `beforeGoal`、`requestedGoal` 和 `effectiveGoal`。blocked 设置 `requiresConfirmation=false`，且不得挂载 ready action。
 
-- [ ] **步骤 5：运行 GREEN 和 exact-count 回归**
+- [x] **步骤 5：运行 GREEN 和 exact-count 回归**
 
 ```bash
 cd zhiyuan-server
@@ -460,7 +460,7 @@ git commit -m "feat: expose M2 tier allocation proposals"
 
 **文件：** hard-objective/postcondition DTO、support、state service、command service、统一 postcondition validator 及其测试。
 
-- [ ] **步骤 1：编写失败的持久化和 postcondition 测试**
+- [x] **步骤 1：编写失败的持久化和 postcondition 测试**
 
 增加以下准确矩阵：range source goal + resolved counts；ratio submitted weights + canonical weights；旧 exact JSON 读取；target 45 -> 50 后 ratio 重新解析；exact 在总数变化后冲突；range regenerate；纯目标 apply；postcondition 失败。postcondition 的单元矩阵放在 `UnifiedPlanPostconditionValidatorTest`，command service 测试只验证事务顺序和结果写入边界。
 
@@ -481,7 +481,7 @@ void shouldVerifyPersistedRangeAndActualCounts() {
 
 增加失败用例：持久化 max 为 2，但最终 sprint count 为 3；预期 `POSTCONDITION_FAILED_CODE`，且不得更新 succeeded command。
 
-- [ ] **步骤 2：运行 RED**
+- [x] **步骤 2：运行 RED**
 
 ```bash
 cd zhiyuan-server
@@ -490,7 +490,7 @@ mvn -q -Dtest=PlanningStateServiceTest,PendingPlanningCommandBizServiceTest,Unif
 
 预期：exact-only 持久化/postcondition 代码无法验证 range 或 ratio 状态。
 
-- [ ] **步骤 3：持久化权威 Proposal 结果而不是请求增量**
+- [x] **步骤 3：持久化权威 Proposal 结果而不是请求增量**
 
 在 `PlanningStateService.applyUserGoalTargetToPlanningState` 中，用以下逻辑替换 raw quota 持久化：
 
@@ -503,15 +503,15 @@ if (change != null && Boolean.TRUE.equals(change.getStateChanged())) {
 
 用户只改变总数、已确认 ratio 因此重新解析时也必须执行该逻辑。apply 阶段不得重新计算或舍入，只消费权威重建 Proposal 和冻结 solver result。
 
-- [ ] **步骤 4：提取并泛化 postcondition，且不破坏 exact 字段**
+- [x] **步骤 4：提取并泛化 postcondition，且不破坏 exact 字段**
 
 把 `PendingPlanningCommandBizService.verifyPlanChangePostcondition` 迁移到 `@Component UnifiedPlanPostconditionValidator`，command service 只在 apply/regenerate/review 完成后调用 `validator.validate(req, state, applyRes)`。为保持 4.0 response 兼容，`TierQuotaResultDTO` 保留旧 `type/sprintCount/stableCount/protectCount`，同时增加 `effectiveGoal`、`resolution` 和 `actualCounts`。exact/ratio 对照 resolved exact counts 校验；range 对照全部有效 min/max bounds 校验。`persisted` 必须同时满足目标语义等价、canonical resolution 等价，以及 objective digest/solver metadata 匹配。
 
-- [ ] **步骤 5：保持事务回滚行为**
+- [x] **步骤 5：保持事务回滚行为**
 
 公开方法 `PendingPlanningCommandBizService.execute` 继续使用 `@Transactional(rollbackFor = Exception.class)`，且 validator 异常必须发生在写入 succeeded command 之前。新增 `PendingPlanningCommandRollbackIntegrationTest`：使用 `@SpringBootTest` 和 `@MockBean UnifiedPlanPostconditionValidator`，先写入隔离 session/active pending/ready command 所需状态，再让 validator 在 apply 后抛出 `BusinessException(40906, "m2_postcondition_injected_failure")`。从事务外重新读取并断言 planning version、正式 selected IDs、`tierQuotaGoal`、`tierQuotaResolution` 都等于执行前值，command 不是 succeeded，pending 不是 applied。该测试只由 `RUN_M2_ROLLBACK_INTEGRATION=1` 启用，不增加生产代码失败开关。
 
-- [ ] **步骤 6：运行 GREEN**
+- [x] **步骤 6：运行 GREEN**
 
 ```bash
 cd zhiyuan-server
@@ -520,7 +520,7 @@ mvn -q -Dtest=TierAllocationSupportTest,PlanningStateServiceTest,PendingPlanning
 
 预期：PASS；exact postcondition response 字段继续存在；range/ratio report 同时证明方案和持久化；失败路径绝不把 command 标为 succeeded。
 
-- [ ] **步骤 7：hard cut 旧 exact-only support**
+- [x] **步骤 7：hard cut 旧 exact-only support**
 
 把剩余所有生产调用从 `TierQuotaSupport` 迁移到 `TierAllocationSupport`，然后删除 `TierQuotaSupport.java` 和 `TierQuotaSupportTest.java`。运行：
 
@@ -541,7 +541,7 @@ git commit -m "feat: persist and verify M2 tier goals"
 
 **文件：** `tools.py`、direct 测试和 prompt。
 
-- [ ] **步骤 1：编写失败的 Agent 归一和 pending 测试**
+- [x] **步骤 1：编写失败的 Agent 归一和 pending 测试**
 
 增加以下准确 direct unit 矩阵：exact 兼容；max-only patch；完整 range replace；ratio replace；update mode 缺失/非法；Boolean/非整数 bounds；min > max；weights 合计为零；未知字段；range/ratio 与 requirements 组合；ready 纯目标 pending；info 真 no-change；blocked 跨类型 patch；Proposal effective-goal 透传。
 
@@ -560,7 +560,7 @@ def test_normalize_range_patch_keeps_only_explicit_bounds():
     }
 ```
 
-- [ ] **步骤 2：运行 RED**
+- [x] **步骤 2：运行 RED**
 
 ```bash
 cd zhiyuan-agent
@@ -569,7 +569,7 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_release_410_plan_change_
 
 预期：新类型被 `only_exact_counts_supported` 拒绝，或者被错误冻结成 exact-only payload。
 
-- [ ] **步骤 3：增加可区分的 TypedDict 结构**
+- [x] **步骤 3：增加可区分的 TypedDict 结构**
 
 ```python
 class PlanTierCountBound(TypedDict, total=False):
@@ -592,17 +592,17 @@ class PlanTierQuotaGoal(TypedDict, total=False):
 
 只保留一个公开 `tier_quota_goal` 字段。归一逻辑可以把 snake_case 改为 camelCase 并校验标量类型，但不得读取 `raw_user_text`、当前自然语言或中文话术列表。
 
-- [ ] **步骤 4：分别冻结请求增量和权威 Proposal 状态**
+- [x] **步骤 4：分别冻结请求增量和权威 Proposal 状态**
 
 把归一后的请求增量作为 `userGoalRequest.tierQuotaGoal` 发送；把原始 snake-case typed delta 保存到 `executionPayload.plan_change_spec`；把后端 `proposal.tierQuotaChange.effectiveGoal` 和 `resolution` 保存到 pending postconditions/display。Python 不得计算比例数量或合并历史 bounds。
 
 只有 exact goal 执行本地总数合计早期校验。range/ratio 的 target 可行性以后端 compiler 为准。没有 `selection_goal` 时继续保持当前正式方案总数。
 
-- [ ] **步骤 5：保留 M3 guard 并更新稳定 prompt 边界**
+- [x] **步骤 5：保留 M3 guard 并更新稳定 prompt 边界**
 
 Prompt 只说明 schema 语义、`patch` 与显式 `replace` 的区别、完整 ratio weights 和禁止猜数。不得恢复 M1 已删除的常驻当前 tier distribution，也不得增加中文话术用例列表。
 
-- [ ] **步骤 6：运行 GREEN 和全部 direct Agent 测试**
+- [x] **步骤 6：运行 GREEN 和全部 direct Agent 测试**
 
 ```bash
 cd zhiyuan-agent
@@ -610,6 +610,13 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_release_410_m0_contract.
 ```
 
 预期：PASS；现有 4.0 exact pending shape 继续接受；新的 range/ratio pending 只包含一个 Proposal 和一个权威 apply payload。
+
+执行证据（2026-07-20）：
+
+- RED：新增 exact/range/ratio 归一、请求增量冻结、权威 effective goal/resolution、非 ready Proposal、M3 组合 guard 和 prompt 边界矩阵；新类型最初仍走 exact-only 拒绝/冻结路径。补充确认结果类型用例后，range/ratio 均稳定失败为“冲稳保精确配额”；补充未知类型用例后，稳定失败为旧 `only_exact_counts_supported` 且误报 exact 字段缺失。
+- GREEN：`PlanTierQuotaGoal` 扩展为 exact/range/ratio 与 patch/replace；Python 只做结构化字段归一和 exact 合计校验，range/ratio 合并、可行性、约分和解析全部交给后端；pending 分别冻结 snake-case 请求 delta、camelCase `userGoalRequest` 和 Proposal 权威 effective goal/resolution。确认成功文案按 postcondition 类型展示精确配额、数量范围或比例。
+- VERIFY：运行 `PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_release_410_m0_contract.py tests/unit/test_zhiyuan_agent_direct.py -q`，最终结果 `290 passed, 33 skipped`。Task 6 才创建的 `test_release_410_plan_change_contract.py` 本步骤未提前伪造。
+- CLEAN：删除过时错误码 `only_exact_counts_supported`，未知类型改为 `tier_quota_type_invalid` 并在类型字段边界 fail closed；旧 exact 场景例句未恢复，quota normalizer 不读取 `raw_user_text`，M3 前 `tier_quota_composite_not_supported` 继续保留。
 
 - [ ] **步骤 7：获得授权后创建提交检查点**
 
@@ -622,15 +629,15 @@ git commit -m "feat: expose M2 tier goals to the agent"
 
 **文件：** reference contract/golden、quality gate、新 M2 case 文件和主计划。
 
-- [ ] **步骤 1：先更新离线 reference contract，再调整预期数量**
+- [x] **步骤 1：先更新离线 reference contract，再调整预期数量**
 
 先把 `test_release_410_m0_contract.py` 中持续演进的 PlanChangeSpec/golden/normalizer 断言移到新文件 `test_release_410_plan_change_contract.py`；原文件只保留冻结 M0 manifest 和大 fixture 来源断言。随后设置 `SCHEMA_VERSION = "4.1.0-m2"`。range/ratio 强制 `update_mode`；exact 允许缺省或 `replace`；用最大公约数 canonicalize ratio weights；patch 输出表达请求增量，不能在没有 planning state 时假装已经完成合并。reference API 增加可选 `context_tier_goal`，只用于验证同类型历史 patch 和跨类型 typed blocked。
 
-- [ ] **步骤 2：增加精确 golden 用例**
+- [x] **步骤 2：增加精确 golden 用例**
 
 合法矩阵包括：max-only patch、完整 range replace、总数 45 的 ratio replace、等价的 30:40:30 ratio，以及不含 update mode 的 4.0 exact。非法矩阵包括：range mode 缺失、ratio patch、空 range、min > max、bounds 合计不可行、weight 合计为零、exact patch，以及带 confirmed-goal context 的跨类型 patch。unit 断言更新为精确的新用例总数。
 
-- [ ] **步骤 3：运行 contract 和 JSON parse gate**
+- [x] **步骤 3：运行 contract 和 JSON parse gate**
 
 ```bash
 cd zhiyuan-agent
@@ -639,7 +646,7 @@ PYTHONPATH=. .venv/bin/python examples/plan_change_spec_410_contract.py
 
 预期：全部 golden case 通过，且 `failures=[]`。
 
-- [ ] **步骤 4：增加一个 M2 final-action 包**
+- [x] **步骤 4：增加一个 M2 final-action 包**
 
 `dialog_regression_410_m2_tier_allocation_cases.json` 必须包含以下隔离用例和准确后端断言：
 
@@ -670,6 +677,10 @@ M2_FINAL_ACTION_CASE_FILES = [
 
 预期：一次 clean first-pass 结果；不得重试失败的 turn/case/package 来拼接发布证据。
 
+执行记录（2026-07-20）：离线 contract 输出 `schemaVersion=4.1.0-m2`、`26/26`、`failures=[]`；M0/可演进 contract/gate 静态组合为 `28 passed`。M2 包冻结 `8 cases / 21 steps`，独立 `m2-final-action` mode 只生成这一条命令，冻结的 `FINAL_ACTION_CASE_FILES` 仍为 24 个且 manifest 无 diff。
+
+真实对话未通过退出门禁：`/private/tmp/zhiyuan_410_m2_tier_allocation_gate.json` 记录 `steps=8`、`successfulSteps=0`、`failedSteps=8`、`failedByReason.environment=8`。全部 case 在第一个对话 turn 前即因 runner 使用默认 `18290` 而本地后端位于 `8080`、MySQL clone 未传本地密码而终止；没有产生功能性结果。遵守一次 clean first-pass 规则，本轮未重跑 turn/case/package，也未将其标记为 M2 通过证据。
+
 - [ ] **步骤 6：获得授权后创建提交检查点**
 
 ```bash
@@ -681,7 +692,7 @@ git commit -m "test: add M2 tier allocation release cases"
 
 **文件：** 全部 M2 文件、主计划、metrics、数据库、候选副本和 MySQL binlog。
 
-- [ ] **步骤 1：从 clean compile 运行聚焦 Java/Python 测试集**
+- [x] **步骤 1：从 clean compile 运行聚焦 Java/Python 测试集**
 
 ```bash
 cd zhiyuan-server
@@ -695,7 +706,7 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_release_410_m0_contract.
 
 预期：PASS，且 failures/errors 都为零。
 
-- [ ] **步骤 2：运行全量自动化测试集**
+- [x] **步骤 2：运行全量自动化测试集**
 
 ```bash
 cd zhiyuan-server
@@ -709,7 +720,7 @@ PYTHONPATH=. .venv/bin/python -m pytest -q
 
 预期：failures/errors 为零；明确报告 skipped 测试。把准确数量和耗时写入主计划。
 
-- [ ] **步骤 3：运行静态检查和资产检查**
+- [x] **步骤 3：运行静态检查和资产检查**
 
 运行 Python `compileall`，解析所有受控 examples/server JSON，运行 `git diff --check`，并使用 `rg` 审计旧 `TierQuotaSupport`、synthetic quota helpers、新增 raw-text recovery、中文话术映射、solver fallback，以及对 `tier_quota_composite_not_supported` 的任何提前删除。
 
@@ -719,7 +730,7 @@ PYTHONPATH=. .venv/bin/python -m pytest -q
 
 在隔离服务中运行新 M2 包和现有冻结的 24-package final-action gate。冻结的 24 包必须与 manifest 完全一致，M2 包必须与自身声明的 step count 一致。只有在 `warnings=[]`、`failures=[]`、没有 case/package/turn retry、没有放宽超时时才能退出。
 
-- [ ] **步骤 5：运行隔离事务集成测试证明回滚**
+- [x] **步骤 5：运行隔离事务集成测试证明回滚**
 
 以 `RUN_M2_ROLLBACK_INTEGRATION=1` 运行 `PendingPlanningCommandRollbackIntegrationTest`。测试通过 mock Spring validator 在 apply 后抛错，不修改生产配置；验证 command 失败、pending 不是 `applied`、planning version 不增长、正式 selected IDs 不变，并且 `tierQuotaGoal`、`tierQuotaResolution` 都等于执行前值。测试 finally 删除隔离 session、pending、command 和 planning state。
 
@@ -730,9 +741,21 @@ RUN_M2_ROLLBACK_INTEGRATION=1 mvn -q -Dtest=PendingPlanningCommandRollbackIntegr
 
 预期：PASS；finally 清理后隔离 session、pending、command 和 planning state 行数都为零。
 
-- [ ] **步骤 6：清理测试状态和磁盘资产**
+- [x] **步骤 6：清理测试状态和磁盘资产**
 
 只删除 M2 测试 session/command/pending/extra/message/behavior/freshness/integration 行、Agent SQLite history、候选 clone 文件、被替换的 M2 metrics 和临时 probe 文件。封存 MySQL binlog 只能通过 MySQL SQL purge，必须保留活动 binlog，并复查磁盘空间和已停止端口。严禁从文件系统直接删除 binlog。
+
+执行证据（2026-07-20）：
+
+- 最终聚焦集：Java `362 tests`、`0 failures/errors`、`3 skipped`；Python `296 passed, 33 skipped`。
+- 最终全量集：Java `655 tests`、`0 failures/errors`、`5 skipped`；Python `1763 passed, 42 skipped`。
+- 静态/资产：`compileall` 退出码 0，受控 examples/resources/bizdata 共 `51` 个 JSON 全部解析，`git diff --check` 通过；旧 `TierQuotaSupport`、synthetic quota helper 和旧 command postcondition 为零匹配，M3 `tier_quota_composite_not_supported` 仍存在。
+- 回滚：`RUN_M2_ROLLBACK_INTEGRATION=1` 的 `PendingPlanningCommandRollbackIntegrationTest` 为 `1/1`，退出码 0；finally 继续验证隔离 session/pending/command/planning state 零残留。
+- 清理：live 环境失败生成的 `9914201-9914208` 共 24 个候选副本已删除，应用服务端口均停止；MySQL chat session/command/pending/extra data 四类残留行均为 `0`，Agent SQLite history 为 `0`，磁盘约 `83GiB` 可用。MySQL 9 `SHOW BINARY LOGS` 与 `SHOW BINARY LOG STATUS` 均确认只有活动 `binlog.000612`（约 150KB），没有旧 binlog 可 purge，因此未删除活动日志。
+- 旧文案：`UserGoalProposalBuilder` 的通用 exact-only 文案已改为按 exact/range/ratio 类型化，新增 range/ratio ready 和 M3 blocked 回归；生产代码中剩余“冲稳保精确配额”仅位于 exact 专用摘要、校验和确认标签。
+- 第二轮完整 live 证据：修复 8080/数据库凭据后重新执行完整 `8 cases / 21 steps`，环境准备全部成功，结果 `7/21`；`14` 个失败按 runner 计为 content `11`、backend `6`、tool `1`，没有 environment failure。不得运行冻结 24 包，也不得关闭 M2。
+- live 首因不是后端数学路径：SQLite 历史中的真实 tool args 证明混合 `total=False` schema 允许模型把 ratio/range 换算成 exact、给纯 tier 请求附加无依据 selection/requirements，并把历史 range 全量回填为 patch 请求。下一轮 RED/GREEN 必须采用 discriminator union、一次 typed retry 和 Proposal 权威 requested delta，继续禁止中文话术规则及 raw text recovery。
+- live 同时证伪三条资产假设：候选源有 `514` 个冲刺候选，`min=45` 不会容量不足；ratio DTO 合法携带其他 nullable 字段；纯目标更新的完整 unit DTO 会刷新，但 45 个 `unitId` 的集合和顺序保持一致。资产修复只能改为确定性不可行边界、subset contains 和 ID 序列对账，不能删除真实 postcondition/persistence 断言。
 
 - [ ] **步骤 7：在 canonical 主计划中关闭 M2**
 

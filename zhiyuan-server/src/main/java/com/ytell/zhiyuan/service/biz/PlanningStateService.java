@@ -665,7 +665,12 @@ public class PlanningStateService {
         }
         ProjectedHardRequirementSupport.persist(state, userGoalRequest.getRequirements());
         PriorityRuleSupport.persist(state, userGoalRequest.getPriorityRules());
-        TierQuotaSupport.persist(state, userGoalRequest.getTierQuotaGoal());
+        if (proposal.getTierQuotaChange() != null
+                && Boolean.TRUE.equals(proposal.getTierQuotaChange().getStateChanged())) {
+            TierAllocationSupport.persist(state,
+                    proposal.getTierQuotaChange().getEffectiveGoal(),
+                    proposal.getTierQuotaChange().getResolution());
+        }
         if (!RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(
                 RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy()))) {
             return;
@@ -7847,7 +7852,7 @@ public class PlanningStateService {
         return RepairCandidateEligibility.hasConfirmedHardConstraints(state)
                 || !CoverageRequirementSupport.confirmedRequirements(state).isEmpty()
                 || !PriorityRuleSupport.confirmedRules(state).isEmpty()
-                || TierQuotaSupport.confirmedGoal(state) != null
+                || TierAllocationSupport.confirmedGoal(state) != null
                 || hasActiveTuitionRange(loadSessionTuitionRange(state == null ? null : state.getSessionId()));
     }
 

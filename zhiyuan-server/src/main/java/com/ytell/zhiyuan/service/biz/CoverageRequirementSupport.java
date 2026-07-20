@@ -233,7 +233,7 @@ final class CoverageRequirementSupport {
     }
 
     private static String normalizeTier(String value) {
-        String key = TierQuotaSupport.canonicalTierKey(value);
+        String key = TierAllocationSupport.canonicalTierKey(value);
         if ("protect".equals(key)) {
             return "保";
         }

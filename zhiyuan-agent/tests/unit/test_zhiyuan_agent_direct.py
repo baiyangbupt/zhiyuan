@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import TypeAdapter
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -36,7 +37,9 @@ from app.service import (
 from app.zhiyuan_agent.agent import ZhiyuanAgent, _is_casual_only_user_text, _prepare_preview_intent_change_tool
 from app.zhiyuan_agent.prompt import build_turn_context, build_zhiyuan_agent_instructions
 from app.zhiyuan_agent.tools import (
+    PlanChangeSpec,
     _item_major_names,
+    _normalize_plan_tier_quota_goal,
     _plan_item_matches_intent_payload,
     _pending_command_execution_uncertain,
     _item_unit_id,
@@ -1744,6 +1747,375 @@ async def test_preview_plan_change_preserves_count_for_exact_tier_quota(mocker):
     ]
 
 
+def test_normalize_range_patch_keeps_only_explicit_bounds():
+    goal, errors = _normalize_plan_tier_quota_goal(
+        {
+            "type": "count_ranges",
+            "update_mode": "patch",
+            "sprint": {"max_count": 10},
+        }
+    )
+
+    assert errors == []
+    assert goal == {
+        "type": "count_ranges",
+        "updateMode": "patch",
+        "sprint": {"maxCount": 10},
+    }
+
+
+def test_plan_change_schema_discriminates_tier_goal_types_and_describes_boundaries():
+    schema = TypeAdapter(PlanChangeSpec).json_schema()
+    tier_schema = schema["properties"]["tier_quota_goal"]
+    branch_refs = tier_schema.get("anyOf") or tier_schema.get("oneOf") or []
+
+    assert len(branch_refs) == 3
+    branch_names = {item["$ref"].rsplit("/", 1)[-1] for item in branch_refs}
+    assert branch_names == {
+        "PlanExactTierQuotaGoal",
+        "PlanRangeTierQuotaGoal",
+        "PlanRatioTierQuotaGoal",
+    }
+    definitions = schema["$defs"]
+    assert set(definitions["PlanExactTierQuotaGoal"]["required"]) >= {
+        "type", "sprint_count", "stable_count", "protect_count"
+    }
+    assert set(definitions["PlanRatioTierQuotaGoal"]["required"]) >= {
+        "type", "update_mode", "sprint_weight", "stable_weight", "protect_weight"
+    }
+    assert set(definitions["PlanRangeTierQuotaGoal"]["required"]) >= {
+        "type", "update_mode"
+    }
+    rendered = json.dumps(schema, ensure_ascii=False)
+    assert "Never convert ratios or ranges into exact counts" in rendered
+    assert "Only include when the user explicitly requests filling" in rendered
+    assert "冲/冲刺 tier (sprint/reach)" in rendered
+    assert "稳 tier (stable)" in rendered
+    assert "保/保底 tier (protect/safety)" in rendered
+
+
+def test_normalize_ratio_replace_keeps_submitted_weights():
+    goal, errors = _normalize_plan_tier_quota_goal(
+        {
+            "type": "ratios",
+            "update_mode": "replace",
+            "sprint_weight": 30,
+            "stable_weight": 40,
+            "protect_weight": 30,
+        }
+    )
+
+    assert errors == []
+    assert goal == {
+        "type": "ratios",
+        "updateMode": "replace",
+        "sprintWeight": 30,
+        "stableWeight": 40,
+        "protectWeight": 30,
+    }
+
+
+def test_normalize_range_replace_keeps_all_explicit_bounds():
+    goal, errors = _normalize_plan_tier_quota_goal(
+        {
+            "type": "count_ranges",
+            "update_mode": "replace",
+            "sprint": {"min_count": 8, "max_count": 12},
+            "stable": {"min_count": 16, "max_count": 20},
+            "protect": {"min_count": 18, "max_count": 22},
+        }
+    )
+
+    assert errors == []
+    assert goal == {
+        "type": "count_ranges",
+        "updateMode": "replace",
+        "sprint": {"minCount": 8, "maxCount": 12},
+        "stable": {"minCount": 16, "maxCount": 20},
+        "protect": {"minCount": 18, "maxCount": 22},
+    }
+
+
+@pytest.mark.parametrize(
+    ("raw_goal", "reason"),
+    [
+        ({"type": "count_ranges", "sprint": {"max_count": 10}},
+         "tier_quota_update_mode_invalid"),
+        ({"type": "count_ranges", "update_mode": "replace", "sprint": {}},
+         "tier_range_bound_invalid"),
+        ({"type": "count_ranges", "update_mode": "replace",
+          "sprint": {"min_count": True}}, "tier_range_bound_invalid"),
+        ({"type": "count_ranges", "update_mode": "replace",
+          "sprint": {"max_count": 1.5}}, "tier_range_bound_invalid"),
+        ({"type": "count_ranges", "update_mode": "replace",
+          "sprint": {"min_count": 11, "max_count": 10}}, "tier_range_bound_invalid"),
+        ({"type": "ratios", "update_mode": "patch",
+          "sprint_weight": 3, "stable_weight": 4, "protect_weight": 3},
+         "tier_quota_update_mode_invalid"),
+        ({"type": "ratios", "update_mode": "replace",
+          "sprint_weight": 0, "stable_weight": 0, "protect_weight": 0},
+         "tier_ratio_weight_invalid"),
+        ({"type": "exact_counts", "update_mode": "patch",
+          "sprint_count": 9, "stable_count": 17, "protect_count": 19},
+         "tier_quota_update_mode_invalid"),
+        ({"type": "exact_counts", "sprint_count": 9, "stable_count": 17,
+          "protect_count": 19, "unknown": 1}, "unsupported_fields"),
+        ({"type": "percentages"}, "tier_quota_type_invalid"),
+    ],
+)
+def test_normalize_tier_allocation_rejects_invalid_contracts(raw_goal, reason):
+    goal, errors = _normalize_plan_tier_quota_goal(raw_goal)
+
+    assert goal is None
+    assert reason in {item["reason"] for item in errors}
+
+
+async def test_preview_plan_change_freezes_range_delta_and_authoritative_goal(mocker):
+    effective_goal = {
+        "type": "count_ranges",
+        "sprint": {"minCount": 0, "maxCount": 2},
+    }
+    resolution = {
+        "targetCount": 4,
+        "effectiveBounds": {
+            "type": "count_ranges",
+            "sourceType": "count_ranges",
+            "sprint": {"minCount": 0, "maxCount": 2},
+            "stable": {"minCount": 0, "maxCount": 4},
+            "protect": {"minCount": 0, "maxCount": 4},
+        },
+        "resolvedCounts": {"sprintCount": 1, "stableCount": 2, "protectCount": 1},
+        "resolutionMethod": "count_ranges",
+        "tieBreakOrder": ["sprint", "stable", "protect"],
+        "objectiveDigest": "objective-digest",
+        "solverVersion": "ojalgo-48.4.2-m2",
+    }
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-range",
+                            "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "保存冲刺档最多2个的硬目标。",
+                            "tierQuotaChange": {
+                                "requestedGoal": {
+                                    "type": "count_ranges",
+                                    "updateMode": "patch",
+                                    "sprint": {"maxCount": 2},
+                                },
+                                "effectiveGoal": effective_goal,
+                                "resolution": resolution,
+                                "stateChanged": True,
+                            },
+                            "dryRunResult": {
+                                "beforeUnitTotal": 4,
+                                "afterUnitTotal": 4,
+                                "afterUnitTierCounts": {"冲": 1, "稳": 2, "保": 1},
+                            },
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "selection_goal": {"type": "fill_to_count", "target_count": 4},
+                "tier_quota_goal": {
+                    "type": "count_ranges",
+                    "update_mode": "patch",
+                    "sprint": {"min_count": 0, "max_count": 2},
+                    "stable": {"min_count": 1, "max_count": 2},
+                    "protect": {"min_count": 1, "max_count": 2},
+                },
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    request = generate_mock.await_args.args[2]
+    assert request["tierQuotaGoal"] == {
+        "type": "count_ranges",
+        "updateMode": "patch",
+        "sprint": {"minCount": 0, "maxCount": 2},
+        "stable": {"minCount": 1, "maxCount": 2},
+        "protect": {"minCount": 1, "maxCount": 2},
+    }
+    pending = save_mock.await_args.args[1]
+    assert pending["executionPayload"]["plan_change_spec"]["tier_quota_goal"] == {
+        "type": "count_ranges",
+        "update_mode": "patch",
+        "sprint": {"max_count": 2},
+    }
+    postconditions = pending["executionPayload"]["postconditions"]
+    assert postconditions["tier_quota_goal"] == effective_goal
+    assert postconditions["tier_quota_resolution"] == resolution
+    assert pending["executionPayload"]["proposal_snapshot"]["tier_quota_change"][
+        "effectiveGoal"
+    ] == effective_goal
+
+
+async def test_preview_plan_change_freezes_ratio_resolution_from_proposal(mocker):
+    effective_goal = {
+        "type": "ratios",
+        "sprintWeight": 30,
+        "stableWeight": 40,
+        "protectWeight": 30,
+    }
+    resolution = {
+        "targetCount": 45,
+        "canonicalWeights": {"sprintWeight": 3, "stableWeight": 4, "protectWeight": 3},
+        "resolvedCounts": {"sprintCount": 14, "stableCount": 18, "protectCount": 13},
+        "resolutionMethod": "largest_remainder",
+        "tieBreakOrder": ["sprint", "stable", "protect"],
+        "objectiveDigest": "objective-digest",
+        "solverVersion": "ojalgo-48.4.2-m2",
+    }
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-ratio",
+                            "sourceVersionGuard": 12,
+                            "canonicalObjectiveDigest": "objective-digest",
+                            "solverVersion": "ojalgo-48.4.2-m2",
+                            "solverInputDigest": "input-digest",
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "按3:4:3落实冲稳保比例。",
+                            "tierQuotaChange": {
+                                "effectiveGoal": effective_goal,
+                                "resolution": resolution,
+                                "stateChanged": True,
+                            },
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "tier_quota_goal": {
+                    "type": "ratios",
+                    "update_mode": "replace",
+                    "sprint_weight": 30,
+                    "stable_weight": 40,
+                    "protect_weight": 30,
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    request = generate_mock.await_args.args[2]
+    assert request["tierQuotaGoal"] == {
+        "type": "ratios",
+        "updateMode": "replace",
+        "sprintWeight": 30,
+        "stableWeight": 40,
+        "protectWeight": 30,
+    }
+    pending = save_mock.await_args.args[1]
+    assert pending["executionPayload"]["plan_change_spec"]["tier_quota_goal"] == {
+        "type": "ratios",
+        "update_mode": "replace",
+        "sprint_weight": 30,
+        "stable_weight": 40,
+        "protect_weight": 30,
+    }
+    assert pending["executionPayload"]["postconditions"]["tier_quota_goal"] == effective_goal
+    assert pending["executionPayload"]["postconditions"]["tier_quota_resolution"] == resolution
+
+
+@pytest.mark.parametrize(
+    ("status", "summary"),
+    [
+        ("info", "当前目标与已确认目标一致，不需要修改。"),
+        ("blocked", "历史目标类型不同，必须明确 replace。"),
+    ],
+)
+async def test_preview_plan_change_does_not_create_pending_for_nonready_tier_proposal(
+    mocker, status, summary
+):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": f"ugp-range-{status}",
+                            "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
+                            "status": status,
+                            "strategy": "fill_missing_count",
+                            "summary": summary,
+                            "tierQuotaChange": {
+                                "effectiveGoal": {
+                                    "type": "count_ranges",
+                                    "sprint": {"maxCount": 10},
+                                },
+                                "resolution": {"targetCount": 45},
+                                "stateChanged": False,
+                            },
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "tier_quota_goal": {
+                    "type": "count_ranges",
+                    "update_mode": "patch",
+                    "sprint": {"max_count": 10},
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["pending_created"] is False
+    assert result["data"]["proposal"]["tier_quota_change"]["stateChanged"] is False
+    generate_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
 async def test_preview_plan_change_clarifies_exact_tier_quota_total_mismatch(mocker):
     generate_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
@@ -1826,6 +2198,53 @@ async def test_preview_plan_change_rejects_tier_quota_requirement_composite(mock
 
     assert result["next_step"] == "respond"
     assert result["data"]["reason"] == "plan_change_composite_not_supported"
+    assert result["data"]["tier_quota_composite_not_supported"] is True
+    generate_mock.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "tier_goal",
+    [
+        {
+            "type": "count_ranges",
+            "update_mode": "patch",
+            "sprint": {"max_count": 10},
+        },
+        {
+            "type": "ratios",
+            "update_mode": "replace",
+            "sprint_weight": 3,
+            "stable_weight": 4,
+            "protect_weight": 3,
+        },
+    ],
+)
+async def test_preview_plan_change_keeps_m3_guard_for_new_tier_goal_types(
+    mocker, tier_goal
+):
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "tier_quota_goal": tier_goal,
+                "requirements": [
+                    {
+                        "kind": "exclude",
+                        "domain": "school",
+                        "key": "school_nature",
+                        "values": ["民办"],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["next_step"] == "respond"
     assert result["data"]["tier_quota_composite_not_supported"] is True
     generate_mock.assert_not_awaited()
 
@@ -2616,6 +3035,114 @@ async def test_zhiyuan_agent_rejects_invalid_first_tool_arguments_before_executi
     assert deps.agent_observability["firstModelToolCallSatisfied"] is True
 
 
+async def test_zhiyuan_agent_retries_accidental_tier_composite_before_tool_execution():
+    request_count = 0
+
+    async def model(messages, agent_info):  # noqa: ARG001
+        nonlocal request_count
+        request_count += 1
+        assert agent_info.allow_text_output is False
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="preview_plan_change",
+                    args={
+                        "spec": {
+                            "tier_quota_goal": {
+                                "type": "ratios",
+                                "update_mode": "replace",
+                                "sprint_weight": 3,
+                                "stable_weight": 4,
+                                "protect_weight": 3,
+                            },
+                            "requirements": [
+                                {
+                                    "kind": "include",
+                                    "domain": "admission",
+                                    "key": "tier",
+                                    "values": ["冲", "稳", "保"],
+                                    "min_count": 1,
+                                }
+                            ],
+                        }
+                    },
+                    tool_call_id=f"tier-composite-{request_count}",
+                )
+            ]
+        )
+
+    agent = ZhiyuanAgent(SimpleNamespace(model=FunctionModel(model), model_settings={}))
+    deps = _direct_context(with_plan=True)
+
+    reply, _, all_messages, usage = await agent.run_with_message_deltas(
+        "按冲稳保比例整体替换，先看预览", deps=deps
+    )
+
+    assert "复合 Proposal" in reply
+    assert [call.tool_call_id for call in _tool_calls(all_messages)] == ["tier-composite-2"]
+    assert usage.requests == 2
+    assert usage.tool_calls == 1
+    assert deps.agent_observability["tierQuotaCompositeRetryRequired"] is True
+
+
+async def test_zhiyuan_agent_retries_ambiguous_saved_target_for_tier_goal(mocker):
+    request_count = 0
+    preview_mock = mocker.patch(
+        "app.zhiyuan_agent.agent.preview_plan_change",
+        AsyncMock(
+            return_value=json.dumps(
+                {
+                    "data": {"pending_created": False},
+                    "next_step": "respond",
+                    "message": "结构已按当前总数重新提交。",
+                },
+                ensure_ascii=False,
+            )
+        ),
+    )
+
+    async def model(messages, agent_info):  # noqa: ARG001
+        nonlocal request_count
+        request_count += 1
+        spec = {
+            "tier_quota_goal": {
+                "type": "ratios",
+                "update_mode": "replace",
+                "sprint_weight": 3,
+                "stable_weight": 4,
+                "protect_weight": 3,
+            }
+        }
+        if request_count == 1:
+            spec["selection_goal"] = {"type": "fill_to_count"}
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="preview_plan_change",
+                    args={"spec": spec},
+                    tool_call_id=f"tier-target-{request_count}",
+                )
+            ]
+        )
+
+    agent = ZhiyuanAgent(SimpleNamespace(model=FunctionModel(model), model_settings={}))
+    deps = _direct_context(with_plan=True)
+    deps.planning_summary.ordered_total = 45
+    deps.planning_summary.ordered_target_total = 48
+    deps.planning_summary.candidate_target_total = 48
+
+    reply, _, all_messages, usage = await agent.run_with_message_deltas(
+        "当前45个按冲稳保3:4:3比例整体替换", deps=deps
+    )
+
+    assert "当前总数重新提交" in reply
+    assert [call.tool_call_id for call in _tool_calls(all_messages)] == ["tier-target-2"]
+    assert usage.requests == 2
+    assert usage.tool_calls == 1
+    assert preview_mock.await_args.kwargs["spec"].get("selection_goal") is None
+    assert deps.agent_observability["tierQuotaTargetSourceRetryRequired"] is True
+
+
 def test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_followups():
     text = build_zhiyuan_agent_instructions(make_run_context(request_context=_direct_context(with_plan=True)))
 
@@ -2653,6 +3180,20 @@ def test_zhiyuan_agent_instructions_require_plan_action_targeting_for_review_fol
     assert "必须调用 answer_policy" in text
     assert "方案里必须有法学，其他专业可以先保留" in text
     assert "不因为句子提到\"方案里\"就升级成结构性 coverage Proposal" in text
+
+
+def test_zhiyuan_agent_instructions_expose_stable_m2_tier_schema_without_old_examples():
+    text = build_zhiyuan_agent_instructions(
+        make_run_context(request_context=_direct_context(with_plan=True))
+    )
+
+    assert "count_ranges" in text
+    assert "ratios" in text
+    assert "update_mode" in text
+    assert "patch" in text and "replace" in text
+    assert "禁止猜测范围、比例或整数解析结果" in text
+    assert "这45个按冲9稳17保19调整" not in text
+    assert "冲稳保按三二一来" not in text
     assert "绝不能调用 preview_plan_change" in text
     assert 'repair_goal":{"review_issue_code":"group_inner_safety_guard"' in text
     assert '"strategy":"adjust_major_group_inner_safety"' in text
@@ -4699,6 +5240,48 @@ async def test_preview_intent_explicit_reference_major_direction_is_not_complete
     assert "school_intents" not in result["data"]["merged"]
     assert "财经" not in result["message"]
     save_mock.assert_awaited_once()
+
+
+async def test_preview_intent_keeps_structured_explicit_major_mentions_at_concrete_level(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.simulate_plan_diff",
+        AsyncMock(return_value={"code": 500}),
+    )
+
+    result = _load(
+        await preview_intent_change(
+            make_run_context(request_context=_direct_context()),
+            intent_type="major",
+            positive={"major": ["网络与新媒体", "跨境电商"]},
+            constraint_type="must_have",
+            raw_user_text="网络与新媒体要，跨境电商也要",
+            semantic_requirements=[
+                {
+                    "domain": "major",
+                    "side": "positive",
+                    "strength": "explicit",
+                    "key": "major",
+                    "values": ["网络与新媒体", "跨境电商"],
+                    "raw_span": "网络与新媒体要，跨境电商也要",
+                }
+            ],
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["merged"]["major_intents"] == {
+        "level3": ["网络与新媒体", "跨境电子商务"]
+    }
+    assert "网络与新媒体" in result["message"]
+    assert "跨境电子商务" in result["message"]
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["executionPayload"]["merged"]["major_intents"] == {
+        "level3": ["网络与新媒体", "跨境电子商务"]
+    }
 
 
 async def test_preview_intent_reference_only_semantic_requirements_do_not_create_pending(mocker):
@@ -8441,6 +9024,81 @@ async def test_confirm_pending_reports_exact_tier_quota_postcondition(
     assert "冲稳保精确配额" in result["message"]
 
 
+@pytest.mark.parametrize(
+    ("tier_quota_goal", "expected_label"),
+    [
+        (
+            {
+                "type": "count_ranges",
+                "updateMode": "replace",
+                "sprint": {"minCount": 8, "maxCount": 12},
+                "stable": {"minCount": 16, "maxCount": 20},
+                "protect": {"minCount": 18, "maxCount": 22},
+            },
+            "冲稳保数量范围",
+        ),
+        (
+            {
+                "type": "ratios",
+                "updateMode": "replace",
+                "sprintWeight": 3,
+                "stableWeight": 4,
+                "protectWeight": 3,
+            },
+            "冲稳保比例",
+        ),
+    ],
+)
+async def test_confirm_pending_reports_typed_tier_quota_postcondition(
+    mocker, _stub_pending_planning_command, tier_quota_goal, expected_label
+):
+    proposal_apply = {
+        "proposalId": "ugp-tier-ratio",
+        "proposalSource": "user_goal",
+        "sourceVersionGuard": 12,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+        "userGoalRequest": {
+            "proposalSource": "user_goal",
+            "goalType": "fill_to_count",
+            "targetCount": 45,
+            "persistTargetCount": False,
+            "tierQuotaGoal": tier_quota_goal,
+            "sourceVersionGuard": 12,
+        },
+    }
+    ctx = _context_with_backend_pending(
+        {
+            "active": True,
+            "pending_id": "pending-tier-ratio",
+            "kind": "plan_mutation",
+            "action_family": "apply_plan_change_proposal",
+            "summary": "按3:4:3调整冲稳保比例",
+            "source_backend_version": 12,
+            "execution_payload": {
+                "action_family": "apply_plan_change_proposal",
+                "proposal_apply": proposal_apply,
+                "postconditions": {
+                    "tier_quota_goal": proposal_apply["userGoalRequest"]["tierQuotaGoal"]
+                },
+            },
+            "raw": {
+                "pendingId": "pending-tier-ratio",
+                "kind": "plan_mutation",
+                "actionFamily": "apply_plan_change_proposal",
+                "status": "active",
+                "sourceBackendVersion": 12,
+            },
+        }
+    )
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["applied"] is True
+    assert expected_label in result["message"]
+    assert "冲稳保精确配额" not in result["message"]
+
+
 async def test_confirm_pending_applies_review_repair_proposal_and_reports_actual_target(
     mocker, _stub_pending_planning_command
 ):
@@ -9596,7 +10254,7 @@ async def test_preview_intent_change_blocks_new_pending_when_turn_started_with_p
     save_mock.assert_not_awaited()
 
 
-async def test_preview_intent_tool_schema_requires_pending_resolution_only_with_active_pending():
+async def test_preview_intent_tool_schema_always_requires_semantic_requirements_and_conditionally_pending_resolution():
     tool_def = ToolDefinition(
         name="preview_intent_change",
         parameters_json_schema={
@@ -9604,24 +10262,28 @@ async def test_preview_intent_tool_schema_requires_pending_resolution_only_with_
             "properties": {
                 "intent_type": {"type": "string"},
                 "pending_resolution": {"type": "string", "default": "none"},
+                "semantic_requirements": {"type": "array", "default": None},
             },
             "required": ["intent_type"],
         },
     )
 
-    unchanged = await _prepare_preview_intent_change_tool(
+    prepared_without_pending = await _prepare_preview_intent_change_tool(
         make_run_context(request_context=_direct_context()),
         tool_def,
     )
-    assert unchanged is tool_def
-    assert unchanged.strict is None
-    assert unchanged.parameters_json_schema["properties"]["pending_resolution"]["default"] == "none"
+    assert prepared_without_pending.strict is None
+    assert "semantic_requirements" in prepared_without_pending.parameters_json_schema["required"]
+    assert "default" not in prepared_without_pending.parameters_json_schema["properties"]["semantic_requirements"]
+    assert "structured" in prepared_without_pending.parameters_json_schema["properties"]["semantic_requirements"]["description"]
+    assert prepared_without_pending.parameters_json_schema["properties"]["pending_resolution"]["default"] == "none"
 
     prepared = await _prepare_preview_intent_change_tool(
         make_run_context(request_context=_direct_context(pending=True)),
         tool_def,
     )
     assert prepared.strict is None
+    assert "semantic_requirements" in prepared.parameters_json_schema["required"]
     assert "pending_resolution" in prepared.parameters_json_schema["required"]
     assert "default" not in prepared.parameters_json_schema["properties"]["pending_resolution"]
     assert "active pending" in prepared.parameters_json_schema["properties"]["pending_resolution"]["description"]
@@ -9699,6 +10361,83 @@ async def test_zhiyuan_agent_rejects_missing_required_pending_resolution_before_
     assert usage.requests == 2
     assert usage.tool_calls == 1
     assert deps.agent_observability["missingRequiredPendingResolutionRejected"] is True
+
+
+async def test_zhiyuan_agent_rejects_missing_required_semantic_requirements_before_tool_execution(mocker):
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.simulate_plan_diff",
+        AsyncMock(return_value={"code": 500}),
+    )
+    request_count = 0
+
+    async def model(messages, agent_info):  # noqa: ARG001
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="preview_intent_change",
+                        args={
+                            "intent_type": "major",
+                            "positive": {"level2": ["新闻传播学类", "电子商务类"]},
+                            "constraint_type": "must_have",
+                            "raw_user_text": "网络与新媒体要，跨境电商也要",
+                        },
+                        tool_call_id="missing-semantic-requirements",
+                    )
+                ]
+            )
+        assert any(
+            isinstance(part, RetryPromptPart)
+            for message in messages
+            for part in message.parts
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="preview_intent_change",
+                    args={
+                        "intent_type": "major",
+                        "positive": {"major": ["网络与新媒体", "跨境电商"]},
+                        "constraint_type": "must_have",
+                        "raw_user_text": "网络与新媒体要，跨境电商也要",
+                        "semantic_requirements": [
+                            {
+                                    "domain": "major",
+                                    "side": "positive",
+                                    "strength": "explicit",
+                                    "key": "major",
+                                    "values": ["网络与新媒体", "跨境电商"],
+                                    "raw_span": "网络与新媒体要，跨境电商也要",
+                            }
+                        ],
+                    },
+                    tool_call_id="grounded-semantic-requirements",
+                )
+            ]
+        )
+
+    agent = ZhiyuanAgent(SimpleNamespace(model=FunctionModel(model), model_settings={}))
+    deps = _direct_context()
+
+    _, _, all_messages, usage = await agent.run_with_message_deltas(
+        "网络与新媒体要，跨境电商也要", deps=deps
+    )
+
+    calls = _tool_calls(all_messages)
+    assert [call.tool_call_id for call in calls] == ["grounded-semantic-requirements"]
+    assert usage.requests == 2
+    assert usage.tool_calls == 1
+    assert deps.agent_observability["missingRequiredSemanticRequirementsRejected"] is True
+    saved_state = save_mock.await_args.args[1]
+    assert saved_state["executionPayload"]["merged"]["major_intents"] == {
+        "level3": ["网络与新媒体", "跨境电子商务"]
+    }
 
 
 async def test_preview_intent_change_can_replace_active_pending_when_explicit(mocker):

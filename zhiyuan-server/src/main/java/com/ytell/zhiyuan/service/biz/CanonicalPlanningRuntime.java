@@ -90,7 +90,7 @@ final class CanonicalPlanningRuntime {
             throw new BusinessException(409, "priority_target_not_in_plan: 当前没有正式方案");
         }
         if (ordered.stream().anyMatch(entity -> Strings.isNullOrEmpty(
-                TierQuotaSupport.canonicalTierKey(entity.tier())))) {
+                TierAllocationSupport.canonicalTierKey(entity.tier())))) {
             throw new BusinessException(409, "priority_tier_unavailable: 当前方案存在未标注档位的项目");
         }
         if (ordered.stream().noneMatch(entity -> entity.priorityMatched)) {
@@ -721,7 +721,7 @@ final class CanonicalPlanningRuntime {
         }
 
         private boolean hasConflictingTier() {
-            return candidates.stream().map(candidate -> TierQuotaSupport.canonicalTierKey(candidate.getTier()))
+            return candidates.stream().map(candidate -> TierAllocationSupport.canonicalTierKey(candidate.getTier()))
                     .filter(value -> !Strings.isNullOrEmpty(value)).distinct().count() > 1;
         }
     }

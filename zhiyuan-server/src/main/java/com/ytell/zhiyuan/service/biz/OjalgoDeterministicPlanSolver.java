@@ -592,7 +592,7 @@ final class OjalgoDeterministicPlanSolver implements DeterministicPlanSolver {
     }
 
     private static String tier(PlanSolverInputDTO.CandidateDTO candidate) {
-        return TierQuotaSupport.canonicalTierKey(candidate == null ? null : candidate.getTier());
+        return TierAllocationSupport.canonicalTierKey(candidate == null ? null : candidate.getTier());
     }
 
     private static String coverageId(int index) {

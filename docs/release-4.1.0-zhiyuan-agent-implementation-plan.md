@@ -1,8 +1,8 @@
 # Release 4.1.0 - Zhiyuan Agent 实施计划
 
-> 状态: M0、M1 已完成；M2 实施中，Task 1 canonical 配额编译已完成  
-> 日期: 2026-07-19  
-> 基线: Release 4.0.0 / 实施设计 v2.77  
+> 状态: M0、M1 已完成；M2 Task 1-5 与 Task 6 离线资产已完成，live final-action 因环境预置失败而未关闭，M3 不启动
+> 日期: 2026-07-19
+> 基线: Release 4.0.0 / 实施设计 v2.77
 > 目标: 扩展 typed 方案目标和确定性联合求解能力，同时保持单 `PlanChangeSpec`、单 Proposal、单 pending、单 command 的原子执行链。
 
 ## 1. 版本结论
@@ -551,7 +551,7 @@ inputDigest
 | D0 | 版本、范围、架构原则和实施计划落档 | 已完成 |
 | M0 | 基线冻结、schema/solver ADR、fixture 与 benchmark | 已完成（2026-07-18） |
 | M1 | Canonical objective compiler + solver 基座，无新用户行为 | 已完成（2026-07-19） |
-| M2 | 冲稳保 count ranges/max/ratios 纵切 | 实施中；Task 1 canonical 配额编译已完成 |
+| M2 | 冲稳保 count ranges/max/ratios 纵切 | 实施中；Task 1-4 后端闭环已完成，Task 5 Agent 契约待开始 |
 | M3 | tier allocation + requirements + priority 联合求解 | 待开始 |
 | M4 | 概率缺口、安全垫和结构 review Proposal 可执行化 | 待开始 |
 | M5 | 有界复杂 selector + 多条/多级 priority | 待开始 |
@@ -702,6 +702,26 @@ Canonical contract：
 - [x] GREEN 1：实现 request/persisted/canonical/resolution DTO、统一 `TierAllocationSupport` 和 `PlanningObjectiveCompiler` hard cut；支持 exact/range/ratio canonical 编译、range patch/replace、比例约分与 largest-remainder、双向 M3 组合 guard、持久化等价判断和冻结 resolution metadata，但尚未开放 Proposal/Agent 用户路径。2026-07-20 运行 `mvn -DskipTests test-compile` 成功；`mvn -Dtest=TierAllocationSupportTest,PlanningObjectiveCompilerTest test` 为 `22/22`；`mvn -Dtest=TierQuotaSupportTest,UserGoalProposalBuilderTest test` 为 `60/60`，均无 failure/error/skip。
 - [x] RED 2：新增 `TierStructureProjectionTest` 和 solver range 矩阵，覆盖 max-only/no-change、min-only、完整 bounds、候选容量不足、locked 超上界、ratio exact bounds、transport 顺序稳定、历史 anchor 不可达和 `tier_range` objective result。运行 `mvn -q -Dtest=TierStructureProjectionTest,OjalgoDeterministicPlanSolverTest test`，按预期在 `testCompile` 因 `TierStructureProjection`、`historicalTierAnchor` 和 `resolvedTierCounts` 不存在失败。
 - [x] GREEN 2：增加有界历史结构投影和 solver 二级结构偏移目标；档位约束统一改为 min/max，保留 exact diagnostics，solver 升级为 `ojalgo-48.4.2-m2`，runtime 配额总数 hard cut 到 canonical `targetCount`。2026-07-20 运行 Task 1+2 组合回归 `118/118`；400-candidate ADR fixture 本轮 `OPTIMAL`、约 `310.25ms`、selection digest 保持 `698bc6658c8cfd5da4fffdfefa02c95861e3c5237c574e9ea4d2d751f757421b`，低于 2 秒上限。
+- [x] RED 3：在 `UserGoalProposalBuilderTest` 增加纯目标更新 ready、真正 no-change info、range replace 前后信封、ratio submitted/canonical/resolved、实际 selected tier dry-run、跨类型 patch blocked 和 tier capacity diagnostic；按预期在 `testCompile` 因 `TierQuotaChangeDTO`/`FixProposalDTO.tierQuotaChange` 不存在失败。
+- [x] GREEN 3：增加权威 `TierQuotaChangeDTO`，Proposal 状态改为同时比较 solver 方案变化与持久化目标变化；range/ratio 统一经 compiler/support，pure objective update 保持空 actions 但可确认，真正语义等价返回 info，blocked 不可确认。2026-07-20 运行 `mvn -Dtest=UserGoalProposalBuilderTest,PlanningObjectiveCompilerTest,OjalgoDeterministicPlanSolverTest test` 为 `91/91`，无 failure/error/skip。
+- [x] RED 4：增加 range/ratio 持久化、旧 exact JSON、45 -> 50 ratio 重解析、exact 总数冲突、range regenerate、postcondition 成功/失败和 command 成功写入边界矩阵。随后补充三个缺口用例并逐项观察失败：range 已保存实际 counts 后被误判 `stateChanged=true`；resolution digest 被修改后 `isPersisted` 仍返回 true；range 冻结 counts 不一致时仍返回 true。
+- [x] GREEN 4：`PlanningStateService` 只持久化权威 `TierQuotaChangeDTO.effectiveGoal/resolution`；新增 `UnifiedPlanPostconditionValidator` 统一验证 exact/range/ratio、实际档位数量、持久目标、冻结 resolution 和 canonical metadata，command 只负责事务顺序且在 validator 通过后才写 succeeded。状态变更比较与持久化完整性比较已分层：range 语义比较忽略 solver 实际解，postcondition 则严格比较 frozen counts、objective digest 和 solver version。
+- [x] VERIFY 4：运行 `mvn -q -Dtest=TierAllocationSupportTest,PlanningStateServiceTest,PendingPlanningCommandBizServiceTest,UnifiedPlanPostconditionValidatorTest,CanonicalPlanningRuntimeTest test`，退出码 0；共 `265 tests`、`0 failures/errors`、`3 skipped`。以 `RUN_M2_ROLLBACK_INTEGRATION=1` 运行真实 Spring/MySQL `PendingPlanningCommandRollbackIntegrationTest` 为 `1/1`，validator 在 apply 后注入 `40906` 时 planning JSON、version、selected IDs、tier goal/resolution 均恢复执行前值，command 未 succeeded、pending 保持 applying；finally 对隔离 session/planningState/pending/command 四类行逐项断言为 0。
+- [x] CLEAN 4：删除 `PendingPlanningCommandBizService` 中已被 validator 接管的约 470 行旧 postcondition 代码；迁移全部档位 canonical/legacy exact 职责后删除 `TierQuotaSupport.java` 和 `TierQuotaSupportTest.java`。`rg -n "TierQuotaSupport|verifyPlanChangePostcondition|syntheticRequirements|syntheticObjectives" zhiyuan-server/src/main zhiyuan-server/src/test` 为零匹配，`git diff --check` 通过。
+- [x] RED 5：增加 exact/range/ratio 归一、pending 分层冻结、非 ready Proposal、M3 组合 guard 和稳定 prompt 边界矩阵，观察新类型仍被 exact-only 逻辑拒绝或冻结。确认结果补充类型化用例后，range/ratio 均稳定失败为“冲稳保精确配额”；未知类型用例稳定失败为旧 `only_exact_counts_supported` 并误报 exact 字段缺失。
+- [x] GREEN 5：Agent 公开 `tier_quota_goal` 扩展为 exact/range/ratio 与 patch/replace；Python 只归一结构化请求和校验 exact 合计，不合并历史 range、不约分/舍入 ratio、不从 `raw_user_text` 恢复业务字段。pending 分别冻结 snake-case 请求 delta、camelCase 后端请求和 Proposal 权威 effective goal/resolution；确认成功文案按 postcondition 类型显示精确配额、数量范围或比例。
+- [x] VERIFY 5：运行 `PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_release_410_m0_contract.py tests/unit/test_zhiyuan_agent_direct.py -q`，最终结果 `290 passed, 33 skipped`。`test_release_410_plan_change_contract.py` 按 Task 6 边界尚未创建，不在本步骤提前加入。
+- [x] CLEAN 5：删除过时错误码 `only_exact_counts_supported`，未知类型统一以 `tier_quota_type_invalid` fail closed；删除旧 exact prompt 场景例句并保留 M3 组合 guard。没有增加中文话术路由、文本恢复、Agent 侧比例解析或历史 bounds 合并。
+- [x] RED 6：把演进中的 PlanChangeSpec/golden/normalizer 断言从冻结 M0 测试迁入 `test_release_410_plan_change_contract.py`。新测试按预期出现 6 个失败：schema 不接受 `update_mode`、API 不接受 `context_tier_goal`、ratio 未约分、golden 仍为 M0；M2 对话资产/gate 测试另按预期分别失败为文件不存在和缺少 `M2_FINAL_ACTION_CASE_FILES`。
+- [x] GREEN 6：reference contract 升级为 `4.1.0-m2`，请求 delta 与持久化 context 分型；contextless range patch 只输出未解析请求增量，同类型历史 patch 才合并 effective goal，跨类型 patch 返回 `tier_patch_type_mismatch`，ratio 同时保留 submitted weights 和 GCD canonical weights。golden 扩为 26 个；新增独立 `8 cases / 21 steps` M2 包和 `m2-final-action` mode，冻结 24 包及 M0 manifest 未修改。
+- [x] VERIFY 6 OFFLINE：contract runner 输出 `26/26`、`failures=[]`；M0/演进 contract/quality-gate 静态组合 `28 passed`；受控 JSON 解析和 M2 gate dry-run 通过。
+- [ ] VERIFY 6 LIVE：首次结果 `0/8` 为环境无效运行，根因是 runner 默认后端误用 `18290` 且 MySQL clone 未传本地密码。修复环境后于 2026-07-20 重新完整运行同一 `8 cases / 21 steps` 包，metrics 仍写入 `/private/tmp/zhiyuan_410_m2_tier_allocation_gate.json`；本轮服务、MySQL、源 session 16、24 条 extra-data 和候选资产预检均通过，结果为 `7/21`，`failedSteps=14`，`failedByReason={content:11, backend:6, tool:1}`，已经排除环境失败。
+  - 首因一：Agent 公开 schema 仍把 exact/range/ratio 放在一个 `total=False` 混合 TypedDict 中。真实 tool args 证明模型把 `3:4:3` 计算成 exact counts、把“至少45”改成 exact `45/0/0`，并给纯 ratio 注入 `requirements` 或无数字 `fill_to_count`；因此不是 solver 或 postcondition 误算。
+  - 首因二：range patch 的后端 effective goal 正确，但模型把历史未修改 bounds 一并写回请求，导致 `plan_change_spec` 不再是最小 request delta。修复必须以 Proposal 权威 requested goal 冻结 delta，不能从 `raw_user_text` 恢复字段，也不能在 Agent 侧合并历史 bounds。
+  - 测试资产问题：源候选实际有 `514` 个冲刺候选，原“冲刺至少45个应容量不足”假设不成立；ratio 持久化 exact-equals 断言未考虑 DTO 合法 null 字段；纯目标更新虽完整 unit DTO 因刷新变化，但 source/target 的 45 个 `unitId` 序列一致，业务选集和顺序没有 churn。
+  - 纠偏设计：把三类 quota 改成 discriminator typed union 并在 schema 中明确“不得跨类型换算”；对可纠正的 typed 复合/总数冲突只允许一次 ModelRetry；pending delta 使用 Proposal requested goal；runner 支持数组字段投影后以 `unitId` 序列断言无 churn；把证伪的容量 case 改成确定性 range-total infeasible blocked case。禁止新增中文话术路由、raw-text parser、Agent 比例舍入和 package/case/turn 结果拼接。
+- [x] VERIFY 7 AUTOMATION：最终聚焦 Java `362 tests`、`0 failures/errors`、`3 skipped`，Python `296 passed, 33 skipped`；最终全量 Java `655 tests`、`0 failures/errors`、`5 skipped`，Python `1763 passed, 42 skipped`；真实事务回滚集成 `1/1`，退出码 0。
+- [x] CLEAN 7：`compileall`、51 个受控 JSON、`git diff --check` 通过；旧 support/synthetic/postcondition 零匹配且 M3 guard 仍存在。清理失败 live 运行复制的 24 个 `9914201-9914208` 候选文件并停止应用端口；MySQL chat session/command/pending/extra data 四类残留行和 Agent SQLite history 均为 `0`，磁盘可用约 `83GiB`。MySQL 只有活动 `binlog.000612`（约 150KB），无旧 binlog 可 purge，未删除活动日志。通用 Proposal 的 exact-only 文案已按 exact/range/ratio 类型化并增加回归。
 
 ### 10.4 M3 - 联合求解
 

@@ -23,6 +23,7 @@ DEFAULT_METRICS_DIR = Path("/private/tmp/zhiyuan-agent-dialog-quality-gate")
 
 LOCAL_PYTEST_TARGETS = [
     "tests/unit/test_release_410_m0_contract.py",
+    "tests/unit/test_release_410_plan_change_contract.py",
     "tests/unit/models/test_semantic_router.py",
     "tests/unit/test_semantic_frame_evaluator.py",
     "tests/unit/test_semantic_frame_probe.py",
@@ -79,6 +80,10 @@ FINAL_ACTION_CASE_FILES = [
     "dialog_regression_400_tier_quota_cases.json",
 ]
 
+M2_FINAL_ACTION_CASE_FILES = [
+    "dialog_regression_410_m2_tier_allocation_cases.json",
+]
+
 MODEL_PROVIDER_CASE_FILES = [
     "model_provider_benchmark_e2e_cases.json",
     "model_provider_400_quality_readonly_cases.json",
@@ -127,6 +132,10 @@ def _final_action_case_file_names() -> list[str]:
     return _required_existing_case_files(FINAL_ACTION_CASE_FILES, label="final-action")
 
 
+def _m2_final_action_case_file_names() -> list[str]:
+    return _required_existing_case_files(M2_FINAL_ACTION_CASE_FILES, label="M2 final-action")
+
+
 def _metrics_path(metrics_dir: Path, stem: str, suffix: str) -> Path:
     return metrics_dir / f"{stem}_{suffix}"
 
@@ -142,6 +151,53 @@ def _case_uses_backend_clone(case_name: str) -> bool:
 def _existing_local_pytest_targets() -> list[str]:
     """Return local pytest targets that exist in this checkout."""
     return [target for target in LOCAL_PYTEST_TARGETS if (ROOT / target).exists()]
+
+
+def _build_final_action_commands(
+    case_names: list[str],
+    *,
+    category: str,
+    name_prefix: str,
+    metrics_suffix: str,
+    metrics_dir: Path,
+    py: str,
+    ws_args: list[str],
+    internal_service_args: list[str],
+    backend_db_args: list[str],
+) -> list[GateCommand]:
+    commands: list[GateCommand] = []
+    for case_name in case_names:
+        case_path = f"examples/{case_name}"
+        stem = Path(case_name).stem
+        metrics_output = _metrics_path(metrics_dir, stem, metrics_suffix)
+        commands.append(
+            GateCommand(
+                name=f"{name_prefix}-{stem}",
+                category=category,
+                command=[
+                    py,
+                    "examples/dialog_regression_runner.py",
+                    "--cases",
+                    case_path,
+                    "--clear-history-per-case",
+                    "--clear-backend-pending-per-case",
+                    "--clear-backend-planning-intent-per-case",
+                    "--clone-backend-chat-session",
+                    "--keep-response-text",
+                    "--assert-plan-style",
+                    "--response-timeout",
+                    "180",
+                    "--metrics-output",
+                    str(metrics_output),
+                    *ws_args,
+                    *internal_service_args,
+                    *backend_db_args,
+                ],
+                description=f"Run clone-backed {category} WebSocket regression cases from {case_path}.",
+                output=str(metrics_output),
+            )
+        )
+    return commands
 
 
 def build_gate_plan(
@@ -240,37 +296,32 @@ def build_gate_plan(
             )
         )
 
-    for case_name in _final_action_case_file_names():
-        case_path = f"examples/{case_name}"
-        stem = Path(case_name).stem
-        metrics_output = _metrics_path(metrics_dir, stem, "final-action-live.json")
-        commands.append(
-            GateCommand(
-                name=f"final-action-{stem}",
-                category="final-action",
-                command=[
-                    py,
-                    "examples/dialog_regression_runner.py",
-                    "--cases",
-                    case_path,
-                    "--clear-history-per-case",
-                    "--clear-backend-pending-per-case",
-                    "--clear-backend-planning-intent-per-case",
-                    "--clone-backend-chat-session",
-                    "--keep-response-text",
-                    "--assert-plan-style",
-                    "--response-timeout",
-                    "180",
-                    "--metrics-output",
-                    str(metrics_output),
-                    *ws_args,
-                    *internal_service_args,
-                    *backend_db_args,
-                ],
-                description=f"Run clone-backed final-action/high-signal WebSocket regression cases from {case_path}.",
-                output=str(metrics_output),
-            )
+    commands.extend(
+        _build_final_action_commands(
+            _final_action_case_file_names(),
+            category="final-action",
+            name_prefix="final-action",
+            metrics_suffix="final-action-live.json",
+            metrics_dir=metrics_dir,
+            py=py,
+            ws_args=ws_args,
+            internal_service_args=internal_service_args,
+            backend_db_args=backend_db_args,
         )
+    )
+    commands.extend(
+        _build_final_action_commands(
+            _m2_final_action_case_file_names(),
+            category="m2-final-action",
+            name_prefix="m2-final-action",
+            metrics_suffix="m2-final-action-live.json",
+            metrics_dir=metrics_dir,
+            py=py,
+            ws_args=ws_args,
+            internal_service_args=internal_service_args,
+            backend_db_args=backend_db_args,
+        )
+    )
 
     provider_args: list[str] = []
     for provider in provider_names or []:
@@ -385,7 +436,7 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         action="append",
-        choices=["local", "live", "final-action", "report", "model", "all"],
+        choices=["local", "live", "final-action", "m2-final-action", "report", "model", "all"],
         default=None,
         help="command category to include; repeatable. Default dry-run includes all, execute defaults to local.",
     )

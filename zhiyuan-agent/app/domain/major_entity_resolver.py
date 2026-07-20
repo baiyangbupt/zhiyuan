@@ -20,7 +20,7 @@ from app.domain.entity_resolution import EntityResolutionCandidate, EntityResolu
 
 
 def compact_major_text(value: Any) -> str:
-    return "".join(str(value or "").split()).lower()
+    return "".join(str(value or "").split()).lower().replace("电子商务", "电商")
 
 
 def major_name_sets_for_batch(batch: str | None) -> dict[str, set[str]]:
@@ -493,13 +493,13 @@ def normalize_major_intent_payload_by_catalog(
     return dedupe_major_intent_payload_across_levels(normalized)
 
 
-def _major_mentions_by_level(text: str, batch: str | None) -> dict[str, set[str]]:
-    mentions: dict[str, set[str]] = {"level1": set(), "level2": set(), "level3": set()}
+def _major_mentions_by_level(text: str, batch: str | None) -> dict[str, list[str]]:
+    mentions: dict[str, list[str]] = {"level1": [], "level2": [], "level3": []}
     for mention in resolve_major_mentions_from_text(text, batch):
         level = str(mention.level or "")
         name = str(mention.canonical_name or "").strip()
-        if level in mentions and name:
-            mentions[level].add(name)
+        if level in mentions and name and name not in mentions[level]:
+            mentions[level].append(name)
     return mentions
 
 

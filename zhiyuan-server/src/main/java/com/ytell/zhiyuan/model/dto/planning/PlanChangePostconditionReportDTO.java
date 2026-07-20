@@ -69,6 +69,9 @@ public class PlanChangePostconditionReportDTO {
         private Integer actualSprintCount = 0;
         private Integer actualStableCount = 0;
         private Integer actualProtectCount = 0;
+        private TierQuotaGoalDTO effectiveGoal;
+        private TierAllocationResolutionDTO resolution;
+        private TierCountsDTO actualCounts;
         private Boolean planSatisfied = false;
         private Boolean persisted = false;
         private Boolean satisfied = false;

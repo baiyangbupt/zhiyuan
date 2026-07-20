@@ -88,6 +88,17 @@ def test_resolve_major_mentions_prefers_common_alias_over_auto_alias():
     assert [mention.source for mention in mentions] == ["alias", "alias"]
 
 
+def test_resolve_major_entity_normalizes_ecommerce_abbreviation():
+    resolved = resolve_major_entity("跨境电商", "01")
+    mentions = resolve_major_mentions_from_text("网络与新媒体要，跨境电商也要", "01")
+
+    assert resolved.best is not None
+    assert resolved.best.canonical_name == "跨境电子商务"
+    assert resolved.best.level == "level3"
+    assert [mention.canonical_name for mention in mentions] == ["网络与新媒体", "跨境电子商务"]
+    assert [mention.level for mention in mentions] == ["level3", "level3"]
+
+
 def test_major_alias_variants_for_name_uses_common_alias_table():
     assert "审计" in major_alias_variants_for_name("审计学", "01")
     assert "软工" in major_alias_variants_for_name("软件工程", "01")

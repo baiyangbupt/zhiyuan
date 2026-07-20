@@ -8,6 +8,7 @@ from typing import Any
 from loguru import logger
 
 from app.data.major_aliases import resolve_deterministic_major_alias
+from app.domain.major_entity_resolver import compact_major_text
 from app.util.internal_client import (
     catalog_lookup_city,
     catalog_lookup_major,
@@ -138,10 +139,6 @@ def _load_major_name_to_code_map(batch: str) -> tuple[dict[str, str], dict[str, 
     return level1_map, level2_map, level3_map
 
 
-def _compact_major_alias_text(value: str) -> str:
-    return "".join(str(value or "").split()).replace("电子商务", "电商")
-
-
 def _resolve_local_major_name_alias(name: str, level: str, local_map: dict[str, str]) -> str | None:
     if name in local_map:
         return name
@@ -150,11 +147,11 @@ def _resolve_local_major_name_alias(name: str, level: str, local_map: dict[str, 
         return deterministic_alias
     if f"{name}学" in local_map:
         return f"{name}学"
-    compact_name = _compact_major_alias_text(name)
+    compact_name = compact_major_text(name)
     if not compact_name:
         return None
     for standard_name in local_map:
-        if _compact_major_alias_text(standard_name) == compact_name:
+        if compact_major_text(standard_name) == compact_name:
             return standard_name
     return None
 

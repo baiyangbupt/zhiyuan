@@ -63,6 +63,7 @@ import com.ytell.zhiyuan.model.dto.planning.ReviewWorkflowRunRes;
 import com.ytell.zhiyuan.model.dto.planning.StaleFlagsDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalRequestDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
 import com.ytell.zhiyuan.model.dto.planning.UpdateConstraintStateReq;
 import com.ytell.zhiyuan.model.dto.planning.UpdateLatentProfileReq;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
@@ -3736,12 +3737,86 @@ public class PlanningStateServiceTest {
         assertEquals(Integer.valueOf(48), res.getState().getCandidatePoolState().getRequiredCount());
         assertEquals(Integer.valueOf(3), res.getState().getConstraintState()
                 .getHardPlanningObjectives().getSelectionTargetCount());
-        assertTrue(TierQuotaSupport.isPersisted(res.getState(), quota));
+        assertTrue(TierAllocationSupport.isPersisted(res.getState(),
+                proposal.getTierQuotaChange().getEffectiveGoal(),
+                proposal.getTierQuotaChange().getResolution()));
         Map<String, Long> tierCounts = res.getState().getOrderedPlanState().getItems().stream()
                 .collect(Collectors.groupingBy(OrderedItemDTO::getTier, Collectors.counting()));
         assertEquals(Long.valueOf(1L), tierCounts.get("冲"));
         assertEquals(Long.valueOf(1L), tierCounts.get("稳"));
         assertEquals(Long.valueOf(1L), tierCounts.get("保"));
+    }
+
+    @Test
+    void shouldApplyAndPersistRangeWhenPlanSelectionDoesNotChange() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(48);
+        CandidateItemDTO sprintOne = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校1", "冲", "数学", 40D, 90D, 40D, false);
+        CandidateItemDTO sprintTwo = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校2", "冲", "物理学", 50D, 85D, 50D, false);
+        CandidateItemDTO stable = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "学校3", "稳", "金融学", 60D, 80D, 60D, false);
+        CandidateItemDTO protect = buildCandidateItem(
+                "ps4_m4", "ps4", "s4", "学校4", "保", "会计学", 70D, 75D, 70D, false);
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(sprintOne, sprintTwo, stable, protect));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps1_m1", "学校1", "数学", "冲", 1));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps2_m2", "学校2", "物理学", "冲", 2));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps3_m3", "学校3", "金融学", "稳", 3));
+        state.getOrderedPlanState().getItems().add(
+                buildOrderedItem("ps4_m4", "学校4", "会计学", "保", 4));
+        saveStateToStore(1L, state);
+
+        TierCountRangeDTO sprintMaximum = new TierCountRangeDTO();
+        sprintMaximum.setMaxCount(2);
+        TierQuotaGoalRequestDTO quota = new TierQuotaGoalRequestDTO();
+        quota.setType("count_ranges");
+        quota.setUpdateMode("patch");
+        quota.setSprint(sprintMaximum);
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(4);
+        req.setPersistTargetCount(false);
+        req.setSourceVersionGuard(9);
+        req.setTierQuotaGoal(quota);
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req)
+                .getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getActions().isEmpty());
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(true);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals(4, res.getState().getOrderedPlanState().getItems().size());
+        assertTrue(TierAllocationSupport.isPersisted(res.getState(),
+                proposal.getTierQuotaChange().getEffectiveGoal(),
+                proposal.getTierQuotaChange().getResolution()));
+        assertEquals(Integer.valueOf(2), TierAllocationSupport.confirmedGoal(res.getState())
+                .getSprint().getMaxCount());
+        assertNotNull(TierAllocationSupport.confirmedResolution(res.getState()).getObjectiveDigest());
+        assertEquals("ojalgo-48.4.2-m2",
+                TierAllocationSupport.confirmedResolution(res.getState()).getSolverVersion());
+
+        OrderedPlanGenerateReq regenerate = new OrderedPlanGenerateReq();
+        regenerate.setForceRegenerate(true);
+        regenerate.setRegroupByTier(true);
+        PlanningStateDTO regenerated = planningStateService.generateOrderedPlan(1L, 1L, regenerate);
+        long regeneratedSprintCount = regenerated.getOrderedPlanState().getItems().stream()
+                .filter(item -> "冲".equals(item.getTier())).count();
+        assertTrue(regeneratedSprintCount <= 2L);
+        assertEquals(Integer.valueOf(2), TierAllocationSupport.confirmedGoal(regenerated)
+                .getSprint().getMaxCount());
     }
 
     @Test

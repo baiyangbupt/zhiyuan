@@ -1,7 +1,9 @@
 package com.ytell.zhiyuan.service.biz;
 
+import com.alibaba.fastjson.JSONObject;
 import com.ytell.zhiyuan.model.dto.planning.ConstraintStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierCountsDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalRequestDTO;
@@ -140,6 +142,62 @@ class TierAllocationSupportTest {
     }
 
     @Test
+    void shouldRejectPersistedResolutionWithDifferentCanonicalMetadata() {
+        PlanningStateDTO state = state();
+        TierAllocationSupport.CompiledTierAllocation compiled = TierAllocationSupport.compile(
+                state, ratioRequest("replace", 3, 4, 3), 45);
+        compiled.getResolution().setObjectiveDigest("objective-digest");
+        compiled.getResolution().setSolverVersion("ojalgo-48.4.2-m2");
+        TierAllocationSupport.persist(
+                state, compiled.getEffectiveSourceGoal(), compiled.getResolution());
+        TierAllocationSupport.confirmedResolution(state).setObjectiveDigest("different-digest");
+
+        assertFalse(TierAllocationSupport.isPersisted(
+                state, compiled.getEffectiveSourceGoal(), compiled.getResolution()));
+    }
+
+    @Test
+    void shouldIgnoreFrozenActualCountsWhenComparingEquivalentRangeResolution() {
+        PlanningStateDTO state = state();
+        TierQuotaGoalRequestDTO request = rangeRequest(
+                "replace", bound(8, 12), bound(16, 20), bound(18, 22));
+        TierAllocationSupport.CompiledTierAllocation initial =
+                TierAllocationSupport.compile(state, request, 45);
+        TierCountsDTO frozenActualCounts = new TierCountsDTO();
+        frozenActualCounts.setSprintCount(9);
+        frozenActualCounts.setStableCount(17);
+        frozenActualCounts.setProtectCount(19);
+        initial.getResolution().setResolvedCounts(frozenActualCounts);
+        TierAllocationSupport.persist(
+                state, initial.getEffectiveSourceGoal(), initial.getResolution());
+
+        TierAllocationSupport.CompiledTierAllocation repeated =
+                TierAllocationSupport.compile(state, request, 45);
+
+        assertFalse(repeated.isStateChanged());
+    }
+
+    @Test
+    void shouldRejectPersistedRangeWithDifferentFrozenCounts() {
+        PlanningStateDTO state = state();
+        TierQuotaGoalRequestDTO request = rangeRequest(
+                "replace", bound(8, 12), bound(16, 20), bound(18, 22));
+        TierAllocationSupport.CompiledTierAllocation compiled =
+                TierAllocationSupport.compile(state, request, 45);
+        TierCountsDTO expectedCounts = new TierCountsDTO();
+        expectedCounts.setSprintCount(9);
+        expectedCounts.setStableCount(17);
+        expectedCounts.setProtectCount(19);
+        compiled.getResolution().setResolvedCounts(expectedCounts);
+        TierAllocationSupport.persist(
+                state, compiled.getEffectiveSourceGoal(), compiled.getResolution());
+        TierAllocationSupport.confirmedResolution(state).getResolvedCounts().setSprintCount(10);
+
+        assertFalse(TierAllocationSupport.isPersisted(
+                state, compiled.getEffectiveSourceGoal(), compiled.getResolution()));
+    }
+
+    @Test
     void shouldReResolveConfirmedRatioWhenTargetCountChanges() {
         PlanningStateDTO state = state();
         TierAllocationSupport.CompiledTierAllocation initial = TierAllocationSupport.compile(
@@ -147,12 +205,57 @@ class TierAllocationSupportTest {
         TierAllocationSupport.persist(state, initial.getEffectiveSourceGoal(), initial.getResolution());
 
         TierAllocationSupport.CompiledTierAllocation resized =
-                TierAllocationSupport.compileConfirmed(state, 46);
+                TierAllocationSupport.compileConfirmed(state, 50);
 
         assertTrue(resized.isStateChanged());
-        assertEquals(Integer.valueOf(14), resized.getResolution().getResolvedCounts().getSprintCount());
-        assertEquals(Integer.valueOf(18), resized.getResolution().getResolvedCounts().getStableCount());
-        assertEquals(Integer.valueOf(14), resized.getResolution().getResolvedCounts().getProtectCount());
+        assertEquals(Integer.valueOf(15), resized.getResolution().getResolvedCounts().getSprintCount());
+        assertEquals(Integer.valueOf(20), resized.getResolution().getResolvedCounts().getStableCount());
+        assertEquals(Integer.valueOf(15), resized.getResolution().getResolvedCounts().getProtectCount());
+    }
+
+    @Test
+    void shouldReadLegacyExactGoalWithoutPersistedResolution() {
+        PlanningStateDTO state = JSONObject.parseObject(
+                "{\"constraintState\":{\"hardPlanningObjectives\":{\"tierQuotaGoal\":"
+                        + "{\"type\":\"exact_counts\",\"sprintCount\":9,"
+                        + "\"stableCount\":17,\"protectCount\":19}}}}",
+                PlanningStateDTO.class);
+        TierQuotaGoalDTO legacyGoal = exact(9, 17, 19);
+
+        TierAllocationSupport.CompiledTierAllocation compiled =
+                TierAllocationSupport.compileConfirmed(state, 45);
+
+        assertFalse(compiled.isStateChanged());
+        assertEquals(Integer.valueOf(9), compiled.getResolution().getResolvedCounts().getSprintCount());
+        assertTrue(TierAllocationSupport.isLegacyExactPersisted(state, legacyGoal));
+    }
+
+    @Test
+    void shouldRejectConfirmedExactGoalWhenTargetCountChanges() {
+        PlanningStateDTO state = state();
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(exact(9, 17, 19));
+
+        TierAllocationSupport.ContractException error = assertThrows(
+                TierAllocationSupport.ContractException.class,
+                () -> TierAllocationSupport.compileConfirmed(state, 50));
+
+        assertEquals("tier_exact_total_mismatch", error.getReasonCode());
+    }
+
+    @Test
+    void shouldNormalizeSupportedTierAliasesToCanonicalKeys() {
+        assertTierAliases("sprint", "冲", "冲刺", "sprint", " SPRINT ", "reach");
+        assertTierAliases("stable", "稳", "稳妥", "stable", " STABLE ", "safe");
+        assertTierAliases("protect", "保", "保底", "兜底", "保险",
+                "protect", " PROTECTIVE ", "safety");
+        assertEquals("", TierAllocationSupport.canonicalTierKey(null));
+        assertEquals("", TierAllocationSupport.canonicalTierKey("超稳"));
+    }
+
+    @Test
+    void shouldSummarizeLegacyExactGoal() {
+        assertEquals("冲9个、稳17个、保19个",
+                TierAllocationSupport.summarize(exact(9, 17, 19)));
     }
 
     private void assertContractError(String reasonCode,
@@ -162,6 +265,12 @@ class TierAllocationSupportTest {
                 TierAllocationSupport.ContractException.class,
                 () -> TierAllocationSupport.compile(state(), request, targetCount));
         assertEquals(reasonCode, error.getReasonCode());
+    }
+
+    private void assertTierAliases(String expected, String... aliases) {
+        for (String alias : aliases) {
+            assertEquals(expected, TierAllocationSupport.canonicalTierKey(alias), alias);
+        }
     }
 
     private PlanningStateDTO state() {

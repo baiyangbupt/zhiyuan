@@ -269,7 +269,7 @@ final class PriorityRuleSupport {
     }
 
     private static String normalizedTier(String value) {
-        return TierQuotaSupport.canonicalTierKey(value);
+        return TierAllocationSupport.canonicalTierKey(value);
     }
 
     private static String normalized(String value) {

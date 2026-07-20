@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Offline Release 4.1 PlanChangeSpec reference contract.
 
-This module is intentionally not imported by the production Agent. M0 uses it
-to freeze the proposed schema, cross-field invariants, ratio resolution and
-canonical digest before M1 hard-cuts a runtime implementation.
+This module is intentionally not imported by the production Agent. It tracks
+the evolving 4.1 schema, cross-field invariants and canonical reference output
+without becoming a second runtime implementation.
 """
 
 from __future__ import annotations
@@ -11,13 +11,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
-SCHEMA_VERSION = "4.1.0-m0"
+SCHEMA_VERSION = "4.1.0-m2"
 TIER_ORDER = ("sprint", "stable", "protect")
 
 NonNegativeInt = Annotated[int, Field(ge=0)]
@@ -87,6 +88,7 @@ class TierCountBound(StrictModel):
 
 class ExactTierQuotaGoal(StrictModel):
     type: Literal["exact_counts"]
+    update_mode: Literal["replace"] | None = None
     sprint_count: NonNegativeInt
     stable_count: NonNegativeInt
     protect_count: NonNegativeInt
@@ -94,6 +96,7 @@ class ExactTierQuotaGoal(StrictModel):
 
 class RangeTierQuotaGoal(StrictModel):
     type: Literal["count_ranges"]
+    update_mode: Literal["patch", "replace"]
     sprint: TierCountBound | None = None
     stable: TierCountBound | None = None
     protect: TierCountBound | None = None
@@ -107,6 +110,7 @@ class RangeTierQuotaGoal(StrictModel):
 
 class RatioTierQuotaGoal(StrictModel):
     type: Literal["ratios"]
+    update_mode: Literal["replace"]
     sprint_weight: NonNegativeInt
     stable_weight: NonNegativeInt
     protect_weight: NonNegativeInt
@@ -122,6 +126,49 @@ PlanTierQuotaGoal = Annotated[
     ExactTierQuotaGoal | RangeTierQuotaGoal | RatioTierQuotaGoal,
     Field(discriminator="type"),
 ]
+
+
+class ContextExactTierQuotaGoal(StrictModel):
+    type: Literal["exact_counts"]
+    sprint_count: NonNegativeInt
+    stable_count: NonNegativeInt
+    protect_count: NonNegativeInt
+
+
+class ContextRangeTierQuotaGoal(StrictModel):
+    type: Literal["count_ranges"]
+    sprint: TierCountBound | None = None
+    stable: TierCountBound | None = None
+    protect: TierCountBound | None = None
+
+    @model_validator(mode="after")
+    def validate_any_bound(self) -> "ContextRangeTierQuotaGoal":
+        if self.sprint is None and self.stable is None and self.protect is None:
+            raise ValueError("count_ranges requires at least one tier bound")
+        return self
+
+
+class ContextRatioTierQuotaGoal(StrictModel):
+    type: Literal["ratios"]
+    sprint_weight: NonNegativeInt
+    stable_weight: NonNegativeInt
+    protect_weight: NonNegativeInt
+
+    @model_validator(mode="after")
+    def validate_positive_total(self) -> "ContextRatioTierQuotaGoal":
+        if self.sprint_weight + self.stable_weight + self.protect_weight <= 0:
+            raise ValueError("ratio weights must have a positive total")
+        return self
+
+
+ContextTierQuotaGoal = Annotated[
+    ContextExactTierQuotaGoal | ContextRangeTierQuotaGoal | ContextRatioTierQuotaGoal,
+    Field(discriminator="type"),
+]
+
+
+class TierGoalContext(StrictModel):
+    tier_quota_goal: ContextTierQuotaGoal
 
 
 class SelectorLeaf(StrictModel):
@@ -244,6 +291,7 @@ def _resolved_target_count(spec: PlanChangeSpec410, context_target_count: int | 
 def _resolve_tier_goal(
     goal: PlanTierQuotaGoal | None,
     target_count: int | None,
+    context_tier_goal: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if goal is None:
         return None
@@ -262,24 +310,68 @@ def _resolve_tier_goal(
             )
         return {"type": goal.type, "counts": counts}
     if isinstance(goal, RangeTierQuotaGoal):
+        request_bounds = {
+            tier: source.model_dump(mode="json", exclude_none=True)
+            for tier in TIER_ORDER
+            if (source := getattr(goal, tier)) is not None
+        }
+        if goal.update_mode == "patch" and context_tier_goal is None:
+            return {
+                "type": goal.type,
+                "update_mode": goal.update_mode,
+                "request_bounds": request_bounds,
+                "resolved": False,
+            }
+        if goal.update_mode == "patch":
+            try:
+                context = TierGoalContext.model_validate(
+                    {"tier_quota_goal": context_tier_goal}
+                ).tier_quota_goal
+            except ValidationError as exc:
+                raise ContractError("tier_context_validation_failed", str(exc)) from exc
+            if not isinstance(context, ContextRangeTierQuotaGoal):
+                raise ContractError(
+                    "tier_patch_type_mismatch",
+                    "count_ranges patch requires historical count_ranges goal",
+                )
+            effective_goal = context.model_dump(mode="json", exclude_none=True)
+            for tier, requested in request_bounds.items():
+                effective_goal[tier] = {**effective_goal.get(tier, {}), **requested}
+        else:
+            effective_goal = {
+                "type": goal.type,
+                **request_bounds,
+            }
         bounds: dict[str, dict[str, int]] = {}
         for tier in TIER_ORDER:
-            source = getattr(goal, tier)
+            source = effective_goal.get(tier) or {}
             bounds[tier] = {
-                "min_count": source.min_count if source and source.min_count is not None else 0,
-                "max_count": source.max_count if source and source.max_count is not None else target_count,
+                "min_count": source.get("min_count", 0),
+                "max_count": source.get("max_count", target_count),
             }
         if sum(item["min_count"] for item in bounds.values()) > target_count:
             raise ContractError("tier_range_min_infeasible", "tier minimums exceed target count")
         if sum(item["max_count"] for item in bounds.values()) < target_count:
             raise ContractError("tier_range_max_infeasible", "tier maximums cannot reach target count")
-        return {"type": goal.type, "bounds": bounds}
+        return {
+            "type": goal.type,
+            "update_mode": goal.update_mode,
+            "request_bounds": request_bounds,
+            "effective_goal": effective_goal,
+            "bounds": bounds,
+            "resolved": True,
+        }
 
-    weights = {
+    submitted_weights = {
         "sprint": goal.sprint_weight,
         "stable": goal.stable_weight,
         "protect": goal.protect_weight,
     }
+    divisor = math.gcd(
+        math.gcd(submitted_weights["sprint"], submitted_weights["stable"]),
+        submitted_weights["protect"],
+    )
+    weights = {tier: weight // divisor for tier, weight in submitted_weights.items()}
     total_weight = sum(weights.values())
     counts = {tier: target_count * weights[tier] // total_weight for tier in TIER_ORDER}
     remainders = {tier: target_count * weights[tier] % total_weight for tier in TIER_ORDER}
@@ -289,6 +381,7 @@ def _resolve_tier_goal(
         counts[tier] += 1
     return {
         "type": goal.type,
+        "submitted_weights": submitted_weights,
         "weights": weights,
         "counts": counts,
         "resolution": "largest_remainder",
@@ -296,14 +389,23 @@ def _resolve_tier_goal(
     }
 
 
-def compile_reference(raw_spec: dict[str, Any], *, context_target_count: int | None = None) -> dict[str, Any]:
+def compile_reference(
+    raw_spec: dict[str, Any],
+    *,
+    context_target_count: int | None = None,
+    context_tier_goal: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         spec = PlanChangeSpec410.model_validate(raw_spec)
     except ValidationError as exc:
         raise ContractError("schema_validation_failed", str(exc)) from exc
 
     target_count = _resolved_target_count(spec, context_target_count)
-    tier_result = _resolve_tier_goal(spec.tier_quota_goal, target_count)
+    tier_result = _resolve_tier_goal(
+        spec.tier_quota_goal,
+        target_count,
+        context_tier_goal=context_tier_goal,
+    )
     normalized_spec = spec.model_dump(mode="json", exclude_none=True)
     objective_types = [key for key, value in normalized_spec.items() if value not in (None, [], {})]
     selector_leaf_count = spec.selector_expression.leaf_count() if spec.selector_expression else 0
@@ -334,6 +436,7 @@ def run_golden(path: Path) -> dict[str, Any]:
             compiled = compile_reference(
                 case.get("spec") or {},
                 context_target_count=case.get("contextTargetCount"),
+                context_tier_goal=case.get("contextTierGoal"),
             )
             if not expected_valid:
                 failures.append({"name": name, "reason": "expected_invalid_but_compiled"})

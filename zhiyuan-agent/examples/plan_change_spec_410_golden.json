@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "4.1.0-m0",
+  "schemaVersion": "4.1.0-m2",
   "cases": [
     {
       "name": "400-exact-counts-compatible",
@@ -28,6 +28,7 @@
       "spec": {
         "tier_quota_goal": {
           "type": "count_ranges",
+          "update_mode": "patch",
           "sprint": {"max_count": 10}
         }
       },
@@ -35,11 +36,47 @@
         "target_count": 45,
         "tier_result": {
           "type": "count_ranges",
+          "update_mode": "patch",
+          "request_bounds": {"sprint": {"max_count": 10}},
+          "resolved": false
+        }
+      }
+    },
+    {
+      "name": "410-same-type-historical-range-patch",
+      "valid": true,
+      "contextTargetCount": 45,
+      "contextTierGoal": {
+        "type": "count_ranges",
+        "sprint": {"min_count": 5, "max_count": 12},
+        "stable": {"min_count": 15, "max_count": 20},
+        "protect": {"min_count": 18, "max_count": 25}
+      },
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "patch",
+          "sprint": {"max_count": 10}
+        }
+      },
+      "expectedSummary": {
+        "target_count": 45,
+        "tier_result": {
+          "type": "count_ranges",
+          "update_mode": "patch",
+          "request_bounds": {"sprint": {"max_count": 10}},
+          "effective_goal": {
+            "type": "count_ranges",
+            "sprint": {"min_count": 5, "max_count": 10},
+            "stable": {"min_count": 15, "max_count": 20},
+            "protect": {"min_count": 18, "max_count": 25}
+          },
           "bounds": {
-            "sprint": {"min_count": 0, "max_count": 10},
-            "stable": {"min_count": 0, "max_count": 45},
-            "protect": {"min_count": 0, "max_count": 45}
-          }
+            "sprint": {"min_count": 5, "max_count": 10},
+            "stable": {"min_count": 15, "max_count": 20},
+            "protect": {"min_count": 18, "max_count": 25}
+          },
+          "resolved": true
         }
       }
     },
@@ -50,6 +87,7 @@
       "spec": {
         "tier_quota_goal": {
           "type": "count_ranges",
+          "update_mode": "replace",
           "sprint": {"min_count": 8, "max_count": 12},
           "stable": {"min_count": 16, "max_count": 20},
           "protect": {"min_count": 18, "max_count": 22}
@@ -64,6 +102,7 @@
       "spec": {
         "tier_quota_goal": {
           "type": "ratios",
+          "update_mode": "replace",
           "sprint_weight": 3,
           "stable_weight": 4,
           "protect_weight": 3
@@ -73,6 +112,32 @@
         "target_count": 45,
         "tier_result": {
           "type": "ratios",
+          "submitted_weights": {"sprint": 3, "stable": 4, "protect": 3},
+          "weights": {"sprint": 3, "stable": 4, "protect": 3},
+          "counts": {"sprint": 14, "stable": 18, "protect": 13},
+          "resolution": "largest_remainder",
+          "tie_break_order": ["sprint", "stable", "protect"]
+        }
+      }
+    },
+    {
+      "name": "410-ratio-equivalent-weights-canonicalized",
+      "valid": true,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "ratios",
+          "update_mode": "replace",
+          "sprint_weight": 30,
+          "stable_weight": 40,
+          "protect_weight": 30
+        }
+      },
+      "expectedSummary": {
+        "target_count": 45,
+        "tier_result": {
+          "type": "ratios",
+          "submitted_weights": {"sprint": 30, "stable": 40, "protect": 30},
           "weights": {"sprint": 3, "stable": 4, "protect": 3},
           "counts": {"sprint": 14, "stable": 18, "protect": 13},
           "resolution": "largest_remainder",
@@ -88,6 +153,7 @@
         "selection_goal": {"type": "fill_to_count", "target_count": 50},
         "tier_quota_goal": {
           "type": "ratios",
+          "update_mode": "replace",
           "sprint_weight": 3,
           "stable_weight": 4,
           "protect_weight": 3
@@ -97,6 +163,7 @@
         "target_count": 50,
         "tier_result": {
           "type": "ratios",
+          "submitted_weights": {"sprint": 3, "stable": 4, "protect": 3},
           "weights": {"sprint": 3, "stable": 4, "protect": 3},
           "counts": {"sprint": 15, "stable": 20, "protect": 15},
           "resolution": "largest_remainder",
@@ -172,6 +239,7 @@
         "selection_goal": {"type": "fill_to_count", "target_count": 48},
         "tier_quota_goal": {
           "type": "count_ranges",
+          "update_mode": "replace",
           "sprint": {"max_count": 12},
           "protect": {"min_count": 18}
         },
@@ -222,6 +290,7 @@
       "spec": {
         "tier_quota_goal": {
           "type": "count_ranges",
+          "update_mode": "replace",
           "sprint": {"min_count": 12, "max_count": 10}
         }
       },
@@ -234,6 +303,7 @@
       "spec": {
         "tier_quota_goal": {
           "type": "count_ranges",
+          "update_mode": "replace",
           "sprint": {"min_count": 16},
           "stable": {"min_count": 16},
           "protect": {"min_count": 16}
@@ -248,6 +318,7 @@
       "spec": {
         "tier_quota_goal": {
           "type": "count_ranges",
+          "update_mode": "replace",
           "sprint": {"max_count": 10},
           "stable": {"max_count": 10},
           "protect": {"max_count": 10}
@@ -262,12 +333,86 @@
       "spec": {
         "tier_quota_goal": {
           "type": "ratios",
+          "update_mode": "replace",
           "sprint_weight": 0,
           "stable_weight": 0,
           "protect_weight": 0
         }
       },
       "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-range-update-mode-missing",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "sprint": {"max_count": 10}
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-ratio-patch",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "ratios",
+          "update_mode": "patch",
+          "sprint_weight": 3,
+          "stable_weight": 4,
+          "protect_weight": 3
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-empty-range",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "replace"
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-exact-patch",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "exact_counts",
+          "update_mode": "patch",
+          "sprint_count": 9,
+          "stable_count": 17,
+          "protect_count": 19
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-cross-type-historical-patch",
+      "valid": false,
+      "contextTargetCount": 45,
+      "contextTierGoal": {
+        "type": "exact_counts",
+        "sprint_count": 9,
+        "stable_count": 17,
+        "protect_count": 19
+      },
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "patch",
+          "sprint": {"max_count": 10}
+        }
+      },
+      "expectedError": "tier_patch_type_mismatch"
     },
     {
       "name": "invalid-priority-over-limit",

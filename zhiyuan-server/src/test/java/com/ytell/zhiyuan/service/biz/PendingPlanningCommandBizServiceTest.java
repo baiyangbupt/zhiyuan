@@ -18,6 +18,8 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalRequestDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierQuotaChangeDTO;
 import com.ytell.zhiyuan.model.dto.planning.RepairReportDTO;
 import com.ytell.zhiyuan.model.dto.planning.UpdateConstraintStateReq;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
@@ -69,6 +71,8 @@ public class PendingPlanningCommandBizServiceTest {
         ReflectionTestUtils.setField(service, "extraDataSharedService", extraDataSharedService);
         ReflectionTestUtils.setField(service, "planningStateService", planningStateService);
         ReflectionTestUtils.setField(service, "chatSessionBizService", chatSessionBizService);
+        ReflectionTestUtils.setField(service, "postconditionValidator",
+                new UnifiedPlanPostconditionValidator());
     }
 
     @Test
@@ -714,6 +718,41 @@ public class PendingPlanningCommandBizServiceTest {
     }
 
     @Test
+    void shouldVerifyPersistedRangeAndActualCounts() {
+        PendingPlanningCommandReq req = rangePlanChangeReq(2);
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        when(planningStateService.applyFixProposal(1L, 101L, req.getProposalApply()))
+                .thenReturn(planChangeApplyResultWithTierRange(2));
+
+        PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+        assertTrue(response.getPostconditionReport().getSatisfied());
+        assertTrue(response.getPostconditionReport().getTierQuotaResult().getPlanSatisfied());
+        assertTrue(response.getPostconditionReport().getTierQuotaResult().getPersisted());
+        assertEquals(Integer.valueOf(1), response.getPostconditionReport()
+                .getTierQuotaResult().getActualCounts().getSprintCount());
+        verify(commandSharedService).updateById(any(PlanningPendingCommandEntity.class));
+    }
+
+    @Test
+    void shouldNotSucceedCommandWhenRangePostconditionFails() {
+        PendingPlanningCommandReq req = rangePlanChangeReq(0);
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        when(planningStateService.applyFixProposal(1L, 101L, req.getProposalApply()))
+                .thenReturn(planChangeApplyResultWithTierRange(0));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, error.getStatus());
+        verify(commandSharedService, never()).updateById(any());
+    }
+
+    @Test
     void shouldCountMajorGroupCoverageByUnitInsteadOfMajorDetail() {
         PendingPlanningCommandReq req = planChangeReq(3);
         req.getProposalApply().getUserGoalRequest().setPersistTargetCount(false);
@@ -1035,7 +1074,7 @@ public class PendingPlanningCommandBizServiceTest {
         state.getCandidatePoolState().setVolunteerModel("major");
         state.getCandidatePoolState().setRequiredCount(48);
         TierQuotaGoalDTO quota = tierQuota(1, 1, 1);
-        TierQuotaSupport.persist(state, quota);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(quota);
         String[] tiers = {"冲刺", "safe", "保底"};
         for (int index = 0; index < tiers.length; index++) {
             CandidateItemDTO candidate = candidate("v-tier-" + index, "公办");
@@ -1048,6 +1087,58 @@ public class PendingPlanningCommandBizServiceTest {
         }
         FixProposalApplyRes result = new FixProposalApplyRes();
         result.setStatus("applied");
+        result.setState(state);
+        return result;
+    }
+
+    private PendingPlanningCommandReq rangePlanChangeReq(int sprintMaximum) {
+        PendingPlanningCommandReq req = planChangeReq(4);
+        req.getProposalApply().getUserGoalRequest().setPersistTargetCount(false);
+        TierQuotaGoalRequestDTO quota = new TierQuotaGoalRequestDTO();
+        quota.setType("count_ranges");
+        quota.setUpdateMode("replace");
+        TierCountRangeDTO sprint = new TierCountRangeDTO();
+        sprint.setMinCount(0);
+        sprint.setMaxCount(sprintMaximum);
+        quota.setSprint(sprint);
+        req.getProposalApply().getUserGoalRequest().setTierQuotaGoal(quota);
+        return req;
+    }
+
+    private FixProposalApplyRes planChangeApplyResultWithTierRange(int sprintMaximum) {
+        PlanningStateDTO state = state(16);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(48);
+        TierQuotaGoalRequestDTO requestGoal = rangePlanChangeReq(sprintMaximum)
+                .getProposalApply().getUserGoalRequest().getTierQuotaGoal();
+        TierAllocationSupport.CompiledTierAllocation compiled =
+                TierAllocationSupport.compile(new PlanningStateDTO(), requestGoal, 4);
+        TierAllocationSupport.persist(
+                state, compiled.getEffectiveSourceGoal(), compiled.getResolution());
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(4);
+        String[] tiers = {"冲", "稳", "稳", "保"};
+        for (int index = 0; index < tiers.length; index++) {
+            CandidateItemDTO candidate = candidate("v-range-" + index, "公办");
+            candidate.setTier(tiers[index]);
+            state.getCandidatePoolState().getItems().add(candidate);
+            OrderedItemDTO item = new OrderedItemDTO();
+            item.setVolunteerId(candidate.getVolunteerId());
+            item.setTier(tiers[index]);
+            state.getOrderedPlanState().getItems().add(item);
+        }
+        TierQuotaChangeDTO change = new TierQuotaChangeDTO();
+        change.setRequestedGoal(requestGoal);
+        change.setEffectiveGoal(compiled.getEffectiveSourceGoal());
+        change.setResolution(compiled.getResolution());
+        change.setStateChanged(true);
+        FixProposalDTO proposal = new FixProposalDTO();
+        proposal.setProposalId("ugp-fill");
+        proposal.setProposalSource("user_goal");
+        proposal.setStrategy("fill_missing_count");
+        proposal.setTierQuotaChange(change);
+        FixProposalApplyRes result = new FixProposalApplyRes();
+        result.setStatus("applied");
+        result.setProposal(proposal);
         result.setState(state);
         return result;
     }

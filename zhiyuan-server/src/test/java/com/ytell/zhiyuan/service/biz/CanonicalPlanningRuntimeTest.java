@@ -56,7 +56,7 @@ class CanonicalPlanningRuntimeTest {
         state.getWorkingPlanState().getItems().add(draft(stable, false));
         state.getConstraintState().getHardPlanningObjectives().getCoverageRequirements()
                 .add(requirement("major", "major", "法学", 1));
-        TierQuotaSupport.persist(state, quota(1, 1, 1));
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(quota(1, 1, 1));
 
         PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
                 state, state.getCandidatePoolState().getItems());
@@ -195,7 +195,7 @@ class CanonicalPlanningRuntimeTest {
         state.getCandidatePoolState().setItems(Arrays.asList(sprint, stable));
         state.getWorkingPlanState().getItems().add(draft(sprint, false));
         state.getWorkingPlanState().getItems().add(draft(stable, false));
-        TierQuotaSupport.persist(state, quota(1, 0, 0));
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(quota(1, 0, 0));
 
         BusinessException error = assertThrows(BusinessException.class,
                 () -> CanonicalPlanningRuntime.enforceSelection(

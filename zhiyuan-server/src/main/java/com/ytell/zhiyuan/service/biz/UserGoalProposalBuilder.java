@@ -93,27 +93,18 @@ final class UserGoalProposalBuilder {
 
     private static TierQuotaChangeDTO buildTierQuotaChange(PlanningStateDTO state,
                                                             TierQuotaGoalRequestDTO requested,
-                                                            Integer targetCount) {
+                                                            Integer targetCount,
+                                                            CanonicalPlanningObjectiveSetDTO objectiveSet) {
         TierAllocationSupport.CompiledTierAllocation compiled =
                 TierAllocationSupport.compile(state, requested, targetCount);
         TierQuotaChangeDTO result = new TierQuotaChangeDTO();
         result.setBeforeGoal(TierAllocationSupport.copyGoal(
                 TierAllocationSupport.confirmedGoal(state)));
-        result.setRequestedGoal(copyTierQuotaRequest(requested));
+        result.setRequestedGoal(TierAllocationSupport.copyRequest(compiled.getRequestedGoal()));
         result.setEffectiveGoal(TierAllocationSupport.copyGoal(compiled.getEffectiveSourceGoal()));
-        result.setResolution(TierAllocationSupport.copyResolution(compiled.getResolution()));
+        result.setResolution(TierAllocationSupport.copyResolution(
+                objectiveSet == null ? compiled.getResolution() : objectiveSet.getTierAllocationResolution()));
         result.setStateChanged(compiled.isStateChanged());
-        return result;
-    }
-
-    private static TierQuotaGoalRequestDTO copyTierQuotaRequest(TierQuotaGoalRequestDTO source) {
-        if (source == null) {
-            return null;
-        }
-        TierQuotaGoalDTO copied = TierAllocationSupport.copyGoal(source);
-        TierQuotaGoalRequestDTO result = new TierQuotaGoalRequestDTO();
-        BeanUtils.copyProperties(copied, result);
-        result.setUpdateMode(source.getUpdateMode());
         return result;
     }
 
@@ -146,7 +137,7 @@ final class UserGoalProposalBuilder {
         }
         String type = Strings.nullToEmpty(goal.getType()).trim().toLowerCase(Locale.ROOT);
         if (TierAllocationSupport.TYPE_EXACT_COUNTS.equals(type)) {
-            return "冲稳保精确配额：" + TierQuotaSupport.summarize(goal);
+            return "冲稳保精确配额：" + TierAllocationSupport.summarize(goal);
         }
         if (TierAllocationSupport.TYPE_RATIOS.equals(type)) {
             TierCountsDTO resolved = resolution == null ? null : resolution.getResolvedCounts();
@@ -158,6 +149,21 @@ final class UserGoalProposalBuilder {
         return "冲稳保数量范围：冲" + summarizeBound(goal.getSprint())
                 + "、稳" + summarizeBound(goal.getStable())
                 + "、保" + summarizeBound(goal.getProtect());
+    }
+
+    private static String tierAllocationLabel(TierQuotaGoalRequestDTO goal) {
+        String type = goal == null ? ""
+                : Strings.nullToEmpty(goal.getType()).trim().toLowerCase(Locale.ROOT);
+        if (TierAllocationSupport.TYPE_EXACT_COUNTS.equals(type)) {
+            return "冲稳保精确配额";
+        }
+        if (TierAllocationSupport.TYPE_COUNT_RANGES.equals(type)) {
+            return "冲稳保数量范围";
+        }
+        if (TierAllocationSupport.TYPE_RATIOS.equals(type)) {
+            return "冲稳保比例";
+        }
+        return "冲稳保硬目标";
     }
 
     private static String summarizeBound(TierCountRangeDTO bound) {
@@ -180,7 +186,8 @@ final class UserGoalProposalBuilder {
         if (req != null && req.getTierQuotaGoal() != null
                 && !RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(goalType)) {
             return buildScopeBlockedProposal(state, req, goalType, REASON_TIER_QUOTA_INVALID,
-                    "冲稳保精确配额只支持 fill_to_count 方案目标，不能附加到其他 Proposal。");
+                    tierAllocationLabel(req.getTierQuotaGoal())
+                            + "只支持 fill_to_count 方案目标，不能附加到其他 Proposal。");
         }
         if (RepairProposalTaxonomy.Strategy.ONLY_KEEP_SCOPE.equals(goalType)
                 || RepairProposalTaxonomy.Strategy.MUST_INCLUDE_SCOPE.equals(goalType)
@@ -226,7 +233,8 @@ final class UserGoalProposalBuilder {
                 || !defaultList(req.getPriorityRules()).isEmpty())) {
             return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
                     REASON_TIER_QUOTA_COMPOSITE_NOT_SUPPORTED,
-                    "冲稳保精确配额暂不能与本轮普通要求或优先排序规则混合执行。请先单独确认精确配额。");
+                    tierAllocationLabel(tierQuotaGoal)
+                            + "暂不能与本轮普通要求或优先排序规则混合执行。请先单独确认这项冲稳保硬目标。");
         }
         if (preserveCurrentCount && tierQuotaGoal == null
                 && (defaultList(req.getRequirements()).isEmpty()
@@ -282,10 +290,12 @@ final class UserGoalProposalBuilder {
                 RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
                 preserveCurrentCount
                         ? "保持当前 " + targetCount + (majorGroupMode ? " 个专业组" : " 个志愿")
-                        + (tierQuotaGoal == null ? "并落实覆盖数量的调整预览" : "并落实冲稳保精确配额的调整预览")
+                        + (tierQuotaGoal == null ? "并落实覆盖数量的调整预览"
+                        : "并落实" + tierAllocationLabel(tierQuotaGoal) + "的调整预览")
                         : "补齐到 " + targetCount + (majorGroupMode ? " 个专业组" : " 个志愿") + "的调整预览");
         if (hasTierQuota) {
-            proposal.setTierQuotaChange(buildTierQuotaChange(state, tierQuotaGoal, targetCount));
+            proposal.setTierQuotaChange(buildTierQuotaChange(
+                    state, tierQuotaGoal, targetCount, objectiveSet));
         }
         if (currentProjection.lockedViolation) {
             String message = "当前方案中有锁定项不满足本轮硬要求，不能在不解除锁定的情况下生成原子调整预览。";
@@ -427,7 +437,7 @@ final class UserGoalProposalBuilder {
                     : removeVolunteerIds.size() + " 个志愿"));
             removeAction.setDetail(selection.replacementCount() > 0
                     ? hasTierQuota
-                    ? "其中包含为满足冲稳保精确配额而进行的等量替换。"
+                    ? "其中包含为满足" + tierAllocationLabel(tierQuotaGoal) + "而进行的等量替换。"
                     : "其中包含为满足非排他覆盖要求而进行的等量替换。"
                     : "这些项目不满足本轮要求。");
             removeAction.setUnitIds(removeUnitIds);
@@ -443,7 +453,7 @@ final class UserGoalProposalBuilder {
             action.setSummary("从当前候选池补入 " + adjustedGap + (majorGroupMode ? " 个专业组" : " 个志愿"));
             action.setDetail(selection.replacementCount() > 0
                     ? "其中 " + selection.replacementCount() + " 个用于"
-                    + (hasTierQuota ? "冲稳保精确配额" : "覆盖要求")
+                    + (hasTierQuota ? tierAllocationLabel(tierQuotaGoal) : "覆盖要求")
                     + "的等量替换；最终数量精确达到 " + targetCount + "。"
                     : "补入后方案数量将从 " + retainedCount + " 精确达到 " + targetCount + "。");
             action.setUnitIds(selection.unitIds);
@@ -491,8 +501,17 @@ final class UserGoalProposalBuilder {
                     + "；本次将从符合已确认要求的候选中补入 " + gap + " 个，达到 " + targetCount + " 个。");
             proposal.setImpact("确认前不会改动方案；确认后只应用这份预览中的候选，并重新生成和审查方案。");
         } else if (removeCount == 0 && gap == 0) {
-            proposal.setSummary("当前方案项目不变；本轮要求：" + combinedObjectiveSummary
-                    + prioritySummary + "。确认后只保存冲稳保硬目标并刷新方案。");
+            if (hasTierQuota && !hasProjectedRequirements && !hasPriorityRule) {
+                proposal.setSummary("当前方案有 " + currentCount
+                        + (majorGroupMode ? " 个专业组" : " 个志愿")
+                        + "，方案项目不变；本轮要求：" + combinedObjectiveSummary
+                        + "。确认后只保存冲稳保硬目标并刷新方案。");
+            } else {
+                proposal.setSummary("当前方案有 " + currentCount
+                        + (majorGroupMode ? " 个专业组" : " 个志愿")
+                        + "，数量和集合已经满足目标；本轮要求：" + combinedObjectiveSummary
+                        + prioritySummary + "。确认后会采纳并刷新方案。");
+            }
             proposal.setImpact("确认前不会改动方案；确认后会在同一事务中持久化本轮要求、执行同档硬序并重新审查方案。");
         } else {
             String objectiveSummary = Strings.isNullOrEmpty(combinedObjectiveSummary)
@@ -509,7 +528,8 @@ final class UserGoalProposalBuilder {
                 removeUnitIds.size(), removeVolunteerIds.size(),
                 preserveCurrentCount
                         ? hasTierQuota
-                        ? "已生成保持方案总数的冲稳保精确配额调整预览，等待确认后执行。"
+                        ? "已生成保持方案总数的" + tierAllocationLabel(tierQuotaGoal)
+                        + "调整预览，等待确认后执行。"
                         : "已生成保持方案总数的覆盖调整预览，等待确认后执行。"
                         : "已生成精确补齐预览，等待确认后执行。");
         populateTierQuotaDryRun(proposal, current, majorGroupMode, selection.solverResult);
@@ -2612,7 +2632,7 @@ final class UserGoalProposalBuilder {
 
         private boolean matchesTier(String expectedTier) {
             return candidates.stream().anyMatch(candidate -> expectedTier.equals(
-                    TierQuotaSupport.canonicalTierKey(candidate.getTier())));
+                    TierAllocationSupport.canonicalTierKey(candidate.getTier())));
         }
 
         private String entityId(boolean unitMode) {

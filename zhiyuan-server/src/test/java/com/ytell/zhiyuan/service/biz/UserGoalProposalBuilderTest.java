@@ -1162,17 +1162,59 @@ public class UserGoalProposalBuilderTest {
     @Test
     void shouldCreateReadyProposalWhenNewMaximumNeedsOnlyPersistence() {
         PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+        UserGoalFixProposalReq request = fillWithSprintRange("patch", 0, 2);
+        request.setPersistTargetCount(false);
 
         FixProposalDTO proposal = UserGoalProposalBuilder.build(
-                state, fillWithSprintRange("patch", null, 2)).getProposals().get(0);
+                state, request).getProposals().get(0);
 
         assertEquals("ready", proposal.getStatus());
         assertTrue(proposal.getActions().isEmpty());
         assertEquals("no_change", proposal.getSolverResult().getStatus());
         assertTrue(proposal.getTierQuotaChange().getStateChanged());
+        assertTrue(proposal.getSummary().contains("当前方案有 4 个志愿"), proposal.getSummary());
         assertTrue(proposal.getSummary().contains("方案项目不变"));
+        assertTrue(proposal.getTitle().contains("冲稳保数量范围"));
+        assertTrue(proposal.getSummary().contains("冲稳保数量范围"));
+        assertTrue(proposal.getDryRunResult().getMessage().contains("冲稳保数量范围"));
+        assertFalse(proposal.getTitle().contains("精确配额"));
+        assertFalse(proposal.getDryRunResult().getMessage().contains("精确配额"));
         assertEquals(Integer.valueOf(1), proposal.getDryRunResult()
                 .getAfterVolunteerTierCounts().get("冲"));
+        assertEquals(null, proposal.getTierQuotaChange().getRequestedGoal()
+                .getSprint().getMinCount());
+        assertEquals(Integer.valueOf(2), proposal.getTierQuotaChange().getRequestedGoal()
+                .getSprint().getMaxCount());
+    }
+
+    @Test
+    void shouldExposeOnlyChangedBoundsWhenModelRepeatsHistoricalRangePatch() {
+        PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(
+                rangeGoal(bound(0, 2), bound(1, 3), bound(0, 4)));
+        UserGoalFixProposalReq request = fillRequest(4);
+        request.setPersistTargetCount(false);
+        TierQuotaGoalRequestDTO requested = new TierQuotaGoalRequestDTO();
+        requested.setType("count_ranges");
+        requested.setUpdateMode("patch");
+        requested.setSprint(bound(0, 1));
+        requested.setStable(bound(1, 3));
+        requested.setProtect(bound(0, 4));
+        request.setTierQuotaGoal(requested);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(
+                state, request).getProposals().get(0);
+
+        TierQuotaGoalRequestDTO delta = proposal.getTierQuotaChange().getRequestedGoal();
+        assertEquals("patch", delta.getUpdateMode());
+        assertEquals(Integer.valueOf(1), delta.getSprint().getMaxCount());
+        assertEquals(null, delta.getSprint().getMinCount());
+        assertEquals(null, delta.getStable());
+        assertEquals(null, delta.getProtect());
+        assertEquals(Integer.valueOf(0), proposal.getTierQuotaChange()
+                .getEffectiveGoal().getSprint().getMinCount());
+        assertEquals(Integer.valueOf(3), proposal.getTierQuotaChange()
+                .getEffectiveGoal().getStable().getMaxCount());
     }
 
     @Test
@@ -1210,6 +1252,7 @@ public class UserGoalProposalBuilderTest {
     void shouldExposeSubmittedCanonicalAndResolvedRatioValues() {
         PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
         UserGoalFixProposalReq request = fillRequest(4);
+        request.setPersistTargetCount(false);
         request.setTierQuotaGoal(ratio(30, 40, 30));
 
         FixProposalDTO proposal = UserGoalProposalBuilder.build(state, request).getProposals().get(0);
@@ -1222,6 +1265,28 @@ public class UserGoalProposalBuilderTest {
                 .getResolution().getCanonicalWeights().getSprintWeight());
         assertEquals(Integer.valueOf(2), proposal.getTierQuotaChange()
                 .getResolution().getResolvedCounts().getStableCount());
+        assertTrue(proposal.getTitle().contains("冲稳保比例"));
+        assertTrue(proposal.getSummary().contains("冲稳保比例"));
+        assertTrue(proposal.getDryRunResult().getMessage().contains("冲稳保比例"));
+        assertFalse(proposal.getTitle().contains("精确配额"));
+        assertFalse(proposal.getDryRunResult().getMessage().contains("精确配额"));
+    }
+
+    @Test
+    void shouldDescribeRangeCompositeGuardWithoutCallingItExactQuota() {
+        PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+        UserGoalFixProposalReq request = fillWithSprintRange("patch", null, 2);
+        request.getRequirements().add(
+                requirement("exclude", "school", "school_nature", "民办"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, request)
+                .getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("tier_quota_composite_not_supported",
+                proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getBlockingReason().contains("冲稳保数量范围"));
+        assertFalse(proposal.getBlockingReason().contains("精确配额"));
     }
 
     @Test
