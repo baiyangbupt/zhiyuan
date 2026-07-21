@@ -922,21 +922,33 @@ def _resolve_json_path(value: Any, path: str) -> Any:
         return value
     if text.startswith("$."):
         text = text[2:]
-    current: Any = value
-    for part in [item for item in text.split(".") if item]:
+    parts = [item for item in text.split(".") if item]
+
+    def resolve(current: Any, remaining: list[str]) -> Any:
+        if not remaining:
+            return current
+        part = remaining[0]
+        tail = remaining[1:]
         if isinstance(current, dict):
             if part not in current:
                 return _JSON_PATH_MISSING
-            current = current.get(part)
-            continue
+            return resolve(current.get(part), tail)
+        if isinstance(current, list) and part == "*":
+            projected: list[Any] = []
+            for item in current:
+                resolved = resolve(item, tail)
+                if resolved is _JSON_PATH_MISSING:
+                    return _JSON_PATH_MISSING
+                projected.append(resolved)
+            return projected
         if isinstance(current, list) and part.isdigit():
             index = int(part)
             if index < 0 or index >= len(current):
                 return _JSON_PATH_MISSING
-            current = current[index]
-            continue
+            return resolve(current[index], tail)
         return _JSON_PATH_MISSING
-    return current
+
+    return resolve(value, parts)
 
 
 def _json_value_contains(actual: Any, expected: Any) -> bool:

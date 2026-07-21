@@ -1,0 +1,525 @@
+{
+  "metadata": {
+    "release": "4.1.0-m2",
+    "expectedCaseCount": 8,
+    "expectedStepCount": 21,
+    "purpose": "Verify range and ratio tier goals through one Proposal, one pending command, authoritative persistence and typed postconditions.",
+    "notes": "Every case clones the same formal-plan source into an isolated session. Range and ratio requests remain hard requirements; M3 composites stay closed."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_1_0_m2",
+      "preview_plan_change",
+      "apply_plan_change_proposal",
+      "tier_allocation_postcondition"
+    ],
+    "coverage": [
+      "range_patch_replace",
+      "ratio_resolution",
+      "historical_goal",
+      "single_proposal_pending_command",
+      "no_partial_persistence"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "16",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "action_family",
+        "volunteerId",
+        "软偏好",
+        "草稿"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "410-m2-range-max-satisfied-persists-without-plan-churn",
+      "sessionId": "9914201",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": ["orderedPlan", "formalPlan"]
+      },
+      "prompts": [
+        {
+          "prompt": "当前45个专业组总数不变，只追加一个硬要求：冲刺档最多45个，按数量范围 patch 处理，先看预览",
+          "assertContains": ["45"],
+          "assertContainsAny": ["冲刺", "冲最多", "冲上限", "冲0-45", "冲稳保数量范围"],
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {"key": "pendingConfirmation", "path": "status", "equals": "active"},
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.plan_change_spec.tier_quota_goal",
+              "equals": {
+                "type": "count_ranges",
+                "update_mode": "patch",
+                "sprint": {"max_count": 45}
+              }
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.proposal_snapshot.status",
+              "equals": "ready"
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.proposal_snapshot.dry_run.addUnitCount",
+              "equals": 0
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.proposal_snapshot.dry_run.removeUnitCount",
+              "equals": 0
+            }
+          ]
+        },
+        {
+          "prompt": "确认执行",
+          "assertContains": ["冲稳保数量范围", "校验通过"],
+          "assertNoFollowups": true,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {"key": "pendingConfirmation", "path": "status", "equals": "applied"},
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.appliedActionCount",
+              "equals": 0
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.tierQuotaResult.satisfied",
+              "equals": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.tierQuotaGoal",
+              "contains": {"type": "count_ranges", "sprint": {"maxCount": 45}}
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units.*.unitId",
+              "unchangedFromBefore": true
+            },
+            {"key": "planningState", "path": "version", "greaterThanBefore": true}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "410-m2-range-max-violated-rebalances-plan",
+      "sessionId": "9914202",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": ["orderedPlan", "formalPlan"]
+      },
+      "prompts": [
+        {
+          "prompt": "45个专业组总数保持不变，把冲刺档上限设为0个，按数量范围 patch 更新，先给我预览",
+          "assertContainsAny": ["冲刺", "上限", "0"],
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {"key": "pendingConfirmation", "path": "status", "equals": "active"},
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.proposal_snapshot.tier_quota_change.effectiveGoal",
+              "contains": {"type": "count_ranges", "sprint": {"maxCount": 0}}
+            }
+          ]
+        },
+        {
+          "prompt": "确认执行",
+          "assertContains": ["冲稳保数量范围", "校验通过"],
+          "assertNoFollowups": true,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {"key": "pendingConfirmation", "path": "status", "equals": "applied"},
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.tierQuotaResult.actualSprintCount",
+              "equals": 0
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.tierQuotaResult.planSatisfied",
+              "equals": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.tierQuotaGoal",
+              "contains": {"type": "count_ranges", "sprint": {"maxCount": 0}}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "410-m2-range-patch-preserves-historical-bounds",
+      "sessionId": "9914203",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": ["orderedPlan", "formalPlan"]
+      },
+      "prompts": [
+        {
+          "prompt": "45个专业组不变，把冲稳保数量范围整体替换为：冲5到12、稳15到20、保18到25，先看预览",
+          "assertContainsAny": ["5", "12", "15", "20", "18", "25"],
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContains": ["冲稳保数量范围", "校验通过"],
+          "assertNoFollowups": true,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.tierQuotaGoal",
+              "contains": {
+                "type": "count_ranges",
+                "sprint": {"minCount": 5, "maxCount": 12},
+                "stable": {"minCount": 15, "maxCount": 20},
+                "protect": {"minCount": 18, "maxCount": 25}
+              }
+            }
+          ]
+        },
+        {
+          "prompt": "在刚才已确认的范围上，只把冲刺上限改成10，其他上下限全部保留，按 patch 先看预览",
+          "assertContainsAny": ["冲刺", "10", "保留"],
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.plan_change_spec.tier_quota_goal",
+              "equals": {
+                "type": "count_ranges",
+                "update_mode": "patch",
+                "sprint": {"max_count": 10}
+              }
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.proposal_snapshot.tier_quota_change.effectiveGoal",
+              "contains": {
+                "type": "count_ranges",
+                "sprint": {"minCount": 5, "maxCount": 10},
+                "stable": {"minCount": 15, "maxCount": 20},
+                "protect": {"minCount": 18, "maxCount": 25}
+              }
+            }
+          ]
+        },
+        {
+          "prompt": "确认执行",
+          "assertContains": ["冲稳保数量范围", "校验通过"],
+          "assertNoFollowups": true,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.tierQuotaGoal",
+              "contains": {
+                "type": "count_ranges",
+                "sprint": {"minCount": 5, "maxCount": 10},
+                "stable": {"minCount": 15, "maxCount": 20},
+                "protect": {"minCount": 18, "maxCount": 25}
+              }
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.tierQuotaResult.persisted",
+              "equals": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "410-m2-cross-type-patch-blocked-without-new-pending",
+      "sessionId": "9914204",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": ["orderedPlan", "formalPlan"]
+      },
+      "prompts": [
+        {
+          "prompt": "这45个专业组按冲9、稳17、保19精确替换，先看预览",
+          "assertContainsAny": ["冲9", "稳17", "保19"],
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContains": ["冲稳保精确配额", "校验通过"],
+          "assertNoFollowups": true,
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "在刚才精确数量目标上，按 patch 只加一个冲刺最多10个的范围，先看预览",
+          "assertContainsAny": ["类型", "replace", "替换", "不能"],
+          "assertNoFollowups": true,
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {"key": "pendingConfirmation", "path": "status", "equals": "applied"},
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.tierQuotaGoal",
+              "contains": {
+                "type": "exact_counts",
+                "sprintCount": 9,
+                "stableCount": 17,
+                "protectCount": 19
+              }
+            },
+            {"key": "planningState", "path": "version", "unchangedFromBefore": true}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "410-m2-ratio-persists-source-and-canonical-resolution",
+      "sessionId": "9914205",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": ["orderedPlan", "formalPlan"]
+      },
+      "prompts": [
+        {
+          "prompt": "当前45个专业组总数不变，把冲稳保比例整体替换为30:40:30，先看预览",
+          "assertContainsAny": ["30:40:30", "14", "18", "13", "比例"],
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.proposal_apply.userGoalRequest.tierQuotaGoal",
+              "contains": {
+                "type": "ratios",
+                "updateMode": "replace",
+                "sprintWeight": 30,
+                "stableWeight": 40,
+                "protectWeight": 30
+              }
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.proposal_snapshot.tier_quota_change.resolution.canonicalWeights",
+              "equals": {"sprintWeight": 3, "stableWeight": 4, "protectWeight": 3}
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.proposal_snapshot.tier_quota_change.resolution.resolvedCounts",
+              "equals": {"sprintCount": 14, "stableCount": 18, "protectCount": 13}
+            }
+          ]
+        },
+        {
+          "prompt": "确认执行",
+          "assertContains": ["冲稳保比例", "校验通过"],
+          "assertNoFollowups": true,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {"key": "pendingConfirmation", "path": "status", "equals": "applied"},
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.tierQuotaGoal",
+              "contains": {
+                "type": "ratios",
+                "sprintWeight": 30,
+                "stableWeight": 40,
+                "protectWeight": 30
+              }
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.tierQuotaResolution.canonicalWeights",
+              "equals": {"sprintWeight": 3, "stableWeight": 4, "protectWeight": 3}
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.tierQuotaResult.actualCounts",
+              "equals": {"sprintCount": 14, "stableCount": 18, "protectCount": 13}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "410-m2-confirmed-ratio-reresolves-for-new-target",
+      "sessionId": "9914206",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": ["orderedPlan", "formalPlan"]
+      },
+      "prompts": [
+        {
+          "prompt": "当前45个专业组按冲稳保3:4:3比例整体替换，先看预览",
+          "assertContainsAny": ["3:4:3", "比例"],
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContains": ["冲稳保比例", "校验通过"],
+          "assertNoFollowups": true,
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "把方案补齐到50个，已确认的3:4:3冲稳保比例继续作为硬要求，先看一个新预览",
+          "assertContainsAny": ["50", "15", "20", "比例"],
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {"key": "pendingConfirmation", "path": "status", "equals": "active"},
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.plan_change_spec.selection_goal.target_count",
+              "equals": 50
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "executionPayload.proposal_snapshot.tier_quota_change.resolution.resolvedCounts",
+              "equals": {"sprintCount": 15, "stableCount": 20, "protectCount": 15}
+            }
+          ]
+        },
+        {
+          "prompt": "确认执行",
+          "assertContains": ["50个专业组", "冲稳保比例", "校验通过"],
+          "assertNoFollowups": true,
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthEquals": 50
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.tierQuotaResolution.resolvedCounts",
+              "equals": {"sprintCount": 15, "stableCount": 20, "protectCount": 15}
+            },
+            {
+              "key": "pendingConfirmation",
+              "path": "resultData.postcondition_report.satisfied",
+              "equals": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "410-m2-semantic-ratio-repeat-is-no-change",
+      "sessionId": "9914207",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": ["orderedPlan", "formalPlan"]
+      },
+      "prompts": [
+        {
+          "prompt": "当前45个专业组按冲稳保30:40:30比例整体替换，先看预览",
+          "assertContainsAny": ["30:40:30", "比例"],
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "确认执行",
+          "assertContains": ["冲稳保比例", "校验通过"],
+          "assertNoFollowups": true,
+          "maxToolCallCount": 1
+        },
+        {
+          "prompt": "还是按等价的3:4:3比例整体替换，先检查是否需要改动",
+          "assertContainsAny": ["已经满足", "无需", "不需要", "一致"],
+          "assertNoFollowups": true,
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {"key": "pendingConfirmation", "path": "status", "equals": "applied"},
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives.tierQuotaGoal",
+              "contains": {
+                "type": "ratios",
+                "sprintWeight": 30,
+                "stableWeight": 40,
+                "protectWeight": 30
+              }
+            },
+            {"key": "planningState", "path": "version", "unchangedFromBefore": true}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "410-m2-range-min-total-infeasible-blocks-without-persistence",
+      "sessionId": "9914208",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "requiredState": ["orderedPlan", "formalPlan"]
+      },
+      "prompts": [
+        {
+          "prompt": "45个专业组总数不变，把原有冲稳保数量范围整体替换为冲至少30个、稳至少10个、保至少10个，先看预览",
+          "assertContainsAny": ["超过", "不能", "最低", "总数"],
+          "assertNoFollowups": true,
+          "expectedToolNames": ["preview_plan_change"],
+          "expectedToolCounts": {"preview_plan_change": 1},
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {"key": "pendingConfirmation", "path": "status", "isEmpty": true},
+            {
+              "key": "planningState",
+              "path": "constraintState.hardPlanningObjectives",
+              "unchangedFromBefore": true
+            },
+            {"key": "planningState", "path": "version", "unchangedFromBefore": true}
+          ]
+        }
+      ]
+    }
+  ]
+}

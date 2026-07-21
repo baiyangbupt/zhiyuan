@@ -391,6 +391,37 @@ def test_backend_extra_data_assertions_compare_after_with_before():
     )[0]
 
 
+def test_backend_extra_data_assertions_compare_projected_list_field_sequence():
+    before = {
+        "orderedPlanState": {
+            "units": [
+                {"unitId": "u1", "refreshedLabel": "before-a"},
+                {"unitId": "u2", "refreshedLabel": "before-b"},
+            ]
+        }
+    }
+    after = {
+        "orderedPlanState": {
+            "units": [
+                {"unitId": "u1", "refreshedLabel": "after-a"},
+                {"unitId": "u2", "refreshedLabel": "after-b"},
+            ]
+        }
+    }
+
+    assert runner._resolve_json_path(
+        after, "orderedPlanState.units.*.unitId"
+    ) == ["u1", "u2"]
+    assert runner._check_single_backend_assertion(
+        {
+            "path": "orderedPlanState.units.*.unitId",
+            "unchangedFromBefore": True,
+        },
+        actual_root=after,
+        before_root=before,
+    )[0]
+
+
 def test_backend_extra_data_assertions_support_nested_numeric_field_max():
     state = {
         "orderedPlanState": {

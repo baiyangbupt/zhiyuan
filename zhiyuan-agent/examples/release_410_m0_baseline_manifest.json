@@ -1,0 +1,209 @@
+{
+  "schemaVersion": "4.1.0-m0-baseline-v1",
+  "capturedAt": "2026-07-18",
+  "releaseBaseline": "4.0.0-v2.77",
+  "productionBehaviorChanged": false,
+  "finalActionGate": {
+    "expectedFileCount": 24,
+    "expectedStepCount": 178,
+    "lastFullResult": {"passed": 178, "failed": 0, "warnings": 0},
+    "metricsDirectory": "/private/tmp/zhiyuan_410_m0_final_action_gate_clean_13",
+    "caseFiles": {
+      "dialog_regression_400_direct_confirm_execution_cases.json": 4,
+      "dialog_regression_400_g1_g32_direct_cases.json": 23,
+      "dialog_regression_400_realistic_user_cases.json": 14,
+      "dialog_regression_400_v143_constraint_apply_cases.json": 2,
+      "dialog_regression_400_v150_candidate_view_cases.json": 2,
+      "dialog_regression_400_v151_attribute_final_action_cases.json": 8,
+      "dialog_regression_400_v153_major_final_action_cases.json": 2,
+      "dialog_regression_400_v154_tag_final_action_cases.json": 4,
+      "dialog_regression_400_v155_realistic_final_action_cases.json": 7,
+      "dialog_regression_400_v156_realistic_broadened_final_action_cases.json": 10,
+      "dialog_regression_400_v157_realistic_cancel_combo_cases.json": 11,
+      "dialog_regression_400_v158_pending_combo_negation_cases.json": 9,
+      "dialog_regression_400_v173_action_expansion_final_cases.json": 11,
+      "dialog_regression_400_v179_pending_replace_review_quality_cases.json": 10,
+      "dialog_regression_400_v183_realistic_followup_quality_cases.json": 13,
+      "dialog_regression_400_v211_region_area_final_cases.json": 2,
+      "dialog_regression_400_v212_region_area_expanded_final_cases.json": 10,
+      "dialog_regression_400_v213_region_area_quality_final_cases.json": 10,
+      "dialog_regression_400_v216_region_remote_final_cases.json": 2,
+      "dialog_regression_400_fill_to_count_cases.json": 11,
+      "dialog_regression_400_coverage_preserve_cases.json": 3,
+      "dialog_regression_400_priority_rules_cases.json": 4,
+      "dialog_regression_400_tier_minimum_cases.json": 3,
+      "dialog_regression_400_tier_quota_cases.json": 3
+    }
+  },
+  "liveGate": {
+    "expectedFileCount": 13,
+    "expectedStepCount": 231,
+    "lastFullResult": {"passed": 227, "failed": 4},
+    "focusedRetest": {"passed": 4, "failed": 0},
+    "metricsDirectory": "/private/tmp/zhiyuan_400_v277_full_live_gate",
+    "caseFiles": {
+      "dialog_regression_400_agent_smoke_cases.json": 6,
+      "dialog_regression_400_plan_operation_cases.json": 8,
+      "dialog_regression_400_explore_intent_cases.json": 22,
+      "dialog_regression_400_readonly_real_session_cases.json": 2,
+      "dialog_regression_400_core_effect_perf_cases.json": 11,
+      "dialog_regression_400_effect_perf_cases.json": 16,
+      "dialog_regression_400_open_quality_cases.json": 23,
+      "dialog_regression_400_quality_realistic_user_cases.json": 9,
+      "dialog_regression_400_dialogue_derived_cases.json": 88,
+      "dialog_regression_400_career_direction_cases.json": 4,
+      "dialog_regression_400_review_repair_cases.json": 10,
+      "dialog_regression_400_production_abstracted_cases.json": 22,
+      "dialog_regression_400_requirement_plan_action_cases.json": 10
+    }
+  },
+  "automationBaseline": {
+    "python": {"passed": 1719, "skipped": 42},
+    "maven": {"tests": 593, "failures": 0, "errors": 0, "skipped": 4},
+    "exampleJsonFileCount": 44
+  },
+  "m0Validation": {
+    "status": "completed",
+    "completedAt": "2026-07-18",
+    "python": {"passed": 1733, "skipped": 42, "durationSeconds": 4.60},
+    "maven": {"tests": 595, "failures": 0, "errors": 0, "skipped": 4, "durationSeconds": 20.195},
+    "exampleJsonFileCount": 46,
+    "solverFixtureJsonFileCount": 1,
+    "validatedJsonFileCount": 47,
+    "transportHardening": {
+      "status": "implemented",
+      "connectTimeoutSeconds": 15,
+      "providers": ["openai", "openai_compatible"],
+      "anthropicChanged": false,
+      "wholeTurnRetryAdded": false,
+      "businessTimeoutsChanged": false
+    },
+    "finalAction": {
+      "status": "passed",
+      "completeRun": {
+        "metricsDirectory": "/private/tmp/zhiyuan_410_m0_final_action_gate_clean_13",
+        "files": 24,
+        "passedSteps": 178,
+        "totalSteps": 178,
+        "failedSteps": 0,
+        "warnings": 0,
+        "failures": 0,
+        "greenFiles": 24,
+        "manifestMatched": true
+      },
+      "precedingDiagnosticRun": {
+        "metricsDirectory": "/private/tmp/zhiyuan_410_m0_final_action_gate_clean_12",
+        "metricsRetained": false,
+        "files": 24,
+        "passedSteps": 177,
+        "totalSteps": 178,
+        "failedSteps": 1,
+        "warnings": 0,
+        "rootCause": "the first model changed the explicit protect count from 18 to 19 before calling the typed tool"
+      },
+      "focusedDiagnostic": {
+        "metricsFiles": [
+          "/private/tmp/zhiyuan_410_m0_clean_12_tier_mismatch_postfailure_probe_1.json",
+          "/private/tmp/zhiyuan_410_m0_clean_12_tier_mismatch_postfailure_probe_2.json",
+          "/private/tmp/zhiyuan_410_m0_clean_12_tier_mismatch_postfailure_probe_3.json"
+        ],
+        "passedSteps": 3,
+        "totalSteps": 3,
+        "countedTowardCompleteRun": false,
+        "metricsRetained": false
+      },
+      "exitCondition": "run all 24 packages once with 178/178 before M1 starts",
+      "exitConditionMet": true
+    },
+    "cleanup": {
+      "status": "completed",
+      "mysqlDeleted": {
+        "command": 52,
+        "pending": 79,
+        "extra": 287,
+        "message": 2121,
+        "behavior": 704,
+        "freshness": 94,
+        "integration": 0,
+        "session": 94
+      },
+      "sqliteDeleted": 99,
+      "volunteerFilesDeleted": 247,
+      "volunteerFileSessions": 94,
+      "supersededMetricPathsDeleted": 48,
+      "retainedMetricsDirectory": "/private/tmp/zhiyuan_410_m0_final_action_gate_clean_13",
+      "retainedMetricsFiles": 24,
+      "purgedSealedBinlogs": 33,
+      "activeBinlog": "binlog.000548",
+      "activeBinlogBytes": 198,
+      "freeDiskBeforeGiB": 22,
+      "freeDiskAfterGiB": 58,
+      "testStateVerifiedZero": true,
+      "isolatedServicesStopped": true
+    }
+  },
+  "trackedLargeFixtureSources": [
+    {
+      "path": "../zhiyuan-server/data/tmp/session_volunteer_16.json",
+      "bytes": 18014250,
+      "sha256": "402ac20159d583eb261288ef26c06550fb8667840e5f8548604913d3132945b8"
+    },
+    {
+      "path": "../zhiyuan-server/data/tmp/session_volunteer_16_temp.json",
+      "bytes": 6519240,
+      "sha256": "0a59477858505ad01c50c093f3d996eeb79ae6b968720b3ae80efe1469edba46"
+    }
+  ],
+  "solverAdr": {
+    "decision": "ojalgo-48.4.2-pure-java-mip",
+    "dependencyScope": "test",
+    "productionRuntimeEnabled": false,
+    "legacyCoverageDp": {
+      "case": "joint-400-candidates-16-constraints",
+      "status": "state_limit",
+      "jointConstraintsRepresented": false
+    },
+    "candidateResults": [
+      {
+        "case": "joint-400-candidates-16-constraints",
+        "state": "OPTIMAL",
+        "candidateCount": 400,
+        "constraintCount": 20,
+        "selectedCount": 48,
+        "churnCount": 6,
+        "firstRunDurationMs": 298.0,
+        "repeatCount": 3,
+        "selectionDigest": "698bc6658c8cfd5da4fffdfefa02c95861e3c5237c574e9ea4d2d751f757421b"
+      },
+      {
+        "case": "joint-120-candidates-8-constraints",
+        "state": "OPTIMAL",
+        "candidateCount": 120,
+        "constraintCount": 12,
+        "selectedCount": 30,
+        "churnCount": 2,
+        "firstRunDurationMs": 13.06,
+        "repeatCount": 3,
+        "selectionDigest": "1492e02be6eb9a8c9060b74995ac48120726d23691bed73688c7c49a57479794"
+      },
+      {
+        "case": "pinned-sprint-exceeds-maximum",
+        "state": "INFEASIBLE",
+        "candidateCount": 120,
+        "constraintCount": 12,
+        "firstRunDurationMs": 3.1
+      }
+    ],
+    "rejectedForM1": {
+      "coverageDp": "cannot represent joint constraints and hit the 20000-state limit",
+      "ortools-9.8.3296": "requires five platform native runtime jars plus JNA/protobuf for the current Maven dependency"
+    }
+  },
+  "m0ContractArtifacts": [
+    "examples/plan_change_spec_410_contract.py",
+    "examples/plan_change_spec_410_golden.json",
+    "tests/unit/test_release_410_m0_contract.py",
+    "../zhiyuan-server/src/test/resources/release-4.1.0/plan-solver-adr-cases.json",
+    "../zhiyuan-server/src/test/java/com/ytell/zhiyuan/service/biz/PlanSolver410AdrBenchmarkTest.java"
+  ]
+}

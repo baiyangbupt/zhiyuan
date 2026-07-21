@@ -73,6 +73,8 @@ _COMPOSABLE_READONLY_TOOLS = {
 }
 
 _FIRST_TOOL_RETRY_FLAG = "firstModelToolCallRetryRequired"
+_TIER_COMPOSITE_RETRY_FLAG = "tierQuotaCompositeRetryRequired"
+_TIER_TARGET_SOURCE_RETRY_FLAG = "tierQuotaTargetSourceRetryRequired"
 
 
 def _is_casual_only_user_text(value: Any) -> bool:
@@ -86,6 +88,83 @@ def _first_tool_requirement_active(ctx: RunContext[RequestContext]) -> bool:
     observability = getattr(ctx.deps, "agent_observability", None)
     retry_required = isinstance(observability, dict) and observability.get(_FIRST_TOOL_RETRY_FLAG) is True
     return ctx.run_step == 1 or retry_required
+
+
+def _replace_call_has_old_item_locator(tool_args: dict[str, Any]) -> bool:
+    targets = tool_args.get("targets")
+    if isinstance(targets, (list, tuple)) and any(str(value or "").strip() for value in targets):
+        return True
+    if str(tool_args.get("review_issue_code") or "").strip():
+        return True
+    filters = tool_args.get("filters")
+    if not isinstance(filters, dict):
+        return False
+    candidate_only_keys = {
+        "candidates",
+        "candidate_targets",
+        "candidateTargets",
+        "replacement_spec",
+        "replacementSpec",
+    }
+    return any(
+        key not in candidate_only_keys and value not in (None, "", [], {})
+        for key, value in filters.items()
+    )
+
+
+def _preview_plan_change_retry_issue(
+    ctx: RunContext[RequestContext],
+    tool_args: dict[str, Any],
+) -> tuple[str, dict[str, Any]] | None:
+    spec = tool_args.get("spec")
+    if not isinstance(spec, dict):
+        return None
+    tier_goal = spec.get("tier_quota_goal")
+    if not isinstance(tier_goal, dict) or not tier_goal:
+        return None
+
+    companion_fields = [
+        key
+        for key in ("requirements", "priority_rules", "repair_goal")
+        if spec.get(key) not in (None, [], {})
+    ]
+    if companion_fields:
+        return _TIER_COMPOSITE_RETRY_FLAG, {
+            "reason": "tier_quota_composite_requires_recheck",
+            "invalid_companion_fields": companion_fields,
+            "instruction": (
+                "Re-check the original user request before calling preview_plan_change again. "
+                "Never derive requirements, priority_rules, repair_goal, or selection_goal from tier "
+                "weights or bounds. Remove only fields the user did not explicitly request. If the user "
+                "explicitly requested the composite, keep every explicit field so the tool can fail closed."
+            ),
+        }
+
+    selection_goal = spec.get("selection_goal")
+    if not isinstance(selection_goal, dict) or selection_goal.get("target_count") is not None:
+        return None
+    if str(selection_goal.get("type") or "").strip() != "fill_to_count":
+        return None
+    summary = getattr(ctx.deps, "planning_summary", None)
+    current_total = int(getattr(summary, "ordered_total", 0) or 0)
+    saved_target = int(
+        getattr(summary, "ordered_target_total", 0)
+        or getattr(summary, "candidate_target_total", 0)
+        or 0
+    )
+    if current_total <= 0 or saved_target <= 0 or saved_target == current_total:
+        return None
+    return _TIER_TARGET_SOURCE_RETRY_FLAG, {
+        "reason": "tier_quota_target_source_ambiguous",
+        "current_plan_total": current_total,
+        "saved_planning_target": saved_target,
+        "instruction": (
+            "selection_goal without target_count means fill to the saved planning target, which differs "
+            "from the current plan total. Re-check the original request. Omit "
+            "selection_goal when preserving the current total; keep it only for an explicit fill request, "
+            "and never convert user-supplied ratios or ranges into exact counts."
+        ),
+    }
 
 
 async def _require_first_model_tool_call(
@@ -109,14 +188,94 @@ async def _require_first_model_tool_call(
 async def _reject_first_model_text_response(
     ctx: RunContext[RequestContext],
     *,
-    request_context: ModelRequestContext,  # noqa: ARG001
+    request_context: ModelRequestContext,
     response: ModelResponse,
 ) -> ModelResponse:
+    observability = getattr(ctx.deps, "agent_observability", None)
+    tool_calls = [part for part in response.parts if isinstance(part, ToolCallPart)]
+    for tool_call in tool_calls:
+        if tool_call.tool_name != "preview_plan_action":
+            continue
+        try:
+            tool_args = tool_call.args_as_dict(raise_if_invalid=True)
+        except (TypeError, ValueError):
+            continue
+        if str(tool_args.get("action") or "").strip().lower() != "replace":
+            continue
+        if _replace_call_has_old_item_locator(tool_args):
+            continue
+        if isinstance(observability, dict):
+            observability[_FIRST_TOOL_RETRY_FLAG] = True
+            observability["invalidPlanActionLocatorRejected"] = True
+        response.parts = []
+        raise ModelRetry(
+            "Call preview_plan_action again with action='replace' and include an old-plan item locator in "
+            "targets, filters, or review_issue_code. Candidate targets and replacement_spec do not locate "
+            "the old item; preserve replacement_spec when the user gave a replacement direction."
+        )
     if not _first_tool_requirement_active(ctx):
         return response
-    tool_names = [part.tool_name for part in response.parts if isinstance(part, ToolCallPart)]
-    observability = getattr(ctx.deps, "agent_observability", None)
+    tool_names = [part.tool_name for part in tool_calls]
     if len(tool_names) == 1:
+        tool_call = tool_calls[0]
+        try:
+            tool_args = tool_call.args_as_dict(raise_if_invalid=True)
+        except (TypeError, ValueError):
+            if isinstance(observability, dict):
+                observability[_FIRST_TOOL_RETRY_FLAG] = True
+                observability["firstModelInvalidToolArgumentsRejected"] = True
+                observability["firstModelRejectedToolNames"] = list(tool_names)
+            response.parts = []
+            raise ModelRetry(
+                "Call the same tool again with one complete, valid JSON object. Use JSON literals such as "
+                "true, false, and null, and close every object and array."
+            )
+        tool_def = next(
+            (
+                item
+                for item in request_context.model_request_parameters.function_tools
+                if item.name == tool_call.tool_name
+            ),
+            None,
+        )
+        required = (tool_def.parameters_json_schema.get("required") or []) if tool_def else []
+        if "semantic_requirements" in required:
+            semantic_requirements = tool_args.get("semantic_requirements")
+            if not isinstance(semantic_requirements, list) or not semantic_requirements:
+                if isinstance(observability, dict):
+                    observability[_FIRST_TOOL_RETRY_FLAG] = True
+                    observability["missingRequiredSemanticRequirementsRejected"] = True
+                response.parts = []
+                raise ModelRetry(
+                    "Call preview_intent_change again with a non-empty semantic_requirements list. "
+                    "Represent each user-named requirement as structured domain, side, strength, key, values, "
+                    "and raw_span evidence; preserve the named major hierarchy level and concrete entity."
+                )
+        if "pending_resolution" in required:
+            pending_resolution = tool_args.get("pending_resolution")
+            if str(pending_resolution or "").strip().lower() in {"", "none"}:
+                if isinstance(observability, dict):
+                    observability[_FIRST_TOOL_RETRY_FLAG] = True
+                    observability["missingRequiredPendingResolutionRejected"] = True
+                response.parts = []
+                raise ModelRetry(
+                    "This turn started with an active pending item. Call the same preview tool again and "
+                    "explicitly pass pending_resolution as replace_active_pending, "
+                    "append_to_active_pending, or hold_new_request."
+                )
+        if tool_call.tool_name == "preview_plan_change":
+            retry_issue = _preview_plan_change_retry_issue(ctx, tool_args)
+            if retry_issue is not None:
+                retry_flag, retry_payload = retry_issue
+                already_retried = isinstance(observability, dict) and observability.get(retry_flag) is True
+                if not already_retried:
+                    if isinstance(observability, dict):
+                        observability[_FIRST_TOOL_RETRY_FLAG] = True
+                        observability[retry_flag] = True
+                    response.parts = []
+                    raise ModelRetry(
+                        json.dumps(retry_payload, ensure_ascii=False, separators=(",", ":"))
+                    )
         if tool_names[0] == "respond_casual" and not _is_casual_only_user_text(
             getattr(ctx.deps, "current_user_text", "")
         ):
@@ -161,21 +320,31 @@ async def _prepare_preview_intent_change_tool(
     ctx: RunContext[RequestContext],
     tool_def: ToolDefinition,
 ) -> ToolDefinition:
-    """Require the pending relationship before a model calls an intent preview."""
-    if resolve_pending_confirmation(ctx.deps) is None:
-        return tool_def
+    """Require structured intent evidence and any active-pending relationship."""
     schema = dict(tool_def.parameters_json_schema)
     properties = dict(schema.get("properties") or {})
-    pending_resolution = dict(properties.get("pending_resolution") or {})
-    pending_resolution.pop("default", None)
-    pending_resolution["description"] = (
-        "Required because this turn started with an active pending item. Choose "
-        "replace_active_pending, append_to_active_pending, or hold_new_request."
-    )
-    properties["pending_resolution"] = pending_resolution
     required = list(schema.get("required") or [])
-    if "pending_resolution" not in required:
-        required.append("pending_resolution")
+    if tool_def.name == "preview_intent_change":
+        semantic_requirements = dict(properties.get("semantic_requirements") or {})
+        semantic_requirements.pop("default", None)
+        semantic_requirements["description"] = (
+            "Required structured evidence for this intent preview. Include each user-named item with domain, "
+            "side, strength, key, values, and its raw_span; preserve a concrete major instead of replacing it "
+            "with a parent category."
+        )
+        properties["semantic_requirements"] = semantic_requirements
+        if "semantic_requirements" not in required:
+            required.append("semantic_requirements")
+    if resolve_pending_confirmation(ctx.deps) is not None:
+        pending_resolution = dict(properties.get("pending_resolution") or {})
+        pending_resolution.pop("default", None)
+        pending_resolution["description"] = (
+            "Required because this turn started with an active pending item. Choose "
+            "replace_active_pending, append_to_active_pending, or hold_new_request."
+        )
+        properties["pending_resolution"] = pending_resolution
+        if "pending_resolution" not in required:
+            required.append("pending_resolution")
     schema["properties"] = properties
     schema["required"] = required
     return replace(tool_def, parameters_json_schema=schema)

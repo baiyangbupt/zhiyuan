@@ -11,7 +11,9 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReplacementPairDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalRequestDTO;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 import org.junit.jupiter.api.Test;
 
@@ -679,6 +681,11 @@ public class UserGoalProposalBuilderTest {
         assertEquals("v3", action.getVolunteerIds().get(0));
         assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getBeforeVolunteerTotal());
         assertEquals(Integer.valueOf(4), proposal.getDryRunResult().getAfterVolunteerTotal());
+        assertTrue(proposal.getCanonicalObjectiveDigest().matches("[0-9a-f]{64}"));
+        assertEquals("ojalgo-48.4.2-m2", proposal.getSolverVersion());
+        assertTrue(proposal.getSolverInputDigest().matches("[0-9a-f]{64}"));
+        assertEquals(java.util.Arrays.asList("v1", "v2", "v3", "v4"),
+                proposal.getSolverResult().getSelectedEntityIds());
     }
 
     @Test
@@ -837,6 +844,9 @@ public class UserGoalProposalBuilderTest {
         assertEquals("info", proposal.getStatus());
         assertFalse(proposal.getRequiresConfirmation());
         assertTrue(proposal.getActions().isEmpty());
+        assertEquals("no_change", proposal.getSolverResult().getStatus());
+        assertEquals(java.util.Arrays.asList("v1", "v2"),
+                proposal.getSolverResult().getSelectedEntityIds());
     }
 
     @Test
@@ -1130,6 +1140,10 @@ public class UserGoalProposalBuilderTest {
         assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getAfterVolunteerTotal());
         assertTrue(proposal.getTitle().contains("保持当前 2 个志愿"));
         assertTrue(proposal.getSummary().contains("至少包含2个上海（地区）"), proposal.getSummary());
+        assertEquals(java.util.Arrays.asList("v2", "v3"),
+                proposal.getSolverResult().getSelectedEntityIds());
+        assertEquals(1, proposal.getSolverResult().getObjectiveResults().stream()
+                .filter(item -> "coverage".equals(item.getObjectiveType())).count());
     }
 
     @Test
@@ -1226,6 +1240,170 @@ public class UserGoalProposalBuilderTest {
                 .getBeforeVolunteerTierCounts().get("冲"));
         assertEquals(Integer.valueOf(1), proposal.getDryRunResult()
                 .getAfterVolunteerTierCounts().get("保"));
+        assertEquals(java.util.Arrays.asList("v1", "v3", "v4"),
+                proposal.getSolverResult().getSelectedEntityIds());
+        assertEquals(0, proposal.getSolverResult().getObjectiveResults().stream()
+                .filter(item -> "coverage".equals(item.getObjectiveType())).count());
+        assertEquals(3, proposal.getSolverResult().getObjectiveResults().stream()
+                .filter(item -> "tier_exact".equals(item.getObjectiveType())).count());
+    }
+
+    @Test
+    void shouldCreateReadyProposalWhenNewMaximumNeedsOnlyPersistence() {
+        PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+        UserGoalFixProposalReq request = fillWithSprintRange("patch", 0, 2);
+        request.setPersistTargetCount(false);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(
+                state, request).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getActions().isEmpty());
+        assertEquals("no_change", proposal.getSolverResult().getStatus());
+        assertTrue(proposal.getTierQuotaChange().getStateChanged());
+        assertTrue(proposal.getSummary().contains("当前方案有 4 个志愿"), proposal.getSummary());
+        assertTrue(proposal.getSummary().contains("方案项目不变"));
+        assertTrue(proposal.getTitle().contains("冲稳保数量范围"));
+        assertTrue(proposal.getSummary().contains("冲稳保数量范围"));
+        assertTrue(proposal.getDryRunResult().getMessage().contains("冲稳保数量范围"));
+        assertFalse(proposal.getTitle().contains("精确配额"));
+        assertFalse(proposal.getDryRunResult().getMessage().contains("精确配额"));
+        assertEquals(Integer.valueOf(1), proposal.getDryRunResult()
+                .getAfterVolunteerTierCounts().get("冲"));
+        assertEquals(null, proposal.getTierQuotaChange().getRequestedGoal()
+                .getSprint().getMinCount());
+        assertEquals(Integer.valueOf(2), proposal.getTierQuotaChange().getRequestedGoal()
+                .getSprint().getMaxCount());
+    }
+
+    @Test
+    void shouldExposeOnlyChangedBoundsWhenModelRepeatsHistoricalRangePatch() {
+        PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(
+                rangeGoal(bound(0, 2), bound(1, 3), bound(0, 4)));
+        UserGoalFixProposalReq request = fillRequest(4);
+        request.setPersistTargetCount(false);
+        TierQuotaGoalRequestDTO requested = new TierQuotaGoalRequestDTO();
+        requested.setType("count_ranges");
+        requested.setUpdateMode("patch");
+        requested.setSprint(bound(0, 1));
+        requested.setStable(bound(1, 3));
+        requested.setProtect(bound(0, 4));
+        request.setTierQuotaGoal(requested);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(
+                state, request).getProposals().get(0);
+
+        TierQuotaGoalRequestDTO delta = proposal.getTierQuotaChange().getRequestedGoal();
+        assertEquals("patch", delta.getUpdateMode());
+        assertEquals(Integer.valueOf(1), delta.getSprint().getMaxCount());
+        assertEquals(null, delta.getSprint().getMinCount());
+        assertEquals(null, delta.getStable());
+        assertEquals(null, delta.getProtect());
+        assertEquals(Integer.valueOf(0), proposal.getTierQuotaChange()
+                .getEffectiveGoal().getSprint().getMinCount());
+        assertEquals(Integer.valueOf(3), proposal.getTierQuotaChange()
+                .getEffectiveGoal().getStable().getMaxCount());
+    }
+
+    @Test
+    void shouldReturnInfoWhenPlanAndEffectiveGoalAreBothUnchanged() {
+        PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(
+                rangeGoal(bound(null, 2), null, null));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(
+                state, fillWithSprintRange("patch", null, 2)).getProposals().get(0);
+
+        assertEquals("info", proposal.getStatus());
+        assertFalse(proposal.getRequiresConfirmation());
+        assertFalse(proposal.getTierQuotaChange().getStateChanged());
+    }
+
+    @Test
+    void shouldExposeRemovedHistoricalBoundsForRangeReplace() {
+        PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(
+                rangeGoal(bound(null, 2), bound(1, null), null));
+        UserGoalFixProposalReq request = fillWithSprintRange("replace", null, 3);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, request).getProposals().get(0);
+
+        assertEquals(Integer.valueOf(1), proposal.getTierQuotaChange()
+                .getBeforeGoal().getStable().getMinCount());
+        assertEquals("replace", proposal.getTierQuotaChange().getRequestedGoal().getUpdateMode());
+        assertEquals(Integer.valueOf(3), proposal.getTierQuotaChange()
+                .getEffectiveGoal().getSprint().getMaxCount());
+        assertEquals(null, proposal.getTierQuotaChange().getEffectiveGoal().getStable());
+    }
+
+    @Test
+    void shouldExposeSubmittedCanonicalAndResolvedRatioValues() {
+        PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+        UserGoalFixProposalReq request = fillRequest(4);
+        request.setPersistTargetCount(false);
+        request.setTierQuotaGoal(ratio(30, 40, 30));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, request).getProposals().get(0);
+
+        assertEquals(Integer.valueOf(30), proposal.getTierQuotaChange()
+                .getRequestedGoal().getSprintWeight());
+        assertEquals(Integer.valueOf(30), proposal.getTierQuotaChange()
+                .getEffectiveGoal().getSprintWeight());
+        assertEquals(Integer.valueOf(3), proposal.getTierQuotaChange()
+                .getResolution().getCanonicalWeights().getSprintWeight());
+        assertEquals(Integer.valueOf(2), proposal.getTierQuotaChange()
+                .getResolution().getResolvedCounts().getStableCount());
+        assertTrue(proposal.getTitle().contains("冲稳保比例"));
+        assertTrue(proposal.getSummary().contains("冲稳保比例"));
+        assertTrue(proposal.getDryRunResult().getMessage().contains("冲稳保比例"));
+        assertFalse(proposal.getTitle().contains("精确配额"));
+        assertFalse(proposal.getDryRunResult().getMessage().contains("精确配额"));
+    }
+
+    @Test
+    void shouldDescribeRangeCompositeGuardWithoutCallingItExactQuota() {
+        PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+        UserGoalFixProposalReq request = fillWithSprintRange("patch", null, 2);
+        request.getRequirements().add(
+                requirement("exclude", "school", "school_nature", "民办"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, request)
+                .getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("tier_quota_composite_not_supported",
+                proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getBlockingReason().contains("冲稳保数量范围"));
+        assertFalse(proposal.getBlockingReason().contains("精确配额"));
+    }
+
+    @Test
+    void shouldBlockCrossTypePatchWithoutActions() {
+        PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(quotaGoal(1, 2, 1));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(
+                state, fillWithSprintRange("patch", null, 2)).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("tier_quota_update_type_conflict", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getActions().isEmpty());
+        assertFalse(proposal.getRequiresConfirmation());
+    }
+
+    @Test
+    void shouldExposeTierSolverDiagnosticWhenCandidateCapacityIsInsufficient() {
+        PlanningStateDTO state = stateWithTierCounts(1, 2, 1);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(
+                state, fillWithSprintRange("replace", 2, null)).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("tier_min_infeasible", proposal.getBlockingReasonCodes().get(0));
+        assertEquals("tier_min_infeasible",
+                proposal.getSolverResult().getDiagnostics().get(0).getReasonCode());
+        assertTrue(proposal.getActions().isEmpty());
     }
 
     @Test
@@ -1438,6 +1616,8 @@ public class UserGoalProposalBuilderTest {
         assertEquals(Integer.valueOf(0), proposal.getDryRunResult().getPriorityAfterInversionCount());
         assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getPriorityMovedTargetCount());
         assertEquals(Integer.valueOf(4), proposal.getDryRunResult().getAfterVolunteerTotal());
+        assertEquals(java.util.Arrays.asList("v2", "v4", "v1", "v3"),
+                proposal.getSolverResult().getOrderedEntityIds());
     }
 
     @Test
@@ -1622,13 +1802,97 @@ public class UserGoalProposalBuilderTest {
         return rule;
     }
 
-    private TierQuotaGoalDTO tierQuota(int sprint, int stable, int protect) {
+    private TierQuotaGoalRequestDTO tierQuota(int sprint, int stable, int protect) {
+        TierQuotaGoalRequestDTO goal = new TierQuotaGoalRequestDTO();
+        goal.setType("exact_counts");
+        goal.setSprintCount(sprint);
+        goal.setStableCount(stable);
+        goal.setProtectCount(protect);
+        return goal;
+    }
+
+    private TierQuotaGoalDTO quotaGoal(int sprint, int stable, int protect) {
         TierQuotaGoalDTO goal = new TierQuotaGoalDTO();
         goal.setType("exact_counts");
         goal.setSprintCount(sprint);
         goal.setStableCount(stable);
         goal.setProtectCount(protect);
         return goal;
+    }
+
+    private TierQuotaGoalRequestDTO ratio(int sprint, int stable, int protect) {
+        TierQuotaGoalRequestDTO goal = new TierQuotaGoalRequestDTO();
+        goal.setType("ratios");
+        goal.setUpdateMode("replace");
+        goal.setSprintWeight(sprint);
+        goal.setStableWeight(stable);
+        goal.setProtectWeight(protect);
+        return goal;
+    }
+
+    private UserGoalFixProposalReq fillRequest(int targetCount) {
+        UserGoalFixProposalReq request = new UserGoalFixProposalReq();
+        request.setGoalType("fill_to_count");
+        request.setTargetCount(targetCount);
+        request.setSourceVersionGuard(12);
+        return request;
+    }
+
+    private UserGoalFixProposalReq fillWithSprintRange(String updateMode,
+                                                       Integer minimum,
+                                                       Integer maximum) {
+        UserGoalFixProposalReq request = fillRequest(4);
+        TierQuotaGoalRequestDTO goal = new TierQuotaGoalRequestDTO();
+        goal.setType("count_ranges");
+        goal.setUpdateMode(updateMode);
+        goal.setSprint(bound(minimum, maximum));
+        request.setTierQuotaGoal(goal);
+        return request;
+    }
+
+    private TierQuotaGoalDTO rangeGoal(TierCountRangeDTO sprint,
+                                       TierCountRangeDTO stable,
+                                       TierCountRangeDTO protect) {
+        TierQuotaGoalDTO goal = new TierQuotaGoalDTO();
+        goal.setType("count_ranges");
+        goal.setSprint(sprint);
+        goal.setStable(stable);
+        goal.setProtect(protect);
+        return goal;
+    }
+
+    private TierCountRangeDTO bound(Integer minimum, Integer maximum) {
+        TierCountRangeDTO result = new TierCountRangeDTO();
+        result.setMinCount(minimum);
+        result.setMaxCount(maximum);
+        return result;
+    }
+
+    private PlanningStateDTO stateWithTierCounts(int sprint, int stable, int protect) {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        int index = 0;
+        for (int count = 0; count < sprint; count++) {
+            addTierVolunteer(state, "v" + index++, "冲");
+        }
+        for (int count = 0; count < stable; count++) {
+            addTierVolunteer(state, "v" + index++, "稳");
+        }
+        for (int count = 0; count < protect; count++) {
+            addTierVolunteer(state, "v" + index++, "保");
+        }
+        state.getConstraintState().getHardPlanningObjectives()
+                .setSelectionTargetCount(sprint + stable + protect);
+        return state;
+    }
+
+    private void addTierVolunteer(PlanningStateDTO state, String volunteerId, String tier) {
+        CandidateItemDTO item = candidate(
+                volunteerId, "学校" + volunteerId, "专业" + volunteerId, "类别", 80D);
+        item.setTier(tier);
+        state.getCandidatePoolState().getItems().add(item);
+        state.getOrderedPlanState().getItems().add(
+                orderedWithTier(volunteerId, item.getSchoolName(), item.getMajorName(), tier));
     }
 
     private PlanningUnitMajorDTO unitMajor(String volunteerId, String majorName) {

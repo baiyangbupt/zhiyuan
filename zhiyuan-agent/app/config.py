@@ -22,6 +22,7 @@ class LLMConfig(BaseSettings):
     temperature: float = 0.7
     max_tokens: int = 4096
     timeout_seconds: float = 0.0  # 0 表示不设置模型请求层超时，仍使用外层服务超时兜底
+    connect_timeout_seconds: float = 15.0
 
     @model_validator(mode="after")
     def _validate(self) -> LLMConfig:
@@ -31,6 +32,8 @@ class LLMConfig(BaseSettings):
             )
         if self.timeout_seconds < 0:
             raise ValueError("LLM_TIMEOUT_SECONDS must be greater than or equal to 0")
+        if self.connect_timeout_seconds <= 0:
+            raise ValueError("LLM_CONNECT_TIMEOUT_SECONDS must be greater than 0")
         return self
 
 

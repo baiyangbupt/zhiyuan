@@ -26,4 +26,9 @@ public class FixProposalDTO {
     private List<String> affectedVolunteerIds = Lists.newArrayList();
     private List<FixProposalActionDTO> actions = Lists.newArrayList();
     private FixProposalDryRunResultDTO dryRunResult = new FixProposalDryRunResultDTO();
+    private String canonicalObjectiveDigest;
+    private String solverVersion;
+    private String solverInputDigest;
+    private PlanSolverResultDTO solverResult;
+    private TierQuotaChangeDTO tierQuotaChange;
 }

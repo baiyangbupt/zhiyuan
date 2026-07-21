@@ -76,6 +76,44 @@ final class RepairProposalApplyPolicy {
         if (!RepairProposalTaxonomy.isUserGoalApplyableStrategy(proposal.getStrategy())) {
             throw new BusinessException(400, "当前调整预览暂不支持自动应用");
         }
+        validateCanonicalMetadata(req, proposal);
+    }
+
+    static boolean hasCanonicalMetadata(FixProposalApplyReq req) {
+        return req != null && (!Strings.isNullOrEmpty(req.getCanonicalObjectiveDigest())
+                || !Strings.isNullOrEmpty(req.getSolverVersion())
+                || !Strings.isNullOrEmpty(req.getSolverInputDigest()));
+    }
+
+    static boolean isLegacyCanonicalProposal(FixProposalDTO proposal) {
+        return proposal != null && Strings.isNullOrEmpty(proposal.getCanonicalObjectiveDigest())
+                && Strings.isNullOrEmpty(proposal.getSolverVersion())
+                && Strings.isNullOrEmpty(proposal.getSolverInputDigest())
+                && proposal.getSolverResult() == null;
+    }
+
+    private static void validateCanonicalMetadata(FixProposalApplyReq req, FixProposalDTO proposal) {
+        if (!hasCanonicalMetadata(req)) {
+            if (!isLegacyCanonicalProposal(proposal)) {
+                throw new BusinessException(409, "canonical Proposal 元数据缺失，请重新生成调整预览");
+            }
+            return;
+        }
+        if (Strings.isNullOrEmpty(req.getCanonicalObjectiveDigest())
+                || Strings.isNullOrEmpty(req.getSolverVersion())
+                || Strings.isNullOrEmpty(req.getSolverInputDigest())) {
+            throw new BusinessException(409, "canonical Proposal 元数据不完整，请重新生成调整预览");
+        }
+        if (!req.getCanonicalObjectiveDigest().equals(proposal.getCanonicalObjectiveDigest())
+                || !req.getSolverVersion().equals(proposal.getSolverVersion())
+                || !req.getSolverInputDigest().equals(proposal.getSolverInputDigest())) {
+            throw new BusinessException(409, "canonical Proposal 已变化，请重新生成调整预览");
+        }
+        if (proposal.getSolverResult() == null
+                || !proposal.getSolverVersion().equals(proposal.getSolverResult().getSolverVersion())
+                || !proposal.getSolverInputDigest().equals(proposal.getSolverResult().getInputDigest())) {
+            throw new BusinessException(409, "canonical Proposal 缺少冻结求解结果，请重新生成调整预览");
+        }
     }
 
     static boolean isSupportedStrategy(String strategy) {

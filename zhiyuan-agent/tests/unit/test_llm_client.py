@@ -10,6 +10,22 @@ from app.config import LLMConfig
 from app.llm.client import LLMClient
 
 
+def test_llm_config_defaults_connect_timeout_to_fifteen_seconds():
+    config = LLMConfig(provider="openai", api_key="sk-test")
+
+    assert config.connect_timeout_seconds == 15.0
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_llm_config_rejects_non_positive_connect_timeout(value):
+    with pytest.raises(ValueError, match="LLM_CONNECT_TIMEOUT_SECONDS"):
+        LLMConfig(
+            provider="openai",
+            api_key="sk-test",
+            connect_timeout_seconds=value,
+        )
+
+
 # ---- 1. openai provider ----
 
 def test_create_openai_model(mocker):
@@ -25,6 +41,23 @@ def test_create_openai_model(mocker):
     mock_provider.assert_called_once_with(api_key="sk-test")
     mock_model.assert_called_once_with("gpt-4o", provider=mock_provider.return_value)
     assert client.model is mock_model.return_value
+
+
+def test_create_openai_model_sets_configured_connect_timeout(mocker):
+    mock_provider = mocker.patch(
+        "app.llm.client.OpenAIProvider", return_value=MagicMock()
+    )
+    mocker.patch("app.llm.client.OpenAIChatModel", return_value=MagicMock())
+    config = LLMConfig(
+        provider="openai",
+        model_name="gpt-4o",
+        api_key="sk-test",
+        connect_timeout_seconds=23,
+    )
+
+    LLMClient(config)
+
+    assert mock_provider.return_value.client.timeout.connect == 23
 
 
 # ---- 2. anthropic provider ----
@@ -92,6 +125,24 @@ def test_create_openai_compatible_model(mocker):
         "local-model", provider=mock_provider.return_value
     )
     assert client.model is mock_model.return_value
+
+
+def test_create_openai_compatible_model_sets_configured_connect_timeout(mocker):
+    mock_provider = mocker.patch(
+        "app.llm.client.OpenAIProvider", return_value=MagicMock()
+    )
+    mocker.patch("app.llm.client.OpenAIChatModel", return_value=MagicMock())
+    config = LLMConfig(
+        provider="openai_compatible",
+        model_name="local-model",
+        api_key="sk-test",
+        base_url="http://localhost:8000/v1",
+        connect_timeout_seconds=19,
+    )
+
+    LLMClient(config)
+
+    assert mock_provider.return_value.client.timeout.connect == 19
 
 
 # ---- 4. model_settings 传递 ----

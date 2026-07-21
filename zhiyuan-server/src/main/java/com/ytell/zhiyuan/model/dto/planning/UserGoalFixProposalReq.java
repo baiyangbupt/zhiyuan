@@ -15,7 +15,7 @@ public class UserGoalFixProposalReq {
     private Integer sourceVersionGuard;
     private Integer targetCount;
     private Boolean persistTargetCount = true;
-    private TierQuotaGoalDTO tierQuotaGoal;
+    private TierQuotaGoalRequestDTO tierQuotaGoal;
     private List<RequirementDTO> requirements = Lists.newArrayList();
     private List<PriorityRuleDTO> priorityRules = Lists.newArrayList();
     private List<ScopeDTO> targetScopes = Lists.newArrayList();

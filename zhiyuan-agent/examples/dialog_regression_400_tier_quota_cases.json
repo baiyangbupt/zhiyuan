@@ -138,7 +138,7 @@
             {
               "key": "planningState",
               "path": "constraintState.hardPlanningObjectives.tierQuotaGoal",
-              "equals": {
+              "contains": {
                 "type": "exact_counts",
                 "sprintCount": 9,
                 "stableCount": 17,

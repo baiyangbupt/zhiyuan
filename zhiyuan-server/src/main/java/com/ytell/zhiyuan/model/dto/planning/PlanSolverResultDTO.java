@@ -1,0 +1,44 @@
+package com.ytell.zhiyuan.model.dto.planning;
+
+import com.google.common.collect.Lists;
+import lombok.Data;
+
+import java.util.List;
+
+@Data
+public class PlanSolverResultDTO {
+    private String status;
+    private List<String> selectedEntityIds = Lists.newArrayList();
+    private List<String> orderedEntityIds = Lists.newArrayList();
+    private List<String> removeEntityIds = Lists.newArrayList();
+    private List<String> addEntityIds = Lists.newArrayList();
+    private List<ObjectiveResultDTO> objectiveResults = Lists.newArrayList();
+    private List<DiagnosticDTO> diagnostics = Lists.newArrayList();
+    private String solverVersion;
+    private String solverState;
+    private String inputDigest;
+    private Long durationMs = 0L;
+    private Integer candidateCount = 0;
+    private Integer constraintCount = 0;
+    private TierCountsDTO historicalTierAnchor;
+    private TierCountsDTO resolvedTierCounts;
+
+    @Data
+    public static class ObjectiveResultDTO {
+        private String objectiveId;
+        private String objectiveType;
+        private Integer requiredMin;
+        private Integer requiredMax;
+        private Integer actualCount;
+        private Boolean satisfied = false;
+    }
+
+    @Data
+    public static class DiagnosticDTO {
+        private String reasonCode;
+        private String objectiveId;
+        private String message;
+        private Integer requiredCount;
+        private Integer availableCount;
+    }
+}

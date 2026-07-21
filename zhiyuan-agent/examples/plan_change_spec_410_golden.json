@@ -1,0 +1,444 @@
+{
+  "schemaVersion": "4.1.0-m2",
+  "cases": [
+    {
+      "name": "400-exact-counts-compatible",
+      "valid": true,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "exact_counts",
+          "sprint_count": 9,
+          "stable_count": 17,
+          "protect_count": 19
+        }
+      },
+      "expectedSummary": {
+        "target_count": 45,
+        "tier_result": {
+          "type": "exact_counts",
+          "counts": {"sprint": 9, "stable": 17, "protect": 19}
+        }
+      }
+    },
+    {
+      "name": "410-max-only-uses-effective-open-bounds",
+      "valid": true,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "patch",
+          "sprint": {"max_count": 10}
+        }
+      },
+      "expectedSummary": {
+        "target_count": 45,
+        "tier_result": {
+          "type": "count_ranges",
+          "update_mode": "patch",
+          "request_bounds": {"sprint": {"max_count": 10}},
+          "resolved": false
+        }
+      }
+    },
+    {
+      "name": "410-same-type-historical-range-patch",
+      "valid": true,
+      "contextTargetCount": 45,
+      "contextTierGoal": {
+        "type": "count_ranges",
+        "sprint": {"min_count": 5, "max_count": 12},
+        "stable": {"min_count": 15, "max_count": 20},
+        "protect": {"min_count": 18, "max_count": 25}
+      },
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "patch",
+          "sprint": {"max_count": 10}
+        }
+      },
+      "expectedSummary": {
+        "target_count": 45,
+        "tier_result": {
+          "type": "count_ranges",
+          "update_mode": "patch",
+          "request_bounds": {"sprint": {"max_count": 10}},
+          "effective_goal": {
+            "type": "count_ranges",
+            "sprint": {"min_count": 5, "max_count": 10},
+            "stable": {"min_count": 15, "max_count": 20},
+            "protect": {"min_count": 18, "max_count": 25}
+          },
+          "bounds": {
+            "sprint": {"min_count": 5, "max_count": 10},
+            "stable": {"min_count": 15, "max_count": 20},
+            "protect": {"min_count": 18, "max_count": 25}
+          },
+          "resolved": true
+        }
+      }
+    },
+    {
+      "name": "410-full-tier-ranges",
+      "valid": true,
+      "contextTargetCount": 48,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "replace",
+          "sprint": {"min_count": 8, "max_count": 12},
+          "stable": {"min_count": 16, "max_count": 20},
+          "protect": {"min_count": 18, "max_count": 22}
+        }
+      },
+      "expectedSummary": {"target_count": 48}
+    },
+    {
+      "name": "410-ratio-largest-remainder-tie-order",
+      "valid": true,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "ratios",
+          "update_mode": "replace",
+          "sprint_weight": 3,
+          "stable_weight": 4,
+          "protect_weight": 3
+        }
+      },
+      "expectedSummary": {
+        "target_count": 45,
+        "tier_result": {
+          "type": "ratios",
+          "submitted_weights": {"sprint": 3, "stable": 4, "protect": 3},
+          "weights": {"sprint": 3, "stable": 4, "protect": 3},
+          "counts": {"sprint": 14, "stable": 18, "protect": 13},
+          "resolution": "largest_remainder",
+          "tie_break_order": ["sprint", "stable", "protect"]
+        }
+      }
+    },
+    {
+      "name": "410-ratio-equivalent-weights-canonicalized",
+      "valid": true,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "ratios",
+          "update_mode": "replace",
+          "sprint_weight": 30,
+          "stable_weight": 40,
+          "protect_weight": 30
+        }
+      },
+      "expectedSummary": {
+        "target_count": 45,
+        "tier_result": {
+          "type": "ratios",
+          "submitted_weights": {"sprint": 30, "stable": 40, "protect": 30},
+          "weights": {"sprint": 3, "stable": 4, "protect": 3},
+          "counts": {"sprint": 14, "stable": 18, "protect": 13},
+          "resolution": "largest_remainder",
+          "tie_break_order": ["sprint", "stable", "protect"]
+        }
+      }
+    },
+    {
+      "name": "410-fill-target-overrides-context-for-ratio",
+      "valid": true,
+      "contextTargetCount": 45,
+      "spec": {
+        "selection_goal": {"type": "fill_to_count", "target_count": 50},
+        "tier_quota_goal": {
+          "type": "ratios",
+          "update_mode": "replace",
+          "sprint_weight": 3,
+          "stable_weight": 4,
+          "protect_weight": 3
+        }
+      },
+      "expectedSummary": {
+        "target_count": 50,
+        "tier_result": {
+          "type": "ratios",
+          "submitted_weights": {"sprint": 3, "stable": 4, "protect": 3},
+          "weights": {"sprint": 3, "stable": 4, "protect": 3},
+          "counts": {"sprint": 15, "stable": 20, "protect": 15},
+          "resolution": "largest_remainder",
+          "tie_break_order": ["sprint", "stable", "protect"]
+        }
+      }
+    },
+    {
+      "name": "410-bounded-selector-expression",
+      "valid": true,
+      "spec": {
+        "selector_expression": {
+          "operator": "all_of",
+          "children": [
+            {
+              "operator": "any_of",
+              "children": [
+                {"kind": "include", "domain": "region", "key": "province", "values": ["广东"]},
+                {"kind": "include", "domain": "region", "key": "province", "values": ["福建"]}
+              ]
+            },
+            {"kind": "include", "domain": "school", "key": "school_nature", "values": ["公办"]}
+          ]
+        }
+      },
+      "expectedSummary": {
+        "selector_leaf_count": 3,
+        "objective_types": ["selector_expression"]
+      }
+    },
+    {
+      "name": "410-two-level-priority",
+      "valid": true,
+      "spec": {
+        "priority_rules": [
+          {"domain": "region", "key": "province", "values": ["山东"]},
+          {"domain": "school", "key": "school_nature", "values": ["公办"]}
+        ]
+      },
+      "expectedSummary": {
+        "priority_rule_count": 2,
+        "objective_types": ["priority_rules"]
+      }
+    },
+    {
+      "name": "410-probability-gap",
+      "valid": true,
+      "spec": {
+        "risk_structure_goal": {
+          "type": "probability_gap",
+          "scope": "global",
+          "max_adjacent_gap_points": 15
+        }
+      },
+      "expectedSummary": {"objective_types": ["risk_structure_goal"]}
+    },
+    {
+      "name": "410-safety-floor",
+      "valid": true,
+      "spec": {
+        "risk_structure_goal": {
+          "type": "safety_floor",
+          "min_admission_probability": 70,
+          "min_count": 8
+        }
+      },
+      "expectedSummary": {"objective_types": ["risk_structure_goal"]}
+    },
+    {
+      "name": "410-composite-single-spec",
+      "valid": true,
+      "spec": {
+        "selection_goal": {"type": "fill_to_count", "target_count": 48},
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "replace",
+          "sprint": {"max_count": 12},
+          "protect": {"min_count": 18}
+        },
+        "requirements": [
+          {"kind": "exclude", "domain": "school", "key": "school_nature", "values": ["民办"]},
+          {"kind": "include", "domain": "region", "key": "province", "values": ["山东"], "min_count": 2}
+        ],
+        "priority_rules": [
+          {"domain": "region", "key": "province", "values": ["山东"]}
+        ]
+      },
+      "expectedSummary": {
+        "target_count": 48,
+        "priority_rule_count": 1,
+        "objective_types": ["selection_goal", "tier_quota_goal", "requirements", "priority_rules"]
+      }
+    },
+    {
+      "name": "invalid-empty-spec",
+      "valid": false,
+      "spec": {},
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-unknown-top-level-field",
+      "valid": false,
+      "spec": {"soft_preferences": []},
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-exact-total-mismatch",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "exact_counts",
+          "sprint_count": 9,
+          "stable_count": 17,
+          "protect_count": 18
+        }
+      },
+      "expectedError": "tier_exact_total_mismatch"
+    },
+    {
+      "name": "invalid-range-min-greater-than-max",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "replace",
+          "sprint": {"min_count": 12, "max_count": 10}
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-range-minimums-infeasible",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "replace",
+          "sprint": {"min_count": 16},
+          "stable": {"min_count": 16},
+          "protect": {"min_count": 16}
+        }
+      },
+      "expectedError": "tier_range_min_infeasible"
+    },
+    {
+      "name": "invalid-range-maximums-infeasible",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "replace",
+          "sprint": {"max_count": 10},
+          "stable": {"max_count": 10},
+          "protect": {"max_count": 10}
+        }
+      },
+      "expectedError": "tier_range_max_infeasible"
+    },
+    {
+      "name": "invalid-zero-ratio",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "ratios",
+          "update_mode": "replace",
+          "sprint_weight": 0,
+          "stable_weight": 0,
+          "protect_weight": 0
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-range-update-mode-missing",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "sprint": {"max_count": 10}
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-ratio-patch",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "ratios",
+          "update_mode": "patch",
+          "sprint_weight": 3,
+          "stable_weight": 4,
+          "protect_weight": 3
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-empty-range",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "replace"
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-exact-patch",
+      "valid": false,
+      "contextTargetCount": 45,
+      "spec": {
+        "tier_quota_goal": {
+          "type": "exact_counts",
+          "update_mode": "patch",
+          "sprint_count": 9,
+          "stable_count": 17,
+          "protect_count": 19
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-cross-type-historical-patch",
+      "valid": false,
+      "contextTargetCount": 45,
+      "contextTierGoal": {
+        "type": "exact_counts",
+        "sprint_count": 9,
+        "stable_count": 17,
+        "protect_count": 19
+      },
+      "spec": {
+        "tier_quota_goal": {
+          "type": "count_ranges",
+          "update_mode": "patch",
+          "sprint": {"max_count": 10}
+        }
+      },
+      "expectedError": "tier_patch_type_mismatch"
+    },
+    {
+      "name": "invalid-priority-over-limit",
+      "valid": false,
+      "spec": {
+        "priority_rules": [
+          {"domain": "region", "key": "province", "values": ["山东"]},
+          {"domain": "region", "key": "province", "values": ["广东"]},
+          {"domain": "region", "key": "province", "values": ["福建"]},
+          {"domain": "region", "key": "province", "values": ["江苏"]},
+          {"domain": "region", "key": "province", "values": ["浙江"]}
+        ]
+      },
+      "expectedError": "schema_validation_failed"
+    },
+    {
+      "name": "invalid-probability-out-of-range",
+      "valid": false,
+      "spec": {
+        "risk_structure_goal": {
+          "type": "safety_floor",
+          "min_admission_probability": 101,
+          "min_count": 8
+        }
+      },
+      "expectedError": "schema_validation_failed"
+    }
+  ]
+}

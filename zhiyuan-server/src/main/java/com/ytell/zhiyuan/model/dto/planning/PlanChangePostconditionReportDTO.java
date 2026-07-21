@@ -11,6 +11,10 @@ public class PlanChangePostconditionReportDTO {
     private String proposalSource;
     private String proposalId;
     private String proposalStrategy;
+    private String canonicalObjectiveDigest;
+    private String solverVersion;
+    private String solverInputDigest;
+    private List<PlanSolverResultDTO.ObjectiveResultDTO> objectiveResults = Lists.newArrayList();
     private List<String> sourceReviewIssueCodes = Lists.newArrayList();
     private Boolean postValidationPassed;
     private Integer appliedActionCount = 0;
@@ -65,6 +69,9 @@ public class PlanChangePostconditionReportDTO {
         private Integer actualSprintCount = 0;
         private Integer actualStableCount = 0;
         private Integer actualProtectCount = 0;
+        private TierQuotaGoalDTO effectiveGoal;
+        private TierAllocationResolutionDTO resolution;
+        private TierCountsDTO actualCounts;
         private Boolean planSatisfied = false;
         private Boolean persisted = false;
         private Boolean satisfied = false;

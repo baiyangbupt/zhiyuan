@@ -10,11 +10,13 @@ import asyncio
 import contextlib
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 from urllib.parse import urlparse
 
 import aiohttp
+from pydantic import Field
 from pydantic_ai import RunContext
+from typing_extensions import NotRequired
 
 from app.agent.context import RequestContext, resolve_pending_confirmation
 from app.config import BochaSearchConfig
@@ -138,11 +140,47 @@ class PlanPriorityRule(TypedDict, total=False):
     raw_text: str
 
 
-class PlanTierQuotaGoal(TypedDict, total=False):
-    type: Literal["exact_counts"]
-    sprint_count: int
-    stable_count: int
-    protect_count: int
+class PlanTierCountBound(TypedDict, total=False):
+    min_count: int
+    max_count: int
+
+
+class PlanExactTierQuotaGoal(TypedDict):
+    type: Annotated[
+        Literal["exact_counts"],
+        Field(description="Only for three exact counts explicitly supplied by the user. Never convert ratios or ranges into exact counts."),
+    ]
+    update_mode: NotRequired[Literal["replace"]]
+    sprint_count: Annotated[int, Field(description="Exact count for 冲/冲刺 tier (sprint/reach).")]
+    stable_count: Annotated[int, Field(description="Exact count for 稳 tier (stable).")]
+    protect_count: Annotated[int, Field(description="Exact count for 保/保底 tier (protect/safety).")]
+
+
+class PlanRangeTierQuotaGoal(TypedDict):
+    type: Annotated[
+        Literal["count_ranges"],
+        Field(description="For explicit minimum or maximum bounds. Include only bounds changed in this request; do not copy historical bounds."),
+    ]
+    update_mode: Literal["patch", "replace"]
+    sprint: NotRequired[Annotated[PlanTierCountBound, Field(description="Bounds for 冲/冲刺 tier (sprint/reach) only.")]]
+    stable: NotRequired[Annotated[PlanTierCountBound, Field(description="Bounds for 稳 tier (stable) only.")]]
+    protect: NotRequired[Annotated[PlanTierCountBound, Field(description="Bounds for 保/保底 tier (protect/safety) only.")]]
+
+
+class PlanRatioTierQuotaGoal(TypedDict):
+    type: Annotated[
+        Literal["ratios"],
+        Field(description="For user-supplied ratio weights. Preserve submitted weights and never calculate exact counts in the Agent."),
+    ]
+    update_mode: Literal["replace"]
+    sprint_weight: Annotated[int, Field(description="Submitted weight for 冲/冲刺 tier (sprint/reach).")]
+    stable_weight: Annotated[int, Field(description="Submitted weight for 稳 tier (stable).")]
+    protect_weight: Annotated[int, Field(description="Submitted weight for 保/保底 tier (protect/safety).")]
+
+
+PlanTierQuotaGoal = (
+    PlanExactTierQuotaGoal | PlanRangeTierQuotaGoal | PlanRatioTierQuotaGoal
+)
 
 
 class PlanRepairGoal(TypedDict, total=False):
@@ -152,9 +190,18 @@ class PlanRepairGoal(TypedDict, total=False):
 
 
 class PlanChangeSpec(TypedDict, total=False):
-    selection_goal: PlanSelectionGoal
-    tier_quota_goal: PlanTierQuotaGoal
-    requirements: list[PlanHardRequirement]
+    selection_goal: Annotated[
+        PlanSelectionGoal,
+        Field(description="Only include when the user explicitly requests filling or completing the plan. A stated current total or preserved total is not a fill request."),
+    ]
+    tier_quota_goal: Annotated[
+        PlanTierQuotaGoal,
+        Field(description="Exactly one typed tier-allocation request. Do not derive requirements, priorities, or a selection goal from tier weights or bounds."),
+    ]
+    requirements: Annotated[
+        list[PlanHardRequirement],
+        Field(description="Only explicit school, region, major, or admission requirements. Never derive these from a tier-allocation request."),
+    ]
     priority_rules: list[PlanPriorityRule]
     repair_goal: PlanRepairGoal
 
@@ -4085,6 +4132,23 @@ def _normalize_school_payload(
     return normalized, ambiguities, display_aliases
 
 
+_CANONICAL_REGION_AREA_MEMBERS = {
+    "北上广深": frozenset({"北京", "上海", "广州", "深圳"}),
+}
+
+
+def _collapse_canonical_region_area_members(normalized: dict[str, list[str]]) -> None:
+    if normalized["area"]:
+        return
+    explicit_members = frozenset(normalized["province"] + normalized["city"])
+    for area, members in _CANONICAL_REGION_AREA_MEMBERS.items():
+        if explicit_members == members:
+            normalized["province"] = []
+            normalized["city"] = []
+            normalized["area"] = [area]
+            return
+
+
 def _normalize_region_payload(payload: dict[str, Any] | None) -> tuple[dict[str, list[str]], list[dict[str, Any]], dict[str, str]]:
     normalized = {"province": [], "city": [], "area": []}
     ambiguities: list[dict[str, Any]] = []
@@ -4130,6 +4194,7 @@ def _normalize_region_payload(payload: dict[str, Any] | None) -> tuple[dict[str,
                 _add_display_alias(display_aliases, name or candidate.raw_text, candidate.canonical_name)
             else:
                 _append_unique(normalized["province"], name)
+    _collapse_canonical_region_area_members(normalized)
     return normalized, ambiguities, display_aliases
 
 
@@ -7958,6 +8023,21 @@ def _plan_apply_result_with_diff(
     return success, data, message
 
 
+def _tier_quota_postcondition_label(result: dict[str, Any]) -> str:
+    quota_type = str(result.get("type") or "").strip()
+    if not quota_type:
+        effective_goal = result.get("effectiveGoal")
+        if not isinstance(effective_goal, dict):
+            effective_goal = result.get("effective_goal")
+        if isinstance(effective_goal, dict):
+            quota_type = str(effective_goal.get("type") or "").strip()
+    return {
+        "exact_counts": "冲稳保精确配额",
+        "count_ranges": "冲稳保数量范围",
+        "ratios": "冲稳保比例",
+    }.get(quota_type, "冲稳保配额")
+
+
 async def _apply_plan_pending(
     ctx: RunContext[RequestContext],
     pending: dict[str, Any],
@@ -8048,7 +8128,7 @@ async def _apply_plan_pending(
                 if priority_rule_count > 0:
                     checks.append(f"{priority_rule_count}条同档优先规则")
                 if tier_quota_result.get("satisfied") is True:
-                    checks.append("冲稳保精确配额")
+                    checks.append(_tier_quota_postcondition_label(tier_quota_result))
                 return True, data, (
                     f"已按预览调整方案，当前共{target_count}个{domain}，"
                     f"{'和'.join(checks)}校验通过。"
@@ -8965,16 +9045,145 @@ def _normalize_plan_tier_quota_goal(
         return None, []
     if not isinstance(tier_quota_goal, dict):
         return None, [{"reason": "tier_quota_goal_must_be_object"}]
-    allowed_fields = {
-        "type", "sprint_count", "sprintCount", "stable_count", "stableCount",
+    quota_type = str(tier_quota_goal.get("type") or "").strip().lower()
+    update_mode = str(
+        tier_quota_goal.get("update_mode") or tier_quota_goal.get("updateMode") or ""
+    ).strip().lower()
+    common_fields = {"type", "update_mode", "updateMode"}
+    exact_fields = {
+        "sprint_count", "sprintCount", "stable_count", "stableCount",
         "protect_count", "protectCount",
     }
+    range_fields = {"sprint", "stable", "protect"}
+    ratio_fields = {
+        "sprint_weight", "sprintWeight", "stable_weight", "stableWeight",
+        "protect_weight", "protectWeight",
+    }
+    allowed_fields = common_fields | (
+        exact_fields if quota_type == "exact_counts" else range_fields
+        if quota_type == "count_ranges" else ratio_fields
+        if quota_type == "ratios" else set()
+    )
     unsupported_fields = sorted(
         str(key)
         for key, value in tier_quota_goal.items()
         if key not in allowed_fields and value not in (None, "", [], {})
     )
-    quota_type = str(tier_quota_goal.get("type") or "").strip().lower()
+    errors: list[dict[str, Any]] = []
+    if unsupported_fields:
+        errors.append({"reason": "unsupported_fields", "unsupported_fields": unsupported_fields})
+    if quota_type not in {"exact_counts", "count_ranges", "ratios"}:
+        errors.append({"reason": "tier_quota_type_invalid", "type": quota_type})
+        return None, errors
+    if quota_type == "count_ranges":
+        if update_mode not in {"patch", "replace"}:
+            errors.append({"reason": "tier_quota_update_mode_invalid", "update_mode": update_mode})
+        normalized_ranges: dict[str, Any] = {
+            "type": "count_ranges",
+            "updateMode": update_mode,
+        }
+        explicit_bound_count = 0
+        for tier in ("sprint", "stable", "protect"):
+            raw_bound = tier_quota_goal.get(tier)
+            if raw_bound is None:
+                continue
+            if not isinstance(raw_bound, dict):
+                errors.append({"reason": "tier_range_bound_must_be_object", "tier": tier})
+                continue
+            bound_unknown = sorted(
+                str(key)
+                for key, value in raw_bound.items()
+                if key not in {"min_count", "minCount", "max_count", "maxCount"}
+                and value not in (None, "", [], {})
+            )
+            raw_min = raw_bound.get("min_count", raw_bound.get("minCount"))
+            raw_max = raw_bound.get("max_count", raw_bound.get("maxCount"))
+            invalid_fields = [
+                name
+                for name, value in (("minCount", raw_min), ("maxCount", raw_max))
+                if value is not None
+                and (isinstance(value, bool) or not isinstance(value, int) or value < 0)
+            ]
+            if bound_unknown:
+                errors.append({
+                    "reason": "unsupported_fields",
+                    "tier": tier,
+                    "unsupported_fields": bound_unknown,
+                })
+            if raw_min is None and raw_max is None:
+                errors.append({"reason": "tier_range_bound_invalid", "tier": tier})
+                continue
+            if invalid_fields or (
+                isinstance(raw_min, int)
+                and not isinstance(raw_min, bool)
+                and isinstance(raw_max, int)
+                and not isinstance(raw_max, bool)
+                and raw_min > raw_max
+            ):
+                errors.append({
+                    "reason": "tier_range_bound_invalid",
+                    "tier": tier,
+                    "invalid_fields": invalid_fields,
+                })
+                continue
+            normalized_bound: dict[str, int] = {}
+            if raw_min is not None:
+                normalized_bound["minCount"] = raw_min
+            if raw_max is not None:
+                normalized_bound["maxCount"] = raw_max
+            normalized_ranges[tier] = normalized_bound
+            explicit_bound_count += 1
+        if explicit_bound_count == 0 and not any(
+            item.get("reason") in {"tier_range_bound_must_be_object", "tier_range_bound_invalid"}
+            for item in errors
+        ):
+            errors.append({"reason": "tier_range_empty"})
+        if errors:
+            return None, errors
+        return normalized_ranges, []
+
+    if quota_type == "ratios":
+        if update_mode != "replace":
+            errors.append({"reason": "tier_quota_update_mode_invalid", "update_mode": update_mode})
+        raw_weights = {
+            "sprintWeight": tier_quota_goal.get(
+                "sprint_weight", tier_quota_goal.get("sprintWeight")
+            ),
+            "stableWeight": tier_quota_goal.get(
+                "stable_weight", tier_quota_goal.get("stableWeight")
+            ),
+            "protectWeight": tier_quota_goal.get(
+                "protect_weight", tier_quota_goal.get("protectWeight")
+            ),
+        }
+        missing_fields = [key for key, value in raw_weights.items() if value is None]
+        invalid_fields = [
+            key
+            for key, value in raw_weights.items()
+            if value is not None
+            and (isinstance(value, bool) or not isinstance(value, int) or value < 0)
+        ]
+        valid_weight_total = sum(
+            value
+            for value in raw_weights.values()
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        )
+        if missing_fields or invalid_fields or (
+            not missing_fields and not invalid_fields and valid_weight_total <= 0
+        ):
+            errors.append({
+                "reason": "tier_ratio_weight_invalid",
+                "missing_fields": missing_fields,
+                "invalid_fields": invalid_fields,
+            })
+        if errors:
+            return None, errors
+        return {
+            "type": "ratios",
+            "updateMode": "replace",
+            **raw_weights,
+        }, []
+
     raw_counts = {
         "sprintCount": tier_quota_goal.get("sprint_count", tier_quota_goal.get("sprintCount")),
         "stableCount": tier_quota_goal.get("stable_count", tier_quota_goal.get("stableCount")),
@@ -8985,11 +9194,8 @@ def _normalize_plan_tier_quota_goal(
         key for key, value in raw_counts.items()
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0)
     ]
-    errors: list[dict[str, Any]] = []
-    if unsupported_fields:
-        errors.append({"reason": "unsupported_fields", "unsupported_fields": unsupported_fields})
-    if quota_type != "exact_counts":
-        errors.append({"reason": "only_exact_counts_supported", "type": quota_type})
+    if quota_type == "exact_counts" and update_mode not in {"", "replace"}:
+        errors.append({"reason": "tier_quota_update_mode_invalid", "update_mode": update_mode})
     if missing_fields:
         errors.append({"reason": "all_tier_counts_required", "missing_fields": missing_fields})
     if invalid_fields:
@@ -9002,6 +9208,58 @@ def _normalize_plan_tier_quota_goal(
         "stableCount": raw_counts["stableCount"],
         "protectCount": raw_counts["protectCount"],
     }, []
+
+
+def _freeze_plan_tier_quota_delta(goal: dict[str, Any]) -> dict[str, Any]:
+    quota_type = str(goal.get("type") or "").strip()
+    frozen: dict[str, Any] = {"type": quota_type}
+    update_mode = str(goal.get("updateMode") or "").strip()
+    if update_mode:
+        frozen["update_mode"] = update_mode
+    if quota_type == "exact_counts":
+        frozen.update(
+            {
+                "sprint_count": goal.get("sprintCount"),
+                "stable_count": goal.get("stableCount"),
+                "protect_count": goal.get("protectCount"),
+            }
+        )
+        return frozen
+    if quota_type == "count_ranges":
+        for tier in ("sprint", "stable", "protect"):
+            bound = goal.get(tier)
+            if not isinstance(bound, dict):
+                continue
+            frozen_bound: dict[str, Any] = {}
+            if bound.get("minCount") is not None:
+                frozen_bound["min_count"] = bound["minCount"]
+            if bound.get("maxCount") is not None:
+                frozen_bound["max_count"] = bound["maxCount"]
+            frozen[tier] = frozen_bound
+        return frozen
+    if quota_type == "ratios":
+        frozen.update(
+            {
+                "sprint_weight": goal.get("sprintWeight"),
+                "stable_weight": goal.get("stableWeight"),
+                "protect_weight": goal.get("protectWeight"),
+            }
+        )
+    return frozen
+
+
+def _tier_quota_fallback_summary(goal: dict[str, Any]) -> str:
+    quota_type = str(goal.get("type") or "").strip()
+    if quota_type == "exact_counts":
+        return (
+            f"把方案调整为冲{goal.get('sprintCount')}、稳{goal.get('stableCount')}、"
+            f"保{goal.get('protectCount')}"
+        )
+    if quota_type == "count_ranges":
+        return "落实冲稳保数量范围硬目标"
+    if quota_type == "ratios":
+        return "落实冲稳保比例硬目标"
+    return "落实冲稳保硬目标"
 
 
 async def _prepare_plan_change_pending_resolution(
@@ -9374,7 +9632,7 @@ async def preview_plan_change(
     requirements and an optional non-exclusive `rank_before/within_tier`
     priority rule, explicit entity or admission-tier minimum coverage while
     preserving the current plan size, one complete exact sprint/stable/protect
-    quota, the same priority rule on its own, or one exact backend review-repair
+    quota/range/ratio goal, the same priority rule on its own, or one exact backend review-repair
     Proposal selected by issue code and strategy.
     """
     effective_raw_user_text = _effective_raw_user_text(ctx, raw_user_text)
@@ -9645,13 +9903,14 @@ async def preview_plan_change(
     invalid_tier_quota_preserve = tier_quota_requested and not selection_goal and (
         not target_count or target_count <= 0
     )
+    tier_quota_type = str((normalized_tier_quota_goal or {}).get("type") or "").strip()
     tier_quota_total = (
         _as_int((normalized_tier_quota_goal or {}).get("sprintCount"))
         + _as_int((normalized_tier_quota_goal or {}).get("stableCount"))
         + _as_int((normalized_tier_quota_goal or {}).get("protectCount"))
     )
     tier_quota_total_mismatch = (
-        bool(normalized_tier_quota_goal)
+        tier_quota_type == "exact_counts"
         and bool(target_count)
         and tier_quota_total != target_count
     )
@@ -9770,7 +10029,43 @@ async def preview_plan_change(
     )
     summary = str(proposal.get("summary") or "").strip()
     blocking_reason = str(proposal.get("blockingReason") or proposal.get("blocking_reason") or "").strip()
+    canonical_objective_digest = str(
+        proposal.get("canonicalObjectiveDigest") or proposal.get("canonical_objective_digest") or ""
+    ).strip()
+    solver_version = str(proposal.get("solverVersion") or proposal.get("solver_version") or "").strip()
+    solver_input_digest = str(
+        proposal.get("solverInputDigest") or proposal.get("solver_input_digest") or ""
+    ).strip()
+    canonical_metadata_count = sum(
+        bool(value) for value in (canonical_objective_digest, solver_version, solver_input_digest)
+    )
     dry_run = proposal.get("dryRunResult") if isinstance(proposal.get("dryRunResult"), dict) else {}
+    tier_quota_change = (
+        proposal.get("tierQuotaChange")
+        if isinstance(proposal.get("tierQuotaChange"), dict)
+        else proposal.get("tier_quota_change")
+        if isinstance(proposal.get("tier_quota_change"), dict)
+        else {}
+    )
+    effective_tier_quota_goal = (
+        tier_quota_change.get("effectiveGoal")
+        if isinstance(tier_quota_change.get("effectiveGoal"), dict)
+        else tier_quota_change.get("effective_goal")
+        if isinstance(tier_quota_change.get("effective_goal"), dict)
+        else None
+    )
+    requested_tier_quota_goal = (
+        tier_quota_change.get("requestedGoal")
+        if isinstance(tier_quota_change.get("requestedGoal"), dict)
+        else tier_quota_change.get("requested_goal")
+        if isinstance(tier_quota_change.get("requested_goal"), dict)
+        else None
+    )
+    tier_quota_resolution = (
+        tier_quota_change.get("resolution")
+        if isinstance(tier_quota_change.get("resolution"), dict)
+        else None
+    )
     proposal_view = {
         "proposal_id": proposal_id,
         "status": proposal_status,
@@ -9778,8 +10073,12 @@ async def preview_plan_change(
         "summary": summary,
         "impact": str(proposal.get("impact") or "").strip(),
         "blocking_reason": blocking_reason,
+        "canonical_objective_digest": canonical_objective_digest,
+        "solver_version": solver_version,
+        "solver_input_digest": solver_input_digest,
         "dry_run": dry_run,
         "candidate_shortages": proposal.get("candidateShortages") or [],
+        "tier_quota_change": tier_quota_change,
     }
     if proposal_status != "ready":
         message = blocking_reason or summary or "当前候选和方案状态不能形成可执行的调整预览。"
@@ -9799,6 +10098,11 @@ async def preview_plan_change(
         not proposal_id
         or proposal_strategy != expected_strategy
         or proposal_source_version != source_version
+        or canonical_metadata_count != 3
+        or (
+            tier_quota_type in {"count_ranges", "ratios"}
+            and (effective_tier_quota_goal is None or tier_quota_resolution is None)
+        )
     ):
         return _json(
             {
@@ -9807,6 +10111,8 @@ async def preview_plan_change(
                     "target_count": target_count,
                     "source_version": source_version,
                     "proposal": proposal_view,
+                    "pending_created": False,
+                    "requires_confirmation": False,
                 },
                 "next_step": "respond",
                 "message": "方案调整 Proposal 与当前方案版本或策略不一致，本轮不会创建待确认操作。",
@@ -9821,6 +10127,14 @@ async def preview_plan_change(
         "rerunReview": True,
         "userGoalRequest": user_goal_request,
     }
+    if canonical_metadata_count == 3:
+        proposal_apply.update(
+            {
+                "canonicalObjectiveDigest": canonical_objective_digest,
+                "solverVersion": solver_version,
+                "solverInputDigest": solver_input_digest,
+            }
+        )
     frozen_spec: dict[str, Any] = {
         "requirements": normalized_requirements,
         "priority_rules": normalized_priority_rules,
@@ -9828,12 +10142,10 @@ async def preview_plan_change(
     if goal_type == "fill_to_count":
         frozen_spec["selection_goal"] = {"type": "fill_to_count", "target_count": target_count}
     if normalized_tier_quota_goal:
-        frozen_spec["tier_quota_goal"] = {
-            "type": "exact_counts",
-            "sprint_count": normalized_tier_quota_goal["sprintCount"],
-            "stable_count": normalized_tier_quota_goal["stableCount"],
-            "protect_count": normalized_tier_quota_goal["protectCount"],
-        }
+        frozen_spec["tier_quota_goal"] = _freeze_plan_tier_quota_delta(
+            requested_tier_quota_goal or normalized_tier_quota_goal
+        )
+    persisted_tier_quota_goal = effective_tier_quota_goal or normalized_tier_quota_goal
     execution_payload = {
         "action_family": action_family,
         "target_count_source": target_count_source,
@@ -9846,7 +10158,12 @@ async def preview_plan_change(
             "operator": "equals",
             "requirements": normalized_requirements,
             "priority_rules": normalized_priority_rules,
-            "tier_quota_goal": normalized_tier_quota_goal,
+            "tier_quota_goal": persisted_tier_quota_goal,
+            **(
+                {"tier_quota_resolution": tier_quota_resolution}
+                if tier_quota_resolution is not None
+                else {}
+            ),
         },
     }
     plan_impact = {
@@ -9875,7 +10192,7 @@ async def preview_plan_change(
         and not coverage_preserve_requested and not tier_quota_requested
         else f"落实覆盖数量要求并保持当前{target_count}个项目不变"
         if coverage_preserve_requested
-        else f"把方案调整为冲{normalized_tier_quota_goal['sprintCount']}、稳{normalized_tier_quota_goal['stableCount']}、保{normalized_tier_quota_goal['protectCount']}"
+        else _tier_quota_fallback_summary(normalized_tier_quota_goal)
         if normalized_tier_quota_goal
         else "在各冲稳保档内前置目标项目"
     )

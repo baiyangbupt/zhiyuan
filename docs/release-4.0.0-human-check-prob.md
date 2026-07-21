@@ -960,3 +960,4 @@
 - final-action 与 live 两轮测试状态均已清零。live 清理删除 MySQL command `8`、pending `37`、extra `259`、message `446`、behavior `8`、freshness `86`、integration `0`、session `86`，八表复查为 `0`；SQLite 删除 `185` 行并 `VACUUM`；runner helper 删除 `231` 个候选副本，复查为 `0`。仅通过 MySQL `PURGE BINARY LOGS TO 'binlog.000425'` 删除 10 个封存日志，最终只保留活动 `binlog.000425`，磁盘可用空间约 `51GiB -> 65GiB`。隔离 `8037/18080` 已停止。
 - 当前查询边界是：正式方案事实走 `query_plan`，院校/专业目录、可报候选和推荐名单走 `discover_options`，地域适配判断走 `explore_topic`；裸问“上海的有哪些”且上下文缺少实体类型/数据范围时走 `clarify_request(discovery_scope)`。
 - 下一阶段剩余 typed 能力按优先级为：冲稳保比例或单档最大值/区间、概率缺口与安全垫、精确配额和 requirements/priority 的联合求解、复杂 selector、多条或多级 priority。不得为覆盖这些表达回退到中文规则罗列；每项继续要求一个 `PlanChangeSpec`、一个 Proposal、一个 pending、一个 command，以及确定 dry-run、持久化和专用 postcondition，未支持组合整体 fail closed。
+- 这些剩余能力不再作为 4.0.0 未关闭缺陷继续累积，已转入 [Release 4.1.0 实施计划](./release-4.1.0-zhiyuan-agent-implementation-plan.md)。4.0.0 保持发布基线，4.1.0 再按独立 schema、solver、postcondition 和全量门禁推进。
