@@ -10,13 +10,13 @@ import asyncio
 import contextlib
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 import aiohttp
 from pydantic import Field
 from pydantic_ai import RunContext
-from typing_extensions import NotRequired
+from typing_extensions import NotRequired, TypedDict
 
 from app.agent.context import RequestContext, resolve_pending_confirmation
 from app.config import BochaSearchConfig

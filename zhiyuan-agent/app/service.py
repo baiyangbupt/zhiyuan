@@ -842,7 +842,6 @@ def _pending_confirmation_from_state(
         pending = PendingConfirmation(
             pending_id=pending_id,
             kind=kind,
-            pending_id=pending_id,
             action_family=action_family,
             preview_summary=str(state.get("summary") or ""),
             execution_payload=payload,
@@ -863,7 +862,6 @@ def _pending_confirmation_from_state(
     pending = PendingConfirmation(
         pending_id=pending_id,
         kind="intent_change",
-        pending_id=pending_id,
         action_family=action_family,
         preview_summary=str(state.get("summary") or ""),
         execution_payload=execution_payload,

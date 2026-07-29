@@ -6,6 +6,8 @@
 # OS
 .DS_Store
 Thumbs.db
+__pycache__/
+*.py[cod]
 
 # Frontend
 zhiyuan-web/node_modules/
@@ -47,3 +49,11 @@ zhiyuan-server/src/main/resources/application-online.yml
 .pids-*.pid
 logs/
 .local-prod-3.0.2/
+
+# Local verification assets and notes
+/assets/
+/TODO
+/recode
+/recodex
+zhiyuan-web/Dockerfile.standardtest.local
+*.local-pre-merge.md
