@@ -142,16 +142,18 @@
       "isolatedServicesStopped": true
     }
   },
-  "trackedLargeFixtureSources": [
+  "retiredLargeFixtureSources": [
     {
       "path": "../zhiyuan-server/data/tmp/session_volunteer_16.json",
       "bytes": 18014250,
-      "sha256": "402ac20159d583eb261288ef26c06550fb8667840e5f8548604913d3132945b8"
+      "sha256": "402ac20159d583eb261288ef26c06550fb8667840e5f8548604913d3132945b8",
+      "removedFromRepository": true
     },
     {
       "path": "../zhiyuan-server/data/tmp/session_volunteer_16_temp.json",
       "bytes": 6519240,
-      "sha256": "0a59477858505ad01c50c093f3d996eeb79ae6b968720b3ae80efe1469edba46"
+      "sha256": "0a59477858505ad01c50c093f3d996eeb79ae6b968720b3ae80efe1469edba46",
+      "removedFromRepository": true
     }
   ],
   "solverAdr": {

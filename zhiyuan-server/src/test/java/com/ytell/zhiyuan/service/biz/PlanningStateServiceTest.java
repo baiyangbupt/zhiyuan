@@ -784,11 +784,15 @@ public class PlanningStateServiceTest {
     }
 
     @Test
-    void shouldNotTreatOriginalLegacyFullDataAsSubmittedPlan() throws Exception {
+    void shouldNotTreatOriginalLegacyFullDataAsSubmittedPlan() {
         bindPlanningStateStore();
-        VolunteerBizService parser = new VolunteerBizService();
-        VolunteerRecommendListResponse original = parser.parseVolunteerRecommendListResponse(
-                new String(Files.readAllBytes(Paths.get("data/tmp/session_volunteer_23.json")), StandardCharsets.UTF_8));
+        VolunteerRecommendListResponse original = new VolunteerRecommendListResponse();
+        original.setBaseData(buildBaseData(2, 1, 1, 0));
+        original.setUserScoreDetail(buildScoreDetail());
+        original.setSprints(java.util.Arrays.asList(buildSchool(
+                "ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "18"))));
+        original.setSafes(java.util.Arrays.asList(buildSchool(
+                "ps2", "s2", "学校B", "天津", 1, buildMajorWithRatio("m2", "专业B", "52"))));
 
         when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenThrow(new RuntimeException("missing final"));
         when(volunteerBizService.loadCachedRecommendData(1L)).thenThrow(new RuntimeException("missing temp"));
@@ -797,7 +801,7 @@ public class PlanningStateServiceTest {
         PlanningStateDTO state = planningStateService.getPlanningState(1L);
 
         assertEquals("legacy_import", state.getOrderedPlanState().getGenerationMode());
-        assertEquals(441, state.getCandidatePoolState().getItems().size());
+        assertEquals(2, state.getCandidatePoolState().getItems().size());
         assertEquals(0, state.getOrderedPlanState().getItems().size());
         assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getLocked())));
         assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getPinned())));
@@ -1123,18 +1127,6 @@ public class PlanningStateServiceTest {
                 .anyMatch(log -> "legacy_plan_edit_cache_pending".equals(log.getType())));
         verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
         verify(chatSessionExtraDataSharedService, times(1)).updateById(any(ChatSessionExtraData.class));
-    }
-
-    @Test
-    void shouldImportTrackedLegacyCompleteDataFiles() throws Exception {
-        VolunteerBizService parser = new VolunteerBizService();
-        for (Long sessionId : java.util.Arrays.asList(26L, 29L, 35L)) {
-            Path path = Paths.get("data/tmp/session_volunteer_" + sessionId + ".json");
-            VolunteerRecommendListResponse legacy = parser.parseVolunteerRecommendListResponse(
-                    new String(Files.readAllBytes(path), StandardCharsets.UTF_8));
-            assertEquals(0, countLegacyPreferredEntries(legacy));
-            assertLegacyOriginalImportMatchesSource(sessionId, legacy);
-        }
     }
 
     @Test

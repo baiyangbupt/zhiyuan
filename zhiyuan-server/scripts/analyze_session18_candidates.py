@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 import json
+import os
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SESSION_FILE = ROOT / "data" / "tmp" / "session_volunteer_18.json"
+SESSION_FILE = Path(os.getenv("ZHIYUAN_SESSION_FILE", str(ROOT / "data" / "tmp" / "session_volunteer_18.json")))
 LOG_DIR = ROOT / "logs"
-SESSION_ID = 18
-TARGET_SCHOOL = "广东药科大学"
+SESSION_ID = int(os.getenv("ZHIYUAN_SESSION_ID", "18"))
+TARGET_SCHOOL = os.getenv("ZHIYUAN_TARGET_SCHOOL", "广东药科大学")
 
 
 def load_session_json():
+    if not SESSION_FILE.exists():
+        raise SystemExit(f"missing session file: {SESSION_FILE}. Set ZHIYUAN_SESSION_FILE to an external sample path.")
     return json.loads(SESSION_FILE.read_text())
 
 

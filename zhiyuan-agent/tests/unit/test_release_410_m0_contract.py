@@ -57,15 +57,18 @@ def test_release_410_m0_manifest_matches_quality_gate_and_case_steps():
     assert sum(live_files.values()) == manifest["liveGate"]["expectedStepCount"] == 231
 
 
-def test_release_410_m0_large_fixture_manifest_uses_tracked_sources_without_copying():
+def test_release_410_m0_large_fixture_manifest_records_retired_sources():
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
-    for fixture in manifest["trackedLargeFixtureSources"]:
+    for fixture in manifest["retiredLargeFixtureSources"]:
         path = (AGENT_ROOT / fixture["path"]).resolve()
         assert path.is_relative_to(REPO_ROOT)
-        assert path.is_file()
-        assert path.stat().st_size == fixture["bytes"]
-        assert _sha256(path) == fixture["sha256"]
+        assert fixture["removedFromRepository"] is True
+        assert fixture["bytes"] > 0
+        assert len(fixture["sha256"]) == 64
+        if path.exists():
+            assert path.stat().st_size == fixture["bytes"]
+            assert _sha256(path) == fixture["sha256"]
 
     assert not (AGENT_ROOT / "tests" / "fixtures" / "session_volunteer_16.json").exists()
 
