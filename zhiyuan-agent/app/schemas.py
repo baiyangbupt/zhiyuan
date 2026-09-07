@@ -27,6 +27,12 @@ class WSResponse(BaseModel):
         "pendingConfirmationCard",
         "planningWorkspaceAction",
         "thinking",
+        "assistant.delta",
+        "assistant.completed",
+        "planning.status",
+        "evidence.updated",
+        "recommendation.card",
+        "recoverable.error",
     ]
     session_id: str
     content: str

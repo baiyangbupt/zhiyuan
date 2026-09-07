@@ -28,6 +28,12 @@ class WSResponse(BaseModel):
         "pendingConfirmationCard",
         "planningWorkspaceAction",
         "thinking",
+        "assistant.delta",
+        "assistant.completed",
+        "planning.status",
+        "evidence.updated",
+        "recommendation.card",
+        "recoverable.error",
     ]
     session_id: str
     content: str  # interestAnalysisPopup / planEditSelectPopup / intentDetectSelectPopup / intentConfirmPopup 时为 JSON 字符串

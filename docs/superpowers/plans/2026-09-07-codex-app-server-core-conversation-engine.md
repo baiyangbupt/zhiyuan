@@ -559,7 +559,7 @@ Gateway 对相邻快照做结构化 diff，字段路径只允许 scoreContext、
 - Modify: zhiyuan-agent/app/schemas/ws.py
 - Modify: zhiyuan-agent/app/config.py
 
-- [ ] 步骤 1：写失败测试
+- [x] 步骤 1：写失败测试
 
     def test_output_validator_rejects_unknown_evidence():
         with pytest.raises(OutputContractError, match="evidence_not_found"):
@@ -575,20 +575,20 @@ Gateway 对相邻快照做结构化 diff，字段路径只允许 scoreContext、
         assert "arguments" not in event
         assert "userId" not in json.dumps(event)
 
-- [ ] 步骤 2：运行 RED
+- [x] 步骤 2：运行 RED
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_output_validation.py tests/unit/test_event_adapter.py -q
 
-- [ ] 步骤 3：实现 Gateway turn 流程
+- [x] 步骤 3：实现 Gateway turn 流程
 
 GatewayService.handle_turn 固定执行：解析 binding；读取 Snapshot；计算 StatePatch；确保 Thread；启动带 outputSchema 的 turn；转发安全事件；解析 TurnOutput；校验 Evidence、Artifact 和状态版本。任何 stale_state、未知引用或 Schema 解析失败都返回 recoverable.error，不发送未校验结论。
 
-- [ ] 步骤 4：保留旧 WebSocket 协议和配置切换
+- [x] 步骤 4：保留旧 WebSocket 协议和配置切换
 
 server.py 增加 GATEWAY_MODE=legacy|codex_shadow|codex_readonly。legacy 完全调用当前 ChatService；codex_shadow 旧链路向用户输出、Codex 并行 dry-run；codex_readonly 通过 WSResponse 和稳定事件输出，写操作返回只读限制。保留 reply、card、thinking，新增 assistant.delta、assistant.completed、planning.status、evidence.updated、recommendation.card、recoverable.error。
 
-- [ ] 步骤 5：运行 fake server 端到端测试
+- [x] 步骤 5：运行 fake server 端到端测试
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_output_validation.py \

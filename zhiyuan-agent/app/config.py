@@ -153,7 +153,7 @@ class GatewayConfig(BaseSettings):
         "extra": "ignore",
     }
 
-    mode: str = "legacy"
+    mode: Literal["legacy", "codex_shadow", "codex_readonly"] = "legacy"
 
 
 class McpConfig(BaseSettings):

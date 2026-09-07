@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import asyncio
+import uuid
 from importlib import metadata
 from contextlib import asynccontextmanager
 
@@ -10,7 +11,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
-from app.config import HistoryConfig
+from app.config import GatewayConfig, HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_store import message_store
 from app.llm.client import LLMClient, configure_logfire
@@ -175,6 +176,18 @@ async def lifespan(app: FastAPI):
     db_path = HistoryConfig().db_path
     history_store = ChatHistoryStore(db_path)
     app.state.chat_service = ChatService(llm_client, history_store)
+    gateway_config = GatewayConfig()
+    app.state.gateway_mode = gateway_config.mode
+    # A production GatewayService is injected by the deployment composition
+    # after trusted binding and Codex sidecar wiring are available.  Keeping
+    # this unset preserves the fully compatible legacy path by default and
+    # fails closed when codex mode is configured without those dependencies.
+    app.state.gateway_service = None
+    if gateway_config.mode != "legacy":
+        logger.warning(
+            "GATEWAY_MODE=%s requested but no trusted GatewayService was injected; using legacy path",
+            gateway_config.mode,
+        )
     logger.info("ChatService initialized")
     yield
 
@@ -339,10 +352,81 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
                 return
 
 
+async def _handle_gateway_ws_loop(ws: WebSocket, gateway) -> None:
+    """Serve stable Gateway events while retaining the v3 WebSocket envelope."""
+    while True:
+        try:
+            raw = await ws.receive_json()
+            msg = WSMessage.model_validate(raw)
+        except (json.JSONDecodeError, ValidationError):
+            if not await _safe_send_text(
+                ws,
+                WSResponse(type="error", session_id="", content="消息格式错误").model_dump_json(),
+                context="gateway.invalid_message",
+            ):
+                return
+            continue
+
+        turn_id = str(raw.get("turnId") or raw.get("turn_id") or uuid.uuid4())
+        tenant_id = str(getattr(ws.app.state, "gateway_tenant_id", ""))
+        try:
+            result = await gateway.handle_turn(
+                tenant_id=tenant_id,
+                session_id=msg.session_id,
+                user_id=msg.user_id,
+                turn_id=turn_id,
+                content=msg.content,
+            )
+        except Exception:
+            logger.exception("Gateway turn failed: session_id=%s turn_id=%s", msg.session_id, turn_id)
+            result = {
+                "reply": "当前对话引擎暂时不可用，请稍后重试。",
+                "events": [],
+                "error": "gateway_failure",
+            }
+
+        for event in result.get("events", []):
+            event_type = str(event.get("type") or "planning.status")
+            try:
+                event_response = WSResponse(
+                    type=event_type,
+                    session_id=msg.session_id,
+                    content=json.dumps(event, ensure_ascii=False),
+                )
+            except ValidationError:
+                event_response = WSResponse(
+                    type="recoverable.error",
+                    session_id=msg.session_id,
+                    content=json.dumps({"type": "recoverable.error", "message": "事件格式错误"}, ensure_ascii=False),
+                )
+            if not await _safe_send_text(
+                ws, event_response.model_dump_json(), context="gateway.event"
+            ):
+                return
+
+        response_type = "recoverable.error" if result.get("error") else "reply"
+        response_content = result.get("reply") or ""
+        if response_type == "recoverable.error":
+            response_content = json.dumps(
+                {"type": response_type, "message": response_content}, ensure_ascii=False
+            )
+        response = WSResponse(
+            type=response_type,
+            session_id=msg.session_id,
+            content=str(response_content),
+        )
+        if not await _safe_send_text(ws, response.model_dump_json(), context="gateway.reply"):
+            return
+
+
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket):
     await ws.accept()
     logger.info("WebSocket connection accepted (v3 protocol)")
+    gateway = getattr(ws.app.state, "gateway_service", None)
+    if gateway is not None:
+        await _handle_gateway_ws_loop(ws, gateway)
+        return
     service: ChatService = ws.app.state.chat_service
     try:
         await _handle_ws_loop(ws, service)
