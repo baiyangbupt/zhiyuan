@@ -510,7 +510,7 @@ Gateway 对相邻快照做结构化 diff，字段路径只允许 scoreContext、
 - Create: zhiyuan-agent/skills/codex/plugin.json
 - Create: zhiyuan-agent/tests/unit/test_codex_skill_manifest.py
 
-- [ ] 步骤 1：写失败测试
+- [x] 步骤 1：写失败测试
 
     def test_codex_skill_manifest_is_complete():
         names = load_skill_names("skills/codex")
@@ -518,18 +518,18 @@ Gateway 对相邻快照做结构化 diff，字段路径只允许 scoreContext、
                          "admission-fact-analysis", "candidate-recommendation",
                          "plan-construction", "plan-final-review"}
 
-- [ ] 步骤 2：运行 RED
+- [x] 步骤 2：运行 RED
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_codex_skill_manifest.py -q
 
-- [ ] 步骤 3：编写 Skill 内容
+- [x] 步骤 3：编写 Skill 内容
 
 每个 SKILL.md 使用 YAML frontmatter name、description、version，正文固定包含适用条件、不适用条件、前置状态、允许能力、标准步骤、证据要求、单轮调用预算、停止条件、输出结构和降级策略。每轮只选择一个主 Skill。candidate-recommendation 缺少省份、年份、位次/成绩或存在硬约束冲突时必须澄清，不能直接给候选。plan-construction 和 plan-final-review 第一期只读，禁止 Proposal。
 
 常驻规则放在 zhiyuan-agent/skills/codex/base_instructions.md，内容只包括事实优先、不得猜测、实体歧义必须澄清、Evidence 必须引用、写操作需 Proposal 和旧状态不得覆盖新 Snapshot。
 
-- [ ] 步骤 4：调用固定 Codex 版本检查 Skill 发现
+- [x] 步骤 4：调用固定 Codex 版本检查 Skill 发现
 
     cd zhiyuan-agent
     CODEX_APP_SERVER_BIN=../codex/codex-rs/target/debug/codex \

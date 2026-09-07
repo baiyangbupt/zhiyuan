@@ -16,6 +16,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.harness.codex import CodexAppServerHarness
 
 
+EXPECTED_CODEX_SKILLS = {
+    "profile-discovery",
+    "school-major-exploration",
+    "admission-fact-analysis",
+    "candidate-recommendation",
+    "plan-construction",
+    "plan-final-review",
+}
+
+
 async def check_protocol(command: list[str]) -> dict[str, str]:
     result: dict[str, str] = {}
     thread_id: str | None = None
@@ -173,6 +183,49 @@ async def check_codex_mcp_metadata(
         await harness.close()
 
 
+async def check_skills(command: list[str], skill_root: str) -> dict[str, Any]:
+    """Verify real App Server skills/list metadata and lazy file discovery."""
+    root = Path(skill_root).resolve()
+    if not root.is_dir():
+        return {"skills": "failed", "reason": "skills_root_not_found"}
+
+    harness = CodexAppServerHarness([*command, "app-server", "--stdio"], request_timeout=10.0)
+    try:
+        await harness.start()
+        await harness.client.request(
+            "skills/extraRoots/set", {"extraRoots": [str(root)]}
+        )
+        response = await harness.client.request(
+            "skills/list",
+            {"cwds": [str(root.parent.parent)], "forceReload": True},
+        )
+    except Exception as exc:
+        return {"skills": "failed", "reason": type(exc).__name__}
+    finally:
+        await harness.close()
+
+    entries = response.get("data") or []
+    metadata = [
+        skill
+        for entry in entries
+        for skill in (entry.get("skills") or [])
+        if skill.get("name") in EXPECTED_CODEX_SKILLS
+    ]
+    names = {skill.get("name") for skill in metadata}
+    valid = (
+        names == EXPECTED_CODEX_SKILLS
+        and all(skill.get("enabled") is True for skill in metadata)
+        and all(skill.get("description") for skill in metadata)
+        and all(str(skill.get("path", "")).endswith("/SKILL.md") for skill in metadata)
+    )
+    return {
+        "skills": "ok" if valid else "failed",
+        "skillsEnabled": sorted(names),
+        "skillsMetadataCount": len(metadata),
+        "skillsErrors": [error for entry in entries for error in (entry.get("errors") or [])],
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-protocol", action="store_true")
@@ -203,11 +256,7 @@ def main() -> None:
                 )
             )
     if args.list_skills:
-        output["skillsRoot"] = str(args.list_skills)
-        output["skills"] = sorted(
-            path.parent.name
-            for path in args.list_skills.glob("*/SKILL.md")
-        )
+        output.update(asyncio.run(check_skills([command], str(args.list_skills))))
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))
     if any(value == "failed" for value in output.values()):
         raise SystemExit(1)

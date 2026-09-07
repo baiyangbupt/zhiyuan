@@ -1,0 +1,19 @@
+{
+  "name": "zhiyuan-codex-planner",
+  "version": "1.0.0",
+  "description": "Codex planning skills for evidence-backed Chinese volunteer application guidance.",
+  "baseInstructions": "base_instructions.md",
+  "skills": [
+    "profile-discovery",
+    "school-major-exploration",
+    "admission-fact-analysis",
+    "candidate-recommendation",
+    "plan-construction",
+    "plan-final-review"
+  ],
+  "references": [
+    "references/evidence-policy.md",
+    "references/planner-questioning-guide.md",
+    "references/recommendation-explanation-guide.md"
+  ]
+}
