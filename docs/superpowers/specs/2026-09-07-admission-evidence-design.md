@@ -40,7 +40,34 @@
 - 最终志愿方案生成、排序和审查规则重构；
 - 新增外部数据源或用模型生成数据补洞。
 
+### 2.4 横切定义（贯穿整个对话引擎）
+
+招生类型不是某个查询接口的局部字段，而是会话和方案的全局维度。所有后续阶段必须遵守以下不变量：
+
+- **会话状态：** Snapshot、StatePatch、ConversationPhase 和工作台状态都保存规范化的 `admissionMode`；后端原始值 `major`/`majorGroup` 只在边界适配，模型不能自行改写。
+- **工具调用：** MCP、推荐、审查和方案查询必须继承可信会话的 `admissionMode`，或显式传入并通过一致性校验；缺失时澄清，禁止根据用户口语或候选行形状猜测。
+- **标识与引用：** `EvidenceRef`、Candidate、OrderedUnit、Review finding、Artifact 和 Proposal 引用都带模式和招生单元 ID。不同模式即使字符串 ID 相同也不得互相引用。
+- **统计与规则：** 冲稳保、方案数量、梯度、有效保底和风险审查以招生单元计数；`major` 是“专业+大学”一单元，`major_group` 是“院校专业组”一单元，组内专业行不能重复计数。
+- **模型与算法：** 录取率事实和风险 tier 由后端按对应模式提供；模型只负责解释和引导，不把组内专业率提升为专业组率，也不把专业组拆成多个志愿参与排序。
+- **模式切换：** 会话招生类型发生变化时，旧 Snapshot、候选、Evidence、Review 和 Artifact 全部标记为需要重新查询/审查；不得跨模式复用缓存或 Proposal。
+- **前端：** 工作台、事实卡片、审查结果和最终方案表始终显示招生类型标签，并按对应单元粒度展示数量和风险；院校专业组的组级事实与组内专业明细分层呈现。
+
+因此，本切片虽然先交付录取率与 Evidence，但其契约字段和校验规则必须被后续 Rank/Solver、Plan Review、Proposal/CAS 及前端工作台直接复用，不能再设计第二套招生类型语义。
+
 ## 3. 统一数据模型
+
+### 3.0 招生类型与招生单元层级
+
+系统同时支持两种招生类型，不能把二者压成同一个“专业志愿”概念。统一契约使用 `admissionMode` 表达类型，并由 Java 现有 `VolunteerModel` 做适配：
+
+| 业务类型 | `admissionMode` | 后端 `VolunteerModel` | 招生单元唯一性 | 下挂专业明细 |
+| --- | --- | --- | --- | --- |
+| 专业+大学 | `major` | `major` | `planMajorDataId`（与院校计划标识共同确定） | 恰好一条专业记录 |
+| 院校专业组 | `major_group` | `majorGroup` | `planSchoolDataId`/`unitId` | 一个专业组下可有多条专业记录 |
+
+风险层和方案计数始终以招生单元为粒度：`major` 模式按“专业+大学”单元计数，`major_group` 模式按“院校专业组”计数，不能把组内多条专业行重复计入。院校专业组的组级录取率用于该招生单元的冲稳保；组内专业录取率只能作为明细证据，不能在 Gateway 或模型侧替代组级录取率。
+
+当 `major_group` 查询只返回组级数据而没有专业明细时，组级事实仍可有效，但必须在 `limitations` 标明 `majorDetailAvailable=false`；若用户问题要求判断组内具体专业，则应返回 `insufficient_data`。
 
 ### 3.1 AdmissionFact
 
@@ -49,21 +76,25 @@
 | 字段 | 类型 | 必填 | 语义 |
 | --- | --- | --- | --- |
 | `admissionUnitId` | string | 是 | 招生单元稳定标识 |
+| `admissionMode` | enum | 是 | `major`（专业+大学）或 `major_group`（院校专业组） |
 | `schoolId` / `schoolName` | string | 是 | 标准院校实体 |
-| `majorId` / `majorName` | string | 是 | 标准专业实体或专业组 |
+| `majorId` / `majorName` | string | 条件必填 | `major` 模式必填；`major_group` 模式作为组内明细，可为空 |
+| `groupCode` | string | 条件必填 | `major_group` 模式的院校专业组代码 |
+| `majorItems` | object[] | 条件必填 | `major_group` 模式的组内专业明细；`major` 模式最多一条 |
 | `provinceCode` | string | 是 | 生源省份 |
 | `year` | integer | 是 | 招生年份 |
 | `batch` | string | 是 | 批次/招生类型 |
 | `scoreRange` | object | 否 | 历史分数范围，存在时包含上下界 |
 | `rankRange` | object | 否 | 历史位次范围，存在时包含上下界 |
-| `admissionRate` | number | 是 | 系统计算的录取率，单位为百分比 `0~100` |
-| `riskTier` | enum | 是 | `冲`、`稳` 或 `保`，由服务端推导并校验 |
+| `unitAdmissionRate` | number | 是 | 当前招生单元的系统录取率，单位为百分比 `0~100` |
+| `riskTier` | enum | 是 | 招生单元的 `冲`、`稳` 或 `保`，由服务端推导并校验 |
+| `majorAdmissionRate` | number | 否 | 组内专业明细的系统录取率；不得替代 `unitAdmissionRate` |
 | `dataVersion` | string | 是 | 招生数据版本 |
 | `algorithmVersion` | string | 是 | 录取率计算算法版本 |
 | `observedAt` | datetime | 是 | 数据生成/观测时间 |
 | `limitations` | string[] | 否 | 适用范围和缺失说明 |
 
-`scoreRange`、`rankRange` 任一缺失不影响事实有效性，但必须在 `limitations` 中说明。`admissionRate` 缺失、非有限数值或超出 `0~100` 时，事实无效。
+`scoreRange`、`rankRange` 任一缺失不影响事实有效性，但必须在 `limitations` 中说明。`unitAdmissionRate` 缺失、非有限数值或超出 `0~100` 时，事实无效。`major` 模式必须能够定位到一个具体专业和院校计划；`major_group` 模式必须能够定位到专业组代码/计划标识。
 
 ### 3.2 EvidenceRef
 
@@ -73,7 +104,9 @@
 {
   "evidenceId": "admission-unit:2026:bj:unit-123:v17",
   "kind": "admission_fact",
+  "admissionMode": "major_group",
   "admissionUnitId": "unit-123",
+  "groupCode": "101",
   "source": "zhiyuan-server.admission",
   "dataVersion": "2026-06-v17",
   "algorithmVersion": "admission-rate-v3",
@@ -93,12 +126,13 @@ Evidence 不承载可执行动作，也不能跨租户或跨会话复用。`stat
 
 ### 3.3 MCP 响应 envelope
 
-三个只读工具 `admission.get_history`、`admission.get_current_plan`、`admission.check_eligibility` 使用同一 envelope：
+三个只读工具 `admission.get_history`、`admission.get_current_plan`、`admission.check_eligibility` 使用同一 envelope。请求必须带 `admissionMode`；未提供时只能使用当前会话已确认的 `VolunteerModel`，不能由模型猜测：
 
 ```json
 {
   "status": "ok",
   "data": {
+    "admissionMode": "major_group",
     "admissionFacts": [],
     "evidence": [],
     "limitations": []
@@ -112,10 +146,10 @@ Evidence 不承载可执行动作，也不能跨租户或跨会话复用。`stat
 
 ## 4. 数据流与职责
 
-1. Gateway 根据当前会话 Snapshot 构造只读 MCP 请求，传入可信的 tenant/session binding 和期望 `stateVersion`。
+1. Gateway 根据当前会话 Snapshot 构造只读 MCP 请求，传入可信的 tenant/session binding、规范化 `admissionMode` 和期望 `stateVersion`。
 2. Java 后端查询招生单元及系统录取率，返回 AdmissionFact、EvidenceRef、数据版本和限制说明。
-3. MCP 层执行 envelope、范围和调用预算校验；禁止写工具和模型覆盖身份字段。
-4. Gateway 的输出校验器验证招生单元存在性、录取率范围、riskTier 边界、Evidence 引用、tenant/session 范围和 `stateVersion`/`dataVersion` 新鲜度。
+3. MCP 层执行 envelope、招生类型、范围和调用预算校验；禁止写工具和模型覆盖身份字段。
+4. Gateway 的输出校验器验证招生单元存在性、招生类型层级、录取率范围、riskTier 边界、Evidence 引用、tenant/session 范围和 `stateVersion`/`dataVersion` 新鲜度；`major_group` 的组级录取率与组内专业录取率分别校验。
 5. 只有通过校验的事实才能进入 `TurnOutput` 的 recommendation、artifact 或 `evidence.updated` 事件。
 6. 前端从结构化 Artifact/Evidence 渲染录取事实卡片和 Evidence 抽屉，不解析 assistant Markdown。
 
@@ -130,12 +164,15 @@ Evidence 不承载可执行动作，也不能跨租户或跨会话复用。`stat
 ### 5.2 版本与范围错误
 
 - Evidence 属于其他 session/tenant：`evidence_scope_mismatch`。
+- Evidence 的 `admissionMode` 与当前会话模式不一致：`admission_mode_mismatch`。
 - `stateVersion` 落后于当前 Snapshot，或 `dataVersion` 已失效：`evidence_stale`。
 - 版本校验失败时不使用旧缓存冒充当前结果。
 
 ### 5.3 格式和口径错误
 
-- `admissionRate` 不是有限数值或不在 `0~100`：拒绝该事实。
+- `unitAdmissionRate` 不是有限数值或不在 `0~100`：拒绝该事实；组内 `majorAdmissionRate` 若存在也必须独立校验。
+- `admissionMode=major` 却缺少具体专业，或 `admissionMode=major_group` 却缺少组标识：拒绝该事实。
+- 模式切换后继续引用旧模式的 Candidate、Review、Artifact 或 Proposal：整体拒绝并要求重新查询。
 - `riskTier` 与固定边界不一致：拒绝模型提供的 tier，并要求服务端重新生成；不得静默展示冲稳保。
 - 事实缺少 EvidenceRef：不得进入 recommendation/artifact。
 
@@ -149,7 +186,9 @@ Evidence 不承载可执行动作，也不能跨租户或跨会话复用。`stat
 
 ## 6. 前端交互
 
-- 录取事实卡片显示院校/专业/招生单元、录取率、冲稳保、年份/批次和数据状态。
+- 录取事实卡片显示招生类型（专业+大学/院校专业组）、院校/专业或专业组、招生单元、单元录取率、冲稳保、年份/批次和数据状态。
+- 院校专业组卡片将组级录取率和冲稳保放在主位，组内专业录取率作为明细列表展示，避免用户误以为某一专业行的概率就是整个专业组概率。
+- 会话模式切换后，前端清空旧模式的事实、审查和方案卡片，并显示“已切换招生类型，需要重新查询/审查”，不混合展示两种模式的数据。
 - Evidence 抽屉显示来源、数据版本、算法版本、观测时间、适用范围和限制说明。
 - `insufficient_data`、`evidence_stale` 和 `recoverable_error` 使用明确状态文案，并提供重新查询入口。
 - 前端不从模型文本中提取或计算录取率；缺少结构化字段时不显示数字。
@@ -158,9 +197,12 @@ Evidence 不承载可执行动作，也不能跨租户或跨会话复用。`stat
 
 ### 7.1 Python/MCP/Gateway
 
-- 有效招生单元事实可通过 envelope、Evidence 和版本校验。
+- 两种招生类型的有效招生单元事实都可通过 envelope、Evidence 和版本校验。
+- Snapshot、StatePatch、Candidate、Review、Artifact 和 Proposal 引用都保留 `admissionMode`，模式切换会触发缓存/Evidence 失效。
+- `major` 模式按专业+大学单元计数且只接受一条专业明细；`major_group` 模式按专业组计数，组内多条专业不重复计数。
+- 专业组主卡片使用组级录取率分层，组内专业录取率不会覆盖组级 tier。
 - 录取率边界 `<50`、`50~70`、`70~99` 的 tier 结果稳定。
-- 非法数值、未知招生单元、缺字段和错误 tier 被拒绝。
+- 非法数值、未知招生单元、招生类型与标识不匹配、缺字段和错误 tier 被拒绝。
 - 过期版本、跨会话 Evidence 和 Snapshot 不匹配被拒绝。
 - 无 Evidence 的事实不能进入 recommendation/artifact。
 - 后端失败仅一次重试，随后返回结构化可恢复错误。
@@ -194,4 +236,3 @@ Evidence 不承载可执行动作，也不能跨租户或跨会话复用。`stat
 2. Rank/Solver：拆分 Eligibility、Admission Probability、Preference Fit 和 Data Confidence，继续复用权威录取率；
 3. Proposal/CAS：只允许 preview/create，确认时重新读取权威版本并校验 postcondition；
 4. 规划工作台：扩展候选、Evidence、Review finding、Plan diff 和最终 Artifact。
-
