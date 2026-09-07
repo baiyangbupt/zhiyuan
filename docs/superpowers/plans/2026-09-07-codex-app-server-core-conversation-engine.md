@@ -736,7 +736,7 @@ conversation.ts 定义 Gateway 事件和 Artifact 类型；conversationEvents.mj
 
 **目的：** 验证 Python、Java、Web、Codex 版本和旧链路没有被破坏。
 
-- [ ] 步骤 1：运行 Python 目标测试
+- [x] 步骤 1：运行 Python 目标测试
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_harness_protocol.py \
@@ -748,7 +748,7 @@ conversation.ts 定义 Gateway 事件和 Artifact 类型；conversationEvents.mj
 
 预期：全部 PASS；未执行的真实 LLM e2e 必须在报告注明。
 
-- [ ] 步骤 2：运行 Java 目标测试
+- [x] 步骤 2：运行 Java 目标测试
 
     cd ../zhiyuan-server
     mvn -q -Dtest=ConversationContractSerializationTest,ConversationSnapshotServiceTest,\
@@ -756,13 +756,13 @@ conversation.ts 定义 Gateway 事件和 Artifact 类型；conversationEvents.mj
 
 预期：全部 PASS。
 
-- [ ] 步骤 3：运行前端测试和构建
+- [x] 步骤 3：运行前端测试和构建
 
     cd ../zhiyuan-web
     node --test src/utils/conversationEvents.test.mjs
     npm run build:dev
 
-- [ ] 步骤 4：运行协议和安全检查
+- [x] 步骤 4：运行协议和安全检查
 
     cd ../zhiyuan-agent
     CODEX_APP_SERVER_BIN=../codex/codex-rs/target/debug/codex \
@@ -776,11 +776,11 @@ conversation.ts 定义 Gateway 事件和 Artifact 类型；conversationEvents.mj
     .venv/bin/python -m pytest tests/unit/test_ws_compat.py \
       tests/unit/test_chat_service_history_persistence.py tests/unit/test_state_sync.py -q
 
-- [ ] 步骤 6：记录发布门禁
+- [x] 步骤 6：记录发布门禁
 
 未授权写操作、跨会话 binding/Proposal、无 Evidence 的关键事实、虚假招生单元、过期版本写入和冲稳保分类不一致必须全部为 0；Codex commit 固定为 89650c6；MCP 工具为 8 个只读工具、0 个写工具。
 
-- [ ] 步骤 7：提交整体验收记录
+- [x] 步骤 7：提交整体验收记录
 
     git add docs/superpowers/plans/2026-09-07-codex-app-server-core-conversation-engine.md \
       zhiyuan-agent/docs/codex-app-server-poc-report.md \
