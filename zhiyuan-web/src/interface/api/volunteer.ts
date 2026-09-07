@@ -690,6 +690,7 @@ export interface PlanningDataFreshnessCheckReq {
   markStale?: boolean;
   fetchLatest?: boolean;
   syncSourceData?: boolean;
+  applyLatestSnapshotToWorkspace?: boolean;
 }
 
 export interface PlanningDataFreshnessCheckRes {

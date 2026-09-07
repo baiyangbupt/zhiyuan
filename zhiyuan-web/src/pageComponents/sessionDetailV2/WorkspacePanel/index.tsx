@@ -1543,6 +1543,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
   };
 
+  const keepSelectedCandidateItemsInCache = () => {
+    const nextCache: Record<string, PlanningCandidateItem> = {};
+    Object.entries(candidateItemCacheRef.current).forEach(([key, item]) => {
+      if (buildCandidateIdentityKeys(item).some(identity => selectedCandidateIdentitySet.has(identity))) {
+        nextCache[key] = item;
+      }
+    });
+    candidateItemCacheRef.current = nextCache;
+    setCandidateCacheVersion(version => version + 1);
+  };
+
   const normalizePlanningState = (data: PlanningStateRes): PlanningStateRes => {
     const normalizedWorkingPlanState = data.workingPlanState || data.draftPlanState;
     if (!normalizedWorkingPlanState) {
@@ -2449,8 +2460,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (refreshMode === 'local_query') {
       candidateQueryInFlightPagesRef.current.clear();
       latestCandidateQuerySignatureRef.current = '';
-      candidateItemCacheRef.current = {};
-      setCandidateCacheVersion(version => version + 1);
+      keepSelectedCandidateItemsInCache();
       queryCandidatePool(1);
       return;
     }

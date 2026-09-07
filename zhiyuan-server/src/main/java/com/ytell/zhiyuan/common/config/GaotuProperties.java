@@ -14,5 +14,10 @@ public class GaotuProperties {
     private Boolean riskOpen;
     private Boolean authOpen;
     private String tempDataPath;
+    private Boolean programDataPagedEnabled = true;
+    private Boolean programDataFallbackEnabled = true;
+    private Integer programDataPageRetryTimes = 2;
+    private Integer programDataSessionReinitTimes = 1;
+    private Integer programDataPageConcurrency = 1;
 
 }

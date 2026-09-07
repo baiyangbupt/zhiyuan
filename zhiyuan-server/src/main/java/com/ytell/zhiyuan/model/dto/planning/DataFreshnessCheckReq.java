@@ -25,4 +25,5 @@ public class DataFreshnessCheckReq {
     private Boolean markStale = true;
     private Boolean fetchLatest = false;
     private Boolean syncSourceData = false;
+    private Boolean applyLatestSnapshotToWorkspace = false;
 }

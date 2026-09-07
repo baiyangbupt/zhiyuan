@@ -7,6 +7,7 @@ public class VolunteerSourceDataSnapshot {
     private Long chatSessionId;
     private String fetchedAt;
     private String sourceDataHash;
+    private String sourceDataJson;
     private String localFilePath;
     private String ossFileName;
     private VolunteerDataDTO volunteerData;

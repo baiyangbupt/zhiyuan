@@ -31,6 +31,8 @@ public class GaotuClient {
     private static final String REPORT_INFO_PATH = "/hl-wish/practice-evaluation/feign/evaluation/report/getById";
     private static final String PROGRAM_LIST_PATH = "/hl-wish/ci/ci_feign/volunteer/generateExpertAIProgram";
     private static final String PROGRAM_LIST_ALL_PATH = "/hl-wish/ci/ci_feign/volunteer/generateAllExpertAIProgram";
+    private static final String PROGRAM_LIST_ALL_INIT_PATH = "/hl-wish/ci/ci_feign/volunteer/generateAllExpertAIProgramInit";
+    private static final String PROGRAM_LIST_ALL_PAGE_PATH = "/hl-wish/ci/ci_feign/volunteer/generateAllExpertAIProgramPage";
 
     private static final String PROGRAM_SAVE_PATH = "/hl-wish/ci/ci_feign/volunteer/saveOrUpdateVolunteerProgram";
     private static final String MACHINE_AUDIT_PATH = "/rk/api/ugc/machine/audit/v1";
@@ -172,6 +174,20 @@ public class GaotuClient {
     public ResponseDTO<JSONObject> getProgramFullList(ProgramPageReq req) {
         String baseUrl = Strings.isNullOrEmpty(gaotuProperties.getProgramDataUrl()) ? gaotuProperties.getZhiyuanUrl() : gaotuProperties.getProgramDataUrl();
         String url = baseUrl + PROGRAM_LIST_ALL_PATH;
+        return JsonHttpUtil.post(url, req, getHeader(), new TypeReference<ResponseDTO<JSONObject>>() {
+        });
+    }
+
+    public ResponseDTO<JSONObject> getProgramFullListInit(ProgramPageReq req) {
+        String baseUrl = Strings.isNullOrEmpty(gaotuProperties.getProgramDataUrl()) ? gaotuProperties.getZhiyuanUrl() : gaotuProperties.getProgramDataUrl();
+        String url = baseUrl + PROGRAM_LIST_ALL_INIT_PATH;
+        return JsonHttpUtil.post(url, req, getHeader(), new TypeReference<ResponseDTO<JSONObject>>() {
+        });
+    }
+
+    public ResponseDTO<JSONObject> getProgramFullListPage(ExpertAIProgramPageReq req) {
+        String baseUrl = Strings.isNullOrEmpty(gaotuProperties.getProgramDataUrl()) ? gaotuProperties.getZhiyuanUrl() : gaotuProperties.getProgramDataUrl();
+        String url = baseUrl + PROGRAM_LIST_ALL_PAGE_PATH;
         return JsonHttpUtil.post(url, req, getHeader(), new TypeReference<ResponseDTO<JSONObject>>() {
         });
     }

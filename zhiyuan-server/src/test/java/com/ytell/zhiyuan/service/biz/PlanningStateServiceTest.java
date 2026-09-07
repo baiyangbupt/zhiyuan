@@ -390,6 +390,42 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldFetchLatestVolunteerDataWithoutSyncingWorkspaceByDefault() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        CandidateItemDTO item = new CandidateItemDTO();
+        item.setVolunteerId("school-1_major-1");
+        item.setPlanSchoolDataId("school-1");
+        item.setSchoolName("学校A");
+        item.setMajorName("专业A");
+        item.setTier("稳");
+        item.setPlanNum(10);
+        initial.getCandidatePoolState().getItems().add(item);
+        saveStateToStore(1L, initial);
+
+        VolunteerSourceDataSnapshot snapshot = new VolunteerSourceDataSnapshot();
+        snapshot.setSourceDataHash("source-v2");
+        snapshot.setVolunteerData(new com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO());
+        when(volunteerSourceDataSyncService.fetchLatestSourceData(eq(1L), eq(1L), eq(false))).thenReturn(snapshot);
+        when(volunteerBizService.recommendVolunteerListWithSourceData(eq(1L), eq(1L), eq(false), any()))
+                .thenReturn(buildLatestVolunteerResponse("school-1", "major-1", "专业A", 12));
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setFetchLatest(true);
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+        PlanningStateDTO stored = planningStateService.getPlanningState(1L);
+
+        assertEquals("changed", res.getDataFreshnessState().getStatusCode());
+        assertEquals("minor", res.getDataFreshnessState().getChangeLevel());
+        assertEquals(Integer.valueOf(1), res.getDataFreshnessState().getUpdatedCount());
+        assertTrue(Boolean.TRUE.equals(res.getDataFreshnessState().getRequiresCandidateRefresh()));
+        assertTrue(staleCandidatePool(res.getStaleFlags()));
+        assertEquals(Integer.valueOf(10), stored.getCandidatePoolState().getItems().get(0).getPlanNum());
+        assertEquals(res.getDataFreshnessState().getLatestDataHash(), stored.getDataFreshnessState().getLatestDataHash());
+        assertFalse(res.getDataFreshnessState().getLatestDataHash().equals(stored.getDataFreshnessState().getDataHash()));
+    }
+
+    @Test
     void shouldFetchLatestVolunteerDataAndSyncCandidateSnapshot() {
         bindPlanningStateStore();
         PlanningStateDTO initial = new PlanningStateDTO();
@@ -412,6 +448,7 @@ public class PlanningStateServiceTest {
 
         DataFreshnessCheckReq req = new DataFreshnessCheckReq();
         req.setFetchLatest(true);
+        req.setApplyLatestSnapshotToWorkspace(true);
         DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
         PlanningStateDTO stored = planningStateService.getPlanningState(1L);
 
@@ -462,6 +499,7 @@ public class PlanningStateServiceTest {
 
         DataFreshnessCheckReq req = new DataFreshnessCheckReq();
         req.setFetchLatest(true);
+        req.setApplyLatestSnapshotToWorkspace(true);
         DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
         PlanningStateDTO stored = planningStateService.getPlanningState(1L);
 
@@ -526,6 +564,7 @@ public class PlanningStateServiceTest {
 
         DataFreshnessCheckReq req = new DataFreshnessCheckReq();
         req.setFetchLatest(true);
+        req.setApplyLatestSnapshotToWorkspace(true);
         DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
         PlanningStateDTO stored = planningStateService.getPlanningState(1L);
 
@@ -574,6 +613,7 @@ public class PlanningStateServiceTest {
 
         DataFreshnessCheckReq req = new DataFreshnessCheckReq();
         req.setFetchLatest(true);
+        req.setApplyLatestSnapshotToWorkspace(true);
         DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
         PlanningStateDTO stored = planningStateService.getPlanningState(1L);
 
@@ -630,6 +670,7 @@ public class PlanningStateServiceTest {
 
         DataFreshnessCheckReq req = new DataFreshnessCheckReq();
         req.setFetchLatest(true);
+        req.setApplyLatestSnapshotToWorkspace(true);
         DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
         PlanningStateDTO stored = planningStateService.getPlanningState(1L);
 
@@ -643,6 +684,52 @@ public class PlanningStateServiceTest {
         assertEquals(Double.valueOf(0.12D), stored.getCandidatePoolState().getItems().get(0).getBaoyanRatio());
         assertEquals(Integer.valueOf(20), stored.getCandidatePoolState().getItems().get(0).getMasterCount());
         assertEquals(Integer.valueOf(8), stored.getCandidatePoolState().getItems().get(0).getDoctorCount());
+    }
+
+    @Test
+    void shouldRejectPartialLatestCandidatePoolWhenRefreshingSourceData() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        for (int i = 1; i <= 10; i++) {
+            CandidateItemDTO candidate = buildCandidateItem(
+                    "ps" + i + "_m" + i,
+                    "ps" + i,
+                    "s" + i,
+                    "学校" + i,
+                    "稳",
+                    "专业" + i,
+                    50D + i,
+                    80D,
+                    50D + i,
+                    false);
+            initial.getCandidatePoolState().getItems().add(candidate);
+            initial.getOrderedPlanState().getItems().add(buildOrderedItem(
+                    candidate.getVolunteerId(),
+                    candidate.getSchoolName(),
+                    candidate.getMajorName(),
+                    candidate.getTier(),
+                    i));
+        }
+        saveStateToStore(1L, initial);
+
+        VolunteerSourceDataSnapshot snapshot = new VolunteerSourceDataSnapshot();
+        snapshot.setSourceDataHash("partial-source");
+        snapshot.setSourceDataJson("{\"detailList\":[]}");
+        snapshot.setVolunteerData(new com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO());
+        when(volunteerSourceDataSyncService.fetchLatestSourceData(eq(1L), eq(1L), eq(false))).thenReturn(snapshot);
+        when(volunteerBizService.recommendVolunteerListWithSourceData(eq(1L), eq(1L), eq(false), any()))
+                .thenReturn(buildLatestVolunteerResponse("ps1", "m1", "专业1", 12));
+
+        CandidatePoolGenerateReq req = new CandidatePoolGenerateReq();
+        req.setForceRegenerate(true);
+        req.setRefreshSourceData(true);
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> planningStateService.generateCandidatePool(1L, 1L, req));
+        PlanningStateDTO stored = planningStateService.getPlanningState(1L);
+
+        assertEquals("最新招生计划数据暂未完整返回，已保留当前候选和方案数据", exception.getMessage());
+        assertEquals(10, stored.getCandidatePoolState().getItems().size());
+        verify(volunteerSourceDataSyncService, never()).persistFetchedSourceData(any(), any(), any());
     }
 
 

@@ -93,6 +93,7 @@ public class VolunteerSourceDataSyncService {
         snapshot.setChatSessionId(chatSessionId);
         snapshot.setFetchedAt(OffsetDateTime.now().toString());
         snapshot.setSourceDataHash(buildDigest(dataJson));
+        snapshot.setSourceDataJson(dataJson);
         snapshot.setVolunteerData(volunteerData);
 
         String localFilePath = volunteerFilePathUtil.getLocalFilePath(chatSessionId, VolunteerFileType.ORIGINAL);
@@ -103,6 +104,21 @@ public class VolunteerSourceDataSyncService {
             persistSourceData(tenantId, chatSessionId, localFilePath, ossFileName, dataJson);
         }
         return snapshot;
+    }
+
+    public void persistFetchedSourceData(Long tenantId,
+                                         Long chatSessionId,
+                                         VolunteerSourceDataSnapshot snapshot) {
+        if (snapshot == null || Strings.isNullOrEmpty(snapshot.getSourceDataJson())) {
+            throw new BusinessException(110, "最新志愿源数据为空，无法保存");
+        }
+        String localFilePath = Strings.isNullOrEmpty(snapshot.getLocalFilePath())
+                ? volunteerFilePathUtil.getLocalFilePath(chatSessionId, VolunteerFileType.ORIGINAL)
+                : snapshot.getLocalFilePath();
+        String ossFileName = Strings.isNullOrEmpty(snapshot.getOssFileName())
+                ? volunteerFilePathUtil.getOssFilePath(chatSessionId, VolunteerFileType.ORIGINAL)
+                : snapshot.getOssFileName();
+        persistSourceData(tenantId, chatSessionId, localFilePath, ossFileName, snapshot.getSourceDataJson());
     }
 
     public String loadLocalSourceDataHash(Long chatSessionId) {

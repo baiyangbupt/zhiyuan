@@ -1169,12 +1169,26 @@ public class PlanningStateService {
         VolunteerRecommendListResponse response;
         VolunteerSourceDataSnapshot sourceSnapshot = null;
         if (Boolean.TRUE.equals(req.getRefreshSourceData())) {
-            sourceSnapshot = volunteerSourceDataSyncService.fetchLatestSourceData(tenantId, chatSessionId, true);
+            sourceSnapshot = volunteerSourceDataSyncService.fetchLatestSourceData(tenantId, chatSessionId, false);
             response = volunteerBizService.recommendVolunteerListWithSourceData(tenantId, chatSessionId, false, sourceSnapshot.getVolunteerData());
         } else {
             response = volunteerBizService.recommendVolunteerList(tenantId, chatSessionId, false, false);
         }
         CandidatePoolStateDTO candidatePoolState = buildCandidatePoolStateFromResponse(chatSessionId, state, response);
+        if (Boolean.TRUE.equals(req.getRefreshSourceData())) {
+            LatestCandidatePoolApplyCheck applyCheck = checkLatestCandidatePoolApplicable(state, candidatePoolState);
+            if (!applyCheck.applicable) {
+                log.warn("skip candidate pool source refresh because latest candidate pool is incomplete chatSessionId={} "
+                                + "currentCount={} latestCount={} selectedCount={} selectedMatchedCount={}",
+                        chatSessionId,
+                        applyCheck.currentCount,
+                        applyCheck.latestCount,
+                        applyCheck.selectedCount,
+                        applyCheck.selectedMatchedCount);
+                throw new BusinessException(110, "最新招生计划数据暂未完整返回，已保留当前候选和方案数据");
+            }
+            volunteerSourceDataSyncService.persistFetchedSourceData(tenantId, chatSessionId, sourceSnapshot);
+        }
 
         state.setCandidatePoolState(candidatePoolState);
         refreshDataFreshnessSnapshot(chatSessionId, state, candidatePoolState);
@@ -5491,6 +5505,8 @@ public class PlanningStateService {
         String currentHash = normalizeCurrentCandidateDataHash(state, freshness);
         boolean hasExternalSnapshot = !Strings.isNullOrEmpty(incomingHash);
         boolean hashChanged = hasExternalSnapshot && !incomingHash.equals(currentHash);
+        boolean applyLatestSnapshotToWorkspace = shouldApplyLatestDataFreshnessSnapshotToWorkspace(
+                chatSessionId, state, latestCandidatePool, safeReq);
         if (!hasExternalSnapshot) {
             if (!"changed".equals(freshness.getStatusCode())) {
                 markDataFreshnessCurrent(freshness, currentHash, safeReq);
@@ -5499,14 +5515,16 @@ public class PlanningStateService {
             changed = true;
         } else if (!hashChanged) {
             markDataFreshnessCurrent(freshness, incomingHash, safeReq);
-            if (syncLatestDataFreshnessSnapshotToWorkspace(chatSessionId, state, freshness, latestCandidatePool, safeReq, incomingHash)) {
+            if (applyLatestSnapshotToWorkspace
+                    && syncLatestDataFreshnessSnapshotToWorkspace(chatSessionId, state, freshness, latestCandidatePool, safeReq, incomingHash)) {
                 state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
             }
             clearDataFreshnessStaleFlags(state);
             changed = true;
         } else if (isSamePendingDataFreshnessChange(freshness, safeReq, incomingHash)) {
             preservePendingDataFreshnessCheckResult(freshness, safeReq, now);
-            if (syncLatestDataFreshnessSnapshotToWorkspace(chatSessionId, state, freshness, latestCandidatePool, safeReq, incomingHash)) {
+            if (applyLatestSnapshotToWorkspace
+                    && syncLatestDataFreshnessSnapshotToWorkspace(chatSessionId, state, freshness, latestCandidatePool, safeReq, incomingHash)) {
                 state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
             }
             changed = true;
@@ -5515,7 +5533,9 @@ public class PlanningStateService {
             if (Boolean.TRUE.equals(safeReq.getMarkStale())) {
                 markDataFreshnessStale(state, freshness);
             }
-            syncLatestDataFreshnessSnapshotToWorkspace(chatSessionId, state, freshness, latestCandidatePool, safeReq, incomingHash);
+            if (applyLatestSnapshotToWorkspace) {
+                syncLatestDataFreshnessSnapshotToWorkspace(chatSessionId, state, freshness, latestCandidatePool, safeReq, incomingHash);
+            }
             appendDataFreshnessOperationLog(state, freshness);
             state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
             changed = true;
@@ -5680,6 +5700,93 @@ public class PlanningStateService {
             req.setSummary("最新招生计划与当前工作区快照一致。");
         }
         return latestCandidatePool;
+    }
+
+    private boolean shouldApplyLatestDataFreshnessSnapshotToWorkspace(Long chatSessionId,
+                                                                      PlanningStateDTO state,
+                                                                      CandidatePoolStateDTO latestCandidatePool,
+                                                                      DataFreshnessCheckReq req) {
+        if (!Boolean.TRUE.equals(req == null ? null : req.getApplyLatestSnapshotToWorkspace())) {
+            return false;
+        }
+        LatestCandidatePoolApplyCheck applyCheck = checkLatestCandidatePoolApplicable(state, latestCandidatePool);
+        if (!applyCheck.applicable) {
+            log.warn("skip dataFreshness workspace sync because latest candidate pool is incomplete chatSessionId={} "
+                            + "currentCount={} latestCount={} selectedCount={} selectedMatchedCount={}",
+                    chatSessionId,
+                    applyCheck.currentCount,
+                    applyCheck.latestCount,
+                    applyCheck.selectedCount,
+                    applyCheck.selectedMatchedCount);
+            return false;
+        }
+        return true;
+    }
+
+    private LatestCandidatePoolApplyCheck checkLatestCandidatePoolApplicable(PlanningStateDTO state,
+                                                                            CandidatePoolStateDTO latestCandidatePool) {
+        LatestCandidatePoolApplyCheck result = new LatestCandidatePoolApplyCheck();
+        CandidatePoolStateDTO currentCandidatePool = state == null ? null : state.getCandidatePoolState();
+        result.currentCount = resolveCandidatePoolEntryCount(currentCandidatePool);
+        result.latestCount = resolveCandidatePoolEntryCount(latestCandidatePool);
+        if (result.currentCount <= 0) {
+            result.applicable = latestCandidatePool != null;
+            return result;
+        }
+        if (result.latestCount <= 0) {
+            result.applicable = false;
+            return result;
+        }
+
+        CandidateResolver resolver = new CandidateResolver(defaultCandidates(latestCandidatePool.getItems()));
+        Set<String> selectedKeys = new LinkedHashSet<String>();
+        for (OrderedItemDTO item : defaultOrderedItems(state == null || state.getOrderedPlanState() == null
+                ? null : state.getOrderedPlanState().getItems())) {
+            String key = buildWorkspacePlanCandidateLookupKey(item.getVolunteerId(), item.getSchoolName(), item.getMajorName());
+            if (!Strings.isNullOrEmpty(key) && selectedKeys.add(key)) {
+                result.selectedCount++;
+                if (resolver.resolve(item) != null) {
+                    result.selectedMatchedCount++;
+                }
+            }
+        }
+        for (DraftItemDTO item : defaultDraftItems(state == null || state.getWorkingPlanState() == null
+                ? null : state.getWorkingPlanState().getItems())) {
+            String key = buildWorkspacePlanCandidateLookupKey(item.getVolunteerId(), item.getSchoolName(), item.getMajorName());
+            if (!Strings.isNullOrEmpty(key) && selectedKeys.add(key)) {
+                result.selectedCount++;
+                if (resolver.resolve(toCandidateLookupItem(item)) != null) {
+                    result.selectedMatchedCount++;
+                }
+            }
+        }
+
+        boolean latestMuchSmallerThanCurrent = result.currentCount >= 8
+                && result.latestCount * 10 < result.currentCount * 8;
+        boolean selectedPlanNotCovered = result.selectedCount > 0
+                && result.selectedMatchedCount < result.selectedCount;
+        result.applicable = !(latestMuchSmallerThanCurrent && selectedPlanNotCovered);
+        return result;
+    }
+
+    private int resolveCandidatePoolEntryCount(CandidatePoolStateDTO candidatePoolState) {
+        if (candidatePoolState == null) {
+            return 0;
+        }
+        int itemCount = defaultCandidates(candidatePoolState.getItems()).size();
+        int summaryTotal = candidatePoolState.getSummary() == null
+                ? 0 : defaultInteger(candidatePoolState.getSummary().getEntryTotal());
+        int normalizedTotal = candidatePoolState.getSourceSummary() == null
+                ? 0 : defaultInteger(candidatePoolState.getSourceSummary().getNormalizedEntryTotal());
+        return Math.max(itemCount, Math.max(summaryTotal, normalizedTotal));
+    }
+
+    private String buildWorkspacePlanCandidateLookupKey(String volunteerId, String schoolName, String majorName) {
+        String normalizedVolunteerId = normalizeText(volunteerId);
+        if (!Strings.isNullOrEmpty(normalizedVolunteerId)) {
+            return normalizedVolunteerId;
+        }
+        return buildCandidateFreshnessFallbackKey(schoolName, majorName);
     }
 
     private boolean syncLatestDataFreshnessSnapshotToWorkspace(Long chatSessionId,
@@ -6201,6 +6308,14 @@ public class PlanningStateService {
             }
             return "主要影响：\n" + String.join("\n", detailLines);
         }
+    }
+
+    private static class LatestCandidatePoolApplyCheck {
+        private boolean applicable = true;
+        private int currentCount;
+        private int latestCount;
+        private int selectedCount;
+        private int selectedMatchedCount;
     }
 
     private boolean backfillDataFreshnessState(Long chatSessionId, PlanningStateDTO state) {

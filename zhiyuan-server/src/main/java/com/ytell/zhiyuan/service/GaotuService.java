@@ -5,6 +5,7 @@ import cn.hutool.core.date.DateUtil;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
+import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.common.config.GaotuProperties;
 import com.ytell.zhiyuan.common.exception.BusinessException;
@@ -22,8 +23,10 @@ import java.math.BigDecimal;
 import java.net.SocketTimeoutException;
 import java.util.Collections;
 import java.util.Date;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -257,6 +260,23 @@ public class GaotuService {
             req.setSubjects(null);
         }
 
+        if (!Boolean.FALSE.equals(gaotuProperties.getProgramDataPagedEnabled())) {
+            try {
+                return queryAllProgramDataPaged(req);
+            } catch (RuntimeException e) {
+                throwVolunteerDataTimeoutIfNeeded(e);
+                if (!Boolean.FALSE.equals(gaotuProperties.getProgramDataFallbackEnabled())) {
+                    log.warn("queryAllProgramData paged failed, fallback to full endpoint reason={}", e.getMessage());
+                } else {
+                    throw e;
+                }
+            }
+        }
+        return queryAllProgramDataLegacy(req);
+
+    }
+
+    private JSONObject queryAllProgramDataLegacy(ProgramPageReq req) {
         log.info("查询志愿方案-全量接口-方案数据, 请求参数: {}", req);
         ResponseDTO<JSONObject> response;
         try {
@@ -282,6 +302,174 @@ public class GaotuService {
         }
         return response.getData();
 
+    }
+
+    private JSONObject queryAllProgramDataPaged(ProgramPageReq req) {
+        int reinitTimes = Math.max(0, defaultInteger(gaotuProperties.getProgramDataSessionReinitTimes(), 1));
+        RuntimeException lastError = null;
+        for (int attempt = 0; attempt <= reinitTimes; attempt++) {
+            try {
+                return queryAllProgramDataPagedOnce(req, attempt);
+            } catch (RuntimeException e) {
+                throwVolunteerDataTimeoutIfNeeded(e);
+                lastError = e;
+                log.warn("queryAllProgramDataPaged attempt failed attempt={} reinitTimes={} reason={}",
+                        attempt, reinitTimes, e.getMessage());
+            }
+        }
+        throw lastError == null ? new BusinessException(110, "查询志愿方案分页数据失败") : lastError;
+    }
+
+    private JSONObject queryAllProgramDataPagedOnce(ProgramPageReq req, int initAttempt) {
+        long initStart = System.currentTimeMillis();
+        ResponseDTO<JSONObject> initResponse;
+        try {
+            initResponse = gaotuClient.getProgramFullListInit(req);
+        } catch (RuntimeException e) {
+            throwVolunteerDataTimeoutIfNeeded(e);
+            throw e;
+        }
+        JSONObject initData = requireSuccessfulProgramDataResponse(initResponse, "分页初始化");
+        String sessionId = initData.getString("sessionId");
+        long total = getRequiredLong(initData, "total", "分页初始化");
+        long pages = getRequiredLong(initData, "pages", "分页初始化");
+        long pageSize = getRequiredLong(initData, "pageSize", "分页初始化");
+        if (Strings.isNullOrEmpty(sessionId) || total < 0 || pages < 0 || (pages > 0 && pageSize <= 0)
+                || initData.get("model") == null) {
+            throw new BusinessException(110, "查询志愿方案分页初始化数据不完整");
+        }
+        log.info("queryAllProgramDataPagedInit areaId={} batch={} year={} prepareType={} total={} pages={} pageSize={} sessionIdPrefix={} costMs={} initAttempt={}",
+                req.getAreaId(),
+                req.getBatch(),
+                req.getYear(),
+                req.getPrepareType(),
+                total,
+                pages,
+                pageSize,
+                sessionId.length() <= 8 ? sessionId : sessionId.substring(0, 8),
+                System.currentTimeMillis() - initStart,
+                initAttempt);
+
+        JSONArray mergedDetails = new JSONArray();
+        for (long current = 1; current <= pages; current++) {
+            JSONObject pageData = queryAllProgramDataPageWithRetry(sessionId, current, pageSize, pages);
+            JSONArray detailList = pageData.getJSONArray("detailList");
+            if (detailList == null) {
+                throw new BusinessException(110, "查询志愿方案分页明细为空");
+            }
+            mergedDetails.addAll(detailList);
+        }
+
+        if (mergedDetails.size() != total) {
+            throw new BusinessException(110, "查询志愿方案分页数据不完整");
+        }
+        int distinctPlanMajorCount = countDistinctPlanMajorDataIds(mergedDetails);
+        int missingPlanMajorCount = countMissingPlanMajorDataIds(mergedDetails);
+        log.info("queryAllProgramDataPagedMerge total={} mergedCount={} distinctPlanMajorDataIdCount={} missingPlanMajorDataIdCount={}",
+                total, mergedDetails.size(), distinctPlanMajorCount, missingPlanMajorCount);
+
+        JSONObject merged = new JSONObject();
+        merged.put("model", initData.get("model"));
+        merged.put("type", initData.get("type"));
+        merged.put("policy", initData.get("policy"));
+        merged.put("isLatestPolicy", initData.get("isLatestPolicy"));
+        merged.put("detailList", mergedDetails);
+        return merged;
+    }
+
+    private JSONObject queryAllProgramDataPageWithRetry(String sessionId, long current, long pageSize, long pages) {
+        int retryTimes = Math.max(0, defaultInteger(gaotuProperties.getProgramDataPageRetryTimes(), 2));
+        RuntimeException lastError = null;
+        for (int retry = 0; retry <= retryTimes; retry++) {
+            long pageStart = System.currentTimeMillis();
+            try {
+                ExpertAIProgramPageReq pageReq = new ExpertAIProgramPageReq();
+                pageReq.setSessionId(sessionId);
+                pageReq.setCurrent(current);
+                pageReq.setSize(pageSize);
+                ResponseDTO<JSONObject> pageResponse = gaotuClient.getProgramFullListPage(pageReq);
+                JSONObject pageData = requireSuccessfulProgramDataResponse(pageResponse, "分页明细");
+                JSONArray detailList = pageData.getJSONArray("detailList");
+                if (detailList == null) {
+                    throw new BusinessException(110, "查询志愿方案分页明细为空");
+                }
+                Long responseCurrent = pageData.getLong("current");
+                if (responseCurrent != null && responseCurrent.longValue() != current) {
+                    log.warn("queryAllProgramDataPagedPage current mismatch requestCurrent={} responseCurrent={}",
+                            current, responseCurrent);
+                }
+                log.info("queryAllProgramDataPagedPage current={} pages={} detailCount={} retry={} costMs={}",
+                        current, pages, detailList.size(), retry, System.currentTimeMillis() - pageStart);
+                return pageData;
+            } catch (RuntimeException e) {
+                throwVolunteerDataTimeoutIfNeeded(e);
+                lastError = e;
+                log.warn("queryAllProgramDataPagedPage failed current={} pages={} retry={} reason={}",
+                        current, pages, retry, e.getMessage());
+            }
+        }
+        throw lastError == null ? new BusinessException(110, "查询志愿方案分页明细失败") : lastError;
+    }
+
+    private JSONObject requireSuccessfulProgramDataResponse(ResponseDTO<JSONObject> response, String step) {
+        if (response == null) {
+            throw new BusinessException(110, "查询志愿方案" + step + "响应为空");
+        }
+        if (response.getCode() == null || response.getCode() != 0) {
+            String msg;
+            if (response.getCode() != null && response.getCode() == -9) {
+                msg = "对不起，您所选的批次内没有查到可报的志愿，请调整您的分数或批次";
+            } else {
+                msg = response.getMsg();
+            }
+            throw new BusinessException(response.getCode() == null ? 110 : response.getCode(), msg);
+        }
+        if (response.getData() == null) {
+            throw new BusinessException(404, "查询志愿方案" + step + "数据为空");
+        }
+        return response.getData();
+    }
+
+    private long getRequiredLong(JSONObject data, String key, String step) {
+        Object value = data == null ? null : data.get(key);
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof String && !Strings.isNullOrEmpty(((String) value).trim())) {
+            try {
+                return Long.parseLong(((String) value).trim());
+            } catch (NumberFormatException ignored) {
+                throw new BusinessException(110, "查询志愿方案" + step + "字段格式错误: " + key);
+            }
+        }
+        throw new BusinessException(110, "查询志愿方案" + step + "缺少字段: " + key);
+    }
+
+    private int countDistinctPlanMajorDataIds(JSONArray details) {
+        Set<String> ids = new LinkedHashSet<String>();
+        for (Object item : details == null ? new JSONArray() : details) {
+            if (item instanceof JSONObject) {
+                String id = ((JSONObject) item).getString("planMajorDataId");
+                if (!Strings.isNullOrEmpty(id)) {
+                    ids.add(id);
+                }
+            }
+        }
+        return ids.size();
+    }
+
+    private int countMissingPlanMajorDataIds(JSONArray details) {
+        int missing = 0;
+        for (Object item : details == null ? new JSONArray() : details) {
+            if (!(item instanceof JSONObject) || Strings.isNullOrEmpty(((JSONObject) item).getString("planMajorDataId"))) {
+                missing++;
+            }
+        }
+        return missing;
+    }
+
+    private int defaultInteger(Integer value, int defaultValue) {
+        return value == null ? defaultValue : value;
     }
 
     /**
