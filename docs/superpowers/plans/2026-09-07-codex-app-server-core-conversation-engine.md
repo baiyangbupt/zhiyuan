@@ -152,7 +152,7 @@ export_shadow_baseline.py 只读取已有脱敏案例，不读取生产密钥、
 - Create: zhiyuan-server/src/main/java/com/ytell/zhiyuan/model/dto/planning/ConversationEvidenceDTO.java
 - Create: zhiyuan-server/src/test/java/com/ytell/zhiyuan/model/dto/planning/ConversationContractSerializationTest.java
 
-- [ ] 步骤 1：写失败测试，锁定字段
+- [x] 步骤 1：写失败测试，锁定字段
 
     def test_recommendation_output_requires_backend_refs():
         with pytest.raises(ValidationError):
@@ -167,22 +167,22 @@ export_shadow_baseline.py 只读取已有脱敏案例，不读取生产密钥、
         with pytest.raises(ValidationError):
             StatePatch(baseVersion=41, targetVersion=43, changes=[], invalidations=[])
 
-- [ ] 步骤 2：运行 RED
+- [x] 步骤 2：运行 RED
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_gateway_contracts.py -q
 
 预期：FAIL，协议类型尚不存在。
 
-- [ ] 步骤 3：增加准确的 Pydantic 合同
+- [x] 步骤 3：增加准确的 Pydantic 合同
 
 实现 EvidenceRef、ArtifactRef、TurnOutput 和 StatePatch。TurnOutput 的 recommendation、fact 和 review 类型必须包含后端引用；所有模型使用 extra forbid；StatePatch 要求 targetVersion 大于 baseVersion，变化路径只来自协议白名单。
 
-- [ ] 步骤 4：实现 Java DTO JSON 对齐
+- [x] 步骤 4：实现 Java DTO JSON 对齐
 
 ConversationTurnSnapshotDTO 至少包含 snapshotVersion、sessionId、planningStage、scoreContext、confirmedConstraints、preferences、activeProposal、missingFacts、allowedCapabilities 和 evidence。所有列表初始化为空列表，不能返回 null。Java 序列化字段与 Python camelCase 完全一致。
 
-- [ ] 步骤 5：运行 GREEN
+- [x] 步骤 5：运行 GREEN
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_gateway_contracts.py -q
@@ -191,7 +191,7 @@ ConversationTurnSnapshotDTO 至少包含 snapshotVersion、sessionId、planningS
 
 预期：Python 和 Java 测试均 PASS。
 
-- [ ] 步骤 6：提交
+- [x] 步骤 6：提交
 
     git add zhiyuan-agent/app/gateway/contracts.py \
       zhiyuan-agent/tests/unit/test_gateway_contracts.py \

@@ -1,0 +1,15 @@
+{
+  "snapshotVersion": 42,
+  "sessionId": "session-1",
+  "planningStage": "candidate_exploration",
+  "scoreContext": {
+    "province": "浙江",
+    "rank": 18420
+  },
+  "confirmedConstraints": {},
+  "preferences": {},
+  "activeProposal": null,
+  "missingFacts": [],
+  "allowedCapabilities": ["admission_read"],
+  "evidence": []
+}
