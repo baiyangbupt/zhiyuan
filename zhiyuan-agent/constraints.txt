@@ -1,0 +1,3 @@
+# Python MCP SDK is kept within the protocol family exercised by Codex
+# App Server commit 89650c6.  Update only with a new compatibility PoC.
+mcp==1.12.4

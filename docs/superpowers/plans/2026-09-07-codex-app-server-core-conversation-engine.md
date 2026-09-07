@@ -436,7 +436,7 @@ Gateway 对相邻快照做结构化 diff，字段路径只允许 scoreContext、
 - Modify: zhiyuan-agent/pyproject.toml
 - Modify: zhiyuan-agent/app/util/internal_client.py
 
-- [ ] 步骤 1：写失败测试，固定八个工具和能力拒绝
+- [x] 步骤 1：写失败测试，固定八个工具和能力拒绝
 
     async def test_readonly_catalog_tool_returns_standard_envelope():
         result = await call_tool("catalog.search_schools", {"query": "华师大", "province": "上海"},
@@ -451,16 +451,16 @@ Gateway 对相邻快照做结构化 diff，字段路径只允许 scoreContext、
                                  context=trusted_context("admission_read"))
         assert result["status"] == "capability_denied"
 
-- [ ] 步骤 2：运行 RED
+- [x] 步骤 2：运行 RED
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_domain_mcp_tools.py -q
 
-- [ ] 步骤 3：锁定 MCP SDK 并实现 stdio server
+- [x] 步骤 3：锁定 MCP SDK 并实现 stdio server
 
 安装并验证与 Codex commit 89650c6 的 initialize、固定 MCP server 配置和 tool result 兼容的 SDK 版本，将实际版本写入 constraints.txt。第一期只注册 entity.resolve、catalog.search_schools、catalog.get_school、catalog.search_majors、catalog.get_major、admission.get_current_plan、admission.get_history 和 admission.check_eligibility。recommendation、plan 和 profile 写工具不注册。
 
-- [ ] 步骤 4：实现统一工具信封
+- [x] 步骤 4：实现统一工具信封
 
     def ok(data, *, state_version, evidence, entities=(), limitations=()):
         return {"status": "ok", "data": data, "resolvedEntities": list(entities),
@@ -474,7 +474,7 @@ Gateway 对相邻快照做结构化 diff，字段路径只允许 scoreContext、
 
 自由文本必须先经过 entity.resolve；admission.get_history 返回可比性、dataVersion、scope、coverage 和 limitations，不把缺失结果返回为零值。
 
-- [ ] 步骤 5：运行 fake backend 和调用治理测试
+- [x] 步骤 5：运行 fake backend 和调用治理测试
 
 覆盖相同参数去重、失败最多重试一次、调用预算、旧 stateVersion 的 stale_state、Evidence 所属 thread 和跨 thread 结果拒绝。
 
@@ -484,7 +484,7 @@ Gateway 对相邻快照做结构化 diff，字段路径只允许 scoreContext、
 
 预期：测试 PASS；self-check 输出八个工具名和 write_tools=0。
 
-- [ ] 步骤 6：提交
+- [x] 步骤 6：提交
 
     git add zhiyuan-agent/app/mcp_server zhiyuan-agent/app/util/internal_client.py \
       zhiyuan-agent/pyproject.toml zhiyuan-agent/constraints.txt \
