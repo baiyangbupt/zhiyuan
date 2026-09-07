@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.admission.facts import AdmissionFactError, canonical_admission_mode, derive_risk_tier
+
 
 class _ContractModel(BaseModel):
     model_config = ConfigDict(
@@ -20,7 +22,90 @@ class EvidenceRef(_ContractModel):
     evidence_id: str
     source_level: Literal["authoritative", "computed", "planner_experience"]
     data_version: str
+    admission_mode: Literal["major", "major_group"] | None = None
+    admission_unit_id: str | None = None
+    group_code: str | None = None
+    algorithm_version: str | None = None
+    state_version: int | None = None
+    scope: dict[str, Any] = Field(default_factory=dict)
+    observed_at: str | None = None
     limitations: list[str] = Field(default_factory=list)
+
+    @field_validator("admission_mode", mode="before")
+    @classmethod
+    def _normalize_admission_mode(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        try:
+            return canonical_admission_mode(value)
+        except AdmissionFactError as exc:
+            raise ValueError(exc.code) from exc
+
+
+class AdmissionMajorDetail(_ContractModel):
+    major_id: str
+    major_name: str | None = None
+    major_code: str | None = None
+    major_admission_rate: float
+
+    @field_validator("major_admission_rate")
+    @classmethod
+    def _validate_rate(cls, value: float) -> float:
+        try:
+            derive_risk_tier(value)
+        except AdmissionFactError as exc:
+            raise ValueError(exc.code) from exc
+        return value
+
+
+class AdmissionFact(_ContractModel):
+    admission_unit_id: str
+    admission_mode: Literal["major", "major_group"]
+    school_id: str
+    school_name: str | None = None
+    major_id: str | None = None
+    major_name: str | None = None
+    group_code: str | None = None
+    major_items: list[AdmissionMajorDetail] = Field(default_factory=list)
+    unit_admission_rate: float
+    risk_tier: Literal["冲", "稳", "保"]
+    data_version: str | None = None
+    algorithm_version: str | None = None
+    observed_at: str | None = None
+    limitations: list[str] = Field(default_factory=list)
+
+    @field_validator("admission_mode", mode="before")
+    @classmethod
+    def _normalize_mode(cls, value: Any) -> Any:
+        try:
+            return canonical_admission_mode(value)
+        except AdmissionFactError as exc:
+            raise ValueError(exc.code) from exc
+
+    @field_validator("unit_admission_rate")
+    @classmethod
+    def _validate_unit_rate(cls, value: float) -> float:
+        try:
+            derive_risk_tier(value)
+        except AdmissionFactError as exc:
+            raise ValueError(exc.code) from exc
+        return value
+
+    @model_validator(mode="after")
+    def _validate_scope_and_tier(self) -> "AdmissionFact":
+        if self.admission_mode == "major" and not self.major_id:
+            raise ValueError("major_required")
+        if self.admission_mode == "major_group" and not self.group_code:
+            raise ValueError("group_code_required")
+        try:
+            expected = derive_risk_tier(self.unit_admission_rate)
+        except AdmissionFactError as exc:
+            raise ValueError(exc.code) from exc
+        if self.risk_tier != expected:
+            raise ValueError("risk_tier_mismatch")
+        if self.admission_mode == "major" and len(self.major_items) > 1:
+            raise ValueError("major_detail_count_invalid")
+        return self
 
 
 class ArtifactRef(_ContractModel):
@@ -34,6 +119,7 @@ class TurnOutput(_ContractModel):
     message: str
     artifact_refs: list[ArtifactRef] = Field(default_factory=list)
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    admission_facts: list[AdmissionFact] = Field(default_factory=list)
     uncertainties: list[str] = Field(default_factory=list)
     clarification: str | None = None
     proposal_ref: str | None = None
@@ -72,6 +158,7 @@ class StatePatch(_ContractModel):
             "activeProposal",
             "missingFacts",
             "allowedCapabilities",
+            "admissionMode",
         }
         for change in changes:
             path = str(change.get("path") or "")
@@ -79,10 +166,23 @@ class StatePatch(_ContractModel):
                 raise ValueError(f"unsupported state path: {path}")
         return changes
 
+    @model_validator(mode="after")
+    def _mode_change_requires_invalidation(self) -> "StatePatch":
+        if any(change.get("path") == "admissionMode" for change in self.changes):
+            has_mode_invalidation = any(
+                invalidation.get("kind") == "admission_mode"
+                or invalidation.get("path") == "admissionMode"
+                for invalidation in self.invalidations
+            )
+            if not has_mode_invalidation:
+                raise ValueError("admissionMode change requires admission_mode invalidation")
+        return self
+
 
 class ConversationTurnSnapshot(_ContractModel):
     snapshot_version: int
     session_id: str
+    admission_mode: Literal["major", "major_group"] = "major"
     planning_stage: str = ""
     score_context: dict[str, Any] = Field(default_factory=dict)
     confirmed_constraints: dict[str, Any] = Field(default_factory=dict)
@@ -91,3 +191,12 @@ class ConversationTurnSnapshot(_ContractModel):
     missing_facts: list[str] = Field(default_factory=list)
     allowed_capabilities: list[str] = Field(default_factory=list)
     evidence: list[EvidenceRef] = Field(default_factory=list)
+    admission_facts: list[AdmissionFact] = Field(default_factory=list)
+
+    @field_validator("admission_mode", mode="before")
+    @classmethod
+    def _normalize_mode(cls, value: Any) -> Any:
+        try:
+            return canonical_admission_mode(value)
+        except AdmissionFactError as exc:
+            raise ValueError(exc.code) from exc

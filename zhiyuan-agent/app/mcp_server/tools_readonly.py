@@ -5,6 +5,11 @@ import hashlib
 import json
 from typing import Any
 
+from app.admission.facts import (
+    AdmissionFactError,
+    canonical_admission_mode,
+    validate_admission_fact,
+)
 from app.harness.binding import BindingError, ThreadBinding
 from app.mcp_server.response import error, ok
 from app.util import internal_client
@@ -54,6 +59,24 @@ class ReadonlyDomainTools:
             return error("capability_denied", "readonly tools cannot perform writes", state_version=self.current_state_version)
         if name not in CAPABILITIES:
             return error("tool_not_found", name, state_version=self.current_state_version)
+        requested_mode: str | None = None
+        if name.startswith("admission."):
+            raw_mode = arguments.get("admissionMode", arguments.get("admission_mode"))
+            try:
+                requested_mode = canonical_admission_mode(
+                    self.binding.admission_mode if raw_mode in (None, "") else raw_mode
+                )
+            except AdmissionFactError as exc:
+                return error(exc.code, "unsupported admission mode", state_version=self.current_state_version)
+            if requested_mode != self.binding.admission_mode:
+                return error(
+                    "admission_mode_mismatch",
+                    "requested admission mode differs from trusted session mode",
+                    state_version=self.current_state_version,
+                    admission_mode=self.binding.admission_mode,
+                )
+            arguments = dict(arguments)
+            arguments["admissionMode"] = requested_mode
         requested_version = arguments.get("stateVersion")
         if requested_version is not None:
             try:
@@ -72,13 +95,20 @@ class ReadonlyDomainTools:
                 raise BindingError("capability_denied")
         except BindingError as exc:
             return error(exc.code, str(exc), state_version=self.current_state_version)
-        cache_key = hashlib.sha256(json.dumps([name, arguments], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        cache_key = hashlib.sha256(
+            json.dumps(
+                [name, arguments, self.binding.admission_mode, self.current_state_version],
+                sort_keys=True,
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
         if cache_key in self._cache:
             return self._cache[cache_key]
         if self.calls >= self.max_calls:
             return error("call_budget_exceeded", "readonly tool call budget exceeded", state_version=self.current_state_version)
         if name == "admission.get_history":
-            required = {"areaId", "batch", "schoolId", "majorId", "year", "subjectType"}
+            required = {"areaId", "batch", "schoolId", "year", "subjectType"}
+            required.add("majorId" if requested_mode == "major" else "groupCode")
             missing = sorted(key for key in required if arguments.get(key) in (None, ""))
             if missing:
                 result = error(
@@ -128,6 +158,8 @@ class ReadonlyDomainTools:
         return {key: value for key, value in arguments.items() if key not in {"threadId", "tenantId", "sessionId", "userId", "handle", "stateVersion"}}
 
     def _envelope(self, name: str, result: Any) -> dict[str, Any]:
+        if name.startswith("admission."):
+            return self._admission_envelope(name, result)
         if isinstance(result, dict):
             evidence = list(result.get("evidence") or [])
             if any(
@@ -177,6 +209,119 @@ class ReadonlyDomainTools:
                 limitations=limitations,
             )
         return ok(result, state_version=self.current_state_version)
+
+    def _admission_envelope(self, name: str, result: Any) -> dict[str, Any]:
+        """Normalize backend admission rows into unit facts plus scoped Evidence."""
+        mode = self.binding.admission_mode
+        if not isinstance(result, dict):
+            return error(
+                "insufficient_data",
+                "admission backend returned no structured data",
+                state_version=self.current_state_version,
+                admission_mode=mode,
+            )
+
+        status = str(result.get("status") or "ok")
+        payload = dict(result.get("data") or result)
+        if status != "ok":
+            return {
+                "status": status,
+                "data": payload,
+                "resolvedEntities": list(result.get("resolvedEntities") or []),
+                "evidence": list(result.get("evidence") or []),
+                "limitations": list(result.get("limitations") or []),
+                "stateVersion": self.current_state_version,
+                "admissionMode": mode,
+            }
+
+        raw_facts = payload.get("admissionFacts") or payload.get("admission_facts")
+        if raw_facts is None:
+            raw_facts = payload.get("items") if isinstance(payload.get("items"), list) else []
+        if not isinstance(raw_facts, list):
+            raw_facts = []
+        data_version = result.get("dataVersion") or payload.get("dataVersion") or payload.get("data_version")
+        algorithm_version = result.get("algorithmVersion") or payload.get("algorithmVersion")
+        limitations = list(result.get("limitations") or payload.get("limitations") or [])
+        facts: list[dict[str, Any]] = []
+        for raw in raw_facts:
+            if not isinstance(raw, dict):
+                limitations.append("admission_fact_invalid")
+                continue
+            candidate = dict(raw)
+            candidate.setdefault("admissionMode", mode)
+            try:
+                fact = validate_admission_fact(candidate)
+            except AdmissionFactError as exc:
+                limitations.append(exc.code)
+                continue
+            if fact["admissionMode"] != mode:
+                limitations.append("admission_mode_mismatch")
+                continue
+            facts.append(fact)
+
+        source_evidence = list(result.get("evidence") or payload.get("evidence") or [])
+        evidence: list[dict[str, Any]] = []
+        for fact in facts:
+            matching = next(
+                (
+                    item
+                    for item in source_evidence
+                    if isinstance(item, dict)
+                    and item.get("admissionUnitId", item.get("admission_unit_id")) == fact["admissionUnitId"]
+                ),
+                None,
+            )
+            if matching is not None:
+                evidence.append(matching)
+                continue
+            evidence.append(
+                {
+                    "evidenceId": f"admission-unit:{fact['admissionUnitId']}:{data_version or 'unknown'}",
+                    "kind": "admission_fact",
+                    "admissionMode": mode,
+                    "admissionUnitId": fact["admissionUnitId"],
+                    "groupCode": fact.get("groupCode"),
+                    "sourceLevel": "authoritative",
+                    "source": "zhiyuan-server.admission",
+                    "dataVersion": data_version,
+                    "algorithmVersion": algorithm_version,
+                    "stateVersion": self.current_state_version,
+                    "scope": {
+                        "tenantId": self.binding.tenant_id,
+                        "sessionId": self.binding.session_id,
+                        "threadId": self.binding.thread_id,
+                    },
+                    "limitations": [],
+                }
+            )
+
+        if not data_version:
+            limitations.append("dataVersion_missing")
+        if mode == "major_group" and name == "admission.check_eligibility":
+            if not facts or not any(fact.get("majorItems") for fact in facts):
+                limitations.append("majorDetailAvailable=false")
+
+        data = {
+            "admissionMode": mode,
+            "admissionFacts": facts,
+            "limitations": limitations,
+        }
+        group_detail_missing = (
+            mode == "major_group"
+            and name == "admission.check_eligibility"
+            and not any(fact.get("majorItems") for fact in facts)
+        )
+        result_status = "ok" if facts and data_version and not group_detail_missing else "insufficient_data"
+        return {
+            "status": result_status,
+            "data": data,
+            "resolvedEntities": list(result.get("resolvedEntities") or []),
+            "evidence": evidence,
+            "limitations": limitations,
+            "stateVersion": self.current_state_version,
+            "admissionMode": mode,
+            "dataVersion": data_version,
+        }
 
 
 class InternalClientBackend:

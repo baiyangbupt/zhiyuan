@@ -60,6 +60,18 @@ public class ConversationSnapshotServiceTest {
     }
 
     @Test
+    void shouldProjectMajorGroupAsCanonicalAdmissionMode() {
+        PlanningWorkspaceStateRes workspace = workspace(42, 101L);
+        workspace.getCandidatePoolState().setVolunteerModel("majorGroup");
+        doReturn(workspace).when(planningStateService).getPlanningWorkspaceState(eq(7L), eq(101L));
+        doReturn(null).when(pendingConfirmationBizService).getCurrent(7L, 101L);
+
+        ConversationTurnSnapshotDTO snapshot = service.getTurnSnapshot(7L, 101L, "candidate-recommendation");
+
+        assertEquals("major_group", snapshot.getAdmissionMode());
+    }
+
+    @Test
     void shouldExposeMissingScoreAndActivePendingWithoutFullWorkspaceState() {
         PlanningWorkspaceStateRes workspace = workspace(null, 101L);
         workspace.setStudentSummary(new StudentPlanningSummaryDTO());

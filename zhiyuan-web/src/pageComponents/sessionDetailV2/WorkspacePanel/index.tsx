@@ -55,6 +55,7 @@ import {
   PlanningWorkspaceIntent,
 } from '@/interface/api/volunteer';
 import {
+  AdmissionFact,
   ConversationArtifact,
   GatewayConversationEvent,
 } from '@/interface/api/conversation';
@@ -63,6 +64,7 @@ import { formatSubjectShortText } from '@/utils/subjectText';
 import { normalizeConversationEvent, resolveArtifact } from '@/utils/conversationEvents.mjs';
 import ArtifactRenderer from '../ConversationEvents/ArtifactRenderer';
 import EvidenceDrawer from '../ConversationEvents/EvidenceDrawer';
+import AdmissionFactCard from '../ConversationEvents/AdmissionFactCard';
 import PlanningStatus from '../ConversationEvents/PlanningStatus';
 import style from './style.module.scss';
 import { MAJOR_CATEGORY_TO_DISCIPLINES } from './majorCategoryMap';
@@ -5102,6 +5104,21 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                     </Button>
                   ))}
                 </div>
+              );
+            }
+            if (event.type === 'admission.facts.updated') {
+              const payload = event.payload || {};
+              const facts = Array.isArray(payload.admissionFacts)
+                ? payload.admissionFacts as unknown as AdmissionFact[]
+                : [];
+              const mode = payload.admissionMode === 'major_group' ? 'major_group' : 'major';
+              return (
+                <AdmissionFactCard
+                  key={`admission-facts-${index}`}
+                  admissionMode={mode}
+                  facts={facts}
+                  limitations={Array.isArray(payload.limitations) ? payload.limitations as string[] : []}
+                />
               );
             }
             if (event.type === 'action.proposed') {

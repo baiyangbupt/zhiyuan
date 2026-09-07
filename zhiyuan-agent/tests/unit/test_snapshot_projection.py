@@ -112,6 +112,40 @@ def test_diff_only_emits_whitelisted_top_level_paths_and_adjacent_version() -> N
     assert {change["path"] for change in patch.changes} == {"planningStage"}
 
 
+def test_projection_derives_canonical_mode_from_volunteer_model() -> None:
+    workspace = fake_backend_workspace()
+    workspace["candidatePoolState"]["volunteerModel"] = "majorGroup"
+
+    snapshot = build_snapshot(workspace)
+
+    assert snapshot.admission_mode == "major_group"
+    assert snapshot.model_dump(by_alias=True)["admissionMode"] == "major_group"
+
+
+def test_mode_change_invalidates_admission_references() -> None:
+    before_workspace = fake_backend_workspace()
+    before_workspace["candidatePoolState"]["volunteerModel"] = "major"
+    after_workspace = fake_backend_workspace()
+    after_workspace["version"] = 43
+    after_workspace["candidatePoolState"]["volunteerModel"] = "majorGroup"
+
+    patch = diff_snapshots(build_snapshot(before_workspace), build_snapshot(after_workspace))
+
+    assert {change["path"] for change in patch.changes} == {"admissionMode"}
+    assert {
+        invalidation["kind"]
+        for invalidation in patch.invalidations
+        if invalidation.get("kind")
+    } >= {
+        "admission_mode",
+        "evidence",
+        "candidate",
+        "review",
+        "artifact",
+        "proposal",
+    }
+
+
 def test_projection_rejects_non_mapping_backend_payload() -> None:
     with pytest.raises(ValueError, match="workspace payload must be an object"):
         build_snapshot([])

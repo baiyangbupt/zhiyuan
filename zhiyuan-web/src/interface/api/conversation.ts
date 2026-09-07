@@ -5,6 +5,7 @@ export type GatewayConversationEventType =
   | 'assistant.completed'
   | 'planning.status'
   | 'evidence.updated'
+  | 'admission.facts.updated'
   | 'recommendation.card'
   | 'action.proposed'
   | 'recoverable.error';
@@ -36,5 +37,37 @@ export interface ConversationEvidence {
   dataVersion: string;
   limitations: string[];
   scope?: Record<string, unknown>;
+  admissionMode?: AdmissionMode;
+  admissionUnitId?: string;
+  groupCode?: string;
+  algorithmVersion?: string;
+  stateVersion?: number;
+  observedAt?: string;
   [key: string]: unknown;
+}
+
+export type AdmissionMode = 'major' | 'major_group';
+
+export interface AdmissionMajorDetail {
+  majorId: string;
+  majorName?: string;
+  majorCode?: string;
+  majorAdmissionRate: number;
+}
+
+export interface AdmissionFact {
+  admissionUnitId: string;
+  admissionMode: AdmissionMode;
+  schoolId: string;
+  schoolName?: string;
+  majorId?: string;
+  majorName?: string;
+  groupCode?: string;
+  majorItems: AdmissionMajorDetail[];
+  unitAdmissionRate: number;
+  riskTier: '冲' | '稳' | '保';
+  dataVersion?: string;
+  algorithmVersion?: string;
+  observedAt?: string;
+  limitations?: string[];
 }

@@ -108,3 +108,45 @@ def test_snapshot_serializes_with_stable_empty_collections() -> None:
     assert payload["missingFacts"] == []
     assert payload["allowedCapabilities"] == []
     assert payload["evidence"] == []
+
+
+def test_snapshot_requires_canonical_admission_mode() -> None:
+    snapshot = ConversationTurnSnapshot.model_validate(
+        {
+            "snapshotVersion": 3,
+            "sessionId": "s1",
+            "admissionMode": "major_group",
+        }
+    )
+
+    assert snapshot.admission_mode == "major_group"
+
+
+def test_state_patch_mode_change_requires_invalidation() -> None:
+    patch = StatePatch.model_validate(
+        {
+            "baseVersion": 3,
+            "targetVersion": 4,
+            "changes": [{"path": "admissionMode", "value": "major_group"}],
+            "invalidations": [{"kind": "admission_mode", "reason": "mode_changed"}],
+        }
+    )
+
+    assert patch.changes[0]["value"] == "major_group"
+
+
+def test_group_evidence_contains_group_scope_and_state_version() -> None:
+    evidence = EvidenceRef.model_validate(
+        {
+            "evidenceId": "ev-1",
+            "sourceLevel": "authoritative",
+            "dataVersion": "v17",
+            "admissionMode": "major_group",
+            "admissionUnitId": "unit-1",
+            "groupCode": "101",
+            "stateVersion": 4,
+        }
+    )
+
+    assert evidence.admission_mode == "major_group"
+    assert evidence.admission_unit_id == "unit-1"

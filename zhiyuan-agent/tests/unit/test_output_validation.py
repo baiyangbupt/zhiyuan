@@ -14,6 +14,15 @@ def _snapshot(version: int = 42) -> ConversationTurnSnapshot:
     )
 
 
+def _group_snapshot(version: int = 42) -> ConversationTurnSnapshot:
+    return ConversationTurnSnapshot(
+        snapshot_version=version,
+        session_id="session-1",
+        admission_mode="major_group",
+        planning_stage="candidate_exploration",
+    )
+
+
 def _fact_output(*evidence_ids: str) -> TurnOutput:
     return TurnOutput(
         response_type="fact",
@@ -94,3 +103,159 @@ def test_output_validator_returns_normalized_output_when_refs_are_valid() -> Non
 
     assert output.response_type == "fact"
     assert output.evidence_refs[0].evidence_id == "ev-known"
+
+
+def test_validator_accepts_group_fact_using_group_rate_not_nested_major_rate() -> None:
+    output = validate_turn_output(
+        turn_output={
+            "responseType": "fact",
+            "message": "专业组招生事实",
+            "evidenceRefs": [
+                {
+                    "evidenceId": "ev-unit-1",
+                    "sourceLevel": "authoritative",
+                    "dataVersion": "v17",
+                    "admissionMode": "major_group",
+                    "admissionUnitId": "unit-1",
+                    "groupCode": "101",
+                    "stateVersion": 42,
+                }
+            ],
+            "admissionFacts": [
+                {
+                    "admissionMode": "major_group",
+                    "admissionUnitId": "unit-1",
+                    "schoolId": "school-1",
+                    "groupCode": "101",
+                    "unitAdmissionRate": 70,
+                    "riskTier": "保",
+                    "majorItems": [{"majorId": "m-1", "majorAdmissionRate": 40}],
+                }
+            ],
+        },
+        current_snapshot=_group_snapshot(),
+        evidence_ledger={
+            "ev-unit-1": {
+                "evidenceId": "ev-unit-1",
+                "sessionId": "session-1",
+                "stateVersion": 42,
+                "dataVersion": "v17",
+                "admissionMode": "major_group",
+                "admissionUnitId": "unit-1",
+                "groupCode": "101",
+            }
+        },
+        artifacts={},
+    )
+
+    assert output.admission_facts[0].risk_tier == "保"
+    assert output.admission_facts[0].major_items[0].major_admission_rate == 40
+
+
+def test_validator_rejects_admission_fact_without_matching_evidence() -> None:
+    with pytest.raises(OutputContractError, match="admission_evidence_missing"):
+        validate_turn_output(
+            turn_output={
+                "responseType": "fact",
+                "message": "招生事实",
+                "evidenceRefs": [
+                    {
+                        "evidenceId": "ev-other",
+                        "sourceLevel": "authoritative",
+                        "dataVersion": "v17",
+                    }
+                ],
+                "admissionFacts": [
+                    {
+                        "admissionMode": "major",
+                        "admissionUnitId": "unit-1",
+                        "schoolId": "school-1",
+                        "majorId": "m-1",
+                        "unitAdmissionRate": 40,
+                        "riskTier": "冲",
+                    }
+                ],
+            },
+            current_snapshot=_snapshot(),
+            evidence_ledger={
+                "ev-other": {
+                    "evidenceId": "ev-other",
+                    "sessionId": "session-1",
+                    "stateVersion": 42,
+                    "dataVersion": "v17",
+                }
+            },
+            artifacts={},
+        )
+
+
+def test_validator_rejects_cross_mode_evidence_and_fact() -> None:
+    with pytest.raises(OutputContractError, match="admission_mode_mismatch"):
+        validate_turn_output(
+            turn_output={
+                "responseType": "fact",
+                "message": "招生事实",
+                "evidenceRefs": [
+                    {
+                        "evidenceId": "ev-unit-1",
+                        "sourceLevel": "authoritative",
+                        "dataVersion": "v17",
+                        "admissionMode": "major",
+                        "admissionUnitId": "unit-1",
+                    }
+                ],
+                "admissionFacts": [
+                    {
+                        "admissionMode": "major",
+                        "admissionUnitId": "unit-1",
+                        "schoolId": "school-1",
+                        "majorId": "m-1",
+                        "unitAdmissionRate": 40,
+                        "riskTier": "冲",
+                    }
+                ],
+            },
+            current_snapshot=_group_snapshot(),
+            evidence_ledger={
+                "ev-unit-1": {
+                    "evidenceId": "ev-unit-1",
+                    "sessionId": "session-1",
+                    "stateVersion": 42,
+                    "dataVersion": "v17",
+                    "admissionMode": "major",
+                    "admissionUnitId": "unit-1",
+                }
+            },
+            artifacts={},
+        )
+
+
+@pytest.mark.parametrize("rate", [99.01, float("nan"), float("inf")])
+def test_validator_rejects_unsupported_admission_rates(rate: float) -> None:
+    with pytest.raises(OutputContractError, match="schema_invalid"):
+        validate_turn_output(
+            turn_output={
+                "responseType": "fact",
+                "message": "招生事实",
+                "evidenceRefs": [
+                    {
+                        "evidenceId": "ev-unit-1",
+                        "sourceLevel": "authoritative",
+                        "dataVersion": "v17",
+                    }
+                ],
+                "admissionFacts": [
+                    {
+                        "admissionMode": "major",
+                        "admissionUnitId": "unit-1",
+                        "schoolId": "school-1",
+                        "majorId": "m-1",
+                        "unitAdmissionRate": rate,
+                        "riskTier": "保",
+                    }
+                ],
+            },
+            current_snapshot=_snapshot(),
+            evidence_ledger={"ev-unit-1": {"dataVersion": "v17"}},
+            artifacts={},
+        )

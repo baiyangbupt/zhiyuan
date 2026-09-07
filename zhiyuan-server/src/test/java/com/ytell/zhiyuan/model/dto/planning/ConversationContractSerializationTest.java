@@ -25,6 +25,8 @@ public class ConversationContractSerializationTest {
         assertTrue(json.get("missingFacts").isArray());
         assertTrue(json.get("allowedCapabilities").isArray());
         assertTrue(json.get("evidence").isArray());
+        assertEquals("major", json.get("admissionMode").asText());
+        assertTrue(json.get("admissionFacts").isArray());
     }
 
     @Test

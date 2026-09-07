@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from app.admission.facts import AdmissionFactError, canonical_admission_mode
 from app.gateway.contracts import ConversationTurnSnapshot, StatePatch
 
 
@@ -29,6 +30,18 @@ def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
     session_id = _first(workspace, "sessionId", "session_id")
     if session_id in (None, ""):
         raise ValueError("workspace sessionId is required")
+
+    candidate_pool = workspace.get("candidatePoolState") or {}
+    raw_mode = _first(
+        workspace,
+        "admissionMode",
+        "admission_mode",
+        default=_first(candidate_pool, "volunteerModel", "volunteer_model", default="major"),
+    )
+    try:
+        admission_mode = canonical_admission_mode(raw_mode)
+    except AdmissionFactError as exc:
+        raise ValueError(exc.code) from exc
 
     summary = workspace.get("studentSummary") or {}
     profile = workspace.get("profileState") or {}
@@ -91,6 +104,7 @@ def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
     return ConversationTurnSnapshot(
         snapshot_version=int(_first(workspace, "version", "snapshotVersion", default=0) or 0),
         session_id=str(session_id),
+        admission_mode=admission_mode,
         planning_stage=str(_first(workspace, "phase", "planningStage", default="")),
         score_context=score_context,
         confirmed_constraints=confirmed_constraints,
@@ -99,6 +113,7 @@ def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
         missing_facts=missing,
         allowed_capabilities=allowed,
         evidence=list(workspace.get("evidence") or []),
+        admission_facts=list(workspace.get("admissionFacts") or workspace.get("admission_facts") or []),
     )
 
 
@@ -117,6 +132,7 @@ def diff_snapshots(
         "activeProposal",
         "missingFacts",
         "allowedCapabilities",
+        "admissionMode",
     }
     changes = [
         {"path": path, "oldValue": before_payload[path], "newValue": after_payload[path]}
@@ -128,6 +144,11 @@ def diff_snapshots(
     after_stale = set(after.missing_facts)
     for fact in sorted(after_stale - before_stale):
         invalidations.append({"path": "missingFacts", "fact": fact})
+    if before.admission_mode != after.admission_mode:
+        invalidations.extend(
+            {"kind": kind, "reason": "mode_changed"}
+            for kind in ("admission_mode", "evidence", "candidate", "review", "artifact", "proposal")
+        )
     return StatePatch(
         base_version=before.snapshot_version,
         target_version=after.snapshot_version,

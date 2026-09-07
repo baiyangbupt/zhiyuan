@@ -49,8 +49,16 @@ export const EvidenceDrawer: React.FC<EvidenceDrawerProps> = ({
       {evidence ? (
         <>
           <Descriptions column={1} size="small">
+            <Descriptions.Item label="招生类型">
+              {evidence.admissionMode === 'major_group' ? '院校专业组' : evidence.admissionMode === 'major' ? '专业+大学' : '—'}
+            </Descriptions.Item>
+            <Descriptions.Item label="招生单元">{evidence.admissionUnitId || '—'}</Descriptions.Item>
+            <Descriptions.Item label="专业组">{evidence.groupCode || '—'}</Descriptions.Item>
             <Descriptions.Item label="数据版本">{evidence.dataVersion || '—'}</Descriptions.Item>
             <Descriptions.Item label="来源等级">{evidence.sourceLevel || '—'}</Descriptions.Item>
+            <Descriptions.Item label="算法版本">{evidence.algorithmVersion || '—'}</Descriptions.Item>
+            <Descriptions.Item label="状态版本">{evidence.stateVersion ?? '—'}</Descriptions.Item>
+            <Descriptions.Item label="观测时间">{evidence.observedAt || '—'}</Descriptions.Item>
           </Descriptions>
           <Typography.Paragraph type="secondary">
             限制：{evidence.limitations?.length ? evidence.limitations.join('；') : '无'}

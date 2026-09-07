@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from app.admission.facts import AdmissionFactError, canonical_admission_mode
+
 
 class BindingError(RuntimeError):
     def __init__(self, code: str, message: str | None = None) -> None:
@@ -28,6 +30,7 @@ class ToolContext:
     tenant_id: str
     session_id: str
     user_id: str
+    admission_mode: str = "major"
     allowed_capabilities: frozenset[str] = field(default_factory=frozenset)
     model_identity_override: str = ""
 
@@ -42,6 +45,7 @@ class ThreadBinding:
     expires_at: datetime | None = None
     revoked_at: datetime | None = None
     opaque_handle: str = field(default="", repr=False, compare=False)
+    admission_mode: str = "major"
 
     @classmethod
     def create(
@@ -52,6 +56,7 @@ class ThreadBinding:
         session_id: str,
         user_id: str,
         allowed_capabilities: set[str] | frozenset[str],
+        admission_mode: str = "major",
         expires_at: datetime | None = None,
     ) -> "ThreadBinding":
         return cls(
@@ -60,6 +65,7 @@ class ThreadBinding:
             session_id=session_id,
             user_id=user_id,
             allowed_capabilities=frozenset(allowed_capabilities),
+            admission_mode=admission_mode,
             expires_at=expires_at,
             opaque_handle=generate_opaque_handle(),
         )
@@ -68,6 +74,10 @@ class ThreadBinding:
         # ``frozen=True`` must also protect the capability allowlist from
         # mutation after construction.
         object.__setattr__(self, "allowed_capabilities", frozenset(self.allowed_capabilities))
+        try:
+            object.__setattr__(self, "admission_mode", canonical_admission_mode(self.admission_mode))
+        except AdmissionFactError as exc:
+            raise ValueError(exc.code) from exc
 
     def _validate_active(self) -> None:
         now = datetime.now(timezone.utc)
@@ -88,6 +98,7 @@ class ThreadBinding:
             tenant_id=self.tenant_id,
             session_id=self.session_id,
             user_id=self.user_id,
+            admission_mode=self.admission_mode,
             allowed_capabilities=frozenset(self.allowed_capabilities),
             model_identity_override=model_identity_override,
         )

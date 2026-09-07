@@ -10,7 +10,7 @@ from app.mcp_server.server import READONLY_TOOL_NAMES, build_sdk_server, build_s
 from app.mcp_server.tools_readonly import InternalClientBackend, ReadonlyDomainTools
 
 
-def trusted_context() -> ThreadBinding:
+def trusted_context(admission_mode: str = "major") -> ThreadBinding:
     return ThreadBinding(
         thread_id="thr_test",
         tenant_id="tenant-1",
@@ -19,6 +19,7 @@ def trusted_context() -> ThreadBinding:
         allowed_capabilities=frozenset(
             {"catalog_read", "catalog.search_schools", "admission_read"}
         ),
+        admission_mode=admission_mode,
     )
 
 
@@ -280,3 +281,99 @@ async def test_internal_backend_keeps_tenant_and_session_server_owned(monkeypatc
 
     assert result == {"items": []}
     assert calls == [101]
+
+
+@pytest.mark.asyncio
+async def test_major_group_history_returns_group_rate_and_nested_major_details() -> None:
+    class Backend:
+        async def get_history(self, **kwargs):
+            return {
+                "dataVersion": "v17",
+                "algorithmVersion": "rate-v3",
+                "admissionFacts": [
+                    {
+                        "admissionMode": "major_group",
+                        "admissionUnitId": "unit-1",
+                        "schoolId": "s1",
+                        "groupCode": "101",
+                        "unitAdmissionRate": 45,
+                        "riskTier": "冲",
+                        "majorItems": [
+                            {"majorId": "m-1", "majorAdmissionRate": 85}
+                        ],
+                    }
+                ],
+            }
+
+    tools = ReadonlyDomainTools(trusted_context("major_group"), backend=Backend())
+    result = await tools.call(
+        "admission.get_history",
+        {
+            "admissionMode": "major_group",
+            "areaId": "31",
+            "batch": "本科批",
+            "schoolId": "s1",
+            "groupCode": "101",
+            "year": 2026,
+            "subjectType": "物理类",
+            "stateVersion": 42,
+        },
+    )
+
+    assert result["status"] == "ok"
+    fact = result["data"]["admissionFacts"][0]
+    assert result["data"]["admissionMode"] == "major_group"
+    assert fact["unitAdmissionRate"] == 45
+    assert fact["riskTier"] == "冲"
+    assert fact["majorItems"][0]["majorAdmissionRate"] == 85
+    assert result["evidence"][0]["admissionMode"] == "major_group"
+
+
+@pytest.mark.asyncio
+async def test_mode_mismatch_is_rejected_without_backend_call() -> None:
+    class Backend:
+        calls = 0
+
+        async def get_current_plan(self, **kwargs):
+            self.calls += 1
+            return {}
+
+    backend = Backend()
+    tools = ReadonlyDomainTools(trusted_context("major"), backend=backend)
+
+    result = await tools.call(
+        "admission.get_current_plan", {"admissionMode": "major_group"}
+    )
+
+    assert result["status"] == "admission_mode_mismatch"
+    assert backend.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_group_detail_is_insufficient_data_not_zero_rate() -> None:
+    class Backend:
+        async def check_eligibility(self, **kwargs):
+            return {
+                "dataVersion": "v17",
+                "admissionFacts": [
+                    {
+                        "admissionMode": "major_group",
+                        "admissionUnitId": "unit-1",
+                        "schoolId": "s1",
+                        "groupCode": "101",
+                        "unitAdmissionRate": 70,
+                        "riskTier": "保",
+                        "majorItems": [],
+                    }
+                ],
+            }
+
+    tools = ReadonlyDomainTools(trusted_context("major_group"), backend=Backend())
+    result = await tools.call(
+        "admission.check_eligibility",
+        {"admissionMode": "major_group", "groupCode": "101"},
+    )
+
+    assert result["status"] == "insufficient_data"
+    assert "majorDetailAvailable=false" in result["limitations"]
+    assert "admissionFacts" in result["data"]

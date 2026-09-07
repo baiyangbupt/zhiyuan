@@ -29,6 +29,8 @@ _COMMON_INPUT_PROPERTIES: dict[str, Any] = {
     "name": {"type": "string"},
     "schoolId": {"type": "string"},
     "majorId": {"type": "string"},
+    "groupCode": {"type": "string"},
+    "admissionMode": {"type": "string", "enum": ["major", "major_group", "majorGroup"]},
     "province": {"type": "string"},
     "city": {"type": "string"},
     "schoolType": {"type": "string"},
@@ -59,9 +61,9 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "catalog.get_major": _input_schema(),
     "admission.get_current_plan": _input_schema(),
     "admission.get_history": _input_schema(
-        "areaId", "batch", "schoolId", "majorId", "year", "subjectType"
+        "areaId", "batch", "schoolId", "year", "subjectType"
     ),
-    "admission.check_eligibility": _input_schema("majorId"),
+    "admission.check_eligibility": _input_schema(),
 }
 
 TOOL_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -81,6 +83,8 @@ TOOL_OUTPUT_SCHEMA: dict[str, Any] = {
         "evidence": {"type": "array", "items": {}},
         "limitations": {"type": "array", "items": {"type": "string"}},
         "stateVersion": {"type": "integer"},
+        "admissionMode": {"type": "string", "enum": ["major", "major_group"]},
+        "dataVersion": {"type": "string"},
     },
     "additionalProperties": False,
 }

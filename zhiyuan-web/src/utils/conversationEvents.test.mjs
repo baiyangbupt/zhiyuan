@@ -49,3 +49,72 @@ test('action proposed is normalized to a pending preview without apply fields', 
     { type: 'action.proposed', payload: { proposalId: 'p1', summary: '调整方案', status: 'pending' } },
   );
 });
+
+test('normalizes structured major group facts without reading assistant text', () => {
+  const event = normalizeConversationEvent({
+    type: 'admission.facts.updated',
+    content: '录取率 99%',
+    payload: {
+      admissionMode: 'majorGroup',
+      admissionFacts: [
+        {
+          admissionMode: 'major_group',
+          admissionUnitId: 'unit-1',
+          schoolId: 'school-1',
+          groupCode: '101',
+          unitAdmissionRate: 45,
+          riskTier: '冲',
+          majorItems: [{ majorId: 'm-1', majorAdmissionRate: 85 }],
+        },
+      ],
+      evidenceIds: ['ev-1'],
+    },
+  });
+
+  assert.equal(event.type, 'admission.facts.updated');
+  assert.equal(event.payload.admissionMode, 'major_group');
+  assert.equal(event.payload.admissionFacts[0].unitAdmissionRate, 45);
+  assert.equal(event.payload.admissionFacts[0].majorItems[0].majorAdmissionRate, 85);
+  assert.deepEqual(event.payload.evidenceIds, ['ev-1']);
+});
+
+test('drops unsupported admission rates instead of displaying invented values', () => {
+  const event = normalizeConversationEvent({
+    type: 'admission.facts.updated',
+    payload: {
+      admissionMode: 'major',
+      admissionFacts: [
+        {
+          admissionMode: 'major',
+          admissionUnitId: 'unit-1',
+          schoolId: 'school-1',
+          majorId: 'm-1',
+          unitAdmissionRate: 99.01,
+          riskTier: '保',
+        },
+      ],
+    },
+  });
+
+  assert.equal(event, null);
+});
+
+test('rejects a mismatched unit tier and malformed nested detail', () => {
+  const event = normalizeConversationEvent({
+    type: 'admission.facts.updated',
+    payload: {
+      admissionMode: 'major_group',
+      admissionFacts: [{
+        admissionMode: 'major_group',
+        admissionUnitId: 'unit-1',
+        schoolId: 'school-1',
+        groupCode: '101',
+        unitAdmissionRate: 70,
+        riskTier: '稳',
+        majorItems: [{ majorId: 'm-1', majorAdmissionRate: 100 }],
+      }],
+    },
+  });
+
+  assert.equal(event, null);
+});

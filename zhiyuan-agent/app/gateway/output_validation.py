@@ -68,7 +68,24 @@ def validate_turn_output(
     if output.proposal_ref and not allow_proposal:
         raise OutputContractError("proposal_forbidden", "proposal output is disabled in readonly mode")
 
+    # Admission facts are only usable when the same turn carries a matching,
+    # current Evidence reference for the same mode and admission unit.
+    for fact in output.admission_facts:
+        if fact.admission_mode != snapshot.admission_mode:
+            raise OutputContractError("admission_mode_mismatch", fact.admission_unit_id)
+        matching_refs = [
+            reference
+            for reference in output.evidence_refs
+            if reference.admission_mode == fact.admission_mode
+            and reference.admission_unit_id == fact.admission_unit_id
+            and (fact.group_code is None or reference.group_code == fact.group_code)
+        ]
+        if not matching_refs:
+            raise OutputContractError("admission_evidence_missing", fact.admission_unit_id)
+
     for reference in output.evidence_refs:
+        if reference.admission_mode is not None and reference.admission_mode != snapshot.admission_mode:
+            raise OutputContractError("admission_mode_mismatch", reference.evidence_id)
         evidence_id = reference.evidence_id
         entry = evidence_ledger.get(evidence_id)
         if entry is None:
@@ -90,8 +107,16 @@ def validate_turn_output(
                 raise OutputContractError("evidence_invalid", evidence_id) from exc
             if parsed_state != snapshot.snapshot_version:
                 raise OutputContractError("stale_state", evidence_id)
+        if reference.state_version is not None and reference.state_version != snapshot.snapshot_version:
+            raise OutputContractError("stale_state", evidence_id)
         entry_version = _field(entry, "dataVersion", "data_version")
         if entry_version not in (None, "") and str(entry_version) != reference.data_version:
+            raise OutputContractError("evidence_mismatch", evidence_id)
+        entry_mode = _field(entry, "admissionMode", "admission_mode")
+        if reference.admission_mode is not None and entry_mode not in (None, "", reference.admission_mode):
+            raise OutputContractError("admission_mode_mismatch", evidence_id)
+        entry_unit = _field(entry, "admissionUnitId", "admission_unit_id")
+        if reference.admission_unit_id is not None and entry_unit not in (None, "", reference.admission_unit_id):
             raise OutputContractError("evidence_mismatch", evidence_id)
 
     for reference in output.artifact_refs:

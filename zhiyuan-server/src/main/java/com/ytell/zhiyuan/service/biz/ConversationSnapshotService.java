@@ -38,6 +38,7 @@ public class ConversationSnapshotService {
         ConversationTurnSnapshotDTO snapshot = new ConversationTurnSnapshotDTO();
         snapshot.setSnapshotVersion(workspace.getVersion() == null ? 0 : workspace.getVersion());
         snapshot.setSessionId(chatSessionId);
+        snapshot.setAdmissionMode(canonicalAdmissionMode(workspace));
         snapshot.setPlanningStage(defaultString(workspace.getPhase()));
         fillScoreContext(snapshot.getScoreContext(), workspace.getStudentSummary());
         fillProfileAndConstraints(snapshot, workspace);
@@ -46,6 +47,18 @@ public class ConversationSnapshotService {
         fillCapabilities(snapshot.getAllowedCapabilities(), skill);
         fillEvidence(snapshot.getEvidence(), workspace);
         return snapshot;
+    }
+
+    private String canonicalAdmissionMode(PlanningWorkspaceStateRes workspace) {
+        String raw = workspace.getCandidatePoolState() == null
+                ? null : workspace.getCandidatePoolState().getVolunteerModel();
+        if (raw == null || raw.trim().isEmpty() || "major".equalsIgnoreCase(raw)) {
+            return "major";
+        }
+        if ("majorGroup".equalsIgnoreCase(raw) || "major_group".equalsIgnoreCase(raw)) {
+            return "major_group";
+        }
+        throw new IllegalStateException("unsupported_admission_mode");
     }
 
     private void fillScoreContext(Map<String, Object> target, StudentPlanningSummaryDTO summary) {

@@ -96,6 +96,60 @@
       "expectedMode": "data_limitation",
       "datasetVersion": "shadow-fixture-2026-09-07-v1",
       "writeAllowed": false
+    },
+    {
+      "caseId": "admission-major-group-valid-001",
+      "sessionId": "shadow-013",
+      "input": "按院校专业组查看录取事实和组内专业明细。",
+      "expectedMode": "admission_major_group_valid",
+      "admissionMode": "major_group",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "admission-unknown-unit-001",
+      "sessionId": "shadow-014",
+      "input": "查询一个不存在的招生单元。",
+      "expectedMode": "insufficient_data",
+      "admissionMode": "major",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "admission-no-evidence-001",
+      "sessionId": "shadow-015",
+      "input": "只给我一个没有依据的录取率。",
+      "expectedMode": "evidence_required",
+      "admissionMode": "major",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "admission-tier-mismatch-001",
+      "sessionId": "shadow-016",
+      "input": "把录取率40%的招生单元标成保。",
+      "expectedMode": "risk_tier_rejected",
+      "admissionMode": "major",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "admission-stale-evidence-001",
+      "sessionId": "shadow-017",
+      "input": "继续使用上一版本的录取依据。",
+      "expectedMode": "evidence_stale",
+      "admissionMode": "major_group",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "admission-cross-mode-001",
+      "sessionId": "shadow-018",
+      "input": "把专业+大学的依据用于院校专业组。",
+      "expectedMode": "admission_mode_mismatch",
+      "admissionMode": "major_group",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
     }
   ]
 }

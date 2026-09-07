@@ -27,6 +27,81 @@ export const formatEvidencePayload = evidence => {
   };
 };
 
+export const normalizeAdmissionMode = value => {
+  if (value === 'major') return 'major';
+  if (value === 'majorGroup' || value === 'major_group') return 'major_group';
+  return null;
+};
+
+const normalizeAdmissionFact = (raw, mode) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const factMode = normalizeAdmissionMode(raw.admissionMode || raw.admission_mode || mode);
+  const unitId = raw.admissionUnitId || raw.admission_unit_id;
+  const schoolId = raw.schoolId || raw.school_id;
+  const groupCode = raw.groupCode || raw.group_code;
+  const majorId = raw.majorId || raw.major_id;
+  const rate = toFiniteNumber(raw.unitAdmissionRate ?? raw.unit_admission_rate);
+  if (!factMode || !unitId || !schoolId || rate === null || rate < 0 || rate > 99) return null;
+  if (factMode === 'major' && !majorId) return null;
+  if (factMode === 'major_group' && !groupCode) return null;
+  const riskTier = raw.riskTier || raw.risk_tier;
+  const expectedTier = rate < 50 ? '冲' : rate < 70 ? '稳' : '保';
+  if (riskTier !== expectedTier) return null;
+  const rawMajorItems = raw.majorItems || raw.major_items;
+  const majorItems = Array.isArray(rawMajorItems)
+    ? rawMajorItems.map(item => {
+      if (!item || typeof item !== 'object') return null;
+      const detailRate = toFiniteNumber(item.majorAdmissionRate ?? item.major_admission_rate);
+      const detailId = item.majorId || item.major_id;
+      if (!detailId || detailRate === null || detailRate < 0 || detailRate > 99) return null;
+      return {
+        majorId: String(detailId),
+        ...(item.majorName || item.major_name ? { majorName: item.majorName || item.major_name } : {}),
+        majorAdmissionRate: detailRate,
+      };
+    })
+    : [];
+  if (majorItems.some(item => item === null)) return null;
+  const majorIds = majorItems.map(item => item.majorId);
+  if (new Set(majorIds).size !== majorIds.length) return null;
+  return {
+    admissionUnitId: String(unitId),
+    admissionMode: factMode,
+    schoolId: String(schoolId),
+    ...(raw.schoolName ? { schoolName: String(raw.schoolName) } : {}),
+    ...(majorId ? { majorId: String(majorId) } : {}),
+    ...(raw.majorName ? { majorName: String(raw.majorName) } : {}),
+    ...(groupCode ? { groupCode: String(groupCode) } : {}),
+    majorItems,
+    unitAdmissionRate: rate,
+    riskTier,
+    ...(Array.isArray(raw.limitations) ? { limitations: raw.limitations.filter(item => typeof item === 'string') } : {}),
+  };
+};
+
+export const normalizeAdmissionFactsPayload = payload => {
+  if (!payload || typeof payload !== 'object') return null;
+  const mode = normalizeAdmissionMode(payload.admissionMode || payload.admission_mode);
+  const rawFacts = payload.admissionFacts || payload.admission_facts;
+  if (!mode || !Array.isArray(rawFacts)) return null;
+  const facts = rawFacts.map(fact => normalizeAdmissionFact(fact, mode)).filter(Boolean);
+  if (!facts.length) return null;
+  if (facts.some(fact => fact.admissionMode !== mode)) return null;
+  const evidenceIds = Array.isArray(payload.evidenceIds)
+    ? payload.evidenceIds.filter(item => typeof item === 'string')
+    : [];
+  return {
+    admissionMode: mode,
+    admissionFacts: facts,
+    evidenceIds,
+    ...(typeof payload.stateVersion === 'number' ? { stateVersion: payload.stateVersion } : {}),
+    ...(typeof payload.dataVersion === 'string' ? { dataVersion: payload.dataVersion } : {}),
+    limitations: Array.isArray(payload.limitations)
+      ? payload.limitations.filter(item => typeof item === 'string')
+      : [],
+  };
+};
+
 const artifactIdOf = artifact => artifact?.artifactId || artifact?.artifact_id;
 
 export const resolveArtifact = (ref, artifacts) => {
@@ -70,6 +145,10 @@ export const normalizeConversationEvent = event => {
         ? event.evidenceIds.filter(item => typeof item === 'string')
         : [];
     return { type: event.type, evidenceIds };
+  }
+  if (event.type === 'admission.facts.updated') {
+    const payload = normalizeAdmissionFactsPayload(stablePayload(event.payload));
+    return payload ? { type: event.type, payload } : null;
   }
   if (event.type === 'recommendation.card') {
     const artifactId = event.artifactId || event.payload?.artifactId;

@@ -36,13 +36,40 @@ class FakeBackend:
 
     async def get_current_plan(self, **kwargs):
         self.calls.append(("get_current_plan", kwargs))
-        return {"items": [], "dataVersion": "2026.09.07"}
+        mode = kwargs.get("admissionMode", "major")
+        return {
+            "admissionMode": mode,
+            "admissionFacts": [
+                {
+                    "admissionMode": mode,
+                    "admissionUnitId": "unit-major-group-1" if mode == "major_group" else "unit-major-1",
+                    "schoolId": "school-1",
+                    **({"groupCode": "101"} if mode == "major_group" else {"majorId": "major-1"}),
+                    "unitAdmissionRate": 45,
+                    "riskTier": "冲",
+                    "majorItems": ([{"majorId": "major-1", "majorAdmissionRate": 85}] if mode == "major_group" else []),
+                }
+            ],
+            "dataVersion": "2026.09.07",
+            "algorithmVersion": "rate-v3",
+        }
 
     async def get_history(self, **kwargs):
         self.calls.append(("get_history", kwargs))
+        mode = kwargs.get("admissionMode", "major")
         return {
-            "rows": [],
+            "admissionMode": mode,
+            "admissionFacts": [{
+                "admissionMode": mode,
+                "admissionUnitId": "unit-history-group-1" if mode == "major_group" else "unit-history-major-1",
+                "schoolId": kwargs.get("schoolId", "school-1"),
+                **({"groupCode": kwargs.get("groupCode", "101")} if mode == "major_group" else {"majorId": kwargs.get("majorId", "major-1")}),
+                "unitAdmissionRate": 70,
+                "riskTier": "保",
+                "majorItems": ([{"majorId": "major-1", "majorAdmissionRate": 40}] if mode == "major_group" else []),
+            }],
             "dataVersion": "2026.09.07",
+            "algorithmVersion": "rate-v3",
             "scope": "school-major",
             "coverage": "complete",
             "comparability": "comparable",
@@ -51,4 +78,11 @@ class FakeBackend:
 
     async def check_eligibility(self, **kwargs):
         self.calls.append(("check_eligibility", kwargs))
-        return {"eligible": True, "reasons": [], "dataVersion": "2026.09.07"}
+        mode = kwargs.get("admissionMode", "major")
+        return {
+            "eligible": True,
+            "reasons": [],
+            "admissionMode": mode,
+            "admissionFacts": [],
+            "dataVersion": "2026.09.07",
+        }
