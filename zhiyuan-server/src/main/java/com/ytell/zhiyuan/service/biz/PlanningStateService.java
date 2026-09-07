@@ -257,6 +257,7 @@ public class PlanningStateService {
             return summary;
         }
         summary.setSex(formatSex(scoreDetail.getSex()));
+        summary.setExamYear(scoreDetail.getExamYear());
         summary.setScore(scoreDetail.getTotalScore());
         summary.setRank(scoreDetail.getTotalScorePos());
         if (scoreDetail.getBatch() != null) {

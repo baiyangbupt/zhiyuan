@@ -2,6 +2,7 @@ package com.ytell.zhiyuan.web.controller.inner;
 
 import com.ytell.zhiyuan.common.base.BaseResponse;
 import com.ytell.zhiyuan.model.dto.planning.*;
+import com.ytell.zhiyuan.service.biz.ConversationSnapshotService;
 import com.ytell.zhiyuan.service.biz.PendingPlanningCommandBizService;
 import com.ytell.zhiyuan.service.biz.PlanningStateService;
 import io.swagger.annotations.Api;
@@ -28,6 +29,8 @@ public class PlanningStateController {
     private PlanningStateService planningStateService;
     @Autowired
     private PendingPlanningCommandBizService pendingPlanningCommandBizService;
+    @Autowired
+    private ConversationSnapshotService conversationSnapshotService;
 
     @GetMapping("/session/state")
     @ApiOperation("获取完整规划状态")
@@ -43,6 +46,16 @@ public class PlanningStateController {
                                                                      @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
         log.info("getPlanningWorkspaceState: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
         return BaseResponse.success(planningStateService.getPlanningWorkspaceState(tenantId, chatSessionId));
+    }
+
+    @GetMapping("/session/turn-snapshot")
+    @ApiOperation("获取 Codex turn 快照")
+    public BaseResponse<ConversationTurnSnapshotDTO> getTurnSnapshot(
+            @PathVariable("tenantId") Long tenantId,
+            @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+            @RequestParam(value = "skill", required = false) String skill) {
+        log.info("getTurnSnapshot: tenantId={}, chatSessionId={}, skill={}", tenantId, chatSessionId, skill);
+        return BaseResponse.success(conversationSnapshotService.getTurnSnapshot(tenantId, chatSessionId, skill));
     }
 
     @GetMapping("/session/summary")

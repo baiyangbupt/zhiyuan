@@ -8,6 +8,7 @@ import java.util.List;
 @Data
 public class StudentPlanningSummaryDTO {
     private String sex;
+    private Integer examYear;
     private Integer score;
     private Integer rank;
     private String batchName;

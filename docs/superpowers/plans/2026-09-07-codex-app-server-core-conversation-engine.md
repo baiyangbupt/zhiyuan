@@ -375,7 +375,7 @@ echo_binding_server.py 提供不访问业务数据的 MCP echo 工具。PoC 依�
 - Create: zhiyuan-agent/app/gateway/snapshot.py
 - Create: zhiyuan-agent/tests/unit/test_snapshot_projection.py
 
-- [ ] 步骤 1：写失败测试，固定快照投影
+- [x] 步骤 1：写失败测试，固定快照投影
 
     def test_candidate_projection_contains_authoritative_score_and_allowed_capabilities():
         snapshot = build_snapshot(fake_backend_workspace())
@@ -388,31 +388,31 @@ echo_binding_server.py 提供不访问业务数据的 MCP echo 工具。PoC 依�
 
 Java 测试覆盖成绩缺失、planning version 为 null、active pending、stale flag、审查摘要、当前 phase、能力集合和用户隔离。
 
-- [ ] 步骤 2：运行 RED
+- [x] 步骤 2：运行 RED
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_snapshot_projection.py -q
     cd ../zhiyuan-server
     mvn -q -Dtest=ConversationSnapshotServiceTest test
 
-- [ ] 步骤 3：实现 Snapshot service 和内部端点
+- [x] 步骤 3：实现 Snapshot service 和内部端点
 
 在 PlanningStateController 增加 GET /session/turn-snapshot，参数为 tenantId、chatSessionId 和可选 skill。ConversationSnapshotService 复用 getPlanningWorkspaceState(tenantId, chatSessionId) 和现有成绩/画像加载逻辑，按 skill 只输出必要字段。后端计算 allowedCapabilities，不接受请求覆盖。
 
 candidate-recommendation 只能得到权威成绩、硬约束、confirmed 偏好、排除项、phase、version 和候选/审查摘要；不能得到完整 operation log。
 
-- [ ] 步骤 4：实现 StatePatch
+- [x] 步骤 4：实现 StatePatch
 
 Gateway 对相邻快照做结构化 diff，字段路径只允许 scoreContext、confirmedConstraints、preferences、planningStage、activeProposal、missingFacts 和 allowedCapabilities。完整候选列表、方案表和原始 Evidence 不进入 Patch。
 
-- [ ] 步骤 5：运行 GREEN
+- [x] 步骤 5：运行 GREEN
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_snapshot_projection.py -q
     cd ../zhiyuan-server
     mvn -q -Dtest=ConversationSnapshotServiceTest,PlanningStateServiceTest test
 
-- [ ] 步骤 6：提交
+- [x] 步骤 6：提交
 
     git add zhiyuan-server/src/main/java/com/ytell/zhiyuan/service/biz/ConversationSnapshotService.java \
       zhiyuan-server/src/main/java/com/ytell/zhiyuan/web/controller/inner/PlanningStateController.java \

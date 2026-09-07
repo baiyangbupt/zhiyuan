@@ -626,6 +626,22 @@ async def get_planning_workspace_state(thread_id: Union[str, int]) -> Dict[str, 
     )
 
 
+async def get_conversation_turn_snapshot(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    skill: Optional[str] = None,
+) -> Dict[str, Any]:
+    """获取面向 Codex 单轮的有界事实快照。"""
+    params: Dict[str, Any] = {"chatSessionId": chat_session_id}
+    if skill:
+        params["skill"] = skill
+    return await http_client.get(
+        endpoint=f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/turn-snapshot",
+        params=params,
+        error_msg="获取 conversation turn snapshot 失败",
+    )
+
+
 async def update_planning_explicit_profile(
     thread_id: Union[str, int],
     major_preferences: Optional[Dict[str, list[str]]] = None,

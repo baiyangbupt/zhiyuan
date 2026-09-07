@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import pytest
+
+from app.gateway.snapshot import build_snapshot, diff_snapshots
+from app.util import internal_client
+
+
+def fake_backend_workspace() -> dict:
+    return {
+        "sessionId": 101,
+        "version": 42,
+        "phase": "candidate_exploration",
+        "studentSummary": {
+            "provinceName": "浙江",
+            "score": 612,
+            "rank": 18420,
+            "subjects": ["物理", "化学"],
+        },
+        "profileState": {
+            "explicitProfile": {
+                "majorPreferences": {"include": ["计算机科学与技术"]},
+                "schoolPreferences": {"include": ["浙江大学"]},
+            }
+        },
+        "constraintState": {
+            "hardConstraints": {"maxTuition": 60000},
+            "softPreferences": {"regions": ["华东"]},
+        },
+        "staleFlags": {"review": False},
+        "reviewState": {"summary": {"riskCount": 1, "warnCount": 2}},
+        "workflowStatus": {"reviewStatus": "reviewed"},
+        "candidatePoolState": {"summary": {"total": 12}},
+        "allowedCapabilities": ["admission_read", "catalog_read"],
+        "evidence": [
+            {
+                "evidenceId": "ev-score",
+                "sourceLevel": "authoritative",
+                "dataVersion": "2026.09.07",
+                "limitations": [],
+            }
+        ],
+        "workingPlanState": {"items": [{"school": "不应进入模型快照"}]},
+        "operationLogs": [{"type": "secret", "payload": "不应进入模型快照"}],
+    }
+
+
+def test_candidate_projection_contains_authoritative_score_and_allowed_capabilities() -> None:
+    snapshot = build_snapshot(fake_backend_workspace())
+
+    assert snapshot.snapshot_version == 42
+    assert snapshot.score_context["province"] == "浙江"
+    assert snapshot.score_context["rank"] == 18420
+    assert "admission_read" in snapshot.allowed_capabilities
+    assert "plan_apply" not in snapshot.allowed_capabilities
+    assert "workingPlanState" not in snapshot.model_dump(by_alias=True)
+    assert "operationLogs" not in snapshot.model_dump(by_alias=True)
+
+
+def test_missing_score_becomes_explicit_missing_fact() -> None:
+    workspace = fake_backend_workspace()
+    workspace["studentSummary"].pop("rank")
+    workspace["studentSummary"].pop("score")
+
+    snapshot = build_snapshot(workspace)
+
+    assert "score" in snapshot.missing_facts
+    assert "rank" in snapshot.missing_facts
+    assert snapshot.score_context["province"] == "浙江"
+
+
+def test_projection_maps_canonical_profile_fields_and_pending_proposal() -> None:
+    workspace = fake_backend_workspace()
+    workspace["profileState"]["explicitProfile"] = {
+        "positiveMajors": ["计算机科学与技术"],
+        "negativeMajors": ["临床医学"],
+        "positiveRegions": ["华东"],
+    }
+    workspace["activeProposal"] = {
+        "pendingId": "pending-1",
+        "data": {"action": "preview"},
+    }
+
+    snapshot = build_snapshot(workspace)
+
+    assert snapshot.preferences["major"] == ["计算机科学与技术"]
+    assert snapshot.preferences["region"] == ["华东"]
+    assert snapshot.confirmed_constraints["excludedMajors"] == ["临床医学"]
+    assert snapshot.active_proposal == workspace["activeProposal"]
+
+
+def test_projection_rejects_workspace_without_session_id() -> None:
+    workspace = fake_backend_workspace()
+    workspace.pop("sessionId")
+
+    with pytest.raises(ValueError, match="workspace sessionId is required"):
+        build_snapshot(workspace)
+
+
+def test_diff_only_emits_whitelisted_top_level_paths_and_adjacent_version() -> None:
+    before = build_snapshot(fake_backend_workspace())
+    workspace = fake_backend_workspace()
+    workspace["version"] = 43
+    workspace["phase"] = "plan_review"
+    workspace["workingPlanState"]["items"].append({"school": "仍不应进入 patch"})
+    after = build_snapshot(workspace)
+
+    patch = diff_snapshots(before, after)
+
+    assert patch.base_version == 42
+    assert patch.target_version == 43
+    assert {change["path"] for change in patch.changes} == {"planningStage"}
+
+
+def test_projection_rejects_non_mapping_backend_payload() -> None:
+    with pytest.raises(ValueError, match="workspace payload must be an object"):
+        build_snapshot([])
+
+
+@pytest.mark.asyncio
+async def test_turn_snapshot_client_uses_tenant_session_and_skill(monkeypatch) -> None:
+    calls = []
+
+    async def get(*, endpoint, params, error_msg):
+        calls.append((endpoint, params, error_msg))
+        return {"code": 0, "data": {"snapshotVersion": 42}}
+
+    monkeypatch.setattr(internal_client.http_client, "get", get)
+
+    result = await internal_client.get_conversation_turn_snapshot(
+        7, 101, "candidate-recommendation"
+    )
+
+    assert result["data"]["snapshotVersion"] == 42
+    assert calls == [
+        (
+            "/gaotu-assistant-bot/inner/planning/7/session/turn-snapshot",
+            {"chatSessionId": 101, "skill": "candidate-recommendation"},
+            "获取 conversation turn snapshot 失败",
+        )
+    ]
