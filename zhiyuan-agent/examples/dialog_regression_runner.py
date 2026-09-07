@@ -2798,6 +2798,14 @@ def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _write_jsonl_records(records: list[dict[str, Any]], output_path: str | Path) -> None:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as stream:
+        for record in records:
+            stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
 def _bump(counter: dict[str, int], key: Any) -> None:
     text = str(key or "").strip()
     if not text:
@@ -2814,6 +2822,7 @@ async def _run_cases(
     open_timeout: float = 30,
     response_timeout: float = 120,
     metrics_output: str | None = None,
+    jsonl_output: str | None = None,
     history_db: str | None = str(DEFAULT_HISTORY_DB),
     keep_response_text: bool = False,
     clear_history_per_case: bool = False,
@@ -3326,6 +3335,8 @@ async def _run_cases(
             + "\n",
             encoding="utf-8",
         )
+    if jsonl_output:
+        _write_jsonl_records(metrics_records, jsonl_output)
     if runtime_observation_output:
         Path(runtime_observation_output).write_text(
             json.dumps(
@@ -3359,6 +3370,7 @@ def main() -> None:
     parser.add_argument("--open-timeout", type=float, default=30, help="websocket opening handshake timeout in seconds")
     parser.add_argument("--response-timeout", type=float, default=120, help="timeout in seconds while waiting for each prompt response")
     parser.add_argument("--metrics-output", help="write per-step latency and assertion summary to JSON")
+    parser.add_argument("--jsonl-output", help="write one per-step regression result as JSONL")
     parser.add_argument(
         "--runtime-observation-output",
         help="write readonly runtime observations JSON; does not change dialog behavior",
@@ -3480,6 +3492,7 @@ def main() -> None:
             open_timeout=args.open_timeout,
             response_timeout=args.response_timeout,
             metrics_output=args.metrics_output,
+            jsonl_output=args.jsonl_output,
             history_db=args.history_db,
             keep_response_text=args.keep_response_text,
             clear_history_per_case=args.clear_history_per_case,

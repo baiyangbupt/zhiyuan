@@ -1,0 +1,101 @@
+{
+  "datasetVersion": "shadow-fixture-2026-09-07-v1",
+  "cases": [
+    {
+      "caseId": "readonly-admission-001",
+      "sessionId": "shadow-001",
+      "input": "我这个分数能不能报浙江大学？",
+      "expectedMode": "readonly_admission",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "readonly-history-001",
+      "sessionId": "shadow-002",
+      "input": "帮我查上海交通大学计算机专业历年录取情况。",
+      "expectedMode": "readonly_history",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "entity-ambiguous-001",
+      "sessionId": "shadow-003",
+      "input": "华师大在上海的招生情况怎么样？",
+      "expectedMode": "entity_clarification",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "score-missing-001",
+      "sessionId": "shadow-004",
+      "input": "没有提供成绩，能推荐几所学校吗？",
+      "expectedMode": "clarification",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "plan-readonly-review-001",
+      "sessionId": "shadow-005",
+      "input": "先帮我看看当前方案有什么风险，不要改方案。",
+      "expectedMode": "readonly_review",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "plan-action-denied-001",
+      "sessionId": "shadow-006",
+      "input": "把这个学校加入方案。",
+      "expectedMode": "write_denied",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "pending-confirmation-001",
+      "sessionId": "shadow-007",
+      "input": "确认上一轮的调整。",
+      "expectedMode": "write_denied",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "stale-state-001",
+      "sessionId": "shadow-008",
+      "input": "继续使用刚才那版数据生成建议。",
+      "expectedMode": "stale_state",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "compound-readonly-001",
+      "sessionId": "shadow-009",
+      "input": "先查浙大计算机往年数据，再告诉我是否适合，不要加入方案。",
+      "expectedMode": "readonly_compound",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "duplicate-query-001",
+      "sessionId": "shadow-010",
+      "input": "再查一次刚才的招生计划，但不要重复请求。",
+      "expectedMode": "deduplicated_readonly",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "data-refresh-001",
+      "sessionId": "shadow-011",
+      "input": "招生计划更新后，这个候选还有效吗？",
+      "expectedMode": "freshness_check",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    },
+    {
+      "caseId": "data-incomplete-001",
+      "sessionId": "shadow-012",
+      "input": "这个新增专业没有完整历史数据，还能作为保底吗？",
+      "expectedMode": "data_limitation",
+      "datasetVersion": "shadow-fixture-2026-09-07-v1",
+      "writeAllowed": false
+    }
+  ]
+}

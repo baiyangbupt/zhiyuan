@@ -98,7 +98,7 @@
 - Modify: zhiyuan-agent/examples/dialog_regression_runner.py（仅增加 JSONL 导出）
 - Create: zhiyuan-agent/docs/codex-shadow-runbook.md
 
-- [ ] 步骤 1：写失败测试，固定 manifest 字段
+- [x] 步骤 1：写失败测试，固定 manifest 字段
 
     def test_baseline_manifest_requires_versions_and_cases():
         manifest = load_manifest("tests/fixtures/shadow/baseline_manifest.json")
@@ -111,18 +111,18 @@
 
 manifest 至少包含 12 个脱敏案例：普通招生查询、历年分数线、实体歧义、成绩缺失、方案只读审查、方案动作请求、待确认、状态过期、复合问题、重复问题、计划更新和数据不足。每个案例记录 caseId、sessionId、input、expectedMode、datasetVersion 和 writeAllowed=false。
 
-- [ ] 步骤 2：运行 RED
+- [x] 步骤 2：运行 RED
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_shadow_baseline_manifest.py -q
 
 预期：FAIL，manifest loader 和固定字段校验尚不存在。
 
-- [ ] 步骤 3：实现只读 manifest loader 和 JSONL 导出
+- [x] 步骤 3：实现只读 manifest loader 和 JSONL 导出
 
 export_shadow_baseline.py 只读取已有脱敏案例，不读取生产密钥、不写数据库。每行结果包含 caseId、toolCalls、resolvedEntities、responseType、latencyMs、writeAttempted 和 error。
 
-- [ ] 步骤 4：运行 GREEN 和静态检查
+- [x] 步骤 4：运行 GREEN 和静态检查
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_shadow_baseline_manifest.py -q
@@ -130,7 +130,7 @@ export_shadow_baseline.py 只读取已有脱敏案例，不读取生产密钥、
 
 预期：测试 PASS，compileall 返回 0。
 
-- [ ] 步骤 5：提交
+- [x] 步骤 5：提交
 
     git add zhiyuan-agent/tests/fixtures/shadow/baseline_manifest.json \
       zhiyuan-agent/scripts/export_shadow_baseline.py \
