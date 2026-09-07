@@ -218,7 +218,7 @@ ConversationTurnSnapshotDTO 至少包含 snapshotVersion、sessionId、planningS
 - Modify: zhiyuan-agent/app/config.py
 - Modify: zhiyuan-agent/pyproject.toml
 
-- [ ] 步骤 1：写 JSONL client 失败测试
+- [x] 步骤 1：写 JSONL client 失败测试
 
     @pytest.mark.asyncio
     async def test_client_correlates_response_and_notification():
@@ -233,24 +233,24 @@ ConversationTurnSnapshotDTO 至少包含 snapshotVersion、sessionId、planningS
 
 另加测试：JSON-RPC error、通知先于 response、请求超时、stdout 非 JSON 日志隔离、进程退出时 pending future 失败和并发 request 不串 id。
 
-- [ ] 步骤 2：运行 RED
+- [x] 步骤 2：运行 RED
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_harness_protocol.py tests/unit/test_codex_harness_client.py -q
 
 预期：FAIL，HarnessClient 和 fake server 尚不存在。
 
-- [ ] 步骤 3：实现最小 JSONL transport
+- [x] 步骤 3：实现最小 JSONL transport
 
 AppServerClient 使用 asyncio.create_subprocess_exec，stdin 每次写一行 JSON，stdout 逐行读取；请求 id 使用单调递增整数；stderr 只进入 logger；close 先关闭 stdin、等待进程、再取消 reader task。禁止把 stdout 全量读入内存。
 
 Codex 适配固定提供 start、create_thread、resume_thread、inject_items、start_turn、steer_turn、interrupt_turn 和 events。默认命令为 codex app-server --stdio，配置读取 CODEX_APP_SERVER_BIN、CODEX_APP_SERVER_COMMIT 和 CODEX_APP_SERVER_TIMEOUT_SECONDS。
 
-- [ ] 步骤 4：实现 fake server 和集成测试
+- [x] 步骤 4：实现 fake server 和集成测试
 
 fake server 模拟 initialize、initialized、thread/start、thread/resume、thread/inject_items、turn/start、turn/steer、turn/interrupt、turn/completed、item/agentMessage/delta 和 item/mcpToolCall。测试不得依赖 OpenAI key。
 
-- [ ] 步骤 5：运行 GREEN 和真实版本协议检查
+- [x] 步骤 5：运行 GREEN 和真实版本协议检查（fake server 已验证；真实 binary 检查待任务 4 的 Go/No-Go 环节统一执行）
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_harness_protocol.py tests/unit/test_codex_harness_client.py tests/integration/test_codex_app_server_poc.py -q
@@ -259,7 +259,7 @@ fake server 模拟 initialize、initialized、thread/start、thread/resume、thr
 
 预期：测试 PASS；真实检查输出 initialize=ok、thread_start=ok、turn_start=ok、output_schema=ok。若 binary 不存在，按 ../codex/AGENTS.md 构建，不能用另一个版本替代。
 
-- [ ] 步骤 6：提交
+- [x] 步骤 6：提交
 
     git add zhiyuan-agent/app/harness zhiyuan-agent/app/config.py \
       zhiyuan-agent/pyproject.toml zhiyuan-agent/tests/unit/test_harness_protocol.py \

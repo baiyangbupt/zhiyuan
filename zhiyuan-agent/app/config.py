@@ -127,3 +127,43 @@ class BochaSearchConfig(BaseSettings):
     api_key: str = ""
     base_url: str = "https://api.bochaai.com/v1/web-search"
     timeout_seconds: float = 10.0
+
+
+class CodexAppServerConfig(BaseSettings):
+    """Codex App Server Harness 配置。"""
+
+    model_config = {
+        "env_prefix": "CODEX_APP_SERVER_",
+        "env_file": ".env",
+        "extra": "ignore",
+    }
+
+    bin: str = "codex"
+    commit: str = "89650c6"
+    transport: str = "stdio"
+    timeout_seconds: float = 30.0
+
+
+class GatewayConfig(BaseSettings):
+    """Conversation Gateway 运行模式配置。"""
+
+    model_config = {
+        "env_prefix": "GATEWAY_",
+        "env_file": ".env",
+        "extra": "ignore",
+    }
+
+    mode: str = "legacy"
+
+
+class McpConfig(BaseSettings):
+    """Domain MCP 运行配置。"""
+
+    model_config = {
+        "env_prefix": "MCP_",
+        "env_file": ".env",
+        "extra": "ignore",
+    }
+
+    mode: str = "readonly"
+    write_tools_enabled: bool = False
