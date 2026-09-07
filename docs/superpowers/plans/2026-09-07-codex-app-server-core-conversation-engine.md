@@ -250,7 +250,7 @@ Codex 适配固定提供 start、create_thread、resume_thread、inject_items、
 
 fake server 模拟 initialize、initialized、thread/start、thread/resume、thread/inject_items、turn/start、turn/steer、turn/interrupt、turn/completed、item/agentMessage/delta 和 item/mcpToolCall。测试不得依赖 OpenAI key。
 
-- [x] 步骤 5：运行 GREEN 和真实版本协议检查（fake server 已验证；真实 binary 检查待任务 4 的 Go/No-Go 环节统一执行）
+- [x] 步骤 5：运行 GREEN 和真实版本协议检查（fake server 已验证；真实 binary 检查在任务 4 的 Go/No-Go 环节完成）
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_harness_protocol.py tests/unit/test_codex_harness_client.py tests/integration/test_codex_app_server_poc.py -q
@@ -290,13 +290,17 @@ fake server 模拟 initialize、initialized、thread/start、thread/resume、thr
 - Create: zhiyuan-agent/tests/fixtures/mcp/echo_binding_server.py
 - Modify: zhiyuan-agent/app/util/internal_client.py
 
-- [ ] 步骤 1：写失败测试，覆盖安全拒绝
+- [x] 步骤 1：写失败测试，覆盖安全拒绝
 
-    def test_binding_rejects_model_supplied_identity():
+    def test_binding_ignores_model_supplied_identity():
         binding = ThreadBinding(threadId="thr_test", sessionId="session-1", userId="user-1",
                                 allowedCapabilities={"catalog.search_schools"})
-        with pytest.raises(BindingError):
-            binding.resolve_tool_context({"threadId": "thr_test", "sessionId": "session-2", "userId": "user-2"})
+        context = binding.resolve_tool_context(
+            {"threadId": "thr_test", "sessionId": "session-2", "userId": "user-2"}
+        )
+        assert context.sessionId == "session-1"
+        assert context.userId == "user-1"
+        assert context.modelIdentityOverride == "ignored"
 
     def test_expired_binding_fails_closed():
         binding = make_expired_binding()
@@ -305,7 +309,7 @@ fake server 模拟 initialize、initialized、thread/start、thread/resume、thr
 
 Java 测试覆盖租户/会话不匹配、重复 thread 注册、过期 binding、能力不在 allowlist、撤销后查询和同一 thread 绑定另一用户。
 
-- [ ] 步骤 2：运行 RED
+- [x] 步骤 2：运行 RED
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_thread_binding.py -q
@@ -314,15 +318,15 @@ Java 测试覆盖租户/会话不匹配、重复 thread 注册、过期 binding�
 
 预期：两侧因类型、表和服务不存在而失败。
 
-- [ ] 步骤 3：增加数据库和 Java binding 服务
+- [x] 步骤 3：增加数据库和 Java binding 服务
 
 迁移表固定包含 id、tenant_id、chat_session_id、user_id、thread_id、handle_hash、allowed_capabilities、expires_at、revoked_at、create_time 和 update_time。thread_id 与 handle_hash 唯一。服务只返回短期 opaque handle 的 hash 结果，不返回数据库内部 user/session 信息给模型。
 
-- [ ] 步骤 4：实现 Gateway binding handle
+- [x] 步骤 4：实现 Gateway binding handle
 
 Gateway 使用 secrets.token_urlsafe(32) 生成 handle，只把明文 handle 放进本进程内存和签名 MCP 启动上下文；MCP tool 参数不包含 handle。每个 turn 的 context 由 Gateway 根据 threadId 从 Java 解析，不能由模型覆盖。
 
-- [ ] 步骤 5：运行 binding fixture
+- [x] 步骤 5：运行 binding fixture 和真实 MCP metadata 检查
 
 echo_binding_server.py 提供不访问业务数据的 MCP echo 工具。PoC 依次断言 thr-A 映射到 session-A/user-A；模型伪造 session-B 仍解析为 session-A；撤销 binding 返回 capability_denied。
 
@@ -335,7 +339,12 @@ echo_binding_server.py 提供不访问业务数据的 MCP echo 工具。PoC 依�
 
 预期输出 binding=trusted、model_identity_override=ignored、revoked=denied。任一项失败，本期为 NO-GO，不接入真实 Domain MCP。
 
-- [ ] 步骤 6：提交
+真实 Codex App Server 的额外检查使用 `codex_metadata_server.py`，断言
+`mcp_metadata=trusted`、`model_identity_override=ignored`，并验证 `_meta.threadId`
+与 `thread/start` 返回的线程一致。该检查使用固定 0.144.1 binary（源码 commit
+89650c6），不会调用模型或外部业务数据。
+
+- [x] 步骤 6：提交
 
     git add zhiyuan-server/src/main/resources/db/migration/V13__add_codex_thread_binding.sql \
       zhiyuan-server/src/main/java/com/ytell/zhiyuan/model/entity/biz/CodexThreadBindingEntity.java \

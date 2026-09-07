@@ -105,6 +105,33 @@ class HttpClient:
             logger.error(f"{error_msg}异常: {e}")
             return {"error": str(e), "success": False}
 
+    async def delete(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        error_msg: str = "请求失败",
+    ) -> Dict[str, Any]:
+        """发送 DELETE 请求。"""
+        base_url = self._get_random_base_url()
+        url = f"{base_url}{endpoint}"
+        merged_headers = {**self.default_headers}
+        if headers:
+            merged_headers.update(headers)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.delete(
+                    url, params=params, headers=merged_headers
+                ) as response:
+                    result = await response.json()
+                    if response.status != 200:
+                        logger.error(f"{error_msg}: {response.status}, {result}")
+                    return result
+        except Exception as e:
+            logger.error(f"{error_msg}异常: {e}")
+            return {"error": str(e), "success": False}
+
     async def put(
         self,
         endpoint: str,
@@ -172,6 +199,39 @@ class HttpClient:
 
 # ── 全局 HTTP 客户端实例 ──────────────────────────────────────────
 http_client = HttpClient()
+
+
+async def register_codex_thread_binding(
+    tenant_id: Union[str, int], binding: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Register a gateway-owned Codex thread binding with the backend."""
+    return await http_client.post(
+        endpoint=f"/gaotu-assistant-bot/inner/codex/{tenant_id}/thread-binding",
+        json_data=dict(binding),
+        error_msg="注册 Codex thread binding 失败",
+    )
+
+
+async def revoke_codex_thread_binding(
+    tenant_id: Union[str, int], thread_id: Union[str, int]
+) -> Dict[str, Any]:
+    """Revoke the binding for a Codex thread."""
+    return await http_client.delete(
+        endpoint=f"/gaotu-assistant-bot/inner/codex/{tenant_id}/thread-binding",
+        params={"threadId": thread_id},
+        error_msg="撤销 Codex thread binding 失败",
+    )
+
+
+async def resolve_codex_thread_binding(
+    tenant_id: Union[str, int], binding: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Resolve a trusted server-side context for a Codex thread."""
+    return await http_client.post(
+        endpoint=f"/gaotu-assistant-bot/inner/codex/{tenant_id}/thread-binding/resolve",
+        json_data=dict(binding),
+        error_msg="解析 Codex thread binding 失败",
+    )
 
 
 def _pending_resource_data(response: Dict[str, Any] | None) -> Dict[str, Any]:

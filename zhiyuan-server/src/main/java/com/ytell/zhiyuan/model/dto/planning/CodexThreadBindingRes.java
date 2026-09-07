@@ -1,0 +1,14 @@
+package com.ytell.zhiyuan.model.dto.planning;
+
+import lombok.Data;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@Data
+public class CodexThreadBindingRes {
+    private String threadId;
+    private String handle;
+    private List<String> allowedCapabilities = new ArrayList<String>();
+    private String expiresAt;
+}
