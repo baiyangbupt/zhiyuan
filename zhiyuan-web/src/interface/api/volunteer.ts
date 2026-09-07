@@ -1,5 +1,7 @@
 import { IUserInfoParams } from '@/interface/api/assistant';
 import { IDialogueResData } from '@/interface/api/sessionDetail';
+import { ConversationEvidence } from '@/interface/api/conversation';
+import request from '@/service/index';
 export interface DialogueProps {
   routerParams: IUserInfoParams;
   version: number;
@@ -40,6 +42,17 @@ export interface PlanningWorkspaceIntent {
     negativeMajorTags?: string[];
   };
 }
+
+/** Read-only Evidence lookup used by the Codex conversation drawer. */
+export const getConversationEvidenceApi = (
+  tenantId: string,
+  chatSessionId: string,
+  evidenceId: string,
+) =>
+  request<{ chatSessionId: string; evidenceId: string }, ConversationEvidence>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/evidence?chatSessionId=${chatSessionId}&evidenceId=${encodeURIComponent(evidenceId)}`,
+    method: 'get',
+  });
 // 定义筛选类型
 export type FilterType = 'sprints' | 'safes' | 'protects';
 

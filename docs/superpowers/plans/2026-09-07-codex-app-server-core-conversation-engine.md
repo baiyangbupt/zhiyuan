@@ -596,7 +596,7 @@ server.py 增加 GATEWAY_MODE=legacy|codex_shadow|codex_readonly。legacy 完全
 
 断言用户和旧链路消息仍持久化；Shadow 不产生画像/方案写入；相同 turnId 重试只产生一条助手消息。
 
-- [ ] 步骤 6：提交
+- [x] 步骤 6：提交
 
     git add zhiyuan-agent/app/gateway zhiyuan-agent/app/server.py \
       zhiyuan-agent/app/schemas/ws.py zhiyuan-agent/app/config.py \
@@ -620,7 +620,7 @@ server.py 增加 GATEWAY_MODE=legacy|codex_shadow|codex_readonly。legacy 完全
 - Modify: zhiyuan-web/src/interface/api/volunteer.ts
 - Modify: zhiyuan-web/src/pageComponents/sessionDetailV2/WorkspacePanel/index.tsx
 
-- [ ] 步骤 1：写失败事件合同测试
+- [x] 步骤 1：写失败事件合同测试
 
     import assert from "node:assert/strict";
     import test from "node:test";
@@ -639,20 +639,20 @@ server.py 增加 GATEWAY_MODE=legacy|codex_shadow|codex_readonly。legacy 完全
 
 另加测试：unknown artifact 返回空值；Evidence payload 显示 dataVersion 和 limitations；planning.status 不暴露工具名和参数；旧 reply/card 仍按原组件渲染。测试使用 Node 内置 runner，不引入当前项目没有的 Jest/Vitest 依赖。
 
-- [ ] 步骤 2：运行 RED
+- [x] 步骤 2：运行 RED
 
     cd zhiyuan-web
     node --test src/utils/conversationEvents.test.mjs
 
-- [ ] 步骤 3：实现只读 Artifact renderer
+- [x] 步骤 3：实现只读 Artifact renderer
 
 conversation.ts 定义 Gateway 事件和 Artifact 类型；conversationEvents.mjs 提供无 UI 依赖的归一化和格式化纯函数；ArtifactRenderer 只接受 Gateway 校验后的 artifact，不接受 assistant 文本作为数字源；EvidenceDrawer 通过 evidenceId 请求后端数据。
 
-- [ ] 步骤 4：接入 WorkspacePanel
+- [x] 步骤 4：接入 WorkspacePanel
 
 增加事件 reducer，只更新对话、Evidence 和只读候选区域；收到 action.proposed 只显示 pending 预览，不调用 apply。第一期 Codex 写动作统一返回 capability_denied。
 
-- [ ] 步骤 5：运行前端和现有回归
+- [x] 步骤 5：运行前端和现有回归
 
     cd zhiyuan-web
     node --test src/utils/conversationEvents.test.mjs

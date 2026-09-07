@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Collapse, Dropdown, Empty, InputNumber, Modal, Spin, Tag, Tooltip, message } from 'antd';
+import { Alert, Button, Collapse, Dropdown, Empty, InputNumber, Modal, Spin, Tag, Tooltip, message } from 'antd';
 import {
   PlusOutlined,
   VerticalAlignTopOutlined,
@@ -54,8 +54,16 @@ import {
   PlanningWorkingPlanUnit,
   PlanningWorkspaceIntent,
 } from '@/interface/api/volunteer';
+import {
+  ConversationArtifact,
+  GatewayConversationEvent,
+} from '@/interface/api/conversation';
 import { resolveCandidateRefreshMode } from '@/utils/planningDataFreshness.mjs';
 import { formatSubjectShortText } from '@/utils/subjectText';
+import { normalizeConversationEvent, resolveArtifact } from '@/utils/conversationEvents.mjs';
+import ArtifactRenderer from '../ConversationEvents/ArtifactRenderer';
+import EvidenceDrawer from '../ConversationEvents/EvidenceDrawer';
+import PlanningStatus from '../ConversationEvents/PlanningStatus';
 import style from './style.module.scss';
 import { MAJOR_CATEGORY_TO_DISCIPLINES } from './majorCategoryMap';
 
@@ -205,6 +213,8 @@ interface WorkspacePanelProps {
     state: PlanningDataFreshnessState | null,
     checking: boolean
   ) => void;
+  conversationEvents?: GatewayConversationEvent[];
+  conversationArtifacts?: Record<string, ConversationArtifact>;
 }
 
 const getWorkspaceViewStorageKey = (chatSessionId?: string) =>
@@ -622,6 +632,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   onWorkspaceIntentConsumed,
   onPlanningStateChange,
   onDataFreshnessStateChange,
+  conversationEvents = [],
+  conversationArtifacts = {},
 }) => {
   const isMinipMobileLayout = mobileLayoutMode === 'minip';
   const initialActiveView = (() => {
@@ -691,6 +703,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [filters, setFilters] = useState(createDefaultFilters);
   const [focusVolunteerIds, setFocusVolunteerIds] = useState<string[]>([]);
   const [schoolHistoryModal, setSchoolHistoryModal] = useState<SchoolHistoryModalState | null>(null);
+  const [selectedConversationEvidenceId, setSelectedConversationEvidenceId] = useState<string | null>(null);
+  const normalizedConversationEvents = useMemo(
+    () => conversationEvents.map(event => normalizeConversationEvent(event)).filter(Boolean) as GatewayConversationEvent[],
+    [conversationEvents]
+  );
   const candidateItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const candidateScrollAnchorRef = useRef<{ volunteerId: string; groupKey?: string; topOffset: number } | null>(null);
   const candidateScrollRestoredVolunteerIdRef = useRef<string | null>(null);
@@ -5046,6 +5063,70 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
   return (
     <div className={`${style.workspacePanel} ${isMinipMobileLayout ? style.mobileOptimized : ''}`}>
+      {normalizedConversationEvents.length > 0 && (
+        <div style={{ display: 'grid', gap: 8, marginBottom: 12 }}>
+          {normalizedConversationEvents.map((event, index) => {
+            if (event.type === 'planning.status') {
+              const payload = event.payload || {};
+              return (
+                <PlanningStatus
+                  key={`planning-status-${index}`}
+                  status={typeof payload.status === 'string' ? payload.status : undefined}
+                  stage={typeof payload.stage === 'string' ? payload.stage : undefined}
+                  message={typeof payload.message === 'string' ? payload.message : undefined}
+                />
+              );
+            }
+            if (event.type === 'recommendation.card') {
+              return (
+                <ArtifactRenderer
+                  key={`recommendation-card-${event.artifactId || index}`}
+                  artifact={resolveArtifact(
+                    { artifactId: event.artifactId },
+                    conversationArtifacts
+                  ) as ConversationArtifact | null}
+                />
+              );
+            }
+            if (event.type === 'evidence.updated') {
+              return (
+                <div key={`evidence-${index}`} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {(event.evidenceIds || []).map(evidenceId => (
+                    <Button
+                      key={evidenceId}
+                      size="small"
+                      type="link"
+                      onClick={() => setSelectedConversationEvidenceId(evidenceId)}
+                    >
+                      查看依据 {evidenceId}
+                    </Button>
+                  ))}
+                </div>
+              );
+            }
+            if (event.type === 'action.proposed') {
+              const payload = event.payload || {};
+              return (
+                <Alert
+                  key={`action-proposed-${index}`}
+                  type="warning"
+                  showIcon
+                  message="待确认方案调整"
+                  description={typeof payload.summary === 'string' ? payload.summary : '方案调整待用户确认'}
+                />
+              );
+            }
+            return null;
+          })}
+          <EvidenceDrawer
+            tenantId={routerParams.tenantId}
+            chatSessionId={routerParams.chatSessionId}
+            evidenceId={selectedConversationEvidenceId}
+            open={Boolean(selectedConversationEvidenceId)}
+            onClose={() => setSelectedConversationEvidenceId(null)}
+          />
+        </div>
+      )}
       <div className={`${style.stageHeader} ${overviewCollapsed ? style.stageHeaderCollapsed : ''}`}>
         <div className={`${style.metricsGrid} ${overviewCollapsed ? style.metricsGridCollapsed : ''}`}>
           <div className={style.metricCard}>
