@@ -660,7 +660,7 @@ conversation.ts 定义 Gateway 事件和 Artifact 类型；conversationEvents.mj
 
 预期：测试和生产构建 PASS。
 
-- [ ] 步骤 6：提交
+- [x] 步骤 6：提交
 
     git add zhiyuan-web/src/interface/api/conversation.ts \
       zhiyuan-web/src/interface/api/volunteer.ts \
@@ -722,7 +722,7 @@ conversation.ts 定义 Gateway 事件和 Artifact 类型；conversationEvents.mj
 
 报告必须记录 Codex commit、transport、MCP SDK 版本、binding 结果、Thread/Turn/compaction/interrupt/resume 结果、性能、失败样例和 GO/NO-GO。binding 失败时结论固定为 NO-GO。
 
-- [ ] 步骤 6：提交
+- [x] 步骤 6：提交
 
     git add zhiyuan-agent/scripts/codex_shadow_replay.py \
       zhiyuan-agent/tests/fixtures/shadow \
