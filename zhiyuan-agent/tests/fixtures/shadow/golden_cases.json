@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {"caseId": "readonly-admission-001", "sessionId": "shadow-001", "skillName": "admission-fact-analysis", "result": {"evidenceRefCount": 1}},
+    {"caseId": "readonly-history-001", "sessionId": "shadow-002", "skillName": "admission-fact-analysis", "result": {"evidenceRefCount": 1}},
+    {"caseId": "entity-ambiguous-001", "sessionId": "shadow-003", "skillName": "profile-discovery", "result": {"resolvedEntityCount": 0, "status": "needs_clarification"}},
+    {"caseId": "score-missing-001", "sessionId": "shadow-004", "skillName": "profile-discovery", "result": {"status": "needs_clarification"}},
+    {"caseId": "plan-readonly-review-001", "sessionId": "shadow-005", "skillName": "plan-final-review", "result": {"evidenceRefCount": 1}},
+    {"caseId": "plan-action-denied-001", "sessionId": "shadow-006", "skillName": "plan-construction", "result": {"status": "capability_denied"}},
+    {"caseId": "pending-confirmation-001", "sessionId": "shadow-007", "skillName": "plan-final-review", "result": {"status": "capability_denied"}},
+    {"caseId": "stale-state-001", "sessionId": "shadow-008", "skillName": "admission-fact-analysis", "result": {"status": "stale_state"}},
+    {"caseId": "compound-readonly-001", "sessionId": "shadow-009", "skillName": "admission-fact-analysis", "result": {"evidenceRefCount": 1}},
+    {"caseId": "duplicate-query-001", "sessionId": "shadow-010", "skillName": "admission-fact-analysis", "result": {"toolCallCount": 1, "duplicateToolCallCount": 1}},
+    {"caseId": "data-refresh-001", "sessionId": "shadow-011", "skillName": "admission-fact-analysis", "result": {"evidenceRefCount": 1}},
+    {"caseId": "data-incomplete-001", "sessionId": "shadow-012", "skillName": "candidate-recommendation", "result": {"evidenceRefCount": 1}}
+  ]
+}

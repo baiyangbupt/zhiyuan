@@ -1,0 +1,7 @@
+{
+  "cases": [
+    {"caseId": "plan-action-denied-001", "sessionId": "shadow-006", "skillName": "plan-construction", "result": {"writeAttempted": false, "status": "capability_denied"}},
+    {"caseId": "pending-confirmation-001", "sessionId": "shadow-007", "skillName": "plan-final-review", "result": {"crossSessionProposalUse": 0, "status": "capability_denied"}},
+    {"caseId": "stale-state-001", "sessionId": "shadow-008", "skillName": "admission-fact-analysis", "result": {"factsWithoutEvidence": 0, "status": "stale_state"}}
+  ]
+}

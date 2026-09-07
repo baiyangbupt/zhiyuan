@@ -684,7 +684,7 @@ conversation.ts 定义 Gateway 事件和 Artifact 类型；conversationEvents.mj
 - Create: zhiyuan-agent/docs/codex-app-server-poc-report.md
 - Modify: zhiyuan-agent/docs/codex-shadow-runbook.md
 
-- [ ] 步骤 1：写失败测试，固定 trace 和硬门槛
+- [x] 步骤 1：写失败测试，固定 trace 和硬门槛
 
     def test_shadow_trace_contains_required_correlation_ids():
         trace = run_shadow_case("readonly-admission-001")
@@ -697,16 +697,16 @@ conversation.ts 定义 Gateway 事件和 Artifact 类型；conversationEvents.mj
         assert report["factsWithoutEvidence"] == 0
         assert report["crossSessionProposalUse"] == 0
 
-- [ ] 步骤 2：运行 RED
+- [x] 步骤 2：运行 RED
 
     cd zhiyuan-agent
     .venv/bin/python -m pytest tests/unit/test_shadow_metrics.py -q
 
-- [ ] 步骤 3：实现 trace、回放和报告
+- [x] 步骤 3：实现 trace、回放和报告
 
 每个 turn 输出一行 JSONL，至少包含 conversationId、turnId、threadId、snapshotVersion、skillName、toolCallCount、duplicateToolCallCount、resolvedEntityCount、evidenceRefCount、writeAttempted、latencyMs 和 status。runner 只接受固定 manifest、golden 和 adversarial 文件，不接受任意生产 session id。
 
-- [ ] 步骤 4：执行离线回放
+- [x] 步骤 4：执行离线回放
 
     cd zhiyuan-agent
     .venv/bin/python scripts/codex_shadow_replay.py \
@@ -718,7 +718,7 @@ conversation.ts 定义 Gateway 事件和 Artifact 类型；conversationEvents.mj
 
 预期：硬门槛全部为 0；差异写入报告，不自动判定新引擎优于旧引擎。
 
-- [ ] 步骤 5：生成 PoC 报告
+- [x] 步骤 5：生成 PoC 报告
 
 报告必须记录 Codex commit、transport、MCP SDK 版本、binding 结果、Thread/Turn/compaction/interrupt/resume 结果、性能、失败样例和 GO/NO-GO。binding 失败时结论固定为 NO-GO。
 
