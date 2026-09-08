@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Literal
+import sys
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
@@ -60,6 +61,7 @@ class InternalServiceConfig(BaseSettings):
     }
 
     url: str = "https://zhiyuan.ytell.cn"
+    timeout_seconds: float = 10.0
     # 仅用于 4.0 发布迁移窗口：新 pending 表无记录时读取旧 extra-data。
     # 新写入始终只走独立 pending 资源，完成存量迁移后应删除此开关和兜底。
 
@@ -142,6 +144,10 @@ class CodexAppServerConfig(BaseSettings):
     commit: str = "89650c6"
     transport: str = "stdio"
     timeout_seconds: float = 30.0
+    binding_ttl_seconds: int = 900
+    binding_registry_path: str = ""
+    python_bin: str = sys.executable
+    skill_root: str = ""
 
 
 class GatewayConfig(BaseSettings):

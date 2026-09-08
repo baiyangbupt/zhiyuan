@@ -4,10 +4,20 @@ import argparse
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
-from app.harness.binding import ThreadBinding
-from app.mcp_server.tools_readonly import CAPABILITIES, ReadonlyDomainTools
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from app.mcp_server.context import (
+    ThreadBindingRegistry,
+    TrustedContextError,
+    extract_trusted_thread_id,
+    extract_trusted_thread_id_from_metadata,
+)
+from app.mcp_server.response import error
+from app.mcp_server.tools_readonly import CAPABILITIES, InternalClientBackend, ReadonlyDomainTools
 
 try:
     from mcp.server import Server as SdkServer
@@ -100,7 +110,11 @@ def build_server() -> DomainMcpServer:
     return DomainMcpServer()
 
 
-def build_sdk_server(tool_runner: ReadonlyDomainTools) -> Any:
+def build_sdk_server(
+    tool_runner: ReadonlyDomainTools | None = None,
+    *,
+    binding_registry: ThreadBindingRegistry | None = None,
+) -> Any:
     """Build the production MCP SDK server around the governed tool runner.
 
     The SDK owns JSON-RPC framing and schema validation.  Domain authorization,
@@ -129,39 +143,115 @@ def build_sdk_server(tool_runner: ReadonlyDomainTools) -> Any:
 
     @server.call_tool(validate_input=True)
     async def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
-        return await tool_runner.call(name, arguments or {})
+        metadata = getattr(server.request_context, "meta", None) or {}
+        return await _call_domain_tool(
+            name,
+            arguments or {},
+            metadata=metadata,
+            binding_registry=binding_registry,
+            fallback_tool_runner=tool_runner,
+        )
 
     return server
 
 
-async def serve() -> None:
-    binding = ThreadBinding(
-        thread_id="stdio",
-        tenant_id="stdio",
-        session_id="stdio",
-        user_id="stdio",
-        allowed_capabilities=frozenset({"catalog_read", "admission_read"}),
-    )
-    tools = ReadonlyDomainTools(binding, backend=None)
-    if stdio_server is None:  # pragma: no cover
-        raise RuntimeError("mcp SDK is not installed")
-    server = build_sdk_server(tools)
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
+async def _call_domain_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    metadata: object,
+    binding_registry: ThreadBindingRegistry | None,
+    fallback_tool_runner: ReadonlyDomainTools | None = None,
+) -> dict[str, Any]:
+    active_tool_runner = fallback_tool_runner
+    if binding_registry is not None:
+        try:
+            thread_id = extract_trusted_thread_id_from_metadata(metadata)
+            capability = CAPABILITIES.get(name)
+            if capability is None:
+                return error("tool_not_found", name, state_version=0)
+            binding = await binding_registry.resolve(
+                thread_id=thread_id,
+                capability=capability,
+            )
+        except TrustedContextError as exc:
+            return error(str(exc), "trusted binding is unavailable", state_version=0)
+        active_tool_runner = ReadonlyDomainTools(
+            binding,
+            backend=InternalClientBackend(
+                tenant_id=binding.tenant_id,
+                chat_session_id=binding.session_id,
+            ),
         )
+    if active_tool_runner is None:
+        return error("binding_unconfigured", "trusted binding is unavailable", state_version=0)
+    return await active_tool_runner.call(name, arguments)
+
+
+def serve(binding_registry_path: str) -> None:
+    """Run a minimal JSON-RPC stdio MCP server compatible with Codex App Server.
+
+    The installed MCP SDK's stdio transport does not consume stdin in this
+    deployment environment.  We retain its schema builder for tests while the
+    production transport uses the small, protocol-specific loop below.
+    """
+    registry = ThreadBindingRegistry(binding_registry_path)
+    for raw_line in sys.stdin:
+        try:
+            request = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        method = request.get("method")
+        request_id = request.get("id")
+        params = request.get("params") or {}
+        result: dict[str, Any] | None = None
+        if method == "initialize":
+            result = {
+                "protocolVersion": params.get("protocolVersion", MCP_PROTOCOL_VERSION),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "zhiyuan-domain-readonly", "version": "0.1.0"},
+                "instructions": "Read-only Zhiyuan catalog and admission facts; all writes are denied.",
+            }
+        elif method == "tools/list":
+            result = {
+                "tools": [
+                    {
+                        "name": name,
+                        "description": "Zhiyuan authoritative read-only domain query",
+                        "inputSchema": TOOL_INPUT_SCHEMAS[name],
+                    }
+                    for name in sorted(READONLY_TOOL_NAMES)
+                ]
+            }
+        elif method == "tools/call":
+            outcome = asyncio.run(
+                _call_domain_tool(
+                    str(params.get("name") or ""),
+                    dict(params.get("arguments") or {}),
+                    metadata=params.get("_meta") or {},
+                    binding_registry=registry,
+                )
+            )
+            result = {
+                "content": [{"type": "text", "text": json.dumps(outcome, ensure_ascii=False)}],
+                "isError": False,
+            }
+        if request_id is not None and result is not None:
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-check", action="store_true")
+    parser.add_argument("--binding-registry", default="")
     args = parser.parse_args()
     if args.self_check:
         print(json.dumps({"tools": sorted(READONLY_TOOL_NAMES), "write_tools": 0}, ensure_ascii=False))
         return
-    asyncio.run(serve())
+    if not args.binding_registry:
+        parser.error("--binding-registry is required for MCP serving")
+    serve(args.binding_registry)
 
 
 if __name__ == "__main__":

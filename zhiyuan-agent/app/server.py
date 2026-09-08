@@ -6,14 +6,17 @@ import asyncio
 import uuid
 from importlib import metadata
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
-from app.config import GatewayConfig, HistoryConfig
+from app.config import CodexAppServerConfig, GatewayConfig, HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_store import message_store
+from app.gateway.composition import build_gateway_runtime
+from app.harness.binding import ThreadBinding, generate_opaque_handle
 from app.llm.client import LLMClient, configure_logfire
 from app.schemas import WSMessage, WSResponse
 from app.service import (
@@ -177,19 +180,112 @@ async def lifespan(app: FastAPI):
     history_store = ChatHistoryStore(db_path)
     app.state.chat_service = ChatService(llm_client, history_store)
     gateway_config = GatewayConfig()
+    codex_config = CodexAppServerConfig()
     app.state.gateway_mode = gateway_config.mode
-    # A production GatewayService is injected by the deployment composition
-    # after trusted binding and Codex sidecar wiring are available.  Keeping
-    # this unset preserves the fully compatible legacy path by default and
-    # fails closed when codex mode is configured without those dependencies.
-    app.state.gateway_service = None
-    if gateway_config.mode != "legacy":
-        logger.warning(
-            "GATEWAY_MODE=%s requested but no trusted GatewayService was injected; using legacy path",
-            gateway_config.mode,
+
+    binding_handles: dict[str, tuple[str, datetime]] = {}
+    binding_ttl_seconds = codex_config.binding_ttl_seconds
+    binding_registry = None
+    if codex_config.binding_registry_path:
+        from app.mcp_server.context import ThreadBindingRegistry
+
+        binding_registry = ThreadBindingRegistry(codex_config.binding_registry_path)
+
+    async def backend_binding_loader(
+        *,
+        tenant_id: str,
+        session_id: str,
+        user_id: str,
+        thread_id: str,
+        allowed_capabilities: list[str],
+        admission_mode: str,
+        **kwargs,
+    ) -> ThreadBinding:
+        del kwargs
+        from app.util.internal_client import (
+            register_codex_thread_binding,
+            resolve_codex_thread_binding,
         )
+
+        try:
+            numeric_tenant = int(tenant_id)
+            numeric_session = int(session_id)
+            numeric_user = int(user_id)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("binding_identity_must_be_numeric") from exc
+
+        cached_binding = binding_handles.get(thread_id)
+        now = datetime.now(timezone.utc)
+        if cached_binding is None or cached_binding[1] <= now + timedelta(seconds=60):
+            handle = generate_opaque_handle()
+            expires_at_datetime = now + timedelta(seconds=binding_ttl_seconds)
+            expires_at = expires_at_datetime.isoformat().replace("+00:00", "Z")
+            registration = await register_codex_thread_binding(
+                numeric_tenant,
+                {
+                    "chatSessionId": numeric_session,
+                    "userId": numeric_user,
+                    "threadId": thread_id,
+                    "handle": handle,
+                    "allowedCapabilities": list(allowed_capabilities),
+                    "expiresAt": expires_at,
+                },
+            )
+            if (registration or {}).get("code") not in (None, 0):
+                raise RuntimeError("binding_registration_failed")
+            binding_handles[thread_id] = (handle, expires_at_datetime)
+        else:
+            handle, expires_at_datetime = cached_binding
+            expires_at = expires_at_datetime.isoformat().replace("+00:00", "Z")
+
+        capability = next(iter(allowed_capabilities), "catalog_read")
+        resolved = await resolve_codex_thread_binding(
+            numeric_tenant,
+            {
+                "chatSessionId": numeric_session,
+                "threadId": thread_id,
+                "handle": handle,
+                "capability": capability,
+            },
+        )
+        data = (resolved or {}).get("data") or {}
+        if (resolved or {}).get("code") not in (None, 0) or not data:
+            raise RuntimeError("binding_resolution_failed")
+        binding = ThreadBinding(
+            thread_id=str(data.get("threadId") or thread_id),
+            tenant_id=str(numeric_tenant),
+            session_id=str(data.get("chatSessionId") or numeric_session),
+            user_id=str(data.get("userId") or numeric_user),
+            allowed_capabilities=frozenset(data.get("allowedCapabilities") or allowed_capabilities),
+            expires_at=expires_at_datetime,
+            admission_mode=admission_mode,
+            opaque_handle=handle,
+        )
+        if binding_registry is not None:
+            binding_registry.store(binding, expires_at=expires_at)
+        return binding
+
+    async def snapshot_loader(*, tenant_id: str, session_id: str, skill: str | None = None):
+        from app.util.internal_client import get_conversation_turn_snapshot
+
+        return await get_conversation_turn_snapshot(tenant_id, session_id, skill)
+
+    gateway_runtime = await build_gateway_runtime(
+        gateway_config,
+        legacy=app.state.chat_service,
+        message_store=message_store,
+        binding_loader=getattr(app.state, "gateway_binding_loader", backend_binding_loader),
+        snapshot_loader=getattr(app.state, "gateway_snapshot_loader", snapshot_loader),
+        codex_config=codex_config,
+    )
+    app.state.gateway_runtime = gateway_runtime
+    app.state.gateway_service = gateway_runtime.gateway if gateway_runtime else None
     logger.info("ChatService initialized")
-    yield
+    try:
+        yield
+    finally:
+        if gateway_runtime is not None:
+            await gateway_runtime.close()
 
 
 app = FastAPI(title="高考志愿填报 Agent", lifespan=lifespan)

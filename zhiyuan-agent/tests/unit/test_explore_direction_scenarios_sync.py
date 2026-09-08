@@ -593,7 +593,14 @@ def test_generic_direction_explore_fallback_starts_with_student_fit_not_school_l
 
     planning_state = _planning_state_with_direction_examples()
     with (
-        patch("app.tools.explore_direction_tool.get_planning_state", new=AsyncMock(return_value=planning_state)),
+        patch(
+            "app.tools.explore_direction_tool.get_planning_workspace_state",
+            new=AsyncMock(return_value=planning_state),
+        ),
+        patch(
+            "app.tools.explore_direction_tool.query_planning_candidate_pool",
+            new=AsyncMock(return_value={"data": {"items": planning_state["data"]["candidatePoolState"]["items"]}}),
+        ),
         patch(
             "app.tools.explore_direction_tool._generate_generic_direction_analysis_content",
             side_effect=RuntimeError("llm unavailable"),

@@ -1,7 +1,7 @@
 """Unit tests for code enrichment utilities."""
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 from app.util.code_enrichment import (
     get_major_codes,
     get_major_codes_async,
@@ -96,6 +96,12 @@ def test_get_province_codes_empty():
 def test_get_city_codes_empty():
     codes = get_city_codes([])
     assert codes == []
+
+
+def test_get_province_codes_accepts_statutory_administrative_names():
+    assert get_province_codes(
+        ["北京市", "上海市", "河北省", "广西壮族自治区", "内蒙古自治区"]
+    ) == ["110000", "310000", "130000", "450000", "150000"]
 
 
 def test_add_codes_to_profile():
@@ -278,6 +284,40 @@ async def test_async_school_province_city_codes_can_use_catalog():
     assert school_codes == ["10001"]
     assert province_codes == ["110000"]
     assert city_codes == ["110100"]
+
+
+@pytest.mark.asyncio
+async def test_async_province_aliases_are_resolved_locally_without_catalog_lookup():
+    from app.util import code_enrichment as module
+
+    module._catalog_province_item_cache.clear()
+    with patch(
+        "app.util.code_enrichment.catalog_lookup_province",
+        new_callable=AsyncMock,
+    ) as lookup_mock:
+        codes = await get_province_codes_async(["北京市", "上海市"])
+
+    assert codes == ["110000", "310000"]
+    lookup_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_async_province_local_fallback_does_not_misalign_after_missing_name():
+    from app.util import code_enrichment as module
+
+    module._catalog_province_item_cache.clear()
+    with (
+        patch("app.util.code_enrichment._load_province_city_maps", return_value=({"北京": "110000"}, {})),
+        patch(
+            "app.util.code_enrichment.catalog_lookup_province",
+            new_callable=AsyncMock,
+            return_value={"resultType": "exact", "data": {"provinceCode": "999999"}},
+        ) as lookup_mock,
+    ):
+        codes = await get_province_codes_async(["不存在", "北京"])
+
+    assert codes == ["999999", "110000"]
+    lookup_mock.assert_awaited_once_with("不存在")
 
 
 async def test_async_school_code_catalog_lookup_is_cached_across_calls():

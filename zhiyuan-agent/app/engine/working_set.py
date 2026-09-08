@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.gateway.contracts import ConversationTurnSnapshot, TurnOutput
+import json
+
+
+def _bounded(values: list[dict[str, Any]], limit: int = 24) -> list[dict[str, Any]]:
+    return values[-limit:]
+
+
+def _merge_entities(
+    current: list[dict[str, Any]], incoming: list[dict[str, Any]], limit: int = 24
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for value in current + incoming:
+        identifier = value.get("entityId")
+        if identifier:
+            merged.pop(str(identifier), None)
+            merged[str(identifier)] = value
+    return list(merged.values())[-limit:]
+
+
+@dataclass(slots=True)
+class ConversationWorkingSet:
+    """Model-facing projection of authoritative conversation state.
+
+    This is not a second business database and does not infer user intent. It
+    only keeps bounded, validated objects that make cross-turn references
+    resolvable after a new snapshot or a context compaction.
+    """
+
+    snapshot_version: int
+    session_id: str
+    snapshot: dict[str, Any]
+    candidate_entities: list[dict[str, Any]] = field(default_factory=list)
+    evidence_refs: list[dict[str, Any]] = field(default_factory=list)
+    admission_facts: list[dict[str, Any]] = field(default_factory=list)
+    artifact_refs: list[dict[str, Any]] = field(default_factory=list)
+    confirmed_constraints: dict[str, Any] = field(default_factory=dict)
+    active_proposal: dict[str, Any] | None = None
+    last_response_type: str | None = None
+    last_turn_id: str | None = None
+    candidate_scope_version: int = 0
+    candidate_scope_stage: str = ""
+    candidate_source_turn_id: str | None = None
+
+    @classmethod
+    def from_snapshot(cls, snapshot: ConversationTurnSnapshot) -> "ConversationWorkingSet":
+        return cls(
+            snapshot_version=snapshot.snapshot_version,
+            session_id=snapshot.session_id,
+            snapshot=snapshot.model_dump(by_alias=True),
+            confirmed_constraints=dict(snapshot.confirmed_constraints),
+            active_proposal=snapshot.active_proposal,
+            evidence_refs=[item.model_dump(by_alias=True) for item in snapshot.evidence],
+            admission_facts=[item.model_dump(by_alias=True) for item in snapshot.admission_facts],
+            candidate_scope_version=snapshot.snapshot_version,
+            candidate_scope_stage=snapshot.planning_stage,
+        )
+
+    def reconcile_snapshot(self, snapshot: ConversationTurnSnapshot) -> None:
+        """Apply a new authoritative snapshot without leaking old candidates."""
+        stage_changed = snapshot.planning_stage != self.candidate_scope_stage
+        mode_changed = snapshot.admission_mode != self.snapshot.get("admissionMode")
+        if stage_changed or mode_changed:
+            self.candidate_entities = []
+            self.candidate_source_turn_id = None
+        self.snapshot_version = snapshot.snapshot_version
+        self.snapshot = snapshot.model_dump(by_alias=True)
+        self.confirmed_constraints = dict(snapshot.confirmed_constraints)
+        self.candidate_scope_version = snapshot.snapshot_version
+        self.candidate_scope_stage = snapshot.planning_stage
+
+    def apply_output(self, output: TurnOutput, turn_id: str) -> None:
+        self.evidence_refs = _bounded(
+            self.evidence_refs
+            + [item.model_dump(by_alias=True) for item in output.evidence_refs]
+        )
+        self.admission_facts = _bounded(
+            self.admission_facts
+            + [item.model_dump(by_alias=True) for item in output.admission_facts]
+        )
+        self.artifact_refs = _bounded(
+            self.artifact_refs
+            + [item.model_dump(by_alias=True) for item in output.artifact_refs]
+        )
+        if output.proposal_ref:
+            self.active_proposal = {"proposalRef": output.proposal_ref}
+        self.last_response_type = output.response_type
+        self.last_turn_id = str(turn_id)
+
+    def ingest_payload(self, payload: Any, *, turn_id: str | None = None) -> None:
+        """Project stable entities and tool facts from a Codex payload."""
+        for item in _walk_mappings(payload):
+            entities = item.get("resolvedEntities") or item.get("resolved_entities")
+            if isinstance(entities, list):
+                self.candidate_entities = _bounded(
+                    _merge_entities(self.candidate_entities, _stable_entities(entities))
+                )
+                if entities:
+                    self.candidate_source_turn_id = turn_id or self.candidate_source_turn_id
+            data = item.get("data")
+            if isinstance(data, dict):
+                candidates = data.get("candidates") or data.get("items")
+                if isinstance(candidates, list):
+                    self.candidate_entities = _merge_entities(
+                        self.candidate_entities, _stable_entities(candidates)
+                    )
+                    if candidates:
+                        self.candidate_source_turn_id = turn_id or self.candidate_source_turn_id
+            for key, target in (
+                ("evidence", "evidence_refs"),
+                ("evidenceRefs", "evidence_refs"),
+                ("admissionFacts", "admission_facts"),
+            ):
+                values = item.get(key)
+                if isinstance(values, list):
+                    current = getattr(self, target)
+                    setattr(self, target, _bounded(current + [value for value in values if isinstance(value, dict)]))
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "kind": "conversation_working_set",
+            "snapshotVersion": self.snapshot_version,
+            "sessionId": self.session_id,
+            "snapshot": self.snapshot,
+            "candidateEntities": self.candidate_entities,
+            "candidateSet": {
+                "scopeVersion": self.candidate_scope_version,
+                "planningStage": self.candidate_scope_stage,
+                "sourceTurnId": self.candidate_source_turn_id,
+                "items": self.candidate_entities,
+            },
+            "evidenceRefs": self.evidence_refs,
+            "admissionFacts": self.admission_facts,
+            "artifactRefs": self.artifact_refs,
+            "confirmedConstraints": self.confirmed_constraints,
+            "activeProposal": self.active_proposal,
+            "lastResponseType": self.last_response_type,
+            "lastTurnId": self.last_turn_id,
+        }
+
+    def as_context_text(self) -> str:
+        """Render an explicit Chinese context block for model consumption."""
+        candidates = self.candidate_entities
+        candidate_text = "、".join(
+            f"{item.get('name') or item.get('entityId')}（ID={item.get('entityId')}）"
+            for item in candidates
+        ) or "当前没有已确认候选"
+        query_scope = self.confirmed_constraints.get("historyQuery")
+        query_scope_text = ""
+        if isinstance(query_scope, dict) and query_scope:
+            query_scope_text = (
+                "\n已确认历史查询参数："
+                + ", ".join(f"{key}={value}" for key, value in query_scope.items())
+            )
+        return (
+            "【志愿填报业务上下文】\n"
+            "以下内容是当前会话已确认的业务状态，不是用户新问题。"
+            "如果用户使用‘那几个学校’‘这几个’等指代，优先从候选集合恢复对象；"
+            "不要说看不到候选，也不要编造候选。\n"
+            f"当前候选学校：{candidate_text}\n"
+            + query_scope_text
+            + "\n如需查询历史分数，仍必须向用户询问缺失的省份、科类、批次、专业等参数。\n"
+            "结构化状态："
+            + json.dumps(self.as_payload(), ensure_ascii=False)
+        )
+
+
+def _walk_mappings(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        result = [value]
+        for nested in value.values():
+            result.extend(_walk_mappings(nested))
+        return result
+    if isinstance(value, list):
+        result: list[dict[str, Any]] = []
+        for nested in value:
+            result.extend(_walk_mappings(nested))
+        return result
+    return []
+
+
+def _stable_entities(values: list[Any]) -> list[dict[str, Any]]:
+    entities: list[dict[str, Any]] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        identifier = value.get("entityId") or value.get("entity_id") or value.get("id")
+        if not identifier:
+            continue
+        entity = {"entityId": str(identifier)}
+        for source, target in (
+            ("entityType", "entityType"),
+            ("entity_type", "entityType"),
+            ("name", "name"),
+            ("schoolId", "schoolId"),
+            ("schoolName", "schoolName"),
+            ("majorId", "majorId"),
+            ("majorName", "majorName"),
+        ):
+            if value.get(source) not in (None, ""):
+                entity[target] = value[source]
+        entities.append(entity)
+    return entities

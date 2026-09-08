@@ -36,8 +36,19 @@ public class CodexThreadBindingService {
         duplicateThread.lambda()
                 .eq(CodexThreadBindingEntity::getTenantId, tenantId)
                 .eq(CodexThreadBindingEntity::getThreadId, threadId);
-        if (bindingMapper.selectOne(duplicateThread) != null) {
-            throw new IllegalStateException("binding_thread_exists");
+        CodexThreadBindingEntity existing = bindingMapper.selectOne(duplicateThread);
+        if (existing != null) {
+            if (!req.getChatSessionId().equals(existing.getChatSessionId())
+                    || !req.getUserId().equals(existing.getUserId())) {
+                throw new IllegalStateException("binding_thread_identity_conflict");
+            }
+            existing.setHandleHash(handleHash);
+            existing.setAllowedCapabilities(String.join(",", req.getAllowedCapabilities()));
+            existing.setExpiresAt(parseExpiry(req.getExpiresAt()));
+            existing.setRevokedAt(null);
+            existing.setUpdateTime(new Date());
+            bindingMapper.updateById(existing);
+            return existing.getHandleHash();
         }
         QueryWrapper<CodexThreadBindingEntity> duplicateHandle = new QueryWrapper<CodexThreadBindingEntity>();
         duplicateHandle.lambda().eq(CodexThreadBindingEntity::getHandleHash, handleHash);

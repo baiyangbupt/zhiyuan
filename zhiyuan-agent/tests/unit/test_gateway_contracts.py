@@ -36,6 +36,20 @@ def test_fact_output_requires_evidence_refs() -> None:
         )
 
 
+def test_turn_output_normalizes_needs_clarification_alias() -> None:
+    output = TurnOutput.model_validate(
+        {
+            "responseType": "needs_clarification",
+            "message": "请补充省份",
+            "artifactRefs": [],
+            "evidenceRefs": [],
+            "uncertainties": ["province"],
+        }
+    )
+
+    assert output.response_type == "clarification"
+
+
 def test_state_patch_rejects_non_adjacent_versions() -> None:
     with pytest.raises(ValidationError, match="targetVersion"):
         StatePatch(

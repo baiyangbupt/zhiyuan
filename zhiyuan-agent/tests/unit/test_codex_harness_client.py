@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from app.harness.client import AppServerClient, AppServerProtocolError, AppServerTimeout
+from app.harness.codex import CodexAppServerHarness
+from app.harness.codex import _extract_output, _terminal_status
 
 
 FAKE_SERVER = Path(__file__).resolve().parents[1] / "fixtures" / "codex" / "fake_app_server.py"
@@ -75,3 +77,56 @@ async def test_client_marks_pending_requests_failed_when_process_exits() -> None
     with pytest.raises(Exception, match="app server exited"):
         await request_task
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_harness_waits_for_turn_completed_notification() -> None:
+    harness = CodexAppServerHarness([sys.executable, str(FAKE_SERVER)])
+    await harness.start()
+
+    result = await harness.start_turn_and_collect(
+        "thr_test",
+        [{"type": "text", "text": "你好"}],
+        {"type": "object"},
+    )
+
+    assert result.status == "completed"
+    assert result.turn_id == "turn_test"
+    assert result.events
+    await harness.close()
+
+
+def test_harness_accepts_real_agent_message_item_completion() -> None:
+    event = {
+        "type": "item/completed",
+        "item": {
+            "type": "agentMessage",
+            "text": '{"responseType":"clarification","message":"请补充省份"}',
+        },
+    }
+
+    assert _terminal_status(event) == "completed"
+    assert _extract_output(event) == {
+        "responseType": "clarification",
+        "message": "请补充省份",
+    }
+
+
+@pytest.mark.asyncio
+async def test_client_routes_concurrent_notification_waiters_without_cross_turn_blocking() -> None:
+    client = AppServerClient([sys.executable, str(FAKE_SERVER)])
+    first = asyncio.create_task(
+        client.wait_for_notification(lambda item: item.get("params", {}).get("turnId") == "turn-a")
+    )
+    second = asyncio.create_task(
+        client.wait_for_notification(lambda item: item.get("params", {}).get("turnId") == "turn-b")
+    )
+    await asyncio.sleep(0)
+
+    client._route_notification({"method": "turn/completed", "params": {"turnId": "turn-b"}})
+    client._route_notification({"method": "turn/completed", "params": {"turnId": "turn-a"}})
+
+    second_result = await second
+    first_result = await first
+    assert second_result["params"]["turnId"] == "turn-b"
+    assert first_result["params"]["turnId"] == "turn-a"

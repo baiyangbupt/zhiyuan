@@ -801,8 +801,19 @@ def test_chat_service_needs_plan_first_guard_runs_before_zhiyuan_direct(
     tmp_path,
     mock_llm_client,
 ):
-    db_path = tmp_path / "history.db"
-    store = ChatHistoryStore(str(db_path))
+    del tmp_path
+    saved_histories: dict[str, list] = {}
+
+    async def load_history(session_id: str):
+        return saved_histories.get(session_id)
+
+    async def save_history(session_id: str, history: list):
+        saved_histories[session_id] = list(history)
+
+    store = SimpleNamespace(
+        load=AsyncMock(side_effect=load_history),
+        save=AsyncMock(side_effect=save_history),
+    )
     pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
     fake_agent = _FakeAgent(["不应该调用旧模型"])
     direct_agent = SimpleNamespace(run_with_message_deltas=AsyncMock())
@@ -840,7 +851,7 @@ def test_chat_service_needs_plan_first_guard_runs_before_zhiyuan_direct(
     save_pending_mock.assert_not_awaited()
     direct_agent.run_with_message_deltas.assert_not_awaited()
     assert fake_agent.calls == []
-    saved_history = asyncio.run(store.load("session-needs-plan-first-before-direct"))
+    saved_history = saved_histories.get("session-needs-plan-first-before-direct")
     route_events = []
     for message in saved_history or []:
         for part in getattr(message, "parts", []) or []:

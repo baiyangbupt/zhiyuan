@@ -124,6 +124,11 @@ class TurnOutput(_ContractModel):
     clarification: str | None = None
     proposal_ref: str | None = None
 
+    @field_validator("response_type", mode="before")
+    @classmethod
+    def _normalize_clarification_response_type(cls, value: Any) -> Any:
+        return "clarification" if value == "needs_clarification" else value
+
     @model_validator(mode="after")
     def _require_backend_refs(self) -> "TurnOutput":
         if self.response_type == "fact" and not self.evidence_refs:

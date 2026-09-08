@@ -79,7 +79,10 @@ def main() -> None:
     with args.output.open("w", encoding="utf-8") as stream:
         for record in records:
             stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-    print(json.dumps(aggregate_shadow_report(records), ensure_ascii=False, sort_keys=True))
+    report = aggregate_shadow_report(records)
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    if not report["go"]:
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

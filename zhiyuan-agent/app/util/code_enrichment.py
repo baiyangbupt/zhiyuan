@@ -26,6 +26,16 @@ _catalog_province_item_cache: dict[str, dict[str, Any] | None] = {}
 _catalog_city_item_cache: dict[str, dict[str, Any] | None] = {}
 _catalog_filter_tag_tree_cache: dict[str, Any] | None = None
 
+_PROVINCE_NAME_ALIASES = {
+    "广西壮族自治区": "广西",
+    "内蒙古自治区": "内蒙古",
+    "宁夏回族自治区": "宁夏",
+    "新疆维吾尔自治区": "新疆",
+    "西藏自治区": "西藏",
+    "香港特别行政区": "香港",
+    "澳门特别行政区": "澳门",
+}
+
 
 def _normalize_string_list(values: Any) -> list[str]:
     if not values:
@@ -186,6 +196,20 @@ def _load_province_city_maps() -> tuple[dict[str, str], dict[str, str]]:
         for city in province.get("children", []):
             city_map[city["label"]] = city["id"]
 
+    # The option data uses short names (for example, "北京" and "河北"), while
+    # profile extraction commonly emits statutory names such as "北京市" and
+    # "河北省". Keep the source labels canonical and accept these deterministic
+    # query aliases locally before falling back to the catalog service.
+    for canonical_name, code in list(province_map.items()):
+        for suffix in ("省", "市", "自治区", "特别行政区"):
+            province_map.setdefault(f"{canonical_name}{suffix}", code)
+    for alias, canonical_name in _PROVINCE_NAME_ALIASES.items():
+        if canonical_name in province_map:
+            province_map.setdefault(alias, province_map[canonical_name])
+
+    for canonical_name, code in list(city_map.items()):
+        city_map.setdefault(f"{canonical_name}市", code)
+
     return province_map, city_map
 
 
@@ -218,8 +242,9 @@ async def get_major_codes_async(major_names: list[str], level: str, batch: str) 
         return []
 
     education_level = _batch_to_education_level(batch)
-    fallback_codes = get_major_codes(major_names, level, batch)
-    fallback_by_name = {name: code for name, code in zip(major_names, fallback_codes)}
+    level1_map, level2_map, level3_map = _load_major_name_to_code_map(batch)
+    code_map = {"level1": level1_map, "level2": level2_map}.get(level, level3_map)
+    fallback_by_name = {name: code_map[name] for name in major_names if name in code_map}
     async def lookup_one(name: str) -> tuple[str, str | None]:
         if level == "level1":
             item = await _lookup_cached_catalog_item(
@@ -277,8 +302,8 @@ async def get_school_codes_async(school_names: list[str]) -> list[str]:
     if not school_names:
         return []
 
-    fallback_codes = get_school_codes(school_names)
-    fallback_by_name = {name: code for name, code in zip(school_names, fallback_codes)}
+    school_map = _load_school_name_to_id_map()
+    fallback_by_name = {name: school_map[name] for name in school_names if name in school_map}
     async def lookup_one(name: str) -> tuple[str, str | None]:
         item = await _lookup_cached_catalog_item(
             _catalog_school_item_cache,
@@ -320,8 +345,8 @@ async def get_province_codes_async(province_names: list[str]) -> list[str]:
     if not province_names:
         return []
 
-    fallback_codes = get_province_codes(province_names)
-    fallback_by_name = {name: code for name, code in zip(province_names, fallback_codes)}
+    province_map, _ = _load_province_city_maps()
+    fallback_by_name = {name: province_map[name] for name in province_names if name in province_map}
     async def lookup_one(name: str) -> tuple[str, str | None]:
         item = await _lookup_cached_catalog_item(
             _catalog_province_item_cache,
@@ -363,8 +388,8 @@ async def get_city_codes_async(city_names: list[str]) -> list[str]:
     if not city_names:
         return []
 
-    fallback_codes = get_city_codes(city_names)
-    fallback_by_name = {name: code for name, code in zip(city_names, fallback_codes)}
+    _, city_map = _load_province_city_maps()
+    fallback_by_name = {name: city_map[name] for name in city_names if name in city_map}
     async def lookup_one(name: str) -> tuple[str, str | None]:
         item = await _lookup_cached_catalog_item(
             _catalog_city_item_cache,

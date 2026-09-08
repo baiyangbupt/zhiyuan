@@ -22,6 +22,7 @@ class HttpClient:
         config = InternalServiceConfig()
         # 支持逗号分隔的多个地址
         self.base_urls = [url.strip() for url in config.url.split(",")]
+        self.timeout = aiohttp.ClientTimeout(total=max(0.1, float(config.timeout_seconds)))
         self.default_headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
@@ -56,7 +57,7 @@ class HttpClient:
             merged_headers.update(headers)
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.get(
                     url, params=params, headers=merged_headers
                 ) as response:
@@ -93,7 +94,7 @@ class HttpClient:
             merged_headers.update(headers)
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.post(
                     url, json=json_data, headers=merged_headers
                 ) as response:
@@ -120,7 +121,7 @@ class HttpClient:
             merged_headers.update(headers)
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.delete(
                     url, params=params, headers=merged_headers
                 ) as response:
@@ -157,7 +158,7 @@ class HttpClient:
             merged_headers.update(headers)
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.put(
                     url, json=json_data, headers=merged_headers
                 ) as response:
@@ -184,7 +185,7 @@ class HttpClient:
             merged_headers.update(headers)
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.patch(
                     url, json=json_data, headers=merged_headers
                 ) as response:

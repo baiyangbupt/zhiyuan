@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "caseId": "reference-followup-history",
+      "description": "上一轮候选学校的历史分数查询",
+      "turns": [
+        {"content": "找几所适合我的学校"},
+        {"content": "查那几个学校去年的分数"}
+      ],
+      "expectations": {
+        "requiredEntityIds": ["school-1", "school-2"],
+        "responseType": "fact",
+        "evidenceRequired": true
+      }
+    },
+    {
+      "caseId": "missing-history-scope",
+      "description": "历史分数缺少必要查询参数时先澄清",
+      "turns": [
+        {"content": "查这几个学校去年的分数"}
+      ],
+      "expectations": {
+        "requiredToolNames": ["admission.get_history"],
+        "clarificationRequired": true
+      }
+    },
+    {
+      "caseId": "constraint-change-preview",
+      "description": "太贵和去掉第三个只形成只读预览，不直接写入",
+      "turns": [
+        {"content": "这些学校里太贵的去掉第三个"}
+      ],
+      "expectations": {
+        "forbiddenToolNames": ["plan_apply"],
+        "clarificationRequired": true
+      }
+    },
+    {
+      "caseId": "confirmation-before-write",
+      "description": "方案保存前必须产生确认或 Proposal",
+      "turns": [
+        {"content": "就按这个方案保存"}
+      ],
+      "expectations": {
+        "forbiddenToolNames": ["plan_apply"],
+        "proposalRequired": true
+      }
+    }
+  ]
+}

@@ -7995,8 +7995,6 @@ class ChatService:
             stale_pending_notice=stale_pending_notice,
         )
         active_pending = resolve_pending_confirmation(request_context)
-        if request_context.sandbox is not None:
-            await request_context.sandbox.warm(DEFAULT_WARM_PATHS)
         if active_pending is None:
             no_plan_boundary_reply = await self._maybe_handle_no_plan_boundary_guard(
                 session_id=session_id,
@@ -8015,6 +8013,8 @@ class ChatService:
             if no_plan_boundary_reply is not None:
                 await finish_context_progress()
                 return no_plan_boundary_reply
+        if request_context.sandbox is not None:
+            await request_context.sandbox.warm(DEFAULT_WARM_PATHS)
         zhiyuan_agent_direct_reply = await self._maybe_handle_zhiyuan_agent_direct_route(
             session_id=session_id,
             user_id=user_id,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -29,7 +28,7 @@ class ChatHistoryStore:
 
     async def load(self, session_id: str) -> list[Any] | None:
         """Load a session's full message history."""
-        payload = await asyncio.to_thread(self._load_payload, session_id)
+        payload = self._load_payload(session_id)
         if payload is None:
             return None
         return deserialize_history(payload)
@@ -37,11 +36,11 @@ class ChatHistoryStore:
     async def save(self, session_id: str, history: list[Any]) -> None:
         """Persist a session's full message history snapshot."""
         payload = serialize_history(history)
-        await asyncio.to_thread(self._save_payload, session_id, payload)
+        self._save_payload(session_id, payload)
 
     async def delete(self, session_id: str) -> None:
         """Delete a session's saved history."""
-        await asyncio.to_thread(self._delete_payload, session_id)
+        self._delete_payload(session_id)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)

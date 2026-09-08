@@ -15,7 +15,7 @@ cd zhiyuan-agent
   --output /tmp/zhiyuan-codex-shadow.jsonl
 ```
 
-输出每个 case 一行 JSONL trace，包含 conversationId、turnId、threadId、snapshotVersion、skillName、tool/evidence 计数、writeAttempted、latencyMs 和 status。汇总中的四个硬门槛必须为零：未授权写、未知招生单元、无 Evidence 事实、跨会话 Proposal。Shadow 只比较，不自动宣称新引擎优于旧链路。
+输出每个 case 一行 JSONL trace，包含 conversationId、turnId、threadId、snapshotVersion、skillName、tool/evidence 计数、writeAttempted、latencyMs 和 status。汇总中的四个硬门槛必须为零：未授权写、未知招生单元、无 Evidence 事实、跨会话 Proposal。若任一硬门槛非零，runner 以退出码 `2` 结束，CI 或发布脚本必须视为 `NO-GO`。Shadow 只比较，不自动宣称新引擎优于旧链路。
 
 ## 故障处理
 

@@ -7,6 +7,7 @@ import pytest
 from app.config import GatewayConfig
 from app.gateway.service import GatewayService
 from app.harness.binding import ThreadBinding
+from app.engine.semantic_eval import SemanticExpectation, evaluate_trace
 
 
 class FakeMessageStore:
@@ -55,6 +56,10 @@ class FakeCodexHarness:
             "turn": {"id": "turn-shadow"},
             "output": {"responseType": "text", "message": "Codex dry-run"},
         }
+
+
+def _working_set_payload(text: str) -> dict:
+    return json.loads(text.split("结构化状态：", 1)[1])
 
 
 def _snapshot() -> dict:
@@ -111,6 +116,22 @@ async def test_shadow_persists_legacy_chain_and_deduplicates_turn() -> None:
     assert first["writeAttempted"] is False
 
 
+async def test_gateway_rejects_same_turn_id_with_different_content() -> None:
+    store = FakeMessageStore()
+    legacy = FakeLegacyService()
+    gateway = await _build_gateway(store, legacy, FakeCodexHarness())
+
+    await gateway.handle_turn(
+        tenant_id="tenant-1", session_id="session-1", user_id="user-1", turn_id="turn-1", content="第一条"
+    )
+    result = await gateway.handle_turn(
+        tenant_id="tenant-1", session_id="session-1", user_id="user-1", turn_id="turn-1", content="第二条"
+    )
+
+    assert result["error"] == "turn_id_input_conflict"
+    assert len(legacy.calls) == 1
+
+
 async def test_gateway_injects_adjacent_snapshot_as_state_patch() -> None:
     store = FakeMessageStore()
     legacy = FakeLegacyService()
@@ -140,6 +161,10 @@ async def test_gateway_injects_adjacent_snapshot_as_state_patch() -> None:
     assert second["statePatch"]["baseVersion"] == 42
     assert second["statePatch"]["targetVersion"] == 43
     assert json.loads(codex.injected[-1]["items"][0]["text"])["kind"] == "state_patch"
+    working_set = _working_set_payload(codex.injected[-1]["items"][1]["text"])
+    assert working_set["kind"] == "conversation_working_set"
+    assert working_set["snapshotVersion"] == 43
+    assert working_set["lastResponseType"] == "text"
 
 
 async def test_readonly_gateway_does_not_persist_unvalidated_codex_output() -> None:
@@ -174,6 +199,151 @@ async def test_readonly_gateway_does_not_persist_unvalidated_codex_output() -> N
     assert result["error"].startswith("evidence_not_found")
     assert len(store.users) == 1
     assert len(store.agents) == 0
+
+
+async def test_readonly_gateway_rejects_cross_tenant_evidence() -> None:
+    store = FakeMessageStore()
+    legacy = FakeLegacyService()
+
+    class CrossTenantHarness(FakeCodexHarness):
+        async def start_turn(self, thread_id: str, input_items: list[dict], output_schema=None):
+            self.turns.append({"thread_id": thread_id, "input": input_items, "schema": output_schema})
+            return {
+                "turn": {"id": "turn-cross-tenant"},
+                "output": {
+                    "responseType": "fact",
+                    "message": "跨租户事实",
+                    "evidenceRefs": [
+                        {
+                            "evidenceId": "ev-cross-tenant",
+                            "sourceLevel": "authoritative",
+                            "dataVersion": "2026",
+                        }
+                    ],
+                },
+                "evidenceLedger": [
+                    {
+                        "evidenceId": "ev-cross-tenant",
+                        "tenantId": "other-tenant",
+                        "stateVersion": 42,
+                        "dataVersion": "2026",
+                    }
+                ],
+            }
+
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=CrossTenantHarness(),
+        legacy=legacy,
+        message_store=store,
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+
+    result = await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-cross-tenant",
+        content="查询事实",
+    )
+
+    assert result["error"].startswith("evidence_scope_violation")
+    assert len(store.agents) == 0
+
+
+async def test_readonly_gateway_preserves_candidates_for_followup_fact_query() -> None:
+    store = FakeMessageStore()
+    legacy = FakeLegacyService()
+
+    class TwoTurnReadonlyHarness(FakeCodexHarness):
+        def __init__(self) -> None:
+            super().__init__()
+            self.call_count = 0
+
+        async def start_turn(self, thread_id: str, input_items: list[dict], output_schema=None):
+            self.turns.append({"thread_id": thread_id, "input": input_items, "schema": output_schema})
+            self.call_count += 1
+            if self.call_count == 1:
+                return {
+                    "turn": {"id": "turn-1"},
+                    "output": {"responseType": "text", "message": "已找到候选学校"},
+                    "events": [
+                        {
+                            "type": "mcpToolCall",
+                            "result": {
+                                "resolvedEntities": [
+                                    {"entityId": "school-1", "entityType": "school", "name": "甲大学"},
+                                    {"entityId": "school-2", "entityType": "school", "name": "乙大学"},
+                                ]
+                            },
+                        }
+                    ],
+                }
+            return {
+                "turn": {"id": "turn-2"},
+                "output": {
+                    "responseType": "fact",
+                    "message": "已查询候选学校的历史分数",
+                    "evidenceRefs": [
+                        {
+                            "evidenceId": "ev-history",
+                            "sourceLevel": "authoritative",
+                            "dataVersion": "2026",
+                            "stateVersion": 42,
+                        }
+                    ],
+                },
+                "evidenceLedger": [
+                    {
+                        "evidenceId": "ev-history",
+                        "stateVersion": 42,
+                        "dataVersion": "2026",
+                        "sessionId": "session-1",
+                        "threadId": "thr-shadow",
+                        "tenantId": "tenant-1",
+                    }
+                ],
+            }
+
+    codex = TwoTurnReadonlyHarness()
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=codex,
+        legacy=legacy,
+        message_store=store,
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+
+    first = await gateway.handle_turn(
+        tenant_id="tenant-1", session_id="session-1", user_id="user-1", turn_id="turn-1", content="找几所学校"
+    )
+    second = await gateway.handle_turn(
+        tenant_id="tenant-1", session_id="session-1", user_id="user-1", turn_id="turn-2", content="查那几个学校去年的分数"
+    )
+
+    assert first["reply"] == "已找到候选学校"
+    assert second["reply"] == "已查询候选学校的历史分数"
+    injected_working_set = _working_set_payload(codex.injected[-1]["items"][1]["text"])
+    assert [item["entityId"] for item in injected_working_set["candidateSet"]["items"]] == [
+        "school-1",
+        "school-2",
+    ]
+    assert second["output"]["evidenceRefs"][0]["evidenceId"] == "ev-history"
+    assert second["trace"]["responseType"] == "fact"
+    assert second["trace"]["evidenceIds"] == ["ev-history"]
+    assert second["trace"]["entityIds"] == ["school-1", "school-2"]
+    evaluation = evaluate_trace(
+        SemanticExpectation(
+            case_id="followup-history",
+            required_entity_ids={"school-1", "school-2"},
+            response_type="fact",
+            evidence_required=True,
+        ),
+        second["trace"],
+    )
+    assert evaluation["passed"] is True
 
 
 def test_gateway_mode_is_allowlisted() -> None:
