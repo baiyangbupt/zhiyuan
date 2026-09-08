@@ -7,6 +7,25 @@ from app.gateway.contracts import ConversationTurnSnapshot, TurnOutput
 import json
 
 
+def project_proposal(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Expose a stable read-only proposal projection to Codex."""
+    if not isinstance(value, dict):
+        return None
+    proposal_id = value.get("proposalRef") or value.get("proposalId") or value.get("pendingId")
+    if not proposal_id:
+        return None
+    return {
+        "proposalRef": str(proposal_id),
+        "status": str(value.get("status") or "pending_confirmation"),
+        "requiresConfirmation": bool(value.get("requiresConfirmation", True)),
+        "sourceVersion": value.get("sourceVersion") or value.get("source_version"),
+        "summary": value.get("summary") or value.get("title") or "",
+        "actionFamily": value.get("actionFamily") or value.get("action_family") or "",
+        "changes": value.get("changes") or value.get("operations") or [],
+        "blockingReason": value.get("blockingReason") or value.get("blocking_reason"),
+    }
+
+
 def _bounded(values: list[dict[str, Any]], limit: int = 24) -> list[dict[str, Any]]:
     return values[-limit:]
 
@@ -54,7 +73,7 @@ class ConversationWorkingSet:
             session_id=snapshot.session_id,
             snapshot=snapshot.model_dump(by_alias=True),
             confirmed_constraints=dict(snapshot.confirmed_constraints),
-            active_proposal=snapshot.active_proposal,
+            active_proposal=project_proposal(snapshot.active_proposal),
             evidence_refs=[item.model_dump(by_alias=True) for item in snapshot.evidence],
             admission_facts=[item.model_dump(by_alias=True) for item in snapshot.admission_facts],
             candidate_scope_version=snapshot.snapshot_version,
@@ -88,7 +107,7 @@ class ConversationWorkingSet:
             + [item.model_dump(by_alias=True) for item in output.artifact_refs]
         )
         if output.proposal_ref:
-            self.active_proposal = {"proposalRef": output.proposal_ref}
+            self.active_proposal = project_proposal({"proposalRef": output.proposal_ref})
         self.last_response_type = output.response_type
         self.last_turn_id = str(turn_id)
 

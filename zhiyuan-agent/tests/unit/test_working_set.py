@@ -16,9 +16,38 @@ def test_working_set_projects_validated_cross_turn_objects() -> None:
     payload = working_set.as_payload()
 
     assert payload["snapshotVersion"] == 7
-    assert payload["activeProposal"] == {"proposalRef": "proposal-1"}
+    assert payload["activeProposal"]["proposalRef"] == "proposal-1"
+    assert payload["activeProposal"]["status"] == "pending_confirmation"
+    assert payload["activeProposal"]["requiresConfirmation"] is True
     assert payload["lastTurnId"] == "turn-2"
     assert payload["lastResponseType"] == "clarification"
+
+
+def test_working_set_projects_proposal_as_readonly_confirmation_state() -> None:
+    working_set = ConversationWorkingSet.from_snapshot(
+        ConversationTurnSnapshot(
+            snapshotVersion=7,
+            sessionId="s1",
+            activeProposal={
+                "pendingId": "pending-1",
+                "status": "active",
+                "actionFamily": "remove_plan_item",
+                "operations": [{"target": "school-3"}],
+                "sourceVersion": 7,
+            },
+        )
+    )
+
+    assert working_set.active_proposal == {
+        "proposalRef": "pending-1",
+        "status": "active",
+        "requiresConfirmation": True,
+        "sourceVersion": 7,
+        "summary": "",
+        "actionFamily": "remove_plan_item",
+        "changes": [{"target": "school-3"}],
+        "blockingReason": None,
+    }
 
 
 def test_working_set_does_not_replace_new_snapshot_constraints() -> None:
