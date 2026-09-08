@@ -69,11 +69,12 @@
         {"content": "查那几个学校去年的分数"}
       ],
       "expectations": {
-        "responseType": "clarification",
-        "executionStatus": "blocked",
+        "responseType": "fact",
+        "executionStatus": "partial",
         "limitationsRequired": true,
         "nextStepRequired": true,
-        "clarificationRequired": true
+        "proposalRequired": true,
+        "clarificationRequired": false
       }
     },
     {

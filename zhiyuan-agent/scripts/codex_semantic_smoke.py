@@ -85,6 +85,29 @@ def complete_history_scenario() -> tuple[dict[str, object], str, SemanticExpecta
     )
 
 
+def mixed_read_write_scenario() -> tuple[dict[str, object], str, SemanticExpectation]:
+    context, _, _ = reference_missing_scope_scenario()
+    context["snapshot"]["confirmedConstraints"] = {
+        "historyQuery": {"areaId": "330000", "majorId": "major-cs"},
+        "activePlan": {"artifactId": "plan-1", "items": ["school-1", "school-2", "school-3"]},
+    }
+    return (
+        context,
+        "查那几个学校2025年浙江物理类本科批计算机科学与技术专业的历史最低分，然后把方案里的第三个删掉",
+        SemanticExpectation(
+            case_id="mixed-read-and-write-request",
+            required_tool_names={"admission.get_history"},
+            forbidden_tool_names={"plan_apply"},
+            response_type="fact",
+            execution_status="partial",
+            limitations_required=True,
+            next_step_required=True,
+            clarification_required=False,
+            proposal_required=True,
+        ),
+    )
+
+
 async def run_scenario(
     scenario_factory: object,
 ) -> dict[str, object]:
@@ -252,13 +275,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scenario",
-        choices=["reference-missing-scope", "reference-complete-history"],
+        choices=["reference-missing-scope", "reference-complete-history", "mixed-read-write"],
         default="reference-missing-scope",
     )
     args = parser.parse_args()
     factory = (
         complete_history_scenario
         if args.scenario == "reference-complete-history"
+        else mixed_read_write_scenario
+        if args.scenario == "mixed-read-write"
         else reference_missing_scope_scenario
     )
     print(json.dumps(asyncio.run(run_scenario(factory)), ensure_ascii=False))
