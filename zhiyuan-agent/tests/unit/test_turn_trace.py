@@ -33,6 +33,8 @@ def test_turn_trace_records_observable_tool_and_clarification_facts() -> None:
     ]
     assert trace.entity_ids == ["school-1"]
     assert trace.clarification_requested is True
+    assert trace.orchestration[0]["ready"] is True
+    assert trace.orchestration[0]["missingArguments"] == []
 
 
 def test_turn_trace_accepts_real_mcp_tool_field() -> None:
@@ -62,3 +64,24 @@ def test_turn_trace_accepts_real_mcp_tool_field() -> None:
     )
 
     assert trace.tool_calls[0]["name"] == "admission.get_history"
+    assert trace.orchestration[0]["missingArguments"] == [
+        "majorId", "areaId", "batch", "year", "subjectType"
+    ]
+    assert trace.orchestration[0]["ready"] is False
+
+
+def test_turn_trace_marks_repeated_identical_invocations() -> None:
+    output = TurnOutput(responseType="text", message="已处理")
+    trace = build_turn_trace(
+        {
+            "events": [
+                {"type": "mcpToolCall", "toolName": "catalog.search_schools", "arguments": {"query": "计算机"}},
+                {"type": "mcpToolCall", "toolName": "catalog.search_schools", "arguments": {"query": "计算机"}},
+            ]
+        },
+        output,
+        entity_ids=[],
+    )
+
+    assert trace.orchestration[0]["duplicate"] is False
+    assert trace.orchestration[1]["duplicate"] is True
