@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.gateway.contracts import TurnOutput
-from app.engine.tool_orchestration import prepare_tool_invocation
+from app.engine.tool_orchestration import build_tool_batch_report, prepare_tool_invocation
 
 
 @dataclass(slots=True)
@@ -19,6 +19,7 @@ class TurnTrace:
     clarification_requested: bool = False
     proposal_ref: str | None = None
     orchestration: list[dict[str, Any]] = field(default_factory=list)
+    batch_report: dict[str, Any] = field(default_factory=dict)
 
     def as_payload(self) -> dict[str, Any]:
         return {
@@ -30,6 +31,7 @@ class TurnTrace:
             "clarificationRequested": self.clarification_requested,
             "proposalRef": self.proposal_ref,
             "orchestration": self.orchestration,
+            "batchReport": self.batch_report,
         }
 
 
@@ -93,6 +95,7 @@ def build_turn_trace(payload: Any, output: TurnOutput, *, entity_ids: list[str])
         clarification_requested=output.response_type == "clarification" or bool(output.clarification),
         proposal_ref=output.proposal_ref,
         orchestration=_dedupe_orchestration(orchestration),
+        batch_report=build_tool_batch_report(payload).as_payload(),
     )
 
 

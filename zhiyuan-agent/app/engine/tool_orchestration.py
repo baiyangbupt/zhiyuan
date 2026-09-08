@@ -61,6 +61,71 @@ class ToolBatchReport:
             return "failed"
         return "completed"
 
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "steps": [
+                {
+                    "stepId": step.step_id,
+                    "toolName": step.tool_name,
+                    "status": step.status,
+                    "invocationKey": step.invocation_key,
+                    "missingArguments": list(step.missing_arguments),
+                    "resultCount": step.result_count,
+                    "error": step.error,
+                }
+                for step in self.steps
+            ],
+            "mergedResults": list(self.merged_results),
+        }
+
+
+def build_tool_batch_report(payload: Any) -> ToolBatchReport:
+    """Build an observable batch report from Codex/MCP event payloads."""
+    steps: list[ToolStep] = []
+    results_by_step: dict[str, list[dict[str, Any]]] = {}
+    errors_by_step: dict[str, str] = {}
+    for index, item in enumerate(_walk_mappings(payload)):
+        item_type = str(item.get("type") or "").lower()
+        if "mcp" not in item_type and not any(
+            key in item for key in ("toolName", "tool_name", "toolCall", "tool_call")
+        ):
+            continue
+        nested = item.get("toolCall") or item.get("tool_call")
+        nested = nested if isinstance(nested, dict) else {}
+        name = (
+            item.get("toolName") or item.get("tool_name") or item.get("tool")
+            or nested.get("name") or nested.get("toolName") or ""
+        )
+        arguments = item.get("arguments") or item.get("args") or nested.get("arguments") or {}
+        if not isinstance(arguments, dict) or not name:
+            continue
+        step_id = str(item.get("id") or item.get("itemId") or f"tool-{index}")
+        steps.append(ToolStep(step_id, str(name), arguments))
+        result = item.get("result")
+        if isinstance(result, dict):
+            result_items = result.get("results") or result.get("items") or result.get("evidence")
+            if isinstance(result_items, list):
+                results_by_step[step_id] = [value for value in result_items if isinstance(value, dict)]
+        status = str(item.get("status") or "").lower()
+        if status in {"failed", "error"}:
+            errors_by_step[step_id] = str(item.get("error") or item.get("errorMessage") or "tool_failed")
+    return prepare_tool_batch(steps, results_by_step=results_by_step, errors_by_step=errors_by_step)
+
+
+def _walk_mappings(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        result = [value]
+        for nested in value.values():
+            result.extend(_walk_mappings(nested))
+        return result
+    if isinstance(value, list):
+        result: list[dict[str, Any]] = []
+        for nested in value:
+            result.extend(_walk_mappings(nested))
+        return result
+    return []
+
 
 def prepare_tool_batch(
     steps: Iterable[ToolStep],

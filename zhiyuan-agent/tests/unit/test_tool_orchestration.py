@@ -6,6 +6,7 @@ from app.engine.tool_orchestration import (
     render_tool_contracts,
     ToolStep,
     prepare_tool_batch,
+    build_tool_batch_report,
 )
 
 
@@ -110,3 +111,39 @@ def test_tool_batch_marks_completed_invocation_as_duplicate() -> None:
 
     assert report.status == "completed"
     assert report.steps[0].status == "duplicate"
+
+
+def test_build_tool_batch_report_reads_real_mcp_events() -> None:
+    report = build_tool_batch_report(
+        {
+            "events": [
+                {
+                    "type": "item/mcpToolCall",
+                    "id": "call-1",
+                    "tool": "catalog.search_schools",
+                    "arguments": {"query": "计算机"},
+                    "status": "completed",
+                    "result": {"items": [{"entityId": "school-1"}]},
+                },
+                {
+                    "type": "item/mcpToolCall",
+                    "id": "call-2",
+                    "tool": "admission.get_history",
+                    "arguments": {
+                        "schoolId": "school-1",
+                        "majorId": "major-cs",
+                        "areaId": "330000",
+                        "batch": "本科批",
+                        "year": 2025,
+                        "subjectType": "物理类",
+                    },
+                    "status": "failed",
+                    "errorMessage": "backend_timeout",
+                },
+            ]
+        }
+    )
+
+    assert report.status == "partial"
+    assert report.as_payload()["steps"][0]["resultCount"] == 1
+    assert report.as_payload()["steps"][1]["error"] == "backend_timeout"
