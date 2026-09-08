@@ -147,3 +147,24 @@ def test_build_tool_batch_report_reads_real_mcp_events() -> None:
     assert report.status == "partial"
     assert report.as_payload()["steps"][0]["resultCount"] == 1
     assert report.as_payload()["steps"][1]["error"] == "backend_timeout"
+
+
+def test_build_tool_batch_report_reads_business_status_from_result_body() -> None:
+    report = build_tool_batch_report(
+        {
+            "events": [{
+                "type": "item/mcpToolCall",
+                "id": "call-1",
+                "tool": "admission.get_history",
+                "arguments": {
+                    "schoolId": "school-1", "majorId": "major-cs", "areaId": "330000",
+                    "batch": "本科批", "year": 2025, "subjectType": "物理类",
+                },
+                "status": "completed",
+                "result": {"status": "no_data", "data": {"history": []}},
+            }]
+        }
+    )
+
+    assert report.status == "completed"
+    assert report.steps[0].error == "no_data"

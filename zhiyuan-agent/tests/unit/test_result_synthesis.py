@@ -31,3 +31,16 @@ def test_failed_batch_status_never_claims_complete_fact() -> None:
     assert result.execution_status == "failed"
     assert result.limitations == ["工具查询失败，当前没有可确认的完整结果。"]
     assert result.next_step == "请稍后重试，或调整查询条件。"
+
+
+def test_business_no_data_status_adds_limit_even_when_batch_completed() -> None:
+    output = TurnOutput(responseType="text", message="查询完成")
+
+    result = synthesize_execution_status(
+        output,
+        {"status": "completed", "steps": [{"error": "no_data"}]},
+    )
+
+    assert result.execution_status == "completed"
+    assert result.limitations == ["当前查询范围没有返回可引用数据。"]
+    assert result.next_step == "请调整查询范围或确认是否查询其他年份/批次。"

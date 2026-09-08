@@ -104,6 +104,9 @@ def build_tool_batch_report(payload: Any) -> ToolBatchReport:
         steps.append(ToolStep(step_id, str(name), arguments))
         result = item.get("result")
         if isinstance(result, dict):
+            result_status = str(result.get("status") or "").lower()
+            if result_status in {"needs_clarification", "missing_parameter", "entity_not_found", "stale_state", "no_data"}:
+                errors_by_step[step_id] = result_status
             result_items = result.get("results") or result.get("items") or result.get("evidence")
             if isinstance(result_items, list):
                 results_by_step[step_id] = [value for value in result_items if isinstance(value, dict)]
@@ -158,7 +161,7 @@ def prepare_tool_batch(
         elif preparation.invocation_key in completed:
             status = "duplicate"
         elif step.step_id in errors_by_step:
-            status = "failed"
+            status = "completed" if errors_by_step[step.step_id] == "no_data" else "failed"
         else:
             status = "completed"
         step_results = [item for item in results_by_step.get(step.step_id, ()) if isinstance(item, dict)]

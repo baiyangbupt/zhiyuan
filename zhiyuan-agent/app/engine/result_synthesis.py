@@ -11,7 +11,7 @@ def synthesize_execution_status(
 ) -> TurnOutput:
     """Overlay observable tool status without inventing business facts."""
     status = str(batch_report.get("status") or "completed")
-    if status == "completed" or output.execution_status == status:
+    if status == "completed" and not batch_report.get("steps"):
         return output
     limitations = list(output.limitations)
     next_step = output.next_step
