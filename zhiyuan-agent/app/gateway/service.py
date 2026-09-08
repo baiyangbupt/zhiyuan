@@ -15,6 +15,7 @@ from app.engine.working_set import ConversationWorkingSet
 from app.engine.execution_plan import build_execution_plan
 from app.engine.tool_orchestration import render_tool_contracts
 from app.engine.turn_trace import build_turn_trace
+from app.engine.result_synthesis import synthesize_execution_status
 
 
 TURN_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -26,7 +27,10 @@ TURN_OUTPUT_SCHEMA: dict[str, Any] = {
         "evidenceRefs",
         "admissionFacts",
         "uncertainties",
+        "limitations",
         "clarification",
+        "nextStep",
+        "executionStatus",
         "proposalRef",
     ],
     "properties": {
@@ -147,7 +151,13 @@ TURN_OUTPUT_SCHEMA: dict[str, Any] = {
             },
         },
         "uncertainties": {"type": "array", "items": {"type": "string"}},
+        "limitations": {"type": "array", "items": {"type": "string"}},
         "clarification": {"type": ["string", "null"]},
+        "nextStep": {"type": ["string", "null"]},
+        "executionStatus": {
+            "type": "string",
+            "enum": ["completed", "partial", "blocked", "failed"],
+        },
         "proposalRef": {"type": ["string", "null"]},
     },
     "additionalProperties": False,
@@ -527,7 +537,11 @@ class GatewayService:
             if raw_output is None and isinstance(turn, Mapping):
                 raw_output = turn.get("turn", {}).get("output")
             if raw_output is None:
-                raw_output = {"responseType": "text", "message": ""}
+                raw_output = {
+                    "responseType": "text",
+                    "message": "",
+                    "executionStatus": "completed",
+                }
             output = TurnOutput.model_validate(raw_output)
             evidence_ledger = _by_id(
                 turn.get("evidenceLedger", []) if isinstance(turn, Mapping) else [],
@@ -560,6 +574,7 @@ class GatewayService:
                     if item.get("entityId")
                 ],
             )
+            output = synthesize_execution_status(output, trace.batch_report)
             return {
                 "output": output,
                 "events": events,

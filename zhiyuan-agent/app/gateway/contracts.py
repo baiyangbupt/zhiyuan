@@ -121,7 +121,10 @@ class TurnOutput(_ContractModel):
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
     admission_facts: list[AdmissionFact] = Field(default_factory=list)
     uncertainties: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
     clarification: str | None = None
+    next_step: str | None = None
+    execution_status: Literal["completed", "partial", "blocked", "failed"] = "completed"
     proposal_ref: str | None = None
 
     @field_validator("response_type", mode="before")
