@@ -4,6 +4,8 @@ from app.engine.tool_orchestration import (
     merge_tool_results,
     prepare_tool_invocation,
     render_tool_contracts,
+    ToolStep,
+    prepare_tool_batch,
 )
 
 
@@ -65,3 +67,46 @@ def test_tool_contract_text_emphasizes_no_incomplete_query() -> None:
 
     assert "admission.get_history" in text
     assert "参数不完整时不得调用" in text
+
+
+def test_tool_batch_reports_dependency_block_and_partial_success() -> None:
+    report = prepare_tool_batch(
+        [
+            ToolStep("schools", "catalog.search_schools", {"query": "计算机"}),
+            ToolStep(
+                "majors",
+                "catalog.search_majors",
+                {"query": "计算机"},
+                depends_on=("schools",),
+            ),
+            ToolStep(
+                "current-plan",
+                "admission.get_current_plan",
+                {},
+                depends_on=("schools",),
+            ),
+        ],
+        results_by_step={
+            "schools": [{"entityId": "school-1", "name": "甲大学"}],
+            "majors": [{"entityId": "major-cs", "name": "计算机科学与技术"}],
+        },
+        errors_by_step={"current-plan": "backend_timeout"},
+    )
+
+    assert report.status == "partial"
+    assert [step.status for step in report.steps] == ["completed", "completed", "failed"]
+    assert report.steps[2].error == "backend_timeout"
+    assert report.merged_results == (
+        {"entityId": "school-1", "name": "甲大学"},
+        {"entityId": "major-cs", "name": "计算机科学与技术"},
+    )
+
+
+def test_tool_batch_marks_completed_invocation_as_duplicate() -> None:
+    step = ToolStep("schools", "catalog.search_schools", {"query": "计算机"})
+    report = prepare_tool_batch(
+        [step], completed_keys=[build_invocation_key(step.tool_name, step.arguments)]
+    )
+
+    assert report.status == "completed"
+    assert report.steps[0].status == "duplicate"

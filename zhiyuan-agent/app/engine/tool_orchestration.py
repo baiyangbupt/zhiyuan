@@ -26,6 +26,93 @@ class ToolPreparation:
         return not self.missing_arguments
 
 
+@dataclass(frozen=True, slots=True)
+class ToolStep:
+    step_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    depends_on: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ToolStepReport:
+    step_id: str
+    tool_name: str
+    status: str
+    invocation_key: str
+    missing_arguments: tuple[str, ...] = ()
+    result_count: int = 0
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolBatchReport:
+    steps: tuple[ToolStepReport, ...]
+    merged_results: tuple[dict[str, Any], ...]
+
+    @property
+    def status(self) -> str:
+        statuses = {step.status for step in self.steps}
+        if "blocked" in statuses:
+            return "blocked"
+        if "failed" in statuses and "completed" in statuses:
+            return "partial"
+        if "failed" in statuses:
+            return "failed"
+        return "completed"
+
+
+def prepare_tool_batch(
+    steps: Iterable[ToolStep],
+    *,
+    completed_keys: Iterable[str] = (),
+    results_by_step: dict[str, Iterable[dict[str, Any]]] | None = None,
+    errors_by_step: dict[str, str] | None = None,
+) -> ToolBatchReport:
+    """Report a dependency-ordered read batch without invoking tools."""
+    completed = set(completed_keys)
+    results_by_step = results_by_step or {}
+    errors_by_step = errors_by_step or {}
+    reports: list[ToolStepReport] = []
+    all_results: list[dict[str, Any]] = []
+    known_steps: set[str] = set()
+    for step in steps:
+        preparation = prepare_tool_invocation(step.tool_name, step.arguments)
+        dependency_blocked = any(
+            dependency not in known_steps
+            or not any(
+                report.step_id == dependency and report.status == "completed"
+                for report in reports
+            )
+            for dependency in step.depends_on
+        )
+        if preparation.missing_arguments:
+            status = "blocked"
+        elif dependency_blocked:
+            status = "blocked"
+        elif preparation.invocation_key in completed:
+            status = "duplicate"
+        elif step.step_id in errors_by_step:
+            status = "failed"
+        else:
+            status = "completed"
+        step_results = [item for item in results_by_step.get(step.step_id, ()) if isinstance(item, dict)]
+        all_results.extend(step_results)
+        reports.append(
+            ToolStepReport(
+                step_id=step.step_id,
+                tool_name=step.tool_name,
+                status=status,
+                invocation_key=preparation.invocation_key,
+                missing_arguments=preparation.missing_arguments,
+                result_count=len(step_results),
+                error=errors_by_step.get(step.step_id),
+            )
+        )
+        known_steps.add(step.step_id)
+    return ToolBatchReport(tuple(reports), tuple(merge_tool_results(all_results)))
+
+
 TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     ToolContract(
         "catalog.search_schools",
