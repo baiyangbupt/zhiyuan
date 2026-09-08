@@ -81,3 +81,28 @@ def test_semantic_eval_rejects_fact_without_domain_tool_and_evidence() -> None:
 
     assert result["passed"] is False
     assert set(result["failures"]) == {"missing_tools", "evidence_missing"}
+
+
+def test_semantic_eval_rejects_write_tool_in_mixed_read_write_request() -> None:
+    result = evaluate_trace(
+        SemanticExpectation(
+            case_id="mixed-read-and-write-request",
+            required_tool_names={"admission.get_history"},
+            forbidden_tool_names={"plan_apply"},
+            response_type="clarification",
+            execution_status="blocked",
+            clarification_required=True,
+        ),
+        {
+            "toolCalls": [
+                {"name": "admission.get_history"},
+                {"name": "plan_apply"},
+            ],
+            "responseType": "clarification",
+            "executionStatus": "blocked",
+            "clarificationRequested": True,
+        },
+    )
+
+    assert result["passed"] is False
+    assert "forbidden_tools" in result["failures"]

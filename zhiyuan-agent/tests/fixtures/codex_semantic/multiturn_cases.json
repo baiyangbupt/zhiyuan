@@ -75,6 +75,22 @@
         "nextStepRequired": true,
         "clarificationRequired": true
       }
+    },
+    {
+      "caseId": "mixed-read-and-write-request",
+      "description": "同一轮同时查询事实和修改方案时，先完成只读部分并阻止写入",
+      "turns": [
+        {"content": "查这几个学校的历史分数，然后把第三个从方案里删掉"}
+      ],
+      "expectations": {
+        "requiredToolNames": ["admission.get_history"],
+        "forbiddenToolNames": ["plan_apply"],
+        "responseType": "clarification",
+        "executionStatus": "blocked",
+        "limitationsRequired": true,
+        "nextStepRequired": true,
+        "clarificationRequired": true
+      }
     }
   ]
 }
