@@ -106,3 +106,23 @@ def test_semantic_eval_rejects_write_tool_in_mixed_read_write_request() -> None:
 
     assert result["passed"] is False
     assert "forbidden_tools" in result["failures"]
+
+
+def test_semantic_eval_requires_failed_status_to_expose_recovery_step() -> None:
+    result = evaluate_trace(
+        SemanticExpectation(
+            case_id="failed-read-result",
+            response_type="text",
+            execution_status="failed",
+            limitations_required=True,
+            next_step_required=True,
+        ),
+        {
+            "responseType": "text",
+            "executionStatus": "failed",
+            "limitations": ["工具查询失败"],
+            "nextStep": "请稍后重试",
+        },
+    )
+
+    assert result["passed"] is True

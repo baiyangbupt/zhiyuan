@@ -21,3 +21,13 @@ def test_blocked_batch_status_exposes_next_step() -> None:
 
     assert result.execution_status == "blocked"
     assert result.next_step == "请补充缺失参数后继续。"
+
+
+def test_failed_batch_status_never_claims_complete_fact() -> None:
+    output = TurnOutput(responseType="text", message="暂未完成查询")
+
+    result = synthesize_execution_status(output, {"status": "failed"})
+
+    assert result.execution_status == "failed"
+    assert result.limitations == ["工具查询失败，当前没有可确认的完整结果。"]
+    assert result.next_step == "请稍后重试，或调整查询条件。"
