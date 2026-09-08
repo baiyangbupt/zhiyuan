@@ -55,6 +55,8 @@
       ],
       "expectations": {
         "responseType": "fact",
+        "requiredToolNames": ["admission.get_history"],
+        "evidenceRequired": true,
         "executionStatus": "partial",
         "limitationsRequired": true,
         "nextStepRequired": true

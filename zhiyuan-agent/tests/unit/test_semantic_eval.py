@@ -62,3 +62,22 @@ def test_semantic_eval_checks_result_synthesis_status_and_next_step() -> None:
     )
 
     assert result["passed"] is True
+
+
+def test_semantic_eval_rejects_fact_without_domain_tool_and_evidence() -> None:
+    result = evaluate_trace(
+        SemanticExpectation(
+            case_id="fact-without-tool",
+            response_type="fact",
+            required_tool_names={"admission.get_history"},
+            evidence_required=True,
+        ),
+        {
+            "responseType": "fact",
+            "toolCalls": [],
+            "evidenceIds": [],
+        },
+    )
+
+    assert result["passed"] is False
+    assert set(result["failures"]) == {"missing_tools", "evidence_missing"}

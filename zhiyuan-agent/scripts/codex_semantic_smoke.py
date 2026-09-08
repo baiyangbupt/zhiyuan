@@ -79,6 +79,7 @@ def complete_history_scenario() -> tuple[dict[str, object], str, SemanticExpecta
             required_tool_names={"admission.get_history"},
             forbidden_tool_names={"plan_apply"},
             response_type="fact",
+            evidence_required=True,
             clarification_required=False,
         ),
     )
