@@ -42,3 +42,23 @@ def test_semantic_eval_rejects_write_tool_and_missing_clarification() -> None:
         "forbidden_tools",
         "clarification_mismatch",
     }
+
+
+def test_semantic_eval_checks_result_synthesis_status_and_next_step() -> None:
+    result = evaluate_trace(
+        SemanticExpectation(
+            case_id="partial-read-result",
+            response_type="fact",
+            execution_status="partial",
+            limitations_required=True,
+            next_step_required=True,
+        ),
+        {
+            "responseType": "fact",
+            "executionStatus": "partial",
+            "limitations": ["仅覆盖已成功返回的学校"],
+            "nextStep": "继续查询未完成学校",
+        },
+    )
+
+    assert result["passed"] is True

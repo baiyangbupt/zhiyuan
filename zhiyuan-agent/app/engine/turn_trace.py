@@ -20,6 +20,9 @@ class TurnTrace:
     proposal_ref: str | None = None
     orchestration: list[dict[str, Any]] = field(default_factory=list)
     batch_report: dict[str, Any] = field(default_factory=dict)
+    execution_status: str = "completed"
+    limitations: list[str] = field(default_factory=list)
+    next_step: str | None = None
 
     def as_payload(self) -> dict[str, Any]:
         return {
@@ -32,6 +35,9 @@ class TurnTrace:
             "proposalRef": self.proposal_ref,
             "orchestration": self.orchestration,
             "batchReport": self.batch_report,
+            "executionStatus": self.execution_status,
+            "limitations": self.limitations,
+            "nextStep": self.next_step,
         }
 
 
@@ -96,6 +102,9 @@ def build_turn_trace(payload: Any, output: TurnOutput, *, entity_ids: list[str])
         proposal_ref=output.proposal_ref,
         orchestration=_dedupe_orchestration(orchestration),
         batch_report=build_tool_batch_report(payload).as_payload(),
+        execution_status=output.execution_status,
+        limitations=list(output.limitations),
+        next_step=output.next_step,
     )
 
 

@@ -17,6 +17,9 @@ class SemanticExpectation:
     clarification_required: bool | None = None
     evidence_required: bool = False
     proposal_required: bool = False
+    execution_status: str | None = None
+    limitations_required: bool = False
+    next_step_required: bool = False
 
 
 def evaluate_trace(
@@ -50,6 +53,12 @@ def evaluate_trace(
         failures.append("evidence_missing")
     if expectation.proposal_required and not trace.get("proposalRef"):
         failures.append("proposal_missing")
+    if expectation.execution_status and trace.get("executionStatus") != expectation.execution_status:
+        failures.append("execution_status_mismatch")
+    if expectation.limitations_required and not trace.get("limitations"):
+        failures.append("limitations_missing")
+    if expectation.next_step_required and not trace.get("nextStep"):
+        failures.append("next_step_missing")
     return {
         "caseId": expectation.case_id,
         "passed": not failures,
@@ -62,5 +71,8 @@ def evaluate_trace(
             "message": message,
             "clarificationRequested": bool(trace.get("clarificationRequested")),
             "proposalRef": trace.get("proposalRef"),
+            "executionStatus": trace.get("executionStatus"),
+            "limitations": list(trace.get("limitations") or []),
+            "nextStep": trace.get("nextStep"),
         },
     }

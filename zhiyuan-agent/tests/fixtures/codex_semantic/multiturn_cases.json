@@ -46,6 +46,33 @@
         "forbiddenToolNames": ["plan_apply"],
         "proposalRequired": true
       }
+    },
+    {
+      "caseId": "partial-read-result",
+      "description": "多校只读查询部分成功时明确覆盖范围和下一步",
+      "turns": [
+        {"content": "查这些学校的历史分数"}
+      ],
+      "expectations": {
+        "responseType": "fact",
+        "executionStatus": "partial",
+        "limitationsRequired": true,
+        "nextStepRequired": true
+      }
+    },
+    {
+      "caseId": "blocked-read-result",
+      "description": "查询缺少参数时输出阻塞状态和补参下一步",
+      "turns": [
+        {"content": "查那几个学校去年的分数"}
+      ],
+      "expectations": {
+        "responseType": "clarification",
+        "executionStatus": "blocked",
+        "limitationsRequired": true,
+        "nextStepRequired": true,
+        "clarificationRequired": true
+      }
     }
   ]
 }
