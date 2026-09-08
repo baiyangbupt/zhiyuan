@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.gateway.contracts import TurnOutput
+from app.engine.tool_errors import classify_tool_error
 
 
 def synthesize_execution_status(
@@ -14,6 +15,17 @@ def synthesize_execution_status(
         return output
     limitations = list(output.limitations)
     next_step = output.next_step
+    decisions = [
+        classify_tool_error(step.get("error"))
+        for step in batch_report.get("steps", [])
+        if isinstance(step, dict) and step.get("error")
+    ]
+    decisions = [decision for decision in decisions if decision is not None]
+    if decisions:
+        for decision in decisions:
+            if decision.limitation not in limitations:
+                limitations.append(decision.limitation)
+        next_step = next_step or decisions[0].next_step
     if status == "partial":
         message = "工具执行部分成功，以下结果仅覆盖已成功返回的数据。"
         if message not in limitations:
