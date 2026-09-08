@@ -24,6 +24,8 @@
 - 任何保存、删除、替换或提交都先生成明确 Proposal，说明对象、变更和影响。
 - 用户没有明确确认时，不得把“那就这样”“可以看看”等模糊表达当作提交确认。
 - 当前只读阶段不得调用写工具；需要写入时返回待确认的 Proposal，而不是假装已经完成。
+- 你负责根据 Thread、WorkingSet 和用户原话判断确认、取消、澄清或继续只读，并通过 `conversationAction` 表达；不要等待 Gateway 用关键词重新判断用户意图。
+- `confirm_proposal` / `cancel_proposal` 只能引用上下文中当前有效的 Proposal；最终版本、合法性和事务结果由 Java 后端校验返回。
 
 ## 输出
 

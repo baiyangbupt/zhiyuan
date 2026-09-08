@@ -259,3 +259,56 @@ def test_validator_rejects_unsupported_admission_rates(rate: float) -> None:
             evidence_ledger={"ev-unit-1": {"dataVersion": "v17"}},
             artifacts={},
         )
+
+
+def test_validator_accepts_confirm_action_for_current_active_proposal() -> None:
+    snapshot = ConversationTurnSnapshot(
+        snapshotVersion=42,
+        sessionId="session-1",
+        activeProposal={"proposalRef": "proposal-1", "sourceVersion": 42},
+    )
+    output = validate_turn_output(
+        turn_output={
+            "responseType": "clarification",
+            "message": "请确认方案变更",
+            "proposalRef": "proposal-1",
+            "conversationAction": {
+                "actionType": "confirm_proposal",
+                "proposalRef": "proposal-1",
+                "expectedSourceVersion": 42,
+                "intent": "explicit",
+            },
+        },
+        current_snapshot=snapshot,
+        evidence_ledger={},
+        artifacts={},
+        allow_proposal=True,
+    )
+
+    assert output.conversation_action.action_type == "confirm_proposal"
+
+
+def test_validator_rejects_confirm_action_for_stale_proposal() -> None:
+    snapshot = ConversationTurnSnapshot(
+        snapshotVersion=42,
+        sessionId="session-1",
+        activeProposal={"proposalRef": "proposal-1", "sourceVersion": 43},
+    )
+
+    with pytest.raises(OutputContractError, match="proposal_version_mismatch"):
+        validate_turn_output(
+            turn_output={
+                "responseType": "clarification",
+                "message": "确认",
+                "conversationAction": {
+                    "actionType": "confirm_proposal",
+                    "proposalRef": "proposal-1",
+                    "expectedSourceVersion": 42,
+                    "intent": "explicit",
+                },
+            },
+            current_snapshot=snapshot,
+            evidence_ledger={},
+            artifacts={},
+            allow_proposal=True,
+        )

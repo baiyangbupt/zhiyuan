@@ -32,6 +32,7 @@ TURN_OUTPUT_SCHEMA: dict[str, Any] = {
         "nextStep",
         "executionStatus",
         "proposalRef",
+        "conversationAction",
     ],
     "properties": {
         "responseType": {
@@ -159,6 +160,20 @@ TURN_OUTPUT_SCHEMA: dict[str, Any] = {
             "enum": ["completed", "partial", "blocked", "failed"],
         },
         "proposalRef": {"type": ["string", "null"]},
+        "conversationAction": {
+            "type": "object",
+            "properties": {
+                "actionType": {
+                    "type": "string",
+                    "enum": ["none", "request_clarification", "continue_readonly", "create_proposal", "confirm_proposal", "cancel_proposal", "refresh_proposal"],
+                },
+                "proposalRef": {"type": ["string", "null"]},
+                "expectedSourceVersion": {"type": ["integer", "null"]},
+                "intent": {"type": "string", "enum": ["explicit", "inferred", "not_applicable"]},
+            },
+            "required": ["actionType", "proposalRef", "expectedSourceVersion", "intent"],
+            "additionalProperties": False,
+        },
     },
     "additionalProperties": False,
 }
@@ -560,6 +575,7 @@ class GatewayService:
                 artifacts=artifacts,
                 thread_id=thread_id,
                 tenant_id=tenant_id,
+                allow_proposal=True,
             )
             working_set = self._working_sets.get(str(session_id))
             if working_set is not None:

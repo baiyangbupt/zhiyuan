@@ -23,6 +23,7 @@ class TurnTrace:
     execution_status: str = "completed"
     limitations: list[str] = field(default_factory=list)
     next_step: str | None = None
+    conversation_action: dict[str, Any] = field(default_factory=dict)
 
     def as_payload(self) -> dict[str, Any]:
         return {
@@ -38,6 +39,7 @@ class TurnTrace:
             "executionStatus": self.execution_status,
             "limitations": self.limitations,
             "nextStep": self.next_step,
+            "conversationAction": self.conversation_action,
         }
 
 
@@ -105,6 +107,7 @@ def build_turn_trace(payload: Any, output: TurnOutput, *, entity_ids: list[str])
         execution_status=output.execution_status,
         limitations=list(output.limitations),
         next_step=output.next_step,
+        conversation_action=output.conversation_action.model_dump(by_alias=True),
     )
 
 

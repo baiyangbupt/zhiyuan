@@ -114,6 +114,21 @@ class ArtifactRef(_ContractModel):
     state_version: int
 
 
+class ConversationAction(_ContractModel):
+    action_type: Literal[
+        "none",
+        "request_clarification",
+        "continue_readonly",
+        "create_proposal",
+        "confirm_proposal",
+        "cancel_proposal",
+        "refresh_proposal",
+    ] = "none"
+    proposal_ref: str | None = None
+    expected_source_version: int | None = None
+    intent: Literal["explicit", "inferred", "not_applicable"] = "not_applicable"
+
+
 class TurnOutput(_ContractModel):
     response_type: Literal["text", "fact", "recommendation", "review", "clarification"]
     message: str
@@ -126,6 +141,7 @@ class TurnOutput(_ContractModel):
     next_step: str | None = None
     execution_status: Literal["completed", "partial", "blocked", "failed"] = "completed"
     proposal_ref: str | None = None
+    conversation_action: ConversationAction = Field(default_factory=ConversationAction)
 
     @field_validator("response_type", mode="before")
     @classmethod

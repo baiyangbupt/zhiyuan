@@ -67,6 +67,16 @@ def validate_turn_output(
 
     if output.proposal_ref and not allow_proposal:
         raise OutputContractError("proposal_forbidden", "proposal output is disabled in readonly mode")
+    action = output.conversation_action
+    if action.action_type in {"confirm_proposal", "cancel_proposal"}:
+        active = snapshot.active_proposal or {}
+        active_ref = active.get("proposalRef") or active.get("proposalId") or active.get("pendingId")
+        if not action.proposal_ref or str(action.proposal_ref) != str(active_ref or ""):
+            raise OutputContractError("proposal_reference_mismatch", "proposal action does not match active proposal")
+        source_version = active.get("sourceVersion") or active.get("source_version")
+        if action.expected_source_version is not None and source_version is not None:
+            if int(action.expected_source_version) != int(source_version):
+                raise OutputContractError("proposal_version_mismatch", "proposal source version is stale")
 
     # Admission facts are only usable when the same turn carries a matching,
     # current Evidence reference for the same mode and admission unit.

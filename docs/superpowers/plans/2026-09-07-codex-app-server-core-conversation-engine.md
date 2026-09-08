@@ -4,7 +4,7 @@
 
 **目标：** 在不改变现有最终方案写入链路的前提下，交付一个可离线回放、生产 Shadow 和只读 Canary 的 Codex App Server 对话 Harness 第一版。
 
-**架构：** 现有 zhiyuan-agent 保留对外 WebSocket 兼容协议，新增 Conversation Gateway、HarnessClient、版本化 Turn Snapshot、可信 Thread binding、只读 Domain MCP 和结构化 Evidence/Artifact 协议。Codex App Server 只承担 Thread/Turn、Skill、流式事件和模型编排；Java、数据库、现有招生单元录取率引擎、Rank、Solver 和 Proposal/CAS 仍是业务权威。第一期所有写能力继续走旧链路，Codex 只允许只读工具并以 Shadow/Canary 方式验证。
+**架构：** 现有 zhiyuan-agent 保留对外 WebSocket 兼容协议，新增 Conversation Gateway、HarnessClient、版本化 Turn Snapshot、可信 Thread binding、只读 Domain MCP 和结构化 Evidence/Artifact 协议。Codex App Server 只承担 Thread/Turn、Skill、流式事件和模型编排；Java、数据库、现有招生单元录取率引擎、Rank、Solver 和 Proposal/CAS 仍是业务权威。第一期所有写入执行继续走旧链路；Codex 可以在只读对话中理解确认/取消意图并生成 Proposal 草案或引用，但不得直接调用写工具或执行方案变更。
 
 **技术栈：** Python 3.10、FastAPI、aiohttp、Pydantic、pytest；Java 8、Spring Boot、MyBatis-Plus、Flyway、JUnit 5、Maven；Codex App Server commit 89650c6，stdio JSONL transport；Domain MCP 使用与固定 Codex 版本兼容的 Python MCP SDK，版本写入 zhiyuan-agent/constraints.txt；SQLite 仅用于单实例离线回放，生产 binding 使用 Java 持久化表。
 
@@ -810,7 +810,7 @@ App Server 启动失败、binding 失败、MCP 初始化失败或输出校验失
 1. 录取率与 Evidence：接入招生单元录取率、算法/数据版本、边界 [0,50) / [50,70) / [70,99] 和数据缺失协议。
 2. Plan Review Policy：从 ReviewRuleRegistry、PlanValidationService、RepairCandidateSelector 和旧审查回放统一冲稳保框架、录取率梯度、有效保底和 repair options。
 3. Rank/Solver：拆分 Eligibility、Admission Probability、Preference Fit、Data Confidence，复用现有确定性 Solver，禁止重新计算录取率。
-4. Proposal/CAS：Codex 只能 preview/create Proposal，用户确认由 Gateway 调既有 CAS，重新读取权威版本并验证 postcondition。
+4. Proposal/CAS：Codex 负责理解用户确认/取消意图并输出结构化 `ConversationAction`；Gateway 只校验动作契约，Java 重新读取权威 Proposal、执行 CAS 并验证 postcondition。
 5. 规划工作台：扩展候选、Evidence、Review finding、Plan diff 和最终 Artifact，全部由稳定 Gateway 事件驱动。
 
 第二期每个计划都必须有独立设计审阅、golden/replay/adversarial 数据集、Shadow 结果和回退开关；第一期不提前实现写能力。
