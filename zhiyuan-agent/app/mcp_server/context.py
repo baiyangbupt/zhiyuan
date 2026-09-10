@@ -26,6 +26,7 @@ class TrustedToolContext:
     admission_mode: str
     allowed_capabilities: frozenset[str]
     model_identity_override: str = ""
+    snapshot_version: int | None = None
 
     @classmethod
     def from_binding(cls, binding: ThreadBinding) -> "TrustedToolContext":
@@ -37,6 +38,7 @@ class TrustedToolContext:
             user_id=context.user_id,
             admission_mode=context.admission_mode,
             allowed_capabilities=context.allowed_capabilities,
+            snapshot_version=context.snapshot_version,
         )
 
     def with_model_arguments(self, payload: object) -> "TrustedToolContext":
@@ -65,8 +67,9 @@ class ThreadBindingRegistry:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO codex_thread_binding_registry
-                    (thread_id, tenant_id, session_id, user_id, capabilities, admission_mode, handle, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (thread_id, tenant_id, session_id, user_id, capabilities, admission_mode, handle, expires_at,
+                     snapshot_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     binding.thread_id,
@@ -77,6 +80,7 @@ class ThreadBindingRegistry:
                     binding.admission_mode,
                     binding.opaque_handle or "",
                     expires_at,
+                    binding.snapshot_version,
                 ),
             )
 
@@ -109,6 +113,7 @@ class ThreadBindingRegistry:
             allowed_capabilities=frozenset(data.get("allowedCapabilities") or json.loads(row[4])),
             admission_mode=row[5],
             opaque_handle=row[6],
+            snapshot_version=row[8],
         )
 
     def _initialize(self) -> None:
@@ -123,10 +128,21 @@ class ThreadBindingRegistry:
                     capabilities TEXT NOT NULL,
                     admission_mode TEXT NOT NULL,
                     handle TEXT NOT NULL,
-                    expires_at TEXT NOT NULL
+                    expires_at TEXT NOT NULL,
+                    snapshot_version INTEGER
                 )
                 """
             )
+            columns = {
+                str(column[1])
+                for column in connection.execute(
+                    "PRAGMA table_info(codex_thread_binding_registry)"
+                ).fetchall()
+            }
+            if "snapshot_version" not in columns:
+                connection.execute(
+                    "ALTER TABLE codex_thread_binding_registry ADD COLUMN snapshot_version INTEGER"
+                )
         try:
             os.chmod(self.path, 0o600)
         except OSError:
@@ -137,7 +153,7 @@ class ThreadBindingRegistry:
             return connection.execute(
                 """
                 SELECT thread_id, tenant_id, session_id, user_id, capabilities,
-                       admission_mode, handle, expires_at
+                       admission_mode, handle, expires_at, snapshot_version
                 FROM codex_thread_binding_registry WHERE thread_id = ?
                 """,
                 (thread_id,),

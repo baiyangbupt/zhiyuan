@@ -31,6 +31,18 @@ async def test_get_pending_prefers_dedicated_resource(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_pending_uses_provided_tenant_in_endpoint(monkeypatch):
+    get_mock = AsyncMock(return_value={"code": 0, "data": None})
+    monkeypatch.setattr(internal_client.http_client, "get", get_mock)
+
+    await internal_client.get_last_pending_confirmation("101", tenant_id="tenant-7")
+
+    assert get_mock.await_args.kwargs["endpoint"] == (
+        "/gaotu-assistant-bot/inner/chat/tenant-7/session/pending"
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_pending_does_not_read_legacy_when_resource_is_absent(monkeypatch):
     resource_response = {"code": 0, "data": None}
     monkeypatch.setattr(
@@ -71,6 +83,50 @@ async def test_active_save_reads_current_revision_and_uses_pending_upsert(monkey
     assert post_mock.await_args.kwargs["endpoint"].endswith("/session/pending")
     assert payload["expectedRevision"] == 7
     assert "version" not in payload
+
+
+@pytest.mark.asyncio
+async def test_save_pending_uses_provided_tenant_in_endpoint(monkeypatch):
+    monkeypatch.setattr(
+        internal_client.http_client,
+        "get",
+        AsyncMock(return_value={"code": 0, "data": None}),
+    )
+    post_mock = AsyncMock(return_value={"code": 0, "data": {"revision": 1}})
+    monkeypatch.setattr(internal_client.http_client, "post", post_mock)
+
+    await internal_client.save_pending_confirmation(
+        "101",
+        {
+            "pendingId": "pending-1",
+            "kind": "plan_mutation",
+            "actionFamily": "remove_units",
+            "status": "active",
+        },
+        tenant_id="tenant-7",
+    )
+
+    assert post_mock.await_args.kwargs["endpoint"] == (
+        "/gaotu-assistant-bot/inner/chat/tenant-7/session/pending"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_pending_uses_provided_tenant_in_endpoint(monkeypatch):
+    post_mock = AsyncMock(return_value={"code": 0, "data": {"status": "applied"}})
+    monkeypatch.setattr(internal_client.http_client, "post", post_mock)
+
+    await internal_client.resolve_pending_confirmation(
+        "101",
+        tenant_id="tenant-7",
+        pending_id="pending-1",
+        expected_revision=3,
+        action="confirm",
+    )
+
+    assert post_mock.await_args.kwargs["endpoint"] == (
+        "/gaotu-assistant-bot/inner/chat/tenant-7/session/pending/resolve"
+    )
 
 
 @pytest.mark.asyncio

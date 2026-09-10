@@ -7,6 +7,7 @@ import pytest
 from app.config import GatewayConfig
 from app.gateway.service import GatewayService
 from app.harness.binding import ThreadBinding
+from app.harness.turn_result import CodexTurnResult
 from app.engine.semantic_eval import SemanticExpectation, evaluate_trace
 
 
@@ -132,6 +133,33 @@ async def test_gateway_rejects_same_turn_id_with_different_content() -> None:
     assert len(legacy.calls) == 1
 
 
+async def test_gateway_binds_the_snapshot_version_for_the_codex_turn() -> None:
+    captured = {}
+
+    def binding_loader(**kwargs):
+        captured.update(kwargs)
+        return _binding()
+
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=FakeCodexHarness(),
+        legacy=FakeLegacyService(),
+        message_store=FakeMessageStore(),
+        binding_loader=binding_loader,
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+
+    await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-bound-snapshot",
+        content="推荐计算机",
+    )
+
+    assert captured["snapshot_version"] == 42
+
+
 async def test_gateway_injects_adjacent_snapshot_as_state_patch() -> None:
     store = FakeMessageStore()
     legacy = FakeLegacyService()
@@ -160,8 +188,9 @@ async def test_gateway_injects_adjacent_snapshot_as_state_patch() -> None:
     assert first["statePatch"] is None
     assert second["statePatch"]["baseVersion"] == 42
     assert second["statePatch"]["targetVersion"] == 43
-    assert json.loads(codex.injected[-1]["items"][0]["text"])["kind"] == "state_patch"
-    working_set = _working_set_payload(codex.injected[-1]["items"][1]["text"])
+    assert codex.injected == []
+    assert json.loads(codex.turns[-1]["input"][0]["text"])["kind"] == "state_patch"
+    working_set = _working_set_payload(codex.turns[-1]["input"][1]["text"])
     assert working_set["kind"] == "conversation_working_set"
     assert working_set["snapshotVersion"] == 43
     assert working_set["lastResponseType"] == "text"
@@ -199,6 +228,46 @@ async def test_readonly_gateway_does_not_persist_unvalidated_codex_output() -> N
     assert result["error"].startswith("evidence_not_found")
     assert len(store.users) == 1
     assert len(store.agents) == 0
+
+
+async def test_readonly_gateway_asks_codex_to_repair_missing_structured_output_once() -> None:
+    store = FakeMessageStore()
+    legacy = FakeLegacyService()
+
+    class RepairingHarness(FakeCodexHarness):
+        async def start_turn_and_collect(self, thread_id, input_items, output_schema=None):
+            self.turns.append({"thread_id": thread_id, "input": input_items, "schema": output_schema})
+            if len(self.turns) == 1:
+                return CodexTurnResult(status="completed", output=None)
+            return CodexTurnResult(
+                status="completed",
+                output={"responseType": "text", "message": "已按契约修复输出"},
+            )
+
+    codex = RepairingHarness()
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=codex,
+        legacy=legacy,
+        message_store=store,
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+
+    result = await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-repair",
+        content="继续查询",
+    )
+
+    assert result["reply"] == "已按契约修复输出"
+    assert result["recovery"] == {"outputRepaired": True}
+    assert len(codex.turns) == 2
+    assert len(codex.turns[1]["input"]) == 1
+    assert "不要调用新工具" in codex.turns[1]["input"][0]["text"]
+    assert store.agents == [("session-1", "已按契约修复输出")]
 
 
 async def test_readonly_gateway_rejects_cross_tenant_evidence() -> None:
@@ -325,8 +394,9 @@ async def test_readonly_gateway_preserves_candidates_for_followup_fact_query() -
 
     assert first["reply"] == "已找到候选学校"
     assert second["reply"] == "已查询候选学校的历史分数"
-    injected_working_set = _working_set_payload(codex.injected[-1]["items"][1]["text"])
-    assert [item["entityId"] for item in injected_working_set["candidateSet"]["items"]] == [
+    assert codex.injected == []
+    turn_working_set = _working_set_payload(codex.turns[-1]["input"][1]["text"])
+    assert [item["entityId"] for item in turn_working_set["candidateSet"]["items"]] == [
         "school-1",
         "school-2",
     ]
@@ -344,6 +414,113 @@ async def test_readonly_gateway_preserves_candidates_for_followup_fact_query() -
         second["trace"],
     )
     assert evaluation["passed"] is True
+
+
+async def test_readonly_gateway_collects_evidence_from_nested_mcp_event() -> None:
+    store = FakeMessageStore()
+
+    class NestedEvidenceHarness(FakeCodexHarness):
+        async def start_turn(self, thread_id: str, input_items: list[dict], output_schema=None):
+            return {
+                "turn": {"id": "turn-evidence"},
+                "output": {
+                    "responseType": "fact",
+                    "message": "已查到权威事实",
+                    "evidenceRefs": [
+                        {
+                            "evidenceId": "ev-nested",
+                            "sourceLevel": "authoritative",
+                            "dataVersion": "2026",
+                            "stateVersion": 42,
+                        }
+                    ],
+                },
+                "events": [
+                    {
+                        "type": "mcpToolCall",
+                        "result": {
+                            "evidence": [
+                                {
+                                    "evidenceId": "ev-nested",
+                                    "tenantId": "tenant-1",
+                                    "sessionId": "session-1",
+                                    "threadId": "thr-shadow",
+                                    "stateVersion": 42,
+                                    "dataVersion": "2026",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=NestedEvidenceHarness(),
+        legacy=FakeLegacyService(),
+        message_store=store,
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+    result = await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-evidence",
+        content="查询事实",
+    )
+
+    assert result["reply"] == "已查到权威事实"
+    assert result["output"]["evidenceRefs"][0]["evidenceId"] == "ev-nested"
+
+
+async def test_gateway_sends_model_proposal_request_to_java_preview(monkeypatch) -> None:
+    from app.util import internal_client
+
+    async def preview(tenant_id, session_id, payload):
+        assert tenant_id == "tenant-1"
+        assert session_id == "session-1"
+        assert payload["goalType"] == "exclude_scope"
+        assert payload["sourceVersionGuard"] == 42
+        return {"code": 0, "data": {"proposals": [{"proposalId": "proposal-1", "status": "ready"}]}}
+
+    monkeypatch.setattr(internal_client, "generate_user_goal_planning_fix_proposals", preview)
+
+    class ProposalHarness(FakeCodexHarness):
+        async def start_turn(self, thread_id: str, input_items: list[dict], output_schema=None):
+            return {
+                "turn": {"id": "turn-proposal"},
+                "output": {
+                    "responseType": "text",
+                    "message": "我先生成方案预览",
+                    "proposalRequest": {
+                        "goalType": "exclude_scope",
+                        "userOriginalText": "排除北京",
+                        "confidence": "high",
+                        "sourceVersionGuard": 42,
+                        "negativeScopes": [{"scopeType": "province", "name": "北京"}],
+                    },
+                },
+            }
+
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=ProposalHarness(),
+        legacy=FakeLegacyService(),
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+    result = await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-proposal",
+        content="排除北京",
+    )
+
+    assert result["reply"] == "我先生成方案预览"
+    assert result["proposalPreview"] == {"proposalId": "proposal-1", "status": "ready"}
 
 
 def test_gateway_mode_is_allowlisted() -> None:

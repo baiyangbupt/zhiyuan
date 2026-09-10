@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 TRACE_PATH = os.environ.get("ZHIYUAN_SEMANTIC_MCP_TRACE", "")
+AUTHORITATIVE = os.environ.get("ZHIYUAN_SEMANTIC_AUTHORITATIVE", "").lower() == "true" or "--authoritative" in sys.argv[1:]
 
 
 def send(request_id: object, result: dict) -> None:
@@ -95,10 +96,17 @@ def call_tool(name: str, arguments: dict) -> dict:
                         "minimumScore": 612 if arguments["schoolId"] == "school-1" else 598,
                     }
                 ],
-                "dataVersion": "semantic-fixture-1",
+                "dataVersion": "semantic-authoritative-1" if AUTHORITATIVE else "semantic-fixture-1",
             },
-            "limitations": ["semantic_fixture_only"],
         }
+        if not AUTHORITATIVE:
+            payload["limitations"] = ["semantic_fixture_only"]
+        else:
+            payload["evidence"] = {
+                "sourceLevel": "authoritative",
+                "evidenceId": f"history-{arguments['schoolId']}-{arguments['year']}",
+                "dataVersion": "semantic-authoritative-1",
+            }
         return {
             "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
             "isError": False,

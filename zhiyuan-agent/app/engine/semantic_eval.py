@@ -12,7 +12,7 @@ class SemanticExpectation:
     required_entity_ids: set[str] = field(default_factory=set)
     required_tool_names: set[str] = field(default_factory=set)
     forbidden_tool_names: set[str] = field(default_factory=set)
-    response_type: str | None = None
+    response_type: str | set[str] | None = None
     required_message_fragments: set[str] = field(default_factory=set)
     clarification_required: bool | None = None
     evidence_required: bool = False
@@ -20,6 +20,7 @@ class SemanticExpectation:
     execution_status: str | None = None
     limitations_required: bool = False
     next_step_required: bool = False
+    conversation_action_type: str | None = None
 
 
 def evaluate_trace(
@@ -39,7 +40,11 @@ def evaluate_trace(
         failures.append("missing_tools")
     if forbidden_tools:
         failures.append("forbidden_tools")
-    if expectation.response_type and trace.get("responseType") != expectation.response_type:
+    if expectation.response_type and (
+        trace.get("responseType") not in expectation.response_type
+        if isinstance(expectation.response_type, set)
+        else trace.get("responseType") != expectation.response_type
+    ):
         failures.append("response_type_mismatch")
     message = str(trace.get("message") or "")
     if any(fragment not in message for fragment in expectation.required_message_fragments):
@@ -59,6 +64,9 @@ def evaluate_trace(
         failures.append("limitations_missing")
     if expectation.next_step_required and not trace.get("nextStep"):
         failures.append("next_step_missing")
+    action = trace.get("conversationAction") or {}
+    if expectation.conversation_action_type and action.get("actionType") != expectation.conversation_action_type:
+        failures.append("conversation_action_mismatch")
     return {
         "caseId": expectation.case_id,
         "passed": not failures,
@@ -74,5 +82,6 @@ def evaluate_trace(
             "executionStatus": trace.get("executionStatus"),
             "limitations": list(trace.get("limitations") or []),
             "nextStep": trace.get("nextStep"),
+            "conversationAction": action,
         },
     }

@@ -29,6 +29,40 @@ async def test_client_correlates_response_and_notification() -> None:
 
 
 @pytest.mark.asyncio
+async def test_harness_passes_thread_approval_policy() -> None:
+    harness = CodexAppServerHarness(
+        [sys.executable, str(FAKE_SERVER)],
+        approval_policy="never",
+        sandbox_policy="read-only",
+    )
+    await harness.start()
+    result = await harness.create_thread()
+    assert result["thread"]["id"] == "thr_test"
+    assert result["received"]["approvalPolicy"] == "never"
+    assert result["received"]["sandbox"] == "read-only"
+    await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_harness_sends_structured_turn_sandbox_policy() -> None:
+    harness = CodexAppServerHarness(
+        [sys.executable, str(FAKE_SERVER)],
+        approval_policy="never",
+        sandbox_policy="read-only",
+    )
+    await harness.start()
+    result = await harness.start_turn(
+        "thr_test", [{"type": "text", "text": "你好"}], {"type": "object"}
+    )
+    assert result["received"]["approvalPolicy"] == "never"
+    assert result["received"]["sandboxPolicy"] == {
+        "type": "readOnly",
+        "networkAccess": False,
+    }
+    await harness.close()
+
+
+@pytest.mark.asyncio
 async def test_client_surfaces_json_rpc_error() -> None:
     client = AppServerClient([sys.executable, str(FAKE_SERVER)])
     await client.start()
@@ -96,7 +130,7 @@ async def test_harness_waits_for_turn_completed_notification() -> None:
     await harness.close()
 
 
-def test_harness_accepts_real_agent_message_item_completion() -> None:
+def test_harness_waits_for_turn_completion_after_agent_message_item() -> None:
     event = {
         "type": "item/completed",
         "item": {
@@ -105,10 +139,55 @@ def test_harness_accepts_real_agent_message_item_completion() -> None:
         },
     }
 
-    assert _terminal_status(event) == "completed"
+    assert _terminal_status(event) is None
     assert _extract_output(event) == {
         "responseType": "clarification",
         "message": "请补充省份",
+    }
+
+
+def test_harness_waits_even_after_final_agent_message() -> None:
+    event = {
+        "type": "item/completed",
+        "item": {
+            "type": "agentMessage",
+            "phase": "final_answer",
+            "text": '{"message":"测试通过"}',
+        },
+    }
+
+    assert _terminal_status(event) is None
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "interrupted"])
+def test_nested_turn_terminal_status(status):
+    from app.harness.codex import _matches_turn
+    notification = {"method": "turn/completed", "params": {
+        "threadId": "thread-1", "turn": {"id": "turn-1", "status": status}
+    }}
+    assert _matches_turn(notification, "thread-1", "turn-1")
+    assert not _matches_turn(notification, "thread-1", "turn-other")
+    assert _terminal_status({"type": "turn/completed", **notification["params"]}) == status
+
+
+def test_turn_match_accepts_thread_scoped_mcp_notification_without_turn_id() -> None:
+    from app.harness.codex import _matches_turn
+
+    notification = {
+        "method": "item/completed",
+        "params": {
+            "threadId": "thread-1",
+            "item": {"type": "mcpToolCall", "tool": "admission.get_history"},
+        },
+    }
+
+    assert _matches_turn(notification, "thread-1", "turn-1")
+    assert not _matches_turn(notification, "thread-other", "turn-1")
+
+
+def test_extract_output_accepts_json_markdown_fence() -> None:
+    assert _extract_output({"item": {"text": "```json\n{\"message\":\"ok\"}\n```"}}) == {
+        "message": "ok"
     }
 
 

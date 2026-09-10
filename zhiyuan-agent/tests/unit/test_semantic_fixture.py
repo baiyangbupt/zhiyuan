@@ -14,5 +14,8 @@ def test_multiturn_semantic_fixture_contains_result_synthesis_cases() -> None:
         "partial-read-result",
         "blocked-read-result",
         "mixed-read-and-write-request",
+        "followup-confirm-proposal",
+        "followup-cancel-proposal",
+        "ambiguous-reference-clarification",
     }
     assert all(case["turns"] for case in cases)

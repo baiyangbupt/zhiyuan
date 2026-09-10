@@ -40,6 +40,15 @@ _NON_PERSISTENT_USER_MESSAGE_TYPES = {"planEditSelect", "intentSelect", "pending
 _CHAT_SERVICE_TIMEOUT_SECONDS = 180
 
 
+def _build_legacy_chat_service(gateway_mode: str) -> ChatService | None:
+    """Build the legacy stack only for modes that can route a turn to it."""
+    if gateway_mode == "codex_readonly":
+        return None
+    llm_client = LLMClient()
+    history_store = ChatHistoryStore(HistoryConfig().db_path)
+    return ChatService(llm_client, history_store)
+
+
 def _has_primary_reply_content(reply: object) -> bool:
     if isinstance(reply, WSResponse):
         return bool(str(reply.content or "").strip())
@@ -175,13 +184,10 @@ async def lifespan(app: FastAPI):
     configure_logfire()
     logger.info("Logfire configured")
 
-    llm_client = LLMClient()
-    db_path = HistoryConfig().db_path
-    history_store = ChatHistoryStore(db_path)
-    app.state.chat_service = ChatService(llm_client, history_store)
     gateway_config = GatewayConfig()
     codex_config = CodexAppServerConfig()
     app.state.gateway_mode = gateway_config.mode
+    app.state.chat_service = _build_legacy_chat_service(gateway_config.mode)
 
     binding_handles: dict[str, tuple[str, datetime]] = {}
     binding_ttl_seconds = codex_config.binding_ttl_seconds
@@ -199,6 +205,7 @@ async def lifespan(app: FastAPI):
         thread_id: str,
         allowed_capabilities: list[str],
         admission_mode: str,
+        snapshot_version: int | None = None,
         **kwargs,
     ) -> ThreadBinding:
         del kwargs
@@ -260,6 +267,7 @@ async def lifespan(app: FastAPI):
             expires_at=expires_at_datetime,
             admission_mode=admission_mode,
             opaque_handle=handle,
+            snapshot_version=snapshot_version,
         )
         if binding_registry is not None:
             binding_registry.store(binding, expires_at=expires_at)
@@ -464,15 +472,43 @@ async def _handle_gateway_ws_loop(ws: WebSocket, gateway) -> None:
             continue
 
         turn_id = str(raw.get("turnId") or raw.get("turn_id") or uuid.uuid4())
-        tenant_id = str(getattr(ws.app.state, "gateway_tenant_id", ""))
-        try:
-            result = await gateway.handle_turn(
-                tenant_id=tenant_id,
+        tenant_id = str(msg.tenant_id or getattr(ws.app.state, "gateway_tenant_id", "")).strip()
+        if not tenant_id:
+            response = WSResponse(
+                type="recoverable.error",
                 session_id=msg.session_id,
-                user_id=msg.user_id,
-                turn_id=turn_id,
-                content=msg.content,
+                content=json.dumps(
+                    {"type": "recoverable.error", "message": "缺少 tenantId，无法执行本轮对话。"},
+                    ensure_ascii=False,
+                ),
             )
+            if not await _safe_send_text(ws, response.model_dump_json(), context="gateway.tenant_missing"):
+                return
+            continue
+        try:
+            if msg.conversation_action is not None:
+                snapshot = await gateway.get_current_snapshot(
+                    tenant_id=tenant_id, session_id=str(msg.session_id)
+                )
+                if snapshot is None:
+                    result = {"error": "conversation_snapshot_unavailable", "events": []}
+                else:
+                    result = await gateway.execute_action_and_refresh(
+                        tenant_id=tenant_id,
+                        session_id=msg.session_id,
+                        action=msg.conversation_action,
+                        snapshot=snapshot,
+                    )
+                    result["reply"] = "操作已处理。"
+                    result["events"] = []
+            else:
+                result = await gateway.handle_turn(
+                    tenant_id=tenant_id,
+                    session_id=msg.session_id,
+                    user_id=msg.user_id,
+                    turn_id=turn_id,
+                    content=msg.content,
+                )
         except Exception:
             logger.exception("Gateway turn failed: session_id=%s turn_id=%s", msg.session_id, turn_id)
             result = {
@@ -502,6 +538,26 @@ async def _handle_gateway_ws_loop(ws: WebSocket, gateway) -> None:
 
         response_type = "recoverable.error" if result.get("error") else "reply"
         response_content = result.get("reply") or ""
+        if result.get("actionResult") is not None:
+            response_content = json.dumps(
+                {
+                    "type": "conversationAction.result",
+                    "message": response_content,
+                    "actionResult": result["actionResult"],
+                    "snapshotVersion": result.get("snapshotVersion"),
+                },
+                ensure_ascii=False,
+            )
+        elif result.get("proposalPreview") is not None:
+            response_content = json.dumps(
+                {
+                    "type": "proposal.preview",
+                    "message": response_content,
+                    "proposalPreview": result["proposalPreview"],
+                    "snapshotVersion": result.get("snapshotVersion"),
+                },
+                ensure_ascii=False,
+            )
         if response_type == "recoverable.error":
             response_content = json.dumps(
                 {"type": response_type, "message": response_content}, ensure_ascii=False
@@ -512,6 +568,132 @@ async def _handle_gateway_ws_loop(ws: WebSocket, gateway) -> None:
             content=str(response_content),
         )
         if not await _safe_send_text(ws, response.model_dump_json(), context="gateway.reply"):
+            return
+
+
+async def _handle_gateway_compat_ws_loop(
+    ws: WebSocket, gateway, tenant_id: str, bot_id: str
+) -> None:
+    """Translate the legacy agent-plus envelope into Gateway turns.
+
+    The compatibility route remains intentionally thin: Gateway owns turn
+    execution and persistence, while this adapter only handles ping and the
+    field-name differences expected by the existing frontend.
+    """
+    del bot_id
+    while True:
+        try:
+            raw = await ws.receive_json()
+        except WebSocketDisconnect:
+            return
+        except (json.JSONDecodeError, TypeError):
+            await _safe_send_json(
+                ws,
+                {"type": "error", "content": "消息格式错误", "end": True},
+                context="compat.gateway.invalid_message",
+            )
+            continue
+
+        if str(raw.get("inputType") or "text") == "ping":
+            pong = {"type": "pong"}
+            if "timestamp" in raw:
+                pong["timestamp"] = raw["timestamp"]
+            if not await _safe_send_json(ws, pong, context="compat.gateway.pong"):
+                return
+            continue
+
+        session_id = str(raw.get("sessionId") or "").strip()
+        user_id = str(raw.get("userId") or "").strip()
+        content = raw.get("content", "")
+        action = raw.get("conversationAction")
+        if action is None and isinstance(content, dict):
+            raw_action = str(content.get("action") or "").strip().lower()
+            if raw_action in {"confirm", "accept", "apply", "cancel", "reject"}:
+                action = {
+                    "actionType": "confirm_proposal"
+                    if raw_action in {"confirm", "accept", "apply"}
+                    else "cancel_proposal",
+                    "proposalRef": content.get("proposalRef") or content.get("pendingId"),
+                    "expectedSourceVersion": content.get("expectedSourceVersion")
+                    or content.get("sourceVersion"),
+                    "intent": "explicit",
+                }
+        if isinstance(content, dict):
+            content = json.dumps(content, ensure_ascii=False)
+        if not session_id or not user_id or not str(content).strip() and action is None:
+            await _safe_send_json(
+                ws,
+                {"type": "error", "content": "消息格式错误", "end": True},
+                context="compat.gateway.validation_error",
+            )
+            continue
+
+        turn_id = str(raw.get("turnId") or raw.get("turn_id") or uuid.uuid4())
+        try:
+            if action is not None:
+                snapshot = await gateway.get_current_snapshot(
+                    tenant_id=str(tenant_id), session_id=session_id
+                )
+                if snapshot is None:
+                    result = {
+                        "error": "conversation_snapshot_unavailable",
+                        "reply": "当前确认内容已失去上下文，请重新生成预览。",
+                    }
+                else:
+                    result = await gateway.execute_action_and_refresh(
+                        tenant_id=str(tenant_id),
+                        session_id=session_id,
+                        action=action,
+                        snapshot=snapshot,
+                    )
+                    result["reply"] = "操作已处理。"
+            else:
+                result = await gateway.handle_turn(
+                    tenant_id=str(tenant_id),
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    content=str(content),
+                )
+        except Exception:
+            logger.exception(
+                "Gateway compat turn failed: tenant=%s session=%s turn=%s",
+                tenant_id,
+                session_id,
+                turn_id,
+            )
+            result = {
+                "error": "gateway_failure",
+                "reply": "当前对话引擎暂时不可用，请稍后重试。",
+            }
+
+        response_type = "error" if result.get("error") else "text"
+        response_content = result.get("reply") or ""
+        if result.get("actionResult") is not None:
+            response_content = json.dumps(
+                {
+                    "type": "conversationAction.result",
+                    "message": response_content,
+                    "actionResult": result["actionResult"],
+                    "snapshotVersion": result.get("snapshotVersion"),
+                },
+                ensure_ascii=False,
+            )
+        elif result.get("proposalPreview") is not None:
+            response_content = json.dumps(
+                {
+                    "type": "proposal.preview",
+                    "message": response_content,
+                    "proposalPreview": result["proposalPreview"],
+                    "snapshotVersion": result.get("snapshotVersion"),
+                },
+                ensure_ascii=False,
+            )
+        if not await _safe_send_json(
+            ws,
+            {"type": response_type, "content": str(response_content), "end": True},
+            context="compat.gateway.reply",
+        ):
             return
 
 
@@ -554,6 +736,10 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
     """
     await ws.accept()
     logger.info("WebSocket connection accepted (compat protocol) tenant=%s bot=%s", tenant_id, bot_id)
+    gateway = getattr(ws.app.state, "gateway_service", None)
+    if gateway is not None:
+        await _handle_gateway_compat_ws_loop(ws, gateway, tenant_id, bot_id)
+        return
     service: ChatService = ws.app.state.chat_service
     registered_session_id = await _compat_connections.register(
         ws.query_params.get("chatSessionId") or ws.query_params.get("sessionId"),

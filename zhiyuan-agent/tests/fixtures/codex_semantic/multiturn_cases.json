@@ -86,11 +86,48 @@
       "expectations": {
         "requiredToolNames": ["admission.get_history"],
         "forbiddenToolNames": ["plan_apply"],
-        "responseType": "clarification",
-        "executionStatus": "blocked",
+        "responseType": "fact",
+        "executionStatus": "partial",
         "limitationsRequired": true,
         "nextStepRequired": true,
-        "clarificationRequired": true
+        "proposalRequired": true,
+        "clarificationRequired": false
+      }
+    },
+    {
+      "caseId": "followup-confirm-proposal",
+      "description": "用户明确确认当前 Proposal 时输出确认动作，不重新解释自然语言",
+      "turns": [
+        {"content": "先把第三个学校从方案中移除，给我看看变更"},
+        {"content": "确认，就按这个删掉"}
+      ],
+      "expectations": {
+        "forbiddenToolNames": ["plan_apply"],
+        "proposalRequired": true
+      }
+    },
+    {
+      "caseId": "followup-cancel-proposal",
+      "description": "用户取消当前 Proposal 时不执行写入",
+      "turns": [
+        {"content": "生成删除第三个学校的方案变更"},
+        {"content": "算了，不删了"}
+      ],
+      "expectations": {
+        "forbiddenToolNames": ["plan_apply"],
+        "proposalRequired": false
+      }
+    },
+    {
+      "caseId": "ambiguous-reference-clarification",
+      "description": "存在多个候选集合时，模糊指代先澄清而不是猜测",
+      "turns": [
+        {"content": "分别找一组保守和冲刺学校"},
+        {"content": "查它们的历史分数"}
+      ],
+      "expectations": {
+        "clarificationRequired": true,
+        "nextStepRequired": true
       }
     }
   ]

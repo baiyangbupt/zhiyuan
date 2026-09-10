@@ -10,7 +10,9 @@ from app.mcp_server.server import READONLY_TOOL_NAMES, build_sdk_server, build_s
 from app.mcp_server.tools_readonly import InternalClientBackend, ReadonlyDomainTools
 
 
-def trusted_context(admission_mode: str = "major") -> ThreadBinding:
+def trusted_context(
+    admission_mode: str = "major", snapshot_version: int | None = None
+) -> ThreadBinding:
     return ThreadBinding(
         thread_id="thr_test",
         tenant_id="tenant-1",
@@ -20,6 +22,7 @@ def trusted_context(admission_mode: str = "major") -> ThreadBinding:
             {"catalog_read", "catalog.search_schools", "admission_read"}
         ),
         admission_mode=admission_mode,
+        snapshot_version=snapshot_version,
     )
 
 
@@ -253,6 +256,112 @@ async def test_call_budget_rejects_new_calls_but_keeps_deduplication() -> None:
     assert first["status"] == "ok"
     assert duplicate == first
     assert second["status"] == "call_budget_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_production_mcp_runner_uses_authoritative_snapshot_version(monkeypatch) -> None:
+    from app.mcp_server import server as mcp_server
+
+    class Registry:
+        async def resolve(self, *, thread_id, capability):
+            assert thread_id == "thr_test"
+            return trusted_context(snapshot_version=77)
+
+    class Backend:
+        async def resolve(self, **kwargs):
+            return {"data": {"entityId": kwargs["query"]}}
+
+    async def snapshot(*args, **kwargs):
+        return {"data": {"snapshotVersion": 77}}
+
+    monkeypatch.setattr(mcp_server.internal_client, "get_conversation_turn_snapshot", snapshot)
+    monkeypatch.setattr(mcp_server, "InternalClientBackend", lambda **kwargs: Backend())
+    result = await mcp_server._call_domain_tool(
+        "entity.resolve",
+        {"query": "浙江大学"},
+        metadata={"threadId": "thr_test"},
+        binding_registry=Registry(),
+        fallback_tool_runner=ReadonlyDomainTools(trusted_context(), backend=Backend()),
+    )
+
+    assert result["status"] == "ok"
+    assert result["stateVersion"] == 77
+
+
+@pytest.mark.asyncio
+async def test_production_mcp_runner_rejects_a_snapshot_changed_after_turn_start(monkeypatch) -> None:
+    from app.mcp_server import server as mcp_server
+
+    class Registry:
+        async def resolve(self, *, thread_id, capability):
+            return trusted_context(snapshot_version=77)
+
+    async def snapshot(*args, **kwargs):
+        return {"data": {"snapshotVersion": 78}}
+
+    monkeypatch.setattr(mcp_server.internal_client, "get_conversation_turn_snapshot", snapshot)
+    monkeypatch.setattr(
+        mcp_server,
+        "ReadonlyDomainTools",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not construct a domain runner for stale state")
+        ),
+    )
+    result = await mcp_server._call_domain_tool(
+        "entity.resolve",
+        {"query": "浙江大学"},
+        metadata={"threadId": "thr_test"},
+        binding_registry=Registry(),
+    )
+
+    assert result["status"] == "stale_state"
+    assert result["stateVersion"] == 78
+    assert result["evidence"] == []
+
+
+@pytest.mark.asyncio
+async def test_production_mcp_runner_rejects_legacy_binding_without_snapshot_version(monkeypatch) -> None:
+    from app.mcp_server import server as mcp_server
+
+    class Registry:
+        async def resolve(self, *, thread_id, capability):
+            return trusted_context()
+
+    async def snapshot(*args, **kwargs):
+        raise AssertionError("must not query the snapshot for an unbound turn")
+
+    monkeypatch.setattr(mcp_server.internal_client, "get_conversation_turn_snapshot", snapshot)
+    result = await mcp_server._call_domain_tool(
+        "entity.resolve",
+        {"query": "浙江大学"},
+        metadata={"threadId": "thr_test"},
+        binding_registry=Registry(),
+    )
+
+    assert result["status"] == "state_version_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_production_mcp_runner_fails_closed_when_snapshot_version_unavailable(monkeypatch) -> None:
+    from app.mcp_server import server as mcp_server
+
+    class Registry:
+        async def resolve(self, *, thread_id, capability):
+            return trusted_context(snapshot_version=77)
+
+    async def broken_snapshot(*args, **kwargs):
+        raise RuntimeError("snapshot backend down")
+
+    monkeypatch.setattr(mcp_server.internal_client, "get_conversation_turn_snapshot", broken_snapshot)
+    result = await mcp_server._call_domain_tool(
+        "entity.resolve",
+        {"query": "浙江大学"},
+        metadata={"threadId": "thr_test"},
+        binding_registry=Registry(),
+        fallback_tool_runner=None,
+    )
+
+    assert result["status"] == "state_version_unavailable"
 
 
 def test_error_envelope_has_no_backend_data_or_evidence() -> None:

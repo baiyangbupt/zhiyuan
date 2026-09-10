@@ -259,9 +259,13 @@ def _pending_claim_token(data_value: Dict[str, Any] | None) -> str:
     return str(data_value.get("_pendingClaimToken") or data_value.get("claimToken") or "").strip()
 
 
-async def _get_pending_resource(chat_session_id: Union[str, int]) -> Dict[str, Any]:
+async def _get_pending_resource(
+    chat_session_id: Union[str, int],
+    *,
+    tenant_id: Union[str, int] = 1,
+) -> Dict[str, Any]:
     return await http_client.get(
-        endpoint="/gaotu-assistant-bot/inner/chat/1/session/pending",
+        endpoint=f"/gaotu-assistant-bot/inner/chat/{tenant_id}/session/pending",
         params={"chatSessionId": chat_session_id},
         error_msg="获取待确认资源失败",
     )
@@ -1035,6 +1039,8 @@ async def get_school_majors_recommend(
 async def save_pending_confirmation(
     chat_session_id: Union[str, int],
     data_value: Dict[str, Any],
+    *,
+    tenant_id: Union[str, int] = 1,
 ) -> Dict[str, Any]:
     """Create/replace or finalize the dedicated pending resource."""
     status = str(data_value.get("status") or "active").strip().lower()
@@ -1042,7 +1048,7 @@ async def save_pending_confirmation(
     expected_revision = _pending_revision(data_value)
     current_response: Dict[str, Any] = {}
     if expected_revision <= 0:
-        current_response = await _get_pending_resource(chat_session_id)
+        current_response = await _get_pending_resource(chat_session_id, tenant_id=tenant_id)
         current = _pending_resource_data(current_response)
         current_pending_id = str(current.get("pendingId") or "").strip()
         current_revision = _pending_revision(current)
@@ -1062,6 +1068,7 @@ async def save_pending_confirmation(
             return {"code": 40001, "msg": f"unsupported pending status: {status}"}
         return await resolve_pending_confirmation(
             chat_session_id,
+            tenant_id=tenant_id,
             pending_id=pending_id,
             expected_revision=expected_revision,
             action=action,
@@ -1080,7 +1087,7 @@ async def save_pending_confirmation(
     }
     logger.info("存储待确认卡片状态: {}", payload)
     return await http_client.post(
-        endpoint="/gaotu-assistant-bot/inner/chat/1/session/pending",
+        endpoint=f"/gaotu-assistant-bot/inner/chat/{tenant_id}/session/pending",
         json_data=payload,
         error_msg="存储待确认卡片状态失败",
     )
@@ -1089,6 +1096,7 @@ async def save_pending_confirmation(
 async def resolve_pending_confirmation(
     chat_session_id: Union[str, int],
     *,
+    tenant_id: Union[str, int] = 1,
     pending_id: str,
     expected_revision: int,
     action: str,
@@ -1109,7 +1117,7 @@ async def resolve_pending_confirmation(
     if data_value:
         payload["dataValue"] = data_value
     return await http_client.post(
-        endpoint="/gaotu-assistant-bot/inner/chat/1/session/pending/resolve",
+        endpoint=f"/gaotu-assistant-bot/inner/chat/{tenant_id}/session/pending/resolve",
         json_data=payload,
         error_msg="迁移待确认状态失败",
     )
@@ -1118,19 +1126,26 @@ async def resolve_pending_confirmation(
 async def claim_pending_confirmation(
     chat_session_id: Union[str, int],
     data_value: Dict[str, Any],
+    *,
+    tenant_id: Union[str, int] = 1,
 ) -> Dict[str, Any]:
     """Atomically claim execution rights for one active pending snapshot."""
     pending_id = str(data_value.get("pendingId") or data_value.get("pending_id") or "").strip()
     revision = _pending_revision(data_value)
     claim_token = str(uuid.uuid4())
     if revision <= 0:
-        materialized = await save_pending_confirmation(chat_session_id, {**data_value, "status": "active"})
+        materialized = await save_pending_confirmation(
+            chat_session_id,
+            {**data_value, "status": "active"},
+            tenant_id=tenant_id,
+        )
         if materialized.get("code") != 0:
             return materialized
         current = _pending_resource_data(materialized)
         revision = _pending_revision(current)
     return await resolve_pending_confirmation(
         chat_session_id,
+        tenant_id=tenant_id,
         pending_id=pending_id,
         expected_revision=revision,
         action="confirm",
@@ -1140,9 +1155,11 @@ async def claim_pending_confirmation(
 
 async def get_last_pending_confirmation(
     chat_session_id: Union[str, int],
+    *,
+    tenant_id: Union[str, int] = 1,
 ) -> Dict[str, Any]:
     """Fetch the dedicated pending resource."""
-    return await _get_pending_resource(chat_session_id)
+    return await _get_pending_resource(chat_session_id, tenant_id=tenant_id)
 
 
 # ── 方案参数校验 ──────────────────────────────────────────────────

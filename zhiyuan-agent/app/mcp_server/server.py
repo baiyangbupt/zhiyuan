@@ -18,6 +18,7 @@ from app.mcp_server.context import (
 )
 from app.mcp_server.response import error
 from app.mcp_server.tools_readonly import CAPABILITIES, InternalClientBackend, ReadonlyDomainTools
+from app.util import internal_client
 
 try:
     from mcp.server import Server as SdkServer
@@ -176,12 +177,40 @@ async def _call_domain_tool(
             )
         except TrustedContextError as exc:
             return error(str(exc), "trusted binding is unavailable", state_version=0)
+        try:
+            expected_state_version = binding.snapshot_version
+            if expected_state_version is None:
+                raise ValueError("binding snapshot version is missing")
+            expected_state_version = int(expected_state_version)
+            if expected_state_version < 0:
+                raise ValueError("negative binding snapshot version")
+        except (TypeError, ValueError, AttributeError) as exc:
+            return error("state_version_unavailable", str(exc), state_version=0)
+        try:
+            snapshot_response = await internal_client.get_conversation_turn_snapshot(
+                binding.tenant_id,
+                binding.session_id,
+            )
+            snapshot_data = (snapshot_response or {}).get("data") or {}
+            raw_version = snapshot_data.get("snapshotVersion", snapshot_data.get("version"))
+            state_version = int(raw_version)
+            if state_version < 0:
+                raise ValueError("negative snapshot version")
+        except (TypeError, ValueError, AttributeError, KeyError, RuntimeError) as exc:
+            return error("state_version_unavailable", str(exc), state_version=0)
+        if state_version != expected_state_version:
+            return error(
+                "stale_state",
+                "the authoritative snapshot changed during this turn",
+                state_version=state_version,
+            )
         active_tool_runner = ReadonlyDomainTools(
             binding,
             backend=InternalClientBackend(
                 tenant_id=binding.tenant_id,
                 chat_session_id=binding.session_id,
             ),
+            current_state_version=state_version,
         )
     if active_tool_runner is None:
         return error("binding_unconfigured", "trusted binding is unavailable", state_version=0)

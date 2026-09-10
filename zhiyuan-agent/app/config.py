@@ -144,6 +144,8 @@ class CodexAppServerConfig(BaseSettings):
     commit: str = "89650c6"
     transport: str = "stdio"
     timeout_seconds: float = 30.0
+    approval_policy: str = "never"
+    sandbox_policy: str = "read-only"
     binding_ttl_seconds: int = 900
     binding_registry_path: str = ""
     python_bin: str = sys.executable

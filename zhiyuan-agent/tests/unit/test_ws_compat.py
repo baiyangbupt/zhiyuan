@@ -13,6 +13,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCall
 from app.data.history_store import ChatHistoryStore
 from app.schemas.ws import WSResponse
 from app.service import ChatService, ChatServiceResponseEnvelope, _build_plan_timeout_fallback_reply
+from app.server import _build_legacy_chat_service
 
 _patches = []
 
@@ -47,6 +48,24 @@ def client():
 
 
 WS_PATH = "/gaotu-assistant-agent/plus/chat/test-tenant/bot/test-bot/do"
+
+
+def test_codex_readonly_does_not_build_the_legacy_llm_stack():
+    with patch("app.server.LLMClient") as llm_client, patch("app.server.ChatHistoryStore") as history_store:
+        assert _build_legacy_chat_service("codex_readonly") is None
+
+    llm_client.assert_not_called()
+    history_store.assert_not_called()
+
+
+def test_legacy_and_shadow_modes_build_the_legacy_stack():
+    with patch("app.server.LLMClient") as llm_client, patch("app.server.ChatHistoryStore") as history_store, patch("app.server.ChatService") as chat_service:
+        _build_legacy_chat_service("legacy")
+        _build_legacy_chat_service("codex_shadow")
+
+    assert llm_client.call_count == 2
+    assert history_store.call_count == 2
+    assert chat_service.call_count == 2
 
 
 class _ClosedJsonWebSocket:
@@ -246,6 +265,96 @@ def test_ping_pong(client):
         resp = ws.receive_json()
         assert resp["type"] == "pong"
         assert resp["timestamp"] == 12345
+
+
+def test_gateway_mode_compat_text_routes_to_gateway(client):
+    gateway = MagicMock()
+    gateway.handle_turn = AsyncMock(return_value={"reply": "Gateway 已处理", "events": []})
+    client.app.state.gateway_service = gateway
+
+    with client.websocket_connect(WS_PATH) as ws:
+        ws.send_json(
+            {
+                "sessionId": "gateway-session",
+                "userId": "gateway-user",
+                "content": "帮我看看浙江大学",
+                "inputType": "text",
+                "turnId": "turn-1",
+            }
+        )
+        response = ws.receive_json()
+
+    client.app.state.gateway_service = None
+    assert response == {"type": "text", "content": "Gateway 已处理", "end": True}
+    gateway.handle_turn.assert_awaited_once_with(
+        tenant_id="test-tenant",
+        session_id="gateway-session",
+        user_id="gateway-user",
+        turn_id="turn-1",
+        content="帮我看看浙江大学",
+    )
+
+
+def test_gateway_mode_compat_confirmation_maps_to_conversation_action(client):
+    gateway = MagicMock()
+    gateway.get_current_snapshot = AsyncMock(return_value=object())
+    gateway.execute_action_and_refresh = AsyncMock(
+        return_value={
+            "actionResult": {"actionStatus": "applied"},
+            "snapshotVersion": 8,
+        }
+    )
+    client.app.state.gateway_service = gateway
+
+    with client.websocket_connect(WS_PATH) as ws:
+        ws.send_json(
+            {
+                "sessionId": "gateway-session",
+                "userId": "gateway-user",
+                "content": {"action": "confirm", "pendingId": "proposal-1", "sourceVersion": 7},
+                "inputType": "pendingConfirmation",
+            }
+        )
+        response = ws.receive_json()
+
+    client.app.state.gateway_service = None
+    assert response["type"] == "text"
+    payload = json.loads(response["content"])
+    assert payload["type"] == "conversationAction.result"
+    gateway.execute_action_and_refresh.assert_awaited_once()
+    gateway.get_current_snapshot.assert_awaited_once_with(
+        tenant_id="test-tenant", session_id="gateway-session"
+    )
+    action = gateway.execute_action_and_refresh.await_args.kwargs["action"]
+    assert action == {
+        "actionType": "confirm_proposal",
+        "proposalRef": "proposal-1",
+        "expectedSourceVersion": 7,
+        "intent": "explicit",
+    }
+
+
+def test_gateway_mode_compat_without_snapshot_fails_closed(client):
+    gateway = MagicMock()
+    gateway.get_current_snapshot = AsyncMock(return_value=None)
+    gateway.execute_action_and_refresh = AsyncMock()
+    client.app.state.gateway_service = gateway
+
+    with client.websocket_connect(WS_PATH) as ws:
+        ws.send_json(
+            {
+                "sessionId": "missing-session",
+                "userId": "gateway-user",
+                "content": {"action": "cancel", "pendingId": "proposal-1"},
+                "inputType": "pendingConfirmation",
+            }
+        )
+        response = ws.receive_json()
+
+    client.app.state.gateway_service = None
+    assert response["type"] == "error"
+    assert "失去上下文" in response["content"]
+    gateway.execute_action_and_refresh.assert_not_awaited()
 
 
 def test_text_message_returns_plus_format(client):

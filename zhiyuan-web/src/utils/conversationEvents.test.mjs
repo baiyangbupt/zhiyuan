@@ -6,7 +6,32 @@ import {
   formatEvidencePayload,
   normalizeConversationEvent,
   resolveArtifact,
+  parseConversationActionResult,
+  applyPendingActionResult,
 } from './conversationEvents.mjs';
+
+test('reads action results from native and compatibility websocket envelopes', () => {
+  const result = { type: 'conversationAction.result', actionResult: { proposalRef: 'p1', actionStatus: 'applying' } };
+  for (const type of ['reply', 'text', 'conversationAction.result']) {
+    assert.deepEqual(parseConversationActionResult({ type, content: JSON.stringify(result) }), result);
+  }
+  assert.deepEqual(parseConversationActionResult(result), result);
+  assert.equal(parseConversationActionResult({ type: 'text', content: '操作成功' }), null);
+  assert.equal(parseConversationActionResult({ type: 'text', content: '{invalid' }), null);
+});
+
+test('updates only the referenced pending card from authoritative action states', () => {
+  const card = { pendingId: 'p1', status: 'active', clickable: true };
+  for (const actionStatus of ['applying', 'applied', 'cancelled', 'expired', 'stale_state', 'failed']) {
+    const updated = applyPendingActionResult(card, { proposalRef: 'p1', actionStatus });
+    assert.equal(updated.status, actionStatus);
+    assert.equal(updated.clicked, actionStatus === 'applied');
+    assert.equal(updated.clickable, false);
+  }
+  assert.equal(applyPendingActionResult(card, { proposalRef: 'p2', actionStatus: 'applied' }), card);
+  assert.equal(applyPendingActionResult(card, { proposalRef: 'p1', actionStatus: 'unknown' }), card);
+  assert.equal(applyPendingActionResult(card, {}), card);
+});
 
 test('formats backend artifact values without parsing assistant markdown', () => {
   assert.equal(formatAdmissionProbability(0.68), '68%');

@@ -126,3 +126,15 @@ def test_semantic_eval_requires_failed_status_to_expose_recovery_step() -> None:
     )
 
     assert result["passed"] is True
+
+
+def test_semantic_eval_checks_conversation_action_type() -> None:
+    result = evaluate_trace(
+        SemanticExpectation(
+            case_id="confirm-proposal",
+            conversation_action_type="confirm_proposal",
+        ),
+        {"conversationAction": {"actionType": "cancel_proposal"}},
+    )
+    assert result["passed"] is False
+    assert result["failures"] == ["conversation_action_mismatch"]

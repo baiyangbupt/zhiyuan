@@ -31,6 +31,15 @@ def _field(value: Any, *names: str) -> Any:
 def _as_output(value: TurnOutput | Mapping[str, Any]) -> TurnOutput:
     if isinstance(value, TurnOutput):
         return value
+    if isinstance(value, Mapping) and value.get("type") == "object":
+        value = {key: nested for key, nested in value.items() if key != "type"}
+    if (
+        isinstance(value, Mapping)
+        and "responseType" not in value
+        and value.get("type") in {"text", "fact", "recommendation", "review", "clarification"}
+    ):
+        value = {**value, "responseType": value["type"]}
+        value.pop("type", None)
     try:
         return TurnOutput.model_validate(value)
     except ValidationError as exc:
@@ -55,6 +64,7 @@ def validate_turn_output(
     thread_id: str | None = None,
     tenant_id: str | None = None,
     allow_proposal: bool = False,
+    strict_scope: bool = False,
 ) -> TurnOutput:
     """Validate every backend reference before output reaches a user.
 
@@ -62,8 +72,23 @@ def validate_turn_output(
     Gateway turn.  Optional scope fields are checked when present in a ledger
     entry; absence is not treated as proof of a different scope.
     """
+    if isinstance(turn_output, Mapping):
+        for fact in turn_output.get("admissionFacts", turn_output.get("admission_facts", [])) or []:
+            limitations = fact.get("limitations", []) if isinstance(fact, Mapping) else []
+            if any("semantic_fixture_only" in str(limitation) for limitation in limitations):
+                raise OutputContractError(
+                    "non_authoritative_admission_fact",
+                    "semantic fixture data cannot be promoted to admission facts",
+                )
     output = _as_output(turn_output)
     snapshot = _as_snapshot(current_snapshot)
+
+    for fact in output.admission_facts:
+        if any("semantic_fixture_only" in limitation for limitation in fact.limitations):
+            raise OutputContractError(
+                "non_authoritative_admission_fact",
+                "semantic fixture data cannot be promoted to admission facts",
+            )
 
     if output.proposal_ref and not allow_proposal:
         raise OutputContractError("proposal_forbidden", "proposal output is disabled in readonly mode")
@@ -100,14 +125,14 @@ def validate_turn_output(
         entry = evidence_ledger.get(evidence_id)
         if entry is None:
             raise OutputContractError("evidence_not_found", evidence_id)
-        entry_session = _field(entry, "sessionId", "session_id")
-        if entry_session not in (None, "", snapshot.session_id):
+        entry_session = _scoped_field(entry, "sessionId", "session_id")
+        if (strict_scope and entry_session in (None, "")) or entry_session not in (None, "", snapshot.session_id):
             raise OutputContractError("evidence_scope_violation", evidence_id)
-        entry_thread = _field(entry, "threadId", "thread_id")
-        if thread_id and entry_thread not in (None, "", thread_id):
+        entry_thread = _scoped_field(entry, "threadId", "thread_id")
+        if (strict_scope and thread_id and entry_thread in (None, "")) or (thread_id and entry_thread not in (None, "", thread_id)):
             raise OutputContractError("evidence_scope_violation", evidence_id)
-        entry_tenant = _field(entry, "tenantId", "tenant_id")
-        if tenant_id and entry_tenant not in (None, "", tenant_id):
+        entry_tenant = _scoped_field(entry, "tenantId", "tenant_id")
+        if (strict_scope and tenant_id and entry_tenant in (None, "")) or (tenant_id and entry_tenant not in (None, "", tenant_id)):
             raise OutputContractError("evidence_scope_violation", evidence_id)
         entry_state = _field(entry, "stateVersion", "state_version")
         if entry_state not in (None, ""):
@@ -144,11 +169,19 @@ def validate_turn_output(
                 raise OutputContractError("stale_state", artifact_id)
         if reference.state_version != snapshot.snapshot_version:
             raise OutputContractError("stale_state", artifact_id)
-        entry_session = _field(entry, "sessionId", "session_id")
-        if entry_session not in (None, "", snapshot.session_id):
+        entry_session = _scoped_field(entry, "sessionId", "session_id")
+        if (strict_scope and entry_session in (None, "")) or entry_session not in (None, "", snapshot.session_id):
             raise OutputContractError("artifact_scope_violation", artifact_id)
-        entry_thread = _field(entry, "threadId", "thread_id")
-        if thread_id and entry_thread not in (None, "", thread_id):
+        entry_thread = _scoped_field(entry, "threadId", "thread_id")
+        if (strict_scope and thread_id and entry_thread in (None, "")) or (thread_id and entry_thread not in (None, "", thread_id)):
             raise OutputContractError("artifact_scope_violation", artifact_id)
 
     return output
+
+
+def _scoped_field(value: Any, *names: str) -> Any:
+    direct = _field(value, *names)
+    if direct not in (None, ""):
+        return direct
+    scope = _field(value, "scope")
+    return _field(scope, *names)

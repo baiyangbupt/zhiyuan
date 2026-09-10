@@ -9,8 +9,10 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pydantic import ValidationError
 from pathlib import Path
+from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -26,6 +28,7 @@ from app.gateway.contracts import ConversationTurnSnapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = ROOT / "skills" / "codex"
+load_dotenv(ROOT / ".env")
 
 
 def reference_missing_scope_scenario() -> tuple[dict[str, object], str, SemanticExpectation]:
@@ -78,11 +81,19 @@ def complete_history_scenario() -> tuple[dict[str, object], str, SemanticExpecta
             required_entity_ids={"school-1", "school-2"},
             required_tool_names={"admission.get_history"},
             forbidden_tool_names={"plan_apply"},
-            response_type="fact",
-            evidence_required=True,
+            response_type={"text", "fact"},
+            evidence_required=False,
             clarification_required=False,
         ),
     )
+
+
+def authoritative_history_scenario() -> tuple[dict[str, object], str, SemanticExpectation]:
+    context, message, expectation = complete_history_scenario()
+    expectation.case_id = "reference-authoritative-history"
+    expectation.response_type = "fact"
+    expectation.evidence_required = True
+    return context, message, expectation
 
 
 def mixed_read_write_scenario() -> tuple[dict[str, object], str, SemanticExpectation]:
@@ -111,17 +122,28 @@ def mixed_read_write_scenario() -> tuple[dict[str, object], str, SemanticExpecta
 async def run_scenario(
     scenario_factory: object,
 ) -> dict[str, object]:
+    started_at = time.perf_counter()
     binary = os.environ.get("CODEX_APP_SERVER_BIN", "codex")
+    semantic_home = ROOT.parent / ".codex-semantic-home"
+    if semantic_home.is_dir():
+        os.environ.setdefault("CODEX_HOME", str(semantic_home))
     fixture = ROOT / "tests" / "fixtures" / "mcp" / "semantic_readonly_server.py"
     trace_file = tempfile.NamedTemporaryFile(prefix="zhiyuan-semantic-mcp-", suffix=".jsonl", delete=False)
     trace_file.close()
     os.environ["ZHIYUAN_SEMANTIC_MCP_TRACE"] = trace_file.name
-    config = (
-        "mcp_servers.semantic_readonly={"
+    context, user_message, expectation = scenario_factory()
+    if expectation.case_id == "reference-authoritative-history":
+        os.environ["ZHIYUAN_SEMANTIC_AUTHORITATIVE"] = "true"
+    else:
+        os.environ.pop("ZHIYUAN_SEMANTIC_AUTHORITATIVE", None)
+    fixture_args = [str(fixture)]
+    if expectation.case_id == "reference-authoritative-history":
+        fixture_args.append("--authoritative")
+    model_config = ["mcp_servers.semantic_readonly={"
         f"command={json.dumps(sys.executable)},"
-        f"args=[{json.dumps(str(fixture))}]"
-        "}"
-    )
+        f"args=[{','.join(json.dumps(item) for item in fixture_args)}]"
+        "}",
+    ]
 
     async def accept_readonly_elicitation(request: dict[str, object]) -> dict[str, object]:
         params = request.get("params") or {}
@@ -132,7 +154,7 @@ async def run_scenario(
         return {"action": "accept", "content": None}
 
     harness = CodexAppServerHarness(
-        [binary, "--config", config, "app-server", "--stdio"],
+        [binary, *sum((["--config", item] for item in model_config), []), "app-server", "--stdio"],
         request_timeout=90.0,
         skill_root=str(SKILL_ROOT),
     )
@@ -144,11 +166,12 @@ async def run_scenario(
             developer_instructions=(SKILL_ROOT / "developer_instructions.md").read_text(
                 encoding="utf-8"
             ),
+            approval_policy="never",
         )
         thread_id = str(thread.get("thread", {}).get("id") or "")
         if not thread_id:
             raise RuntimeError("thread_not_created")
-        context, user_message, expectation = scenario_factory()
+
         snapshot_data = context["snapshot"]
         context_snapshot = ConversationTurnSnapshot(
             snapshotVersion=42,
@@ -158,13 +181,6 @@ async def run_scenario(
         )
         working_set = ConversationWorkingSet.from_snapshot(context_snapshot)
         working_set.candidate_entities = context["candidateSet"]["items"]
-        await harness.inject_items(
-            thread_id,
-            [
-                {"type": "text", "text": working_set.as_context_text()},
-                {"type": "text", "text": render_tool_contracts()},
-            ],
-        )
         result = await harness.start_turn_and_collect(
             thread_id,
             [
@@ -244,17 +260,37 @@ async def run_scenario(
                     "proposalRef": result.output.get("proposalRef"),
                 }
                 payload["evaluation"] = evaluate_trace(expectation, payload["trace"])
+                payload["elapsedMs"] = round((time.perf_counter() - started_at) * 1000, 1)
                 return payload
             trace = build_turn_trace(
-                {"events": result.events},
+                {"events": [*result.events, *_recorded_mcp_events(mcp_calls)]},
                 output,
                 entity_ids=payload["modelUsedCandidateIds"],
             )
             payload["trace"] = trace.as_payload()
             payload["evaluation"] = evaluate_trace(expectation, trace.as_payload())
+        payload["elapsedMs"] = round((time.perf_counter() - started_at) * 1000, 1)
         return payload
     finally:
         await harness.close()
+        Path(trace_file.name).unlink(missing_ok=True)
+
+
+def _recorded_mcp_events(calls: list[dict[str, object]]) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for call in calls:
+        name = call.get("name")
+        arguments = call.get("arguments")
+        if isinstance(name, str) and name and isinstance(arguments, dict):
+            events.append(
+                {
+                    "type": "mcpToolCall",
+                    "toolName": name,
+                    "arguments": arguments,
+                    "status": "completed",
+                }
+            )
+    return events
 
 
 def _walk_values(value: object) -> list[object]:
@@ -275,12 +311,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scenario",
-        choices=["reference-missing-scope", "reference-complete-history", "mixed-read-write"],
+        choices=["reference-missing-scope", "reference-complete-history", "reference-authoritative-history", "mixed-read-write"],
         default="reference-missing-scope",
     )
     args = parser.parse_args()
     factory = (
-        complete_history_scenario
+        authoritative_history_scenario
+        if args.scenario == "reference-authoritative-history"
+        else complete_history_scenario
         if args.scenario == "reference-complete-history"
         else mixed_read_write_scenario
         if args.scenario == "mixed-read-write"

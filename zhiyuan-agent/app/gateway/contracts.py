@@ -129,6 +129,86 @@ class ConversationAction(_ContractModel):
     intent: Literal["explicit", "inferred", "not_applicable"] = "not_applicable"
 
 
+class ProposalScope(_ContractModel):
+    scope_type: str
+    name: str
+    normalized_name: str | None = None
+    entity_type: str | None = None
+    scope_level: str | None = None
+    resolution_status: str | None = None
+    raw_text: str | None = None
+
+
+class ProposalRequirement(_ContractModel):
+    kind: str
+    domain: str
+    key: str
+    values: list[str]
+    min_count: int = Field(default=1, ge=0)
+    raw_text: str | None = None
+
+
+class ProposalPriorityRule(_ContractModel):
+    domain: str
+    key: str
+    values: list[str]
+    ordering_target: str = "rank_before"
+    scope: str = "within_tier"
+    raw_text: str | None = None
+
+
+class ProposalTierRange(_ContractModel):
+    min_count: int | None = Field(default=None, ge=0)
+    max_count: int | None = Field(default=None, ge=0)
+
+
+class ProposalTierQuota(_ContractModel):
+    type: Literal["exact_counts", "count_ranges", "ratios"]
+    update_mode: str | None = None
+    sprint_count: int | None = Field(default=None, ge=0)
+    stable_count: int | None = Field(default=None, ge=0)
+    protect_count: int | None = Field(default=None, ge=0)
+    sprint: ProposalTierRange | None = None
+    stable: ProposalTierRange | None = None
+    protect: ProposalTierRange | None = None
+    sprint_weight: int | None = Field(default=None, ge=0)
+    stable_weight: int | None = Field(default=None, ge=0)
+    protect_weight: int | None = Field(default=None, ge=0)
+
+
+class ProposalContext(_ContractModel):
+    min_tuition_per_year: int | None = Field(default=None, ge=0)
+    max_tuition_per_year: int | None = Field(default=None, ge=0)
+
+
+class ProposalRequest(_ContractModel):
+    """Model-produced semantic draft accepted by the Java proposal compiler."""
+
+    proposal_source: Literal["user_goal"] = "user_goal"
+    goal_type: Literal[
+        "only_keep_scope",
+        "must_include_scope",
+        "exclude_scope",
+        "tuition_budget_scope",
+        "fill_to_count",
+        "prioritize_within_tier",
+    ]
+    user_original_text: str = ""
+    confidence: Literal["low", "medium", "high"] = "medium"
+    source_version_guard: int = Field(ge=0)
+    target_count: int | None = Field(default=None, gt=0)
+    persist_target_count: bool = True
+    tier_quota_goal: ProposalTierQuota | None = None
+    requirements: list[ProposalRequirement] = Field(default_factory=list)
+    priority_rules: list[ProposalPriorityRule] = Field(default_factory=list)
+    target_scopes: list[ProposalScope] = Field(default_factory=list)
+    negative_scopes: list[ProposalScope] = Field(default_factory=list)
+    quality_guards: list[str] = Field(default_factory=list)
+    tradeoff_guards: list[str] = Field(default_factory=list)
+    source_review_issue_codes: list[str] = Field(default_factory=list)
+    context: ProposalContext = Field(default_factory=ProposalContext)
+
+
 class TurnOutput(_ContractModel):
     response_type: Literal["text", "fact", "recommendation", "review", "clarification"]
     message: str
@@ -141,6 +221,7 @@ class TurnOutput(_ContractModel):
     next_step: str | None = None
     execution_status: Literal["completed", "partial", "blocked", "failed"] = "completed"
     proposal_ref: str | None = None
+    proposal_request: ProposalRequest | None = None
     conversation_action: ConversationAction = Field(default_factory=ConversationAction)
 
     @field_validator("response_type", mode="before")

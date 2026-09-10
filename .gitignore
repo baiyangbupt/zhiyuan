@@ -37,9 +37,12 @@ zhiyuan-rank/logs/
 .local-prod-3.0.2/
 
 # Environment files with secrets
+.codex-semantic-home/
+.codex-semantic-home/config-deepseek.toml
 *.env.local
 zhiyuan-web/.env.standardtest
 zhiyuan-agent/.env
+zhiyuan-agent/.env.dp
 
 # Production configs with credentials
 zhiyuan-server/src/main/resources/application-online.yml
@@ -47,6 +50,8 @@ zhiyuan-server/src/main/resources/application-online.yml
 # Local scripts runtime
 .pids/
 .pids-*.pid
+.local/codex-local/
+.runtime/
 logs/
 .local-prod-3.0.2/
 

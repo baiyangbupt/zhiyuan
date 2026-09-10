@@ -69,6 +69,8 @@ async def build_gateway_runtime(
             build_codex_command(mode, resolved_config),
             request_timeout=resolved_config.timeout_seconds,
             skill_root=skill_root,
+            approval_policy=resolved_config.approval_policy,
+            sandbox_policy=resolved_config.sandbox_policy,
         )
 
     if not base_instructions:

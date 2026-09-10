@@ -7,4 +7,4 @@ def test_complete_history_scenario_requires_read_tool_and_no_clarification() -> 
     assert "2025" in message
     assert expectation.required_tool_names == {"admission.get_history"}
     assert expectation.clarification_required is False
-    assert expectation.response_type == "fact"
+    assert expectation.response_type == {"text", "fact"}

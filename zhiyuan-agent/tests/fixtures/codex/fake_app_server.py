@@ -26,7 +26,7 @@ for line in sys.stdin:
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": {"thread": {"id": "thr_test", "ephemeral": True}},
+                "result": {"thread": {"id": "thr_test", "ephemeral": True}, "received": params},
             }
         )
     elif method == "thread/resume":
@@ -44,7 +44,7 @@ for line in sys.stdin:
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": {"turn": {"id": "turn_test", "status": "inProgress"}},
+                "result": {"turn": {"id": "turn_test", "status": "inProgress"}, "received": params},
             }
         )
         send(
@@ -58,7 +58,7 @@ for line in sys.stdin:
             {
                 "jsonrpc": "2.0",
                 "method": "turn/completed",
-                "params": {"threadId": params.get("threadId"), "turnId": "turn_test"},
+                "params": {"threadId": params.get("threadId"), "turn": {"id": "turn_test", "status": "completed"}},
             }
         )
     elif method in {"turn/steer", "turn/interrupt"}:

@@ -7,15 +7,19 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from app.gateway.contracts import ConversationTurnSnapshot, TurnOutput
+from pydantic import ValidationError
+
+from app.gateway.contracts import ConversationTurnSnapshot, ProposalRequest, TurnOutput
 from app.gateway.event_adapter import adapt_codex_item
 from app.gateway.output_validation import OutputContractError, validate_turn_output
+from app.gateway.conversation_actions import ConversationActionResult, execute_conversation_action
 from app.gateway.snapshot import build_snapshot, diff_snapshots
 from app.engine.working_set import ConversationWorkingSet
 from app.engine.execution_plan import build_execution_plan
 from app.engine.tool_orchestration import render_tool_contracts
 from app.engine.turn_trace import build_turn_trace
 from app.engine.result_synthesis import synthesize_execution_status
+from app.util import internal_client
 
 
 TURN_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -32,6 +36,7 @@ TURN_OUTPUT_SCHEMA: dict[str, Any] = {
         "nextStep",
         "executionStatus",
         "proposalRef",
+        "proposalRequest",
         "conversationAction",
     ],
     "properties": {
@@ -71,8 +76,26 @@ TURN_OUTPUT_SCHEMA: dict[str, Any] = {
                     "stateVersion": {"type": ["integer", "null"]},
                     "scope": {
                         "type": "object",
-                        "properties": {},
-                        "required": [],
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "areaId": {"type": ["string", "null"]},
+                            "province": {"type": ["string", "null"]},
+                            "subjectType": {"type": ["string", "null"]},
+                            "batch": {"type": ["string", "null"]},
+                            "year": {"type": ["integer", "null"]},
+                            "majorId": {"type": ["string", "null"]},
+                            "schoolId": {"type": ["string", "null"]},
+                        },
+                        "required": [
+                            "kind",
+                            "areaId",
+                            "province",
+                            "subjectType",
+                            "batch",
+                            "year",
+                            "majorId",
+                            "schoolId",
+                        ],
                         "additionalProperties": False,
                     },
                     "observedAt": {"type": ["string", "null"]},
@@ -160,6 +183,7 @@ TURN_OUTPUT_SCHEMA: dict[str, Any] = {
             "enum": ["completed", "partial", "blocked", "failed"],
         },
         "proposalRef": {"type": ["string", "null"]},
+        "proposalRequest": {"anyOf": [{"$ref": "#/$defs/ProposalRequest"}, {"type": "null"}]},
         "conversationAction": {
             "type": "object",
             "properties": {
@@ -176,6 +200,25 @@ TURN_OUTPUT_SCHEMA: dict[str, Any] = {
         },
     },
     "additionalProperties": False,
+}
+
+
+def _strict_model_schema(model: type[Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    schema = model.model_json_schema(by_alias=True)
+    definitions = schema.pop("$defs", {})
+    for definition in definitions.values():
+        if definition.get("type") == "object":
+            definition["required"] = list(definition.get("properties", {}))
+            definition.pop("default", None)
+    schema["required"] = list(schema.get("properties", {}))
+    schema.pop("default", None)
+    return schema, definitions
+
+
+_proposal_schema, _proposal_definitions = _strict_model_schema(ProposalRequest)
+TURN_OUTPUT_SCHEMA["$defs"] = _proposal_definitions
+TURN_OUTPUT_SCHEMA["properties"]["proposalRequest"] = {
+    "anyOf": [_proposal_schema, {"type": "null"}]
 }
 
 
@@ -220,6 +263,35 @@ def _by_id(values: Any, *keys: str) -> dict[str, Any]:
     return result
 
 
+def _collect_records(payload: Any, *record_keys: str) -> list[dict[str, Any]]:
+    """Collect tool records from both turn payloads and nested App Server events."""
+    records: list[dict[str, Any]] = []
+    visited: set[int] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            identity = id(value)
+            if identity in visited:
+                return
+            visited.add(identity)
+            if value.get("evidenceId") or value.get("evidence_id") or value.get("artifactId") or value.get("artifact_id"):
+                records.append(dict(value))
+            for key in record_keys:
+                nested = value.get(key)
+                if isinstance(nested, Mapping):
+                    records.append(dict(nested))
+                elif isinstance(nested, list):
+                    records.extend(dict(item) for item in nested if isinstance(item, Mapping))
+            for nested in value.values():
+                walk(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                walk(nested)
+
+    walk(payload)
+    return records
+
+
 class GatewayService:
     """Orchestrate one conversation turn behind a stable Gateway contract."""
 
@@ -251,6 +323,79 @@ class GatewayService:
         self._turn_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._turn_digests: dict[tuple[str, str], str] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
+
+    async def execute_action(
+        self,
+        *,
+        tenant_id: str | int = 1,
+        session_id: str,
+        action: Any,
+        snapshot: ConversationTurnSnapshot | Mapping[str, Any],
+    ) -> ConversationActionResult:
+        """显式执行已校验动作；默认不启用，避免只读回合隐式写入。"""
+        return await execute_conversation_action(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            action=action,
+            snapshot=snapshot,
+        )
+
+    async def get_current_snapshot(
+        self, *, tenant_id: str, session_id: str
+    ) -> ConversationTurnSnapshot | None:
+        """Return the cached snapshot or load the current authoritative one."""
+        session_key = str(session_id)
+        cached = self._snapshots.get(session_key)
+        if cached is not None:
+            return cached
+        try:
+            snapshot = _snapshot_payload(
+                await _maybe_await(
+                    self.snapshot_loader(
+                        tenant_id=tenant_id,
+                        session_id=session_key,
+                        skill=None,
+                    )
+                )
+            )
+        except Exception:
+            return None
+        self._snapshots[session_key] = snapshot
+        self._working_sets[session_key] = ConversationWorkingSet.from_snapshot(snapshot)
+        return snapshot
+
+    async def execute_action_and_refresh(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        action: Any,
+        snapshot: ConversationTurnSnapshot | Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """显式执行动作，并在后端成功变更后刷新权威会话状态。"""
+        result = await self.execute_action(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            action=action,
+            snapshot=snapshot,
+        )
+        payload: dict[str, Any] = {"actionResult": result.as_dict()}
+        if result.action_status not in {"applied", "cancelled"}:
+            return payload
+        refreshed = _snapshot_payload(
+            await _maybe_await(
+                self.snapshot_loader(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    skill=None,
+                )
+            )
+        )
+        self._snapshots[str(session_id)] = refreshed
+        self._working_sets[str(session_id)] = ConversationWorkingSet.from_snapshot(refreshed)
+        payload["snapshot"] = refreshed.model_dump(by_alias=True)
+        payload["snapshotVersion"] = refreshed.snapshot_version
+        return payload
 
     async def handle_turn(
         self,
@@ -416,11 +561,13 @@ class GatewayService:
             "reply": output.message,
             "events": codex_result.get("events", []),
             "trace": codex_result.get("trace", {}),
+            "recovery": codex_result.get("recovery", {"outputRepaired": False}),
             "snapshotVersion": snapshot.snapshot_version,
             "statePatch": state_patch.model_dump(by_alias=True) if state_patch else None,
             "writeAttempted": bool(output.proposal_ref),
             "output": output.model_dump(by_alias=True),
             "workingSet": self._working_sets[str(session_id)].as_payload(),
+            "proposalPreview": codex_result.get("proposalPreview"),
         }
 
     async def _legacy_reply(self, session_id: str, user_id: str, content: str) -> str:
@@ -471,6 +618,7 @@ class GatewayService:
                     thread_id=thread_id,
                     allowed_capabilities=allowed_capabilities,
                     admission_mode=admission_mode,
+                    snapshot_version=snapshot.snapshot_version,
                 )
             )
             if binding is None:
@@ -513,7 +661,6 @@ class GatewayService:
                         ),
                     }
                 )
-            await self.codex.inject_items(thread_id, context_items)
             turn_input = list(context_items)
             turn_input.append({"type": "text", "text": content})
             if hasattr(self.codex, "start_turn_and_collect"):
@@ -543,28 +690,59 @@ class GatewayService:
                     turn_input,
                     TURN_OUTPUT_SCHEMA,
                 )
+            raw_output = turn.get("output") if isinstance(turn, Mapping) else None
+            if raw_output is None and isinstance(turn, Mapping):
+                raw_output = turn.get("turn", {}).get("output")
+            output_repaired = False
+            try:
+                if not isinstance(raw_output, Mapping):
+                    raise OutputContractError("output_missing", "completed turn did not return structured output")
+                output = TurnOutput.model_validate(raw_output)
+            except (OutputContractError, ValidationError) as exc:
+                repaired = await self._repair_turn_output(thread_id, str(exc))
+                if repaired is None:
+                    raise OutputContractError("output_schema_invalid", str(exc)) from exc
+                repaired_events = repaired.get("events") or []
+                turn = {
+                    **turn,
+                    "output": repaired["output"],
+                    "events": [*(turn.get("events") or []), *repaired_events],
+                }
+                output = TurnOutput.model_validate(repaired["output"])
+                output_repaired = True
             events: list[dict[str, Any]] = []
             for item in turn.get("events", []) if isinstance(turn, Mapping) else []:
                 event = adapt_codex_item(item)
                 if event is not None:
                     events.append(event)
-            raw_output = turn.get("output") if isinstance(turn, Mapping) else None
-            if raw_output is None and isinstance(turn, Mapping):
-                raw_output = turn.get("turn", {}).get("output")
-            if raw_output is None:
-                raw_output = {
-                    "responseType": "text",
-                    "message": "",
-                    "executionStatus": "completed",
-                }
-            output = TurnOutput.model_validate(raw_output)
             evidence_ledger = _by_id(
-                turn.get("evidenceLedger", []) if isinstance(turn, Mapping) else [],
+                _collect_records(
+                    [
+                        turn.get("evidenceLedger", []),
+                        turn.get("events", []),
+                    ]
+                    if isinstance(turn, Mapping)
+                    else [],
+                    "evidenceLedger",
+                    "evidence",
+                    "evidenceRefs",
+                    "evidence_refs",
+                ),
                 "evidenceId",
                 "evidence_id",
             )
             artifacts = _by_id(
-                turn.get("artifacts", []) if isinstance(turn, Mapping) else [],
+                _collect_records(
+                    [
+                        turn.get("artifacts", []),
+                        turn.get("events", []),
+                    ]
+                    if isinstance(turn, Mapping)
+                    else [],
+                    "artifacts",
+                    "artifactRefs",
+                    "artifact_refs",
+                ),
                 "artifactId",
                 "artifact_id",
             )
@@ -576,7 +754,38 @@ class GatewayService:
                 thread_id=thread_id,
                 tenant_id=tenant_id,
                 allow_proposal=True,
+                strict_scope=True,
             )
+            proposal_preview = None
+            if output.proposal_request is not None:
+                if output.proposal_request.source_version_guard != snapshot.snapshot_version:
+                    raise OutputContractError(
+                        "stale_state",
+                        "proposal source version does not match the current snapshot",
+                    )
+                proposal_response = await internal_client.generate_user_goal_planning_fix_proposals(
+                    tenant_id,
+                    session_id,
+                    output.proposal_request.model_dump(by_alias=True, exclude_none=True),
+                )
+                if (proposal_response or {}).get("code") not in (None, 0):
+                    raise OutputContractError(
+                        "proposal_preview_unavailable",
+                        "Java proposal compiler rejected the request",
+                    )
+                proposal_data = (proposal_response or {}).get("data") or {}
+                proposals = proposal_data.get("proposals") if isinstance(proposal_data, Mapping) else None
+                if not isinstance(proposals, list) or not proposals:
+                    raise OutputContractError(
+                        "proposal_preview_unavailable",
+                        "Java proposal compiler returned no proposal",
+                    )
+                proposal_preview = next((item for item in proposals if isinstance(item, Mapping)), None)
+                if proposal_preview is None:
+                    raise OutputContractError(
+                        "proposal_preview_unavailable",
+                        "Java proposal compiler returned an invalid proposal",
+                    )
             working_set = self._working_sets.get(str(session_id))
             if working_set is not None:
                 working_set.ingest_payload(turn, turn_id=turn_id)
@@ -596,8 +805,32 @@ class GatewayService:
                 "events": events,
                 "threadId": thread_id,
                 "trace": trace.as_payload(),
+                "recovery": {"outputRepaired": output_repaired},
+                "proposalPreview": dict(proposal_preview) if proposal_preview is not None else None,
             }
         except (OutputContractError, ValueError, KeyError) as exc:
             return {"error": str(exc), "events": []}
         except Exception as exc:
             return {"error": type(exc).__name__, "events": []}
+
+    async def _repair_turn_output(self, thread_id: str, issue: str) -> dict[str, Any] | None:
+        if not hasattr(self.codex, "start_turn_and_collect"):
+            return None
+        collected = await self.codex.start_turn_and_collect(
+            thread_id,
+            [
+                {
+                    "type": "text",
+                    "text": (
+                        "上一回合已经完成用户问题和已有工具调用，但最终结构化输出未通过契约校验。"
+                        "不要重新解释用户意图、不要调用新工具、不要编造事实；仅依据本线程已有上下文和工具结果，"
+                        "修正并返回符合输出 Schema 的最终结果。校验问题："
+                        + issue
+                    ),
+                }
+            ],
+            TURN_OUTPUT_SCHEMA,
+        )
+        if collected.status != "completed" or not isinstance(collected.output, dict):
+            return None
+        return {"output": collected.output, "events": collected.events}

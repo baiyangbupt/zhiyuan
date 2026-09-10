@@ -3,6 +3,28 @@ const toFiniteNumber = value => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+export const parseConversationActionResult = value => {
+  const asObject = raw => {
+    if (typeof raw !== 'string') return raw;
+    try { return JSON.parse(raw); } catch { return null; }
+  };
+  const event = asObject(value);
+  if (!event || typeof event !== 'object') return null;
+  if (event.type === 'conversationAction.result' && event.actionResult) return event;
+  if (!['conversationAction.result', 'reply', 'text'].includes(event.type)) return null;
+  const content = asObject(event.content);
+  return content?.type === 'conversationAction.result' && content.actionResult ? content : null;
+};
+
+export const applyPendingActionResult = (card, result) => {
+  const reference = card?.proposalRef || card?.pendingId;
+  if (!reference || !result?.proposalRef || String(reference) !== String(result.proposalRef)) return card;
+  if (!['applying', 'applied', 'cancelled', 'expired', 'stale_state', 'failed'].includes(result.actionStatus)) {
+    return card;
+  }
+  return { ...card, status: result.actionStatus, clickable: false, clicked: result.actionStatus === 'applied' };
+};
+
 export const formatAdmissionProbability = value => {
   const parsed = toFiniteNumber(value);
   if (parsed === null) return '—';

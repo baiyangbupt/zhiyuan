@@ -45,8 +45,57 @@ skills/                 # 技能定义 (SKILL.md)
 
 | 路径 | 协议 | 说明 |
 |------|------|------|
-| `/ws/chat` | V3 原生 | JSON `{session_id, user_id, content, type}` |
+| `/ws/chat` | V3 原生 | JSON `{tenantId, sessionId, userId, content, type}` |
 | `/gaotu-assistant-agent/plus/chat/{tenant_id}/bot/{bot_id}/do` | 兼容 | 兼容前端/旧协议 |
+
+`/ws/chat` 在 `GATEWAY_MODE=codex_readonly` 时进入 Codex 对话执行网关。普通对话消息使用
+`type=chat`；确认或取消 Proposal 时使用 `conversationAction` 字段，服务端会返回
+`conversationAction.result`。模型的自然语言回复不能作为执行成功依据，客户端应只根据该结构化结果更新方案状态。
+
+## 本地会话验证
+
+完整的隔离式 Codex 本地验证链路（Java、Rank、Agent、Web、端口和私有可重置数据源要求）见
+[`../docs/codex-local-stack.md`](../docs/codex-local-stack.md)。它不使用旧的 `scripts/start-all.sh`。
+
+启动只读 Codex 网关：
+
+```bash
+GATEWAY_MODE=codex_readonly \
+CODEX_APP_SERVER_BINDING_REGISTRY_PATH=/tmp/zhiyuan-bindings.json \
+uvicorn app.server:app --host 127.0.0.1 --port 18291
+```
+
+检查服务：
+
+```bash
+curl http://127.0.0.1:18291/health
+```
+
+不依赖前端时，可以使用：
+
+```bash
+.venv/bin/python scripts/local_ws_client.py \
+  --url ws://127.0.0.1:18291/ws/chat \
+  --tenant-id 1 \
+  --session-id local-test-session \
+  --user-id local-test-user \
+  --message "我想了解浙江物理类本科志愿怎么筛选"
+```
+
+对当前 Proposal 的确认或取消可显式发送结构化动作：
+
+```bash
+.venv/bin/python scripts/local_ws_client.py \
+  --url ws://127.0.0.1:18291/ws/chat \
+  --tenant-id 1 \
+  --session-id local-test-session \
+  --user-id local-test-user \
+  --conversation-action '{"actionType":"cancel_proposal","proposalRef":"pending-1","expectedSourceVersion":7}'
+```
+
+脚本只负责发送和展示协议消息，不替代模型理解、Gateway 校验或 Java 权威状态。动作的实际结果以服务端返回的 `conversationAction.result` 为准。
+Codex Gateway 模式要求每条 `/ws/chat` 消息携带 `tenantId`；缺失时返回 `recoverable.error`，不会使用空租户继续访问后端。
+`GATEWAY_MODE=codex_readonly` 不再初始化旧 Pydantic AI 模型客户端；模型认证由 Codex App Server 自己的配置负责。`legacy` 和 `codex_shadow` 仍需要 `LLM_*` 配置。
 
 ## 环境变量
 

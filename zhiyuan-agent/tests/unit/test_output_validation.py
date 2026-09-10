@@ -6,6 +6,59 @@ from app.gateway.contracts import ConversationTurnSnapshot, EvidenceRef, TurnOut
 from app.gateway.output_validation import OutputContractError, validate_turn_output
 
 
+def test_validate_output_ignores_json_schema_root_type_echo():
+    output = validate_turn_output(
+        turn_output={"type": "object", "responseType": "text", "message": "已完成"},
+        current_snapshot={"snapshotVersion": 1, "sessionId": "s"},
+        evidence_ledger={},
+        artifacts={},
+    )
+
+    assert output.response_type == "text"
+
+
+def test_validate_output_preserves_model_text_with_evidence():
+    output = validate_turn_output(
+        turn_output={
+            "responseType": "text",
+            "message": "查询结果",
+            "evidenceRefs": [{"evidenceId": "ev-1", "sourceLevel": "authoritative", "dataVersion": "v1"}],
+        },
+        current_snapshot={"snapshotVersion": 1, "sessionId": "s"},
+        evidence_ledger={"ev-1": {"sessionId": "s", "stateVersion": 1}},
+        artifacts={},
+    )
+
+    assert output.response_type == "text"
+
+
+def test_output_validation_rejects_fixture_admission_fact():
+    with pytest.raises(OutputContractError, match="non_authoritative_admission_fact"):
+        validate_turn_output(
+            turn_output={
+                "responseType": "fact",
+                "message": "测试",
+                "evidenceRefs": [{"evidenceId": "ev-1", "sourceLevel": "authoritative", "dataVersion": "semantic-fixture-1"}],
+                "admissionFacts": [{
+                    "admissionUnitId": "school-1/major-cs/2025",
+                    "admissionMode": "major",
+                    "schoolId": "school-1",
+                    "schoolName": "甲大学",
+                    "majorId": "major-cs",
+                    "majorName": "计算机科学与技术",
+                    "majorItems": [{"majorId": "major-cs", "majorName": "计算机科学与技术", "majorAdmissionRate": 0}],
+                    "unitAdmissionRate": 0,
+                    "riskTier": "稳",
+                    "dataVersion": "semantic-fixture-1",
+                    "limitations": ["semantic_fixture_only"],
+                }],
+            },
+            current_snapshot={"snapshotVersion": 42, "sessionId": "s1"},
+            evidence_ledger={"ev-1": {"sessionId": "s1", "stateVersion": 42}},
+            artifacts={},
+        )
+
+
 def _snapshot(version: int = 42) -> ConversationTurnSnapshot:
     return ConversationTurnSnapshot(
         snapshot_version=version,
@@ -103,6 +156,19 @@ def test_output_validator_returns_normalized_output_when_refs_are_valid() -> Non
 
     assert output.response_type == "fact"
     assert output.evidence_refs[0].evidence_id == "ev-known"
+
+
+def test_output_validator_can_require_complete_production_scope() -> None:
+    with pytest.raises(OutputContractError, match="evidence_scope_violation"):
+        validate_turn_output(
+            turn_output=_fact_output("ev-known"),
+            current_snapshot=_snapshot(),
+            evidence_ledger={"ev-known": {"evidenceId": "ev-known", "stateVersion": 42}},
+            artifacts={},
+            thread_id="thread-1",
+            tenant_id="tenant-1",
+            strict_scope=True,
+        )
 
 
 def test_validator_accepts_group_fact_using_group_rate_not_nested_major_rate() -> None:

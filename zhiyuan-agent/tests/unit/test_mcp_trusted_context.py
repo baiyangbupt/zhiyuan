@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import sqlite3
 
 import pytest
 
@@ -38,6 +39,7 @@ async def test_registry_resolves_backend_context_using_stored_handle(monkeypatch
         user_id="3",
         allowed_capabilities=frozenset({"catalog_read"}),
         opaque_handle="opaque-handle",
+        snapshot_version=42,
     )
     registry.store(
         binding,
@@ -71,6 +73,7 @@ async def test_registry_resolves_backend_context_using_stored_handle(monkeypatch
             "capability": "catalog_read",
         },
     }
+    assert resolved.snapshot_version == 42
 
 
 @pytest.mark.asyncio
@@ -90,3 +93,55 @@ async def test_expired_registry_binding_is_rejected_before_backend_call(tmp_path
 
     with pytest.raises(TrustedContextError, match="binding_expired"):
         await registry.resolve(thread_id="thr-expired", capability="catalog_read")
+
+
+def test_registry_migrates_legacy_rows_without_assuming_a_snapshot_version(tmp_path) -> None:
+    path = tmp_path / "bindings.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE codex_thread_binding_registry (
+                thread_id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                capabilities TEXT NOT NULL,
+                admission_mode TEXT NOT NULL,
+                handle TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO codex_thread_binding_registry
+                (thread_id, tenant_id, session_id, user_id, capabilities, admission_mode, handle, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "thr-legacy",
+                "1",
+                "2",
+                "3",
+                '["catalog_read"]',
+                "major",
+                "legacy-handle",
+                (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+            ),
+        )
+
+    registry = ThreadBindingRegistry(str(path))
+    with sqlite3.connect(path) as connection:
+        columns = {
+            column[1]
+            for column in connection.execute(
+                "PRAGMA table_info(codex_thread_binding_registry)"
+            ).fetchall()
+        }
+        row = connection.execute(
+            "SELECT snapshot_version FROM codex_thread_binding_registry WHERE thread_id = ?",
+            ("thr-legacy",),
+        ).fetchone()
+
+    assert "snapshot_version" in columns
+    assert row == (None,)

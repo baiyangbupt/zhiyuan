@@ -27,6 +27,7 @@ import TypingAnimation from '@/components/generating/TypingAnimation';
 import SendPng from '@/images/icons/send.png';
 import { marked } from 'marked';
 import { createFetchQueue } from './fetchQueue.mjs';
+import { applyPendingActionResult, parseConversationActionResult } from '@/utils/conversationEvents.mjs';
 
 marked.use({ gfm: true, breaks: true });
 
@@ -153,7 +154,9 @@ interface IIntentCardContent {
   actionFamily?: string;
   summary?: string;
   pendingId?: string;
-  status?: 'active' | 'applied' | 'cancelled' | 'replaced' | 'expired';
+  proposalRef?: string;
+  sourceVersion?: number;
+  status?: 'active' | 'applying' | 'applied' | 'cancelled' | 'replaced' | 'expired' | 'stale_state' | 'failed';
   confirmText?: string;
   cancelText?: string;
 }
@@ -544,6 +547,11 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
 
   const appendAgentWsMessage = useCallback(
     (data: WebSocketMessage | string) => {
+      const actionResult = parseConversationActionResult(data);
+      if (actionResult) {
+        applyConversationActionResult(actionResult);
+        return;
+      }
       const wsData = typeof data === 'string' ? { type: 'text', content: data } : data;
       const type = typeof wsData?.type === 'string' ? wsData.type : 'text';
       if (type === 'pong' || type === 'thinking') {
@@ -1057,30 +1065,22 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     );
   };
 
-  const markPendingConfirmationCardHandled = (
-    messageId: number,
-    status: 'applied' | 'cancelled'
-  ) => {
+  const applyConversationActionResult = (result: any) => {
+    const actionResult = result?.actionResult;
     setMessageList(prevList =>
       prevList.map(item => {
-        if (item.id !== messageId || item.contentType !== 'CARD') {
-          return item;
-        }
+        if (item.contentType !== 'CARD') return item;
         const contentObj = parseCardContent(item.content);
-        if (!isPendingConfirmationCard(contentObj)) {
-          return item;
-        }
+        if (!isPendingConfirmationCard(contentObj)) return item;
+        const updated = applyPendingActionResult(contentObj, actionResult);
+        if (updated === contentObj) return item;
         return {
           ...item,
-          content: JSON.stringify({
-            ...contentObj,
-            clickable: false,
-            clicked: status === 'applied',
-            status,
-          }),
+          content: JSON.stringify(updated),
         };
       })
     );
+    resetAnswerLoading();
   };
 
   const renderImpactBlock = (impact?: string, impactTitle?: string) => {
@@ -1263,8 +1263,13 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
           message_id: msg.id,
         },
         inputType: 'pendingConfirmation',
+        conversationAction: {
+          actionType: action === 'confirm' ? 'confirm_proposal' : 'cancel_proposal',
+          proposalRef: cardContent.proposalRef || cardContent.pendingId,
+          expectedSourceVersion: cardContent.sourceVersion,
+          intent: 'explicit',
+        },
       });
-      markPendingConfirmationCardHandled(msg.id, action === 'confirm' ? 'applied' : 'cancelled');
     } catch (error) {
       resetAnswerLoading();
       console.error('待采纳内容操作失败', error);
@@ -1465,7 +1470,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                                   );
                                   const cardDisabled =
                                     effectiveContentObj?.clickable === false ||
-                                    ['applied', 'cancelled', 'replaced', 'expired'].includes(
+                                    ['applying', 'applied', 'cancelled', 'replaced', 'expired', 'stale_state', 'failed'].includes(
                                       effectiveContentObj?.status || ''
                                     );
                                   let statusText = '';
@@ -1486,6 +1491,15 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                                   } else if (effectiveContentObj?.status === 'expired') {
                                     statusText = '已失效';
                                     badgeText = '已失效';
+                                  } else if (effectiveContentObj?.status === 'applying') {
+                                    statusText = '正在执行，请等待执行结果';
+                                    badgeText = '执行中';
+                                  } else if (effectiveContentObj?.status === 'stale_state') {
+                                    statusText = '方案已变化，请重新生成预览';
+                                    badgeText = '需重新确认';
+                                  } else if (effectiveContentObj?.status === 'failed') {
+                                    statusText = '未能确认执行结果，请刷新后检查方案';
+                                    badgeText = '未完成';
                                   }
                                   return (
                                     <div className={style.pendingConfirmationCard}>

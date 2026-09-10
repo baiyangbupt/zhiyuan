@@ -124,6 +124,7 @@ const configObj = {
     // 开发环境API代理
     if (process.env.APP_ENV === 'dev') {
       const devDomainInner = process.env.NEXT_PUBLIC_ASSISTANT_API_BASE_URL || 'http://localhost:8080';
+      const devDomainAgent = process.env.NEXT_PUBLIC_AGENT_API_BASE_URL || devDomainInner;
       const devDomainOuter = process.env.NEXT_PUBLIC_OUTER_API_BASE_URL || 'https://www.gaotuzhiyuan.com';
 
       console.log('🔧 开发环境启用API代理');
@@ -134,7 +135,7 @@ const configObj = {
         },
         {
           source: '/gaotu-assistant-agent/:path*',
-          destination: `${devDomainInner}/gaotu-assistant-agent/:path*`,
+          destination: `${devDomainAgent}/gaotu-assistant-agent/:path*`,
         },
 
         {

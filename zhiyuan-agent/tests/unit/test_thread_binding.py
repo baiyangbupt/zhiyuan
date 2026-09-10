@@ -40,6 +40,33 @@ def test_binding_rejects_non_object_model_identity_payload() -> None:
         binding.resolve_tool_context(["session-2"])  # type: ignore[arg-type]
 
 
+def test_binding_normalizes_the_gateway_snapshot_version() -> None:
+    binding = ThreadBinding(
+        thread_id="thr_test",
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        allowed_capabilities={"catalog_read"},
+        snapshot_version="42",  # type: ignore[arg-type]
+    )
+
+    assert binding.snapshot_version == 42
+    assert binding.context().snapshot_version == 42
+
+
+@pytest.mark.parametrize("value", [-1, True, "not-a-version"])
+def test_binding_rejects_invalid_gateway_snapshot_version(value) -> None:
+    with pytest.raises(ValueError, match="invalid_snapshot_version"):
+        ThreadBinding(
+            thread_id="thr_test",
+            tenant_id="tenant-1",
+            session_id="session-1",
+            user_id="user-1",
+            allowed_capabilities={"catalog_read"},
+            snapshot_version=value,
+        )
+
+
 def test_expired_binding_fails_closed() -> None:
     binding = ThreadBinding(
         thread_id="thr_test",

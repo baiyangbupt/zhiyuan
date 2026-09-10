@@ -33,6 +33,7 @@ class ToolContext:
     admission_mode: str = "major"
     allowed_capabilities: frozenset[str] = field(default_factory=frozenset)
     model_identity_override: str = ""
+    snapshot_version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,9 @@ class ThreadBinding:
     revoked_at: datetime | None = None
     opaque_handle: str = field(default="", repr=False, compare=False)
     admission_mode: str = "major"
+    # Bound by the Gateway to the authoritative Snapshot injected into this turn.
+    # It is intentionally not derived from model-provided tool arguments.
+    snapshot_version: int | None = None
 
     @classmethod
     def create(
@@ -57,6 +61,7 @@ class ThreadBinding:
         user_id: str,
         allowed_capabilities: set[str] | frozenset[str],
         admission_mode: str = "major",
+        snapshot_version: int | None = None,
         expires_at: datetime | None = None,
     ) -> "ThreadBinding":
         return cls(
@@ -66,6 +71,7 @@ class ThreadBinding:
             user_id=user_id,
             allowed_capabilities=frozenset(allowed_capabilities),
             admission_mode=admission_mode,
+            snapshot_version=snapshot_version,
             expires_at=expires_at,
             opaque_handle=generate_opaque_handle(),
         )
@@ -78,6 +84,14 @@ class ThreadBinding:
             object.__setattr__(self, "admission_mode", canonical_admission_mode(self.admission_mode))
         except AdmissionFactError as exc:
             raise ValueError(exc.code) from exc
+        if self.snapshot_version is not None:
+            try:
+                snapshot_version = int(self.snapshot_version)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("invalid_snapshot_version") from exc
+            if isinstance(self.snapshot_version, bool) or snapshot_version < 0:
+                raise ValueError("invalid_snapshot_version")
+            object.__setattr__(self, "snapshot_version", snapshot_version)
 
     def _validate_active(self) -> None:
         now = datetime.now(timezone.utc)
@@ -101,6 +115,7 @@ class ThreadBinding:
             admission_mode=self.admission_mode,
             allowed_capabilities=frozenset(self.allowed_capabilities),
             model_identity_override=model_identity_override,
+            snapshot_version=self.snapshot_version,
         )
 
     def resolve_tool_context(self, model_payload: dict[str, Any] | None = None) -> ToolContext:
