@@ -58,6 +58,14 @@ reviewed_at: 2026-09-10
 1. 6 次运行里 `mcpCalls` 均为 0、`toolCalls` 计数为 0/4/8 不等,`ch-1` 的 message 提到「MCP 调用需要审批,当前审批策略为 never」。这说明 codex 的 smoke 脚本把 MCP 工具调用拦下了,只验证了"结构化输出 + 流式完成",没有验证"工具调用 + Evidence 生成"的全链路。这**不是 T003 的缺陷**(它的验收目标就是流与 schema),但提醒 P1 的真实验证需要在审批策略放行 MCP 的环境下重跑。
 2. `app/tools/volunteer_tool.py` 在 `app/` 下无任何 import 引用(grep 全量),疑似悬空。仅记录,不在此任务范围内处理。
 
+> **勘误(2026-09-10,设计会话追加)。** 上面第 1 条的定性有两处错,且远不止"次要事项"。
+>
+> - **`mcpCalls` 恒为 `[]` 与工具是否执行无关。** 实测:codex 不把 `ZHIYUAN_SEMANTIC_MCP_TRACE` 环境变量传给 MCP 子进程,夹具 `record()` 每次早退,这个仪表从来没有过读数。拿它当证据是我的错(见 README 规则 4)。
+> - **审批拦截确有其事,但根因不在审批策略。** codex `mcp_tool_call.rs:2256` 的只读豁免要求工具在 `annotations` 里声明 `readOnlyHint: true`;`semantic_readonly_server.py` 的 `tools/list` 没声明,于是 `read_only_hint` 取默认 `false` → `destructive_hint.unwrap_or(true)` 为真 → 需审批 → `never` 拒绝。补上 `annotations` 后工具立即正常执行,`approval_policy` 不必改动。
+> - **T003 的验收条件(`status=completed` ×6)本身选错了**,它量不出场景是否跑通。同批运行的语义评估实际 4/6 失败。这是我写任务书的错,不影响 T003 改动本身的正确性(schema 归一化经独立复核成立,判定维持 `ACCEPTED`)。
+>
+> 完整实测与后续动作见 T005。
+
 ## 五、遗留与后续
 
 - **P1 权威证据台账**:设计会话的下一个设计交付物,依赖本任务解除的 P0。
