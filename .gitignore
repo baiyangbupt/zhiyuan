@@ -39,6 +39,7 @@ zhiyuan-rank/logs/
 # Environment files with secrets
 .codex-semantic-home/
 .codex-semantic-home/config-deepseek.toml
+.codex-capture-home/
 *.env.local
 zhiyuan-web/.env.standardtest
 zhiyuan-agent/.env
