@@ -9,6 +9,8 @@
 | [T002](T002-drop-resolver/) | 清理悬空 resolver 模块并修正过时文档 | 修订计划 P4 | deepseek | 2026-09-10 | 未按格式提交 | `ACCEPTED_WITH_FOLLOWUP` | T004 |
 | [T003](T003-schema-compat/) | 使 `TURN_OUTPUT_SCHEMA` 通过 DeepSeek 校验并跑通复杂回合 | T001 结论 | deepseek | 2026-09-10 | `DONE` | `ACCEPTED` | T005 |
 | [T005](T005-mcp-execution/) | 让只读 MCP 工具真正执行，并修好语义冒烟的观测仪表 | T003 REVIEW 勘误 | deepseek | 2026-09-10 | — | — | — |
+| [T006](T006-registry-unblock/) | 把本地基础设施 compose 指向可达镜像源，解除 P2 前置 | 修订计划 P2 | 未派发 | — | — | — | — |
+| [T007](T007-agent-doc-accuracy/) | 修正 `zhiyuan-agent/CLAUDE.md` 的 Tools 一节 | T003 REVIEW 勘误 2 | 未派发 | — | — | — | — |
 
 ## 已闭环的待办
 

@@ -58,6 +58,8 @@ reviewed_at: 2026-09-10
 1. 6 次运行里 `mcpCalls` 均为 0、`toolCalls` 计数为 0/4/8 不等,`ch-1` 的 message 提到「MCP 调用需要审批,当前审批策略为 never」。这说明 codex 的 smoke 脚本把 MCP 工具调用拦下了,只验证了"结构化输出 + 流式完成",没有验证"工具调用 + Evidence 生成"的全链路。这**不是 T003 的缺陷**(它的验收目标就是流与 schema),但提醒 P1 的真实验证需要在审批策略放行 MCP 的环境下重跑。
 2. `app/tools/volunteer_tool.py` 在 `app/` 下无任何 import 引用(grep 全量),疑似悬空。仅记录,不在此任务范围内处理。
 
+> **勘误 2(2026-09-10)。** 上面第 2 条是错的:`volunteer_tool.py` **在 git 历史里从未存在过**,磁盘上也没有。它只存在于 `zhiyuan-agent/CLAUDE.md:87` 的文档描述里。我当时读了 CLAUDE.md、grep 不到 import、就断言"疑似悬空",没有先确认文件存在——正是 README 第六节自检表第一条要防的错。真实问题是文档陈旧:CLAUDE.md 的 Tools 一节列了 4 个文件(其中 1 个不存在),而 `app/tools/` 实际有 20 个。转 T007。
+
 > **勘误(2026-09-10,设计会话追加)。** 上面第 1 条的定性有两处错,且远不止"次要事项"。
 >
 > - **`mcpCalls` 恒为 `[]` 与工具是否执行无关。** 实测:codex 不把 `ZHIYUAN_SEMANTIC_MCP_TRACE` 环境变量传给 MCP 子进程,夹具 `record()` 每次早退,这个仪表从来没有过读数。拿它当证据是我的错(见 README 规则 4)。
