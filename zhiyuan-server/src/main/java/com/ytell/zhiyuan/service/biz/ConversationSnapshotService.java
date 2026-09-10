@@ -134,12 +134,36 @@ public class ConversationSnapshotService {
             return;
         }
         Map<String, Object> proposal = new LinkedHashMap<String, Object>();
+        // Keep the Gateway contract flat and explicit.  Consumers should not
+        // need to inspect the serialized pending payload to find the identity,
+        // revision, source version, or whether confirmation is required.
+        proposal.put("proposalRef", pending.getPendingId());
         proposal.put("pendingId", pending.getPendingId());
         proposal.put("revision", pending.getRevision());
         proposal.put("kind", pending.getKind());
         proposal.put("actionFamily", pending.getActionFamily());
-        proposal.put("data", pending.getDataValue());
+        proposal.put("status", pending.getStatus());
+        proposal.put("requiresConfirmation", "active".equals(pending.getStatus()));
+        Map<String, Object> dataValue = pending.getDataValue() == null
+                ? new LinkedHashMap<String, Object>() : pending.getDataValue();
+        Object sourceVersion = firstPresent(
+                dataValue.get("sourceVersion"),
+                dataValue.get("sourceBackendVersion"),
+                dataValue.get("planningVersion"));
+        if (sourceVersion != null) {
+            proposal.put("sourceVersion", sourceVersion);
+        }
+        proposal.put("data", dataValue);
         snapshot.setActiveProposal(proposal);
+    }
+
+    private Object firstPresent(Object... values) {
+        for (Object value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private void fillCapabilities(List<String> capabilities, String skill) {

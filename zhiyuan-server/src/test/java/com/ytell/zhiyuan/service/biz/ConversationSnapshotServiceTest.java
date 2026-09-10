@@ -81,8 +81,14 @@ public class ConversationSnapshotServiceTest {
         doReturn(workspace).when(planningStateService).getPlanningWorkspaceState(eq(7L), eq(101L));
         PendingConfirmationRes pending = new PendingConfirmationRes();
         pending.setPendingId("pending-1");
+        pending.setRevision(3L);
+        pending.setKind("plan_mutation");
+        pending.setActionFamily("apply_plan_change_proposal");
         pending.setStatus("active");
-        pending.setDataValue(java.util.Collections.<String, Object>singletonMap("kind", "plan"));
+        pending.setDataValue(new java.util.LinkedHashMap<String, Object>() {{
+            put("kind", "plan");
+            put("sourceBackendVersion", 42);
+        }});
         doReturn(pending).when(pendingConfirmationBizService).getCurrent(7L, 101L);
 
         ConversationTurnSnapshotDTO snapshot = service.getTurnSnapshot(7L, 101L, "profile-discovery");
@@ -90,6 +96,11 @@ public class ConversationSnapshotServiceTest {
         assertEquals(0, snapshot.getSnapshotVersion());
         assertTrue(snapshot.getMissingFacts().containsAll(Arrays.asList("province", "score", "rank")));
         assertEquals("pending-1", snapshot.getActiveProposal().get("pendingId"));
+        assertEquals("pending-1", snapshot.getActiveProposal().get("proposalRef"));
+        assertEquals(3L, snapshot.getActiveProposal().get("revision"));
+        assertEquals(42, snapshot.getActiveProposal().get("sourceVersion"));
+        assertEquals(true, snapshot.getActiveProposal().get("requiresConfirmation"));
+        assertEquals("apply_plan_change_proposal", snapshot.getActiveProposal().get("actionFamily"));
         assertTrue(snapshot.getActiveProposal().containsKey("data"));
         assertTrue(snapshot.getConfirmedConstraints().containsKey("staleFlags"));
     }
