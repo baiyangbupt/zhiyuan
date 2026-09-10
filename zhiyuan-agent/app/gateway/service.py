@@ -222,6 +222,58 @@ TURN_OUTPUT_SCHEMA["properties"]["proposalRequest"] = {
 }
 
 
+def _normalize_nullable_for_upstream(schema: dict[str, Any]) -> dict[str, Any]:
+    """把 ``anyOf: [X, {"type": "null"}]`` 改写成 DeepSeek ``/responses`` 接受的等价写法。
+
+    上游实测约束（T003 步骤 1 探测表）：
+    1. ``anyOf`` 分支里出现 ``$ref`` 时该节点必须带 ``type``，而带 ``type: "object"`` 的节点必须有
+       非空 ``properties``；
+    2. ``type`` 数组只接受 ``string`` / ``number`` / ``integer`` / ``boolean`` / ``null``，不接受
+       ``object`` / ``array``。
+
+    于是三类可空节点分别改写为：标量 → 类型数组；``$ref`` → ``$def`` 自身声明
+    ``["object", "null"]`` 后用裸 ``$ref``；内联对象 → 把对象自身的键提升到同层，``anyOf`` 原样保留。
+
+    只改表达形式：可空性、``enum`` / ``minimum`` / ``exclusiveMinimum`` 等约束一律保留；
+    ``required`` 覆盖全部 ``properties`` 的性质由 ``_strict_model_schema()`` 保证，此处不触碰。
+    """
+    definitions = schema.get("$defs", {})
+
+    def rewrite(node: Any) -> Any:
+        if isinstance(node, dict):
+            for key, value in list(node.items()):
+                node[key] = rewrite(value)
+            any_of = node.get("anyOf")
+            if not isinstance(any_of, list) or len(any_of) != 2:
+                return node
+            branches = [item for item in any_of if item != {"type": "null"}]
+            if len(branches) != 1 or not isinstance(branches[0], dict):
+                return node
+            branch = branches[0]
+            if "$ref" in branch:
+                definition = definitions.get(str(branch["$ref"]).rsplit("/", 1)[-1])
+                if definition is not None:
+                    definition["type"] = ["object", "null"]
+                node.pop("anyOf")
+                node.update(branch)
+            elif branch.get("type") == "object":
+                node.update({**branch, "anyOf": any_of})
+            elif isinstance(branch.get("type"), str):
+                node.pop("anyOf")
+                node.update({**branch, "type": [branch["type"], "null"]})
+            return node
+        if isinstance(node, list):
+            for index, value in enumerate(node):
+                node[index] = rewrite(value)
+        return node
+
+    rewrite(schema)
+    return schema
+
+
+_normalize_nullable_for_upstream(TURN_OUTPUT_SCHEMA)
+
+
 def _maybe_await(value: Any) -> Any:
     return value if inspect.isawaitable(value) else _Immediate(value)
 
