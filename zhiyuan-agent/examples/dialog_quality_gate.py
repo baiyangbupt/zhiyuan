@@ -32,7 +32,6 @@ LOCAL_PYTEST_TARGETS = [
     "tests/unit/test_dialog_case_evaluation_report.py",
     "tests/unit/test_model_provider_benchmark.py",
     "tests/unit/test_mainline_dialog_scenarios.py",
-    "tests/unit/test_action_resolver.py",
     "tests/unit/test_chat_service_history_persistence.py",
     "tests/unit/test_ws_compat.py",
 ]

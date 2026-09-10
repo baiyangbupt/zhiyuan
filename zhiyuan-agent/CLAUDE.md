@@ -10,7 +10,7 @@ AI 高考志愿填报后端服务（gaotu-zy-agent-v3）。学生通过 WebSocke
 
 - Python >= 3.10
 - Pydantic AI (`pydantic-ai-slim[openai,anthropic]`) — Agent 框架
-- `pydantic-ai-skills` — 技能按需加载
+- `pydantic-ai-skills` — 技能按需加载（当前仅 `examples/demo_agent.py` 使用，生产 `ZhiyuanAgent` 未启用 `skill_dirs`，详见「Skills 机制」）
 - `pydantic-settings` — 环境变量配置
 - FastAPI + Uvicorn — WebSocket 服务
 - SQLite — 会话历史持久化
@@ -62,9 +62,8 @@ bash run-docker.sh
    - `on_node()` / `on_complete()` 钩子供子类覆写（日志、推送等）
    - `message_history` 支持多轮对话
    - `run_with_message_deltas()` 返回 (output, new_messages, all_messages) 三元组
-4. **ChatAgent** (`app/agent/chat_agent.py`) — 继承 BaseAgent，高考志愿填报聊天 Agent，注册意向提取工具和技能目录
-5. **ChatService** (`app/service.py`) — 会话管理 + Agent 编排层，负责加载/保存历史、获取成绩详情、构建 RequestContext
-6. **FastAPI Server** (`app/server.py`) — WebSocket 端点 `/ws/chat`，处理消息收发和错误
+4. **ChatService** (`app/service.py`) — 会话管理 + Agent 编排层，负责加载/保存历史、获取成绩详情、构建 RequestContext
+5. **FastAPI Server** (`app/server.py`) — WebSocket 端点 `/ws/chat`，处理消息收发和错误
 
 ### 请求上下文
 
@@ -81,7 +80,7 @@ bash run-docker.sh
 
 ### Tools（意向提取工具）
 
-位于 `app/tools/`，注册到 ChatAgent：
+位于 `app/tools/`：
 - `school_intent_tool.py` — 提取院校意向
 - `major_intent_tool.py` — 提取专业意向 + 负面专业意向
 - `city_intent_tool.py` — 提取城市意向 + 负面城市意向
@@ -95,7 +94,9 @@ bash run-docker.sh
 
 ### Skills 机制
 
-技能定义在 `skills/` 目录下，当前有 `skills/intake_chat/SKILL.md`。Agent 运行时通过 `pydantic-ai-skills` 的 `SkillsToolset` 按需发现和加载技能。
+技能定义在 `skills/` 目录下，共 7 个 `skills/<skill-name>/SKILL.md`（`intake_chat`、`intent_detect`、`explore_chat`、`plan_chat`、`plan_query`、`score_query`、`career_path_chat`）。
+
+注意：这 7 个技能目前**仅由 `examples/demo_agent.py` 加载**（该脚本传 `skill_dirs=["./skills"]`），生产 `ZhiyuanAgent` 未传 `skill_dirs`，因此 `pydantic-ai-skills` 的 `SkillsToolset` 在生产运行时不生效。`skills/codex/` 是给外部 codex 二进制用的独立格式（子目录各自带 `SKILL.md`，另有 `plugin.json`、`base_instructions.md` 等），不走 `SkillsToolset`。
 
 ### 工具模块
 
