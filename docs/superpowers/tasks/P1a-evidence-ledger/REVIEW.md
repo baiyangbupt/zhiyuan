@@ -13,7 +13,7 @@ reviewed_at: 2026-09-11
 
 实现方自报 `DONE_WITH_CONCERNS` 并把最需要确认的一条写在结论第一段——判断准确，那条确实是本片最大的风险。
 
-跟进项四条，见第四节。其中第 1、2 条必须在 P1b 派发前定，第 3、4 条排进 P1b。
+跟进项四条，见第四节。其中第 1、3 条**已于 2026-09-11 实测结案**（`plans/2026-09-11-P1a上游版本契约实测与dataVersion改设计.md`）：上游根本不返回 `dataVersion`，版本改由 Java 按 `data` 内容摘要自算，版本表的键随之定死为 `(source_system, params_digest)`。第 2、4 条排进 P1b。
 
 ## 二、自行重跑的验收（不采信报告输出）
 
@@ -73,6 +73,8 @@ BUILD SUCCESS
 
 ### 1. `dataVersion` 的上游契约是假设的，不是事实（P1b 派发前必须定）
 
+> **已结案（2026-09-11）：实测为假，改设计。** 见 `plans/2026-09-11-P1a上游版本契约实测与dataVersion改设计.md`。真实上游成功/失败两条路径的信封里都没有 `dataVersion`。**这条跟进项的判断是对的，而且是最坏的那一种：不是"可能不对"，是"确实不存在"。** 改为由 Java 对 `data` 子对象算 SHA-256 内容摘要。下面的原文保留，因为它记录的是"当时凭什么把这条列为头号风险"，那个推理过程本身成立。
+
 实现方在结论第一段就点明了，判断准确。核查确认：`ResponseDTO`、`BatchDataResponseDTO`、`QueryProgramByLimitNumRes`、`QuerySchoolMajorScoreLineRes` 四个类原本都没有版本字段，仓库里也没有真实上游报文留存。本次把版本定义为响应包上的 `dataVersion` 字段，验收用的是会返回该字段的替身。
 
 风险是明确的：**如果真实上游不返回 `dataVersion`，那么按当前 fail-closed 逻辑，生产上一条证据都签不出来**，P1b/P1c 接上去之后所有 `fact` 输出会整轮 fail closed。
@@ -93,6 +95,8 @@ GaotuService.java:603/617                     → 2 参重载 → EvidenceScope.
 但要把这条结论的分量说清楚：P1a 建成的是一台**装好但没接进产线**的机器。设计文档第七章把 P1a 定义为"建表 + 摘要 + 签发接入 + verify + 四态"，字面上都做到了；"签发接入"是否包含把会话上下文打通到 `GaotuService`，文档没写清楚——这是我的切片定义不够锐利。判定不因此降级，但 **P1b 必须把会话上下文接到生产取数路径**，否则 P1c 的验收（"模型任何 `fact` 输出的 evidenceRefs 都能回解到 Java 权威记录"）在生产上恒为不可能。
 
 ### 3. `evidence_source_version` 按 `source_system` 单行，跨参数会互相打脸（排进 P1b）
+
+> **已结案（2026-09-11）：键改成 `(source_system, params_digest)`，且不再是"若……则……"的条件项，而是必做。** 换成内容摘要之后，"版本随参数变化"不是一种可能性而是定义——不同参数当然是不同内容。见 `plans/2026-09-11-P1a上游版本契约实测与dataVersion改设计.md` 第六节。
 
 `upsert(sourceSystem, dataVersion, observedAt)` 与 `currentDataVersion(sourceSystem)` 都只按来源系统取键，一个来源全局一行。
 
