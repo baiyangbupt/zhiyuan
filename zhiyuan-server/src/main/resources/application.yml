@@ -11,6 +11,11 @@ spring:
     user: ${spring.datasource.dynamic.datasource.master.username}
     password: ${spring.datasource.dynamic.datasource.master.password}
 
+evidence:
+  ledger:
+    # 证据保留窗口（天）。志愿填报是一个季度内完成的业务，30 天覆盖单次咨询周期。
+    ttl-days: 30
+
 planning:
   pending-command:
     retention:

@@ -2,6 +2,7 @@ package com.ytell.zhiyuan.web.controller.inner;
 
 import com.alibaba.fastjson.JSONObject;
 import com.ytell.zhiyuan.manager.gaotu.GaotuClient;
+import com.ytell.zhiyuan.model.dto.evidence.EvidenceScope;
 import com.ytell.zhiyuan.model.dto.gaotu.*;
 import com.ytell.zhiyuan.model.dto.gaotu.req.*;
 import com.ytell.zhiyuan.model.dto.gaotu.res.QueryProgramByLimitNumRes;
@@ -40,8 +41,12 @@ public class GaotuClientDebugController {
     public ResponseDTO<BatchDataResponseDTO> getBatchList(
             @ApiParam("地区ID") @RequestParam Long areaId,
             @ApiParam("准备类型") @RequestParam String prepareType,
-            @ApiParam("科目") @RequestParam String subject) {
-        return gaotuClient.getBatchList(areaId, prepareType, subject);
+            @ApiParam("科目") @RequestParam String subject,
+            @ApiParam("租户ID，证据签发范围") @RequestParam(required = false) Long tenantId,
+            @ApiParam("会话ID，证据签发范围") @RequestParam(required = false) Long chatSessionId,
+            @ApiParam("线程ID，证据签发范围") @RequestParam(required = false) String threadId) {
+        return gaotuClient.getBatchList(areaId, prepareType, subject,
+                EvidenceScope.of(tenantId, chatSessionId, threadId));
     }
 
     @PostMapping("/report/info")
@@ -95,13 +100,21 @@ public class GaotuClientDebugController {
 
     @PostMapping("/program/query-by-limit-num")
     @ApiOperation("按分数查询院校专业录取方案")
-    public ResponseDTO<java.util.List<QueryProgramByLimitNumRes>> queryProgramByLimitNum(@RequestBody QueryProgramLimitNumReq req) {
-        return gaotuClient.queryProgramByLimitNum(req);
+    public ResponseDTO<java.util.List<QueryProgramByLimitNumRes>> queryProgramByLimitNum(
+            @RequestBody QueryProgramLimitNumReq req,
+            @ApiParam("租户ID，证据签发范围") @RequestParam(required = false) Long tenantId,
+            @ApiParam("会话ID，证据签发范围") @RequestParam(required = false) Long chatSessionId,
+            @ApiParam("线程ID，证据签发范围") @RequestParam(required = false) String threadId) {
+        return gaotuClient.queryProgramByLimitNum(req, EvidenceScope.of(tenantId, chatSessionId, threadId));
     }
 
     @PostMapping("/score-line/query")
     @ApiOperation("查询院校专业历年录取分数线")
-    public ResponseDTO<java.util.List<QuerySchoolMajorScoreLineRes>> querySchoolMajorScoreLine(@RequestBody QuerySchoolMajorScoreLineReq req) {
-        return gaotuClient.querySchoolMajorScoreLine(req);
+    public ResponseDTO<java.util.List<QuerySchoolMajorScoreLineRes>> querySchoolMajorScoreLine(
+            @RequestBody QuerySchoolMajorScoreLineReq req,
+            @ApiParam("租户ID，证据签发范围") @RequestParam(required = false) Long tenantId,
+            @ApiParam("会话ID，证据签发范围") @RequestParam(required = false) Long chatSessionId,
+            @ApiParam("线程ID，证据签发范围") @RequestParam(required = false) String threadId) {
+        return gaotuClient.querySchoolMajorScoreLine(req, EvidenceScope.of(tenantId, chatSessionId, threadId));
     }
 }

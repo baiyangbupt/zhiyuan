@@ -1,5 +1,6 @@
 package com.ytell.zhiyuan.manager.gaotu;
 
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.alibaba.fastjson.TypeReference;
 import com.google.common.base.Strings;
@@ -7,14 +8,19 @@ import com.google.common.collect.Maps;
 import com.ytell.zhiyuan.common.config.GaotuProperties;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.common.util.JsonHttpUtil;
+import com.ytell.zhiyuan.model.dto.evidence.EvidenceScope;
+import com.ytell.zhiyuan.model.dto.evidence.EvidenceSignRequest;
 import com.ytell.zhiyuan.model.dto.gaotu.*;
 import com.ytell.zhiyuan.model.dto.gaotu.req.*;
 import com.ytell.zhiyuan.model.dto.gaotu.res.*;
+import com.ytell.zhiyuan.model.dto.planning.ConversationEvidenceDTO;
+import com.ytell.zhiyuan.service.biz.EvidenceLedgerService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -52,6 +58,9 @@ public class GaotuClient {
     private static final String USER_RIGHTS_BY_USER_ID= "/hl-wish/ci/ci_feign/member/noToken/getUserRightsByMemberId";
     @Autowired
     private GaotuProperties gaotuProperties;
+
+    @Autowired
+    private EvidenceLedgerService evidenceLedgerService;
 
     public Map<String, String> getHeader() {
         Map<String, String> headers = Maps.newHashMap();
@@ -119,14 +128,27 @@ public class GaotuClient {
      * @return
      */
     public ResponseDTO<BatchDataResponseDTO> getBatchList(Long areaId, String prepareType, String subject) {
+        return getBatchList(areaId, prepareType, subject, EvidenceScope.none());
+    }
+
+    /**
+     * 获取批次线数据，并按权威证据台账签发证据。
+     *
+     * <p>签发与取数在同一次读取内完成。不要在各个 BizService 里分别接——那会漏，
+     * 而且漏掉的那个正好就是不带证据的路径。</p>
+     */
+    public ResponseDTO<BatchDataResponseDTO> getBatchList(Long areaId, String prepareType, String subject,
+                                                          EvidenceScope scope) {
         String url = gaotuProperties.getZhiyuanUrl() + BATCH_LIST_PATH;
 
         Map<String, Object> params = Maps.newHashMap();
         params.put("areaId", areaId);
         params.put("prepareType", prepareType);
         params.put("subject", subject);
-        return JsonHttpUtil.get(url, params, getHeader(), new TypeReference<ResponseDTO<BatchDataResponseDTO>>() {
+        ResponseDTO<BatchDataResponseDTO> response = JsonHttpUtil.get(url, params, getHeader(), new TypeReference<ResponseDTO<BatchDataResponseDTO>>() {
         });
+        attachEvidence(response, EvidenceLedgerService.SOURCE_GAOTU_BATCH_LIST, params, scope);
+        return response;
     }
 
     /**
@@ -264,9 +286,21 @@ public class GaotuClient {
      * @return
      */
     public ResponseDTO<List<QueryProgramByLimitNumRes>> queryProgramByLimitNum(QueryProgramLimitNumReq req) {
+        return queryProgramByLimitNum(req, EvidenceScope.none());
+    }
+
+    /**
+     * 查询院校专业方案，并按权威证据台账签发证据。
+     *
+     * <p>签发与取数在同一次读取内完成，见 {@link #getBatchList(Long, String, String, EvidenceScope)}。</p>
+     */
+    public ResponseDTO<List<QueryProgramByLimitNumRes>> queryProgramByLimitNum(QueryProgramLimitNumReq req,
+                                                                              EvidenceScope scope) {
         String url = gaotuProperties.getZhiyuanUrl() + QUERY_PROGRAM_BY_LIMIT_NUM;
-        return JsonHttpUtil.post(url, req, getHeader(), new TypeReference<ResponseDTO<List<QueryProgramByLimitNumRes>>>() {
+        ResponseDTO<List<QueryProgramByLimitNumRes>> response = JsonHttpUtil.post(url, req, getHeader(), new TypeReference<ResponseDTO<List<QueryProgramByLimitNumRes>>>() {
         });
+        attachEvidence(response, EvidenceLedgerService.SOURCE_GAOTU_PROGRAM_BY_LIMIT_NUM, req, scope);
+        return response;
     }
 
     /**
@@ -275,9 +309,51 @@ public class GaotuClient {
      * 输出: 对应分数线(如果包含院校专业给出对应每个专业的分数线)
      */
     public ResponseDTO<List<QuerySchoolMajorScoreLineRes>> querySchoolMajorScoreLine(QuerySchoolMajorScoreLineReq req) {
+        return querySchoolMajorScoreLine(req, EvidenceScope.none());
+    }
+
+    /**
+     * 查询院校专业录取分数，并按权威证据台账签发证据。
+     *
+     * <p>签发与取数在同一次读取内完成，见 {@link #getBatchList(Long, String, String, EvidenceScope)}。</p>
+     */
+    public ResponseDTO<List<QuerySchoolMajorScoreLineRes>> querySchoolMajorScoreLine(QuerySchoolMajorScoreLineReq req,
+                                                                                    EvidenceScope scope) {
         String url = gaotuProperties.getZhiyuanUrl() + QUERY_SCHOOL_MAJOR_SCORE_LINE;
-        return JsonHttpUtil.post(url, req, getHeader(), new TypeReference<ResponseDTO<List<QuerySchoolMajorScoreLineRes>>>() {
+        ResponseDTO<List<QuerySchoolMajorScoreLineRes>> response = JsonHttpUtil.post(url, req, getHeader(), new TypeReference<ResponseDTO<List<QuerySchoolMajorScoreLineRes>>>() {
         });
+        attachEvidence(response, EvidenceLedgerService.SOURCE_GAOTU_SCHOOL_MAJOR_SCORE_LINE, req, scope);
+        return response;
+    }
+
+    /**
+     * 把查询结果交给台账签发。上游版本、归属范围任一缺失则不签发，
+     * 调用方拿不到 evidence 字段，必须按"证据不可用"降级。
+     */
+    private void attachEvidence(ResponseDTO<?> response, String sourceSystem, Object request, EvidenceScope scope) {
+        if (response == null) {
+            return;
+        }
+        ConversationEvidenceDTO evidence = evidenceLedgerService.sign(EvidenceSignRequest.query(
+                sourceSystem, response.getDataVersion(), toParams(request), scope));
+        if (evidence != null) {
+            response.setEvidence(Collections.singletonList(evidence));
+        }
+    }
+
+    private static Map<String, Object> toParams(Object request) {
+        if (request == null) {
+            return Collections.emptyMap();
+        }
+        if (request instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> params = (Map<String, Object>) request;
+            return params;
+        }
+        Map<String, Object> params = JSON.parseObject(JSON.toJSONString(request),
+                new TypeReference<Map<String, Object>>() {
+                });
+        return params == null ? Collections.<String, Object>emptyMap() : params;
     }
 
     /**

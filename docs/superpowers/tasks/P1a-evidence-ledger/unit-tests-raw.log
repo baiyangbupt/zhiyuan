@@ -1,0 +1,89 @@
+[INFO] Scanning for projects...
+[WARNING] 
+[WARNING] Some problems were encountered while building the effective model for com.ytell:zhiyuan-server:jar:3.0.0
+[WARNING] 'dependencyManagement.dependencies.dependency.exclusions.exclusion.artifactId' for org.quartz-scheduler:quartz:jar with value '*' does not match a valid id pattern. @ org.springframework.boot:spring-boot-dependencies:2.3.8.RELEASE, /root/.m2/repository/org/springframework/boot/spring-boot-dependencies/2.3.8.RELEASE/spring-boot-dependencies-2.3.8.RELEASE.pom, line 2014, column 25
+[WARNING] 
+[WARNING] It is highly recommended to fix these problems because they threaten the stability of your build.
+[WARNING] 
+[WARNING] For this reason, future Maven versions might no longer support building such malformed projects.
+[WARNING] 
+[INFO]                                                                         
+[INFO] ------------------------------------------------------------------------
+[INFO] Building zhiyuan-server 3.0.0
+[INFO] ------------------------------------------------------------------------
+[INFO] 
+[INFO] --- maven-resources-plugin:3.1.0:resources (default-resources) @ zhiyuan-server ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] Copying 2 resources
+[INFO] Copying 23 resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.8.1:compile (default-compile) @ zhiyuan-server ---
+[INFO] Nothing to compile - all classes are up to date
+[INFO] 
+[INFO] --- maven-resources-plugin:3.1.0:testResources (default-testResources) @ zhiyuan-server ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] Copying 2 resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.8.1:testCompile (default-testCompile) @ zhiyuan-server ---
+[INFO] Nothing to compile - all classes are up to date
+[INFO] 
+[INFO] --- maven-surefire-plugin:2.22.2:test (default-test) @ zhiyuan-server ---
+[INFO] 
+[INFO] -------------------------------------------------------
+[INFO]  T E S T S
+[INFO] -------------------------------------------------------
+[INFO] Running com.ytell.zhiyuan.service.biz.EvidenceLedgerServiceTest
+07:12:19.336 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@2002348] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 1261044180]
+07:12:19.338 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@2002348] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 589363823]
+07:12:19.338 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@2002348] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.353 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@52de51b6] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 415565467]
+07:12:19.353 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@52de51b6] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 973936431]
+07:12:19.353 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@52de51b6] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.355 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@68ad99fe] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 1214133948]
+07:12:19.355 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@68ad99fe] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 2015301874]
+07:12:19.355 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@68ad99fe] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.390 [main] INFO com.ytell.zhiyuan.service.biz.EvidenceLedgerService - 证据已签发, evidenceId=ev_01M26SFVD3SKZMA9C3W7DV2FNG, sourceSystem=gaotu.schoolMajorScoreLine, chatSessionId=42, paramsDigest=f6837cfbc12b6f98153337d550aa4f8d, dataVersion=2026-06-v17
+07:12:19.416 [main] INFO com.ytell.zhiyuan.service.biz.EvidenceLedgerService - 证据已签发, evidenceId=ev_01M26SFVER5ZJC5KR3HJ8PJBWD, sourceSystem=gaotu.schoolMajorScoreLine, chatSessionId=42, paramsDigest=f6837cfbc12b6f98153337d550aa4f8d, dataVersion=2026-06-v17
+07:12:19.418 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@5316e95f] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 1057307776]
+07:12:19.418 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@5316e95f] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 1819038759]
+07:12:19.418 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@5316e95f] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.419 [main] INFO com.ytell.zhiyuan.service.biz.EvidenceLedgerService - 证据已签发, evidenceId=ev_01M26SFVEVPKK50KRKDHCEXQQB, sourceSystem=gaotu.schoolMajorScoreLine, chatSessionId=42, paramsDigest=f6837cfbc12b6f98153337d550aa4f8d, dataVersion=2026-06-v17
+07:12:19.424 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@30f5a68a] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 505231702]
+07:12:19.424 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@30f5a68a] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 1328323494]
+07:12:19.424 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@30f5a68a] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.425 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@4e28bdd1] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 1408533352]
+07:12:19.425 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@4e28bdd1] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 617928649]
+07:12:19.426 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@4e28bdd1] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.427 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@73db4768] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 1907604549]
+07:12:19.427 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@73db4768] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 176955204]
+07:12:19.427 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@73db4768] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.428 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@150ab4ed] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 1011044643]
+07:12:19.429 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@150ab4ed] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 1358857082]
+07:12:19.429 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@150ab4ed] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.429 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@3a62c01e] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 2056234595]
+07:12:19.429 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@3a62c01e] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 1558395480]
+07:12:19.430 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@3a62c01e] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.431 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@78a287ed] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 1416415959]
+07:12:19.431 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@78a287ed] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 1398260359]
+07:12:19.431 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@78a287ed] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.432 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@1623134f] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 2052223881]
+07:12:19.432 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@1623134f] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 1213871206]
+07:12:19.432 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@1623134f] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+07:12:19.433 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceLedgerMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@25748410] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceLedgerMapper, hashCode: 725832346]
+07:12:19.433 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'evidenceSourceVersionMapper' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@25748410] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [Mock for EvidenceSourceVersionMapper, hashCode: 1113895488]
+07:12:19.433 [main] DEBUG org.springframework.test.util.ReflectionTestUtils - Setting field 'ttlDays' of type [null] on target object [com.ytell.zhiyuan.service.biz.EvidenceLedgerService@25748410] or target class [class com.ytell.zhiyuan.service.biz.EvidenceLedgerService] to value [30]
+[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.462 s - in com.ytell.zhiyuan.service.biz.EvidenceLedgerServiceTest
+[INFO] Running com.ytell.zhiyuan.common.util.EvidenceParamsDigestTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0 s - in com.ytell.zhiyuan.common.util.EvidenceParamsDigestTest
+[INFO] 
+[INFO] Results:
+[INFO] 
+[INFO] Tests run: 18, Failures: 0, Errors: 0, Skipped: 0
+[INFO] 
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time: 2.205s
+[INFO] Finished at: Fri Sep 11 07:12:19 CST 2026
+[INFO] Final Memory: 22M/425M
+[INFO] ------------------------------------------------------------------------

@@ -1,0 +1,97 @@
+
+==============================================================
+## 0. 启动上游替身与 zhiyuan-server
+==============================================================
+服务已就绪：http://127.0.0.1:18080
+上游替身：http://127.0.0.1:18811
+Flyway 版本记录（V14）：
+14	evidence ledger	1
+台账初始行数：
+0
+
+==============================================================
+## 1. 同一查询参数连续两次：两个不同 evidenceId、相同 paramsDigest
+==============================================================
+--- 第 1 次原始响应 ---
+{"code":0,"msg":"ok","data":[{"year":2025,"name":"甲大学","batch":"本科批","batchTitle":"本科批","enrollNum":"10","maxScore":"630","minScore":"612","averageScore":"620","minPos":"8000","maxPos":"12000","selectInfo":"物理类"}],"dataVersion":"2026-06-v17","evidence":[{"evidenceId":"ev_01M26SFEV2602PG44J0Q4S5H00","sourceLevel":"authoritative","sourceSystem":"gaotu.schoolMajorScoreLine","paramsDigest":"d7e9bea1ad3d3ca100a2b58f95dde4e4","dataVersion":"2026-06-v17","expiresAt":"2026-10-11T07:12:06.497+08:00","admissionMode":null,"admissionUnitId":null,"groupCode":null,"algorithmVersion":null,"stateVersion":null,"scope":{"tenantId":7,"chatSessionId":42,"threadId":"thread-1"},"observedAt":"2026-09-11T07:12:06.497+08:00","limitations":[]}]}
+--- 第 2 次原始响应 ---
+{"code":0,"msg":"ok","data":[{"year":2025,"name":"甲大学","batch":"本科批","batchTitle":"本科批","enrollNum":"10","maxScore":"630","minScore":"612","averageScore":"620","minPos":"8000","maxPos":"12000","selectInfo":"物理类"}],"dataVersion":"2026-06-v17","evidence":[{"evidenceId":"ev_01M26SFEYVTWH43GHFCKFM8WCQ","sourceLevel":"authoritative","sourceSystem":"gaotu.schoolMajorScoreLine","paramsDigest":"d7e9bea1ad3d3ca100a2b58f95dde4e4","dataVersion":"2026-06-v17","expiresAt":"2026-10-11T07:12:06.619+08:00","admissionMode":null,"admissionUnitId":null,"groupCode":null,"algorithmVersion":null,"stateVersion":null,"scope":{"tenantId":7,"chatSessionId":42,"threadId":"thread-1"},"observedAt":"2026-09-11T07:12:06.619+08:00","limitations":[]}]}
+--- 提取 ---
+第 1 次 evidenceId   = ev_01M26SFEV2602PG44J0Q4S5H00
+第 2 次 evidenceId   = ev_01M26SFEYVTWH43GHFCKFM8WCQ
+evidenceId 不同      = true
+第 1 次 paramsDigest = d7e9bea1ad3d3ca100a2b58f95dde4e4
+第 2 次 paramsDigest = d7e9bea1ad3d3ca100a2b58f95dde4e4
+paramsDigest 相同    = true
+--- 上游收到 2 次请求（替身计数）---
+{"dataVersion": "2026-06-v17", "calls": ["/hl-wish/ci/memberWhitelist/noToken/commonInfo", "/hl-wish/ci/ci_feign/volunteer/querySchoolMajorScoreLine", "/hl-wish/ci/ci_feign/volunteer/querySchoolMajorScoreLine"]}
+==============================================================
+## 2. 反向对照：改一个参数值（year 2025 → 2024），paramsDigest 必须变
+==============================================================
+{"code":0,"msg":"ok","data":[{"year":2025,"name":"甲大学","batch":"本科批","batchTitle":"本科批","enrollNum":"10","maxScore":"630","minScore":"612","averageScore":"620","minPos":"8000","maxPos":"12000","selectInfo":"物理类"}],"dataVersion":"2026-06-v17","evidence":[{"evidenceId":"ev_01M26SFF4CBGG9MQ1Q2JH6EEGM","sourceLevel":"authoritative","sourceSystem":"gaotu.schoolMajorScoreLine","paramsDigest":"47605e6c06e210ebe40adce1ae7069d3","dataVersion":"2026-06-v17","expiresAt":"2026-10-11T07:12:06.795+08:00","admissionMode":null,"admissionUnitId":null,"groupCode":null,"algorithmVersion":null,"stateVersion":null,"scope":{"tenantId":7,"chatSessionId":42,"threadId":"thread-1"},"observedAt":"2026-09-11T07:12:06.795+08:00","limitations":[]}]}
+year=2025 paramsDigest = d7e9bea1ad3d3ca100a2b58f95dde4e4
+year=2024 paramsDigest = 47605e6c06e210ebe40adce1ae7069d3
+paramsDigest 变化      = true
+
+==============================================================
+## 3. 台账内容（签发确实落库）
+==============================================================
+ev_01M26SFEV2602PG44J0Q4S5H00	7	42	thread-1	gaotu.schoolMajorScoreLine	d7e9bea1ad3d3ca100a2b58f95dde4e4	2026-06-v17	2026-09-11 07:12:06	2026-10-11 07:12:06
+ev_01M26SFEYVTWH43GHFCKFM8WCQ	7	42	thread-1	gaotu.schoolMajorScoreLine	d7e9bea1ad3d3ca100a2b58f95dde4e4	2026-06-v17	2026-09-11 07:12:07	2026-10-11 07:12:07
+ev_01M26SFF4CBGG9MQ1Q2JH6EEGM	7	42	thread-1	gaotu.schoolMajorScoreLine	47605e6c06e210ebe40adce1ae7069d3	2026-06-v17	2026-09-11 07:12:07	2026-10-11 07:12:07
+--- 来源版本登记 ---
+gaotu.schoolMajorScoreLine	2026-06-v17	2026-09-11 07:12:07
+
+==============================================================
+## 4. 上游 dataVersion 取不到 → 不签发（对照：能取到时必须签发）
+==============================================================
+--- 控制面把版本设为 null ---
+{"ok": true, "dataVersion": null}
+--- 原始响应 ---
+{"code":0,"msg":"ok","data":[{"year":2025,"name":"甲大学","batch":"本科批","batchTitle":"本科批","enrollNum":"10","maxScore":"630","minScore":"612","averageScore":"620","minPos":"8000","maxPos":"12000","selectInfo":"物理类"}],"dataVersion":null,"evidence":null}
+调用前台账行数 = 3
+调用后台账行数 = 3
+未产生新记录   = true
+--- 控制面恢复版本 ---
+{"ok": true, "dataVersion": "2026-06-v17"}
+恢复版本后再调用，台账行数 = 4
+对照：能取到版本时必须产生记录 = true
+新签发 evidenceId = ev_01M26SFFGMCWKQZAJ46PN27RE9
+
+==============================================================
+## 5. 四态核验：valid
+==============================================================
+--- verify(ev_01M26SFFGMCWKQZAJ46PN27RE9) ---
+{"data":{"results":{"ev_01M26SFFGMCWKQZAJ46PN27RE9":{"status":"valid","sourceSystem":"gaotu.schoolMajorScoreLine","paramsDigest":"d7e9bea1ad3d3ca100a2b58f95dde4e4","dataVersion":"2026-06-v17","observedAt":"2026-09-11T07:12:07+08:00","expiresAt":"2026-10-11T07:12:07+08:00"}}},"code":0,"msg":"success"}
+==============================================================
+## 6. 四态核验：stale（上游版本变了，旧记录当时正确、现已失效）
+==============================================================
+--- 控制面把上游版本推进到 2026-06-v18，再查一次 ---
+{"ok": true, "dataVersion": "2026-06-v18"}
+新记录 evidenceId = ev_01M26SFFMW0DYJ594KQ6BEQFDX
+--- 旧记录与新记录一起核验 ---
+{"data":{"results":{"ev_01M26SFFGMCWKQZAJ46PN27RE9":{"status":"stale","sourceSystem":"gaotu.schoolMajorScoreLine","paramsDigest":"d7e9bea1ad3d3ca100a2b58f95dde4e4","dataVersion":"2026-06-v17","observedAt":"2026-09-11T07:12:07+08:00","expiresAt":"2026-10-11T07:12:07+08:00"},"ev_01M26SFFMW0DYJ594KQ6BEQFDX":{"status":"valid","sourceSystem":"gaotu.schoolMajorScoreLine","paramsDigest":"d7e9bea1ad3d3ca100a2b58f95dde4e4","dataVersion":"2026-06-v18","observedAt":"2026-09-11T07:12:07+08:00","expiresAt":"2026-10-11T07:12:07+08:00"}}},"code":0,"msg":"success"}--- 对照：删掉 ev_01M26SFFGMCWKQZAJ46PN27RE9 之后必须返回 unknown ---
+{"data":{"results":{"ev_01M26SFFGMCWKQZAJ46PN27RE9":{"status":"unknown","sourceSystem":null,"paramsDigest":null,"dataVersion":null,"observedAt":null,"expiresAt":null},"ev_01M26SFFMW0DYJ594KQ6BEQFDX":{"status":"valid","sourceSystem":"gaotu.schoolMajorScoreLine","paramsDigest":"d7e9bea1ad3d3ca100a2b58f95dde4e4","dataVersion":"2026-06-v18","observedAt":"2026-09-11T07:12:07+08:00","expiresAt":"2026-10-11T07:12:07+08:00"}}},"code":0,"msg":"success"}
+==============================================================
+## 7. 四态核验：expired（把 expires_at 改到过去）
+==============================================================
+--- 核验 ev_01M26SFFMW0DYJ594KQ6BEQFDX ---
+{"data":{"results":{"ev_01M26SFFMW0DYJ594KQ6BEQFDX":{"status":"expired","sourceSystem":"gaotu.schoolMajorScoreLine","paramsDigest":"d7e9bea1ad3d3ca100a2b58f95dde4e4","dataVersion":"2026-06-v18","observedAt":"2026-09-11T07:12:07+08:00","expiresAt":"2026-09-09T23:12:07+08:00"}}},"code":0,"msg":"success"}
+==============================================================
+## 8. 范围校验：换一个会话核验同一个 ID，必须 unknown
+==============================================================
+{"data":{"results":{"ev_01M26SFFMW0DYJ594KQ6BEQFDX":{"status":"unknown","sourceSystem":null,"paramsDigest":null,"dataVersion":null,"observedAt":null,"expiresAt":null}}},"code":0,"msg":"success"}
+==============================================================
+## 9. data_version NOT NULL 约束的负向对照（拿不到版本就不签发，而不是写空值）
+==============================================================
+--- 绕过签发逻辑，直接插一条 data_version = NULL ---
+ERROR 1048 (23000) at line 1: Column 'data_version' cannot be null
+mysql 退出码 = 1
+--- 台账里是否落进了这条探针行 ---
+0
+
+==============================================================
+## 10. 收尾：停止服务
+==============================================================
+上游替身请求计数：
+{"dataVersion": "2026-06-v18", "calls": ["/hl-wish/ci/memberWhitelist/noToken/commonInfo", "/hl-wish/ci/ci_feign/volunteer/querySchoolMajorScoreLine", "/hl-wish/ci/ci_feign/volunteer/querySchoolMajorScoreLine", "/hl-wish/ci/ci_feign/volunteer/querySchoolMajorScoreLine", "/hl-wish/ci/ci_feign/volunteer/querySchoolMajorScoreLine", "/hl-wish/ci/ci_feign/volunteer/querySchoolMajorScoreLine", "/hl-wish/ci/ci_feign/volunteer/querySchoolMajorScoreLine"]}

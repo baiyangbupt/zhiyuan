@@ -41,6 +41,8 @@ public class WebConfig implements WebMvcConfigurer {
                 .excludePathPatterns(
                         "/**/admin/**",
                         "/**/inner/**",
+                        // 证据核验接口（与 /inner 同级：内部调用，靠网络隔离而非登录态保护）
+                        "/internal/evidence/**",
                         "/**/user/login/**",
                         "/**/wx/**",
                         "/**/debug/**",
