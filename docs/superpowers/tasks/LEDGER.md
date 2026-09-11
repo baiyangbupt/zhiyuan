@@ -11,8 +11,28 @@
 | [T005](T005-mcp-execution/) | 让只读 MCP 工具真正执行，并修好语义冒烟的观测仪表 | T003 REVIEW 勘误 | deepseek | 2026-09-10 | `DONE` | `ACCEPTED_WITH_FOLLOWUP` | T008 |
 | [T006](T006-registry-unblock/) | 把本地基础设施 compose 指向可达镜像源，解除 P2 前置 | 修订计划 P2 | deepseek | 2026-09-10（口头） | `DONE` | `ACCEPTED` | — |
 | [T007](T007-agent-doc-accuracy/) | 修正 `zhiyuan-agent/CLAUDE.md` 的 Tools 一节 | T003 REVIEW 勘误 2 | deepseek | 2026-09-10（口头） | `DONE` | `ACCEPTED` | P5 文档收尾 |
-| [P1a](P1a-evidence-ledger/) | Java 证据台账：建表、摘要、签发、四态核验 | 修订计划 P1 切片 | deepseek | 2026-09-10 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | P1b |
+| [P1a](P1a-evidence-ledger/) | Java 证据台账：建表、摘要、签发、四态核验 | 修订计划 P1 切片 | deepseek | 2026-09-10 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | P1b-1 / P1b-2 / P1b-3 |
+| [P1b-1](P1b-1-content-digest/) | 数据版本改为 `data` 内容摘要，版本表键改 `(source_system, params_digest)` | P1a REVIEW 跟进 1/3 + 上游实测 | 未派发 | — | — | — | — |
+| [P1b-2](P1b-2-evidence-passthrough/) | 打通证据到 Agent 的三处断链，最后删自铸分支 | P1a REVIEW 跟进 2（归因勘误后） | 未派发 | — | — | — | — |
+| [P1b-3](P1b-3-snapshot-evidence/) | `fillEvidence()` 落地 + snapshot 优先于进程内存 | 设计文档 4.5 / 5.2 | 未派发 | — | — | — | — |
 | [T008](T008-output-extraction/) | 让 harness 取得到散文包裹的 JSON，并让取不到变成显式失败 | T005 REVIEW 第四节 2 | 未派发 | — | — | — | — |
+
+## P1b 三片的并行关系（派发前先看这个）
+
+三份任务书都已写好，**可以同时派给三个实现方**。改动面基本不重叠：
+
+| 片 | 改动面 | 与其它片的重叠 |
+|---|---|---|
+| P1b-1 | Java：摘要工具类、`GaotuClient`、`ResponseDTO`、`EvidenceSourceVersionMapper`、V15 migration、验收脚本 | 与 P1b-2 **零重叠** |
+| P1b-2 | Python：`server.py`、`tools_readonly.py`、`internal_client.py` 及其测试 | 与另两片 **零重叠** |
+| P1b-3 | Java：`ConversationSnapshotService`；Python：`service.py:545` | 与 P1b-1 **同改 `EvidenceLedgerService.java`**（P1b-3 只增只读方法，P1b-1 改已有方法体），合并由设计会话处理 |
+
+两条**验收上的**顺序依赖，已写进各自的任务书，派发时不必额外交代：
+
+1. **P1b-2 的端到端验收在 P1b-1 合入前无法对真实上游做绿**——真实上游不返回 `dataVersion`，Java 签不出证据。所以 P1b-2 的验收明确允许用替身（它测的是 Python 管道，替身在这里是被测对象的输入，不是外部世界的证人），但**测试数据的形状必须从 Java DTO 取，不能从替身脚本抄**——替身返回 dict、真实返回数组，照替身抄就会原样复制断链 3。
+2. **P1b-3 的"造 `stale`"手法依赖 `evidence_source_version` 的表结构**，而 P1b-1 正在改它的主键。任务书已要求优先写成不依赖表结构的单测。
+
+另有一条**跨片的口径待裁决**（P1a 跟进项 4，三份任务书都写了"不要自行处理"）：`EvidenceLedgerService.verifyOne()` 只在双方 `threadId` 都非空时才校验线程，而 Agent 侧 `strict_scope=True` 要求 scope 必须存在，Java 比 Agent 松。影响面封在单会话内，不构成跨会话泄露。要么 Java 侧也要求必填，要么写明"线程级隔离由 Agent 侧负责"——**设计会话在 P1c 派发前定。**
 
 ## 本轮复核的两条结论（影响后续排期）
 
@@ -24,6 +44,8 @@
    **同日查清第一项的归因错了**（`plans/2026-09-11-P1a证据到不了Agent的三处断链.md`）：不签发的原因不在 `GaotuService.java:603/617`（那条路 Agent 不经过），而在 Python 侧三处互相独立的断链——scope 没上路、信封被 `_data()` 拆掉、`data` 是数组而归一化只吃 dict。**P1b 现在可派发，但改动面比原估计大，重心在 Python 侧。**
 
    这条留下两条方法论，已补进 `README.md` 第六节：**替身能证明代码按设计工作，不能证明设计与外部世界相符**；**桩的形状要从生产者那一侧取，不要从消费者的期望那一侧编**。P1a 在替身上九步验收全绿，验的却是设计会话编出来的契约；Agent 侧三层测试都有效，缝隙全在层与层之间。
+
+   **任务书已就位（2026-09-11）**：P1b 拆成 P1b-1 / P1b-2 / P1b-3 三份，见上表与并行关系一节。三份都可立即派发。
 
 ## 已闭环的待办
 
