@@ -78,13 +78,18 @@ bash run-docker.sh
 - **message_utils** (`app/data/message_utils.py`) — pydantic-ai 消息到 dict 的转换工具
 - **school_data / major_data / city_data** (`app/data/`) — 院校、专业、城市静态数据
 
-### Tools（意向提取工具）
+### Tools（`app/tools/`）
 
-位于 `app/tools/`：
-- `school_intent_tool.py` — 提取院校意向
-- `major_intent_tool.py` — 提取专业意向 + 负面专业意向
-- `city_intent_tool.py` — 提取城市意向 + 负面城市意向
-- `volunteer_tool.py` — 提交志愿方案
+`app/tools/` 下现有 20 个模块：
+
+- 意向抽取：`school_intent_tool.py`、`major_intent_tool.py`（含负面意向）、`city_intent_tool.py`（含负面意向）、`career_intent_tool.py`
+- 分数与建议：`score_query_tool.py`、`major_recommend_tool.py`、`admission_policy_tool.py`、`admission_fit_match_tool.py`
+- 方案与校验：`plan_validation_tool.py`、`plan_orchestration_models.py`、`plan_goal_resolution.py`
+- 探索与多轮状态：`explore_direction_tool.py`、`explore_followup_tool.py`、`intent_state_tool.py`、`intent_relation_tool.py`、`intent_response_tool.py`
+- 共享/基础设施：`candidate_filter_extraction_tool.py`、`extraction_json.py`、`review_issue_registry.py`
+- 示例：`example_context_tool.py`
+
+Release 4.0 实际注册到 `ZhiyuanAgent` 的工具定义在 `app/zhiyuan_agent/tools.py`：`acknowledge_readonly`、`answer_policy`、`clarify_request`、`compare_entities`、`confirm_pending`、`discover_options`、`explore_topic`、`preview_intent_change`、`preview_plan_change`、`preview_plan_action`、`query_plan`、`read_state`、`respond_casual`、`review_plan`。在 `app/` 内（`app/tools/` 以外）目前只有 `app/service.py` 与 `app/zhiyuan_agent/tools.py` 引用 `app/tools/` 下的模块，其余引用来自测试。
 
 ### Schemas
 
