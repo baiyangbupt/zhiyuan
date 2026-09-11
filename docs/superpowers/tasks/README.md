@@ -109,6 +109,7 @@ T003 的验收条件是我写的：「两个场景各连续 3 次 `status=comple
 
 - **这条指标失败时会是什么样子？** 想不出失败长什么样，它就不是验收条件。
 - **零值 / 空列表能自证吗？** `count == 0`、`list == []`、`grep` 无输出，都必须能区分"确实没有"和"根本没测到"。至少配一次已知非零的对照。
+- **缺失的键比零值更危险。** T005 复核时撞上一次：`scripts/codex_semantic_smoke.py` 在模型输出解析失败时**根本不写** `evaluation` 键，于是 `d.get('evaluation', {}).get('passed')` 读出 `None`——不报错、不为真、看起来就像一次普通的不通过。判定脚本必须先断言键存在，再判它的值；`KeyError` 炸出来比静默假值好。
 - **它量的是目标，还是目标的必要条件？** "请求被接受"是"任务完成"的必要条件，不是充分条件。验收要压在目标上。
 
 ---
@@ -125,15 +126,17 @@ T003 的验收条件是我写的：「两个场景各连续 3 次 `status=comple
 - [ ] **验收指标**：每条都过一遍规则 4 的三问——失败什么样、零值能否自证、量的是不是目标本身。
 - [ ] **报告路径**：写死绝对路径了吗？
 
-### 当前已知失败基线（2026-09-10，`zhiyuan-agent/scripts/run_unit_tests.sh`）
+### 当前已知失败基线（2026-09-11，`zhiyuan-agent/scripts/run_unit_tests.sh`）
 
 ```
 FAILED tests/unit/test_dialog_quality_gate.py::test_final_action_explicit_clone_sources_have_volunteer_fixture
 FAILED tests/unit/test_ops_release_smoke.py::test_release_smoke_supports_production_and_dev_web_base_paths[None-/assistant-pc/session]
-2 failed, 1699 passed, 34 skipped
+2 failed, 1700 passed, 34 skipped
 ```
 
-第一条因 `zhiyuan-server/data/tmp/session_volunteer_*.json` 本地夹具缺失（94 条），第二条与 web base path 有关。两条都与 codex 引擎链路无关。基线变化时更新本节。
+第一条因 `zhiyuan-server/data/tmp/session_volunteer_*.json` 本地夹具缺失（94 条），第二条与 web base path 有关。两条都与 codex 引擎链路无关。
+
+通过数 2026-09-10 为 1699，T005 新增一条回归测试后为 1700。基线变化时更新本节，并在此记下差额来自哪个任务——否则下一个实现方无法区分"新增用例"和"漏跑用例"。
 
 ---
 
@@ -141,9 +144,19 @@ FAILED tests/unit/test_ops_release_smoke.py::test_release_smoke_supports_product
 
 - [ ] 报告文件存在，且状态词是四态之一
 - [ ] **自己重跑一遍验收命令**，不采信报告里的输出（报告输出用于比对差异，不用于替代复核）
+- [ ] **重跑次数要够看出抖动。** T005 的门禁报告跑 3 次全过，我跑 8 次是 7 过 1 挂——低频抖动只跑一遍是看不见的。真实端点、涉及模型输出的验收，至少跑到能给出分母（"n 次中 m 次"），不要只报一次结果
 - [ ] **复核里引用的每个数字，确认它的仪表是活的**（规则 4）。不要拿一个没验证过的观测值去下结论——T003 的 REVIEW 就是这么写错的。
 - [ ] `git status` 核对实际改动文件 == 报告声明的清单，多出来的文件逐个问清楚
 - [ ] 边界清单里的文件确实没被动过
 - [ ] 全量测试的新增失败逐条对照已知基线
 - [ ] 写 `REVIEW.md`，更新 `LEDGER.md` 终态
 - [ ] 通过后由设计会话提交。**实现会话一律不 commit**，这条写进每份任务书
+
+### 口头派发的任务怎么判边界
+
+T006 / T007 由设计会话口头派发，没有 `TASK.md`。实现方的处理是对的：按 `LEDGER.md` 的标题界定范围，并把"本任务没有任务书"写进偏离节。补一条规则：
+
+**没有 `TASK.md` 时，边界依据是 `LEDGER.md` 的标题，且报告必须显式声明这一点。** 复核时不能用"任务书里没写"来指责实现方越界或漏做——没写是设计会话的欠账。
+
+但这只是兜底。口头派发的代价在 T006 / T007 上已经显形：两份报告都得自己猜边界，而"猜对了"是运气不是制度。**能写任务书就写**，哪怕只有五行。
+
