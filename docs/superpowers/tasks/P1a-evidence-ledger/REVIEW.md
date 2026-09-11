@@ -13,7 +13,9 @@ reviewed_at: 2026-09-11
 
 实现方自报 `DONE_WITH_CONCERNS` 并把最需要确认的一条写在结论第一段——判断准确，那条确实是本片最大的风险。
 
-跟进项四条，见第四节。其中第 1、3 条**已于 2026-09-11 实测结案**（`plans/2026-09-11-P1a上游版本契约实测与dataVersion改设计.md`）：上游根本不返回 `dataVersion`，版本改由 Java 按 `data` 内容摘要自算，版本表的键随之定死为 `(source_system, params_digest)`。第 2、4 条排进 P1b。
+跟进项四条，见第四节。其中第 1、3 条**已于 2026-09-11 实测结案**（`plans/2026-09-11-P1a上游版本契约实测与dataVersion改设计.md`）：上游根本不返回 `dataVersion`，版本改由 Java 按 `data` 内容摘要自算，版本表的键随之定死为 `(source_system, params_digest)`。第 4 条排进 P1b。
+
+第 2 条的**结论成立但归因错了**，同日查清（`plans/2026-09-11-P1a证据到不了Agent的三处断链.md`）：不签发的原因不在我下面点名的那条 Java 路径，而在 Python 侧三处互相独立的断链。P1b 的实际改动面比本文估计的大。
 
 ## 二、自行重跑的验收（不采信报告输出）
 
@@ -82,6 +84,12 @@ BUILD SUCCESS
 这不是实现缺陷——设计文档确实没说版本从哪来，是我的遗漏。但它必须在 P1b 派发前用一次真实上游调用定下来，**不能靠继续在替身上验证**。若上游确实不提供版本，需要改设计：要么取 HTTP 响应头/网关侧的数据批次号，要么由 Java 侧按取数时间窗自定义版本口径。
 
 ### 2. 生产路径当前一条证据都不签（P1b 派发前必须定）
+
+> **已查清（2026-09-11）：结论对，归因错。** 见 `plans/2026-09-11-P1a证据到不了Agent的三处断链.md`。下面写的 `GaotuService.java:603/617` 那条路是 **Java 内部调用方**走的，**Agent 根本不经过**；Agent 的生产取数入口恰恰就是这里被当成旁路的 `GaotuClientDebugController`（名字叫 Debug，干的是正事）。真正不签发的原因在 Python 侧：`InternalClientBackend` 拿着 `tenant_id`/`chat_session_id` 却没往下传，`thread_id` 连拿都没拿，`HttpClient.post` 也没有 `params` 形参，于是 Java 收到的恒为 `EvidenceScope.of(null,null,null)`。
+>
+> 并且不止这一处断链——**即便 scope 接通，证据也到不了模型**：`InternalClientBackend._data()` 会把挂着 `evidence`/`dataVersion` 的信封拆掉只留 `data`，随后 Agent 回落到自铸分支。第三处：`data` 是 JSON 数组而 `_admission_envelope` 只吃 dict，于是真实 backend 上 `admission.get_history` 结构性返回 `insufficient_data`。三处独立，任一处不修都白修。
+>
+> **这条跟进项"P1b 必须把会话上下文接到生产取数路径"的判断成立，但改动面比这里估计的大，且重心在 Python 侧不在 Java 侧。**
 
 我自己 grep 核对（`src/main/java` 全量，排除 `GaotuClient` 自身）：
 
