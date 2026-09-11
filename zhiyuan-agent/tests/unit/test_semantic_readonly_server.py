@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-def test_semantic_readonly_server_lists_only_read_tools(tmp_path: Path) -> None:
+def _list_tools(tmp_path: Path) -> list[dict]:
     fixture = Path(__file__).parents[1] / "fixtures" / "mcp" / "semantic_readonly_server.py"
     process = subprocess.Popen(
         [sys.executable, str(fixture)],
@@ -19,5 +19,14 @@ def test_semantic_readonly_server_lists_only_read_tools(tmp_path: Path) -> None:
     process.stdin.flush()
     result = json.loads(process.stdout.readline())
     process.terminate()
-    names = {tool["name"] for tool in result["result"]["tools"]}
+    return result["result"]["tools"]
+
+
+def test_semantic_readonly_server_lists_only_read_tools(tmp_path: Path) -> None:
+    names = {tool["name"] for tool in _list_tools(tmp_path)}
     assert names == {"catalog.search_schools", "admission.get_history"}
+
+
+def test_semantic_readonly_server_marks_every_tool_read_only(tmp_path: Path) -> None:
+    for tool in _list_tools(tmp_path):
+        assert tool.get("annotations", {}).get("readOnlyHint") is True, tool["name"]

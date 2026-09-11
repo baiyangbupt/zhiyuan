@@ -48,6 +48,9 @@ def build_turn_trace(payload: Any, output: TurnOutput, *, entity_ids: list[str])
     orchestration: list[dict[str, Any]] = []
     for item in _walk(payload):
         item_type = str(item.get("type") or "").lower()
+        if "mcpserver" in item_type:
+            # MCP 服务器生命周期事件（如 mcpServer/startupStatus/updated）不是工具调用
+            continue
         if "mcp" not in item_type and not any(
             key in item for key in ("toolName", "tool_name", "toolCall", "tool_call")
         ):

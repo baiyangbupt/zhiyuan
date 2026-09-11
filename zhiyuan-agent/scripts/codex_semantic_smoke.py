@@ -136,7 +136,7 @@ async def run_scenario(
         os.environ["ZHIYUAN_SEMANTIC_AUTHORITATIVE"] = "true"
     else:
         os.environ.pop("ZHIYUAN_SEMANTIC_AUTHORITATIVE", None)
-    fixture_args = [str(fixture)]
+    fixture_args = [str(fixture), "--trace", trace_file.name]
     if expectation.case_id == "reference-authoritative-history":
         fixture_args.append("--authoritative")
     model_config = ["mcp_servers.semantic_readonly={"
@@ -250,7 +250,7 @@ async def run_scenario(
             except ValidationError as exc:
                 payload["outputValidationError"] = str(exc)
                 payload["trace"] = {
-                    "toolCalls": [],
+                    "toolCalls": _recorded_tool_calls(mcp_calls),
                     "evidenceIds": [],
                     "entityIds": payload["modelUsedCandidateIds"],
                     "responseType": result.output.get("responseType"),
@@ -274,6 +274,18 @@ async def run_scenario(
     finally:
         await harness.close()
         Path(trace_file.name).unlink(missing_ok=True)
+
+
+def _recorded_tool_calls(calls: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {
+            "name": str(call["name"]),
+            "status": "completed",
+            "argumentKeys": sorted(str(key) for key in call.get("arguments") or {}),
+        }
+        for call in calls
+        if isinstance(call.get("name"), str) and call["name"]
+    ]
 
 
 def _recorded_mcp_events(calls: list[dict[str, object]]) -> list[dict[str, object]]:

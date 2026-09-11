@@ -9,7 +9,15 @@ import sys
 from pathlib import Path
 
 
-TRACE_PATH = os.environ.get("ZHIYUAN_SEMANTIC_MCP_TRACE", "")
+def _argument_value(flag: str) -> str:
+    if flag in sys.argv[1:]:
+        index = sys.argv.index(flag)
+        if index + 1 < len(sys.argv):
+            return sys.argv[index + 1]
+    return ""
+
+
+TRACE_PATH = _argument_value("--trace") or os.environ.get("ZHIYUAN_SEMANTIC_MCP_TRACE", "")
 AUTHORITATIVE = os.environ.get("ZHIYUAN_SEMANTIC_AUTHORITATIVE", "").lower() == "true" or "--authoritative" in sys.argv[1:]
 
 
@@ -31,6 +39,7 @@ def tool_list() -> list[dict]:
         {
             "name": "catalog.search_schools",
             "description": "只读查询学校候选。",
+            "annotations": {"readOnlyHint": True},
             "inputSchema": {
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
@@ -41,6 +50,7 @@ def tool_list() -> list[dict]:
         {
             "name": "admission.get_history",
             "description": "只读查询某学校某专业的历史录取分数。缺少范围参数时必须先澄清。",
+            "annotations": {"readOnlyHint": True},
             "inputSchema": {
                 "type": "object",
                 "properties": {
