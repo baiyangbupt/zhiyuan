@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.gateway.service import TURN_OUTPUT_SCHEMA
 from app.harness.codex import CodexAppServerHarness
+from app.harness.turn_result import CodexTurnResult
 from app.engine.semantic_eval import SemanticExpectation, evaluate_trace
 from app.engine.turn_trace import build_turn_trace
 from app.engine.tool_orchestration import render_tool_contracts
@@ -196,6 +197,7 @@ async def run_scenario(
             "status": result.status,
             "errorCode": result.error_code,
             "output": result.output,
+            "outputExtraction": result.output_extraction,
             "eventTypes": [event.get("type") for event in result.events],
             "eventSummaries": [
                 {
@@ -269,11 +271,35 @@ async def run_scenario(
             )
             payload["trace"] = trace.as_payload()
             payload["evaluation"] = evaluate_trace(expectation, trace.as_payload())
+        else:
+            payload["evaluation"] = _missing_output_evaluation(expectation, result)
         payload["elapsedMs"] = round((time.perf_counter() - started_at) * 1000, 1)
         return payload
     finally:
         await harness.close()
         Path(trace_file.name).unlink(missing_ok=True)
+
+
+def _missing_output_evaluation(
+    expectation: SemanticExpectation, result: CodexTurnResult
+) -> dict[str, object]:
+    """Explicit failing evaluation for when no usable output was extracted.
+
+    Covers both branches that used to leave `evaluation` unset entirely:
+    `status != "completed"`, and `status == "completed"` but `output` isn't a
+    dict (extraction failed). Deliberately does not synthesize `trace` --
+    there is no trace without an output.
+    """
+    return {
+        "caseId": expectation.case_id,
+        "passed": False,
+        "failures": ["output_missing"],
+        "observed": {
+            "status": result.status,
+            "errorCode": result.error_code,
+            "outputExtraction": result.output_extraction,
+        },
+    }
 
 
 def _recorded_tool_calls(calls: list[dict[str, object]]) -> list[dict[str, object]]:

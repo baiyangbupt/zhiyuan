@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any, AsyncIterator, cast
 
 from app.harness.client import AppServerClient
@@ -106,12 +107,15 @@ class CodexAppServerHarness:
         initial_status = str(turn_payload.get("status") or "").lower()
         events: list[dict[str, Any]] = []
         final_output = None
+        final_output_extraction = _missing_extraction()
 
         if initial_status in {"completed", "failed", "interrupted"}:
+            started_output, started_extraction = _extract_output_ex(started)
             return CodexTurnResult(
                 status=cast(TurnStatus, initial_status),
                 turn_id=turn_id,
-                output=_extract_output(started),
+                output=started_output,
+                output_extraction=started_extraction,
                 payload=started,
             )
         if not turn_id:
@@ -158,14 +162,22 @@ class CodexAppServerHarness:
             events.append(event)
             item = event.get("item") or {}
             if event.get("type") == "item/completed" and item.get("type") == "agentMessage":
-                final_output = _extract_output(event)
+                final_output, final_output_extraction = _extract_output_ex(event)
             terminal_status = _terminal_status(event)
             if terminal_status is None:
                 continue
+            event_output, event_extraction = _extract_output_ex(event)
+            if terminal_status == "completed":
+                output = event_output or final_output
+                extraction = event_extraction if event_output else final_output_extraction
+            else:
+                output = None
+                extraction = _missing_extraction()
             return CodexTurnResult(
                 status=terminal_status,
                 turn_id=turn_id,
-                output=(_extract_output(event) or final_output) if terminal_status == "completed" else None,
+                output=output,
+                output_extraction=extraction,
                 events=events,
                 error_code=_extract_error(event),
                 payload=event,
@@ -262,57 +274,133 @@ def _terminal_status(event: dict[str, Any]) -> str | None:
 
 
 def _extract_output(payload: dict[str, Any]) -> dict[str, Any] | None:
+    return _extract_output_ex(payload)[0]
+
+
+def _extract_output_ex(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Like `_extract_output`, but also returns how the output was obtained.
+
+    The second element is `{"source": "direct"|"fenced"|"embedded"|"missing",
+    "candidateCount": int | None}`. Recursion always propagates the record of the
+    call that actually produced a hit (via return values, never a shared mutable
+    that a later failed attempt could clobber).
+    """
     for key in ("output", "structuredOutput", "structured_output"):
         value = payload.get(key)
         if isinstance(value, dict):
-            return value
+            return value, {"source": "direct", "candidateCount": None}
         if isinstance(value, str):
-            parsed = _parse_json_object(value)
+            parsed, extraction = _parse_json_object(value)
             if parsed is not None:
-                return parsed
+                return parsed, extraction
     item = payload.get("item")
     if isinstance(item, dict):
-        extracted = _extract_output(item)
+        extracted, extraction = _extract_output_ex(item)
         if extracted is not None:
-            return extracted
+            return extracted, extraction
         for key in ("text", "content"):
             value = item.get(key)
             if isinstance(value, str):
-                parsed = _parse_json_object(value)
+                parsed, extraction = _parse_json_object(value)
                 if parsed is not None:
-                    return parsed
+                    return parsed, extraction
             if isinstance(value, list):
                 for content in value:
                     if not isinstance(content, dict):
                         continue
                     text = content.get("text")
                     if isinstance(text, str):
-                        parsed = _parse_json_object(text)
+                        parsed, extraction = _parse_json_object(text)
                         if parsed is not None:
-                            return parsed
+                            return parsed, extraction
                     structured = content.get("structuredContent") or content.get("structured_content")
                     if isinstance(structured, dict):
-                        return structured
+                        return structured, {"source": "direct", "candidateCount": None}
     turn = payload.get("turn")
     if isinstance(turn, dict):
-        return _extract_output(turn)
+        return _extract_output_ex(turn)
+    return None, _missing_extraction()
+
+
+def _missing_extraction() -> dict[str, Any]:
+    return {"source": "missing", "candidateCount": None}
+
+
+_FENCE_PATTERN = re.compile(r"```[ \t]*[\w.+-]*[ \t]*\r?\n?(.*?)```", re.DOTALL)
+
+
+def _find_outermost_braces(value: str) -> str | None:
+    """Return the span from the first '{' to its balanced '}', or None.
+
+    Simple depth counting, no string-literal awareness. If the braces never
+    balance, or content isn't valid JSON, callers must treat that as a miss
+    rather than falling back to any kind of regex text scraping.
+    """
+    start = value.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for index in range(start, len(value)):
+        char = value[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return value[start : index + 1]
     return None
 
 
-def _parse_json_object(value: str) -> dict[str, Any] | None:
-    value = value.strip()
-    if value.startswith("```"):
-        lines = value.splitlines()
-        if lines and lines[0].strip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        value = "\n".join(lines).strip()
+def _parse_json_object(value: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Layered extraction of a JSON object from model output.
+
+    Order is fixed and each layer only counts as a hit on a full parse success:
+      1. direct  - the entire (stripped) string is valid JSON.
+      2. fenced  - scan all ``` fenced blocks (anywhere in the string, including
+         a language tag like ```json), parse each; if more than one parses to a
+         dict, the last one wins (model's final answer). This is a superset of
+         the historical "whole value starts with ```" behavior, not a replacement.
+      3. embedded - no fenced hit; take the outermost balanced {...} span in the
+         prose and try to parse it. No field-level patching, no regex scraping:
+         if that span isn't valid JSON, this is a miss.
+      4. missing - none of the above produced a dict.
+    """
+    stripped = value.strip()
+
     try:
-        parsed = json.loads(value)
+        direct = json.loads(stripped)
     except (TypeError, ValueError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
+        direct = None
+    if isinstance(direct, dict):
+        return direct, {"source": "direct", "candidateCount": None}
+
+    fenced_candidates: list[dict[str, Any]] = []
+    for match in _FENCE_PATTERN.finditer(stripped):
+        block = match.group(1).strip()
+        if not block:
+            continue
+        try:
+            parsed_block = json.loads(block)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed_block, dict):
+            fenced_candidates.append(parsed_block)
+    if fenced_candidates:
+        return fenced_candidates[-1], {
+            "source": "fenced",
+            "candidateCount": len(fenced_candidates),
+        }
+
+    span = _find_outermost_braces(stripped)
+    if span is not None:
+        try:
+            embedded = json.loads(span)
+        except (TypeError, ValueError):
+            embedded = None
+        if isinstance(embedded, dict):
+            return embedded, {"source": "embedded", "candidateCount": None}
+
+    return None, _missing_extraction()
 
 
 def _extract_error(payload: dict[str, Any]) -> str | None:
