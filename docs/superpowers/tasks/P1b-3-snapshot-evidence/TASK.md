@@ -86,6 +86,23 @@ working_set.evidence_refs = list(previous_working_set.evidence_refs)   # 现状�
 
 ---
 
+### ⚠️ 交付完之后链路仍然不通，这是预期内的
+
+你把 `fillEvidence()` 做好、证据进了 snapshot 之后，**模型引用它仍然会整轮失败**，报 `evidence_not_found`。
+
+原因（2026-09-13 查明，见 `plans/2026-09-13-P1c证据校验器的三处结构性拒收.md`）：`app/gateway/service.py:770-781` 构造校验器账本时**只**读本回合的 codex turn events，snapshot 里的证据一条都不进账本。于是 `output_validation.py:127` 找不到，硬失败。
+
+**这归 P1c，不归你。** 明确要求：
+
+- **不要改 `app/gateway/service.py:770-781` 的账本构造。**
+- **不要放宽 `app/gateway/output_validation.py` 的任何检查。** 那里还有两处检查（证据的 `stateVersion` 等值、`threadId` 等值）同样会拒收权威证据，**它们确实要删，但必须和 P1a 的四态核验一起接**——先删就是真的开了 fail-open 的口子。
+- 你的验收（第五节）**不包含端到端引用成功**，只到"`valid` 的进了 snapshot、`stale` 的没进"为止。这条边界是有意划的，不是漏写。
+
+如果你跑端到端发现引用失败，**那是预期结果，照实写进报告即可，不要去修**。
+
+
+---
+
 ## 五、验收
 
 ```bash
@@ -154,7 +171,10 @@ FAILED tests/unit/test_ops_release_smoke.py::test_release_smoke_supports_product
 - 不要"顺手"重构、格式化、改 import 顺序。
 - **不要 commit。** 改完等 review。
 
-**关于线程级隔离的口径不一**（P1a 复核跟进项 4，**本任务不解决，知道就行**）：`EvidenceLedgerService.verifyOne()` `:167-170` 只在请求与记录的 `threadId` **都非空**时才校验线程；而 Agent 侧 `output_validation.py:126-145` 在 `strict_scope=True` 时要求 scope 字段必须存在。Java 比 Agent 松。影响面封在单会话内（`tenantId` + `chatSessionId` 仍强制），不构成跨会话泄露。**这件事归设计会话裁决**——要么 Java 侧也要求必填，要么写明"线程级隔离由 Agent 侧负责"。你遇到它时不要自行收紧或放宽，在报告里提一句即可。
+**关于线程级隔离的口径（P1a 复核跟进项 4，2026-09-13 已裁决）**：`thread` **不是证据的隔离边界**，隔离由 `(tenantId, chatSessionId)` 承担。依据是 `app/gateway/service.py:372` 的 `self._threads` 是纯进程内 dict、从不持久化，且 thread 与 session 是 1:1——**一个会随进程重启而改变的标识符不能承载安全语义**（详见 `plans/2026-09-13-P1c证据校验器的三处结构性拒收.md` 第四节）。
+
+对你的影响就一条：**`fillEvidence()` 按 `(tenantId, chatSessionId)` 查就是对的，不是将就。** 步骤 1 里"不要为了拿 `threadId` 去改 `getTurnSnapshot` 签名"现在有了正式依据。台账记录里的 `thread_id` 照常带进 DTO 作为审计信息，但**不要用它做任何过滤**。
+
 
 ---
 
