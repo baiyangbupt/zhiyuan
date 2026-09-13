@@ -18,7 +18,7 @@
 | [P1c-1](P1c-1-validator-unblock/) | 拆掉三处恒真的证据检查，让权威证据能进校验器账本 | 断链 4/5/6 | 未派发（等 P1b-2、P1b-3 合入） | — | — | — | — |
 | P1c-2 | 四态核验接入 Gateway + 第六章分流表 + 重查一次 | 设计文档 5.3 / 第六章 | 任务书未写（等 P1b 落地后定 API 形状） | — | — | — | — |
 | [T008](T008-output-extraction/) | 让 harness 取得到散文包裹的 JSON，并让取不到变成显式失败 | T005 REVIEW 第四节 2 | claude-subagent | 2026-09-13 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | T009 |
-| T009 | 冒烟 payload 存一份拼好的 agentMessage 正文（碎片已在，缺"拼好的那份"） | T008 REVIEW 第六节 | 未派发（任务书待写） | — | — | — | — |
+| [T009](T009-agent-message-capture/) | 冒烟 payload 存一份拼好的 agentMessage 正文（碎片已在，缺"拼好的那份"） | T008 REVIEW 第六节 | claude-subagent | 2026-09-13 | 执行中 | — | — |
 
 ## P1b 三片的并行关系
 
