@@ -19,6 +19,7 @@
 | P1c-2 | 四态核验接入 Gateway + 第六章分流表 + 重查一次 | 设计文档 5.3 / 第六章 | 任务书未写（等 P1b 落地后定 API 形状） | — | — | — | — |
 | [T008](T008-output-extraction/) | 让 harness 取得到散文包裹的 JSON，并让取不到变成显式失败 | T005 REVIEW 第四节 2 | claude-subagent | 2026-09-13 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | T009 |
 | [T009](T009-agent-message-capture/) | 冒烟 payload 存一份拼好的 agentMessage 正文（碎片已在，缺"拼好的那份"） | T008 REVIEW 第六节 | claude-subagent | 2026-09-13 | 执行中 | — | — |
+| [P2a](P2a-forbidden-tool-testable/) | 把 `plan_apply` 放上桌，让 `forbidden_tool_names` 守在对的门上 | mixed-read-write 成因 3 | 任务书已写，**等 T009 合入**（见下文依赖说明） | — | — | — | — |
 
 ## P1b 三片的并行关系
 
@@ -85,7 +86,7 @@ P1c-2 的任务书暂不写，是有意的：它要调 `/internal/evidence/verif
    |---|---|---|
    | 1 | 模型把 `executionStatus` / `limitations` / `nextStep` 说进了散文，字段留空（3 次里 2 次） | 真缺陷，归 P2 |
    | 2 | 场景让 `school-3` 无名、不在候选集，然后要求模型**不许澄清**、必须给删除提案 | **期望写错了**——它奖励了闭眼提案、惩罚了问清楚 |
-   | 3 | `forbidden_tool_names={"plan_apply"}` 恒真——只读夹具压根没声明这个工具 | 第 5 次撞上"永远通过的检查" |
+   | 3 | `forbidden_tool_names={"plan_apply"}` 空转——只读夹具没声明这个工具 | 第 5 次撞上"永远通过的检查"，且是更隐蔽的一种（见下） |
    | 4 | `service.py:854` 用工具批次状态**覆盖**模型的 `execution_status`，且冒烟走的是覆盖前的值 | **生产缺陷**，且冒烟在结构上看不见它 |
 
    第 4 条最要紧：工具全成功时 `partial` 被无条件改写成 `completed`——**用户请求了读+写，系统做了读、拒了写，然后报告"完成"**。而且成因 1 修好之后冒烟会变绿，生产依然是 `completed`，**绿灯与修好之间没有关系**。与断链 5 同型：两个不同的问题（"工具跑成功了吗" / "诉求满足了吗"）共用一个字段名，其中一个把另一个吃掉了。
@@ -107,7 +108,29 @@ P1c-2 的任务书暂不写，是有意的：它要调 `/internal/evidence/verif
 
 ## 说明
 
-### 两个实现方同时在一个工作树里（2026-09-13）
+### 同一工作树的文件占用矩阵（2026-09-13，派发前必查）
+
+现在同时有**两个实现方在跑**（`zhiyuan-48` 串行做 P1b 三片；一个 subagent 做 T009），另有三件排队（P1c-1、P2、P1c-2）。**全部在 `/root/dev/zhiyuan` 一个工作树里，没有分支。**
+
+这意味着两个实现方同改一个文件不是"git 冲突"，是**后写的直接覆盖先写的，无声无息**。派发前对着这张表看一眼：
+
+| 文件 | 谁声明了它 | 状态 |
+|---|---|---|
+| `app/gateway/service.py` | P1b-3（`:545`）、P1c-1（`:770-781`）、P2 第 4 项（`:845-854`） | **三方占用**，行段不重叠但必须串行派发 |
+| `EvidenceLedgerService.java` | P1b-1（改已有方法体）、P1b-3（只增只读方法） | 两方，已知，合并由设计会话做 |
+| `scripts/codex_semantic_smoke.py` | T009（进行中）、P2 第 2 项（`:99-118`） | 两方，**P2 第 2 项必须等 T009 合入** |
+| `app/harness/codex.py` | T008 ✅ 已提交 | 已释放 |
+| `tests/fixtures/mcp/semantic_readonly_server.py` | P2 第 3 项 | 独占，**随时可派** |
+| `app/engine/result_synthesis.py` | P2 第 4 项 | 独占 |
+| `output_validation.py` | P1c-1 | 独占 |
+| `app/mcp_server/server.py`、`tools_readonly.py`、`internal_client.py` | P1b-2 | 独占 |
+
+**规则：一个文件同一时刻只能有一个在跑的实现方。** 行段不重叠也不行——两个 agent 各自读全文、各自整体写回，行段无关。
+
+**这张表只管"谁改它"，还有两种依赖它看不出来，派发前要单独想：**
+
+1. **占用 ≠ 依赖。** P2a 一行都不改 `scripts/codex_semantic_smoke.py`，但它的验收第 3、4 条**要跑这个脚本**。T009 此刻正在改它——拿一个改到一半的脚本去跑真实端点，跑出来的数字不能用。**所以 P2a 必须等 T009 合入**，哪怕文件占用表上两者零重叠。
+2. **真实 codex 运行时是独占资源。** 两个任务同时打真实端点会互相干扰（T005/T008 都撞到过）。**涉及真实端点验收的任务一次只派一个。**
 
 T008 与 P1b 系列并行执行，共用 `/root/dev/zhiyuan` 一个工作树。这是有意的——T008 在 harness/scripts 层，P1b 在 Java 与 `app/mcp_server/`、`app/util/` 层，**改动面零重叠**，串行没有收益。
 

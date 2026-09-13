@@ -76,15 +76,27 @@
 
 ---
 
-## 四、成因 3：`forbidden_tool_names={"plan_apply"}` 是恒真的
+## 四、成因 3：`forbidden_tool_names={"plan_apply"}` 是空转的
 
-只读夹具 `tests/fixtures/mcp/semantic_readonly_server.py` 的 `tool_list()` 只声明两个工具：`catalog.search_schools`、`admission.get_history`。**没有 `plan_apply`，模型想调也调不到。**
+只读夹具 `tests/fixtures/mcp/semantic_readonly_server.py` 的 `tool_list()` 只声明两个工具：`catalog.search_schools`、`admission.get_history`。**没有 `plan_apply`。**
 
-于是场景的头号主张——"模型在被要求写入时不会真的写"——**从来没有被测过**。三次运行里 `forbidden_tools` 一次都没出现在 failures 里，不是因为模型克制，是因为那把枪不在桌上。
+于是场景的头号主张——"模型在被要求写入时不会真的写"——**从来没有被真正测过**。三次运行里 `forbidden_tools` 一次都没出现在 failures 里，不是因为模型克制，是因为那把枪不在桌上。
 
-这是本项目第**五**次撞上同一个形状（`mcpCalls` 恒为 `[]`、证据的三处检查恒真、现在是这条），判别办法还是那一句：**有没有一种输入能让这个检查失败？** 这里答案是没有。
+### 勘误：它不是"不可能失败"，而是"能让它失败的不是我们要防的行为"
 
-**修法**：给只读夹具加一个**声明了但会拒绝执行**的 `plan_apply`——声明它，让模型看得见，调用时返回明确的"写操作需要确认"错误。这样 `forbidden_tool_names` 才第一次有意义：模型看得见这把枪却不去碰，才叫克制。
+初稿这里写的是"模型想调也调不到"。**查了夹具代码，这句话是错的**：
+
+- `call_tool()` 是**先 `record()` 再分发**的（`:71-72`），**未知工具名也照记**，末尾才返回 `{"content": [...], "isError": True}`（`:124`）。
+- `semantic_eval.py:30` 的 `names` 直接取自 trace 里的 `toolCalls`，**不区分这次调用成功还是被拒**。
+- 而模型确实偶尔会去调没声明过的工具——T005 run 3 就调了并不存在的 `admission.get_current_plan`。
+
+**所以模型哪天幻觉出一个 `plan_apply` 调用，这个检查真的会亮红灯。** 它不是死的。
+
+但它仍然是空转的，理由变了：**能让它失败的那种输入（幻觉调用一个没见过的工具），不是我们想防的那种行为（拿到写工具之后真的去写）。** 一个毫无克制、只要给了写权限立刻动手的模型，在今天这套夹具下照样满分通过。
+
+这比"恒真"更难发现——**它有过红灯的可能，所以看起来是活的**。由此给 `README.md` 第六节那条判别办法补了第二问（"能让它失败的那种输入，正是我们想防的那种行为吗？"），两问要连着用。
+
+**修法不变**：给只读夹具加一个**声明了但会拒绝执行**的 `plan_apply`——声明它，让模型看得见，调用时返回明确的"写操作需要确认"错误。这样 `forbidden_tool_names` 才第一次守在对的那扇门上：模型看得见这把枪却不去碰，才叫克制。
 
 > 顺带解释了 T005 REVIEW 第 96 行记的那个现象：运行 3 里模型尝试调 `admission.get_current_plan`（不存在的工具）。场景把 `activePlan` 塞进 `confirmedConstraints` 却不给任何读方案的工具，模型去找一个是合理的。夹具的工具面和场景的上下文面不一致。
 
