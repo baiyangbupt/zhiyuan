@@ -192,33 +192,7 @@ async def run_scenario(
             TURN_OUTPUT_SCHEMA,
             timeout=90.0,
         )
-        payload: dict[str, object] = {
-            "scenario": expectation.case_id,
-            "status": result.status,
-            "errorCode": result.error_code,
-            "output": result.output,
-            "outputExtraction": result.output_extraction,
-            "eventTypes": [event.get("type") for event in result.events],
-            "eventSummaries": [
-                {
-                    "type": event.get("type"),
-                    "keys": sorted(str(key) for key in event),
-                    "text": str(
-                        event.get("text")
-                        or event.get("message")
-                        or event.get("delta")
-                        or ""
-                    )[:500],
-                }
-                for event in result.events
-            ],
-            "errors": [
-                event
-                for event in result.events
-                if str(event.get("type") or "").lower() == "error"
-            ],
-            "contextCandidateIds": ["school-1", "school-2"],
-        }
+        payload: dict[str, object] = _build_base_payload(expectation, result)
         mcp_calls: list[dict[str, object]] = []
         try:
             mcp_calls = [
@@ -278,6 +252,97 @@ async def run_scenario(
     finally:
         await harness.close()
         Path(trace_file.name).unlink(missing_ok=True)
+
+
+def _build_base_payload(
+    expectation: SemanticExpectation, result: CodexTurnResult
+) -> dict[str, object]:
+    """Build the status-independent portion of the smoke-test payload.
+
+    This runs unconditionally, before any branching on `result.status` or on
+    whether `result.output` parses -- so every key set here (including
+    `agentMessages`) is present on every return path out of `run_scenario`,
+    not just the success path.
+    """
+    return {
+        "scenario": expectation.case_id,
+        "status": result.status,
+        "errorCode": result.error_code,
+        "output": result.output,
+        "outputExtraction": result.output_extraction,
+        "eventTypes": [event.get("type") for event in result.events],
+        "eventSummaries": [
+            {
+                "type": event.get("type"),
+                "keys": sorted(str(key) for key in event),
+                "text": str(
+                    event.get("text")
+                    or event.get("message")
+                    or event.get("delta")
+                    or ""
+                )[:500],
+            }
+            for event in result.events
+        ],
+        "agentMessages": _collect_agent_messages(result.events),
+        "errors": [
+            event
+            for event in result.events
+            if str(event.get("type") or "").lower() == "error"
+        ],
+        "contextCandidateIds": ["school-1", "school-2"],
+    }
+
+
+def _collect_agent_messages(
+    events: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Collect the fully-assembled body text of every completed agentMessage.
+
+    Identifies agentMessage completions the same way app/harness/codex.py:
+    163-164 does (an `item/completed` event whose `item.type ==
+    "agentMessage"`), in event order. Unlike `eventSummaries`, the text here
+    comes from `event["item"]` (where the assembled body actually lives, per
+    app/harness/codex.py:301-315) rather than from the event's own top-level
+    keys, and it is never truncated.
+    """
+    agent_messages: list[dict[str, object]] = []
+    for event in events:
+        item = event.get("item") or {}
+        if event.get("type") == "item/completed" and item.get("type") == "agentMessage":
+            agent_messages.append(
+                {"itemId": item.get("id"), "text": _agent_message_text(item)}
+            )
+    return agent_messages
+
+
+def _agent_message_text(item: dict[str, object]) -> str:
+    """Extract the assembled body text of a completed agentMessage item.
+
+    The two possible shapes of `item["text"]` are taken from
+    app/harness/codex.py:296-318: a plain `str`, or a list of dicts each
+    carrying a fragment in its own "text" key.
+
+    The combining rule is NOT taken from there. codex.py is hunting for the
+    first list element that parses as JSON; this function is reconstructing a
+    message body, so it concatenates every fragment in order. Both are right
+    for their own job -- but don't read this as "mirrors codex.py".
+
+    As of 2026-09-13 the list shape has been observed 0 times in 5 real runs,
+    and the only list-shaped fixture in the whole repo is this function's own
+    unit test. The branch is defensive, not proven. Never raises -- returns
+    "" if neither shape yields text.
+    """
+    value = item.get("text")
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(
+            content["text"]
+            for content in value
+            if isinstance(content, dict) and isinstance(content.get("text"), str)
+        )
+    return ""
 
 
 def _missing_output_evaluation(

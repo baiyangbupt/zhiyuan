@@ -18,8 +18,8 @@
 | [P1c-1](P1c-1-validator-unblock/) | 拆掉三处恒真的证据检查，让权威证据能进校验器账本 | 断链 4/5/6 | 未派发（等 P1b-2、P1b-3 合入） | — | — | — | — |
 | P1c-2 | 四态核验接入 Gateway + 第六章分流表 + 重查一次 | 设计文档 5.3 / 第六章 | 任务书未写（等 P1b 落地后定 API 形状） | — | — | — | — |
 | [T008](T008-output-extraction/) | 让 harness 取得到散文包裹的 JSON，并让取不到变成显式失败 | T005 REVIEW 第四节 2 | claude-subagent | 2026-09-13 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | T009 |
-| [T009](T009-agent-message-capture/) | 冒烟 payload 存一份拼好的 agentMessage 正文（碎片已在，缺"拼好的那份"） | T008 REVIEW 第六节 | claude-subagent | 2026-09-13 | 执行中 | — | — |
-| [P2a](P2a-forbidden-tool-testable/) | 把 `plan_apply` 放上桌，让 `forbidden_tool_names` 守在对的门上 | mixed-read-write 成因 3 | 任务书已写，**等 T009 合入**（见下文依赖说明） | — | — | — | — |
+| [T009](T009-agent-message-capture/) | 冒烟 payload 存一份拼好的 agentMessage 正文（碎片已在，缺"拼好的那份"） | T008 REVIEW 第六节 | claude-subagent | 2026-09-13 | `DONE` | `ACCEPTED_WITH_FOLLOWUP` | 无（三条遗留不开任务） |
+| [P2a](P2a-forbidden-tool-testable/) | 把 `plan_apply` 放上桌，让 `forbidden_tool_names` 守在对的门上 | mixed-read-write 成因 3 | — | 可派发（T009 已合入，依赖解除） | — | — | — |
 
 ## P1b 三片的并行关系
 
@@ -118,7 +118,7 @@ P1c-2 的任务书暂不写，是有意的：它要调 `/internal/evidence/verif
 |---|---|---|
 | `app/gateway/service.py` | P1b-3（`:545`）、P1c-1（`:770-781`）、P2 第 4 项（`:845-854`） | **三方占用**，行段不重叠但必须串行派发 |
 | `EvidenceLedgerService.java` | P1b-1（改已有方法体）、P1b-3（只增只读方法） | 两方，已知，合并由设计会话做 |
-| `scripts/codex_semantic_smoke.py` | T009（进行中）、P2 第 2 项（`:99-118`） | 两方，**P2 第 2 项必须等 T009 合入** |
+| `scripts/codex_semantic_smoke.py` | T009 ✅ 已提交、P2 第 2 项（`:99-118`） | 已释放，P2 第 2 项可派 |
 | `app/harness/codex.py` | T008 ✅ 已提交 | 已释放 |
 | `tests/fixtures/mcp/semantic_readonly_server.py` | P2 第 3 项 | 独占，**随时可派** |
 | `app/engine/result_synthesis.py` | P2 第 4 项 | 独占 |

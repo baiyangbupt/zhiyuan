@@ -148,6 +148,12 @@ T003 的验收条件是我写的：「两个场景各连续 3 次 `status=comple
 
   报数时同样：**19/20 要连着置信区间一起报**（Wilson 95% CI 是 [76.4%, 99.1%]）。20 个样本区分不了 80% 和 99%，把"95%"当成已知量拿去做后续判断，是给自己造一个精度不存在的数。
 
+- [ ] **写完一条验收条，问一句：这个数字，从交付物的哪个字段读出来？** 这是验收缺陷的**第四类**，前三类问的是"这条判据好不好"，这一类问的是"这条判据**够得着吗**"。
+
+  T009 任务书同时写了两句互相打架的话：验收第 4 条要求"**在同一次运行里**统计 `item["text"]` 是 `str` 的有几个、是 list 的有几个"，而交付物规格只让 `agentMessages` 带 `itemId` / `text` 两个字段——**形状信息按我自己定的规格根本不会被留下来。** 实现方于是只有两条路：超范围加字段，或者走交付物之外的一次性临时探针（它选了后者，并如实报为偏离）。
+
+  **两条都是偏离，而且都是我造成的偏离。** 判别办法就一句：对着交付物规格逐条问"这个观测从哪个字段、哪条输出里读出来"，答不上来就改——要么把字段补进交付物规格，要么把验收条明确改成"允许一次性探针"并说清它跟主验收不是同一次运行。
+
 - [ ] **边界**：明确列出不要动的目录和文件，尤其是大文件和正在演进的模块。
 
 
@@ -159,12 +165,12 @@ T003 的验收条件是我写的：「两个场景各连续 3 次 `status=comple
 ```
 FAILED tests/unit/test_dialog_quality_gate.py::test_final_action_explicit_clone_sources_have_volunteer_fixture
 FAILED tests/unit/test_ops_release_smoke.py::test_release_smoke_supports_production_and_dev_web_base_paths[None-/assistant-pc/session]
-2 failed, 1712 passed, 34 skipped
+2 failed, 1714 passed, 34 skipped
 ```
 
 第一条因 `zhiyuan-server/data/tmp/session_volunteer_*.json` 本地夹具缺失（94 条），第二条与 web base path 有关。两条都与 codex 引擎链路无关。
 
-通过数 2026-09-10 为 1699，T005 新增一条回归测试后为 1700，T008 新增 `tests/unit/test_codex_output_extraction.py` 共 12 条后为 1712。基线变化时更新本节，并在此记下差额来自哪个任务——否则下一个实现方无法区分"新增用例"和"漏跑用例"。
+通过数 2026-09-10 为 1699，T005 新增一条回归测试后为 1700，T008 新增 `tests/unit/test_codex_output_extraction.py` 共 12 条后为 1712，T009 在 `tests/unit/test_codex_semantic_smoke.py` 新增 2 条后为 1714。基线变化时更新本节，并在此记下差额来自哪个任务——否则下一个实现方无法区分"新增用例"和"漏跑用例"。
 
 ---
 
