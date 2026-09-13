@@ -12,14 +12,18 @@
 | [T006](T006-registry-unblock/) | 把本地基础设施 compose 指向可达镜像源，解除 P2 前置 | 修订计划 P2 | deepseek | 2026-09-10（口头） | `DONE` | `ACCEPTED` | — |
 | [T007](T007-agent-doc-accuracy/) | 修正 `zhiyuan-agent/CLAUDE.md` 的 Tools 一节 | T003 REVIEW 勘误 2 | deepseek | 2026-09-10（口头） | `DONE` | `ACCEPTED` | P5 文档收尾 |
 | [P1a](P1a-evidence-ledger/) | Java 证据台账：建表、摘要、签发、四态核验 | 修订计划 P1 切片 | deepseek | 2026-09-10 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | P1b-1 / P1b-2 / P1b-3 |
-| [P1b-1](P1b-1-content-digest/) | 数据版本改为 `data` 内容摘要，版本表键改 `(source_system, params_digest)` | P1a REVIEW 跟进 1/3 + 上游实测 | 未派发 | — | — | — | — |
-| [P1b-2](P1b-2-evidence-passthrough/) | 打通证据到 Agent 的三处断链，最后删自铸分支 | P1a REVIEW 跟进 2（归因勘误后） | 未派发 | — | — | — | — |
-| [P1b-3](P1b-3-snapshot-evidence/) | `fillEvidence()` 落地 + snapshot 优先于进程内存 | 设计文档 4.5 / 5.2 | 未派发 | — | — | — | — |
+| [P1b-1](P1b-1-content-digest/) | 数据版本改为 `data` 内容摘要，版本表键改 `(source_system, params_digest)` | P1a REVIEW 跟进 1/3 + 上游实测 | zhiyuan-48 | 2026-09-13 | 执行中 | — | — |
+| [P1b-2](P1b-2-evidence-passthrough/) | 打通证据到 Agent 的三处断链，最后删自铸分支 | P1a REVIEW 跟进 2（归因勘误后） | zhiyuan-48 | 2026-09-13 | 排队（P1b-1 之后） | — | — |
+| [P1b-3](P1b-3-snapshot-evidence/) | `fillEvidence()` 落地 + snapshot 优先于进程内存 | 设计文档 4.5 / 5.2 | zhiyuan-48 | 2026-09-13 | 排队（P1b-2 之后） | — | — |
+| [P1c-1](P1c-1-validator-unblock/) | 拆掉三处恒真的证据检查，让权威证据能进校验器账本 | 断链 4/5/6 | 未派发（等 P1b-2、P1b-3 合入） | — | — | — | — |
+| P1c-2 | 四态核验接入 Gateway + 第六章分流表 + 重查一次 | 设计文档 5.3 / 第六章 | 任务书未写（等 P1b 落地后定 API 形状） | — | — | — | — |
 | [T008](T008-output-extraction/) | 让 harness 取得到散文包裹的 JSON，并让取不到变成显式失败 | T005 REVIEW 第四节 2 | 未派发 | — | — | — | — |
 
-## P1b 三片的并行关系（派发前先看这个）
+## P1b 三片的并行关系
 
 三份任务书都已写好，**可以同时派给三个实现方**。改动面基本不重叠：
+
+> **实际派发（2026-09-13）：三片全部给了 `zhiyuan-48` 一个会话，要求串行做、每片单独出报告。** 只有一个实现方可用时，串行是对的——三片共出一份报告会让"哪一项没验过"变得说不出口，而那正是 P1a 的失败方式。
 
 | 片 | 改动面 | 与其它片的重叠 |
 |---|---|---|
@@ -49,6 +53,17 @@
 三处今天全看不见，原因完全一致：**证据是每回合自铸的，填的就是当前值，于是三个检查恒真、从未真正做过判定。** 这与 `mcpCalls` 恒为 `[]` 是同一类错误的两面——那次是仪表没通电，这次是校验器没通电。由此产生的第三条方法论规则已补进 `README.md` 第六节：**迁移设计时要专门去找"现在永远通过"的检查**，判别办法是问"有没有一种输入能让它失败"。
 
 **P1c 的范围因此扩大**：账本合并 snapshot、删证据的 `stateVersion` 等值检查、删证据的 `threadId` 等值检查（**artifact 那两处同名检查保留**，产物确实绑定线程与工作区版本），三件事都必须排在四态核验接入**之前**。删检查方向上是放松，论证见设计笔记第六节：删掉的是两个恒真因而从未做过判定的检查，换上的四态核验是会真的说"不"的——**防线变强了**；反过来先接核验不删检查，则两道门都关着，`fact` 回合永远出不去。
+
+**因此 P1c 也切两片**，仍按验证面切（同 P1b 的理由）：
+
+| 片 | 内容 | 验证面 | 状态 |
+|---|---|---|---|
+| P1c-1 | 上面这三件事 | 纯 Python 单测能验完，不需要真实上游、不需要跑通端到端 | 任务书已写，等 P1b-2/P1b-3 合入后派发 |
+| P1c-2 | 四态核验接入 + 第六章分流表 + 重查一次 | 需要 Java verify 端点 + 真实工具执行 | **任务书暂不写** |
+
+P1c-2 的任务书暂不写，是有意的：它要调 `/internal/evidence/verify`，而那个端点的请求/响应形状会被 P1b-1 的 `currentDataVersion(String, String)` 改签名波及。现在写等于拿假设当事实——**这正是 P1a 栽过的那个跟头**（README 第六节第五条）。等 P1b-1 合入、形状定死，再写。
+
+**P1c-1 合入后到 P1c-2 合入前，证据侧的拒收能力存在一个真实的中间态**（`stateVersion` / `threadId` 两维暂时不设防，会话/租户隔离、`evidence_not_found`、`dataVersion` 比对、`admission_mode` 都还在）。这是有意接受的，理由同上——但它是**真实存在的窗口，不是纸面上的**，因此 P1c-2 不应长期挂起。
 
 
 ## 本轮复核的两条结论（影响后续排期）
