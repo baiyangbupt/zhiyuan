@@ -118,7 +118,7 @@ def _parse_json_object(value: str) -> dict[str, Any] | None:
 1. **别去关围栏剥离的旧行为。** 现在"整条以 ` ``` ` 开头"的输入是能正常工作的，围栏扫描要覆盖这种情况而不是替换掉它。第六节有测试。
 2. **`_extract_output` 是递归的**（`:275` 和 `:298` 会递归自己），且在 `item.content[]` 里逐条尝试。你加的"来源记录"在递归里会被多次写入，注意最终留下的是**真正命中那一次**的来源，不是最后一次尝试的来源。
 3. **模型每次输出都不一样。** 这个 bug 是低频的（我 8 次撞 1 次）。**不要靠真实端点去验证解析逻辑**——用单测喂固定文本。真实端点只用来验步骤 3 的"键一定在"。
-4. **不要动 MCP 夹具。** `tests/fixtures/mcp/semantic_readonly_server.py` 和 `app/engine/turn_trace.py` 是 T005 刚改完还没提交的，动它们会让两个任务的改动混在一起、没法分别回滚。
+4. **不要动 MCP 夹具。** `tests/fixtures/mcp/semantic_readonly_server.py` 和 `app/engine/turn_trace.py` 属于 T005 的改动面（T005 已提交），动它们会让改动混在一起、没法分别回滚。
 5. **鉴权信息不要出现在报告、脚本、日志里。** `$CODEX_HOME/auth.json` 里有真实 API key。`.codex-semantic-home/` 已在 `.gitignore`，别把它的内容贴进报告。
 6. **不要原地改 `.codex-semantic-home/config.toml`。** 需要不同配置就另起一个 `CODEX_HOME` 目录。
 
@@ -193,6 +193,15 @@ FAILED tests/unit/test_ops_release_smoke.py::test_release_smoke_supports_product
 ---
 
 ## 七、边界：不要做这些
+
+### ⚠️ 有另一个实现会话正在同一个工作树里干活（2026-09-13 追加）
+
+`git status` 里会有一批**不属于你**的未提交改动（P1b 系列，Java 侧为主，之后会扩到 `app/mcp_server/`、`app/util/internal_client.py`）。它们是另一个会话正在写的。
+
+- **绝对不要运行任何会改动工作树的 git 命令**：`git checkout` / `git restore` / `git stash` / `git reset` / `git clean` 一律禁止。一条 `git stash` 就能把别人几小时的工作删掉，而且不会有人立刻发现。
+- **不要 `git add`、不要 `git commit`。** 提交由设计会话统一做。
+- `git status` / `git diff` 这类只读命令可以用。**你在报告第六节列改动文件清单时，只列你自己改的**，看到别的文件不要列、也不要报告成异常。
+- 全量单测可能因为别人正在改 Python 文件而出现不稳定。**基线以外的失败，先看它是不是落在 `app/mcp_server/`、`app/util/`、`zhiyuan-server/` 这些不属于你的面上**——是的话照实记录并注明"疑似并发改动导致，未处理"，不要去修。
 
 - **不要动 `/root/dev/codex`**（codex 自身的 Rust 源码）。
 - **不要动 `app/engine/turn_trace.py`、`tests/fixtures/mcp/semantic_readonly_server.py`、`tests/unit/test_semantic_readonly_server.py`**——T005 的未提交改动在里面。
