@@ -64,11 +64,12 @@ forbidden_tool_names={"plan_apply"},
    ```
    FAILED tests/unit/test_dialog_quality_gate.py::test_final_action_explicit_clone_sources_have_volunteer_fixture
    FAILED tests/unit/test_ops_release_smoke.py::test_release_smoke_supports_production_and_dev_web_base_paths[None-/assistant-pc/session]
-   2 failed, 1712 passed, 34 skipped
+   2 failed, 1714 passed, 34 skipped
    ```
 
    与本任务无关，**不要去修**。
-8. **同一个工作树里还有两个会话在干活**（一个在改 `zhiyuan-server/` 下的 Java，一个在改 `scripts/codex_semantic_smoke.py`）。见第六节。
+8. **同一个工作树里还有别的活在跑**（`zhiyuan-server/` 下的 Java）。见第六节。
+9. **`scripts/codex_semantic_smoke.py` 刚刚被另一个任务改完并已提交**，现在是干净的。**本任务要跑它，但一行都不要改它。**
 
 ---
 
@@ -172,7 +173,7 @@ bash scripts/run_unit_tests.sh 2>&1 | tail -6
 
 **不要动这些文件：**
 
-- `scripts/codex_semantic_smoke.py`——**另一个会话正在改它**，碰了就是事故
+- `scripts/codex_semantic_smoke.py`——**本任务要跑它，但一行都不要改它**（它刚被另一个任务改完提交，现在是干净的；你的改动只该落在夹具和夹具的单测上）
 - `app/engine/semantic_eval.py`（期望的判定逻辑不改）
 - `app/engine/result_synthesis.py`、`app/gateway/service.py`（那是 P2 另一项）
 - `app/harness/` 下任何文件
