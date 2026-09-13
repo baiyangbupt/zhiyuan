@@ -23,9 +23,6 @@ public class ResponseDTO<T> implements Serializable {
     @ApiModelProperty(value = "响应数据")
     private T data;
 
-    @ApiModelProperty(value = "上游数据版本；缺失表示上游未提供版本，不签发证据")
-    private String dataVersion;
-
     @ApiModelProperty(value = "Java 签发的权威证据；缺失表示本次未签发，调用方不得自行补造")
     private List<ConversationEvidenceDTO> evidence;
 

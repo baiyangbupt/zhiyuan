@@ -12,11 +12,11 @@
 | [T006](T006-registry-unblock/) | 把本地基础设施 compose 指向可达镜像源，解除 P2 前置 | 修订计划 P2 | deepseek | 2026-09-10（口头） | `DONE` | `ACCEPTED` | — |
 | [T007](T007-agent-doc-accuracy/) | 修正 `zhiyuan-agent/CLAUDE.md` 的 Tools 一节 | T003 REVIEW 勘误 2 | deepseek | 2026-09-10（口头） | `DONE` | `ACCEPTED` | P5 文档收尾 |
 | [P1a](P1a-evidence-ledger/) | Java 证据台账：建表、摘要、签发、四态核验 | 修订计划 P1 切片 | deepseek | 2026-09-10 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | P1b-1 / P1b-2 / P1b-3 |
-| [P1b-1](P1b-1-content-digest/) | 数据版本改为 `data` 内容摘要，版本表键改 `(source_system, params_digest)` | P1a REVIEW 跟进 1/3 + 上游实测 | zhiyuan-48 | 2026-09-13 | 执行中 | — | — |
-| [P1b-2](P1b-2-evidence-passthrough/) | 打通证据到 Agent 的三处断链，最后删自铸分支 | P1a REVIEW 跟进 2（归因勘误后） | zhiyuan-48 | 2026-09-13 | 排队（P1b-1 之后） | — | — |
+| [P1b-1](P1b-1-content-digest/) | 数据版本改为 `data` 内容摘要，版本表键改 `(source_system, params_digest)` | P1a REVIEW 跟进 1/3 + 上游实测 | zhiyuan-48 | 2026-09-13 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | 两条遗留并入 P1c-2；1 条挂起 |
+| [P1b-2](P1b-2-evidence-passthrough/) | 打通证据到 Agent 的三处断链，最后删自铸分支 | P1a REVIEW 跟进 2（归因勘误后） | zhiyuan-48 | 2026-09-13 | `NEEDS_CONTEXT`（步骤 1、6 已完成并验过；2–5 等裁决 (a)） | — | — |
 | [P1b-3](P1b-3-snapshot-evidence/) | `fillEvidence()` 落地 + snapshot 优先于进程内存 | 设计文档 4.5 / 5.2 | zhiyuan-48 | 2026-09-13 | 排队（P1b-2 之后） | — | — |
 | [P1c-1](P1c-1-validator-unblock/) | 拆掉三处恒真的证据检查，让权威证据能进校验器账本 | 断链 4/5/6 | 未派发（等 P1b-2、P1b-3 合入） | — | — | — | — |
-| P1c-2 | 四态核验接入 Gateway + 第六章分流表 + 重查一次 | 设计文档 5.3 / 第六章 | 任务书未写（等 P1b 落地后定 API 形状） | — | — | — | — |
+| P1c-2 | 四态核验接入 Gateway + 第六章分流表 + 重查一次 | 设计文档 5.3 / 第六章 + P1b-1 REVIEW 遗留 2 | **任务书可写了**（P1b-1 已合入，API 形状定死） | — | — | — | — |
 | [T008](T008-output-extraction/) | 让 harness 取得到散文包裹的 JSON，并让取不到变成显式失败 | T005 REVIEW 第四节 2 | claude-subagent | 2026-09-13 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | T009 |
 | [T009](T009-agent-message-capture/) | 冒烟 payload 存一份拼好的 agentMessage 正文（碎片已在，缺"拼好的那份"） | T008 REVIEW 第六节 | claude-subagent | 2026-09-13 | `DONE` | `ACCEPTED_WITH_FOLLOWUP` | 无（三条遗留不开任务） |
 | [P2a](P2a-forbidden-tool-testable/) | 把 `plan_apply` 放上桌，让 `forbidden_tool_names` 守在对的门上 | mixed-read-write 成因 3 | — | 可派发（T009 已合入，依赖解除） | — | — | — |
@@ -61,9 +61,17 @@
 | 片 | 内容 | 验证面 | 状态 |
 |---|---|---|---|
 | P1c-1 | 上面这三件事 | 纯 Python 单测能验完，不需要真实上游、不需要跑通端到端 | 任务书已写，等 P1b-2/P1b-3 合入后派发 |
-| P1c-2 | 四态核验接入 + 第六章分流表 + 重查一次 | 需要 Java verify 端点 + 真实工具执行 | **任务书暂不写** |
+| P1c-2 | 四态核验接入 + 第六章分流表 + 重查一次 | 需要 Java verify 端点 + 真实工具执行 | **前置已解除，任务书可写** |
 
-P1c-2 的任务书暂不写，是有意的：它要调 `/internal/evidence/verify`，而那个端点的请求/响应形状会被 P1b-1 的 `currentDataVersion(String, String)` 改签名波及。现在写等于拿假设当事实——**这正是 P1a 栽过的那个跟头**（README 第六节第五条）。等 P1b-1 合入、形状定死，再写。
+P1c-2 的任务书原本暂不写，是有意的：它要调 `/internal/evidence/verify`，而那个端点的请求/响应形状会被 P1b-1 的 `currentDataVersion(String, String)` 改签名波及。现在写等于拿假设当事实——**这正是 P1a 栽过的那个跟头**（README 第六节第五条）。
+
+**2026-09-13：P1b-1 已合入，签名定死，这条前置解除。** 同时 P1b-1 的复核给 P1c-2 带回一条必须一起做的遗留（`P1b-1-content-digest/REVIEW.md` 第六节）：
+
+> **`currentDataVersion()` 查不到记录时返回空串 `""`**，于是比对必然不等，`verifyOne` 把它判成 `stale`。可四态里的 `unknown` 正是为这种情形准备的——**"我没有当前版本的记录"和"当前版本跟你签的不一样"是两个不同的问题，现在共用一个答案槽。**
+
+**这是这个形状的第三次**（前两次：断链 5 的 `stateVersion` 把"方案版本"当"招生数据版本"；成因 4 的 `executionStatus` 把"工具跑成功了吗"当"诉求满足了吗"）。它的直接后果是诊断被污染：版本表一旦被清空（例如 V15 那样的 `DROP TABLE` 重建），系统报出来的是"上游数据变了"，而真相是"我丢了自己的版本记录"，**两者的处置完全不同**。
+
+附带记一条运维约束：**`evidence_source_version` 后续迁移不得再用 `DROP TABLE` 重建。** V15 这次是安全的，条件是台账从未进过产线（本节下方第 2 条）——一旦进了产线，同样的迁移会让**全部在世证据在被重新观测之前一律判 `stale`**，fail-closed 下等于全部作废。
 
 **P1c-1 合入后到 P1c-2 合入前，证据侧的拒收能力存在一个真实的中间态**（`stateVersion` / `threadId` 两维暂时不设防，会话/租户隔离、`evidence_not_found`、`dataVersion` 比对、`admission_mode` 都还在）。这是有意接受的，理由同上——但它是**真实存在的窗口，不是纸面上的**，因此 P1c-2 不应长期挂起。
 

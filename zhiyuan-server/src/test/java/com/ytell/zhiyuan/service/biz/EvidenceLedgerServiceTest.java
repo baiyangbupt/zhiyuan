@@ -66,7 +66,7 @@ class EvidenceLedgerServiceTest {
     void shouldSignAndRecordWhenVersionAndScopePresent() {
         EvidenceScope scope = EvidenceScope.of(7L, 42L, "thread-1");
         when(evidenceLedgerMapper.insert(any(EvidenceLedgerEntity.class))).thenReturn(1);
-        when(evidenceSourceVersionMapper.upsert(anyString(), anyString(), any(Date.class))).thenReturn(1);
+        when(evidenceSourceVersionMapper.upsert(anyString(), anyString(), anyString(), any(Date.class))).thenReturn(1);
 
         ConversationEvidenceDTO evidence = service.sign(request("2026-06-v17", scope));
 
@@ -92,7 +92,7 @@ class EvidenceLedgerServiceTest {
         assertEquals(evidence.getEvidenceId(), stored.getEvidenceId());
         assertEquals(evidence.getParamsDigest(), stored.getParamsDigest());
         assertTrue(stored.getExpiresAt().after(stored.getObservedAt()));
-        verify(evidenceSourceVersionMapper).upsert(eq(SOURCE), eq("2026-06-v17"), any(Date.class));
+        verify(evidenceSourceVersionMapper).upsert(eq(SOURCE), anyString(), eq("2026-06-v17"), any(Date.class));
     }
 
     @Test
@@ -103,7 +103,7 @@ class EvidenceLedgerServiceTest {
         assertNull(service.sign(request("  ", EvidenceScope.of(7L, 42L, "thread-1"))));
 
         verify(evidenceLedgerMapper, never()).insert(any(EvidenceLedgerEntity.class));
-        verify(evidenceSourceVersionMapper, never()).upsert(anyString(), anyString(), any(Date.class));
+        verify(evidenceSourceVersionMapper, never()).upsert(anyString(), anyString(), anyString(), any(Date.class));
     }
 
     @Test
@@ -120,7 +120,7 @@ class EvidenceLedgerServiceTest {
     @Test
     void shouldGenerateDifferentEvidenceIdsForRepeatedIdenticalQuery() {
         when(evidenceLedgerMapper.insert(any(EvidenceLedgerEntity.class))).thenReturn(1);
-        when(evidenceSourceVersionMapper.upsert(anyString(), anyString(), any(Date.class))).thenReturn(1);
+        when(evidenceSourceVersionMapper.upsert(anyString(), anyString(), anyString(), any(Date.class))).thenReturn(1);
 
         ConversationEvidenceDTO first = service.sign(request("2026-06-v17", EvidenceScope.of(7L, 42L, "thread-1")));
         ConversationEvidenceDTO second = service.sign(request("2026-06-v17", EvidenceScope.of(7L, 42L, "thread-1")));
@@ -157,6 +157,7 @@ class EvidenceLedgerServiceTest {
     private EvidenceSourceVersionEntity sourceVersion(String dataVersion) {
         EvidenceSourceVersionEntity entity = new EvidenceSourceVersionEntity();
         entity.setSourceSystem(SOURCE);
+        entity.setParamsDigest("0123456789abcdef0123456789abcdef");
         entity.setDataVersion(dataVersion);
         entity.setObservedAt(new Date());
         return entity;
@@ -166,7 +167,8 @@ class EvidenceLedgerServiceTest {
     void shouldReturnValidWhenVersionMatchesUpstream() {
         Date future = new Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(30));
         when(evidenceLedgerMapper.selectById("ev_ok")).thenReturn(stored("ev_ok", "2026-06-v17", future));
-        when(evidenceSourceVersionMapper.selectById(SOURCE)).thenReturn(sourceVersion("2026-06-v17"));
+        when(evidenceSourceVersionMapper.selectBySourceAndParams(eq(SOURCE), anyString()))
+                .thenReturn(sourceVersion("2026-06-v17"));
 
         EvidenceVerifyRes response = service.verify(verifyRequest("ev_ok"));
 
@@ -183,7 +185,8 @@ class EvidenceLedgerServiceTest {
     void shouldReturnStaleWhenVersionDiffersFromUpstream() {
         Date future = new Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(30));
         when(evidenceLedgerMapper.selectById("ev_stale")).thenReturn(stored("ev_stale", "2026-06-v16", future));
-        when(evidenceSourceVersionMapper.selectById(SOURCE)).thenReturn(sourceVersion("2026-06-v17"));
+        when(evidenceSourceVersionMapper.selectBySourceAndParams(eq(SOURCE), anyString()))
+                .thenReturn(sourceVersion("2026-06-v17"));
 
         EvidenceVerifyRes response = service.verify(verifyRequest("ev_stale"));
 
@@ -203,7 +206,8 @@ class EvidenceLedgerServiceTest {
     void shouldReturnExpiredWhenPastExpiresAt() {
         Date past = new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1));
         when(evidenceLedgerMapper.selectById("ev_old")).thenReturn(stored("ev_old", "2026-06-v17", past));
-        when(evidenceSourceVersionMapper.selectById(SOURCE)).thenReturn(sourceVersion("2026-06-v17"));
+        when(evidenceSourceVersionMapper.selectBySourceAndParams(eq(SOURCE), anyString()))
+                .thenReturn(sourceVersion("2026-06-v17"));
 
         EvidenceVerifyRes response = service.verify(verifyRequest("ev_old"));
 
@@ -244,7 +248,7 @@ class EvidenceLedgerServiceTest {
     void shouldReturnStaleWhenNoSourceVersionObserved() {
         Date future = new Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(30));
         when(evidenceLedgerMapper.selectById("ev_nover")).thenReturn(stored("ev_nover", "2026-06-v17", future));
-        when(evidenceSourceVersionMapper.selectById(SOURCE)).thenReturn(null);
+        when(evidenceSourceVersionMapper.selectBySourceAndParams(eq(SOURCE), anyString())).thenReturn(null);
 
         assertEquals("stale", service.verify(verifyRequest("ev_nover")).getResults().get("ev_nover").getStatus());
     }

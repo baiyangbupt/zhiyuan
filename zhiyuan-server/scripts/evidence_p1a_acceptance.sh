@@ -77,13 +77,14 @@ done
 if [ "${READY}" -ne 1 ]; then echo "服务 60 秒内未就绪，日志尾部："; tail -30 "${APP_LOG}"; exit 1; fi
 echo "服务已就绪：${BASE}"
 echo "上游替身：${UP}"
-echo "Flyway 版本记录（V14）："
-mysql_exec "SELECT version, description, success FROM flyway_schema_history WHERE version = '14';"
+echo "Flyway 版本记录（V14 / V15）："
+mysql_exec "SELECT version, description, success FROM flyway_schema_history WHERE version IN ('14','15') ORDER BY version;"
 echo "台账初始行数："
 mysql_exec "SELECT COUNT(*) FROM evidence_ledger;"
 
 PARAMS_V1='{"areaId":"330000","batch":"本科批","majorId":"major-cs","schoolId":"school-1","year":2025,"subjectType":"物理类"}'
 PARAMS_V2='{"areaId":"330000","batch":"本科批","majorId":"major-cs","schoolId":"school-1","year":2024,"subjectType":"物理类"}'
+PARAMS_V3='{"areaId":"330000","batch":"本科批","majorId":"major-cs","schoolId":"school-2","year":2025,"subjectType":"物理类"}'
 SCOPE="tenantId=7&chatSessionId=42&threadId=thread-1"
 
 call_score_line() {
@@ -122,12 +123,12 @@ echo "paramsDigest 变化      = $([ "${D1}" != "${D3}" ] && echo true || echo f
 
 step "3. 台账内容（签发确实落库）"
 mysql_exec "SELECT evidence_id, tenant_id, chat_session_id, thread_id, source_system, params_digest, data_version, observed_at, expires_at FROM evidence_ledger ORDER BY observed_at;"
-echo "--- 来源版本登记 ---"
-mysql_exec "SELECT source_system, data_version, observed_at FROM evidence_source_version;"
+echo "--- 来源版本登记（键是 source_system + params_digest）---"
+mysql_exec "SELECT source_system, params_digest, data_version, observed_at FROM evidence_source_version;"
 
-step "4. 上游 dataVersion 取不到 → 不签发（对照：能取到时必须签发）"
-echo "--- 控制面把版本设为 null ---"
-curl -s -X POST "${UP}/__control/version" -H 'Content-Type: application/json' -d '{"dataVersion": null}'
+step "4. 响应 data 缺失 → 不签发（对照：data 存在时必须签发）"
+echo "--- 控制面把 data 置为 null ---"
+curl -s -X POST "${UP}/__control/data" -H 'Content-Type: application/json' -d '{"dataNull": true}'
 echo
 BEFORE=$(mysql_exec "SELECT COUNT(*) FROM evidence_ledger;")
 R4=$(call_score_line "${PARAMS_V1}")
@@ -137,13 +138,13 @@ AFTER=$(mysql_exec "SELECT COUNT(*) FROM evidence_ledger;")
 echo "调用前台账行数 = ${BEFORE}"
 echo "调用后台账行数 = ${AFTER}"
 echo "未产生新记录   = $([ "${BEFORE}" = "${AFTER}" ] && echo true || echo false)"
-echo "--- 控制面恢复版本 ---"
-curl -s -X POST "${UP}/__control/version" -H 'Content-Type: application/json' -d '{"dataVersion": "2026-06-v17"}'
+echo "--- 控制面恢复 data ---"
+curl -s -X POST "${UP}/__control/data" -H 'Content-Type: application/json' -d '{"dataNull": false}'
 echo
 R5=$(call_score_line "${PARAMS_V1}")
 AFTER2=$(mysql_exec "SELECT COUNT(*) FROM evidence_ledger;")
-echo "恢复版本后再调用，台账行数 = ${AFTER2}"
-echo "对照：能取到版本时必须产生记录 = $([ "${AFTER2}" -gt "${AFTER}" ] && echo true || echo false)"
+echo "恢复 data 后再调用，台账行数 = ${AFTER2}"
+echo "对照：data 存在时必须产生记录 = $([ "${AFTER2}" -gt "${AFTER}" ] && echo true || echo false)"
 ID5=$(extract "${R5}" evidenceId)
 echo "新签发 evidenceId = ${ID5}"
 
@@ -156,9 +157,9 @@ verify() {
 echo "--- verify(${ID5}) ---"
 verify "[\"${ID5}\"]"
 
-step "6. 四态核验：stale（上游版本变了，旧记录当时正确、现已失效）"
-echo "--- 控制面把上游版本推进到 2026-06-v18，再查一次 ---"
-curl -s -X POST "${UP}/__control/version" -H 'Content-Type: application/json' -d '{"dataVersion": "2026-06-v18"}'
+step "6. 四态核验：stale（上游内容变了，旧记录当时正确、现已失效）"
+echo "--- 控制面把响应内容里的 minScore 从 612 改成 620（相当于上游数据更新），再查一次 ---"
+curl -s -X POST "${UP}/__control/content" -H 'Content-Type: application/json' -d '{"scoreLineMinScore": "620"}'
 echo
 R6=$(call_score_line "${PARAMS_V1}")
 ID6=$(extract "${R6}" evidenceId)
@@ -188,7 +189,43 @@ echo "mysql 退出码 = ${PROBE_CODE}"
 echo "--- 台账里是否落进了这条探针行 ---"
 mysql_exec "SELECT COUNT(*) FROM evidence_ledger WHERE evidence_id = 'ev_null_version_probe';"
 
-step "10. 收尾：停止服务"
+step "10. 版本表键的对照：同来源、不同参数的第二条证据签发后，第一条必须仍是 valid"
+echo "--- 参数组 1（schoolId=school-1，前面一直在用的那组）---"
+R_KEY1=$(call_score_line "${PARAMS_V1}")
+KEY1=$(extract "${R_KEY1}" evidenceId)
+echo "evidenceId = ${KEY1}"
+echo "--- 参数组 3（只把 schoolId 改成 school-2）---"
+R_KEY2=$(call_score_line "${PARAMS_V3}")
+KEY2=$(extract "${R_KEY2}" evidenceId)
+echo "evidenceId = ${KEY2}"
+echo "--- 版本表当前内容（应有两行，params_digest 不同）---"
+mysql_exec "SELECT source_system, params_digest, data_version FROM evidence_source_version ORDER BY params_digest;"
+echo "--- 核验两条：第二条签发后第一条必须仍是 valid ---"
+verify "[\"${KEY1}\",\"${KEY2}\"]"
+
+step "11. 版本表键的对照（有牙齿版）：两组参数、两次内容各不相同，后签的不得让先签的失效"
+echo "--- 内容当前为 minScore=620，用参数组 1 签一条 ---"
+RA=$(call_score_line "${PARAMS_V1}")
+IDA=$(extract "${RA}" evidenceId)
+VA=$(extract "${RA}" dataVersion)
+PA=$(extract "${RA}" paramsDigest)
+echo "evidenceId=${IDA}  paramsDigest=${PA}  dataVersion=${VA}"
+echo "--- 把内容改成 minScore=612，再用参数组 3（schoolId=school-2）签一条 ---"
+curl -s -X POST "${UP}/__control/content" -H 'Content-Type: application/json' -d '{"scoreLineMinScore": "612"}'
+echo
+RB=$(call_score_line "${PARAMS_V3}")
+IDB=$(extract "${RB}" evidenceId)
+VB=$(extract "${RB}" dataVersion)
+PB=$(extract "${RB}" paramsDigest)
+echo "evidenceId=${IDB}  paramsDigest=${PB}  dataVersion=${VB}"
+echo "两条 paramsDigest 不同 = $([ "${PA}" != "${PB}" ] && echo true || echo false)"
+echo "两条 dataVersion 不同   = $([ "${VA}" != "${VB}" ] && echo true || echo false)"
+echo "--- 版本表（键必须是 source_system + params_digest）---"
+mysql_exec "SELECT source_system, params_digest, data_version FROM evidence_source_version ORDER BY params_digest;"
+echo "--- 核验：后签的 B 不得让先签的 A 失效（对照见报告：把键退回单行，A 必然变 stale）---"
+verify "[\"${IDA}\",\"${IDB}\"]"
+
+step "12. 收尾：停止服务"
 echo "上游替身请求计数："
 curl -s "${UP}/__control/state"
 echo

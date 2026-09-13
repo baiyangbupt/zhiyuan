@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""P1a 验收用的上游替身（只在本机回环地址上跑）。
+"""验收用的上游替身（只在本机回环地址上跑）。
 
-真实上游是 https://www.gaotuzhiyuan.com，从验收环境不可达，且它是否返回
-dataVersion 不由我们决定。验收需要的是「上游版本存在」和「上游版本缺失」
-两条分支都可复现，所以这里用替身提供：
+真实上游是 https://www.gaotuzhiyuan.com。它<b>不返回任何数据版本字段</b>（2026-09-11 实测，
+见 P1b-1 任务书第二节），所以这个替身也不再伪造 `dataVersion` —— 伪造它会让验收
+在一条不存在的契约上通过，P1a 就是这么错的。
+
+「数据版本」现在由 Java 对响应内容算摘要得到，因此验收需要的是
+「响应内容存在」与「响应内容缺失/变化」三条分支可复现，替身提供：
 
   POST /hl-wish/ci/ci_feign/volunteer/querySchoolMajorScoreLine
   GET  /hl-wish/ci/h5/batchData/anno/batchListByPolicy
@@ -11,8 +14,10 @@ dataVersion 不由我们决定。验收需要的是「上游版本存在」和�
 
 控制面（只有替身有，真实上游没有）：
 
-  POST /__control/version  {"dataVersion": "2026-06-v17"}   设版本，null 表示不返回版本字段
-  GET  /__control/state                                     当前版本 + 收到的请求计数
+  POST /__control/data      {"dataNull": true}                 让所有响应的 data 为 null
+  POST /__control/data      {"dataNull": false}                恢复
+  POST /__control/content   {"scoreLineMinScore": "620"}       改内容（摘要必须随之变）
+  GET  /__control/state                                        当前控制位 + 收到的请求计数
 """
 
 from __future__ import annotations
@@ -22,8 +27,11 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+DEFAULT_MIN_SCORE = "612"
+
 STATE = {
-    "dataVersion": "2026-06-v17",
+    "dataNull": False,
+    "scoreLineMinScore": DEFAULT_MIN_SCORE,
     "calls": [],
 }
 LOCK = threading.Lock()
@@ -41,7 +49,7 @@ def _score_line_row() -> dict:
         "batchTitle": "本科批",
         "enrollNum": "10",
         "maxScore": "630",
-        "minScore": "612",
+        "minScore": STATE["scoreLineMinScore"],
         "averageScore": "620",
         "minPos": "8000",
         "maxPos": "12000",
@@ -113,27 +121,39 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/__control/state":
             with LOCK:
-                self._write_json({"dataVersion": STATE["dataVersion"], "calls": list(STATE["calls"])})
+                self._write_json({
+                    "dataNull": STATE["dataNull"],
+                    "scoreLineMinScore": STATE["scoreLineMinScore"],
+                    "calls": list(STATE["calls"]),
+                })
             return
         self._handle(path)
 
     def do_POST(self) -> None:
         path = self.path.split("?", 1)[0]
         body = self._read_json()
-        if path == "/__control/version":
+        if path == "/__control/data":
             with LOCK:
-                STATE["dataVersion"] = body.get("dataVersion")
-            self._write_json({"ok": True, "dataVersion": STATE["dataVersion"]})
+                STATE["dataNull"] = bool(body.get("dataNull"))
+                snapshot = {"dataNull": STATE["dataNull"]}
+            self._write_json({"ok": True, **snapshot})
+            return
+        if path == "/__control/content":
+            with LOCK:
+                requested = body.get("scoreLineMinScore")
+                STATE["scoreLineMinScore"] = DEFAULT_MIN_SCORE if requested is None else str(requested)
+                snapshot = {"scoreLineMinScore": STATE["scoreLineMinScore"]}
+            self._write_json({"ok": True, **snapshot})
             return
         self._handle(path)
 
     def _handle(self, path: str) -> None:
         with LOCK:
             STATE["calls"].append(path)
-            version = STATE["dataVersion"]
+            data_null = STATE["dataNull"]
         payload = _payload(path)
-        if version is not None:
-            payload["dataVersion"] = version
+        if data_null:
+            payload["data"] = None
         self._write_json(payload)
 
 

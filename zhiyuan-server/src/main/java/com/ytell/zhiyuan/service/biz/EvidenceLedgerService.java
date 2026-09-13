@@ -40,7 +40,7 @@ public class EvidenceLedgerService {
     /** 权威级别标签，只允许由本服务写入。 */
     public static final String SOURCE_LEVEL_AUTHORITATIVE = "authoritative";
 
-    /** 取数来源标识，失效判定按来源分别比对上游版本。 */
+    /** 取数来源标识，失效判定按「来源 + 查询参数」分别比对最近一次观测到的内容摘要。 */
     public static final String SOURCE_GAOTU_SCHOOL_MAJOR_SCORE_LINE = "gaotu.schoolMajorScoreLine";
     public static final String SOURCE_GAOTU_BATCH_LIST = "gaotu.batchList";
     public static final String SOURCE_GAOTU_PROGRAM_BY_LIMIT_NUM = "gaotu.programByLimitNum";
@@ -77,7 +77,7 @@ public class EvidenceLedgerService {
             return null;
         }
         if (isBlank(request.getDataVersion())) {
-            // 拿不到上游版本就不签发，让调用方走已有的 dataVersion_missing 降级路径
+            // 算不出内容摘要（data 为 null 或无法规范化）就不签发，调用方按"证据不可用"降级
             return null;
         }
         EvidenceScope scope = request.getScope();
@@ -110,7 +110,7 @@ public class EvidenceLedgerService {
 
         try {
             evidenceLedgerMapper.insert(entity);
-            evidenceSourceVersionMapper.upsert(request.getSourceSystem(), request.getDataVersion(), observedAt);
+            evidenceSourceVersionMapper.upsert(request.getSourceSystem(), paramsDigest, request.getDataVersion(), observedAt);
         } catch (RuntimeException e) {
             // 台账写不进去就不签发：调用方拿不到证据，必须按"证据不可用"降级。
             // 这里不抛出，避免把一次取证失败放大成取数失败。
@@ -178,10 +178,13 @@ public class EvidenceLedgerService {
             item.setStatus(STATUS_EXPIRED);
             return item;
         }
-        String current = currentVersions.get(entity.getSourceSystem());
+        // 缓存键必须带上 paramsDigest：版本按「来源 + 查询参数」登记，
+        // 同来源不同参数的记录不能共用同一个当前版本，否则批量核验会互相串味。
+        String cacheKey = entity.getSourceSystem() + " " + entity.getParamsDigest();
+        String current = currentVersions.get(cacheKey);
         if (current == null) {
-            current = currentDataVersion(entity.getSourceSystem());
-            currentVersions.put(entity.getSourceSystem(), current);
+            current = currentDataVersion(entity.getSourceSystem(), entity.getParamsDigest());
+            currentVersions.put(cacheKey, current);
         }
         item.setStatus(current.equals(entity.getDataVersion()) ? STATUS_VALID : STATUS_STALE);
         return item;
@@ -213,11 +216,12 @@ public class EvidenceLedgerService {
     }
 
     /**
-     * 该来源最近一次观察到的上游数据版本。没有观察记录时返回空串，
+     * 该来源、该组查询参数最近一次观察到的数据版本。没有观察记录时返回空串，
      * 于是台账记录永远比不中，核验落到 {@code stale} 而不是 {@code valid}。
      */
-    private String currentDataVersion(String sourceSystem) {
-        EvidenceSourceVersionEntity current = evidenceSourceVersionMapper.selectById(sourceSystem);
+    private String currentDataVersion(String sourceSystem, String paramsDigest) {
+        EvidenceSourceVersionEntity current =
+                evidenceSourceVersionMapper.selectBySourceAndParams(sourceSystem, paramsDigest);
         if (current == null || isBlank(current.getDataVersion())) {
             return "";
         }

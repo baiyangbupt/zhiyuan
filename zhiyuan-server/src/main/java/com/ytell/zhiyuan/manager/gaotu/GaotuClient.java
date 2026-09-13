@@ -7,6 +7,7 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Maps;
 import com.ytell.zhiyuan.common.config.GaotuProperties;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.common.util.EvidenceContentDigest;
 import com.ytell.zhiyuan.common.util.JsonHttpUtil;
 import com.ytell.zhiyuan.model.dto.evidence.EvidenceScope;
 import com.ytell.zhiyuan.model.dto.evidence.EvidenceSignRequest;
@@ -327,15 +328,18 @@ public class GaotuClient {
     }
 
     /**
-     * 把查询结果交给台账签发。上游版本、归属范围任一缺失则不签发，
+     * 把查询结果交给台账签发。响应内容（data 摘要）、归属范围任一缺失则不签发，
      * 调用方拿不到 evidence 字段，必须按"证据不可用"降级。
      */
     private void attachEvidence(ResponseDTO<?> response, String sourceSystem, Object request, EvidenceScope scope) {
         if (response == null) {
             return;
         }
+        // "数据版本"取 data 内容本身的摘要，不取上游信封字段——上游信封上没有版本字段，
+        // 且信封里的 timestamp 逐次调用都变。见 EvidenceContentDigest。
+        String dataVersion = EvidenceContentDigest.digest(response.getData());
         ConversationEvidenceDTO evidence = evidenceLedgerService.sign(EvidenceSignRequest.query(
-                sourceSystem, response.getDataVersion(), toParams(request), scope));
+                sourceSystem, dataVersion, toParams(request), scope));
         if (evidence != null) {
             response.setEvidence(Collections.singletonList(evidence));
         }
