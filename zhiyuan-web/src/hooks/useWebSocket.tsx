@@ -11,6 +11,7 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
     autoReconnect = true,
     reconnectInterval = 3000,
     maxReconnectAttempts = Number.POSITIVE_INFINITY,
+    authenticate,
   } = options;
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -18,6 +19,11 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
   const reconnectAttemptsRef = useRef<number>(0);
   const isMountedRef = useRef<boolean>(true);
   const pendingMessagesRef = useRef<Array<WebSocketMessage | string>>([]);
+  // 队列必须有上限，且**换 URL 时清空**：
+  // 上限缺失时，一次长时间断线会把用户所有离线输入攒在内存里；
+  // 不清空则会把上一个会话的消息发进新会话——用户在新页面里看到自己的话
+  // 被发到了别处，而且没有任何提示。
+  const MAX_PENDING_MESSAGES = 20;
 
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [lastMessage, setLastMessage] = useState<WebSocketMessage | string | null>(null);
@@ -30,11 +36,12 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
       onMessage,
       onClose,
       onError,
+      authenticate,
     }),
-    [onOpen, onMessage, onClose, onError]
+    [onOpen, onMessage, onClose, onError, authenticate]
   );
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     // 只在客户端执行
     if (typeof window === 'undefined') {
       return;
@@ -61,8 +68,26 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
     }
 
     try {
-      console.log('🔄 Creating new WebSocket connection to:', url);
-      const socket = new WebSocket(url);
+      console.log('🔄 建立对话通道连接（地址不入日志）');
+      // 票据是**一次性且短命**的：每次连接尝试都要重新取。
+      // 复用上一张票会在重连时被服务端拒掉（它已经用掉了），
+      // 而那种失败看起来像"网络问题"，很难查。
+      let connectUrl = url;
+      if (callbacks.authenticate) {
+        let params: Record<string, string>;
+        try {
+          params = await callbacks.authenticate();
+        } catch (authError) {
+          // 取不到票就不连：连上去也会被拒，还会白白消耗一次重连计数。
+          console.warn('取票失败，本次不连接');
+          return;
+        }
+        const query = new URLSearchParams(params).toString();
+        if (query) {
+          connectUrl = `${url}${url.includes('?') ? '&' : '?'}${query}`;
+        }
+      }
+      const socket = new WebSocket(connectUrl);
       wsRef.current = socket;
 
       socket.onopen = (event: Event) => {
@@ -120,7 +145,7 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
               console.log(
                 `Attempting reconnect (${reconnectAttemptsRef.current}/${maxReconnectAttempts})`
               );
-              connect();
+              void connect();
             }
           }, reconnectInterval);
         }
@@ -150,9 +175,17 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
       } else {
         console.warn('⚠️ WebSocket is not connected');
         pendingMessagesRef.current.push(message);
+        if (pendingMessagesRef.current.length > MAX_PENDING_MESSAGES) {
+          // 丢最旧的：新输入更可能还是用户想要的那条。
+          pendingMessagesRef.current.splice(
+            0,
+            pendingMessagesRef.current.length - MAX_PENDING_MESSAGES,
+          );
+          console.warn('待发队列已满，丢弃了最旧的待发消息');
+        }
         if (!isConnected) {
           console.log('Attempting to reconnect...');
-          connect();
+          void connect();
         }
       }
     },
@@ -201,7 +234,7 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
     // 延迟一下再连接，确保断开完成
     setTimeout(() => {
       if (isMountedRef.current) {
-        connect();
+        void connect();
       }
     }, 100);
   }, [disconnect, connect]);
@@ -209,10 +242,14 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
   useEffect(() => {
     isMountedRef.current = true;
 
+    // 换了 URL 就是换了会话/环境：上一条会话没发出去的消息**不能**带过去。
+    pendingMessagesRef.current = [];
+    reconnectAttemptsRef.current = 0;
+
     // 只在客户端执行连接；url 变化时需要重连到新的会话/环境地址。
     if (typeof window !== 'undefined') {
-      console.log('🏗️ Component mounted or websocket url changed, connecting WebSocket');
-      connect();
+      console.log('🏗️ 连接对话通道（地址不入日志）');
+      void connect();
     }
 
     return () => {
@@ -228,12 +265,11 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
     []
   );
 
-  // 添加调试信息
+  // 调试信息只留状态，不留地址：`wsRef.current.url` 里带着查询串上的票据，
+  // 它落到控制台就等于落到了任何能看到控制台的人手里。
   useEffect(() => {
     console.log('WebSocket ref state:', {
-      current: wsRef.current,
       readyState: wsRef.current?.readyState,
-      url: wsRef.current?.url,
     });
   }, [isConnected, reconnectCount]);
 

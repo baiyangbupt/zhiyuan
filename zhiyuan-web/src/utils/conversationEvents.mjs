@@ -1,3 +1,95 @@
+// ── v1 统一事件（协议版本 1） ────────────────────────────────────────
+// 白名单同时是"渲染面"的定义：不在里面的类型不会被页面渲染，
+// 服务端新增事件类型时必须两边一起改，而不是靠前端"认不出来就画个默认"。
+export const CONVERSATION_V1_TYPES = new Set([
+  'turn.started',
+  'turn.phase',
+  'tool.progress',
+  'understanding.preview',
+  'clarification.requested',
+  'clarification.resolved',
+  'proposal.preview',
+  'conversationAction.result',
+  'assistant.completed',
+  'turn.completed',
+  'recoverable.error',
+  'session.resync',
+]);
+
+export const isConversationV1Event = event =>
+  !!event
+  && event.protocolVersion === 1
+  && CONVERSATION_V1_TYPES.has(event.type)
+  && typeof event.sessionId === 'string'
+  && typeof event.turnId === 'string'
+  && typeof event.sequence === 'number';
+
+const V1_PAYLOAD_WHITELIST = {
+  'tool.progress': ['itemId', 'tool', 'status', 'label'],
+  'turn.phase': ['phase', 'status', 'label'],
+  'understanding.preview': ['summary', 'entities', 'constraints'],
+  'clarification.requested': ['requestId', 'inputKind', 'questions', 'requestedSchema', 'expiresIn'],
+  'clarification.resolved': ['requestId', 'status'],
+  'proposal.preview': ['proposalRef', 'diff', 'sourceVersion', 'expiresAt'],
+  'conversationAction.result': ['proposalRef', 'actionStatus', 'newStateVersion', 'workspaceVersion'],
+  'assistant.completed': ['message', 'responseType', 'executionStatus', 'limitations'],
+  'turn.completed': ['executionStatus', 'toolStatus', 'runtimeStatus'],
+  'recoverable.error': ['code', 'message'],
+};
+
+/** 只放过白名单字段：原生形状里的额外字段不该顺手流到页面上。 */
+export const sanitizeV1Payload = (type, payload) => {
+  const allowed = V1_PAYLOAD_WHITELIST[type];
+  if (!allowed || !payload || typeof payload !== 'object') return {};
+  return Object.fromEntries(
+    allowed.filter(key => payload[key] !== undefined).map(key => [key, payload[key]]),
+  );
+};
+
+/**
+ * 把**旧信封**里的帧转成 v1 形状，并分配一个本地序号。
+ *
+ * 旧帧里没有序号，所以这里的序号只在本次连接内有意义——它能让 reducer 正常工作，
+ * 但**不能**跨重连去重。真正可重放的编号要等服务端接上事件存储后由它给出。
+ * 因此这条路径产出的状态永远带着 `localSequence: true`，页面据此决定是否可以
+ * 用序号做断线恢复（答案是：不可以）。
+ */
+export const toConversationEvent = (frame, { sessionId, streamEpoch, sequence }) => {
+  if (!frame || typeof frame !== 'object') return null;
+  if (isConversationV1Event(frame)) return frame;
+  const knownTypes = new Set([...CONVERSATION_V1_TYPES, 'planning.status', 'text', 'reply']);
+  if (!knownTypes.has(frame.type)) return null;
+  const parsed = parseNestedContent(frame.content);
+  const innerType = parsed && CONVERSATION_V1_TYPES.has(parsed.type) ? parsed.type : null;
+  if (!innerType) return null;
+  return {
+    protocolVersion: 1,
+    type: innerType,
+    sessionId: String(sessionId || ''),
+    turnId: String(frame.turnId || parsed.turnId || ''),
+    streamEpoch: String(streamEpoch || 'local'),
+    sequence,
+    payload: sanitizeV1Payload(innerType, {
+      ...parsed,
+      itemId: parsed.itemId,
+      label: parsed.message || parsed.label,
+      status: parsed.stage || parsed.status,
+    }),
+    localSequence: true,
+  };
+};
+
+const parseNestedContent = content => {
+  if (content && typeof content === 'object') return content;
+  if (typeof content !== 'string') return null;
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
 const toFiniteNumber = value => {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -146,6 +238,14 @@ const stablePayload = payload => {
 
 export const normalizeConversationEvent = event => {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') return null;
+  // v1 统一事件先过一遍：它自带协议版本、会话、代际与序号，
+  // 不需要（也不该）再走下面那套按类型猜形状的兼容逻辑。
+  if (isConversationV1Event(event)) {
+    return {
+      ...event,
+      payload: sanitizeV1Payload(event.type, event.payload || {}),
+    };
+  }
   if (event.type === 'reply' || event.type === 'card') return event;
 
   if (event.type === 'planning.status') {

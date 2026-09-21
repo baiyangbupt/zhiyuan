@@ -15,6 +15,13 @@ export interface WebSocketOptions {
   autoReconnect?: boolean; // 是否启用自动重连（默认 true）
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
+  /**
+   * 每次连接尝试前调用，返回要附加到 URL 上的查询参数。
+   *
+   * 之所以是"每次连接"而不是"每次挂载"：票据是一次性且短命的，
+   * 重连时必须换一张新的。
+   */
+  authenticate?: () => Promise<Record<string, string>>;
 }
 
 export interface UseWebSocketReturn {

@@ -23,6 +23,11 @@ services:
 
   redis:
     image: ${CODEX_LOCAL_REDIS_IMAGE:-docker.m.daocloud.io/library/redis:7-alpine}
+    # 事件流承诺的是"至少一次投递 + 可能 resync"，不是零丢失。没有 AOF 的话
+    # 进程重启会连事件带计数器一起清空，客户端手上那个 cursor 就永远等不到东西——
+    # 所以隔离测试实例必须开 AOF，且用每秒刷盘。
+    # 注意：改这里只对**新建**容器生效，已运行的容器需要重新 create。
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "${REDIS_PORT:-16379}:6379"
     volumes:

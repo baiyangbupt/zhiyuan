@@ -22,6 +22,20 @@ import style from './style.module.scss';
 import { TextSegment } from '@/interface/api/sessionDetail';
 import useAuthParams from '@/hooks/useAuthParams';
 import { useWebSocket } from '@/hooks/useWebSocket';
+import {
+  createConversationState,
+  pendingClarifications,
+  reduceConversation,
+} from '@/utils/conversationSession.mjs';
+import { toConversationEvent } from '@/utils/conversationEvents.mjs';
+import { fetchWsTicketApi } from '@/service/apis/conversationAccess';
+import {
+  buildClarificationAnswerFrame,
+  buildTurnInterruptFrame,
+  buildTurnSteerFrame,
+} from '@/utils/conversationProtocol.mjs';
+import ClarificationCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ClarificationCard';
+import UnderstandingCard from '@/pageComponents/sessionDetailV2/ConversationEvents/UnderstandingCard';
 import { WebSocketMessage } from '@/hooks/websocket';
 import TypingAnimation from '@/components/generating/TypingAnimation';
 import SendPng from '@/images/icons/send.png';
@@ -610,7 +624,109 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     setThinkingHints([normalizedHint]);
   }, []);
 
+  // ── 会话事件状态 ────────────────────────────────────────────────
+  // ref 是同步的真相来源，state 只用于触发渲染：WS 回调里连续到达的事件
+  // 如果只靠 setState 的 updater 串行化，回调返回后拿不到"处理完没有"。
+  const conversationSessionId = String(
+    (routerParams as any)?.chatSessionId || (routerParams as any)?.sessionId || '',
+  );
+  const conversationStateRef = useRef(createConversationState(conversationSessionId));
+  const [conversationState, setConversationState] = useState(() =>
+    createConversationState(conversationSessionId),
+  );
+  const localSequenceRef = useRef(0);
+
+  useEffect(() => {
+    // 换会话就是换一条时间线：旧状态留着会让新会话页面上挂着上一个会话的答案。
+    conversationStateRef.current = createConversationState(conversationSessionId);
+    localSequenceRef.current = 0;
+    setConversationState(conversationStateRef.current);
+  }, [conversationSessionId]);
+
+  const applyConversationEvent = useCallback((frame: unknown) => {
+    if (!conversationSessionId) return null;
+    localSequenceRef.current += 1;
+    const event = toConversationEvent(frame, {
+      sessionId: conversationSessionId,
+      streamEpoch: 'local',
+      sequence: localSequenceRef.current,
+    });
+    if (!event) return null;
+    const base =
+      conversationStateRef.current.sessionId === event.sessionId
+        ? conversationStateRef.current
+        : createConversationState(event.sessionId);
+    const next = reduceConversation(base, event);
+    if (next === base) return event;
+    conversationStateRef.current = next;
+    setConversationState(next);
+    if (next.needsResync) {
+      // 缺口/换代只在这里暴露一次：让用户看到一个"正在重新同步"的提示，
+      // 比默默少几条消息好——后者看起来像消息丢了，而用户无从判断。
+      console.warn('会话事件流需要重新同步');
+    }
+    return event;
+  }, [conversationSessionId]);
+
+  const handleClarificationAnswer = useCallback(
+    (requestId: string, answer: Record<string, unknown>, clientRequestId: string) => {
+      // 交回服务端的形状必须与 A4 的合同一致：choice 走 answers、form 走 action+content，
+      // 且 requestId 是服务端给的、客户端不得改写。
+      sendMessageRef.current?.(
+        buildClarificationAnswerFrame({
+          sessionId: conversationSessionId,
+          turnId:
+            (Object.values(conversationStateRef.current.turns || {}) as any[]).find(
+              turn => turn.clarifications && turn.clarifications[requestId],
+            )?.id || '',
+          requestId,
+          answer,
+          clientRequestId,
+        }),
+      );
+    },
+    [conversationSessionId],
+  );
+
+  const handleSteerTurn = useCallback((turnId: string, text: string) => {
+    // 补充说明走 turnSteer：它是用户新增的一句话，不是"就地改模型的摘要"。
+    // 回合已经结束时服务端会回 no_active_turn，页面据此提示用户另发一条。
+    sendMessageRef.current?.(
+      buildTurnSteerFrame({
+        sessionId: conversationSessionId,
+        turnId,
+        text,
+        clientRequestId: `steer-${turnId}-${text.length}`,
+      }),
+    );
+  }, [conversationSessionId]);
+
+  const handleInterruptTurn = useCallback((turnId: string) => {
+    sendMessageRef.current?.(
+      buildTurnInterruptFrame({
+        sessionId: conversationSessionId,
+        turnId,
+        clientRequestId: `stop-${turnId}`,
+      }),
+    );
+  }, [conversationSessionId]);
+
+  // 每次连接尝试都取一张新票：票是一次性且 60 秒有效的，
+  // 重连时复用旧票会被服务端拒掉，而那种失败看起来像"网络问题"。
+  const authenticateForWebSocket = useCallback(async () => {
+    const response: any = await fetchWsTicketApi(String(tenantId), {
+      sessionId: String(routerParams.chatSessionId),
+      botId: String(botId),
+    });
+    const ticket = response?.data?.ticket ?? response?.ticket;
+    if (!ticket) {
+      throw new Error('ws_ticket_missing');
+    }
+    return { ticket: String(ticket) };
+  }, [tenantId, botId, routerParams.chatSessionId]);
+
   const { sendMessage, disconnect, reconnect, isConnected } = useWebSocket(websocketUrl, {
+    authenticate: authenticateForWebSocket,
     onMessage(data, event) {
       if (typeof data === 'object' && data !== null && 'type' in data) {
         const wsData = data as IThinkingMessage;
@@ -618,6 +734,33 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
           appendThinkingHint(wsData.content);
           return;
         }
+      }
+
+      const conversationEvent = applyConversationEvent(data);
+      if (conversationEvent) {
+        // 进度只更新状态，**不重拉整页、不结束 loading**。
+        // 以前任何一条非 pong 消息都会触发"重拉列表 + 结束转圈"，
+        // 于是模型还在跑的时候用户已经看到转圈停了，而列表在被反复重拉。
+        if (conversationEvent.type === 'turn.completed') {
+          // 运行结束才是本地 loading 的终点；这时对齐一次持久化消息。
+          resetAnswerLoading();
+          fetchLatestMessageList();
+        } else if (conversationEvent.type === 'session.resync') {
+          // resync 重置了基线，列表必须整体对齐，否则页面会停在旧基线上。
+          fetchLatestMessageList();
+        } else if (
+          conversationEvent.type === 'conversationAction.result' &&
+          (conversationEvent.payload as any)?.actionStatus === 'applied'
+        ) {
+          // 只有**已生效**才对齐：确认中、已取消、过期都不需要重拉，
+          // 而"确认中"去重拉会让用户以为已经生效了。
+          resetAnswerLoading();
+          fetchLatestMessageList();
+          // 工作区也要跟着刷新：正式方案变了而工作区停旧版本，
+          // 用户会照着旧方案继续操作。
+          setFetchFlag(prev => prev + 1);
+        }
+        return;
       }
 
       const workspaceIntent = parseWorkspaceIntentPayload(data);
@@ -1712,6 +1855,48 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
               )}
             </div>
           )}
+          {Object.values(conversationState.turns).map((turn: any) => {
+            const steps = Object.values(turn.steps || {}) as any[];
+            const pending = pendingClarifications(turn);
+            if (steps.length === 0 && pending.length === 0) return null;
+            return (
+              <div key={turn.id} data-turn-id={turn.id} style={{ padding: '4px 12px' }}>
+                {steps.length > 0 ? (
+                  <div data-testid="turn-progress">
+                    {steps.map(step => (
+                      <div key={step.itemId} data-testid="turn-progress-step" data-status={step.status}>
+                        {step.label || step.tool}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <UnderstandingCard
+                  understanding={turn.understanding}
+                  onRefine={
+                    turn.terminal ? undefined : () => handleSteerTurn(turn.id, '补充说明')
+                  }
+                />
+                {!turn.terminal ? (
+                  <button
+                    type="button"
+                    data-testid="turn-stop"
+                    onClick={() => handleInterruptTurn(turn.id)}
+                  >
+                    停止
+                  </button>
+                ) : null}
+                {pending.map((card: any) => (
+                  <ClarificationCard
+                    key={card.requestId}
+                    clarification={card}
+                    onSubmit={(answer, meta) =>
+                      handleClarificationAnswer(card.requestId, answer, meta.clientRequestId)
+                    }
+                  />
+                ))}
+              </div>
+            );
+          })}
           <div ref={bottomRef} />
         </Spin>
       </div>

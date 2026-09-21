@@ -5,6 +5,8 @@ import {
   formatRank,
   formatEvidencePayload,
   normalizeConversationEvent,
+  isConversationV1Event,
+  toConversationEvent,
   resolveArtifact,
   parseConversationActionResult,
   applyPendingActionResult,
@@ -142,4 +144,86 @@ test('rejects a mismatched unit tier and malformed nested detail', () => {
   });
 
   assert.equal(event, null);
+});
+
+// ── v1 统一事件 ──────────────────────────────────────────────────────
+
+test('v1 事件直通，且只放过白名单字段', () => {
+  const event = {
+    protocolVersion: 1,
+    type: 'tool.progress',
+    sessionId: '42',
+    turnId: 't1',
+    streamEpoch: 'e1',
+    sequence: 3,
+    payload: {
+      itemId: 'i1',
+      tool: 'admission.get_history',
+      status: 'started',
+      label: '正在查询历年录取',
+      arguments: { private: 'do-not-display' },
+    },
+  };
+
+  const normalized = normalizeConversationEvent(event);
+
+  assert.equal(normalized.type, 'tool.progress');
+  assert.equal(normalized.sequence, 3);
+  assert.equal(normalized.payload.arguments, undefined, '参数原文不该进渲染面');
+  assert.equal(normalized.payload.label, '正在查询历年录取');
+});
+
+test('缺协议字段的"像 v1"事件不被误判', () => {
+  // 少一个 sequence 就不是 v1 事件；当成 v1 会让 reducer 收到 undefined 序号。
+  const notV1 = {
+    protocolVersion: 1,
+    type: 'tool.progress',
+    sessionId: '42',
+    turnId: 't1',
+    streamEpoch: 'e1',
+    payload: {},
+  };
+  assert.equal(isConversationV1Event(notV1), false);
+});
+
+test('未知 v1 类型不直通', () => {
+  const unknown = {
+    protocolVersion: 1,
+    type: 'something.brand.new',
+    sessionId: '42',
+    turnId: 't1',
+    streamEpoch: 'e1',
+    sequence: 1,
+    payload: {},
+  };
+  assert.equal(isConversationV1Event(unknown), false);
+});
+
+test('旧信封里的进度帧被转换成带本地序号的 v1 事件', () => {
+  const frame = {
+    type: 'planning.status',
+    session_id: '42',
+    turnId: 't1',
+    content: JSON.stringify({
+      type: 'tool.progress',
+      itemId: 'i1',
+      stage: 'started',
+      message: '正在查询历年录取',
+    }),
+  };
+
+  const converted = toConversationEvent(frame, { sessionId: '42', streamEpoch: 'e1', sequence: 1 });
+
+  assert.equal(converted.type, 'tool.progress');
+  assert.equal(converted.sequence, 1);
+  assert.equal(converted.payload.itemId, 'i1');
+  assert.equal(converted.payload.status, 'started');
+  assert.equal(converted.payload.label, '正在查询历年录取');
+  // 本地序号不能跨重连去重——这一点必须能从事件上看出来。
+  assert.equal(converted.localSequence, true);
+});
+
+test('旧信封里认不出类型的帧被丢弃，而不是画成默认气泡', () => {
+  const frame = { type: 'text', content: '普通回复' };
+  assert.equal(toConversationEvent(frame, { sessionId: '42', streamEpoch: 'e1', sequence: 1 }), null);
 });
