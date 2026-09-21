@@ -18,11 +18,15 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.Collections;
+
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -251,5 +255,35 @@ class EvidenceLedgerServiceTest {
         when(evidenceSourceVersionMapper.selectBySourceAndParams(eq(SOURCE), anyString())).thenReturn(null);
 
         assertEquals("stale", service.verify(verifyRequest("ev_nover")).getResults().get("ev_nover").getStatus());
+    }
+
+    @Test
+    void listSessionEvidenceOnlyReturnsUnexpiredRowsForTheSameSession() {
+        EvidenceLedgerEntity valid = new EvidenceLedgerEntity();
+        valid.setEvidenceId("ev_valid");
+        valid.setTenantId(1L);
+        valid.setChatSessionId(2L);
+        valid.setSourceSystem(EvidenceLedgerService.SOURCE_GAOTU_SCHOOL_MAJOR_SCORE_LINE);
+        valid.setParamsDigest("d1");
+        valid.setDataVersion("sha256:abc");
+        valid.setObservedAt(new Date());
+        valid.setExpiresAt(new Date(System.currentTimeMillis() + 3_600_000L));
+        valid.setScopeJson("{}");
+        valid.setLimitationsJson("[]");
+
+        when(evidenceLedgerMapper.selectList(any())).thenReturn(Collections.singletonList(valid));
+
+        List<ConversationEvidenceDTO> evidence = service.listSessionEvidence(1L, 2L, new Date());
+
+        assertEquals(1, evidence.size());
+        assertEquals("ev_valid", evidence.get(0).getEvidenceId());
+    }
+
+    @Test
+    void listSessionEvidenceReturnsEmptyWithoutScope() {
+        // 少了租户或会话就没有隔离边界可言：宁可回空，也不能回"全部"。
+        assertTrue(service.listSessionEvidence(null, 2L, new Date()).isEmpty());
+        assertTrue(service.listSessionEvidence(1L, null, new Date()).isEmpty());
+        verify(evidenceLedgerMapper, never()).selectList(any());
     }
 }

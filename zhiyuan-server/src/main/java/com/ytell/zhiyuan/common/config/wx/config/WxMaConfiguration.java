@@ -91,9 +91,12 @@ public class WxMaConfiguration {
     public WxMaService wxMaService() {
         //todo 后续接入
         List<WxMaProperties.Config> configs = this.properties.getConfigs();
-        if (configs == null) {
+        if (configs == null || configs.isEmpty()) {
+            // 空列表与 null 是同一件事：**没有配置小程序**。
+            // 只判 null 会让 `configs: []` 的部署在启动时抛 NoSuchElementException
+            // （setMultiConfigs 内部对空集合取 next），而报错信息完全看不出
+            // 缺的是哪个配置——隔离栈就是这样起不来的。
             return new WxMaServiceImpl();
-            // throw new WxRuntimeException("大哥，拜托先看下项目首页的说明（readme文件），添加下相关配置，注意别配错了！");
         }
         WxMaService maService = new WxMaServiceImpl();
         maService.setMultiConfigs(

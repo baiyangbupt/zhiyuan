@@ -1,6 +1,7 @@
 package com.ytell.zhiyuan.service.biz;
 
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
+import com.ytell.zhiyuan.model.dto.planning.ConversationEvidenceDTO;
 import com.ytell.zhiyuan.model.dto.planning.ConversationTurnSnapshotDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningWorkspaceStateRes;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
@@ -25,6 +26,7 @@ public class ConversationSnapshotServiceTest {
     private ConversationSnapshotService service;
     private PlanningStateService planningStateService;
     private PendingConfirmationBizService pendingConfirmationBizService;
+    private EvidenceLedgerService evidenceLedgerService;
 
     @BeforeEach
     void setUp() {
@@ -33,6 +35,9 @@ public class ConversationSnapshotServiceTest {
         pendingConfirmationBizService = Mockito.mock(PendingConfirmationBizService.class);
         ReflectionTestUtils.setField(service, "planningStateService", planningStateService);
         ReflectionTestUtils.setField(service, "pendingConfirmationBizService", pendingConfirmationBizService);
+        // 快照现在会去台账捞当前会话的有效证据；不注入的话是 NPE，而不是"没有证据"。
+        evidenceLedgerService = Mockito.mock(EvidenceLedgerService.class);
+        ReflectionTestUtils.setField(service, "evidenceLedgerService", evidenceLedgerService);
     }
 
     @Test
@@ -126,5 +131,25 @@ public class ConversationSnapshotServiceTest {
         candidatePool.getSummary().setTotal(12);
         workspace.setCandidatePoolState(candidatePool);
         return workspace;
+    }
+
+    @Test
+    void shouldCarrySessionEvidenceIntoTheSnapshot() {
+        PlanningWorkspaceStateRes workspace = workspace(42, 101L);
+        doReturn(workspace).when(planningStateService).getPlanningWorkspaceState(1L, 101L);
+        doReturn(null).when(pendingConfirmationBizService).getCurrent(1L, 101L);
+
+        ConversationEvidenceDTO ledgerRow = new ConversationEvidenceDTO();
+        ledgerRow.setEvidenceId("ev_real");
+        ledgerRow.setSourceLevel("authoritative");
+        ledgerRow.setDataVersion("sha256:abc");
+        doReturn(java.util.Collections.singletonList(ledgerRow))
+                .when(evidenceLedgerService).listSessionEvidence(eq(1L), eq(101L), org.mockito.ArgumentMatchers.any(java.util.Date.class));
+
+        ConversationTurnSnapshotDTO snapshot = service.getTurnSnapshot(1L, 101L, null);
+
+        // 空实现时代这里恒为 0：快照永远不带证据，模型看到的是"什么都不记得"的上下文。
+        assertEquals(1, snapshot.getEvidence().size());
+        assertEquals("ev_real", snapshot.getEvidence().get(0).getEvidenceId());
     }
 }

@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -25,6 +26,9 @@ public class ConversationSnapshotService {
 
     @Autowired
     private PendingConfirmationBizService pendingConfirmationBizService;
+
+    @Autowired
+    private EvidenceLedgerService evidenceLedgerService;
 
     public ConversationTurnSnapshotDTO getTurnSnapshot(Long tenantId, Long chatSessionId, String skill) {
         if (tenantId == null || chatSessionId == null) {
@@ -45,7 +49,7 @@ public class ConversationSnapshotService {
         fillMissingFacts(snapshot.getMissingFacts(), workspace.getStudentSummary());
         fillActiveProposal(snapshot, tenantId, chatSessionId);
         fillCapabilities(snapshot.getAllowedCapabilities(), skill);
-        fillEvidence(snapshot.getEvidence(), workspace);
+        fillEvidence(snapshot.getEvidence(), tenantId, chatSessionId);
         return snapshot;
     }
 
@@ -174,10 +178,15 @@ public class ConversationSnapshotService {
         }
     }
 
-    private void fillEvidence(List<ConversationEvidenceDTO> evidence, PlanningWorkspaceStateRes workspace) {
-        // First phase exposes only evidence references already produced by the
-        // authoritative backend.  The workspace DTO currently has no evidence
-        // collection, so do not synthesize or infer references here.
+    /**
+     * 把当前会话仍然有效的权威证据填进快照。
+     *
+     * <p>空实现曾经"看起来是对的"——注释说工作区 DTO 里没有证据集合，所以不合成。
+     * 但结果是快照**永远**不带证据，而 Agent 侧又靠证据判断"这条事实能不能用"，
+     * 于是要么全是自铸、要么全是查不到。证据不在工作区里，在**台账**里。
+     */
+    private void fillEvidence(List<ConversationEvidenceDTO> evidence, Long tenantId, Long chatSessionId) {
+        evidence.addAll(evidenceLedgerService.listSessionEvidence(tenantId, chatSessionId, new Date()));
     }
 
     private void putIfPresent(Map<String, Object> target, String key, Object value) {

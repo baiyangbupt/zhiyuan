@@ -51,6 +51,17 @@ public class GaotuClient {
     private static final String QUERY_PROGRAM_BY_LIMIT_NUM = "/hl-wish/ci/ci_feign/volunteer/queryProgramByLimitNum";
 
     private static final String QUERY_SCHOOL_MAJOR_SCORE_LINE = "/hl-wish/ci/ci_feign/volunteer/querySchoolMajorScoreLine";
+
+    /**
+     * 招生计划查询。上游在 `SchoolH5Controller` 的 `/h5/school` 下，同样经 `/hl-wish/ci` 网关。
+     *
+     * <p>**完整前缀未经真实调用验证**：本仓现有路径都是 `/hl-wish/ci/ci_feign/...`，
+     * 而这条属于另一个 controller。第一次真机联调时先确认前缀，别把 404 当成"上游没这功能"。
+     */
+    private static final String PLAN_MAJOR_DATA_LIST = "/hl-wish/ci/h5/school/noToken/planMajorDataList";
+
+    /** 学校招生章程（**展示文案**，见 SchoolRuleRes 的说明）。 */
+    private static final String SCHOOL_RULE_PATH = "/hl-wish/ci/school/noToken/getSchoolRule";
     
     private static final String SCORE_POSITION_RANGE_PATH = "/hl-wish/ci/scorePosition/noToken/getPosRangeByScore";
 
@@ -324,6 +335,45 @@ public class GaotuClient {
         ResponseDTO<List<QuerySchoolMajorScoreLineRes>> response = JsonHttpUtil.post(url, req, getHeader(), new TypeReference<ResponseDTO<List<QuerySchoolMajorScoreLineRes>>>() {
         });
         attachEvidence(response, EvidenceLedgerService.SOURCE_GAOTU_SCHOOL_MAJOR_SCORE_LINE, req, scope);
+        return response;
+    }
+
+    /**
+     * 查询学校招生章程。
+     *
+     * <p><b>不是原文条款的可靠来源</b>：该校没有规则时上游回占位文案，且响应无标志位。
+     * 这里**不签发证据**——它不是取数结果，而是一段展示文案；给它签证据等于
+     * 把"我们查过数仓"的权威性借给一段可能只是"正在更新中"的文本。
+     */
+    public ResponseDTO<SchoolRuleRes> getSchoolRule(Long schoolId) {
+        String url = gaotuProperties.getZhiyuanUrl() + SCHOOL_RULE_PATH;
+        Map<String, Object> query = new java.util.HashMap<String, Object>();
+        query.put("schoolId", schoolId);
+        return JsonHttpUtil.get(url, query, getHeader(),
+                new TypeReference<ResponseDTO<SchoolRuleRes>>() {
+                });
+    }
+
+    /**
+     * 批量查询招生计划。
+     *
+     * <p>与分数线一样按**身份**取数（入参不含分数）：这是"能回答任意院校专业"
+     * 的依据。分数带限制只属于候选推荐那条端点。
+     */
+    public ResponseDTO<List<PlanMajorDataRes>> queryPlanMajorData(QueryPlanMajorDataReq req) {
+        return queryPlanMajorData(req, EvidenceScope.none());
+    }
+
+    /**
+     * 批量查询招生计划，并按权威证据台账签发证据。
+     */
+    public ResponseDTO<List<PlanMajorDataRes>> queryPlanMajorData(QueryPlanMajorDataReq req,
+                                                                  EvidenceScope scope) {
+        String url = gaotuProperties.getZhiyuanUrl() + PLAN_MAJOR_DATA_LIST;
+        ResponseDTO<List<PlanMajorDataRes>> response = JsonHttpUtil.post(url, req, getHeader(),
+                new TypeReference<ResponseDTO<List<PlanMajorDataRes>>>() {
+                });
+        attachEvidence(response, EvidenceLedgerService.SOURCE_GAOTU_PLAN_MAJOR_DATA, req, scope);
         return response;
     }
 

@@ -1,6 +1,7 @@
 package com.ytell.zhiyuan.service.biz;
 
 import com.alibaba.fastjson.JSON;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.ytell.zhiyuan.common.util.EvidenceParamsDigest;
 import com.ytell.zhiyuan.common.util.Ulid;
 import com.ytell.zhiyuan.mapper.EvidenceLedgerMapper;
@@ -44,6 +45,7 @@ public class EvidenceLedgerService {
     public static final String SOURCE_GAOTU_SCHOOL_MAJOR_SCORE_LINE = "gaotu.schoolMajorScoreLine";
     public static final String SOURCE_GAOTU_BATCH_LIST = "gaotu.batchList";
     public static final String SOURCE_GAOTU_PROGRAM_BY_LIMIT_NUM = "gaotu.programByLimitNum";
+    public static final String SOURCE_GAOTU_PLAN_MAJOR_DATA = "gaotu.planMajorDataList";
 
     public static final String STATUS_VALID = "valid";
     public static final String STATUS_STALE = "stale";
@@ -132,6 +134,31 @@ public class EvidenceLedgerService {
      *
      * <p>范围不匹配（别的租户/会话/线程）一律返回 {@code unknown}，不向调用方透露其他会话的台账。</p>
      */
+    /**
+     * 列出某会话**当前仍然有效**的证据。
+     *
+     * <p>快照用它把权威证据摆到模型面前。少了这一步，模型看到的是"什么都不记得"
+     * 的上下文，而它上一轮明明查过——于是要么重复查、要么凭印象答。
+     *
+     * <p>只回未过期的：过期证据被引用时下游会判 `expired`，让模型引用一条
+     * 注定被拒的证据等于给它设陷阱。
+     */
+    public List<ConversationEvidenceDTO> listSessionEvidence(Long tenantId, Long chatSessionId, Date now) {
+        if (tenantId == null || chatSessionId == null) {
+            return new ArrayList<ConversationEvidenceDTO>();
+        }
+        QueryWrapper<EvidenceLedgerEntity> query = new QueryWrapper<EvidenceLedgerEntity>();
+        query.eq("tenant_id", tenantId);
+        query.eq("chat_session_id", chatSessionId);
+        query.gt("expires_at", now == null ? new Date() : now);
+        query.orderByDesc("observed_at");
+        List<ConversationEvidenceDTO> evidence = new ArrayList<ConversationEvidenceDTO>();
+        for (EvidenceLedgerEntity entity : evidenceLedgerMapper.selectList(query)) {
+            evidence.add(toEvidenceDTO(entity));
+        }
+        return evidence;
+    }
+
     public EvidenceVerifyRes verify(EvidenceVerifyReq request) {
         EvidenceVerifyRes response = new EvidenceVerifyRes();
         if (request == null || request.getEvidenceIds() == null) {
