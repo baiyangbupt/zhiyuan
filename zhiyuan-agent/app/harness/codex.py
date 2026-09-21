@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any, AsyncIterator, cast
 
 from app.harness.client import AppServerClient
@@ -18,15 +19,23 @@ class CodexAppServerHarness:
         skill_root: str | None = None,
         approval_policy: str | None = None,
         sandbox_policy: str | dict[str, Any] | None = None,
+        capabilities: dict[str, Any] | None = None,
     ) -> None:
         self.client = AppServerClient(command, request_timeout=request_timeout)
         self.skill_root = skill_root
         self.approval_policy = approval_policy
         self.sandbox_policy = sandbox_policy
+        self.capabilities = capabilities
+        # 保留握手响应：探针要据它判断服务端是否接受了声明，而不是假定接受。
+        self.initialize_result: dict[str, Any] | None = None
 
     async def start(self) -> None:
         await self.client.start()
-        await self.client.initialize(client_name="zhiyuan_gateway", client_version="0.1.0")
+        self.initialize_result = await self.client.initialize(
+            client_name="zhiyuan_gateway",
+            client_version="0.1.0",
+            capabilities=self.capabilities,
+        )
 
     def set_server_request_handler(self, handler: Any) -> None:
         self.client.server_request_handler = handler
@@ -91,8 +100,17 @@ class CodexAppServerHarness:
         timeout: float | None = None,
         approval_policy: str | None = None,
         sandbox_policy: str | dict[str, Any] | None = None,
+        on_notification: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        on_turn_started: Callable[[str], Awaitable[None]] | None = None,
     ) -> CodexTurnResult:
-        """Start a turn and wait for its terminal App Server notification."""
+        """Start a turn and wait for its terminal App Server notification.
+
+        `on_notification` 是**实时进度**的唯一注入点：它在既有的 collect 循环里
+        被调用，因此不需要第二个通知消费者去和它抢同一个队列
+        （stdio 只有一个 reader，两个消费者会互相吃掉对方的事件）。
+        回调必须快速返回——它跑在模型 reader 的关键路径上，慢浏览器不能拖住它。
+        """
+        overflow_before = self.client.protocol_overflow_count
         effective_timeout = timeout if timeout is not None else self.client.request_timeout
         started = await self.start_turn(
             thread_id,
@@ -109,6 +127,10 @@ class CodexAppServerHarness:
         final_output = None
         final_output_extraction = _missing_extraction()
 
+        if on_turn_started is not None and turn_id:
+            # 绑定原生回合号：`turn/steer` 的 expectedTurnId 要的是它，
+            # 而浏览器只知道自己那个回合号。这层映射不能放浏览器里。
+            await on_turn_started(turn_id)
         if initial_status in {"completed", "failed", "interrupted"}:
             started_output, started_extraction = _extract_output_ex(started)
             return CodexTurnResult(
@@ -137,7 +159,7 @@ class CodexAppServerHarness:
                     status="timed_out",
                     turn_id=turn_id,
                     events=events,
-                    error_code="turn_timeout",
+                    error_code=self._timeout_error_code(overflow_before),
                     payload={"turnId": turn_id},
                 )
             try:
@@ -154,10 +176,14 @@ class CodexAppServerHarness:
                     status="timed_out",
                     turn_id=turn_id,
                     events=events,
-                    error_code="turn_timeout",
+                    error_code=self._timeout_error_code(overflow_before),
                     payload={"turnId": turn_id},
                 )
 
+            # 先把进度交出去，再解析终态相关字段——顺序反了的话，
+            # "还在跑"的那段时间里前端什么也看不到。
+            if on_notification is not None:
+                await on_notification(notification)
             event = _notification_to_event(notification)
             events.append(event)
             item = event.get("item") or {}
@@ -182,6 +208,16 @@ class CodexAppServerHarness:
                 error_code=_extract_error(event),
                 payload=event,
             )
+
+    def _timeout_error_code(self, overflow_before: int) -> str:
+        """超时是两种不同的失败，必须分开报。
+
+        一种是"模型就是慢"，另一种是"这个回合期间通知被丢弃过，终态可能根本没到"。
+        都报 turn_timeout 的话，后者会被当成前者一直重试下去。
+        """
+        if self.client.protocol_overflow_count > overflow_before:
+            return "protocol_overflow"
+        return "turn_timeout"
 
     async def steer_turn(
         self, thread_id: str, turn_id: str, input_items: list[dict[str, Any]]

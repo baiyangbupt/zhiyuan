@@ -2,11 +2,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import secrets
 from pathlib import Path
 from typing import Any, Callable
 
 from app.config import CodexAppServerConfig
 from app.gateway.service import GatewayService
+from app.gateway.user_input import UserInputBroker
+
+# A1 探针实测（.runtime/codex-capabilities.json）：原生提问在真实二进制上可用，
+# 但**必须同时满足两件事**——启动时带上这两个特性开关，且 initialize 声明能力。
+# 缺任一件，`item/tool/requestUserInput` 就不会发出，而链路上不会报错：
+# 它只是永远不提问。
+NATIVE_USER_INPUT_FLAGS = (
+    "-c", "features.default_mode_request_user_input=true",
+    "-c", "tools.experimental_request_user_input.enabled=true",
+)
+
+# MCP server 需要的环境变量名（值由 codex 从本进程透传，不写死在这里）。
+MCP_ENV_VARS = ("INTERNAL_SERVICE_URL", "INTERNAL_SERVICE_TIMEOUT_SECONDS")
+
+# 源码依据 codex-rs/codex-mcp/src/client_capabilities.rs：只有这四个命名空间被保留。
+NATIVE_USER_INPUT_CAPABILITIES = {
+    "experimentalApi": True,
+    "extensions": {"openai/standard-form-input": {}},
+}
 from app.harness.codex import CodexAppServerHarness
 
 
@@ -34,10 +54,20 @@ def build_codex_command(mode: str, config: CodexAppServerConfig) -> list[str]:
         mcp_config = (
             "mcp_servers.zhiyuan_domain={"
             f"command={json.dumps(config.python_bin)},"
-            f"args=[{json.dumps(str(server_path))},\"--binding-registry\",{json.dumps(config.binding_registry_path)}]"
+            f"args=[{json.dumps(str(server_path))},\"--binding-registry\",{json.dumps(config.binding_registry_path)}],"
+            # MCP server 是 codex 的子进程，**不自动继承**本进程的环境变量。
+            # 不透传的话 `internal_client` 会落到它的默认地址——而那个默认是
+            # **生产**（https://zhiyuan.ytell.cn），于是本地栈会静默地去生产
+            # 解析绑定，失败信息只说 "binding_resolution_failed"，完全看不出
+            # 它打到了哪里。实测就是这么发生的。
+            f"env_vars={json.dumps(MCP_ENV_VARS)}"
             "}"
         )
         command.extend(["--config", mcp_config])
+    if config.user_input_mode == "native":
+        # 默认不传：这是"替运维做了一次他们没做过的决定"，
+        # 而那条路的开关是 A1 实证过的、有前提的。
+        command.extend(NATIVE_USER_INPUT_FLAGS)
     return [*command, "app-server", "--stdio"]
 
 
@@ -71,6 +101,13 @@ async def build_gateway_runtime(
             skill_root=skill_root,
             approval_policy=resolved_config.approval_policy,
             sandbox_policy=resolved_config.sandbox_policy,
+            # 能力声明与开关必须同进同退：只开开关不声明能力，
+            # 服务端不会把标准表单请求转发过来。
+            capabilities=(
+                NATIVE_USER_INPUT_CAPABILITIES
+                if resolved_config.user_input_mode == "native"
+                else None
+            ),
         )
 
     if not base_instructions:
@@ -81,6 +118,10 @@ async def build_gateway_runtime(
         )
 
     await codex.start()
+    # 没有这一步，原生提问会被 client 的默认分支回成 `{"result": null}`——
+    # 模型的问题被静默当成"用户回答了空"，而且链路上不留任何痕迹。
+    broker = UserInputBroker(runtime_generation=secrets.token_hex(8))
+    codex.set_server_request_handler(broker.handle_server_request)
     gateway = GatewayService(
         mode=mode,
         codex=codex,
@@ -90,8 +131,33 @@ async def build_gateway_runtime(
         snapshot_loader=snapshot_loader,
         base_instructions=base_instructions,
         developer_instructions=developer_instructions,
+        session_runtime=None,
     )
+    # scope 解析器要等 gateway 建好：它从业务绑定反查身份，是唯一可信的来源。
+    broker.set_scope_resolver(gateway.scope_for_thread)
+    broker.set_emitter(_publish_to_session)
+    gateway.user_input_broker = broker
     return GatewayRuntime(gateway=gateway, codex=codex)
+
+
+async def _publish_to_session(key: Any, event: dict) -> bool:
+    """把事件推到该会话当前的 WS 连接。
+
+    运行时要等 server.py 装配时才存在，所以这里做一次间接查表；
+    查不到不是错误——用户可能还没连上，卡片会在 resync 时补出来。
+    """
+    runtime = _SESSION_RUNTIME.get("instance")
+    if runtime is None:
+        return False
+    return await runtime.publish(key, event)
+
+
+# 由 server.py 在 lifespan 里填入；放模块级是为了让 composition 不必知道 server。
+_SESSION_RUNTIME: dict[str, Any] = {}
+
+
+def bind_session_runtime(runtime: Any) -> None:
+    _SESSION_RUNTIME["instance"] = runtime
 
 
 def _load_default_instructions(skill_root: str, filename: str) -> str:

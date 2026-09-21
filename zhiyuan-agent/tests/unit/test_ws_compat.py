@@ -15,6 +15,32 @@ from app.schemas.ws import WSResponse
 from app.service import ChatService, ChatServiceResponseEnvelope, _build_plan_timeout_fallback_reply
 from app.server import _build_legacy_chat_service
 
+class _PermissiveAccessGuard:
+    """测试替身：直接放行并返回固定身份。
+
+    **只在测试里装**。生产路径无条件校验票据（见 app/gateway/access.py），
+    它的正确性由 tests/integration/test_gateway_access.py 的 7 条覆盖——
+    这里不重复验它，只负责让 WS 用例能连上。
+    """
+
+    def __init__(self, tenant_id: str = "test-tenant", bot_id: str = "test-bot") -> None:
+        self._tenant_id = tenant_id
+        self._bot_id = bot_id
+
+    async def verify(self, ticket, origin):
+        from app.gateway.access import TicketIdentity
+
+        return TicketIdentity(
+            tenant_id=self._tenant_id,
+            session_id="test-session",
+            user_id="test-user",
+            bot_id=self._bot_id,
+            origin=origin or "http://127.0.0.1:3201",
+        )
+
+
+
+
 _patches = []
 
 
@@ -37,6 +63,10 @@ def _stop_patches():
 @pytest.fixture(autouse=True)
 def _patch_infra():
     _start_patches()
+    from app.server import app as _app
+
+    # 生产路径无条件校验 WS 票据；测试装一个放行替身，让 WS 用例能连上。
+    _app.state.conversation_access_guard = _PermissiveAccessGuard()
     yield
     _stop_patches()
 
@@ -286,13 +316,18 @@ def test_gateway_mode_compat_text_routes_to_gateway(client):
 
     client.app.state.gateway_service = None
     assert response == {"type": "text", "content": "Gateway 已处理", "end": True}
-    gateway.handle_turn.assert_awaited_once_with(
-        tenant_id="test-tenant",
-        session_id="gateway-session",
-        user_id="gateway-user",
-        turn_id="turn-1",
-        content="帮我看看浙江大学",
-    )
+    gateway.handle_turn.assert_awaited_once()
+    call = gateway.handle_turn.await_args.kwargs
+    assert {k: call[k] for k in ("tenant_id", "session_id", "user_id", "turn_id", "content")} == {
+        "tenant_id": "test-tenant",
+        "session_id": "gateway-session",
+        "user_id": "gateway-user",
+        "turn_id": "turn-1",
+        "content": "帮我看看浙江大学",
+    }
+    # A3 起 compat 路由也要转发中间事件，所以 `emit` 必须真的接上——
+    # 只断言"参数没变"会让"忘了接线"和"接好了"看起来一样。
+    assert callable(call["emit"])
 
 
 def test_gateway_mode_compat_confirmation_maps_to_conversation_action(client):
@@ -996,3 +1031,113 @@ def test_ws_compat_timeout_returns_generic_reply(client):
     assert "这次分析耗时有点长" in resp["content"]
     assert "帮我审查一下当前方案" in resp["content"]
     assert "不会自动写入偏好或改动方案" in resp["content"]
+
+
+# ── v1 入站合同（A2） ────────────────────────────────────────────────
+# 老客户端不带这些字段，行为必须逐字不变；v1 客户端多带协议字段与控制消息类型。
+
+
+def test_v1_chat_message_accepts_protocol_fields() -> None:
+    from app.schemas.ws import WSMessage
+
+    message = WSMessage.model_validate(
+        {
+            "protocolVersion": 1,
+            "type": "chat",
+            "sessionId": "42",
+            "turnId": "ui-turn-1",
+            "clientRequestId": "req-1",
+            "content": "查某校计算机近三年录取",
+        }
+    )
+
+    assert message.protocol_version == 1
+    assert message.turn_id == "ui-turn-1"
+    assert message.client_request_id == "req-1"
+
+
+def test_legacy_message_without_protocol_fields_is_unchanged() -> None:
+    from app.schemas.ws import WSMessage
+
+    message = WSMessage.model_validate({"sessionId": "42", "content": "你好"})
+
+    assert message.protocol_version is None
+    assert message.turn_id == ""
+    assert message.client_request_id == ""
+    assert message.clarification_answer is None
+    assert message.type == "chat"
+
+
+@pytest.mark.parametrize("message_type", ["turnInterrupt", "sessionResume"])
+def test_content_free_control_messages_reject_content(message_type: str) -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.ws import WSMessage
+
+    accepted = WSMessage.model_validate(
+        {"type": message_type, "sessionId": "42", "turnId": "ui-turn-1", "content": ""}
+    )
+    assert accepted.type == message_type
+
+    with pytest.raises(ValidationError, match="control_message_must_not_carry_content"):
+        WSMessage.model_validate(
+            {"type": message_type, "sessionId": "42", "content": "顺手带点内容"}
+        )
+
+
+def test_turn_steer_requires_content() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.ws import WSMessage
+
+    steered = WSMessage.model_validate(
+        {"type": "turnSteer", "sessionId": "42", "turnId": "ui-turn-1", "content": "再保守一点"}
+    )
+    assert steered.content == "再保守一点"
+
+    # 空的转述等于什么都没说：明确报错，不要静默变成空操作。
+    with pytest.raises(ValidationError, match="turn_steer_requires_content"):
+        WSMessage.model_validate(
+            {"type": "turnSteer", "sessionId": "42", "turnId": "ui-turn-1", "content": ""}
+        )
+
+
+def test_clarification_answer_uses_its_own_field_not_conversation_action() -> None:
+    from app.schemas.ws import WSMessage
+
+    message = WSMessage.model_validate(
+        {
+            "protocolVersion": 1,
+            "type": "clarificationAnswer",
+            "sessionId": "42",
+            "turnId": "ui-turn-1",
+            "clientRequestId": "answer-1",
+            "content": "",
+            "clarificationAnswer": {
+                "requestId": "ui-question-1",
+                "inputKind": "choice",
+                "answers": {"major": {"answers": ["计算机科学与技术"]}},
+            },
+        }
+    )
+
+    assert message.clarification_answer["inputKind"] == "choice"
+    assert message.clarification_answer["requestId"] == "ui-question-1"
+    # conversationAction 的语义是"确认/取消一个提案"，不能被回答选择题复用。
+    assert message.conversation_action is None
+
+
+def test_legacy_confirmation_still_uses_chat_plus_conversation_action() -> None:
+    from app.schemas.ws import WSMessage
+
+    message = WSMessage.model_validate(
+        {
+            "type": "chat",
+            "sessionId": "42",
+            "content": "",
+            "conversationAction": {"proposalRef": "proposal-1", "action": "confirm"},
+        }
+    )
+
+    assert message.conversation_action == {"proposalRef": "proposal-1", "action": "confirm"}
+    assert message.clarification_answer is None

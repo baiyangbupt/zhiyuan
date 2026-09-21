@@ -73,6 +73,7 @@ class HttpClient:
         self,
         endpoint: str,
         json_data: Dict[str, Any],
+        params: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         error_msg: str = "请求失败",
     ) -> Dict[str, Any]:
@@ -81,6 +82,7 @@ class HttpClient:
         Args:
             endpoint: API 端点路径（不包含 base_url）
             json_data: 请求体数据，将被序列化为 JSON
+            params: 查询串参数（如果提供，将挂在 URL 上）
             headers: 请求头（如果提供，将与默认请求头合并）
             error_msg: 错误信息前缀
 
@@ -96,7 +98,7 @@ class HttpClient:
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.post(
-                    url, json=json_data, headers=merged_headers
+                    url, json=json_data, params=params, headers=merged_headers
                 ) as response:
                     result = await response.json()
                     if response.status != 200:
@@ -810,19 +812,32 @@ async def apply_planning_fix_proposal(
     )
 
 
-async def get_working_plan(thread_id: Union[str, int]) -> Dict[str, Any]:
-    """获取当前统一规划方案。"""
+async def get_working_plan(
+    thread_id: Union[str, int], tenant_id: Union[str, int]
+) -> Dict[str, Any]:
+    """获取当前统一规划方案。
+
+    `tenant_id` 是**必填**的：路径里那个 `1` 曾经是硬编码，于是 tenant 非 1
+    的会话要么读到别人的方案、要么直接失败——而"读到了别人的方案"不会报错，
+    它会安静地把别人的志愿表当成你的。
+    """
+    if tenant_id in (None, ""):
+        raise ValueError("tenant_id_required")
     return await http_client.get(
-        endpoint="/gaotu-assistant-bot/inner/planning/1/session/working-plan",
+        endpoint=f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/working-plan",
         params={"chatSessionId": thread_id},
         error_msg="获取方案失败",
     )
 
 
-async def get_planning_ordered_plan(thread_id: Union[str, int]) -> Dict[str, Any]:
-    """获取当前统一规划排序方案。"""
+async def get_planning_ordered_plan(
+    thread_id: Union[str, int], tenant_id: Union[str, int]
+) -> Dict[str, Any]:
+    """获取当前统一规划排序方案。tenant_id 与 working-plan 同理，不得硬编码。"""
+    if tenant_id in (None, ""):
+        raise ValueError("tenant_id_required")
     return await http_client.get(
-        endpoint="/gaotu-assistant-bot/inner/planning/1/session/ordered-plan",
+        endpoint=f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/ordered-plan",
         params={"chatSessionId": thread_id},
         error_msg="获取排序方案失败",
     )
@@ -1653,7 +1668,53 @@ async def run_planning_review(
     )
 
 
+# ── 对话访问票据 ──────────────────────────────────────────────────
+
+
+async def consume_ws_ticket(ticket: str, origin: str | None) -> Dict[str, Any] | None:
+    """用票据换回身份。**只有内部可信调用方**能调这个端点。
+
+    身份由 Java 返回，Gateway 不解析 WS 报文或 query 串里的任何身份字段——
+    解析权留在服务端，浏览器只能出示票。
+    """
+    response = await http_client.post(
+        endpoint="/gaotu-assistant-bot/inner/conversation/ws-ticket/consume",
+        json_data={},
+        params={"ticket": ticket},
+        headers={"Origin": origin} if origin else None,
+        error_msg="兑换对话票据失败",
+    )
+    if not isinstance(response, dict):
+        return None
+    # 票无效时 Java 返回 HTTP 403，HttpClient 会抛错；走到这里的都是有效响应。
+    data = response.get("data")
+    return data if isinstance(data, dict) else None
+
+
 # ── 录取分数查询 ──────────────────────────────────────────────────
+
+
+def _evidence_scope_params(
+    tenant_id: Union[str, int, None],
+    chat_session_id: Union[str, int, None],
+    thread_id: Optional[str],
+) -> Dict[str, Any]:
+    """把证据签发范围拼成 Java 侧声明的 @RequestParam 查询串。
+
+    scope 走查询串，不走 header、也不塞进 JSON body：
+    - Java 侧 `GaotuClientDebugController` 已经把它声明成 `@RequestParam`，这是 Java 定的形状；
+    - 走 header 要同时改两个仓库，两边发版不同步期间会静默退回「不签发」；
+    - 塞进 body 会污染业务参数，而 Java 用 body 算 paramsDigest——
+      scope 一旦进 body，同一查询在不同会话里会算出不同的参数摘要，台账就失去按查询聚合的能力。
+    """
+    params: Dict[str, Any] = {}
+    if tenant_id is not None and str(tenant_id).strip():
+        params["tenantId"] = tenant_id
+    if chat_session_id is not None and str(chat_session_id).strip():
+        params["chatSessionId"] = chat_session_id
+    if thread_id is not None and str(thread_id).strip():
+        params["threadId"] = thread_id
+    return params
 
 
 async def query_program_by_limit_num(
@@ -1664,6 +1725,9 @@ async def query_program_by_limit_num(
     area_id: str,
     batch: str,
     record_num_limit: int = 10,
+    tenant_id: Union[str, int, None] = None,
+    chat_session_id: Union[str, int, None] = None,
+    thread_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """按分数查询院校专业录取方案（冲/稳/保）。
 
@@ -1675,6 +1739,9 @@ async def query_program_by_limit_num(
         area_id: 地区ID
         batch: 批次
         record_num_limit: 返回记录数限制
+        tenant_id: 证据签发范围-租户ID（可选，不传则不签发证据）
+        chat_session_id: 证据签发范围-会话ID（可选）
+        thread_id: 证据签发范围-线程ID（可选）
 
     Returns:
         包含 volunteerLevel + records 的列表
@@ -1692,6 +1759,7 @@ async def query_program_by_limit_num(
     return await http_client.post(
         endpoint="/gaotu-assistant-bot/inner/gaotu/program/query-by-limit-num",
         json_data=payload,
+        params=_evidence_scope_params(tenant_id, chat_session_id, thread_id),
         error_msg="查询院校录取方案失败",
     )
 
@@ -1703,6 +1771,10 @@ async def query_school_major_score_line(
     major_id: str = "",
     year: int = 2025,
     subject_type: str = "",
+    group_code: str = "",
+    tenant_id: Union[str, int, None] = None,
+    chat_session_id: Union[str, int, None] = None,
+    thread_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """查询院校专业历年录取分数线。
 
@@ -1713,6 +1785,10 @@ async def query_school_major_score_line(
         major_id: 专业ID（可选，不传则查学校整体分数线）
         year: 年份（可选，0表示查多年）
         subject_type: 科目类型
+        group_code: 专业组代码（major_group 模式必填；学生调用方不得丢弃）
+        tenant_id: 证据签发范围-租户ID（可选，不传则不签发证据）
+        chat_session_id: 证据签发范围-会话ID（可选）
+        thread_id: 证据签发范围-线程ID（可选）
 
     Returns:
         历年分数线列表，每项包含 year/minScore/maxScore/minPos/enrollNum 等
@@ -1724,10 +1800,12 @@ async def query_school_major_score_line(
         "majorId": major_id,
         "year": year,
         "subjectType": subject_type,
+        "groupCode": group_code,
     }
-    logger.info("查询分数线: school_id={}, major_id={}, area_id={}, batch={}, year={}, subject_type={}", school_id, major_id, area_id, batch, year, subject_type)
+    logger.info("查询分数线: school_id={}, major_id={}, group_code={}, area_id={}, batch={}, year={}, subject_type={}", school_id, major_id, group_code, area_id, batch, year, subject_type)
     return await http_client.post(
         endpoint="/gaotu-assistant-bot/inner/gaotu/score-line/query",
         json_data=payload,
+        params=_evidence_scope_params(tenant_id, chat_session_id, thread_id),
         error_msg="查询分数线失败",
     )

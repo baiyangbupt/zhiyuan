@@ -527,3 +527,122 @@ def test_gateway_mode_is_allowlisted() -> None:
     assert GatewayConfig(_env_file=None, mode="codex_shadow").mode == "codex_shadow"
     with pytest.raises(ValueError):
         GatewayConfig(_env_file=None, mode="unsafe")
+
+
+class CollectingCodexHarness:
+    """只实现 readonly 回合路径需要的接口，便于精确构造一次回合。"""
+
+    def __init__(self, output: dict, events: list[dict]) -> None:
+        self.output = output
+        self.events = events
+        self.turn_inputs: list[list[dict]] = []
+
+    async def create_thread(self, **kwargs):
+        return {"thread": {"id": "thr-collected"}}
+
+    async def resume_thread(self, thread_id: str):
+        return {"thread": {"id": thread_id}}
+
+    async def inject_items(self, thread_id: str, items: list[dict]):
+        return {}
+
+    async def start_turn_and_collect(self, thread_id, input_items, output_schema=None):
+        self.turn_inputs.append(input_items)
+        return CodexTurnResult(
+            status="completed",
+            turn_id="turn-collected",
+            output=self.output,
+            events=self.events,
+        )
+
+
+async def test_tool_success_never_upgrades_a_partial_execution_status() -> None:
+    """P2 成因 4 的服务级回归。
+
+    只测 `synthesize_execution_status` 不够：原缺陷的观测面正是"冒烟拿到的是
+    覆盖前的值"，绿灯与修好之间没有关系。这条从 `handle_turn` 进，断言出口。
+    """
+    harness = CollectingCodexHarness(
+        output={
+            "responseType": "text",
+            "message": "只查到部分年份；写入未执行",
+            "executionStatus": "partial",
+        },
+        events=[
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "mcpToolCall",
+                        "id": "call_1",
+                        "server": "zhiyuan_domain",
+                        "tool": "entity.resolve",
+                        "status": "completed",
+                        "arguments": {"query": "计算机"},
+                        "result": {"content": []},
+                    }
+                },
+            }
+        ],
+    )
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=harness,
+        legacy=FakeLegacyService(),
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+
+    result = await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-partial",
+        content="查计算机，并把它写进我的方案",
+    )
+
+    assert result["output"]["executionStatus"] == "partial"
+    assert result["trace"]["batchReport"]["status"] == "completed"
+    assert result["trace"]["executionStatus"] == "partial"
+
+
+async def test_tool_failure_still_downgrades_a_completed_execution_status() -> None:
+    """只降不升不等于不许降：工具失败必须把 completed 拉下来。"""
+    harness = CollectingCodexHarness(
+        output={"responseType": "text", "message": "查询完成", "executionStatus": "completed"},
+        events=[
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "mcpToolCall",
+                        "id": "call_2",
+                        "server": "zhiyuan_domain",
+                        "tool": "entity.resolve",
+                        "status": "failed",
+                        "arguments": {"query": "计算机"},
+                        "error": {"message": "backend unavailable"},
+                    }
+                },
+            }
+        ],
+    )
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=harness,
+        legacy=FakeLegacyService(),
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+
+    result = await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-downgraded",
+        content="查计算机",
+    )
+
+    assert result["output"]["executionStatus"] in {"partial", "failed"}

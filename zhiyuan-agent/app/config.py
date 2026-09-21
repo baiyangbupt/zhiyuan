@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 import sys
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -150,6 +150,11 @@ class CodexAppServerConfig(BaseSettings):
     binding_registry_path: str = ""
     python_bin: str = sys.executable
     skill_root: str = ""
+    # 原生提问走哪条路。默认取保守值：A1 探针虽然探到原生提问可用
+    # （.runtime/codex-capabilities.json），但那条路径要求启动时带上
+    # features.default_mode_request_user_input 与 tools.experimental_request_user_input
+    # 两个开关。开关没接上之前声明成 native，就是把"没测过的组合"当默认。
+    user_input_mode: Literal["native", "structured_final"] = "structured_final"
 
 
 class GatewayConfig(BaseSettings):
@@ -175,3 +180,34 @@ class McpConfig(BaseSettings):
 
     mode: str = "readonly"
     write_tools_enabled: bool = False
+
+
+class ConversationEventStoreConfig(BaseSettings):
+    """对话事件流与请求幂等的存储配置。
+
+    `redis_url` 为空表示没配置：此时事件流不可用，必须**显式失败**而不是
+    退回进程内存——进程内的"事件流"在重启后就是另一条时间线，客户端拿旧
+    cursor 去接会静默错位。
+    """
+
+    model_config = {
+        "env_prefix": "CODEX_EVENT_STORE_",
+        "env_file": ".env",
+        "extra": "ignore",
+    }
+
+    redis_url: str = ""
+    ttl_seconds: int = 24 * 60 * 60
+    max_events: int = 2000
+    max_event_bytes: int = 16 * 1024
+    # 首期只允许一个 worker：进程内锁不跨进程，多 worker 会让"同一会话串行"
+    # 这个前提失效（两个 worker 同时给一个会话开回合，事件流编号依然连续，
+    # 但业务状态会互相覆盖）。写成启动期校验，而不是注释里的提醒。
+    workers: int = 1
+
+    @field_validator("workers")
+    @classmethod
+    def _single_worker_only(cls, value: int) -> int:
+        if value != 1:
+            raise ValueError("event_store_requires_exactly_one_worker")
+        return value

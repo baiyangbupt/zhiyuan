@@ -10,8 +10,12 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.gateway.contracts import ConversationTurnSnapshot, ProposalRequest, TurnOutput
-from app.gateway.event_adapter import adapt_codex_item
-from app.gateway.output_validation import OutputContractError, validate_turn_output
+from app.gateway.event_adapter import adapt_codex_item, adapt_notification
+from app.gateway.output_validation import (
+    OutputContractError,
+    merge_evidence,
+    validate_turn_output,
+)
 from app.gateway.conversation_actions import ConversationActionResult, execute_conversation_action
 from app.gateway.snapshot import build_snapshot, diff_snapshots
 from app.engine.working_set import ConversationWorkingSet
@@ -344,6 +348,24 @@ def _collect_records(payload: Any, *record_keys: str) -> list[dict[str, Any]]:
     return records
 
 
+def _progress_emitter(
+    emit: Callable[[dict[str, Any]], Awaitable[None]] | None, ui_turn_id: str
+) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
+    """把原生通知适配成展示事件后交给 `emit`。
+
+    这个回调跑在**模型 reader 的关键路径**上：它不 await 浏览器。调用方拿到事件后
+    应当写进队列/事件存储就返回，慢消费者由发送侧自己处理（超限断连并让它 resume）。
+    """
+    if emit is None:
+        return None
+
+    async def callback(notification: dict[str, Any]) -> None:
+        for event in adapt_notification(notification, ui_turn_id):
+            await emit(event)
+
+    return callback
+
+
 class GatewayService:
     """Orchestrate one conversation turn behind a stable Gateway contract."""
 
@@ -356,6 +378,7 @@ class GatewayService:
         message_store: Any,
         binding_loader: Callable[..., Any],
         snapshot_loader: Callable[..., Any],
+        session_runtime: Any | None = None,
         base_instructions: str = "",
         developer_instructions: str = "",
     ) -> None:
@@ -367,6 +390,7 @@ class GatewayService:
         self.message_store = message_store
         self.binding_loader = binding_loader
         self.snapshot_loader = snapshot_loader
+        self.session_runtime = session_runtime
         self.base_instructions = base_instructions
         self.developer_instructions = developer_instructions
         self._threads: dict[str, str] = {}
@@ -391,6 +415,60 @@ class GatewayService:
             action=action,
             snapshot=snapshot,
         )
+
+    def scope_for_thread(self, thread_id: str) -> Any:
+        """由 threadId 反查业务身份。**这是唯一可信的来源。**
+
+        请求参数里的 tenant/session 是运行时转述的，模型可能参与其中；
+        拿它当隔离边界等于把边界交给被隔离的一方。
+        """
+        from app.gateway.ui_events import SessionKey
+
+        for session_key, bound_thread in self._threads.items():
+            if str(bound_thread) != str(thread_id):
+                continue
+            for cached in self._snapshots.values():
+                if str(getattr(cached, "session_id", "")) == str(session_key):
+                    return SessionKey(
+                        tenant_id=str(getattr(cached, "tenant_id", "") or ""),
+                        session_id=str(session_key),
+                    )
+            return SessionKey(tenant_id="", session_id=str(session_key))
+        return None
+
+    def _turn_binder(self, tenant_id: str, session_id: str, ui_turn_id: str):
+        """把原生回合号绑到会话运行时上，`turn/steer` 才找得到目标。"""
+        runtime = getattr(self, "session_runtime", None)
+        if runtime is None:
+            return None
+
+        async def bind(codex_turn_id: str) -> None:
+            from app.gateway.ui_events import SessionKey
+
+            runtime.bind_codex_turn(
+                SessionKey(tenant_id=str(tenant_id), session_id=str(session_id)),
+                ui_turn_id,
+                codex_turn_id,
+            )
+
+        return bind
+
+    async def interrupt_codex_turn(self, key: Any, codex_turn_id: str) -> bool:
+        """停止一个**原生**回合。只停推理，不撤销已提交的 Java 事务。"""
+        thread_id = self._threads.get(str(getattr(key, "session_id", key)))
+        if not thread_id or self.codex is None:
+            return False
+        await self.codex.interrupt_turn(thread_id, codex_turn_id)
+        return True
+
+    async def steer_codex_turn(self, key: Any, codex_turn_id: str, text: str) -> bool:
+        thread_id = self._threads.get(str(getattr(key, "session_id", key)))
+        if not thread_id or self.codex is None:
+            return False
+        await self.codex.steer_turn(
+            thread_id, codex_turn_id, [{"type": "text", "text": text}]
+        )
+        return True
 
     async def get_current_snapshot(
         self, *, tenant_id: str, session_id: str
@@ -457,6 +535,7 @@ class GatewayService:
         user_id: str,
         turn_id: str,
         content: str,
+        emit: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         cache_key = (str(session_id), str(turn_id))
         input_digest = hashlib.sha256(str(content).encode("utf-8")).hexdigest()
@@ -481,6 +560,7 @@ class GatewayService:
                 user_id=user_id,
                 turn_id=turn_id,
                 content=content,
+                emit=emit,
             )
             self._turn_cache[cache_key] = result
             self._turn_digests[cache_key] = input_digest
@@ -494,6 +574,7 @@ class GatewayService:
         user_id: str,
         turn_id: str,
         content: str,
+        emit: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         if self.message_store is not None:
             await self.message_store.save_user_message(str(session_id), content)
@@ -565,6 +646,7 @@ class GatewayService:
                 snapshot.allowed_capabilities,
                 snapshot.admission_mode,
                 state_patch,
+                emit=emit,
             )
         )
         if self.mode == "codex_shadow":
@@ -647,6 +729,7 @@ class GatewayService:
         allowed_capabilities: list[str],
         admission_mode: str,
         state_patch: Any = None,
+        emit: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         if self.codex is None:
             return {"error": "codex_unavailable", "events": []}
@@ -716,10 +799,21 @@ class GatewayService:
             turn_input = list(context_items)
             turn_input.append({"type": "text", "text": content})
             if hasattr(self.codex, "start_turn_and_collect"):
+                # 没有 emit 时**不传**这个参数：多传一个 None 会让所有既有的
+                # 替身 harness（签名里没有它）当场 TypeError——"旧调用不变"
+                # 指的是调用形态也不变，不只是语义不变。
+                collect_kwargs: dict[str, Any] = {}
+                emitter = _progress_emitter(emit, str(turn_id))
+                if emitter is not None:
+                    collect_kwargs["on_notification"] = emitter
+                binder = self._turn_binder(tenant_id, session_id, str(turn_id))
+                if binder is not None:
+                    collect_kwargs["on_turn_started"] = binder
                 collected = await self.codex.start_turn_and_collect(
                     thread_id,
                     turn_input,
                     TURN_OUTPUT_SCHEMA,
+                    **collect_kwargs,
                 )
                 if collected.status != "completed":
                     return {
@@ -767,22 +861,26 @@ class GatewayService:
                 event = adapt_codex_item(item)
                 if event is not None:
                     events.append(event)
-            evidence_ledger = _by_id(
-                _collect_records(
-                    [
-                        turn.get("evidenceLedger", []),
-                        turn.get("events", []),
-                    ]
-                    if isinstance(turn, Mapping)
-                    else [],
-                    "evidenceLedger",
-                    "evidence",
-                    "evidenceRefs",
-                    "evidence_refs",
-                ),
-                "evidenceId",
-                "evidence_id",
+            # 账本必须同时含**快照证据**与本回合证据：只从本回合建账本的话，
+            # 快照里那些权威证据虽然被摆到了模型面前，模型一引用就
+            # `evidence_not_found`——看得见、够不着（断链 4）。
+            snapshot_evidence = [
+                item.model_dump(by_alias=True) if hasattr(item, "model_dump") else item
+                for item in (getattr(snapshot, "evidence", None) or [])
+            ]
+            turn_evidence = _collect_records(
+                [
+                    turn.get("evidenceLedger", []),
+                    turn.get("events", []),
+                ]
+                if isinstance(turn, Mapping)
+                else [],
+                "evidenceLedger",
+                "evidence",
+                "evidenceRefs",
+                "evidence_refs",
             )
+            evidence_ledger = merge_evidence(snapshot_evidence, turn_evidence)
             artifacts = _by_id(
                 _collect_records(
                     [

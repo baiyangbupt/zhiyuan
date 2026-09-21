@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import asyncio
 import uuid
 from importlib import metadata
@@ -15,7 +16,19 @@ from pydantic import ValidationError
 from app.config import CodexAppServerConfig, GatewayConfig, HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_store import message_store
-from app.gateway.composition import build_gateway_runtime
+from app.gateway.composition import build_gateway_runtime, bind_session_runtime
+from app.gateway.access import AccessDenied, ConversationAccessGuard, TicketIdentity
+from app.util import internal_client
+from app.gateway.session_runtime import (
+    ACCEPTED,
+    BUSY,
+    CONFLICT,
+    DUPLICATE,
+    ConnectionChannel,
+    SessionRuntime,
+)
+from app.gateway.ui_events import SessionKey
+from app.gateway.user_input import UserInputError
 from app.harness.binding import ThreadBinding, generate_opaque_handle
 from app.llm.client import LLMClient, configure_logfire
 from app.schemas import WSMessage, WSResponse
@@ -288,10 +301,29 @@ async def lifespan(app: FastAPI):
     )
     app.state.gateway_runtime = gateway_runtime
     app.state.gateway_service = gateway_runtime.gateway if gateway_runtime else None
+    # 回合放后台跑，接收器才有空处理"停止"——在 receive_json 里 await 整轮的话，
+    # 用户点停止时那条控制消息正排在一个还没跑完的回合后面。
+    # 事件存储：配置了 URL 才有。没有它时事件不带编号，
+    # 断线恢复这条路径**不可用**——这一点在事件上看得出来（没有 streamEpoch）。
+    app.state.event_store = _build_event_store()
+    if gateway_runtime is not None:
+        runtime = SessionRuntime(
+            interrupt_impl=gateway_runtime.gateway.interrupt_codex_turn,
+            steer_impl=gateway_runtime.gateway.steer_codex_turn,
+        )
+        # 回填给 gateway：回合开始时它要把原生回合号绑上来，
+        # 否则"停止"永远找不到目标（返回 unavailable，用户看到的是"不支持"）。
+        gateway_runtime.gateway.session_runtime = runtime
+        bind_session_runtime(runtime)  # 让 broker 的卡片有地方可推
+        app.state.session_runtime = runtime
+    else:
+        app.state.session_runtime = None
     logger.info("ChatService initialized")
     try:
         yield
     finally:
+        if getattr(app.state, "session_runtime", None) is not None:
+            await app.state.session_runtime.cancel_all()
         if gateway_runtime is not None:
             await gateway_runtime.close()
 
@@ -458,10 +490,32 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
 
 async def _handle_gateway_ws_loop(ws: WebSocket, gateway) -> None:
     """Serve stable Gateway events while retaining the v3 WebSocket envelope."""
+    runtime = getattr(ws.app.state, "session_runtime", None)
+    # 统一约定：队列里放 **dict**，序列化由各路由自己做。
+    # 混着放字符串和 dict 会得到 "the JSON object must be str ... not dict"——
+    # 一个只在某条路由上出现的错，很难从"控制消息没反应"这个现象倒推回来。
+    channel = ConnectionChannel(
+        lambda frame: _safe_send_text(ws, _as_text(frame), context="gateway.event"),
+        frame_builder=_native_event_frame,
+        store=getattr(ws.app.state, "event_store", None),
+        on_overflow=lambda: _close_slow_consumer(ws, "native"),
+    )
+    channel.start()
+    try:
+        await _native_gateway_loop(ws, gateway, runtime, channel)
+    finally:
+        await channel.close()
+
+
+async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None:
     while True:
         try:
             raw = await ws.receive_json()
             msg = WSMessage.model_validate(raw)
+        except WebSocketDisconnect:
+            # 客户端断开是**正常结束**，不是错误：它一天要发生几百次。
+            # 当成异常往上抛会让每次正常关页都在日志里留下一条 error。
+            return
         except (json.JSONDecodeError, ValidationError):
             if not await _safe_send_text(
                 ws,
@@ -485,90 +539,162 @@ async def _handle_gateway_ws_loop(ws: WebSocket, gateway) -> None:
             if not await _safe_send_text(ws, response.model_dump_json(), context="gateway.tenant_missing"):
                 return
             continue
-        try:
-            if msg.conversation_action is not None:
-                snapshot = await gateway.get_current_snapshot(
-                    tenant_id=tenant_id, session_id=str(msg.session_id)
-                )
-                if snapshot is None:
-                    result = {"error": "conversation_snapshot_unavailable", "events": []}
-                else:
-                    result = await gateway.execute_action_and_refresh(
-                        tenant_id=tenant_id,
-                        session_id=msg.session_id,
-                        action=msg.conversation_action,
-                        snapshot=snapshot,
-                    )
-                    result["reply"] = "操作已处理。"
-                    result["events"] = []
-            else:
-                result = await gateway.handle_turn(
-                    tenant_id=tenant_id,
-                    session_id=msg.session_id,
-                    user_id=msg.user_id,
-                    turn_id=turn_id,
-                    content=msg.content,
-                )
-        except Exception:
-            logger.exception("Gateway turn failed: session_id=%s turn_id=%s", msg.session_id, turn_id)
-            result = {
-                "reply": "当前对话引擎暂时不可用，请稍后重试。",
-                "events": [],
-                "error": "gateway_failure",
-            }
 
-        for event in result.get("events", []):
-            event_type = str(event.get("type") or "planning.status")
-            try:
-                event_response = WSResponse(
-                    type=event_type,
-                    session_id=msg.session_id,
-                    content=json.dumps(event, ensure_ascii=False),
-                )
-            except ValidationError:
-                event_response = WSResponse(
+        if await _handle_control_message(ws, raw, runtime, tenant_id, channel):
+            continue
+
+        async def work(msg=msg, turn_id=turn_id, tenant_id=tenant_id) -> None:
+            result = await _run_native_turn(gateway, msg, tenant_id, turn_id, channel)
+            await channel.emit_frame(_native_reply_frame(result, msg.session_id))
+
+        key = SessionKey(tenant_id=tenant_id, session_id=str(msg.session_id))
+        # 编号事件要写会话与回合号：它们是 envelope 的必填字段。
+        channel.bind_session(key)
+        channel.bind_turn(turn_id)
+        if runtime is not None:
+            # 卡片要推给这个会话的当前连接；不登记的话 broker 只能干等。
+            runtime.attach_connection(key, channel)
+            verdict = await runtime.submit(
+                key,
+                client_request_id=str(raw.get("clientRequestId") or turn_id),
+                ui_turn_id=turn_id,
+                work=work,
+            )
+        else:
+            verdict = ACCEPTED
+            await work()
+        if verdict == DUPLICATE:
+            pass
+        elif verdict == BUSY:
+            await channel.emit_frame(
+                WSResponse(
                     type="recoverable.error",
-                    session_id=msg.session_id,
-                    content=json.dumps({"type": "recoverable.error", "message": "事件格式错误"}, ensure_ascii=False),
-                )
-            if not await _safe_send_text(
-                ws, event_response.model_dump_json(), context="gateway.event"
-            ):
-                return
+                    session_id=str(msg.session_id),
+                    content=json.dumps(
+                        {"type": "recoverable.error", "message": "当前回合还在进行，请先等它结束或点停止。"},
+                        ensure_ascii=False,
+                    ),
+                ).model_dump()
+            )
+        elif verdict == CONFLICT:
+            await channel.emit_frame(
+                WSResponse(
+                    type="recoverable.error",
+                    session_id=str(msg.session_id),
+                    content=json.dumps(
+                        {"type": "recoverable.error", "message": "同一请求编号对应了不同内容，请重新发起。"},
+                        ensure_ascii=False,
+                    ),
+                ).model_dump()
+            )
+        continue
 
-        response_type = "recoverable.error" if result.get("error") else "reply"
-        response_content = result.get("reply") or ""
-        if result.get("actionResult") is not None:
-            response_content = json.dumps(
-                {
-                    "type": "conversationAction.result",
-                    "message": response_content,
-                    "actionResult": result["actionResult"],
-                    "snapshotVersion": result.get("snapshotVersion"),
-                },
-                ensure_ascii=False,
+
+async def _run_native_turn(gateway, msg, tenant_id: str, turn_id: str, channel) -> dict:
+    try:
+        if msg.conversation_action is not None:
+            snapshot = await gateway.get_current_snapshot(
+                tenant_id=tenant_id, session_id=str(msg.session_id)
             )
-        elif result.get("proposalPreview") is not None:
-            response_content = json.dumps(
-                {
-                    "type": "proposal.preview",
-                    "message": response_content,
-                    "proposalPreview": result["proposalPreview"],
-                    "snapshotVersion": result.get("snapshotVersion"),
-                },
-                ensure_ascii=False,
+            if snapshot is None:
+                return {"error": "conversation_snapshot_unavailable", "events": []}
+            result = await gateway.execute_action_and_refresh(
+                tenant_id=tenant_id,
+                session_id=msg.session_id,
+                action=msg.conversation_action,
+                snapshot=snapshot,
             )
-        if response_type == "recoverable.error":
-            response_content = json.dumps(
-                {"type": response_type, "message": response_content}, ensure_ascii=False
-            )
-        response = WSResponse(
-            type=response_type,
+            result["reply"] = "操作已处理。"
+            result["events"] = []
+            return result
+        return await gateway.handle_turn(
+            tenant_id=tenant_id,
             session_id=msg.session_id,
-            content=str(response_content),
+            user_id=msg.user_id,
+            turn_id=turn_id,
+            content=msg.content,
+            emit=channel.emit,
         )
-        if not await _safe_send_text(ws, response.model_dump_json(), context="gateway.reply"):
-            return
+    except Exception:
+        logger.exception("Gateway turn failed: session_id=%s turn_id=%s", msg.session_id, turn_id)
+        return {
+            "reply": "当前对话引擎暂时不可用，请稍后重试。",
+            "events": [],
+            "error": "gateway_failure",
+        }
+
+
+def _native_event_frame(event: dict) -> dict:
+    """把一个 v1 事件包成 v3 信封。
+
+    `WSResponse.type` 是一个**冻结的旧 Literal**，新事件名塞进去会被它自己拒绝
+    （实测：tool.progress 直接触发 ValidationError，前端收到的是"事件格式错误"）。
+    所以这里把 v1 事件映射到旧信封已有的类型上，而不是去放宽那个 Literal——
+    放宽会让所有老客户端收到它们解析不了的帧。
+    """
+    payload = event.get("payload") or {}
+    return WSResponse(
+        type=_LEGACY_FRAME_TYPE.get(str(event.get("type")), "planning.status"),
+        session_id=str(payload.get("sessionId") or event.get("sessionId") or ""),
+        content=json.dumps(
+            {
+                "type": event.get("type"),
+                "stage": payload.get("status"),
+                "message": payload.get("label") or "",
+                "itemId": payload.get("itemId"),
+                "clarification": payload.get("clarification"),
+                "requestId": payload.get("requestId"),
+            },
+            ensure_ascii=False,
+        ),
+    ).model_dump()
+
+
+# v1 事件 → 旧信封里已有的类型。没有对应项的一律走 planning.status（旧前端把它
+# 当"正在处理中"的进度提示渲染，不会误解成答案）。
+_LEGACY_FRAME_TYPE = {
+    "tool.progress": "planning.status",
+    "turn.phase": "planning.status",
+    "understanding.preview": "thinking",
+    "clarification.requested": "card",
+    "proposal.preview": "card",
+    "conversationAction.result": "planningWorkspaceAction",
+    "recoverable.error": "recoverable.error",
+}
+
+
+def _native_reply_frame(result: dict, session_id) -> str:
+    response_type = "recoverable.error" if result.get("error") else "reply"
+    response_content = result.get("reply") or ""
+    if result.get("actionResult") is not None:
+        response_content = json.dumps(
+            {
+                "type": "conversationAction.result",
+                "message": response_content,
+                "actionResult": result["actionResult"],
+                "snapshotVersion": result.get("snapshotVersion"),
+            },
+            ensure_ascii=False,
+        )
+    elif result.get("proposalPreview") is not None:
+        response_content = json.dumps(
+            {
+                "type": "proposal.preview",
+                "message": response_content,
+                "proposalPreview": result["proposalPreview"],
+                "snapshotVersion": result.get("snapshotVersion"),
+            },
+            ensure_ascii=False,
+        )
+    if response_type == "recoverable.error":
+        response_content = json.dumps(
+            {"type": response_type, "message": response_content}, ensure_ascii=False
+        )
+    return WSResponse(
+        type=response_type,
+        session_id=session_id,
+        content=str(response_content),
+    ).model_dump()
 
 
 async def _handle_gateway_compat_ws_loop(
@@ -581,6 +707,189 @@ async def _handle_gateway_compat_ws_loop(
     field-name differences expected by the existing frontend.
     """
     del bot_id
+    runtime = getattr(ws.app.state, "session_runtime", None)
+    session_key = None
+    channel = ConnectionChannel(
+        lambda frame: _safe_send_json(ws, _as_mapping(frame), context="compat.gateway.event"),
+        frame_builder=_compat_event_frame,
+        store=getattr(ws.app.state, "event_store", None),
+        on_overflow=lambda: _close_slow_consumer(ws, "compat"),
+    )
+    channel.start()
+    try:
+        await _compat_gateway_loop(ws, gateway, tenant_id, runtime, channel)
+    finally:
+        if runtime is not None:
+            for key in list(getattr(runtime, "_channels", {})):
+                runtime.detach_connection(key, channel)
+        await channel.close()
+
+
+def _as_text(frame) -> str:
+    return frame if isinstance(frame, str) else json.dumps(frame, ensure_ascii=False)
+
+
+def _as_mapping(frame) -> dict:
+    if isinstance(frame, dict):
+        return frame
+    parsed = json.loads(frame)
+    if not isinstance(parsed, dict):
+        raise ValueError("compat_frame_must_be_an_object")
+    return parsed
+
+
+_CONTROL_FAILURE_TEXT = {
+    "no_active_turn": "这个回合已经结束了，可以直接发新消息。",
+    "turn_mismatch": "这条补充或停止不对应当前进行中的回合。",
+    "unavailable": "当前引擎不支持停止或补充。",
+}
+
+
+async def _handle_control_message(ws, raw, runtime, tenant_id, channel) -> bool:
+    """控制消息在**接收器里就地处理**，不排进回合队列。
+
+    这正是"接收器不能被回合堵住"的意义所在：用户点停止时，那条消息必须
+    立刻被读到并处理，而不是排在还没跑完的回合后面。
+    返回 True 表示这条已处理完，不该再走回合分支。
+    """
+    message_type = str(raw.get("type") or "")
+    if message_type == "clarificationAnswer":
+        return await _handle_clarification_answer(ws, raw, tenant_id, channel)
+    if message_type not in {"turnInterrupt", "turnSteer"}:
+        return False
+    session_id = str(raw.get("sessionId") or "").strip()
+    turn_id = str(raw.get("turnId") or raw.get("turn_id") or "")
+    if runtime is None or not session_id:
+        await channel.emit_frame(
+            {
+                "type": "recoverable.error",
+                "content": _CONTROL_FAILURE_TEXT["unavailable"],
+                "end": False,
+            }
+        )
+        return True
+    key = SessionKey(tenant_id=str(tenant_id), session_id=session_id)
+    if message_type == "turnInterrupt":
+        outcome = await runtime.interrupt(key, turn_id)
+        ack_type = "turn.interrupt"
+    else:
+        outcome = await runtime.steer(key, turn_id, str(raw.get("content") or ""))
+        ack_type = "turn.steer"
+    status = str(outcome.get("status"))
+    if status in _CONTROL_FAILURE_TEXT:
+        # 不能假装"收到了"：回合可能已经结束，用户需要知道这条没生效。
+        await channel.emit_frame(
+            {"type": "recoverable.error", "content": _CONTROL_FAILURE_TEXT[status], "end": False}
+        )
+    else:
+        await channel.emit_frame({"type": ack_type, "content": "", "end": False})
+    return True
+
+
+async def _handle_clarification_answer(ws, raw, tenant_id, channel) -> bool:
+    """把用户的作答送回 broker，由它用**原来的 rpc id** 回给 Codex。"""
+    broker = getattr(getattr(ws.app.state, "gateway_service", None), "user_input_broker", None)
+    if broker is None:
+        await channel.emit_frame(
+            {"type": "recoverable.error", "content": "当前引擎不支持回答这张卡。", "end": False}
+        )
+        return True
+    answer = raw.get("clarificationAnswer") or {}
+    request_id = str(answer.get("requestId") or "")
+    key = SessionKey(tenant_id=str(tenant_id), session_id=str(raw.get("sessionId") or ""))
+    try:
+        outcome = await broker.answer(key, request_id, answer)
+    except PermissionError:
+        # 跨会话作答是越权：拒绝，并且不告诉对方"那张卡存在"。
+        await channel.emit_frame(
+            {"type": "recoverable.error", "content": "这张卡不属于当前会话。", "end": False}
+        )
+        return True
+    except UserInputError as exc:
+        await channel.emit_frame(
+            {"type": "recoverable.error", "content": f"答案未被接受：{exc.code}", "end": False}
+        )
+        return True
+    status = str(outcome.get("status"))
+    if status in {"unknown_request", "already_answered"}:
+        await channel.emit_frame(
+            {"type": "recoverable.error", "content": "这张卡已失效，请以最新一轮为准。", "end": False}
+        )
+    elif status == "conflict":
+        await channel.emit_frame(
+            {"type": "recoverable.error", "content": "同一张卡收到了不同答案，请刷新后重试。", "end": False}
+        )
+    else:
+        await channel.emit_frame({"type": "clarification.resolved", "content": "", "end": False})
+    return True
+
+
+def _build_access_guard() -> ConversationAccessGuard:
+    """票据守卫。来源白名单与 Java 侧同源，不做通配。
+
+    白名单来自配置而不是写死：本地与测试域名是两个不同的来源，
+    写死一个会让另一个环境**悄悄拒掉所有连接**。
+    """
+    origins = tuple(
+        item.strip()
+        for item in (os.environ.get("CODEX_WS_ALLOWED_ORIGINS") or "").split(",")
+        if item.strip()
+    ) or ("http://127.0.0.1:3201",)
+    return ConversationAccessGuard(internal_client.consume_ws_ticket, allowed_origins=origins)
+
+
+async def _verify_conversation_access(ws: WebSocket):
+    """在 **accept 之前**校验票据。
+
+    先 accept 再校验等于先开了一条匿名通道——连接建立了、消息能发了，
+    再关掉只是"事后补票"。
+    """
+    guard = getattr(ws.app.state, "conversation_access_guard", None)
+    if guard is None:
+        guard = _build_access_guard()
+        ws.app.state.conversation_access_guard = guard
+    try:
+        return await guard.verify(
+            ws.query_params.get("ticket"),
+            ws.headers.get("origin"),
+        )
+    except AccessDenied as denied:
+        # 未 accept 时 close：ASGI 会把它变成握手拒绝，而不是一条已建立的连接。
+        await ws.close(code=4401 if denied.status == 401 else 4403)
+        logger.info("conversation handshake rejected: %s", denied.reason)
+        return None
+
+
+def _build_event_store():
+    """按配置建事件存储。没配置就回 None——**不退回进程内存**：
+
+    进程内的"事件流"在重启后是另一条时间线，客户端拿旧 cursor 去接会静默错位。
+    """
+    from app.config import ConversationEventStoreConfig
+
+    config = ConversationEventStoreConfig()
+    if not config.redis_url:
+        return None
+    from app.gateway.event_store import RedisEventStore
+
+    return RedisEventStore(
+        config.redis_url,
+        ttl_seconds=config.ttl_seconds,
+        max_events=config.max_events,
+        max_event_bytes=config.max_event_bytes,
+    )
+
+
+async def _close_slow_consumer(ws: WebSocket, route: str) -> None:
+    """慢消费者：关掉这条连接，让它重连后 resume，而不是拖住模型 reader。"""
+    logger.warning("closing slow websocket consumer on %s route", route)
+    try:
+        await ws.close()
+    except Exception:  # 关闭失败没有补救手段，也不该掩盖原始原因
+        pass
+
+
+async def _compat_gateway_loop(ws, gateway, tenant_id: str, runtime, channel) -> None:
     while True:
         try:
             raw = await ws.receive_json()
@@ -600,6 +909,9 @@ async def _handle_gateway_compat_ws_loop(
                 pong["timestamp"] = raw["timestamp"]
             if not await _safe_send_json(ws, pong, context="compat.gateway.pong"):
                 return
+            continue
+
+        if await _handle_control_message(ws, raw, runtime, tenant_id, channel):
             continue
 
         session_id = str(raw.get("sessionId") or "").strip()
@@ -629,77 +941,148 @@ async def _handle_gateway_compat_ws_loop(
             continue
 
         turn_id = str(raw.get("turnId") or raw.get("turn_id") or uuid.uuid4())
-        try:
-            if action is not None:
-                snapshot = await gateway.get_current_snapshot(
-                    tenant_id=str(tenant_id), session_id=session_id
-                )
-                if snapshot is None:
-                    result = {
-                        "error": "conversation_snapshot_unavailable",
-                        "reply": "当前确认内容已失去上下文，请重新生成预览。",
-                    }
-                else:
-                    result = await gateway.execute_action_and_refresh(
-                        tenant_id=str(tenant_id),
-                        session_id=session_id,
-                        action=action,
-                        snapshot=snapshot,
-                    )
-                    result["reply"] = "操作已处理。"
-            else:
-                result = await gateway.handle_turn(
-                    tenant_id=str(tenant_id),
-                    session_id=session_id,
-                    user_id=user_id,
-                    turn_id=turn_id,
-                    content=str(content),
-                )
-        except Exception:
-            logger.exception(
-                "Gateway compat turn failed: tenant=%s session=%s turn=%s",
-                tenant_id,
-                session_id,
-                turn_id,
-            )
-            result = {
-                "error": "gateway_failure",
-                "reply": "当前对话引擎暂时不可用，请稍后重试。",
-            }
+        key = SessionKey(tenant_id=str(tenant_id), session_id=session_id)
 
-        response_type = "error" if result.get("error") else "text"
-        response_content = result.get("reply") or ""
-        if result.get("actionResult") is not None:
-            response_content = json.dumps(
-                {
-                    "type": "conversationAction.result",
-                    "message": response_content,
-                    "actionResult": result["actionResult"],
-                    "snapshotVersion": result.get("snapshotVersion"),
-                },
-                ensure_ascii=False,
+        async def work() -> None:
+            try:
+                result = await _run_compat_turn(
+                    gateway,
+                    action,
+                    tenant_id,
+                    session_id,
+                    user_id,
+                    turn_id,
+                    content,
+                    channel=channel,
+                )
+            except Exception:
+                logger.exception(
+                    "Gateway compat turn failed: tenant=%s session=%s turn=%s",
+                    tenant_id,
+                    session_id,
+                    turn_id,
+                )
+                result = {
+                    "error": "gateway_failure",
+                    "reply": "当前对话引擎暂时不可用，请稍后重试。",
+                }
+            # 终态走**同一条队列**：直接写 socket 会和事件抢，
+            # 结果就是前端先看到答案、后看到"正在查询"。
+            await channel.emit_frame(_compat_reply_frame(result))
+
+        channel.bind_session(key)
+        channel.bind_turn(turn_id)
+        if runtime is not None:
+            runtime.attach_connection(key, channel)
+            verdict = await runtime.submit(
+                key,
+                client_request_id=str(raw.get("clientRequestId") or turn_id),
+                ui_turn_id=turn_id,
+                work=work,
             )
-        elif result.get("proposalPreview") is not None:
-            response_content = json.dumps(
+        else:
+            verdict = ACCEPTED
+            await work()
+        if verdict == DUPLICATE:
+            # 同 id 同内容是重发：不重跑，也不报错——对方上次多半只是没收到回包。
+            pass
+        elif verdict == BUSY:
+            # 不排队、不取消上一轮：用户的诉求不能被后一句话悄悄作废。
+            await channel.emit_frame(
                 {
-                    "type": "proposal.preview",
-                    "message": response_content,
-                    "proposalPreview": result["proposalPreview"],
-                    "snapshotVersion": result.get("snapshotVersion"),
-                },
-                ensure_ascii=False,
+                    "type": "recoverable.error",
+                    "content": "当前回合还在进行，请先等它结束或点停止。",
+                    "end": False,
+                }
             )
-        if not await _safe_send_json(
-            ws,
-            {"type": response_type, "content": str(response_content), "end": True},
-            context="compat.gateway.reply",
-        ):
-            return
+        elif verdict == CONFLICT:
+            await channel.emit_frame(
+                {
+                    "type": "recoverable.error",
+                    "content": "同一请求编号对应了不同内容，请重新发起。",
+                    "end": False,
+                }
+            )
+        continue
+
+
+async def _run_compat_turn(
+    gateway, action, tenant_id, session_id, user_id, turn_id, content, channel=None
+):
+    if action is not None:
+        snapshot = await gateway.get_current_snapshot(
+            tenant_id=str(tenant_id), session_id=session_id
+        )
+        if snapshot is None:
+            return {
+                "error": "conversation_snapshot_unavailable",
+                "reply": "当前确认内容已失去上下文，请重新生成预览。",
+            }
+        result = await gateway.execute_action_and_refresh(
+            tenant_id=str(tenant_id),
+            session_id=session_id,
+            action=action,
+            snapshot=snapshot,
+        )
+        result["reply"] = "操作已处理。"
+        return result
+    kwargs = {}
+    if channel is not None:
+        kwargs["emit"] = channel.emit
+    return await gateway.handle_turn(
+        tenant_id=str(tenant_id),
+        session_id=session_id,
+        user_id=user_id,
+        turn_id=turn_id,
+        content=str(content),
+        **kwargs,
+    )
+
+
+def _compat_event_frame(event: dict) -> dict:
+    """compat 侧没有类型白名单，但**帧形状**必须与终态一致（type/content/end），
+    否则老前端会在自己的解析器里漏掉它。"""
+    return {
+        "type": str(event.get("type") or "planning.status"),
+        "content": json.dumps(event.get("payload") or {}, ensure_ascii=False),
+        "end": False,
+    }
+
+
+def _compat_reply_frame(result: dict) -> dict:
+    """把回合结果拼成 compat 的终态帧。形状与改动前逐字一致。"""
+    response_type = "error" if result.get("error") else "text"
+    response_content = result.get("reply") or ""
+    if result.get("actionResult") is not None:
+        response_content = json.dumps(
+            {
+                "type": "conversationAction.result",
+                "message": response_content,
+                "actionResult": result["actionResult"],
+                "snapshotVersion": result.get("snapshotVersion"),
+            },
+            ensure_ascii=False,
+        )
+    elif result.get("proposalPreview") is not None:
+        response_content = json.dumps(
+            {
+                "type": "proposal.preview",
+                "message": response_content,
+                "proposalPreview": result["proposalPreview"],
+                "snapshotVersion": result.get("snapshotVersion"),
+            },
+            ensure_ascii=False,
+        )
+    return {"type": response_type, "content": str(response_content), "end": True}
 
 
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket):
+    identity = await _verify_conversation_access(ws)
+    if identity is None:
+        return
     await ws.accept()
+    ws.state.identity = identity
     logger.info("WebSocket connection accepted (v3 protocol)")
     gateway = getattr(ws.app.state, "gateway_service", None)
     if gateway is not None:
@@ -734,8 +1117,20 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
     将 plus 格式的消息（sessionId/userId/content/inputType）转换为 v3 格式
     （session_id/user_id/content/type），然后复用同一套处理逻辑。
     """
+    identity = await _verify_conversation_access(ws)
+    if identity is None:
+        return
+    # 路径里的 tenant/bot 是**客户端给的**：与票据不符即拒。
+    # 不校验的话，任何持票用户都能把请求打到别的租户上。
+    if str(tenant_id) != identity.tenant_id or (
+        identity.bot_id is not None and str(bot_id) != identity.bot_id
+    ):
+        await ws.close(code=4403)
+        logger.info("conversation handshake rejected: path identity mismatch")
+        return
     await ws.accept()
-    logger.info("WebSocket connection accepted (compat protocol) tenant=%s bot=%s", tenant_id, bot_id)
+    ws.state.identity = identity
+    logger.info("WebSocket connection accepted (compat protocol)")
     gateway = getattr(ws.app.state, "gateway_service", None)
     if gateway is not None:
         await _handle_gateway_compat_ws_loop(ws, gateway, tenant_id, bot_id)
