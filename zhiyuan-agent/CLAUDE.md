@@ -101,7 +101,23 @@ Release 4.0 实际注册到 `ZhiyuanAgent` 的工具定义在 `app/zhiyuan_agent
 
 技能定义在 `skills/` 目录下，共 7 个 `skills/<skill-name>/SKILL.md`（`intake_chat`、`intent_detect`、`explore_chat`、`plan_chat`、`plan_query`、`score_query`、`career_path_chat`）。
 
-注意：这 7 个技能目前**仅由 `examples/demo_agent.py` 加载**（该脚本传 `skill_dirs=["./skills"]`），生产 `ZhiyuanAgent` 未传 `skill_dirs`，因此 `pydantic-ai-skills` 的 `SkillsToolset` 在生产运行时不生效。`skills/codex/` 是给外部 codex 二进制用的独立格式（子目录各自带 `SKILL.md`，另有 `plugin.json`、`base_instructions.md` 等），不走 `SkillsToolset`。
+注意：这 7 个技能目前**仅由 `examples/demo_agent.py` 加载**（该脚本传 `skill_dirs=["./skills"]`），生产 `ZhiyuanAgent` 未传 `skill_dirs`，因此 `pydantic-ai-skills` 的 `SkillsToolset` 在生产运行时不生效。
+
+**给外部 codex 二进制用的技能已改成真插件**（2026-09-21，此前是手写的 `skills/codex/plugin.json`，**codex 从不读它、模型一份业务技能都看不到**）：
+
+```
+skills/codex-marketplace/                      ← marketplace 根
+├── .agents/plugins/marketplace.json           ← 文件名必须是 marketplace.json
+└── plugins/zhiyuan-codex-planner/
+    ├── .codex-plugin/plugin.json              ← codex 只认这个路径；"skills": "./skills/"
+    └── skills/<7 个技能>/SKILL.md              ← 含入口技能 planner-routing
+skills/codex/                                  ← 只剩 base_instructions.md + developer_instructions.md
+```
+
+改完技能要**重装才生效**：`update_plugin_cachebuster.py <plugin-path>` →
+`codex plugin add zhiyuan-codex-planner@zhiyuan-local`（`CODEX_HOME` 指向隔离目录），
+再重启 agent。注册只用做一次：`codex plugin marketplace add <marketplace 根>`。
+（`skills/codex/` 下那份说明旧布局的段落已作废。）
 
 ### 工具模块
 

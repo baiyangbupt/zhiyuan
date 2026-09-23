@@ -13,13 +13,29 @@
 | [T007](T007-agent-doc-accuracy/) | 修正 `zhiyuan-agent/CLAUDE.md` 的 Tools 一节 | T003 REVIEW 勘误 2 | deepseek | 2026-09-10（口头） | `DONE` | `ACCEPTED` | P5 文档收尾 |
 | [P1a](P1a-evidence-ledger/) | Java 证据台账：建表、摘要、签发、四态核验 | 修订计划 P1 切片 | deepseek | 2026-09-10 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | P1b-1 / P1b-2 / P1b-3 |
 | [P1b-1](P1b-1-content-digest/) | 数据版本改为 `data` 内容摘要，版本表键改 `(source_system, params_digest)` | P1a REVIEW 跟进 1/3 + 上游实测 | zhiyuan-48 | 2026-09-13 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | 两条遗留并入 P1c-2；1 条挂起 |
-| [P1b-2](P1b-2-evidence-passthrough/) | 打通证据到 Agent 的三处断链，最后删自铸分支 | P1a REVIEW 跟进 2（归因勘误后） | zhiyuan-48 | 2026-09-13 | `NEEDS_CONTEXT`（步骤 1、6 已完成并验过；2–5 等裁决 (a)） | — | — |
-| [P1b-3](P1b-3-snapshot-evidence/) | `fillEvidence()` 落地 + snapshot 优先于进程内存 | 设计文档 4.5 / 5.2 | zhiyuan-48 | 2026-09-13 | 排队（P1b-2 之后） | — | — |
-| [P1c-1](P1c-1-validator-unblock/) | 拆掉三处恒真的证据检查，让权威证据能进校验器账本 | 断链 4/5/6 | 未派发（等 P1b-2、P1b-3 合入） | — | — | — | — |
-| P1c-2 | 四态核验接入 Gateway + 第六章分流表 + 重查一次 | 设计文档 5.3 / 第六章 + P1b-1 REVIEW 遗留 2 | **任务书可写了**（P1b-1 已合入，API 形状定死） | — | — | — | — |
+| [P1b-2](P1b-2-evidence-passthrough/) | 打通证据到 Agent 的三处断链，最后删自铸分支 | P1a REVIEW 跟进 2（归因勘误后） | zhiyuan-48（复核与护栏由本地会话 2026-09-22 补） | 2026-09-13 | `DONE_WITH_CONCERNS`：**裁决 (a) 已查清**（该路从未产出录取率：生产者 DTO 11 字段无率、全仓无 setter、Python 明说是上游算好的）；复核发现步骤 2/3/5 早已落地、步骤 4 的测试在但**护栏缺失**——已补 `response.ok()` 的 `authoritative ⇒ ev_` 检查（含对照，红-绿）；真栈一句话验收通过（verify 入参是 `ev_…`） | — | 验收 5 的 scope 对照未复跑（见 `P1b-2/REPORT.md` 附二） |
+| [P1b-3](P1b-3-snapshot-evidence/) | `fillEvidence()` 落地 + snapshot 优先于进程内存 | 设计文档 4.5 / 5.2 | zhiyuan-48（Java 半已随 `23db5da` 落地；Python 半由本地会话 2026-09-21 补） | 2026-09-13 | `PARTIAL`：Python 半完成并带红-绿对照；Java 半的两条验收**起初都不满足**——"只放 valid"（只过滤了过期）与"查库异常降级"（异常直接穿到快照）——2026-09-22 均已在真实栈上红-绿验证（含端到端复验）。`expires_at IS NULL` 的口径差已按裁决统一到 fail-closed（核验侧改判 `expired`，红-绿验证；列是 NOT NULL，实盘不可达、属堵缝）。仍未验：`unknown` 路径（这条路上结构不可达，见 `P1b-3/REPORT.md` 4.6） | — | P1c-1（其前提"模型引用必 `evidence_not_found`"已被工作区的 `merge_evidence` 推翻，派发前需复核） |
+| [P1c-1](P1c-1-validator-unblock/) | 拆掉三处恒真的证据检查，让权威证据能进校验器账本 | 断链 4/5/6 | 未派发（前置已解除） | **工作区已实现**（随 A 线未提交改动：`service.py` 的账本已 `merge_evidence(snapshot, turn)`；`output_validation.py` 里证据侧的 `stateVersion`/`threadId` 等值检查已删、artifact 侧保留）。2026-09-22 本会话补了任务书**验收原话**那条用例（第 3 回合的证据、中间工作区写过、第 7 回合引用必须通过），红-绿验证（注回旧检查即失败）；另有实测：80 条引用证据的回合全部成功 | — | 补报告由派发方定 |
+| [P1c-2](P1c-2-verify-in-gateway/) | 四态核验接入 Gateway + 第六章分流表 + 重查一次 | 设计文档 5.3 / 第六章 + P1b-1 REVIEW 遗留 2 | 本地会话（2026-09-22；任务书由执行方按设计文档翻译） | 2026-09-22 | `DONE_WITH_CONCERNS`：Java（版本缺失→`unknown`）+ Python（核验客户端 / 分流表纯函数 / 接入 `_codex_turn`）两半落地，新增 16 条单测；真栈**断依赖**验收：只把 `/internal/evidence/verify` 打成 500 → 整轮硬失败且**无事实性回答**，恢复后同题正常，backend 访问日志证明确实调了核验端点 | — | 2026-09-22 裁决并落地：『仅被非 `fact` 引用 → 剥离』那一行**作废、失效一律重查**（设计文档第六章已同步修订；依据是实测的 6 条 `clarification` 正文在报数字）。真栈逼出重查两种收场：重查后成功 ✓ / 仍失效则整轮 fail closed ✓（见 `P1c-2/REPORT.md` 第六节） |
+| [P1d](P1d-rank-structured-reasons/) | rank 理由结构化（P1 第 8 条，P1c 之后另开） | 推进计划修订第 8 条 | 本地会话（2026-09-22） | 2026-09-22 | `DONE_WITH_CONCERNS`：rank 侧 75 个调整点记 `{tag, delta}`（新增 `college_factors`/`major_factors`，旧 remark 串不动）+ Java 映射器（标签表 + 动态标签按后缀归类 + 未知标签 `unknown:` 保留 + 权重取不到不补 0）+ rank 边界填充；rank 14 条 / Java 796 条通过 | — | 端到端未验：本地只读栈从不调 rank（属 P2 写路径）；见 `P1d/REPORT.md` 第五节 |
 | [T008](T008-output-extraction/) | 让 harness 取得到散文包裹的 JSON，并让取不到变成显式失败 | T005 REVIEW 第四节 2 | claude-subagent | 2026-09-13 | `DONE_WITH_CONCERNS` | `ACCEPTED_WITH_FOLLOWUP` | T009 |
 | [T009](T009-agent-message-capture/) | 冒烟 payload 存一份拼好的 agentMessage 正文（碎片已在，缺"拼好的那份"） | T008 REVIEW 第六节 | claude-subagent | 2026-09-13 | `DONE` | `ACCEPTED_WITH_FOLLOWUP` | 无（三条遗留不开任务） |
-| [P2a](P2a-forbidden-tool-testable/) | 把 `plan_apply` 放上桌，让 `forbidden_tool_names` 守在对的门上 | mixed-read-write 成因 3 | — | 可派发（T009 已合入，依赖解除） | — | — | — |
+| [P2](P2-write-closed-loop/) | 写入闭环 E2E（codex 网关侧） | 推进计划 §四 | **可派发**（任务书由本地会话 2026-09-22 按计划 + 代码审计写成） | — | — | — | 审计结论：Java 两条端点都在 ✓、legacy agent 有参照 ✓，**codex 网关侧缺 execute 那一步**（4 个调用点全在 `zhiyuan_agent/tools.py`）；第 4 步（前端按真实 CAS 更新）需浏览器，可能要 C 线配合；**派发前先读 TASK 二之二**：execute 的输入已逐个落到出处（operationId 由 Java 编译产出、proposalApply 类型 `FixProposalApplyReq`、claimToken 必须复用），并更正了一条我先前的误判——`executionPayload` 是 **legacy 自己写的**（`service.py:819-847`），不是死代码；两条链对同一个键各写各的形状，新链路按扁平 `proposalApply` 来、不照抄 legacy 的包装层 |
+| [P2a](P2a-forbidden-tool-testable/) | 把 `plan_apply` 放上桌，让 `forbidden_tool_names` 守在对的门上 | mixed-read-write 成因 3 | 本地会话（2026-09-22） | 2026-09-22 | `DONE`：夹具声明写工具（`readOnlyHint: false`）且调用时明确拒绝；**真实端点 10/10 模型没碰它**（`plan_apply_called=False`、`forbidden_tools` 零次），这条主张第一次在正确条件下被测到；场景本身仍不过（另外三个成因，按要求未碰） | — | 顺带观察：8/10 次重复调用同一工具 2 次、1 次调用 4 次（同参数重复取数，与跨回合上下文同类） |
+| [P2b](P2b-execution-status-split/) | 拆开"工具是否成功"与"诉求是否满足"两个语义 | mixed-read-write 成因 4（P2 第 4 项） | 本地会话（2026-09-22） | 2026-09-22 | `DONE_WITH_CONCERNS`：查证**只降不升的合成规则已在工作区落地**（`result_synthesis.py`，单向 ✓）；本会话补了它缺的两件——单调性关键那半的专测（工具成功不许把 partial 抬高）、**冒烟改量生产返回值**（原来量模型原值，"绿灯和修好没有关系"）；全量 1937 通过 | — | 未验："工具失败 + 模型宣称 completed → 生产拉低"这一整条端到端（场景集里没有工具失败的场景）；计划书那句"生产依然返回 completed"针对的是当时的生产代码，现已不成立 |
+| [P2c](P2c-scenario-expectations/) | 把 mixed-read-write 的期望改对，并加一条 A 型姊妹场景 | mixed-read-write 成因 2（P2 第 2 项） | 本地会话（2026-09-22） | 2026-09-22 | `DONE_WITH_CONCERNS`：按计划书的倾向执行 B（`response_type` 接受 fact|clarification、`clarification_required` 不约束、`proposal_required` 撤掉）+ 新增可识别姊妹场景；B 的效果：`proposal_missing` 在歧义场景消失（不再惩罚先问清楚） | — | **跑出的新事实**：两条场景里模型都把写的那半边**整个忽略**（既没提案也没问）——旧的 `proposal_missing` 从来不是"该提案没提"，而是"写请求被无视"；这是 P2/P3 的一条真实条目（该提案还是该反问属设计裁决，未自行定） |
+| [P2d](P2d-contract-schema-alignment/) | 契约字段"不可省略"（成因 1） | mixed-read-write 成因 1（P2 第 1 项） | 本地会话（2026-09-22） | 2026-09-22 | `DONE_WITH_CONCERNS`：**真因不是"模型不填"，而是模型可见 schema 与内部契约不一致**——模型填了 `partial`/3 条 limitations/nextStep，却因 `artifactType`（契约是 Literal，schema 只写 string）整条校验失败，冒烟又把三个字段从量具里丢了。补 3 处 enum + 递归比对用例（红-绿）+ 兜底 trace 带原值 + 提示词把 `executionStatus` 定义成"诉求满足度"。效果：三项 missing 消失、`mixed-read-write` **第一次绿** | — | 留两条：A 型场景的 `proposal_missing`（"该提案还是该反问"属设计裁决）；工具契约与 MCP 夹具 schema 未做同样比对 |
+| [P2e](P2e-tool-contract-drift/) | 工具契约三处漂移的比对（P2d 遗留检查） | P2d 报告第四节第 2 条 | 本地会话（2026-09-22） | 2026-09-22 | `DONE`：查出两次真实漂移——`admission.get_history` 在编排层多要 `majorId`（真实工具是学校级口径、缺它只追加限制不是错误）→ 后果是模型没传就判 blocked、整轮被降级并补"请补充缺失参数"；夹具两处比真实更严。已修 + 新增比对用例（红-绿）+ 更正一条**与 bug 同向的旧断言**；全量 1939 通过 | — | P0 的 20×2 测量发生在本修正之前，已按报告里的命令复跑（见 `P0-acceptance-measurement`） |
+| [P3](P3-process-gates/) | 流程门禁（superpowers 手法迁移；落点是 6 个 skill 的语义） | 推进计划 §五 | **可派发**（任务书由本地会话 2026-09-22 按计划 + 实测写成） | — | — | — | 主判据可证伪：`scripts/measure_p0_acceptance.py 20` 里 `mixed-read-write` 的 `forbidden_tools` 归零；留底为改前 2/20（见 `P0-acceptance-measurement/REPORT.md`） |
+
+## 2026-09-23 事故与恢复：`app/gateway/service.py` 被误覆盖
+
+死代码 A 批删除后的"按文件名整体回滚"把 legacy `app/service.py`（387549 字节）覆盖到了同名的网关 `app/gateway/service.py` 上，后者含三方未提交改动（P1b-3 Python 半、P1c-2、P2d）。**无 golden copy 可用**，已按"keep（9-21 19:58 快照）为底 + 任务报告与无损测试为规格"重建三处改动，逐项做到对应测试红转绿；全量 = `1 failed（既有 test_dialog_quality_gate）/ 1924 passed / 50 skipped`（带 `CODEX_TEST_REDIS_URL` ＝ 1939/35，与 P2e 记的基线一致）。**残留：不是逐字节还原**（P2b 记的调用点 `:1121` ⟶ 重建版 `:1180`，我的实现多约 50 行）。**真栈复验已补（2026-09-23 19:00）**：A/B 对照（原版 vs 重建版，同一事实题、同答 658）＋断依赖（核验端点打 500 → 整轮硬失败、18 字、无事实性回答）＋恢复四条全过，与 P1c-2 原验收逐项一致；带 `CODEX_TEST_REDIS_URL` 全量 = 1939/35，与 P2e 基线精确一致。**重查路径**：机制与 fail-closed 那一半已在真栈复现（会话 900325：重查一次 → 仍失效 → 整轮作废；backend 恰好 2 次 verify 调用），"重查后成功"那一半未撞到（单测已覆盖该组合）；同期还观测到一次模型抄错 ULID 导致的 `evidence_not_found`（模型侧老毛病，与重建无关）。16 案例验收回归 **16/16，0 业务失败 0 环境失败**。
+
+**2026-09-23 晚：独立复核（主脑）判定「有条件不通过」**——三项要修：① 可空 `admissionMode` 的 enum 缺 `None`（契约允许 `null`、schema 会拒，`jsonschema` 实测；**重建时我自己引入的缺陷**）；② 重查轮没传 `on_notification`/`on_turn_started`（进度与 native turn 绑定都缺）；③ `_recheck_turn` 的 `start_turn` 回退把启动确认当回合结果。另有一项"无法判定"（新加日志文案）、一项"通过"（抽取重构）。**三项已全部修复，各补一条回归测试**；修复后：定向 30 passed、全量 **1942 passed / 35 skipped / 1 failed（旧账）**、真栈四项复跑通过（正常 / 断依赖 / 重查 fail-closed / **重查后成功**——后者用确定性方法补上：先查清"版本行是派生的（签发重算、核验直读）"，再"翻到首次核验就停"）。修复后指纹 `cd873230408d61c0ee7af960fb17c9fe`（复核时是 `a7f406d9…`）。详见 `../reviews/2026-09-23-gateway-service-rebuild-review.md` 与事故报告第十节。**复审判定（2026-09-23 21:1x）：放行**——三项修复全过（可空 enum / 重查轮回调 / `start_turn` 回退语义），另两项维持（新增日志文案「无法判定」、抽取重构「通过」）。复核记录另记了两个环境现象（三端口 curl 全失败 + 全量卡在 ~40%）；执行会话按「连接超时而非拒绝」+「自己四次全量皆 ~31s 自然完成」归因为**复核会话的网络沙箱**，并给出可自证命令（事故报告第十一节）——**该归因待复核确认**；"全量统计"与"真栈三项"这两类复核本轮由执行会话代跑，会话号与日志可溯。A 批删除已随回滚全部撤销（`git diff HEAD -- app/` 无顶层 def 删除）。**2026-09-23 裁决：A 批删除暂不重做**——先站稳恢复态（复核重建 + 真栈复验），之后另议；重做前必须先把备份/回滚改成按**完整路径**索引。详见 `../reviews/2026-09-23-gateway-service-restore-incident.md`。**普查清单已落盘**：[2026-09-23-死代码普查清单.md](2026-09-23-死代码普查清单.md)（用写死的方法重新生成 83 个候选，与前一轮的 82/37/16 分布逐项吻合；3 个模块本身零 import；0 条字符串动态引用；10 条人工抽样证伪）。
+
+**2026-09-23 提交批次（6 个提交，工作区已清空）**：`292d85d`（server：台账/rank/来源/会话绑定）、`0066f44`（agent：证据链贯通 + 核验接入 + 网关重建与复核修复）、`364ba87`（agent：MCP 工具契约/技能插件化/验收脚本）、`b1b3495`（rank：理由结构化）、`7bb383a`（web/scripts）＋紧随的 docs 提交。提交前该批改动的验证：带 Redis 全量 1942 passed / 35 skipped / 1 failed（旧账）、16 案例验收 16/16、真栈四项（正常/断依赖/重查 fail-closed/重查成功）。
+
 
 ## P1b 三片的并行关系
 
@@ -41,6 +57,41 @@
 另有一条**跨片的口径待裁决**（P1a 跟进项 4，三份任务书都写了"不要自行处理"）：`EvidenceLedgerService.verifyOne()` 只在双方 `threadId` 都非空时才校验线程，而 Agent 侧 `strict_scope=True` 要求 scope 必须存在，Java 比 Agent 松。影响面封在单会话内，不构成跨会话泄露。
 
 **已裁决（2026-09-13）：统一到松的那边——thread 不是证据的隔离边界。** 依据不是偏好而是事实：`service.py:372` 的 `self._threads` 是纯进程内 dict、从不持久化，thread 与 session 是 1:1，**一个会随进程重启而改变的标识符不能承载安全语义**。隔离由 `(tenantId, chatSessionId)` 承担，Java 侧一直强制。P1b-3 任务书已同步更新。
+
+## P0 验收条：2026-09-22 首次量到，判据满足
+
+两个复杂场景各 20 次（真实 Codex + 真实模型，工具为夹具）：
+
+| 场景 | 通过 | Wilson 95% CI | 判据（≥19/20） |
+|---|---|---|---|
+| `reference-complete-history` | 20/20 | [83.9%, 100%] | 满足 |
+| `mixed-read-write` | 19/20 | [76.4%, 99.1%] | 满足 |
+
+`mixed-read-write` 从 **0/3** 走到 19/20（**首测**，已被复跑取代），靠的是今天的四件改动：
+P2a（把写工具摆上桌）、P2b（合成只降不升 + 冒烟量生产值）、P2c（期望改对 + A 型姊妹场景）、
+P2d（契约 schema 与 prompt 对齐）。明细见 `P0-acceptance-measurement/REPORT.md`。
+
+**复跑（P2e 修掉契约漂移之后）**：`reference-complete-history` 20/20 ✓、`mixed-read-write` **18/20 ✗**——两次失败全是 `forbidden_tools`：模型**真的去调了写工具**。首测那个 19/20 是漂移造成的假象（读的那半被误判 blocked，模型更早收手、根本没走到写的那半）。**P0 这条验收条现在依赖 P3**（不能靠"模型碰巧没动手"，要靠"它动手时被挡住"）。
+
+**2026-09-22 回归确认**：P2d/P2e 那串改动（schema 补 enum、提示词改 `executionStatus` 语义、工具契约与夹具对齐）之后，整套验收 1 遍 → **16/16，0 业务失败 0 环境失败**（`.runtime/zhiyuan-acceptance-regression-0922.json`）。
+
+**证据边界**：本测量是"真实 Codex + 真实模型 + 夹具工具"那一层；
+真实 Java 工具与浏览器两层仍未覆盖（见 `A1-A7-evidence-index.md`）。
+
+---
+
+## 待裁决：`nextStep` 在新架构里的去留（2026-09-22）
+
+`nextStep` 是旧架构的字段被搬进了新契约：**契约层整合（且三处重复）、状态层与用户可见层不整合**
+（Java 与前端全仓 0 命中，写了用户看不到），而新架构里"轮到你了"已有两个更完整的载体
+（原生问答卡、proposal/conversationAction）。另查出 `execution_plan.py` 的
+`userVisibleNextStep` 是**第二条对模型说的"下一步"**（每回合随执行计划骨架注入模型上下文，`service.py:952-961`）——
+与契约里的 `nextStep`（模型说给我们）互不校验。**实测 60 条 rollout：58 条两者不同、0 条逐字相同**，差异是详略与措辞（不是矛盾）。**勘误**：初版误记为"零消费者的死字段"，已撤回。
+
+事实、三条缝与三个选项（A 接线成状态 / B 收敛到原生卡 / C 降级为量具字段）见
+`plans/2026-09-22-nextStep在四层里的落点与三条缝.md`。**未做裁决**，接新架构设计时一并定。
+
+---
 
 ## 第二簇断链：校验器会结构性拒收权威证据（2026-09-13）
 

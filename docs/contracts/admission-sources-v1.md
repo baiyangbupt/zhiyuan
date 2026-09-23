@@ -136,14 +136,30 @@ title = year + schoolRuleTitle;
 
 1. **`publishedAt` / `sourceUrl` 从哪来**：上游计划表里有没有发布日与官方出处？
    没有的话，"这是哪一年哪份文件"就答不出来——而那是学生要核对的东西。
-2. **`RemoteData<String,String>` 的实际序列化形状**：`area`/`batch`/`dataType`
-   都是这个包装类型，线上返回的是什么（id+name？还是嵌套对象？）没有样本。
-3. **网关前缀**：本仓现有上游路径都是 `/hl-wish/ci/...`，而 H5 端点在
-   `xiaowo-ci` 的 `/h5/school/...` 下。两者经同一个网关对外时的完整前缀
-   需要一次真实调用确认。
-4. **章程端点的默认文案与年份语义**：`defaultSchoolRuleContent` 的实际内容、
-   `selectYear()` 的取值来源，都没有核；这直接决定"这条 content 能不能当原文引用"。
-5. **上游是否有 `@Sign` 之外的其他门槛**（H5 端点标注免 token，但网关层可能另有要求）。
+2. ~~**`RemoteData<String,String>` 的实际序列化形状**~~ —— **2026-09-21 实测已核**：
+   形状是 `{"key": "...", "data": "..."}`（如 `{"key":"17","data":"第一段"}`、
+   `{"key":"01","data":"本科批"}`）。它**不是** id+name 的嵌套对象，也不是裸字符串。
+3. ~~**网关前缀**~~ —— **2026-09-21 实测已核**：`/hl-wish/ci/h5/school/noToken/planMajorDataList`
+   可用（免 token，返回真实计划行）。B3 当时担心的"别把 404 当成上游没这功能"不成立——
+   前缀就是 `/hl-wish/ci` + H5 路径。
+4. ~~**章程端点的默认文案与年份语义**~~ —— **2026-09-21 实测分清了两个东西**：
+   - `GET /school/noToken/getSchoolRule`（本仓已接的那条）= `z_school_admission_rule` 的
+     **录取规则摘要**，没规则时回占位文案"正在更新中"且**响应无标志位**。
+     → 结论不变：**不签发证据、不当原文引用**。
+   - `POST /h5/school/noToken/newsPage` + `GET /h5/school/noToken/getNewsInfo`
+     = **招生章程全文**（院校资讯里的"招生简章"，页面入口在院校库的「招生简章」tab）。
+     实测北大/清华/浙大/福建师大各有 2024–2026 三年，标题自带年份、有 `isPublish` 上下架标志；
+     正文是 **HTML**（福建师大 2026 那条 95KB、去标签 5581 字），**不是 PDF**、也没有占位文案。
+     → 这条**才是原文条款的来源**，已接为只读工具 `admission.get_charter(schoolId, year?)`。
+5. ~~**上游是否有 `@Sign` 之外的其他门槛**~~ —— **实测已核**：这些端点带不带 token
+   都能调通（本仓 `GaotuClient` 只带 `content-type` 与可选的 `traffic-env`）。
+6. **实测新增的两条形状限制（原文件未记）**：
+   - `planMajorDataList` 的 `schoolUnitId` 是**必填**，且只能在
+     `planMajorFilterList` 的**末层**拿到（`value`；该层 `code` 是该省院校代码）。
+   - 该响应的 `majorId` 字段可能是 **`"0"`**——那是**"大类招生"哨兵**
+     （`z_plan_major_data.major_id = 0`，大类下不分专业时以 `sub_category_id` 命中），
+     **不是缺数据、也不是可用的专业 id**。详见
+     [`admission-identity-and-filters.md`](admission-identity-and-filters.md) 第五节。
 
 ## 六、对本仓 B3 的影响
 

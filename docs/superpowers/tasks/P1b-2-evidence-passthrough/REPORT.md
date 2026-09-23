@@ -146,3 +146,45 @@ grep -rn "admissionFacts\|AdmissionFactDTO" --include=*.java zhiyuan-server/src/
 1. 全量测试计数与任务书基线不一致：任务书写 `1714 passed, 34 skipped`，实跑 `1730 passed, 43 skipped`；失败集合逐字相同（两条）。未推测原因。
 2. `zhiyuan-agent/app/util/internal_client.py` 的 `HttpClient.post()` 原有 39 处调用，全部使用 `endpoint=` 关键字形式（无位置传参），因此把新形参 `params` 插在 `json_data` 之后不会移动任何既有实参。
 3. 设计侧已更正其先前说法：`scripts/codex-local-infra.sh` 确实出现在 P1b-1 任务书第四节里（P1b-1 报告偏离第 6 条已如实记录该文件不存在），并非我记串。
+
+---
+
+## 附：裁决 (a) 已查清（2026-09-22，事实核查，非偏好）
+
+**结论：这条路（以及全仓）从未产出过录取率。** 依据三条，都可复核：
+
+1. **生产者侧没有这个字段**：`zhiyuan-server/.../dto/gaotu/res/QuerySchoolMajorScoreLineRes.java`
+   共 11 个字段——`year / name / batch / batchTitle / enrollNum / maxScore / minScore /
+   averageScore / minPos / maxPos / selectInfo`。**没有率**，也没有可当率用的比率字段。
+   即：`admission.get_history` 这条路上**结构上不可能**带出录取率。
+2. **契约里有、没人填**：`AdmissionFactDTO.unitAdmissionRate` / `AdmissionMajorDetailDTO.majorAdmissionRate`
+   只出现在 DTO 声明里；全仓 `grep` 不到任何 `setUnitAdmissionRate` / 构造 `AdmissionFactDTO` 的生产代码
+   （`ConversationTurnSnapshotDTO` 只是持有这个列表）。Java 今天不产出率。
+3. **Python 侧明说是"上游算好的"**：`app/admission/tool_results.py:117` 的 `normalize_probability`
+   注释写着"上游已算好的录取概率……缺真实接口时这项能力显示不可用，而不是用别的东西凑一个
+   看起来像概率的数"，缺率时追加 `unit_admission_rate_missing` 并降级——**不是**补零。
+
+**对步骤 3/4 的直接含义**：形状对齐严格按 `QuerySchoolMajorScoreLineRes` 的 11 个字段来，
+**不要为"率"预留位置、不要补默认值**；测试的"真实信封形状"里也不该出现率。
+
+---
+
+## 附二：步骤 2–5 的复核（2026-09-22）
+
+裁决 (a) 查清之后回头核对工作区，发现**步骤 2–5 早已落地**（台账那句『2–5 等裁决』
+已经过期），逐条核对如下：
+
+| 步骤 | 状态 | 证据 |
+|---|---|---|
+| 2 保住信封 | **已做** | `tools_readonly.py::_history_envelope`：`normalize_history({"data": result.get("data")}, …)` + `evidenceRefs = result.get("evidence")`（**原名原样**，没有重写字段）+ limitations/stateVersion/admissionMode |
+| 3 对齐形状 | **已做（换了实现方式）** | 数组分支带注释『真实上游的 `data` 是**数组**』；`check_eligibility` 的布尔**单列一条分支**（注释写明它以前被 `insufficient_data` 吞掉）——这正是任务书要的『能区分』，只是没用 `unexpected_shape` 这个码 |
+| 4 生产者形状测试 + 防回归 | **测试已做，护栏没做 → 本次补上** | 已在：`test_real_array_data_does_not_break_the_envelope`、`test_java_evidence_id_survives_the_mcp_layer_unchanged`、`test_no_evidence_means_no_evidence_not_a_self_minted_one`；**缺**：`authoritative ⇒ ev_` 前缀的护栏（全仓 `grep` 不到），本次补在 `app/mcp_server/response.py::ok()`（所有工具结果的唯一收口）+ 2 条测试（含对照），红-绿：去掉护栏即 1 failed |
+| 5 删自铸分支 | **已做** | `tools_readonly.py` 里自铸点只剩注释：『这里曾经在无证据时自铸一条 `ev-{name}` / sourceLevel=authoritative』 |
+
+**一句话验收（真栈）**：`POST /internal/evidence/verify` 的入参
+`evidenceIds=[ev_01M32ZZS7DS5A84CPMEWCX3C88, ev_01M32ZZQT136FF92VTDVZ1FZ4D]`
+——是 Java 签发的 ULID，不是 `admission-unit:…:unknown` ✓。
+
+**没复跑的一条对照**：验收 5 要求的『把步骤 1 的 scope 传递注释掉再跑一次，必须退回
+无证据』。步骤 1 当时已验过（台账记『已完成并验过』），本次**没有复跑**这条对照——
+它要临时改运行时接线并重启，我没有把它算成已验。

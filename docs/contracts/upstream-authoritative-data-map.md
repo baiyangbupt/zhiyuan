@@ -1,7 +1,11 @@
 # 上游权威数据地图：能不能脱离"分数带"取数
 
 > 日期：2026-09-21。依据：上游仓库 `../hl-wish-server` 的实体与控制器源码。
-> **没有**对上游发起真实调用——字段与端点是代码事实，"线上真的这么返回"未验证。
+>
+> **2026-09-21 下午更新**：本文件原先标注"没有对上游发起真实调用"。现已在四省
+> （浙江/山东/江苏/河北）做了真机实测，**只更正被实测证实或推翻的条目**，
+> 其余仍按"代码事实、线上未验证"读。身份层级与筛选的完整定义见
+> [`admission-identity-and-filters.md`](admission-identity-and-filters.md)。
 
 ## 一、结论先行
 
@@ -10,7 +14,7 @@
 
 | 数据 | 能不能按身份无线取 | 依据 |
 |---|---|---|
-| 历年录取分数线 | **能** | `EnrollDataRequest{areaId, batch, majorId, schoolId, subjectType, year}` —— **入参里没有分数** |
+| 历年录取分数线 | **能**（实测确认，但**分三种口径**） | `EnrollDataRequest{areaId, batch, majorId, schoolId, subjectType, year}` —— **入参里没有分数**。实测（江苏·北大·物理·本科批 2025）：**不传 `majorId`** → 院校/**专业组**级行、**有真分数**（`name`="北京大学05专业组"，minScore 686/minPos 126）；**`majorId="0"`** → 专业级·**大类招生**行（81 行，分数恒 0）；**`majorId=<具体>`** → 专业级行、可跨年（天文学 2025/2023/2021），**分数列在该省恒为 0** |
 | 招生计划 | **能** | `PlanMajorDataRequest{schoolId, areaId, year, subject, batch, schoolUnitId}` |
 | 学校/专业身份 | **能** | `z_school` / `z_major` / `z_profession` 等主表按 ID |
 | 章程与规则 | **能**（表在，端点待定） | `z_school_admission_rule` 等 |
@@ -34,6 +38,11 @@
 | `z_school_major_base` + `_relation` | 学校—专业基础关系 |
 | `z_school_unit` / `z_school_unit_base` / `_relation` | **招生单元**（专业组）身份 |
 | `z_pre_school_unit*` / `z_pre_school_major_base*` | 同上，**预测口径**一套 |
+
+**实测补充——"用 ID"之外还有一条同样硬的口径**：`subjectType` 与 `batch` 必须传**码**
+（`N`/`WL`/`LS`、浙江 17、江苏 01），传中文名（"物理""本科批"）**上游不报错、只返回空**。
+这一类"静默返回空"最难查：链路上只表现为"没有数据"。
+批次码按省不同，必须从 `batchListByPolicy` / `planMajorFilterList` 取。
 
 **稳定取数的第一条原则**：一律用 ID（`schoolId` / `majorId` / `schoolUnitId`），
 不用名字。名字只用于解析，解析结果落成 ID 之后再取数——用名字取数会把
