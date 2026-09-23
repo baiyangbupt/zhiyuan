@@ -46,18 +46,24 @@ async def test_confirm_bridges_to_pending_resolve():
 
 @pytest.mark.asyncio
 async def test_confirm_claim_is_reported_as_applying_until_command_completes():
+    """claim 的 `applying` **不是终态**：P2 之后它会继续走 execute，结果以 execute 为准。"""
+
     async def resolver(*args, **kwargs):
         return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        return {"code": 0, "data": {"status": "applied", "stateVersion": 9}}
 
     result = await execute_conversation_action(
         tenant_id="tenant-7",
         session_id="s1",
         action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
-        snapshot=snapshot(),
+        snapshot=snapshot_with_pending(),
         resolver=resolver,
+        executor=executor,
     )
-    assert result.action_status == "applying"
-    assert result.new_state_version is None
+    assert result.action_status == "applied"
+    assert result.new_state_version == 9
 
 
 @pytest.mark.asyncio
@@ -190,3 +196,167 @@ async def test_zero_source_version_is_not_treated_as_missing():
     )
     assert result.action_status == "cancelled"
     resolver.assert_awaited_once()
+
+
+# ── P2：confirm → claim → execute 两段式（四类异常各一条 + 对照）──────────────────
+#
+# 反例要求（任务书四）："重复确认"要给出**双写为零**的证据——这里是替身层面的证据
+# （execute 只被调一次）；真实栈的落库计数在 P2 报告第二节（那一步要真 Java）。
+
+
+def snapshot_with_pending(data: dict | None = None) -> dict:
+    """带 pending data 的快照（Java 把 pending 的 dataValue 原样放在 activeProposal.data）。"""
+    current = snapshot()
+    current["activeProposal"]["data"] = {
+        "operationId": "op-9",
+        "proposalId": "proposal-9",
+        "proposalSource": "user_goal",
+        **(data or {}),
+    }
+    return current
+
+
+@pytest.mark.asyncio
+async def test_confirm_runs_claim_then_execute_with_the_same_claim_token():
+    """对照（正常路径）：claim 与 execute 用**同一个** claim token，形状是扁平的。
+
+    任务书把"claimToken 复用"点名为最容易错的一点：新生成一个 → Java 拒。
+    同时断言 proposalApply 是**扁平**形状（不照抄 legacy 的 executionPayload 包装层）。
+    """
+    claim_tokens = []
+    execute_calls = []
+
+    async def resolver(*args, **kwargs):
+        claim_tokens.append(kwargs.get("claim_token"))
+        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        execute_calls.append(kwargs)
+        return {"code": 0, "data": {"status": "applied", "stateVersion": 9}}
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1", "expectedSourceVersion": 7},
+        snapshot=snapshot_with_pending(),
+        resolver=resolver, executor=executor,
+    )
+
+    assert result.action_status == "applied"
+    assert execute_calls, "claim 之后必须走 execute"
+    call = execute_calls[0]
+    assert call["claim_token"] == claim_tokens[0], "claim token 必须复用"
+    assert call["operation_id"] == "op-9", "operationId 用 Java 产出的那个"
+    assert call["pending_id"] == "pending-1"
+    assert call["command_type"] == "apply_plan_change_proposal"
+    assert call["expected_plan_version"] == 7
+    assert "executionPayload" not in call["proposal_apply"], "不许照抄 legacy 的包装层"
+    assert call["proposal_apply"]["proposalId"] == "proposal-9"
+
+
+@pytest.mark.asyncio
+async def test_stale_revision_on_claim_refuses_and_never_executes():
+    """异常 1（陈旧 revision）：claim 被判 stale → 拒绝执行、如实回话。"""
+    async def resolver(*args, **kwargs):
+        return {"code": 0, "data": {"status": "stale_state"}}
+
+    async def executor(*args, **kwargs):
+        raise AssertionError("stale 时不许执行")
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending(), resolver=resolver, executor=executor,
+    )
+    assert result.action_status == "stale_state"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_confirm_executes_only_once():
+    """异常 2（重复确认）：第二次确认**不得双写**。
+
+    真实栈的防线是 Java 的幂等键（operationId）；这里量网关侧的行为——
+    第二次 resolve 不再是 applying（pending 已不 active），于是**不再执行**。
+    """
+    resolve_results = [
+        {"code": 0, "data": {"status": "applying", "revision": 4}},
+        {"code": 0, "data": {"status": "stale_state"}},
+    ]
+    executions = []
+
+    async def resolver(*args, **kwargs):
+        return resolve_results.pop(0)
+
+    async def executor(*args, **kwargs):
+        executions.append(kwargs["operation_id"])
+        return {"code": 0, "data": {"status": "applied", "stateVersion": 9}}
+
+    first = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending(), resolver=resolver, executor=executor,
+    )
+    second = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending(), resolver=resolver, executor=executor,
+    )
+
+    assert first.action_status == "applied"
+    assert second.action_status == "stale_state"
+    assert executions == ["op-9"], f"只许执行一次，实际 {executions}"
+
+
+@pytest.mark.asyncio
+async def test_expired_proposal_is_refused_without_executing():
+    """异常 3（过期 Proposal）：拒绝，并把"要重新生成"这句如实带回来。"""
+    async def resolver(*args, **kwargs):
+        return {"code": 0, "data": {"status": "expired"}, "msg": "该预览已过期，请重新生成"}
+
+    async def executor(*args, **kwargs):
+        raise AssertionError("过期时不许执行")
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending(), resolver=resolver, executor=executor,
+    )
+    assert result.action_status == "expired"
+    assert "重新生成" in (result.message or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_failure_is_reported_as_failed_not_completed():
+    """异常 4（执行失败）：状态落 failed，**不许报 completed**（P2b 只降不升同理）。"""
+    async def resolver(*args, **kwargs):
+        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        return {"code": 500, "data": {"status": "failed"}, "msg": "backend exploded"}
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending(), resolver=resolver, executor=executor,
+    )
+    assert result.action_status == "failed"
+    assert result.action_status != "applied"
+
+
+@pytest.mark.asyncio
+async def test_missing_operation_id_refuses_to_execute():
+    """operationId 只能来自 Java 编译产出：pending 里没有 → **拒绝执行**，不自铸幂等键。"""
+    async def resolver(*args, **kwargs):
+        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        raise AssertionError("没有 operationId 时不许执行")
+
+    current = snapshot_with_pending()
+    current["activeProposal"]["data"].pop("operationId")
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=current, resolver=resolver, executor=executor,
+    )
+    assert result.action_status == "failed"
+    assert result.code == "operation_id_missing"

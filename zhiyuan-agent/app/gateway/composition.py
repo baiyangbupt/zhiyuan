@@ -45,7 +45,7 @@ class GatewayRuntime:
 
 def build_codex_command(mode: str, config: CodexAppServerConfig) -> list[str]:
     command = [config.bin]
-    if mode == "codex_readonly":
+    if mode in {"codex_readonly", "codex_write"}:
         if not config.binding_registry_path:
             raise ValueError(
                 "CODEX_APP_SERVER_BINDING_REGISTRY_PATH is required for codex_readonly"

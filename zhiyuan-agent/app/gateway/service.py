@@ -465,7 +465,12 @@ class GatewayService:
         current_binding_loader: Callable[..., Any] | None = None,
         evidence_verifier: Callable[..., Any] | None = None,
     ) -> None:
-        if mode not in {"legacy", "codex_shadow", "codex_readonly"}:
+        # `codex_write`（P2）：允许写闭环的模式。它与 readonly 的差别**不在模型能调什么**
+        # ——写路径由"模型出提案（proposalRequest）→ Java 编译出 pending → 用户确认 →
+        # 网关执行（pending/resolve → pending-command/execute）"承担，模型始终没有
+        # 可以自己调用的写工具（P2 任务书二之二的形状）。模式名的意义是让部署侧
+        # 明确"这个实例的确认链是活的"，并与只读实例分开配置。
+        if mode not in {"legacy", "codex_shadow", "codex_readonly", "codex_write"}:
             raise ValueError("unsupported gateway mode")
         self.mode = mode
         self.codex = codex
