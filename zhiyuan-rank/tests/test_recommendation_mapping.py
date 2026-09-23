@@ -81,6 +81,7 @@ def _studentinfo() -> dict:
 
 def _profileinfo(
     *,
+    positive_college_codes=None,
     positive_tags=None,
     negative_tags=None,
     positive_city_codes=None,
@@ -89,7 +90,10 @@ def _profileinfo(
     negative_province_codes=None,
 ) -> dict:
     return {
-        "college_info": {"values_code": [], "values_emotion": []},
+        "college_info": {
+            "values_code": positive_college_codes or [],
+            "values_emotion": ["Strong"] * len(positive_college_codes or []),
+        },
         "negative_college_info": {"values_code": [], "values_emotion": []},
         "major_intent": {
             "level2_code": [],
@@ -195,6 +199,73 @@ class RecommendationMappingTest(unittest.TestCase):
 
         self.assertGreater(tagged_major["major_score_new"], base_major["major_score_new"])
         self.assertIn("计算机类（类）标签正向加分", tagged_major["major_remark"])
+
+    def test_college_factors_record_one_tag_with_its_own_delta(self):
+        """P1d 步骤 1：单因子——恰好一条，`delta` 就是它自己的增量。"""
+        plan = self._run_recommendation(
+            volunteerinfo=_volunteerinfo(),
+            profileinfo=_profileinfo(positive_tags=["理工院校"]),
+            tag_major={},
+            college_category="理工",
+        )[0]
+
+        factors = plan["college_factors"]
+        self.assertEqual([item["tag"] for item in factors], ["院校类型正向加分"])
+        self.assertAlmostEqual(
+            factors[0]["delta"], plan["college_score_new"] - plan["college_score_old"], places=6
+        )
+
+    def test_college_factors_are_observed_increments_not_an_even_split(self):
+        """对照：两个因子时，**各自**的 delta 之和 ≈ 总分差，且互不干扰。
+
+        这条防的是"把总分差平均分给两条"那种看起来很对的编造：
+        这里断言**先发生的那个因子**在"只有它"与"它加另一个"两次运行里 delta 相同
+        （后发生的调整不该改变前一个调整的增量），再加上"和 ≈ 总分差"。
+        """
+        only_school = self._run_recommendation(
+            volunteerinfo=_volunteerinfo(),
+            profileinfo=_profileinfo(positive_college_codes=["S1"]),
+            tag_major={},
+        )[0]
+        school_and_tag = self._run_recommendation(
+            volunteerinfo=_volunteerinfo(),
+            profileinfo=_profileinfo(positive_college_codes=["S1"], positive_tags=["985院校"]),
+            tag_major={},
+            college_tag="985",
+        )[0]
+
+        school_delta_alone = {item["tag"]: item["delta"] for item in only_school["college_factors"]}
+        factors = {item["tag"]: item["delta"] for item in school_and_tag["college_factors"]}
+
+        self.assertEqual(sorted(factors), ["院校层次正向加分", "院校正向加分"])
+        self.assertAlmostEqual(
+            factors["院校正向加分"], school_delta_alone["院校正向加分"], places=6
+        )
+        self.assertAlmostEqual(
+            sum(factors.values()),
+            school_and_tag["college_score_new"] - school_and_tag["college_score_old"],
+            places=6,
+        )
+        self.assertNotAlmostEqual(
+            factors["院校正向加分"], factors["院校层次正向加分"], places=6
+        )
+
+    def test_major_factors_record_the_same_way_as_college(self):
+        """P1d 步骤 1（专业侧）：单因子的 delta 与专业分差一致。"""
+        major = self._run_recommendation(
+            volunteerinfo=_volunteerinfo(),
+            profileinfo=_profileinfo(positive_tags=["计算机类"]),
+            tag_major={"计算机类": {"id": ["2001"]}},
+        )[0]["majorList"][0]
+
+        tags = [item["tag"] for item in major["major_factors"]]
+        self.assertIn("计算机类（类）标签正向加分", tags)
+        # 同一条计划可能命中多个分支（这里还有"未知专业减分"），所以断言**和**而不是单条。
+        self.assertAlmostEqual(
+            sum(item["delta"] for item in major["major_factors"]),
+            major["major_score_new"] - major["major_score"],
+            places=6,
+        )
 
     def test_major_group_uses_subcategory_when_major_id_is_zero(self):
         result = self._run_recommendation(

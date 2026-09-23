@@ -511,6 +511,7 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                 college_score_old = college_score_avg
                 college_score_new = college_score_old
                 college_remark = ''
+                college_factors = []
                 school_flag = []
                 
                 # 验证college_dict是字典类型
@@ -544,37 +545,49 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                     school_id = plan.get('schoolId')
                     if school_id and school_id in negative_schoollist:
                         school_value = negative_school_dict.get(school_id, 0.01)
+                        _cf_before = college_score_new
                         college_score_new = college_score_new * 0.1 * school_value
                         college_remark = '院校负向减分;'
+                        _record_factor(college_factors, "院校负向减分", _cf_before, college_score_new)
                         school_flag.append(-1)
                     elif school_id and school_id in positive_schoollist:
                         school_value = positive_school_dict.get(school_id, 1)
+                        _cf_before = college_score_new
                         college_score_new += (100 - college_score_new) * (college_score_new / 100) * 1 * school_value
                         college_remark = '院校正向加分;'
+                        _record_factor(college_factors, "院校正向加分", _cf_before, college_score_new)
                         school_flag.append(1)
                     else:
                         city_id = plan.get('cityId')
                         if city_id and city_id in negative_citylist:
                             city_value = negative_city_dict.get(city_id, 0.01)
+                            _cf_before = college_score_new
                             college_score_new = college_score_new * 0.3 * city_value
                             college_remark = '城市负向减分;'
+                            _record_factor(college_factors, "城市负向减分", _cf_before, college_score_new)
                             school_flag.append(-2)
                         elif city_id and city_id in positive_citylist:
                             city_value = positive_city_dict.get(city_id, 1)
+                            _cf_before = college_score_new
                             college_score_new += (100 - college_score_new) * (college_score_new / 100) * 0.8 * city_value
                             college_remark = '城市正向加分;'
+                            _record_factor(college_factors, "城市正向加分", _cf_before, college_score_new)
                             school_flag.append(2)
                         else:
                             province_id = plan.get('provinceId')
                             if province_id and province_id in negative_provincelist:
                                 province_value = negative_province_dict.get(province_id, 0.01)
+                                _cf_before = college_score_new
                                 college_score_new = college_score_new * 0.5 * province_value
                                 college_remark = '省份负向减分;'
+                                _record_factor(college_factors, "省份负向减分", _cf_before, college_score_new)
                                 school_flag.append(-2)
                             elif province_id and province_id in positive_provincelist:
                                 province_value = positive_province_dict.get(province_id, 1)
+                                _cf_before = college_score_new
                                 college_score_new += (100 - college_score_new) * (college_score_new / 100) * 0.5 * province_value
                                 college_remark = '省份正向加分;'
+                                _record_factor(college_factors, "省份正向加分", _cf_before, college_score_new)
                                 school_flag.append(2)
 
                     '''额外分数调整：院校tag信息'''
@@ -584,101 +597,133 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                                 tag_key = level + '院校'
                                 if tag_key in negative_taglist and 1 not in school_flag:
                                     tag_value = negative_tag_dict.get(tag_key, 0.01)
+                                    _cf_before = college_score_new
                                     college_score_new = college_score_new * 0.95 * tag_value
                                     college_remark += '院校层次负向减分;'
+                                    _record_factor(college_factors, "院校层次负向减分", _cf_before, college_score_new)
                                     school_flag.append(-3)
                                 elif tag_key in positive_taglist and -1 not in school_flag:
                                     tag_value = positive_tag_dict.get(tag_key, 1)
+                                    _cf_before = college_score_new
                                     college_score_new += 8 * tag_value
                                     college_remark += '院校层次正向加分;'
+                                    _record_factor(college_factors, "院校层次正向加分", _cf_before, college_score_new)
                                     school_flag.append(3)
                         elif len(list(set(levellist) & set(['211','双一流','国重点','国家级示范','国家级骨干','双高计划'])))>0:
                             for level in ['211','双一流','国重点','国家级示范','国家级骨干','双高计划']:
                                 tag_key = level + '院校'
                                 if tag_key in negative_taglist and 1 not in school_flag:
                                     tag_value = negative_tag_dict.get(tag_key, 0.01)
+                                    _cf_before = college_score_new
                                     college_score_new = college_score_new * 0.9 * tag_value
                                     college_remark += '院校层次负向减分;'
+                                    _record_factor(college_factors, "院校层次负向减分", _cf_before, college_score_new)
                                     school_flag.append(-3)
                                 elif tag_key in positive_taglist and -1 not in school_flag:
                                     tag_value = positive_tag_dict.get(tag_key, 1)
+                                    _cf_before = college_score_new
                                     college_score_new += 7 * tag_value
                                     college_remark += '院校层次正向加分;'
+                                    _record_factor(college_factors, "院校层次正向加分", _cf_before, college_score_new)
                                     school_flag.append(3)
                         elif len(list(set(levellist) & set(['保研', '省重点'])))>0:
                             for level in ['保研', '省重点']:
                                 tag_key = level + '院校'
                                 if tag_key in negative_taglist and 1 not in school_flag:
                                     tag_value = negative_tag_dict.get(tag_key, 0.01)
+                                    _cf_before = college_score_new
                                     college_score_new = college_score_new * 0.85 * tag_value
                                     college_remark += '院校层次负向减分;'
+                                    _record_factor(college_factors, "院校层次负向减分", _cf_before, college_score_new)
                                     school_flag.append(-3)
                                 elif tag_key in positive_taglist and -1 not in school_flag:
                                     tag_value = positive_tag_dict.get(tag_key, 1)
+                                    _cf_before = college_score_new
                                     college_score_new += 6 * tag_value
                                     college_remark += '院校层次正向加分;'
+                                    _record_factor(college_factors, "院校层次正向加分", _cf_before, college_score_new)
                                     school_flag.append(3)
                         else:
                             for level in levellist:
                                 tag_key = level + '院校'
                                 if tag_key in negative_taglist and 1 not in school_flag:
                                     tag_value = negative_tag_dict.get(tag_key, 0.01)
+                                    _cf_before = college_score_new
                                     college_score_new = college_score_new * 0.8 * tag_value
                                     college_remark += '院校层次负向减分;'
+                                    _record_factor(college_factors, "院校层次负向减分", _cf_before, college_score_new)
                                     school_flag.append(-3)
                                 elif tag_key in positive_taglist and -1 not in school_flag:
                                     tag_value = positive_tag_dict.get(tag_key, 1)
+                                    _cf_before = college_score_new
                                     college_score_new += 2 * tag_value
                                     college_remark += '院校层次正向加分;'
+                                    _record_factor(college_factors, "院校层次正向加分", _cf_before, college_score_new)
                                     school_flag.append(3)
 
                     if postgraduate:
                         tag_key = postgraduate + '院校'
                         if tag_key in negative_taglist and 1 not in school_flag:
                             tag_value = negative_tag_dict.get(tag_key, 0.01)
+                            _cf_before = college_score_new
                             college_score_new = college_score_new * 0.6 * tag_value
                             college_remark += '院校硕博点负向减分;'
+                            _record_factor(college_factors, "院校硕博点负向减分", _cf_before, college_score_new)
                             school_flag.append(-3)
                         elif tag_key in positive_taglist and -1 not in school_flag:
                             tag_value = positive_tag_dict.get(tag_key, 1)
+                            _cf_before = college_score_new
                             college_score_new += 6 * tag_value
                             college_remark += '院校硕博点正向加分;'
+                            _record_factor(college_factors, "院校硕博点正向加分", _cf_before, college_score_new)
                             school_flag.append(3)
 
                     if category:
                         tag_key = category + '院校'
                         if tag_key in negative_taglist and 1 not in school_flag:
                             tag_value = negative_tag_dict.get(tag_key, 0.01)
+                            _cf_before = college_score_new
                             college_score_new = college_score_new * 0.5 * tag_value
                             college_remark += '院校类型负向减分;'
+                            _record_factor(college_factors, "院校类型负向减分", _cf_before, college_score_new)
                             school_flag.append(-3)
                         elif tag_key in positive_taglist and -1 not in school_flag:
                             tag_value = positive_tag_dict.get(tag_key, 1)
+                            _cf_before = college_score_new
                             college_score_new += 5 * tag_value
                             college_remark += '院校类型正向加分;'
+                            _record_factor(college_factors, "院校类型正向加分", _cf_before, college_score_new)
                             school_flag.append(3)
 
                     if nature:
                         tag_key = nature + '院校'
                         if tag_key in negative_taglist and 1 not in school_flag:
                             tag_value = negative_tag_dict.get(tag_key, 0.01)
+                            _cf_before = college_score_new
                             college_score_new = college_score_new * 0.3 * tag_value
                             college_remark += '院校性质负向减分;'
+                            _record_factor(college_factors, "院校性质负向减分", _cf_before, college_score_new)
                             school_flag.append(-3)
                         elif tag_key in positive_taglist and -1 not in school_flag:
                             tag_value = positive_tag_dict.get(tag_key, 1)
+                            _cf_before = college_score_new
                             college_score_new += 1 * tag_value
                             college_remark += '院校性质正向加分;'
+                            _record_factor(college_factors, "院校性质正向加分", _cf_before, college_score_new)
                             school_flag.append(3)
 
                     #无任何意向的院校得分处理
                     if len(school_flag) == 0:
+                        _cf_before = college_score_new
                         college_score_new = college_score_new * 0.6
                         college_remark = '院校无意向减分;'
+                        _record_factor(college_factors, "院校无意向减分", _cf_before, college_score_new)
                 else:
                     #未知的院校得分处理
+                    _cf_before = college_score_new
                     college_score_new = college_score_new * 0.6
                     college_remark = '未知院校减分;'
+                    _record_factor(college_factors, "未知院校减分", _cf_before, college_score_new)
 
                 # 在volunteerinfo的每个plan中新增院校指标得分
                 plan['province_gdp'] = province_gdp
@@ -689,6 +734,7 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                 plan['level_score'] = level_score
                 plan['college_score_old'] = college_score_old
                 plan['college_score_new'] = college_score_new
+                plan['college_factors'] = college_factors
                 plan['college_remark'] = college_remark.strip(';')
 
                 majorList = plan.get('majorList', [])
@@ -743,6 +789,7 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                         degree = 'null'
                         major_level = 'null'
                         major_remark = ''
+                        major_factors = []
                         major_flag = []
                         #if majorid in major_score['major_id'].values:
                         if majorid in major_dict:
@@ -758,26 +805,34 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
 
                             if majorid in negative_majorlist:
                                 major_value = negative_major_dict.get(majorid, 0.01)
+                                _mf_before = major_score_new
                                 major_score_new = major_score_new * 0.1 * major_value
                                 major_remark += '专业负向减分;'
+                                _record_factor(major_factors, "专业负向减分", _mf_before, major_score_new)
                                 negative_major_num += 1
                                 major_flag.append(-1)
                             elif submajorid in negative_majorlist:
                                 major_value = negative_major_dict.get(submajorid, 0.01)
+                                _mf_before = major_score_new
                                 major_score_new = major_score_new * 0.3 * major_value
                                 major_remark += '专业（类）负向减分;'
+                                _record_factor(major_factors, "专业（类）负向减分", _mf_before, major_score_new)
                                 negative_major_num += 1
                                 major_flag.append(-1)
                             elif majorid in positive_majorlist:
                                 major_value = positive_major_dict.get(majorid, 1)
+                                _mf_before = major_score_new
                                 major_score_new += (100 - major_score_new) * (major_score_new / 100) * 1 * major_value
                                 major_remark += '专业正向加分;'
+                                _record_factor(major_factors, "专业正向加分", _mf_before, major_score_new)
                                 positive_major_num += 1
                                 major_flag.append(1)
                             elif submajorid in positive_majorlist:
                                 major_value = positive_major_dict.get(majorid, 1)
+                                _mf_before = major_score_new
                                 major_score_new += (100 - major_score_new) * (major_score_new / 100) * 0.8 * major_value
                                 major_remark += '专业（类）正向加分;'
+                                _record_factor(major_factors, "专业（类）正向加分", _mf_before, major_score_new)
                                 positive_major_num += 1
                                 major_flag.append(1)
 
@@ -799,26 +854,38 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                                         if tag in negative_taglist:
                                             tag_value = negative_tag_dict.get(tag, 0.01)
                                             if majorid in tag_data['id'] and 1 not in major_flag:
+                                                _mf_before = major_score_new
                                                 major_score_new = major_score_new * 0.1 * tag_value
-                                                major_remark += tag + '标签负向减分;'
+                                                _segment = tag + '标签负向减分;'
+                                                major_remark += _segment
+                                                _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                                 major_flag.append(-2)
                                             elif submajorid in tag_data['id'] and 1 not in major_flag:
+                                                _mf_before = major_score_new
                                                 major_score_new = major_score_new * 0.3 * tag_value
-                                                major_remark += tag + '（类）标签负向减分;'
+                                                _segment = tag + '（类）标签负向减分;'
+                                                major_remark += _segment
+                                                _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                                 major_flag.append(-2)
                                         elif tag in positive_taglist:
                                             tag_value = positive_tag_dict.get(tag, 1)
                                             if majorid in tag_data['id'] and -1 not in major_flag:
                                                 if add_count < 1:
+                                                    _mf_before = major_score_new
                                                     major_score_new += 8 * tag_value
                                                     add_count += 1
-                                                    major_remark += tag + '标签正向加分;'
+                                                    _segment = tag + '标签正向加分;'
+                                                    major_remark += _segment
+                                                    _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                                     major_flag.append(2)
                                             elif submajorid in tag_data['id'] and -1 not in major_flag:
                                                 if add_count < 2:
+                                                    _mf_before = major_score_new
                                                     major_score_new += 4 * tag_value
                                                     add_count += 1
-                                                    major_remark += tag + '（类）标签正向加分;'
+                                                    _segment = tag + '（类）标签正向加分;'
+                                                    major_remark += _segment
+                                                    _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                                     major_flag.append(2)
                                 except Exception as e:
                                     logger.error('[volunteer_Recommand] 志愿项 %d, 专业 %d, 处理tag %s时出错: %s', 
@@ -836,12 +903,16 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                                 elif 4500 < planMoney < 5500:
                                     MoneyFlag = 0.7
                                 if MoneyFlag != 1:
+                                    _mf_before = major_score_new
                                     major_score_new = major_score_new * MoneyFlag * tag_value
                                     major_remark += '高学费专业标签负向减分;'
+                                    _record_factor(major_factors, "高学费专业标签负向减分", _mf_before, major_score_new)
                                     major_flag.append(-2)
                                 else:
+                                    _mf_before = major_score_new
                                     major_score_new += 2
                                     major_remark += '低学费专业标签正向加分;'
+                                    _record_factor(major_factors, "低学费专业标签正向加分", _mf_before, major_score_new)
                                     major_flag.append(2)
                             elif '低学费专业' in positive_taglist:
                                 tag_value = positive_tag_dict.get('低学费专业', 1)
@@ -853,12 +924,16 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                                 elif 4500 < planMoney < 5500:
                                     MoneyFlag = 0.7
                                 if MoneyFlag != 1:
+                                    _mf_before = major_score_new
                                     major_score_new = major_score_new * MoneyFlag
                                     major_remark += '高学费专业标签负向减分;'
+                                    _record_factor(major_factors, "高学费专业标签负向减分", _mf_before, major_score_new)
                                     major_flag.append(-2)
                                 else:
+                                    _mf_before = major_score_new
                                     major_score_new += 2 * tag_value
                                     major_remark += '低学费专业标签正向加分;'
+                                    _record_factor(major_factors, "低学费专业标签正向加分", _mf_before, major_score_new)
                                     major_flag.append(2)
 
                             '''从data_evaluate获取专业评估信息'''
@@ -872,16 +947,20 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                                 major_level = evaluate_data['level']
                                 if -1 not in major_flag and plan['schoolId'] not in negative_schoollist:
                                     evaluate_score = evaluate_data['evaluate_score']
+                                    _mf_before = major_score_new
                                     major_score_new += evaluate_score * 0.05
                                     major_remark += '专业评估加分;'
+                                    _record_factor(major_factors, "专业评估加分", _mf_before, major_score_new)
 
                             '''从data_special获取特色专业信息'''
                             is_special = loader.lookup_special_data(plan['schoolId'], majorid, submajorid)
                             if is_special:
                                 if -1 not in major_flag and plan['schoolId'] not in negative_schoollist:
                                     special_score = 100
+                                    _mf_before = major_score_new
                                     major_score_new += special_score * 0.03
                                     major_remark += '特色专业加分;'
+                                    _record_factor(major_factors, "特色专业加分", _mf_before, major_score_new)
 
                             '''从data_degree获取硕博点信息'''
                             degree_data = loader.lookup_degree_data(plan['schoolId'], majorid, submajorid)
@@ -889,17 +968,23 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                                 degree = degree_data['degree']
                                 if -1 not in major_flag and plan['schoolId'] not in negative_schoollist:
                                     degree_score = degree_data['score']
+                                    _mf_before = major_score_new
                                     major_score_new += degree_score * 0.02
                                     major_remark += '硕博点加分;'
+                                    _record_factor(major_factors, "硕博点加分", _mf_before, major_score_new)
 
                             # 无任何意向的专业得分处理
                             if len(major_flag) == 0:
+                                _mf_before = major_score_new
                                 major_score_new = major_score_new * 0.6
                                 major_remark = '专业无意向减分;'
+                                _record_factor(major_factors, "专业无意向减分", _mf_before, major_score_new)
                         else:
                             # 未知的专业得分处理
+                            _mf_before = major_score_new
                             major_score_new = major_score_new * 0.6
                             major_remark = '未知专业减分;'
+                            _record_factor(major_factors, "未知专业减分", _mf_before, major_score_new)
 
                         # 在plan的majorlist中的每一个major新增专业指标得分
                         majordict['gender_index'] = gender_index
@@ -913,6 +998,7 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
                         majordict['major_level'] = major_level
                         majordict['major_score'] = major_score_old
                         majordict['major_score_new'] = major_score_new
+                        majordict['major_factors'] = major_factors
                         majordict['major_remark'] = major_remark.strip(';')
                         major_score_final += major_score_new
                     except Exception as e:
@@ -968,6 +1054,19 @@ def volunteer_Recommand(studentinfo, volunteerinfo, profileinfo):
         logger.error('[volunteer_Recommand] 函数执行出错: %s', str(e))
         logger.exception('[volunteer_Recommand] 详细错误堆栈:')
         raise
+
+
+def _record_factor(factors, tag, before, after):
+    """把一次打分调整记成结构化因子（P1d 步骤 1）。
+
+    `delta` 一律是**差值**（调整后 - 调整前）——原实现里正向是加、负向是乘，
+    两种写法都要用同一个口径表达"它对分数做了什么"，否则下游没法把因子加回总分。
+
+    标签取 remark 那段的原文：**同一处文本**，避免"备注说加了 5 分、
+    结构化说加了 3 分"这种双源漂移。
+    """
+    factors.append({"tag": tag, "delta": after - before})
+
 
 def weight_Query(studentinfo, queryinfo, profileinfo):
     """权重查询函数"""
@@ -1062,6 +1161,7 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
             major_score = 0
             major_score_new = 0
             major_remark = ''
+            major_factors = []
             major_flag = []
             majorid = major['major_id']
             '''从major_score获取对应专业（类）得分'''
@@ -1077,23 +1177,31 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
 
                 if majorid in negative_majorlist:
                     major_value = negative_major_dict.get(majorid, 0.01)
+                    _mf_before = major_score_new
                     major_score_new = major_score_new * 0.1 * major_value
                     major_remark = '非意向专业;'
+                    _record_factor(major_factors, "非意向专业", _mf_before, major_score_new)
                     major_flag.append(-1)
                 elif submajorid in negative_majorlist:
                     major_value = negative_major_dict.get(submajorid, 0.01)
+                    _mf_before = major_score_new
                     major_score_new = major_score_new * 0.3 * major_value
                     major_remark = '非意向专业类;'
+                    _record_factor(major_factors, "非意向专业类", _mf_before, major_score_new)
                     major_flag.append(-1)
                 elif majorid in positive_majorlist:
                     major_value = positive_major_dict.get(majorid, 1)
+                    _mf_before = major_score_new
                     major_score_new += (100 - major_score_new) * (major_score_new / 100) * 1 * major_value
                     major_remark = '意向专业;'
+                    _record_factor(major_factors, "意向专业", _mf_before, major_score_new)
                     major_flag.append(1)
                 elif submajorid in positive_majorlist:
                     major_value = positive_major_dict.get(majorid, 1)
+                    _mf_before = major_score_new
                     major_score_new += (100 - major_score_new) * (major_score_new / 100) * 0.8 * major_value
                     major_remark = '意向专业类;'
+                    _record_factor(major_factors, "意向专业类", _mf_before, major_score_new)
                     major_flag.append(1)
 
                 '''额外分数调整：专业tag信息'''
@@ -1104,25 +1212,37 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
                         if tag in negative_taglist:
                             tag_value = negative_tag_dict.get(tag, 0.01)
                             if majorid in tag_data['id'] and 1 not in major_flag:
+                                _mf_before = major_score_new
                                 major_score_new = major_score_new * 0.1 * tag_value
-                                major_remark += tag + '非意向标签'
+                                _segment = tag + '非意向标签'
+                                major_remark += _segment
+                                _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                 major_flag.append(-2)
                             elif submajorid in tag_data['id'] and 1 not in major_flag:
+                                _mf_before = major_score_new
                                 major_score_new = major_score_new * 0.3 * tag_value
-                                major_remark += tag + '类非意向标签'
+                                _segment = tag + '类非意向标签'
+                                major_remark += _segment
+                                _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                 major_flag.append(-2)
                         elif tag in positive_taglist:
                             tag_value = positive_tag_dict.get(tag, 1)
                             if majorid in tag_data['id'] and -1 not in major_flag:
                                 if add_count < 1:
+                                    _mf_before = major_score_new
                                     major_score_new += 10 * tag_value
-                                    major_remark += tag + '意向标签'
+                                    _segment = tag + '意向标签'
+                                    major_remark += _segment
+                                    _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                     major_flag.append(2)
                             elif submajorid in tag_data['id'] and -1 not in major_flag:
                                 if add_count < 2:
+                                    _mf_before = major_score_new
                                     major_score_new += 5 * tag_value
                                     add_count += 1
-                                    major_remark += tag + '类意向标签'
+                                    _segment = tag + '类意向标签'
+                                    major_remark += _segment
+                                    _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                     major_flag.append(2)
 
             # 在querylist中的每一个major新增专业指标得分
@@ -1132,6 +1252,7 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
             major['hot_index'] = hot_index
             major['major_score'] = major_score
             major['major_score_new'] = major_score_new
+            major['major_factors'] = major_factors
             major['major_remark'] = major_remark
     elif type in ['school', 'majorschool']:
         queryinfo = {**college_weight, **queryinfo}
@@ -1146,6 +1267,7 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
             college_score = 0
             college_score_new = 0
             college_remark = ''
+            college_factors = []
             school_flag = []
             school_id = school['school_id']
             if school_id in college_dict:
@@ -1167,35 +1289,47 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
 
                 if school_id and school_id in negative_schoollist:
                     school_value = negative_school_dict.get(school_id, 0.01)
+                    _cf_before = college_score_new
                     college_score_new = college_score_new * 0.1 * school_value
                     college_remark = '非意向院校;'
+                    _record_factor(college_factors, "非意向院校", _cf_before, college_score_new)
                     school_flag.append(-1)
                 elif school_id and school_id in positive_schoollist:
                     school_value = positive_school_dict.get(school_id, 1)
+                    _cf_before = college_score_new
                     college_score_new += (100 - college_score_new) * (college_score_new / 100) * 1 * school_value
                     college_remark = '意向院校;'
+                    _record_factor(college_factors, "意向院校", _cf_before, college_score_new)
                     school_flag.append(1)
                 else:
                     if city_id and city_id in negative_citylist:
                         city_value = negative_city_dict.get(city_id, 0.01)
+                        _cf_before = college_score_new
                         college_score_new = college_score_new * 0.3 * city_value
                         college_remark = '非意向城市;'
+                        _record_factor(college_factors, "非意向城市", _cf_before, college_score_new)
                         school_flag.append(-2)
                     elif city_id and city_id in positive_citylist:
                         city_value = positive_city_dict.get(city_id, 1)
+                        _cf_before = college_score_new
                         college_score_new += (100 - college_score_new) * (college_score_new / 100) * 0.8 * city_value
                         college_remark = '意向城市;'
+                        _record_factor(college_factors, "意向城市", _cf_before, college_score_new)
                         school_flag.append(2)
                     else:
                         if province_id and province_id in negative_provincelist:
                             province_value = negative_province_dict.get(province_id, 0.01)
+                            _cf_before = college_score_new
                             college_score_new = college_score_new * 0.5 * province_value
                             college_remark = '非意向省份;'
+                            _record_factor(college_factors, "非意向省份", _cf_before, college_score_new)
                             school_flag.append(-2)
                         elif province_id and province_id in positive_provincelist:
                             province_value = positive_province_dict.get(province_id, 1)
+                            _cf_before = college_score_new
                             college_score_new += (100 - college_score_new) * (college_score_new / 100) * 0.5 * province_value
                             college_remark = '意向省份;'
+                            _record_factor(college_factors, "意向省份", _cf_before, college_score_new)
                             school_flag.append(2)
 
                 '''额外分数调整：院校tag信息'''
@@ -1205,91 +1339,133 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
                             tag_key = level + '院校'
                             if tag_key in negative_taglist and 1 not in school_flag:
                                 tag_value = negative_tag_dict.get(tag_key, 0.01)
+                                _cf_before = college_score_new
                                 college_score_new = college_score_new * 0.95 * tag_value
-                                college_remark += tag_key + '非意向标签;'
+                                _segment = tag_key + '非意向标签;'
+                                college_remark += _segment
+                                _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                                 school_flag.append(-3)
                             elif tag_key in positive_taglist and -1 not in school_flag:
                                 tag_value = positive_tag_dict.get(tag_key, 1)
+                                _cf_before = college_score_new
                                 college_score_new += 8 * tag_value
-                                college_remark += tag_key + '意向标签;'
+                                _segment = tag_key + '意向标签;'
+                                college_remark += _segment
+                                _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                                 school_flag.append(3)
                     elif len(list(set(levellist) & set(['211', '双一流', '国重点', '国家级示范', '国家级骨干', '双高计划']))) > 0:
                         for level in ['211', '双一流', '国重点', '国家级示范', '国家级骨干', '双高计划']:
                             tag_key = level + '院校'
                             if tag_key in negative_taglist and 1 not in school_flag:
                                 tag_value = negative_tag_dict.get(tag_key, 0.01)
+                                _cf_before = college_score_new
                                 college_score_new = college_score_new * 0.9 * tag_value
-                                college_remark += tag_key + '非意向标签;'
+                                _segment = tag_key + '非意向标签;'
+                                college_remark += _segment
+                                _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                                 school_flag.append(-3)
                             elif tag_key in positive_taglist and -1 not in school_flag:
                                 tag_value = positive_tag_dict.get(tag_key, 1)
+                                _cf_before = college_score_new
                                 college_score_new += 7 * tag_value
-                                college_remark += tag_key + '意向标签;'
+                                _segment = tag_key + '意向标签;'
+                                college_remark += _segment
+                                _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                                 school_flag.append(3)
                     elif len(list(set(levellist) & set(['保研', '省重点']))) > 0:
                         for level in ['保研', '省重点']:
                             tag_key = level + '院校'
                             if tag_key in negative_taglist and 1 not in school_flag:
                                 tag_value = negative_tag_dict.get(tag_key, 0.01)
+                                _cf_before = college_score_new
                                 college_score_new = college_score_new * 0.85 * tag_value
-                                college_remark += tag_key + '非意向标签;'
+                                _segment = tag_key + '非意向标签;'
+                                college_remark += _segment
+                                _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                                 school_flag.append(-3)
                             elif tag_key in positive_taglist and -1 not in school_flag:
                                 tag_value = positive_tag_dict.get(tag_key, 1)
+                                _cf_before = college_score_new
                                 college_score_new += 6 * tag_value
-                                college_remark += tag_key + '意向标签;'
+                                _segment = tag_key + '意向标签;'
+                                college_remark += _segment
+                                _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                                 school_flag.append(3)
                     else:
                         for level in levellist:
                             tag_key = level + '院校'
                             if tag_key in negative_taglist and 1 not in school_flag:
                                 tag_value = negative_tag_dict.get(tag_key, 0.01)
+                                _cf_before = college_score_new
                                 college_score_new = college_score_new * 0.8 * tag_value
-                                college_remark += tag_key + '非意向标签;'
+                                _segment = tag_key + '非意向标签;'
+                                college_remark += _segment
+                                _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                                 school_flag.append(-3)
                             elif tag_key in positive_taglist and -1 not in school_flag:
                                 tag_value = positive_tag_dict.get(tag_key, 1)
+                                _cf_before = college_score_new
                                 college_score_new += 2 * tag_value
-                                college_remark += tag_key + '意向标签;'
+                                _segment = tag_key + '意向标签;'
+                                college_remark += _segment
+                                _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                                 school_flag.append(3)
 
                 if postgraduate:
                     tag_key = postgraduate + '院校'
                     if tag_key in negative_taglist and 1 not in school_flag:
                         tag_value = negative_tag_dict.get(tag_key, 0.01)
+                        _cf_before = college_score_new
                         college_score_new = college_score_new * 0.6 * tag_value
-                        college_remark += tag_key + '非意向标签;'
+                        _segment = tag_key + '非意向标签;'
+                        college_remark += _segment
+                        _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                         school_flag.append(-3)
                     elif tag_key in positive_taglist and -1 not in school_flag:
                         tag_value = positive_tag_dict.get(tag_key, 1)
+                        _cf_before = college_score_new
                         college_score_new += 6 * tag_value
-                        college_remark += tag_key + '意向标签;'
+                        _segment = tag_key + '意向标签;'
+                        college_remark += _segment
+                        _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                         school_flag.append(3)
 
                 if category:
                     tag_key = category + '院校'
                     if tag_key in negative_taglist and 1 not in school_flag:
                         tag_value = negative_tag_dict.get(tag_key, 0.01)
+                        _cf_before = college_score_new
                         college_score_new = college_score_new * 0.5 * tag_value
-                        college_remark += tag_key + '非意向标签;'
+                        _segment = tag_key + '非意向标签;'
+                        college_remark += _segment
+                        _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                         school_flag.append(-3)
                     elif tag_key in positive_taglist and -1 not in school_flag:
                         tag_value = positive_tag_dict.get(tag_key, 1)
+                        _cf_before = college_score_new
                         college_score_new += 5 * tag_value
-                        college_remark += tag_key + '意向标签;'
+                        _segment = tag_key + '意向标签;'
+                        college_remark += _segment
+                        _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                         school_flag.append(3)
 
                 if nature:
                     tag_key = nature + '院校'
                     if tag_key in negative_taglist and 1 not in school_flag:
                         tag_value = negative_tag_dict.get(tag_key, 0.01)
+                        _cf_before = college_score_new
                         college_score_new = college_score_new * 0.3 * tag_value
-                        college_remark += tag_key + '非意向标签;'
+                        _segment = tag_key + '非意向标签;'
+                        college_remark += _segment
+                        _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                         school_flag.append(-3)
                     elif tag_key in positive_taglist and -1 not in school_flag:
                         tag_value = positive_tag_dict.get(tag_key, 1)
+                        _cf_before = college_score_new
                         college_score_new += 1 * tag_value
-                        college_remark += tag_key + '意向标签;'
+                        _segment = tag_key + '意向标签;'
+                        college_remark += _segment
+                        _record_factor(college_factors, _segment.rstrip(";"), _cf_before, college_score_new)
                         school_flag.append(3)
 
             # 在querylist中的每一个school新增院校指标得分
@@ -1301,6 +1477,7 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
             school['level_score'] = level_score
             school['college_score'] = college_score
             school['college_score_new'] = college_score_new
+            school['college_factors'] = college_factors
             school['college_remark'] = college_remark
             if type == 'majorschool':
                 queryinfo = {**major_weight, **queryinfo}
@@ -1321,6 +1498,7 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
                     major_level = ''
                     degree = ''
                     major_remark = ''
+                    major_factors = []
                     remark_extra = ''
                     major_flag = []
                     majorid = major['major_id']
@@ -1337,23 +1515,31 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
 
                         if majorid in negative_majorlist:
                             major_value = negative_major_dict.get(majorid, 0.01)
+                            _mf_before = major_score_new
                             major_score_new = major_score_new * 0.1 * major_value
                             major_remark = '非意向专业;'
+                            _record_factor(major_factors, "非意向专业", _mf_before, major_score_new)
                             major_flag.append(-1)
                         elif submajorid in negative_majorlist:
                             major_value = negative_major_dict.get(submajorid, 0.01)
+                            _mf_before = major_score_new
                             major_score_new = major_score_new * 0.3 * major_value
                             major_remark = '非意向专业类;'
+                            _record_factor(major_factors, "非意向专业类", _mf_before, major_score_new)
                             major_flag.append(-1)
                         elif majorid in positive_majorlist:
                             major_value = positive_major_dict.get(majorid, 1)
+                            _mf_before = major_score_new
                             major_score_new += (100 - major_score_new) * (major_score_new / 100) * 1 * major_value
                             major_remark = '意向专业;'
+                            _record_factor(major_factors, "意向专业", _mf_before, major_score_new)
                             major_flag.append(1)
                         elif submajorid in positive_majorlist:
                             major_value = positive_major_dict.get(majorid, 1)
+                            _mf_before = major_score_new
                             major_score_new += (100 - major_score_new) * (major_score_new / 100) * 0.8 * major_value
                             major_remark = '意向专业类;'
+                            _record_factor(major_factors, "意向专业类", _mf_before, major_score_new)
                             major_flag.append(1)
 
                         '''额外分数调整：专业tag信息'''
@@ -1364,25 +1550,37 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
                                 if tag in negative_taglist:
                                     tag_value = negative_tag_dict.get(tag, 0.01)
                                     if majorid in tag_data['id'] and 1 not in major_flag:
+                                        _mf_before = major_score_new
                                         major_score_new = major_score_new * 0.1 * tag_value
-                                        major_remark += tag + '非意向标签'
+                                        _segment = tag + '非意向标签'
+                                        major_remark += _segment
+                                        _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                         major_flag.append(-1)
                                     elif submajorid in tag_data['id'] and 1 not in major_flag:
+                                        _mf_before = major_score_new
                                         major_score_new = major_score_new * 0.3 * tag_value
-                                        major_remark += tag + '类非意向标签'
+                                        _segment = tag + '类非意向标签'
+                                        major_remark += _segment
+                                        _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                         major_flag.append(-1)
                                 elif tag in positive_taglist:
                                     tag_value = positive_tag_dict.get(tag, 1)
                                     if majorid in tag_data['id'] and -1 not in major_flag:
                                         if add_count < 1:
+                                            _mf_before = major_score_new
                                             major_score_new += 10 * tag_value
-                                            major_remark += tag + '意向标签'
+                                            _segment = tag + '意向标签'
+                                            major_remark += _segment
+                                            _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                             major_flag.append(1)
                                     elif submajorid in tag_data['id'] and -1 not in major_flag:
                                         if add_count < 2:
+                                            _mf_before = major_score_new
                                             major_score_new += 5 * tag_value
                                             add_count += 1
-                                            major_remark += tag + '类意向标签'
+                                            _segment = tag + '类意向标签'
+                                            major_remark += _segment
+                                            _record_factor(major_factors, _segment.rstrip(";"), _mf_before, major_score_new)
                                             major_flag.append(1)
 
                         '''从data_evaluate获取专业评估信息'''
@@ -1428,6 +1626,7 @@ def weight_Query(studentinfo, queryinfo, profileinfo):
                     major['hot_index'] = hot_index
                     major['major_score'] = major_score
                     major['major_score_new'] = major_score_new
+                    major['major_factors'] = major_factors
                     major['major_score_final'] = major_score_final
                     major['major_remark'] = major_remark
                     major['evaluate_score'] = evaluate_score
