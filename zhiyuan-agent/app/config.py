@@ -166,7 +166,9 @@ class GatewayConfig(BaseSettings):
         "extra": "ignore",
     }
 
-    mode: Literal["legacy", "codex_shadow", "codex_readonly"] = "legacy"
+    # `codex_write`（P2）：写闭环活着的实例。它与 readonly 的差别不在模型能调什么
+    # （写路径是 提案→确认→执行，模型始终没有可调的写工具），而在确认链是否接上。
+    mode: Literal["legacy", "codex_shadow", "codex_readonly", "codex_write"] = "legacy"
 
 
 class McpConfig(BaseSettings):

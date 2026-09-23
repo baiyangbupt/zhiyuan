@@ -594,6 +594,9 @@ async def test_write_mode_prepares_a_pending_instead_of_a_plain_preview(monkeypa
 
 def test_gateway_mode_is_allowlisted() -> None:
     assert GatewayConfig(_env_file=None, mode="codex_shadow").mode == "codex_shadow"
+    # 写模式也要在 allowlist 里：不在的话实例**启动即崩**（pydantic 的 Literal 拒收），
+    # 而症状只有"agent health 000"（2026-09-24 真栈实测踩到）。
+    assert GatewayConfig(_env_file=None, mode="codex_write").mode == "codex_write"
     with pytest.raises(ValueError):
         GatewayConfig(_env_file=None, mode="unsafe")
 
