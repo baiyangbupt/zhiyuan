@@ -40,6 +40,15 @@ version: 1.0.0
 
 ## Evidence 要求
 
+<HARD-GATE>
+本阶段恒为 read-only：用户要求"写 / 改 / 删 / 加进方案 / 提交"时，
+**不调用任何 `readOnlyHint: false` 的工具**——点名 `plan_apply`，即使参数齐全、看起来一步就能做完；
+也不调用 Proposal 类工具（`plan.propose_*`）。写请求按"需要用户确认"处理：说清要改什么、改了会怎样，
+把执行交给用户确认后的链路（本技能不创建 Proposal、不自行 apply）。
+同一处调整**两轮内不收敛**就停下，把分歧点交回用户裁决并写进本轮输出（修复循环上限）。
+实现与审查分离：本技能**不给自己刚生成的草案做终审**，终审走 `plan-final-review`。
+</HARD-GATE>
+
 - 每个草案条目引用候选 Artifact 和相关 Evidence；关键数字不得来自 assistant 文本。
 - 缺失 Evidence、过期状态或跨会话引用会使草案不可用，必须停止。
 

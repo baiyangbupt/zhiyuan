@@ -87,6 +87,12 @@ version: 1.0.0
 
 ## Evidence 要求
 
+<HARD-GATE>
+没有绑上 Evidence 的数字**一个字都不写**——不写"往年大概""参考往年分数""一般来说"这类占位表述
+（No-Placeholders，可 grep 校验）；查不到就如实说这条口径还没接上。写意愿一律只读处理：
+**不创建 Proposal、不调用写工具**（含 `plan_apply` 这类 `readOnlyHint: false` 工具）。
+</HARD-GATE>
+
 - 每个关键数字必须引用对应 Evidence、数据版本、省份/年份和招生口径。
 - `admission.get_history` 的缺失字段不能转为 0；若不可比，明确 `not_comparable` 或限制。
 - 录取率只使用系统针对招生单元、结合成绩和位次计算的结果，第一期不自行重算。

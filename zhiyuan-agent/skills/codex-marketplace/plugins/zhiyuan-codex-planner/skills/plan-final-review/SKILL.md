@@ -40,6 +40,12 @@ version: 1.0.0
 
 ## Evidence 要求
 
+<HARD-GATE>
+本技能**只审不改**：不生成新草案、不修改方案、不创建 Proposal、**不调用写工具**（含 `plan_apply`）。
+用户要求"直接提交 / 应用"时，只输出确认前问题，交外部 CAS 确认流程执行。
+同一问题**两轮仍未收敛**即熔断：列出分歧点交回用户裁决，不继续自动调整（修复循环上限）。
+</HARD-GATE>
+
 - 每个阻断或关键事实 finding 必须有 Evidence/Artifact 引用。
 - Evidence 线程、会话、版本任一不匹配即拒绝使用；不得以 assistant 文本修补数字。
 
