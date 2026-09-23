@@ -40,6 +40,19 @@ class CodexAppServerHarness:
     def set_server_request_handler(self, handler: Any) -> None:
         self.client.server_request_handler = handler
 
+    async def restart(self) -> None:
+        """重拉原生 runtime 并重新握手。
+
+        握手必须重做：能力声明（原生提问那套）是每次连接谈的，
+        重拉之后不重新声明，模型就再也提不了问——而且链路上不会报错。
+        """
+        await self.client.restart()
+        self.initialize_result = await self.client.initialize(
+            client_name="zhiyuan_gateway",
+            client_version="0.1.0",
+            capabilities=self.capabilities,
+        )
+
     async def create_thread(
         self,
         *,
@@ -387,6 +400,23 @@ def _find_outermost_braces(value: str) -> str | None:
     return None
 
 
+def _lenient_json(value: str) -> Any:
+    """解析模型给的 JSON，**容忍字符串里的裸控制字符**。
+
+    `json.loads` 默认严格：字符串里出现真的换行/制表符就整段拒绝。而模型经常
+    直接写多段中文回答（`message` 里带真换行），于是一层一层全失败 → `missing`
+    → `output_missing` → **整轮失败**，而内容本身完全合规。
+
+    实测：2026-09-21 一轮查北大招生章程的回答（2435 字、含"第一章"分段），
+    在 `line 1 column 76` 报 `Invalid control character`，抽取返回 None。
+
+    放宽的只有这一条（`strict=False` 只影响字符串内的控制字符；尾逗号、
+    单引号等一律照旧拒绝）。**契约校验不在这里**——解析出来的 dict 仍要过
+    pydantic schema，所以这不是"放松校验"，是"先把话听清再判"。
+    """
+    return json.loads(value, strict=False)
+
+
 def _parse_json_object(value: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Layered extraction of a JSON object from model output.
 
@@ -404,7 +434,7 @@ def _parse_json_object(value: str) -> tuple[dict[str, Any] | None, dict[str, Any
     stripped = value.strip()
 
     try:
-        direct = json.loads(stripped)
+        direct = _lenient_json(stripped)
     except (TypeError, ValueError):
         direct = None
     if isinstance(direct, dict):
@@ -416,7 +446,7 @@ def _parse_json_object(value: str) -> tuple[dict[str, Any] | None, dict[str, Any
         if not block:
             continue
         try:
-            parsed_block = json.loads(block)
+            parsed_block = _lenient_json(block)
         except (TypeError, ValueError):
             continue
         if isinstance(parsed_block, dict):
@@ -430,7 +460,7 @@ def _parse_json_object(value: str) -> tuple[dict[str, Any] | None, dict[str, Any
     span = _find_outermost_braces(stripped)
     if span is not None:
         try:
-            embedded = json.loads(span)
+            embedded = _lenient_json(span)
         except (TypeError, ValueError):
             embedded = None
         if isinstance(embedded, dict):

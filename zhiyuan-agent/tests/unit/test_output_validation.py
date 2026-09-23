@@ -378,3 +378,105 @@ def test_validator_rejects_confirm_action_for_stale_proposal() -> None:
             artifacts={},
             allow_proposal=True,
         )
+
+
+def test_evidence_in_the_producers_shape_passes_scope_checks() -> None:
+    """Java 签发的证据形状：作用域在 `scope` 里，键名是 `chatSessionId`、值是**数字**。
+
+    这里以前只认顶层的 `sessionId`/`session_id`，于是**任何真实签发的证据**
+    都会被判成 `evidence_scope_violation`——证据本身完全合规，只是键名不同；
+    改对键名之后还有第二关：`900017 != "900017"`，值一样、类型不同同样被拒。
+    键名与类型都要在消费侧对齐生产者，不是反过来要求生产者改名。
+    """
+    snapshot = ConversationTurnSnapshot(
+        snapshot_version=42, session_id="900017", planning_stage="candidate_exploration"
+    )
+    ledger = {
+        "ev-1": {
+            "evidenceId": "ev-1",
+            "sourceLevel": "authoritative",
+            "dataVersion": "2026.09.07",
+            "scope": {"tenantId": 1, "chatSessionId": 900017, "threadId": "thr-other"},
+        }
+    }
+
+    validated = validate_turn_output(
+        turn_output=_fact_output("ev-1"),
+        current_snapshot=snapshot,
+        evidence_ledger=ledger,
+        artifacts={},
+        thread_id="thr-current",
+        tenant_id="1",
+        strict_scope=True,
+    )
+
+    assert validated is not None
+
+
+def test_evidence_from_another_session_is_still_refused() -> None:
+    """形状对了不等于可以放松：**别的会话**的证据仍然必须拒。
+
+    上面那条修的是"键名/类型对不上"，不是"别比了"——把这条一起钉住，
+    免得下次有人为了让它通过而把比较删掉。
+    """
+    snapshot = ConversationTurnSnapshot(
+        snapshot_version=42, session_id="900017", planning_stage="candidate_exploration"
+    )
+    ledger = {
+        "ev-1": {
+            "evidenceId": "ev-1",
+            "sourceLevel": "authoritative",
+            "dataVersion": "2026.09.07",
+            "scope": {"tenantId": 1, "chatSessionId": 900018, "threadId": "thr-other"},
+        }
+    }
+
+    with pytest.raises(OutputContractError, match="evidence_scope_violation"):
+        validate_turn_output(
+            turn_output=_fact_output("ev-1"),
+            current_snapshot=snapshot,
+            evidence_ledger=ledger,
+            artifacts={},
+            thread_id="thr-current",
+            tenant_id="1",
+            strict_scope=True,
+        )
+
+
+def test_evidence_signed_before_a_workspace_write_is_still_accepted() -> None:
+    """P1c-1 的验收原话：**第 3 回合产出的证据，在中间发生过一次工作区写入之后，
+    第 7 回合引用它必须通过。**
+
+    判据的实质：证据的 `stateVersion`（签发时的工作区版本）**不再**与当前快照版本
+    比较——招生事实的新鲜度由 `dataVersion` 判，工作区版本回答的是"方案改过没有"，
+    两个不同的问题（混用会把"用户改了方案"读成"录取数据过期"）。
+
+    对照在同文件的 artifact 侧：产物**确实**绑定工作区版本，旧快照的产物仍必须拒
+    （`test_output_validator_rejects_artifact_from_old_snapshot`）。只删证据那两处、
+    不动 artifact 那两处，就是这次改动划的边界。
+    """
+    snapshot = ConversationTurnSnapshot(
+        snapshot_version=42, session_id="900017", planning_stage="candidate_exploration"
+    )
+    ledger = {
+        "ev-1": {
+            "evidenceId": "ev-1",
+            "sourceLevel": "authoritative",
+            "dataVersion": "2026.09.07",
+            # 签发时工作区在第 3 版；现在是第 42 版——中间改过方案。
+            "stateVersion": 3,
+            "scope": {"tenantId": 1, "chatSessionId": 900017},
+        }
+    }
+
+    validated = validate_turn_output(
+        turn_output=_fact_output("ev-1"),
+        current_snapshot=snapshot,
+        evidence_ledger=ledger,
+        artifacts={},
+        thread_id="thr-current",
+        tenant_id="1",
+        strict_scope=True,
+    )
+
+    assert validated is not None

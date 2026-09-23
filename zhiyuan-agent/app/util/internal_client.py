@@ -237,6 +237,60 @@ async def resolve_codex_thread_binding(
     )
 
 
+async def get_current_codex_thread_binding(
+    tenant_id: Union[str, int], chat_session_id: Union[str, int]
+) -> Dict[str, Any]:
+    """查这个 (租户, 会话) 当前有效的绑定，供 Gateway 重启后恢复 thread。
+
+    与 resolve 的区别：resolve 要 handle（证明"我就是当初注册的那个人"），
+    这个查询只要内部身份 + 会话号——它的用途是**找回** thread，而 handle
+    恰好是进程重启后丢掉的那样东西。所以它只对认证过的内部调用方开放。
+    """
+    return await http_client.get(
+        endpoint=f"/gaotu-assistant-bot/inner/codex/{tenant_id}/thread-binding/current",
+        params={"chatSessionId": chat_session_id},
+        error_msg="查询 Codex thread binding 失败",
+    )
+
+
+async def verify_evidence(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    evidence_ids: List[str],
+    thread_id: str | None = None,
+) -> Dict[str, Any]:
+    """批量核验证据（P1c-2）。返回 `{evidenceId: {status, sourceSystem, paramsDigest, ...}}`。
+
+    **失败必须抛**，这是本函数与其它封装的唯一区别，也是它存在的理由：
+    `http_client.post` 是"失败也给你一个 dict"的形状（异常 → `{"error": …, "success": False}`，
+    非 200 → 照样返回响应体）。对核验来说那个形状是 **fail-open**——拿不到答案时，
+    它在调用方眼里长得像"没有证据需要核验"，于是校验被静默放宽。
+    设计文档第六章把"Java 不可达 → 硬失败，不放行"单独列了一行，就是因为
+    "依赖不可用时放宽校验"是这里最自然的手滑。
+    """
+    response = await http_client.post(
+        endpoint="/internal/evidence/verify",
+        json_data={
+            "tenantId": tenant_id,
+            "chatSessionId": chat_session_id,
+            "threadId": thread_id,
+            "evidenceIds": list(evidence_ids),
+        },
+        error_msg="核验证据失败",
+    )
+    if response.get("success") is False:
+        raise RuntimeError(f"evidence verification unreachable: {response.get('error')}")
+    code = response.get("code")
+    if code not in (None, 0):
+        raise RuntimeError(
+            f"evidence verification failed: code={code} msg={response.get('msg')}"
+        )
+    results = ((response.get("data") or {}) or {}).get("results")
+    if not isinstance(results, dict):
+        raise RuntimeError("evidence verification returned an unusable payload")
+    return results
+
+
 def _pending_resource_data(response: Dict[str, Any] | None) -> Dict[str, Any]:
     data = (response or {}).get("data")
     return data if isinstance(data, dict) else {}
@@ -423,6 +477,127 @@ async def catalog_list_schools(
         endpoint="/gaotu-assistant-bot/inner/school/search/advanced",
         params=params,
         error_msg="catalog 查询学校列表失败",
+    )
+
+
+async def search_schools_by_name(school_name: str) -> Any:
+    """按名字模糊查学校。
+
+    与 `catalog_list_schools`（按省份/城市/类型筛）的区别是它有**名字条件**：
+    用户说"北京大学"时，筛选题材的那条路给不出"哪些学校叫这个名"，
+    返回的是一批与该名字无关的学校。
+    """
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/school/search/name",
+        params={"schoolName": school_name},
+        error_msg="catalog 按名搜索学校失败",
+    )
+
+
+async def get_batch_info(
+    area_id: Union[str, int],
+    prepare_type: str = "VOLUNTEER",
+    subject: str = "N",
+    *,
+    tenant_id: Union[str, int, None] = None,
+    chat_session_id: Union[str, int, None] = None,
+    thread_id: Optional[str] = None,
+) -> Any:
+    """取该省的批次字典（含批次码）。
+
+    `admission.get_history` / `admission.compare` 的 `batch` 必须是**这个字典里的码**
+    （浙江第一段 = 17、上海本科批 = 01），不是"本科批"这种名字：传名字上游不报错，
+    它只是返回空——于是每次查询都"没有数据"，而真相是批次码不对。
+    """
+    params: Dict[str, Any] = {
+        "areaId": area_id,
+        "prepareType": prepare_type,
+        "subject": subject,
+    }
+    params.update(_evidence_scope_params(tenant_id, chat_session_id, thread_id))
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/gaotu/batch/info",
+        params=params,
+        error_msg="catalog 查询批次字典失败",
+    )
+
+
+async def get_plan_major_filter_list(
+    school_id: Union[str, int], area_id: Union[str, int]
+) -> Any:
+    """招生计划筛选条件树：年份 → 科类 → 批次 → **招生单元**。
+
+    末层的 `value` 就是 `schoolUnitId`，`get_enrollment_plan` 反过来要求它。
+    这是专业级那条链的入口，而且**免分数**。
+    """
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/gaotu/plan/filter-list",
+        params={"schoolId": school_id, "areaId": area_id},
+        error_msg="招生计划筛选条件查询失败",
+    )
+
+
+async def get_enrollment_plan(
+    payload: Dict[str, Any],
+    *,
+    limit: Optional[int] = None,
+    tenant_id: Union[str, int, None] = None,
+    chat_session_id: Union[str, int, None] = None,
+    thread_id: Optional[str] = None,
+) -> Any:
+    """某个招生单元的招生计划（专业、计划数、学费、选考要求）。"""
+    params: Dict[str, Any] = {}
+    if limit is not None:
+        params["limit"] = limit
+    params.update(_evidence_scope_params(tenant_id, chat_session_id, thread_id))
+    return await http_client.post(
+        endpoint="/gaotu-assistant-bot/inner/gaotu/plan/major-data",
+        json_data=dict(payload),
+        params=params,
+        error_msg="招生计划查询失败",
+    )
+
+
+async def get_school_news(
+    school_id: Union[str, int], *, current: int = 1, size: int = 20
+) -> Any:
+    """院校资讯列表（招生章程/招生简章）。免 token、免分数，是章程那条链的索引。"""
+    return await http_client.post(
+        endpoint="/gaotu-assistant-bot/inner/gaotu/school/news",
+        json_data={"schoolId": str(school_id), "current": current, "size": size},
+        error_msg="招生章程列表查询失败",
+    )
+
+
+async def get_school_news_detail(
+    news_id: Union[str, int],
+    *,
+    tenant_id: Union[str, int, None] = None,
+    chat_session_id: Union[str, int, None] = None,
+    thread_id: Optional[str] = None,
+) -> Any:
+    """招生章程正文（学校发布的招生简章全文），Java 侧按来源签发证据。"""
+    params: Dict[str, Any] = {"id": news_id}
+    params.update(_evidence_scope_params(tenant_id, chat_session_id, thread_id))
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/gaotu/school/news-info",
+        params=params,
+        error_msg="招生章程正文查询失败",
+    )
+
+
+async def compare_candidates(
+    tenant_id: Union[str, int], entities: List[Dict[str, Any]], dimensions: List[str]
+) -> Dict[str, Any]:
+    """同口径并列。
+
+    取数**不在这里**：各实体的值由调用方从自己的来源链路取（那里签证据）。
+    这个端点只负责调用方做不到的那件事——判断这些值能不能放在一张表里比。
+    """
+    return await http_client.post(
+        endpoint=f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/compare",
+        json_data={"entities": list(entities), "dimensions": list(dimensions)},
+        error_msg="同口径并列失败",
     )
 
 

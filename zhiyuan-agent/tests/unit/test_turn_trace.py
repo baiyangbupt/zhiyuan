@@ -64,8 +64,12 @@ def test_turn_trace_accepts_real_mcp_tool_field() -> None:
     )
 
     assert trace.tool_calls[0]["name"] == "admission.get_history"
+    # 2026-09-22 更正：这条断言原来带着 `majorId`——它把**编排层多要的那个参数**
+    # 当成了事实。真实工具是院校/专业组级口径，缺 `majorId` 只追加一条限制
+    # （`caliber_unit_level_not_major`），不是错误；编排层多要一个参数的后果是
+    # "模型没传 → 判 blocked → 整轮被降级 + 补一句'请补充缺失参数'"，而工具本可作答。
     assert trace.orchestration[0]["missingArguments"] == [
-        "majorId", "areaId", "batch", "year", "subjectType"
+        "areaId", "batch", "year", "subjectType"
     ]
     assert trace.orchestration[0]["ready"] is False
 

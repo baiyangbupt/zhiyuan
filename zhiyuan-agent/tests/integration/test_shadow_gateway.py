@@ -646,3 +646,108 @@ async def test_tool_failure_still_downgrades_a_completed_execution_status() -> N
     )
 
     assert result["output"]["executionStatus"] in {"partial", "failed"}
+
+
+@pytest.mark.asyncio
+async def test_evidence_follows_the_snapshot_not_the_process_memory() -> None:
+    """P1b-3 验收 4：证据以 **snapshot** 为准，进程内存只做交集。
+
+    第一轮模型通过工具拿到一条 ev-stale，于是它进了进程内存；第二轮 Java 的
+    快照里**只有** ev-valid——那是 Java 已经判定 ev-stale 不再 `valid`（stale /
+    expired / unknown）。这一轮注入给模型的 workingSet 里必须没有 ev-stale，
+    而 ev-valid 必须还在。
+
+    对照是硬要求（任务书原话）：没有它，"整个 evidence_refs 被清空了"也能让
+    "ev-stale 不在了"成立——通过和坏掉长得一模一样。
+    """
+
+    class EvidenceThenStale(FakeCodexHarness):
+        async def start_turn(self, thread_id: str, input_items: list[dict], output_schema=None):
+            self.turns.append({"thread_id": thread_id, "input": input_items, "schema": output_schema})
+            return {
+                "turn": {"id": f"turn-{len(self.turns)}"},
+                "output": {
+                    "responseType": "fact",
+                    "message": "已拿到一条权威事实",
+                    "evidenceRefs": [
+                        {
+                            "evidenceId": "ev-stale",
+                            "sourceLevel": "authoritative",
+                            "dataVersion": "2026-batch-1",
+                        }
+                    ],
+                },
+                "events": [
+                    {
+                        "type": "mcpToolCall",
+                        "result": {
+                            "evidence": [
+                                {
+                                    "evidenceId": "ev-stale",
+                                    "tenantId": "tenant-1",
+                                    "sessionId": "session-1",
+                                    "threadId": "thr-shadow",
+                                    "dataVersion": "2026-batch-1",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+
+    def snapshot_with(evidence_ids: list[str]) -> dict:
+        return {
+            "sessionId": "session-1",
+            "version": 42,
+            "phase": "candidate_exploration",
+            "studentSummary": {"province": "浙江", "score": 650, "rank": 1000},
+            "allowedCapabilities": ["catalog_read", "admission_read"],
+            "evidence": [
+                {
+                    "evidenceId": evidence_id,
+                    "sourceLevel": "authoritative",
+                    "dataVersion": "2026-batch-1",
+                }
+                for evidence_id in evidence_ids
+            ],
+        }
+
+    # 第二轮的快照里没有 ev-stale——Java 已经把它判掉了。
+    snapshots = [snapshot_with(["ev-valid"]), snapshot_with(["ev-valid"])]
+    calls = {"n": 0}
+
+    async def snapshot_loader(**kwargs):
+        payload = snapshots[min(calls["n"], len(snapshots) - 1)]
+        calls["n"] += 1
+        return payload
+
+    codex = EvidenceThenStale()
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=codex,
+        legacy=FakeLegacyService(),
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=snapshot_loader,
+    )
+
+    await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-1",
+        content="查询事实",
+    )
+    await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-2",
+        content="再问一句",
+    )
+
+    payload = _working_set_payload(codex.turns[-1]["input"][1]["text"])
+    ids = [item["evidenceId"] for item in payload["evidenceRefs"]]
+
+    assert "ev-stale" not in ids, "Java 判成 stale 的证据不许留在进程内存里"
+    assert "ev-valid" in ids, "对照：snapshot 里还有的那条必须留下"

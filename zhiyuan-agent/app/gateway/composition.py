@@ -78,6 +78,8 @@ async def build_gateway_runtime(
     message_store: Any,
     binding_loader: Callable[..., Any],
     snapshot_loader: Callable[..., Any],
+    current_binding_loader: Callable[..., Any] | None = None,
+    evidence_verifier: Callable[..., Any] | None = None,
     codex: Any | None = None,
     codex_config: CodexAppServerConfig | None = None,
     base_instructions: str = "",
@@ -132,6 +134,8 @@ async def build_gateway_runtime(
         base_instructions=base_instructions,
         developer_instructions=developer_instructions,
         session_runtime=None,
+        current_binding_loader=current_binding_loader,
+        evidence_verifier=evidence_verifier,
     )
     # scope 解析器要等 gateway 建好：它从业务绑定反查身份，是唯一可信的来源。
     broker.set_scope_resolver(gateway.scope_for_thread)

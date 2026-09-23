@@ -17,6 +17,17 @@ logger = logging.getLogger(__name__)
 NOTIFICATION_BACKLOG_MAX = 1024
 NOTIFICATION_BACKLOG_TTL_SECONDS = 60.0
 
+# stdout 单行的缓冲上限。**这不是性能参数，是正确性参数。**
+# `asyncio.create_subprocess_exec` 不传 `limit` 时是 64 KiB；原生进程一条通知就能
+# 超过它——实测（2026-09-21）一次"神秘死亡"对应的 rollout 记录是 **229 KiB**。
+# 超限时 `readline()` 抛 `ValueError`，`_read_stdout` 的 finally 于是把在途请求全判成
+# `AppServerExited`：**进程明明还活着**（`is_running` 为 True），恢复路径却以为它死了、
+# 关掉它的 stdin，活进程随即优雅退出（rollout 里留下 `turn_aborted/interrupted`、
+# 退出码 0）。用户看到的是"这一轮引擎不可用"，而且——没有 J7 那层重拉的时候——
+# 进程从此再也读不到任何回复，**每一轮都超时，CPU 却空着**（评估器最初报的就是这个）。
+# 16 MiB 比实测最大值高两个数量级；它只是个缓冲上限，不会预分配内存。
+DEFAULT_STDOUT_LINE_LIMIT = 16 * 1024 * 1024
+
 
 class AppServerProtocolError(RuntimeError):
     def __init__(self, code: int, message: str, data: Any = None) -> None:
@@ -29,6 +40,16 @@ class AppServerTimeout(TimeoutError):
     pass
 
 
+class AppServerExited(RuntimeError):
+    """app-server 进程退出了，在途请求全部作废。
+
+    它必须是一个**类型**，不能只是一句话：恢复链路要据此决定"重拉 runtime
+    并重建 thread"，那是个结构性判断。靠匹配 "app server exited" 这串英文，
+    上游换个措辞就会退化成"认不出的失败 → 整个会话不可用"——实测中正是这么
+    发生的（而且崩掉的 runtime 不会自己复活，新会话也一起挂）。
+    """
+
+
 class AppServerClient:
     def __init__(
         self,
@@ -36,9 +57,11 @@ class AppServerClient:
         *,
         request_timeout: float = 30.0,
         server_request_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None,
+        line_limit: int = DEFAULT_STDOUT_LINE_LIMIT,
     ) -> None:
         self.command = command
         self.request_timeout = request_timeout
+        self.line_limit = line_limit
         self.process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._pending: dict[int | str, asyncio.Future[dict[str, Any]]] = {}
@@ -69,9 +92,32 @@ class AppServerClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # 见 DEFAULT_STDOUT_LINE_LIMIT：默认的 64 KiB 会被一条大通知撑爆，
+            # 而后果是"把活着的进程判成死的"。
+            limit=self.line_limit,
         )
         self._reader_task = asyncio.create_task(self._read_stdout())
         asyncio.create_task(self._read_stderr())
+        asyncio.create_task(self._watch_process_exit())
+
+    async def _watch_process_exit(self) -> None:
+        """进程退出时把**退出码**记下来。
+
+        "app-server 没了"是一个结论，退出码才是它的证据。实测形状（codex 源码
+        `app-server-transport/src/transport/stdio.rs`）：stdin EOF 或 SIGTERM 会启动
+        关停，watchdog 最多 45 秒后 `exit(1)`；此外 0=自己退、-9=被 SIGKILL、
+        -15=被 SIGTERM、134=abort。没有这一条，"它为什么没了"只能靠猜——2026-09-21
+        那两次自退就是这么无从归因的（只看到 `AppServerExited`，看不到死法）。
+        """
+        process = self.process
+        if process is None:
+            return
+        returncode = await process.wait()
+        # 两种"不是自退"：正在关停（`_closed`），或已经换了进程（重启）。
+        if self._closed or self.process is not process:
+            logger.debug("app server exited on request returncode=%s", returncode)
+            return
+        logger.warning("app server exited on its own returncode=%s", returncode)
 
     async def initialize(
         self,
@@ -99,14 +145,24 @@ class AppServerClient:
     async def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if self.process is None or self.process.stdin is None:
             raise RuntimeError("app server is not started")
+        # "从没起来"是调用方的编程错误，"起来过又死了"是运行时故障——后者
+        # 恢复路径要能认出来（重拉 + 重建），所以必须是不同的类型。
+        # 先查再写：进程已死时写 stdin 得到的是 `ConnectionResetError`，
+        # 那是一句没有任何语义的系统错误，分类器无从下手。
+        if not self.is_running:
+            raise AppServerExited("app server is not running")
         request_id = self._next_id
         self._next_id += 1
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         try:
-            await self._write(
-                {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}
-            )
+            try:
+                await self._write(
+                    {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}
+                )
+            except (ConnectionResetError, BrokenPipeError) as exc:
+                # 检查与写入之间进程死掉的竞态窗口。
+                raise AppServerExited("app server exited") from exc
             try:
                 return await asyncio.wait_for(future, timeout=self.request_timeout)
             except asyncio.TimeoutError as exc:
@@ -173,9 +229,29 @@ class AppServerClient:
 
     async def _read_stdout(self) -> None:
         assert self.process is not None and self.process.stdout is not None
+        stream_broken: str | None = None
         try:
-            async for raw_line in self.process.stdout:
-                line = raw_line.decode().strip()
+            while True:
+                try:
+                    raw_line = await self.process.stdout.readline()
+                except ValueError as exc:
+                    # **超长行不等于进程死了**（这个区分是本文件最贵的一课，见模块常量
+                    # `DEFAULT_STDOUT_LINE_LIMIT` 的注释）：readline 撞上限时抛 ValueError，
+                    # 而缓冲里的数据还在，但这行已经读不完整，流是接不回去的。
+                    # 所以照实记下来，再按"这条流废了"处理（恢复路径会重拉 runtime）。
+                    stream_broken = f"stdout line exceeded {self.line_limit} bytes ({exc})"
+                    logger.error(
+                        "app-server %s; the stream cannot be resynchronized, "
+                        "treating it as unreadable (the process itself may still be alive)",
+                        stream_broken,
+                    )
+                    break
+                if not raw_line:
+                    break
+                # `errors="replace"` 与 `_read_stderr` 一致：一行里有坏字节的解码错误
+                # 也会走进同一个 finally，把活着的进程判成死的——那是同一课的另一个入口。
+                # 换掉之后它退化成"非 JSON 行"，只丢这一条。
+                line = raw_line.decode(errors="replace").strip()
                 if not line:
                     continue
                 try:
@@ -214,7 +290,11 @@ class AppServerClient:
         finally:
             # 进程退出的唤醒必须是**全面**的：只唤醒 _pending 的话，
             # 正在等通知的回合会一直等到自己的 deadline——而对方已经不可能再说话了。
-            error = RuntimeError("app server exited")
+            # 消息里带上"为什么读不下去"：退出与"流超限"处置相同（都重拉），但日志里
+            # 必须分得开——分不开就是这一课本身。
+            error = AppServerExited(
+                "app server exited" if stream_broken is None else f"app server {stream_broken}"
+            )
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(error)
@@ -247,7 +327,16 @@ class AppServerClient:
     async def _read_stderr(self) -> None:
         if self.process is None or self.process.stderr is None:
             return
-        async for raw_line in self.process.stderr:
+        while True:
+            try:
+                raw_line = await self.process.stderr.readline()
+            except ValueError:
+                # stderr 不承载协议：超限只意味着"这一行看不到"，丢掉继续读。
+                # （stdout 上同样的错误必须重拉——那边的 JSON-RPC 分帧废了。）
+                logger.warning("app server stderr line exceeded the buffer limit; dropped")
+                continue
+            if not raw_line:
+                return
             logger.debug("app-server: %s", raw_line.decode(errors="replace").rstrip())
 
     async def close(self) -> None:
@@ -265,3 +354,28 @@ class AppServerClient:
         if self._reader_task is not None:
             self._reader_task.cancel()
             await asyncio.gather(self._reader_task, return_exceptions=True)
+
+    @property
+    def is_running(self) -> bool:
+        """进程还在吗。已退出与从未启动是两种状态，但对调用方同样是"用不了"。"""
+        return self.process is not None and self.process.returncode is None
+
+    async def restart(self) -> None:
+        """重拉 app-server。
+
+        退出后的进程不会自己复活，而**一条坏 thread 就能把它打死**（实测：
+        resume 某个 thread 时 codex 直接退出）。没有这个入口，恢复路径就只能
+        撞在一个死进程上，整个 agent 跟着一起废——新建会话也一样失败。
+        """
+        await self.close()
+        self._closed = False
+        # 死进程留下的在途状态一律丢掉：backlog 与 pending 都是它的遗物，
+        # 带着它们重拉等于把旧世界的等待者接到新进程上。
+        self._notification_backlog.clear()
+        for waiter in list(self._notification_waiters):
+            _, future = waiter
+            if not future.done():
+                future.set_exception(AppServerExited("app server restarted"))
+        self._notification_waiters.clear()
+        self.process = None
+        await self.start()

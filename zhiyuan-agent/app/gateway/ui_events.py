@@ -42,8 +42,16 @@ TOOL_LABELS: dict[str, str] = {
     "catalog.get_major": "正在读取专业信息",
     "admission.get_history": "正在查询历年录取",
     "admission.get_plan": "正在查询招生计划",
+    "admission.get_enrollment_plan": "正在读取招生专业计划",
     "admission.get_current_plan": "正在读取当前方案",
+    # 别名与本体**必须同一个标签**：它们是同一个工具，前端看到两个说法会以为
+    # 这是两件事（这也是 `_ADMISSION_SHAPED_TOOLS` 用显式集合而不是前缀的原因）。
+    "planning.get_working_plan": "正在读取当前方案",
     "admission.check_eligibility": "正在核对选科要求",
+    "admission.compare": "正在并列比较",
+    "catalog.list_batches": "正在读取批次",
+    "catalog.list_admission_units": "正在读取招生单元",
+    "admission.get_charter": "正在读取招生章程",
 }
 
 

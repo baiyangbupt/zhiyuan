@@ -291,12 +291,43 @@ async def lifespan(app: FastAPI):
 
         return await get_conversation_turn_snapshot(tenant_id, session_id, skill)
 
+    async def evidence_verifier(*, tenant_id, chat_session_id, evidence_ids, thread_id=None):
+        """P1c-2：把本回合引用的证据全量提交 Java 台账核验。
+
+        失败**抛**（`verify_evidence` 里把 http_client 那种"失败也返回 dict"的形状
+        转成了异常）——调用方按"核验不可用 → 整轮硬失败"处置，不放行。
+        """
+        from app.util.internal_client import verify_evidence
+
+        return await verify_evidence(
+            tenant_id, chat_session_id, evidence_ids, thread_id=thread_id
+        )
+
+    async def current_binding_loader(tenant_id: str, session_id: str):
+        """A7：进程重启后靠它找回这个会话该用的 thread。
+
+        查不到绑定返回 None（新建），查询**失败**则抛出去由 ThreadRecovery
+        判成可恢复错误——把失败当"没有绑定"会把一次后端故障变成一次上下文丢失。
+        """
+        from app.util.internal_client import get_current_codex_thread_binding
+
+        response = await get_current_codex_thread_binding(tenant_id, session_id)
+        if not isinstance(response, dict):
+            raise RuntimeError("binding_lookup_invalid_response")
+        if response.get("code") not in (None, 0):
+            raise RuntimeError("binding_lookup_failed")
+        return response.get("data")
+
     gateway_runtime = await build_gateway_runtime(
         gateway_config,
         legacy=app.state.chat_service,
         message_store=message_store,
         binding_loader=getattr(app.state, "gateway_binding_loader", backend_binding_loader),
         snapshot_loader=getattr(app.state, "gateway_snapshot_loader", snapshot_loader),
+        current_binding_loader=getattr(
+            app.state, "gateway_current_binding_loader", current_binding_loader
+        ),
+        evidence_verifier=getattr(app.state, "gateway_evidence_verifier", evidence_verifier),
         codex_config=codex_config,
     )
     app.state.gateway_runtime = gateway_runtime

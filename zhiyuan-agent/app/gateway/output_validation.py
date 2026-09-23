@@ -125,16 +125,32 @@ def validate_turn_output(
         entry = evidence_ledger.get(evidence_id)
         if entry is None:
             raise OutputContractError("evidence_not_found", evidence_id)
-        entry_session = _scoped_field(entry, "sessionId", "session_id")
-        if (strict_scope and entry_session in (None, "")) or entry_session not in (None, "", snapshot.session_id):
+        # Java 签发的证据把会话放在 `scope.chatSessionId`（生产者的键名），
+        # 而这里以前只认 `sessionId`/`session_id` → 取不到 → strict_scope 判它
+        # session 不符 → **任何真实签发的证据都被拒收**。表现是
+        # `evidence_scope_violation`，而证据本身完全合规。键名要在**消费侧**
+        # 对齐生产者，不是反过来要求生产者改名。
+        entry_session = _scoped_field(
+            entry, "sessionId", "session_id", "chatSessionId", "chat_session_id"
+        )
+        # **两边都按字符串比**：Java 给的是数字（`"chatSessionId": 900021`），
+        # 快照里是字符串。只转一边的话，`900021 != "900021"` 会把一条完全合规的
+        # 证据判成越权——fail closed，而且看不出哪里不对。
+        session_matches = entry_session not in (None, "") and str(entry_session) == str(
+            snapshot.session_id
+        )
+        if (strict_scope and entry_session in (None, "")) or not session_matches:
             raise OutputContractError("evidence_scope_violation", evidence_id)
         # 证据**不校验 thread**：thread 是运行身份，会随进程重启改变。
         # 一个易失的标识符不能承载安全语义——一次 Gateway 重启就会让所有在世会话的
         # 证据全部作废，而隔离边界本来是 (tenantId, chatSessionId)。
         # 这不是放松：这里的检查在改成"证据由 Java 真实签发"之后会真的开始拒绝，
         # 而它拒绝的理由（thread 变了）与安全无关。artifact 那侧的 thread 检查保留。
+        # 同上：Java 给的是数字（`"tenantId": 1`），我们手上是字符串（"1"）。
+        # 用字符串比，避免"值一样、类型不同"被判成越权。
         entry_tenant = _scoped_field(entry, "tenantId", "tenant_id")
-        if (strict_scope and tenant_id and entry_tenant in (None, "")) or (tenant_id and entry_tenant not in (None, "", tenant_id)):
+        tenant_matches = entry_tenant in (None, "") or str(entry_tenant) == str(tenant_id)
+        if (strict_scope and tenant_id and entry_tenant in (None, "")) or not tenant_matches:
             raise OutputContractError("evidence_scope_violation", evidence_id)
         # 招生事实的新鲜度由 dataVersion 判定，**不**由工作区版本判定。
         # 混用会把"用户改了方案"读成"录取数据过期"——两个不同的问题，处置也不同：
@@ -167,7 +183,11 @@ def validate_turn_output(
         if reference.state_version != snapshot.snapshot_version:
             raise OutputContractError("stale_state", artifact_id)
         entry_session = _scoped_field(entry, "sessionId", "session_id")
-        if (strict_scope and entry_session in (None, "")) or entry_session not in (None, "", snapshot.session_id):
+        # 与证据同一处置：值一样、类型不同不能算越权。
+        artifact_session_matches = entry_session not in (None, "") and str(entry_session) == str(
+            snapshot.session_id
+        )
+        if (strict_scope and entry_session in (None, "")) or not artifact_session_matches:
             raise OutputContractError("artifact_scope_violation", artifact_id)
         entry_thread = _scoped_field(entry, "threadId", "thread_id")
         if (strict_scope and thread_id and entry_thread in (None, "")) or (thread_id and entry_thread not in (None, "", thread_id)):

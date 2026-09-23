@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.gateway.conversation_actions import execute_conversation_action
 from app.gateway.service import GatewayService
+from app.gateway.ui_events import SessionKey
 
 
 def snapshot():
@@ -153,7 +154,7 @@ async def test_execute_action_and_refresh_replaces_cached_snapshot():
         )
     assert result["actionResult"]["actionStatus"] == "applied"
     assert result["snapshotVersion"] == 8
-    assert gateway._snapshots["s1"].snapshot_version == 8
+    assert gateway._snapshots[SessionKey(tenant_id="t1", session_id="s1")].snapshot_version == 8
     assert resolver.await_args.kwargs["tenant_id"] == "t1"
 
 

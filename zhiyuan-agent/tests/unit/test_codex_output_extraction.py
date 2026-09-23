@@ -248,3 +248,41 @@ async def test_smoke_payload_evaluation_passed_true_when_output_present_control(
         smoke_script.CodexAppServerHarness = original
 
     assert payload["evaluation"]["passed"] is True
+
+
+def test_extraction_tolerates_raw_control_characters_in_strings() -> None:
+    """模型在 JSON 字符串里写**真换行**时，不能整轮判成"没有输出"。
+
+    `json.loads` 默认严格：字符串内的裸控制字符（真换行/制表符）会让整段解析失败。
+    实测 2026-09-21 一轮查北大招生章程的回答（2435 字、按"第一章/第几条"分段）在
+    `line 1 column 76` 报 `Invalid control character`，三层抽取全失败 →
+    `output_missing` → **整轮失败**，而内容本身完全合规。
+
+    放宽的只有这一条（`strict=False`）。契约校验仍在 pydantic 那一层——
+    这不是"放松校验"，是"先把话听清再判"。
+    """
+    payload = (
+        '{"responseType":"fact","message":"第一章 总则\n第一条 为保证招生工作顺利进行…",'
+        '"nextStep":"无"}'
+    )
+    assert "\n" in payload  # 这就是裸换行，不是转义
+
+    extracted, info = _extract_output_ex({"item": {"type": "agentMessage", "text": payload}})
+
+    assert info["source"] == "direct"
+    assert extracted is not None
+    assert extracted["responseType"] == "fact"
+    assert "第一章" in extracted["message"]
+
+
+def test_extraction_still_rejects_genuinely_broken_json() -> None:
+    """放宽控制字符**不等于**什么都收：尾逗号这类真错误照旧判 miss。
+
+    不然"能解析"就会变成"总能解析"，而 schema 校验前面那道门也就白设了。
+    """
+    payload = '{"responseType":"fact","message":"x",}'
+
+    extracted, info = _extract_output_ex({"item": {"type": "agentMessage", "text": payload}})
+
+    assert extracted is None
+    assert info["source"] == "missing"

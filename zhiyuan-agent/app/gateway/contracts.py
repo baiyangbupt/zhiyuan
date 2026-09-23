@@ -22,6 +22,14 @@ class EvidenceRef(_ContractModel):
     evidence_id: str
     source_level: Literal["authoritative", "computed", "planner_experience"]
     data_version: str
+    # 台账内部标识。Java 的 `ConversationEvidenceDTO` 一直带这三个字段，但快照
+    # 过去是空的（`fillEvidence()` 是空方法体），所以契约里没声明也不炸；2026-09-21
+    # 快照开始真的带证据之后，`extra="forbid"` 会让**整个快照**解析失败。
+    # 实测表现：每个会话从**第二轮**起秒失败（"当前会话状态暂时不可用"），因为
+    # 证据是第一轮跑工具时才落台账的——而错误文本里只有字段名，看不出是契约漏字段。
+    source_system: str | None = None
+    params_digest: str | None = None
+    expires_at: str | None = None
     admission_mode: Literal["major", "major_group"] | None = None
     admission_unit_id: str | None = None
     group_code: str | None = None
