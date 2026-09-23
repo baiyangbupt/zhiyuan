@@ -60,6 +60,13 @@ public class GaotuClient {
      */
     private static final String PLAN_MAJOR_DATA_LIST = "/hl-wish/ci/h5/school/noToken/planMajorDataList";
 
+    /** 招生计划的筛选条件树（年份/科类/批次/招生单元）。实测可用，免 token。 */
+    private static final String PLAN_MAJOR_FILTER_LIST_PATH = "/hl-wish/ci/h5/school/noToken/planMajorFilterList";
+
+    /** 招生章程（院校资讯里的招生简章全文）。与下面那条 SCHOOL_RULE 不是一回事。 */
+    private static final String SCHOOL_NEWS_PAGE_PATH = "/hl-wish/ci/h5/school/noToken/newsPage";
+    private static final String SCHOOL_NEWS_INFO_PATH = "/hl-wish/ci/h5/school/noToken/getNewsInfo";
+
     /** 学校招生章程（**展示文案**，见 SchoolRuleRes 的说明）。 */
     private static final String SCHOOL_RULE_PATH = "/hl-wish/ci/school/noToken/getSchoolRule";
     
@@ -161,6 +168,64 @@ public class GaotuClient {
         });
         attachEvidence(response, EvidenceLedgerService.SOURCE_GAOTU_BATCH_LIST, params, scope);
         return response;
+    }
+
+    /**
+     * 院校资讯列表（招生章程/招生简章）。免 token，**免分数**。
+     *
+     * <p>不签发证据：列表只有标题与时间，是**索引**不是内容。证据挂在详情那次读取上
+     * （见 {@link #getSchoolNewsDetail}）——给索引签证据会让"引用了章程原文"变成
+     * "引用了一个标题"。</p>
+     */
+    public ResponseDTO<SchoolNewsRes.Page> getSchoolNewsPage(String schoolId, Integer current, Integer size) {
+        String url = gaotuProperties.getZhiyuanUrl() + SCHOOL_NEWS_PAGE_PATH;
+        Map<String, Object> body = Maps.newHashMap();
+        body.put("current", current == null ? 1 : current);
+        body.put("size", size == null ? 20 : size);
+        Map<String, Object> model = Maps.newHashMap();
+        model.put("schoolId", schoolId);
+        body.put("model", model);
+        return JsonHttpUtil.post(url, body, getHeader(),
+                new TypeReference<ResponseDTO<SchoolNewsRes.Page>>() {
+                });
+    }
+
+    /**
+     * 招生章程正文，并按权威证据台账签发证据。
+     *
+     * <p>这是**原文条款**那条来源：学校发布、平台收录，标题自带年份、有上下架标志。
+     * 与 {@link #getSchoolRule}（录取规则摘要，没规则时回占位文案）区分开——
+     * 后者**不签发证据**。</p>
+     */
+    public ResponseDTO<SchoolNewsRes> getSchoolNewsDetail(Long newsId, EvidenceScope scope) {
+        String url = gaotuProperties.getZhiyuanUrl() + SCHOOL_NEWS_INFO_PATH;
+        Map<String, Object> params = Maps.newHashMap();
+        params.put("id", newsId);
+        ResponseDTO<SchoolNewsRes> response = JsonHttpUtil.get(url, params, getHeader(),
+                new TypeReference<ResponseDTO<SchoolNewsRes>>() {
+                });
+        attachEvidence(response, EvidenceLedgerService.SOURCE_GAOTU_SCHOOL_NEWS, params, scope);
+        return response;
+    }
+
+    /**
+     * 招生计划的筛选条件树：年份 → 科类 → 批次 → **招生单元**。
+     *
+     * <p>这是"专业级"那条链的**入口**：末层的 {@code value} 是 {@code schoolUnitId}，
+     * 而 {@link #queryPlanMajorData} 反过来要求它。没有这一步，招生计划与
+     * 专业级录取数据都没有门可入——而它是**免分数**的。
+     *
+     * <p>不签发证据：它是**字典**（枚举可选值），不是观测到的招生事实。
+     * 给它签证据会把"这张表有哪些格子"与"格子里是什么"混成一类。</p>
+     */
+    public ResponseDTO<List<PlanMajorFilterNode>> getPlanMajorFilterList(String schoolId, String areaId) {
+        String url = gaotuProperties.getZhiyuanUrl() + PLAN_MAJOR_FILTER_LIST_PATH;
+        Map<String, Object> params = Maps.newHashMap();
+        params.put("schoolId", schoolId);
+        params.put("areaId", areaId);
+        return JsonHttpUtil.get(url, params, getHeader(),
+                new TypeReference<ResponseDTO<List<PlanMajorFilterNode>>>() {
+                });
     }
 
     /**

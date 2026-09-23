@@ -9,6 +9,7 @@ import com.ytell.zhiyuan.service.biz.CodexThreadBindingService;
 import io.swagger.annotations.Api;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -29,6 +30,20 @@ public class CodexConversationController {
             @PathVariable("tenantId") Long tenantId,
             @RequestBody CodexThreadBindingReq req) {
         return BaseResponse.success(bindingService.registerResponse(tenantId, req));
+    }
+
+    /**
+     * 该 (租户, 会话) 当前有效的绑定；没有绑定时 data 为 null。
+     *
+     * <p>Gateway 重启后进程内的 thread 表就没了，靠这条把 thread 找回来，
+     * 否则用户会得到一个"记得你的资料、不记得你刚说过什么"的对话。
+     * 只对认证过的内部调用方开放。</p>
+     */
+    @GetMapping("/thread-binding/current")
+    public BaseResponse<CodexThreadBindingContextRes> current(
+            @PathVariable("tenantId") Long tenantId,
+            @RequestParam("chatSessionId") Long chatSessionId) {
+        return BaseResponse.success(bindingService.current(tenantId, chatSessionId));
     }
 
     @PostMapping("/thread-binding/resolve")

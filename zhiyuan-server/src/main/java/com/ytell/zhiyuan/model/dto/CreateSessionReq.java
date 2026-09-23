@@ -16,6 +16,15 @@ public class CreateSessionReq {
     private Long botId;//
     private String userName; // 用户姓名
 
+    /**
+     * 空会话：不在建会话时采集信息，也不拉该省全量志愿数据。
+     *
+     * <p>省份/批次/选科/成绩这些字段是**对话要达到目标时要采集的东西**，
+     * 不是建会话的前提。置 true 时它们的硬校验与全量取数都跳过，
+     * 缺什么由对话去问。默认 null/false，走原来的采集式建会话。</p>
+     */
+    private Boolean draft;
+
     private Province province; // 高考省份
     private Integer examYear; // 高考年份
     private Sex sex; // 性别

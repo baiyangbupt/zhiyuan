@@ -121,13 +121,41 @@ public class CodexThreadBindingService {
                 req.getThreadId(),
                 req.getHandle(),
                 req.getCapability());
+        return toContext(entity);
+    }
+
+    private CodexThreadBindingContextRes toContext(CodexThreadBindingEntity entity) {
         CodexThreadBindingContextRes response = new CodexThreadBindingContextRes();
+        response.setTenantId(entity.getTenantId());
         response.setChatSessionId(entity.getChatSessionId());
         response.setUserId(entity.getUserId());
         response.setThreadId(entity.getThreadId());
         response.setAllowedCapabilities(splitCapabilities(entity.getAllowedCapabilities()));
         response.setExpiresAt(DateTimeFormatter.ISO_INSTANT.format(entity.getExpiresAt().toInstant()));
         return response;
+    }
+
+    /**
+     * 查该 (租户, 会话) 当前有效的绑定；没有则返回 {@code null}。
+     *
+     * <p>与 {@link #resolve} 的分工：resolve 要 handle，证明"我就是当初注册的那个人"，
+     * 用于工具调用时的身份核验；这条不需要 handle——它的用途恰恰是在 handle
+     * 已经随进程重启丢掉之后，把 thread 找回来。所以它**只对认证过的内部
+     * 调用方开放**，不对外。</p>
+     *
+     * <p>返回 null 表示"没有绑定"（可以新建），异常表示"查不了"（不许新建）——
+     * 调用方必须区分这两者，把查询失败当成没有绑定，等于用一次后端故障
+     * 换掉用户的上下文。</p>
+     */
+    public CodexThreadBindingContextRes current(Long tenantId, Long chatSessionId) {
+        if (tenantId == null || chatSessionId == null) {
+            throw new IllegalArgumentException("tenant and chatSession are required");
+        }
+        CodexThreadBindingEntity entity = bindingMapper.selectCurrent(tenantId, chatSessionId, new Date());
+        if (entity == null) {
+            return null;
+        }
+        return toContext(entity);
     }
 
     public void revoke(Long tenantId, String threadId) {

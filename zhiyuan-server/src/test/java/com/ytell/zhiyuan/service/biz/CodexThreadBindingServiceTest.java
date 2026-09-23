@@ -16,6 +16,7 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 
@@ -127,6 +128,34 @@ public class CodexThreadBindingServiceTest {
         assertEquals(202L, response.getUserId());
         assertEquals("thr_test", response.getThreadId());
         assertEquals(Arrays.asList("catalog.search_schools"), response.getAllowedCapabilities());
+    }
+
+    @Test
+    void shouldReturnCurrentBindingForRecovery() {
+        CodexThreadBindingEntity entity = entity();
+        doReturn(entity).when(mapper).selectCurrent(eq(1L), eq(101L), any());
+
+        CodexThreadBindingContextRes response = service.current(1L, 101L);
+
+        assertEquals(1L, response.getTenantId());
+        assertEquals(101L, response.getChatSessionId());
+        assertEquals("thr_test", response.getThreadId());
+        assertEquals(Arrays.asList("catalog.search_schools"), response.getAllowedCapabilities());
+    }
+
+    @Test
+    void shouldReportNoCurrentBindingAsNullRatherThanFailing() {
+        // null 是"没有绑定"（可以新建）；抛异常才是"查不了"（不许新建）。
+        // 两者混成一个结果，会把一次后端故障变成一次上下文丢失。
+        doReturn(null).when(mapper).selectCurrent(eq(1L), eq(101L), any());
+
+        assertEquals(null, service.current(1L, 101L));
+    }
+
+    @Test
+    void shouldRejectCurrentWithoutTenantOrSession() {
+        assertThrows(IllegalArgumentException.class, () -> service.current(1L, null));
+        assertThrows(IllegalArgumentException.class, () -> service.current(null, 101L));
     }
 
     private CodexThreadBindingReq request() {

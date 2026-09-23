@@ -16,6 +16,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -52,6 +53,35 @@ public class CodexConversationControllerTest {
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.threadId").value("thr_test"))
                 .andExpect(jsonPath("$.data.handle").value("opaque"));
+    }
+
+    @Test
+    void shouldReturnCurrentBindingForRecovery() throws Exception {
+        CodexThreadBindingContextRes response = new CodexThreadBindingContextRes();
+        response.setTenantId(1L);
+        response.setChatSessionId(101L);
+        response.setThreadId("thr_test");
+        doReturn(response).when(service).current(eq(1L), eq(101L));
+
+        mockMvc.perform(get("/gaotu-assistant-bot/inner/codex/1/thread-binding/current")
+                        .param("chatSessionId", "101"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.tenantId").value(1))
+                .andExpect(jsonPath("$.data.threadId").value("thr_test"));
+    }
+
+    @Test
+    void shouldReturnNullDataWhenThereIsNoCurrentBinding() throws Exception {
+        // "没有绑定"要走 200 + data=null，不是错误：Gateway 拿到它就该新建。
+        // 换成错误码的话，恢复链路会把"可以新建"当成"后端坏了"，于是一律不新建。
+        doReturn(null).when(service).current(eq(1L), eq(101L));
+
+        mockMvc.perform(get("/gaotu-assistant-bot/inner/codex/1/thread-binding/current")
+                        .param("chatSessionId", "101"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data").doesNotExist());
     }
 
     @Test

@@ -266,6 +266,9 @@ public class ChatSessionBizService {
         long requestStart = System.currentTimeMillis();
 
         normalizeCreateSessionDefaults(createSessionReq);
+        if (Boolean.TRUE.equals(createSessionReq.getDraft())) {
+            return createEmptyChatSession(tenantId, createSessionReq, requestStart);
+        }
         validateCreateSessionReq(createSessionReq);
 
         UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
@@ -405,6 +408,50 @@ public class ChatSessionBizService {
         log.info("createChatSession step=finish tenantId={} chatSessionId={} totalCostMs={}",
                 tenantId, chatSession.getId(), System.currentTimeMillis() - requestStart);
         ChatSessionVo vo = ChatSessionVo.fromEntity(chatSession, botVo, getSessionExtraSummaryData(chatSession), prepareType);
+        vo.setExamYear(createSessionReq.getExamYear());
+        vo.setStudentSummary(buildStudentPlanningSummary(createSessionReq));
+        return vo;
+    }
+
+    /**
+     * 建一个**什么都不带**的会话：不在建会话时采集信息，也不拉全量志愿数据。
+     *
+     * <p>为什么需要这条分支：原来的"创建会话"= 采集信息 + 拉该省全量志愿数据
+     * （见 {@link #createChatSession} 第 2–7 步），所以省份/批次/选科/成绩被做成了
+     * 硬校验。但那几项本来就是**对话要达到目标时要采集的信息**——先拦一道表单，
+     * 等于把"采集"这件事挪到对话之外，而对话恰恰是最该做这件事的地方。</p>
+     *
+     * <p>这里**故意**不写成绩、不拉数据、不发欢迎语：会话一旦带上占位信息，
+     * 模型就会把它当成已知条件，反而不会再问缺什么。</p>
+     *
+     * <p>权益校验保留——空会话也是会话，判据不该因为信息空着而放宽。</p>
+     */
+    private ChatSessionVo createEmptyChatSession(Long tenantId, CreateSessionReq createSessionReq, long requestStart) {
+        UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
+        CheckRightsResVo checkRightsResVo = userBizService.checkRights(
+                userBaseData.getUserId(), OperateCheckPoint.CreateSession, createSessionReq.getPrepareType());
+        if (!checkRightsResVo.getCanOperate()) {
+            throw new BusinessException(110, checkRightsResVo.getReason());
+        }
+        if (createSessionReq.getBotId() == null) {
+            throw new BusinessException(110, "botId 不能为空");
+        }
+        ChatSession chatSession = saveSession(tenantId, userBaseData, createSessionReq);
+        chatSessionExtraDataSharedService.saveOrUpdateSessionStatus(chatSession.getId(), chatSession.getSessionStatus());
+
+        ChatSession going = new ChatSession();
+        going.setId(chatSession.getId());
+        going.setStartTime(new Date());
+        going.setSessionStatus(SessionStatus.GOING);
+        chatSessionSharedService.updateById(going);
+        chatSessionExtraDataSharedService.saveOrUpdateSessionStatus(chatSession.getId(), going.getSessionStatus());
+
+        log.info("createEmptyChatSession tenantId={} chatSessionId={} totalCostMs={}",
+                tenantId, chatSession.getId(), System.currentTimeMillis() - requestStart);
+
+        ChatSessionVo vo = ChatSessionVo.fromEntity(
+                chatSession, BotVo.defaultInstance(), getSessionExtraSummaryData(chatSession),
+                createSessionReq.getPrepareType());
         vo.setExamYear(createSessionReq.getExamYear());
         vo.setStudentSummary(buildStudentPlanningSummary(createSessionReq));
         return vo;

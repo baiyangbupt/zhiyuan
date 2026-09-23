@@ -2,6 +2,7 @@ package com.ytell.zhiyuan.web.controller.inner;
 
 import com.ytell.zhiyuan.common.base.BaseResponse;
 import com.ytell.zhiyuan.model.dto.planning.*;
+import com.ytell.zhiyuan.service.biz.CandidateComparisonService;
 import com.ytell.zhiyuan.service.biz.ConversationSnapshotService;
 import com.ytell.zhiyuan.service.biz.PendingPlanningCommandBizService;
 import com.ytell.zhiyuan.service.biz.PlanningStateService;
@@ -31,6 +32,27 @@ public class PlanningStateController {
     private PendingPlanningCommandBizService pendingPlanningCommandBizService;
     @Autowired
     private ConversationSnapshotService conversationSnapshotService;
+    @Autowired
+    private CandidateComparisonService candidateComparisonService;
+
+    /**
+     * 同口径并列 2–5 个实体。
+     *
+     * <p>存在的理由不是"少调几次"，而是**口径一致性只能在这里强制**：让调用方
+     * 自己取 N 份数据再并排展示，"这两列是不是同一口径"就没人管了，而跨年、
+     * 跨批次的数字并排放进一张表，读者会默认它们可比。</p>
+     *
+     * <p>不取数：值由调用方从各自来源链路取（那里签证据），这里只做口径判定与成形。</p>
+     */
+    @PostMapping("/session/compare")
+    @ApiOperation("同口径并列多个院校/专业")
+    public BaseResponse<CandidateComparisonDTO> compare(@PathVariable("tenantId") Long tenantId,
+                                                        @RequestBody CandidateComparisonReq req) {
+        log.info("compare: tenantId={}, entities={}, dimensions={}", tenantId,
+                req == null || req.getEntities() == null ? 0 : req.getEntities().size(),
+                req == null ? null : req.getDimensions());
+        return BaseResponse.success(candidateComparisonService.compare(req.getEntities(), req.getDimensions()));
+    }
 
     @GetMapping("/session/state")
     @ApiOperation("获取完整规划状态")

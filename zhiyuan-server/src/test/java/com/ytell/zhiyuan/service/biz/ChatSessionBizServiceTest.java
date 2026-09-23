@@ -8,9 +8,17 @@ import com.ytell.zhiyuan.model.dto.RecommendSubMajorRequest;
 import com.ytell.zhiyuan.model.dto.RecommendSubMajorResponse;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.inner.ChatSessionExtraDataReq;
+import com.ytell.zhiyuan.model.entity.biz.ChatSession;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
+import com.ytell.zhiyuan.model.enums.AuthTypeEnum;
 import com.ytell.zhiyuan.model.enums.DataType;
+import com.ytell.zhiyuan.model.enums.OperateCheckPoint;
+import com.ytell.zhiyuan.model.vo.ChatSessionVo;
+import com.ytell.zhiyuan.model.vo.CheckRightsResVo;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
+import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
+import com.ytell.zhiyuan.web.interceptor.UserBaseData;
+import com.ytell.zhiyuan.web.interceptor.UserInfoThreadLocalUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -97,6 +105,75 @@ public class ChatSessionBizServiceTest {
         assertNotNull(req.getPrepareType());
         assertEquals("VOLUNTEER", req.getPrepareType().getCode());
         assertEquals("智能填报", req.getPrepareType().getDesc());
+    }
+
+    @Test
+    void shouldCreateEmptySessionWithoutCollectedInfoWhenDraft() {
+        // 空会话：省份/批次/选科/成绩一个都不给，也必须建得出来——
+        // 那几项本来就是对话要采集的信息，不是建会话的前提。
+        UserBaseData userBaseData = new UserBaseData();
+        userBaseData.setUserId(7L);
+        userBaseData.setAuthType(AuthTypeEnum.WEB);
+        UserInfoThreadLocalUtil.set(userBaseData);
+
+        ChatSessionSharedService chatSessionSharedService = Mockito.mock(ChatSessionSharedService.class);
+        UserBizService userBizService = Mockito.mock(UserBizService.class);
+        ReflectionTestUtils.setField(chatSessionBizService, "chatSessionSharedService", chatSessionSharedService);
+        ReflectionTestUtils.setField(chatSessionBizService, "userBizService", userBizService);
+
+        CheckRightsResVo rights = new CheckRightsResVo();
+        rights.setCanOperate(true);
+        when(userBizService.checkRights(eq(7L), eq(OperateCheckPoint.CreateSession), any()))
+                .thenReturn(rights);
+        when(chatSessionSharedService.saveSession(any(ChatSession.class))).thenAnswer(invocation -> {
+            ChatSession session = invocation.getArgument(0);
+            session.setId(900L);
+            return session;
+        });
+
+        CreateSessionReq req = new CreateSessionReq();
+        req.setBotId(1L);
+        req.setDraft(Boolean.TRUE);
+
+        ChatSessionVo vo = chatSessionBizService.createChatSession(1L, req);
+
+        assertEquals(900L, vo.getId());
+        // 空会话连欢迎语都不发：会话一旦带上占位信息，模型就不会再问缺什么。
+        verify(chatSessionExtraDataSharedService, never())
+                .save(any(ChatSessionExtraData.class));
+        verify(chatSessionSharedService, never()).pageSession(any(), any());
+        UserInfoThreadLocalUtil.remove();
+    }
+
+    @Test
+    void shouldStillCheckRightsForEmptySession() {
+        // 空会话也是会话：判据不该因为信息空着而放宽。
+        UserBaseData userBaseData = new UserBaseData();
+        userBaseData.setUserId(7L);
+        userBaseData.setAuthType(AuthTypeEnum.WEB);
+        UserInfoThreadLocalUtil.set(userBaseData);
+
+        ChatSessionSharedService chatSessionSharedService = Mockito.mock(ChatSessionSharedService.class);
+        UserBizService userBizService = Mockito.mock(UserBizService.class);
+        ReflectionTestUtils.setField(chatSessionBizService, "chatSessionSharedService", chatSessionSharedService);
+        ReflectionTestUtils.setField(chatSessionBizService, "userBizService", userBizService);
+
+        CheckRightsResVo rights = new CheckRightsResVo();
+        rights.setCanOperate(false);
+        rights.setReason("智能填报需要权益");
+        when(userBizService.checkRights(eq(7L), eq(OperateCheckPoint.CreateSession), any()))
+                .thenReturn(rights);
+
+        CreateSessionReq req = new CreateSessionReq();
+        req.setBotId(1L);
+        req.setDraft(Boolean.TRUE);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> chatSessionBizService.createChatSession(1L, req));
+
+        assertEquals("智能填报需要权益", exception.getMessage());
+        verify(chatSessionSharedService, never()).saveSession(any(ChatSession.class));
+        UserInfoThreadLocalUtil.remove();
     }
 
     @Test

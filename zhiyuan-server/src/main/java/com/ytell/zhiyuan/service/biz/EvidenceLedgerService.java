@@ -47,6 +47,9 @@ public class EvidenceLedgerService {
     public static final String SOURCE_GAOTU_PROGRAM_BY_LIMIT_NUM = "gaotu.programByLimitNum";
     public static final String SOURCE_GAOTU_PLAN_MAJOR_DATA = "gaotu.planMajorDataList";
 
+    /** 招生章程（院校资讯里的招生简章全文）。**不是**录取规则摘要那条端点。 */
+    public static final String SOURCE_GAOTU_SCHOOL_NEWS = "gaotu.schoolNews";
+
     public static final String STATUS_VALID = "valid";
     public static final String STATUS_STALE = "stale";
     public static final String STATUS_EXPIRED = "expired";
@@ -140,8 +143,14 @@ public class EvidenceLedgerService {
      * <p>快照用它把权威证据摆到模型面前。少了这一步，模型看到的是"什么都不记得"
      * 的上下文，而它上一轮明明查过——于是要么重复查、要么凭印象答。
      *
-     * <p>只回未过期的：过期证据被引用时下游会判 `expired`，让模型引用一条
-     * 注定被拒的证据等于给它设陷阱。
+     * <p>只回**四态里 `valid` 的那些**：过期（`expired`）与版本已变（`stale`）都不回。
+     * 让模型引用一条注定被下游拒的证据，等于给它设陷阱——而 `stale` 更糟：
+     * 它是"当时正确、现已失效"，用户看不出来，模型也看不出来。
+     *
+     * <p>判定**复用 `verifyOne` 的同一套**（同一个 `currentDataVersion` + 同一个
+     * 「来源 + 参数摘要」缓存键口径），不另写一套：两套判定迟早分叉，
+     * 而分叉的方向一定是宽松那一边赢（2026-09-22 实测：这里曾只过滤过期，
+     * 于是一条 stale 证据照进快照，被我用"改版本表摘要"的手法抓了个正着）。
      */
     public List<ConversationEvidenceDTO> listSessionEvidence(Long tenantId, Long chatSessionId, Date now) {
         if (tenantId == null || chatSessionId == null) {
@@ -152,9 +161,30 @@ public class EvidenceLedgerService {
         query.eq("chat_session_id", chatSessionId);
         query.gt("expires_at", now == null ? new Date() : now);
         query.orderByDesc("observed_at");
+        Map<String, String> currentVersions = new LinkedHashMap<String, String>();
         List<ConversationEvidenceDTO> evidence = new ArrayList<ConversationEvidenceDTO>();
-        for (EvidenceLedgerEntity entity : evidenceLedgerMapper.selectList(query)) {
-            evidence.add(toEvidenceDTO(entity));
+        try {
+            for (EvidenceLedgerEntity entity : evidenceLedgerMapper.selectList(query)) {
+                String cacheKey = entity.getSourceSystem() + " " + entity.getParamsDigest();
+                String current = currentVersions.get(cacheKey);
+                if (current == null) {
+                    current = currentDataVersion(entity.getSourceSystem(), entity.getParamsDigest());
+                    currentVersions.put(cacheKey, current);
+                }
+                if (!current.equals(entity.getDataVersion())) {
+                    continue;
+                }
+                evidence.add(toEvidenceDTO(entity));
+            }
+        } catch (RuntimeException e) {
+            // 取证失败 → 记 ERROR、**返回空列表**、快照照常返回（P1b-3 任务书）。
+            // 与 sign() 同一方向：不把一次取证失败放大成取快照失败——那在链路上就是
+            // "当前会话状态暂时不可用"，整轮对话跟着挂；而证据缺席是可以降级的
+            // （这一轮少几条可引用的权威事实，不是答不了）。
+            // 版本查不通时**整批**降级：分不出 valid 与 stale 的时候，宁可不摆，
+            // 也不赌它们没过期。
+            log.error("证据列表查询失败, tenantId={}, chatSessionId={}", tenantId, chatSessionId, e);
+            return new ArrayList<ConversationEvidenceDTO>();
         }
         return evidence;
     }
@@ -201,7 +231,14 @@ public class EvidenceLedgerService {
         item.setDataVersion(entity.getDataVersion());
         item.setObservedAt(toIso(entity.getObservedAt()));
         item.setExpiresAt(toIso(entity.getExpiresAt()));
-        if (entity.getExpiresAt() != null && entity.getExpiresAt().before(now)) {
+        if (entity.getExpiresAt() == null || entity.getExpiresAt().before(now)) {
+            // 没有过期时间 = **新鲜度未知**，与"已过期"同一处置（必须重查）。
+            // 2026-09-22 裁决：与快照那条路统一到 fail-closed——`listSessionEvidence`
+            // 的 SQL 用 `expires_at > now`，NULL 同样进不去。此前两边不一致
+            // （快照看不到、核验说 valid），是"同一条记录两个口径"的又一例。
+            // 注意：`evidence_ledger.expires_at` 是 **NOT NULL**（V14），所以 NULL
+            // 只可能来自绕过约束的行或代码里造的实体——这次统一是**把缝堵上**，
+            // 不是修一个线上正在发生的错。
             item.setStatus(STATUS_EXPIRED);
             return item;
         }
@@ -212,6 +249,16 @@ public class EvidenceLedgerService {
         if (current == null) {
             current = currentDataVersion(entity.getSourceSystem(), entity.getParamsDigest());
             currentVersions.put(cacheKey, current);
+        }
+        if (current.isEmpty()) {
+            // **"我没有当前版本的记录" ≠ "当前版本跟你签的不一样"**（P1c-2）。
+            // 前者是 `unknown`（这条证据从未成立，或版本台账自己丢过记录），
+            // 后者才是 `stale`（当时正确、现已失效）。
+            // 混用的直接后果是诊断被污染：V15 那种 `DROP TABLE` 重建会让**全部在世证据**
+            // 报成"上游数据变了"，而真相是"我丢了自己的版本记录"——两者的处置完全不同
+            // （前者的处置是重建版本表，后者是重查上游）。
+            item.setStatus(STATUS_UNKNOWN);
+            return item;
         }
         item.setStatus(current.equals(entity.getDataVersion()) ? STATUS_VALID : STATUS_STALE);
         return item;

@@ -625,9 +625,14 @@ public class VolunteerRecommendBuilder {
             tags.put("college_score_new", detail.getCollege_score_new());
         }
 
-        // 院校得分调整说明
+        // 院校得分调整说明（旧通道：拼好的中文串，前端/导出在用）
         if (detail.getCollege_remark() != null && !detail.getCollege_remark().trim().isEmpty()) {
             tags.put("college_remark", detail.getCollege_remark());
+        }
+
+        // 院校得分调整理由（新通道：结构化，供对话层消费；P1d）
+        if (detail.getCollegeReasons() != null && !detail.getCollegeReasons().isEmpty()) {
+            tags.put("college_reasons", detail.getCollegeReasons());
         }
 
         // 志愿得分

@@ -3,6 +3,7 @@ package com.ytell.zhiyuan.model.dto.volunteer;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 统一的院校专业组数据结构
@@ -46,6 +47,20 @@ public class VolunteerSchoolGroup {
     private Double college_score_old;               // 院校原始得分
     private Double college_score_new;               // 院校最终得分
     private String college_remark;                  // 院校得分调整说明
+    /**
+     * 院校侧逐因子增量，来自 rank（P1d）。**逐行原样透传**，语义由
+     * {@code RankReasonMapper} 负责收口——这一层不放中文标签之外的判断。
+     */
+    private List<Map<String, Object>> college_factors;
+    /**
+     * 院校侧的结构化理由（Java 映射出来的稳定 code/name/weight/delta/reason）。
+     * 与 {@link #college_remark} **并存**：那串是既有前端/导出在用的旧通道。
+     */
+    private List<RankReasonDTO> collegeReasons;
+    /** 专业侧逐因子增量，来自 rank（P1d）。 */
+    private List<Map<String, Object>> major_factors;
+    /** 专业侧的结构化理由（见 {@link #collegeReasons}）。 */
+    private List<RankReasonDTO> majorReasons;
     private Double volunteer_score;                 // 志愿得分
     private Double major_score;   // 专业（类）得分
 

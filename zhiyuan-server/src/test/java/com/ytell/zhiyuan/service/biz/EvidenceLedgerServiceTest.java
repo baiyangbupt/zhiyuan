@@ -168,6 +168,72 @@ class EvidenceLedgerServiceTest {
     }
 
     @Test
+    void shouldReturnExpiredWhenExpiresAtMissing() {
+        // 2026-09-22 裁决：没有过期时间 = 新鲜度未知 = `expired`（必须重查），
+        // 与快照那条路（SQL `expires_at > now`，NULL 进不去）统一到 fail-closed。
+        // 在此之前核验这条路把 NULL 当"永不过期"，同一条记录两个口径。
+        when(evidenceLedgerMapper.selectById("ev_noexpiry")).thenReturn(stored("ev_noexpiry", "2026-06-v17", null));
+        when(evidenceSourceVersionMapper.selectBySourceAndParams(eq(SOURCE), anyString()))
+                .thenReturn(sourceVersion("2026-06-v17"));
+
+        assertEquals("expired", service.verify(verifyRequest("ev_noexpiry")).getResults().get("ev_noexpiry").getStatus());
+    }
+
+    @Test
+    void shouldDegradeToNoEvidenceWhenTheLedgerQueryFails() {
+        // P1b-3 任务书步骤 1：查库异常 → **记 ERROR、返回空列表、snapshot 照常返回**。
+        // 与 sign() 同一方向（"不把一次取证失败放大成取数据失败"）：证据缺席可以降级，
+        // 整轮对话失败不能——快照失败在链路上就是"当前会话状态暂时不可用"。
+        when(evidenceLedgerMapper.selectList(any())).thenThrow(new RuntimeException("db down"));
+
+        assertTrue(service.listSessionEvidence(7L, 42L, new Date()).isEmpty());
+    }
+
+    @Test
+    void shouldDegradeToNoEvidenceWhenTheVersionLookupFails() {
+        // 版本查不到就分不出 valid 与 stale。**整批降级为空**是刻意的：
+        // 拿不准的那些宁可不摆到模型面前，而不是赌它们没过期。
+        Date future = new Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(30));
+        when(evidenceLedgerMapper.selectList(any()))
+                .thenReturn(Lists.newArrayList(stored("ev_1", "2026-06-v17", future)));
+        when(evidenceSourceVersionMapper.selectBySourceAndParams(anyString(), anyString()))
+                .thenThrow(new RuntimeException("db down"));
+
+        assertTrue(service.listSessionEvidence(7L, 42L, new Date()).isEmpty());
+    }
+
+    @Test
+    void shouldListOnlyValidEvidenceAndDropStaleOnes() {
+        // P1b-3 的核心验收：快照**只放 valid**。对照是硬要求——
+        // 只断言"stale 不在"的话，"整个列表被清空"也能让它通过。
+        Date future = new Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(30));
+        when(evidenceLedgerMapper.selectList(any()))
+                .thenReturn(Lists.newArrayList(
+                        stored("ev_valid", "2026-06-v17", future),
+                        stored("ev_stale", "2026-06-v16", future)));
+        when(evidenceSourceVersionMapper.selectBySourceAndParams(eq(SOURCE), anyString()))
+                .thenReturn(sourceVersion("2026-06-v17"));
+
+        List<ConversationEvidenceDTO> listed = service.listSessionEvidence(7L, 42L, new Date());
+
+        assertEquals(1, listed.size(), listed.toString());
+        assertEquals("ev_valid", listed.get(0).getEvidenceId());
+    }
+
+    @Test
+    void shouldDropEvidenceWhoseSourceVersionRowIsGone() {
+        // 版本行没了 ⇒ currentDataVersion 回 ""（`verifyOne` 的同一条语义），
+        // 与记录里的摘要必然不等 ⇒ 判 stale、不进快照。
+        Date future = new Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(30));
+        when(evidenceLedgerMapper.selectList(any()))
+                .thenReturn(Lists.newArrayList(stored("ev_orphan", "2026-06-v17", future)));
+        when(evidenceSourceVersionMapper.selectBySourceAndParams(eq(SOURCE), anyString()))
+                .thenReturn(null);
+
+        assertTrue(service.listSessionEvidence(7L, 42L, new Date()).isEmpty());
+    }
+
+    @Test
     void shouldReturnValidWhenVersionMatchesUpstream() {
         Date future = new Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(30));
         when(evidenceLedgerMapper.selectById("ev_ok")).thenReturn(stored("ev_ok", "2026-06-v17", future));
@@ -249,16 +315,23 @@ class EvidenceLedgerServiceTest {
     }
 
     @Test
-    void shouldReturnStaleWhenNoSourceVersionObserved() {
+    void shouldReturnUnknownWhenNoSourceVersionObserved() {
+        // P1c-2：版本记录缺失 = **"我没有当前版本的记录"** = `unknown`，
+        // 不是 `stale`（"当前版本跟你签的不一样"）。这条用例原来断言的是 `stale`，
+        // 它编码的正是那处混用——P1b-1 复核第六节把它记成了隐患。
+        // 对照在下一条：版本行在、摘要不同 → 仍是 `stale`。
         Date future = new Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(30));
         when(evidenceLedgerMapper.selectById("ev_nover")).thenReturn(stored("ev_nover", "2026-06-v17", future));
         when(evidenceSourceVersionMapper.selectBySourceAndParams(eq(SOURCE), anyString())).thenReturn(null);
 
-        assertEquals("stale", service.verify(verifyRequest("ev_nover")).getResults().get("ev_nover").getStatus());
+        assertEquals("unknown", service.verify(verifyRequest("ev_nover")).getResults().get("ev_nover").getStatus());
     }
 
     @Test
-    void listSessionEvidenceOnlyReturnsUnexpiredRowsForTheSameSession() {
+    void listSessionEvidenceOnlyReturnsUnexpiredAndCurrentRowsForTheSameSession() {
+        // 语义自 2026-09-22 起是"未过期**且**版本仍是最新的"：这条用例原来只铺了
+        // "未过期"，于是按新语义它会被判 stale 而滤掉——补上版本行，让它继续验
+        // 它本来要验的那件事（同会话、未过期的行会被返回）。
         EvidenceLedgerEntity valid = new EvidenceLedgerEntity();
         valid.setEvidenceId("ev_valid");
         valid.setTenantId(1L);
@@ -270,6 +343,14 @@ class EvidenceLedgerServiceTest {
         valid.setExpiresAt(new Date(System.currentTimeMillis() + 3_600_000L));
         valid.setScopeJson("{}");
         valid.setLimitationsJson("[]");
+
+        EvidenceSourceVersionEntity current = new EvidenceSourceVersionEntity();
+        current.setSourceSystem(EvidenceLedgerService.SOURCE_GAOTU_SCHOOL_MAJOR_SCORE_LINE);
+        current.setParamsDigest("d1");
+        current.setDataVersion("sha256:abc");
+        when(evidenceSourceVersionMapper.selectBySourceAndParams(
+                eq(EvidenceLedgerService.SOURCE_GAOTU_SCHOOL_MAJOR_SCORE_LINE), eq("d1")))
+                .thenReturn(current);
 
         when(evidenceLedgerMapper.selectList(any())).thenReturn(Collections.singletonList(valid));
 
