@@ -623,6 +623,10 @@ public class PlanningStateService {
                     }
                     PendingConfirmationUpsertReq upsert = new PendingConfirmationUpsertReq();
                     upsert.setChatSessionId(chatSessionId);
+                    // pendingId 由**调用方**给（`validateUpsert` 要求；服务不生成），
+                    // 取值与 legacy 同一约定：uuid。同一个 requestId 重放时 work 不会再跑
+                    // （prepareOnce 直接回放已存的结果），所以不会造出第二个 pending ✓。
+                    upsert.setPendingId(UUID.randomUUID().toString());
                     upsert.setKind("plan_change_proposal");
                     upsert.setActionFamily("apply_plan_change_proposal");
                     upsert.setDataValue(dataValue);
