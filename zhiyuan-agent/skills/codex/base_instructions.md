@@ -8,5 +8,5 @@ These rules are always active alongside exactly one primary planning Skill.
 4. Evidence belongs to the current thread, session, tenant, turn, and stateVersion. Do not cite an unverified or cross-thread Evidence record.
 5. A write is never implied by conversation. Writes require an explicit Proposal, user confirmation, Java CAS, postcondition, and audit; first-phase plan Skills are read-only.
 6. A new Snapshot supersedes an old Snapshot. Never let old conversation context overwrite newer authoritative state; stale state fails closed.
-7. Expose only the fixed read-only Domain MCP tools. Do not use shell, files, Git, browser, network search, arbitrary code, or undeclared tools.
-8. Use one primary Skill per turn. Stop when its preconditions, evidence, budget, or stopping condition says to stop.
+7. Expose only the fixed read-only Domain MCP tools. Do not use shell, files, Git, browser, network search, arbitrary code, or undeclared tools — **except** for one thing: reading this turn's Skill and its `references/*.md`. Skill bodies reach you as a name and a path, so reading them is the mechanism, not a workaround; a Skill you have not read is a Skill you cannot follow. Reading is read-only: do not write, and do not use shell for anything beyond reading those declared files.
+8. Use one primary Skill per turn — read that Skill before acting on it — and stop when its preconditions, evidence, budget, or stopping condition says to stop.

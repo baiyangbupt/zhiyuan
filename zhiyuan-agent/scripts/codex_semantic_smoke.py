@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.gateway.service import TURN_OUTPUT_SCHEMA
 from app.harness.codex import CodexAppServerHarness
 from app.harness.turn_result import CodexTurnResult
+from app.engine.result_synthesis import synthesize_execution_status
 from app.engine.semantic_eval import SemanticExpectation, evaluate_trace
 from app.engine.turn_trace import build_turn_trace
 from app.engine.tool_orchestration import render_tool_contracts
@@ -66,6 +67,39 @@ def reference_missing_scope_scenario() -> tuple[dict[str, object], str, Semantic
     )
 
 
+
+def unambiguous_mixed_read_write_scenario() -> tuple[dict[str, object], str, SemanticExpectation]:
+    """A 型姊妹场景（成因 2 的另一半）：**同样的读+写请求，但"第三个"可识别**。
+
+    与 `mixed_read_write_scenario` 成对使用：那条测"识别不出时先问清楚"，
+    这条测"识别得出时该给出提案"。只留一条的话，B 之后一个"永远反问、从不提案"的
+    实现也能全绿——那等于把 P3 的写入门禁测没了。
+    """
+    context, _, _ = reference_missing_scope_scenario()
+    context["snapshot"]["confirmedConstraints"] = {
+        "historyQuery": {"areaId": "330000", "majorId": "major-cs"},
+        "activePlan": {"artifactId": "plan-1", "items": ["school-1", "school-2", "school-3"]},
+    }
+    # 与歧义那条**唯一**的差别：school-3 在候选集里有名字。
+    context["candidateSet"]["items"] = [
+        *context["candidateSet"]["items"],
+        {"entityId": "school-3", "entityType": "school", "name": "丙大学"},
+    ]
+    return (
+        context,
+        "查那几个学校2025年浙江物理类本科批计算机科学与技术专业的历史最低分，然后把方案里的第三个删掉",
+        SemanticExpectation(
+            case_id="mixed-read-write-unambiguous",
+            required_tool_names={"admission.get_history"},
+            forbidden_tool_names={"plan_apply"},
+            response_type={"fact", "clarification"},
+            execution_status="partial",
+            limitations_required=True,
+            next_step_required=True,
+            proposal_required=True,
+        ),
+    )
+
 def complete_history_scenario() -> tuple[dict[str, object], str, SemanticExpectation]:
     context, _, _ = reference_missing_scope_scenario()
     context["snapshot"]["confirmedConstraints"] = {
@@ -110,12 +144,15 @@ def mixed_read_write_scenario() -> tuple[dict[str, object], str, SemanticExpecta
             case_id="mixed-read-and-write-request",
             required_tool_names={"admission.get_history"},
             forbidden_tool_names={"plan_apply"},
-            response_type="fact",
+            # B（2026-09-22，成因 2 的裁决）：`school-3` **没有名字、不在候选集**，
+            # 识别不出它是对的判断，闭着眼给它提删除提案才是错的——旧期望却奖励后者
+            # （运行 1 提了 proposal 就过，运行 3 先问清楚反被判 mismatch）。
+            # 所以：`response_type` 接受 fact|clarification、`clarification_required`
+            # 不约束、`proposal_required` 一并放宽——问清楚与给提案是互斥的两种正确反应。
+            response_type={"fact", "clarification"},
             execution_status="partial",
             limitations_required=True,
             next_step_required=True,
-            clarification_required=False,
-            proposal_required=True,
         ),
     )
 
@@ -234,11 +271,18 @@ async def run_scenario(
                     "clarificationRequested": result.output.get("responseType")
                     in {"clarification", "needs_clarification"},
                     "proposalRef": result.output.get("proposalRef"),
+                    # 校验失败**不等于**这些字段没填。不带原值的话，
+                    # `execution_status_mismatch` / `limitations_missing` / `next_step_missing`
+                    # 会把"填了但别处不合法"读成"字段缺"——实测踩过：`artifactType` 不在
+                    # 允许值里导致整条校验失败，三项被判 missing，真凶反而看不见。
+                    "executionStatus": result.output.get("executionStatus"),
+                    "limitations": result.output.get("limitations"),
+                    "nextStep": result.output.get("nextStep"),
                 }
                 payload["evaluation"] = evaluate_trace(expectation, payload["trace"])
                 payload["elapsedMs"] = round((time.perf_counter() - started_at) * 1000, 1)
                 return payload
-            trace = build_turn_trace(
+            trace = _trace_as_production_returns_it(
                 {"events": [*result.events, *_recorded_mcp_events(mcp_calls)]},
                 output,
                 entity_ids=payload["modelUsedCandidateIds"],
@@ -345,6 +389,21 @@ def _agent_message_text(item: dict[str, object]) -> str:
     return ""
 
 
+
+def _trace_as_production_returns_it(events_payload: dict, output: TurnOutput, *, entity_ids: list) -> Any:
+    """按**生产的形状**建 trace（P2 成因 4）。
+
+    生产会把工具批次观测并进 `executionStatus`（**只降不升**：工具失败能把它拉低、
+    工具成功不能把它抬高）。冒烟不接这一步的话，两边量的是两个不同的东西——
+    "模型说 completed、工具全失败"在生产里红、在冒烟里绿，绿灯和修好之间没有关系。
+    """
+    trace = build_turn_trace(events_payload, output, entity_ids=entity_ids)
+    synthesized = synthesize_execution_status(output, trace.batch_report)
+    if synthesized.execution_status != output.execution_status:
+        trace = build_turn_trace(events_payload, synthesized, entity_ids=entity_ids)
+    return trace
+
+
 def _missing_output_evaluation(
     expectation: SemanticExpectation, result: CodexTurnResult
 ) -> dict[str, object]:
@@ -414,7 +473,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scenario",
-        choices=["reference-missing-scope", "reference-complete-history", "reference-authoritative-history", "mixed-read-write"],
+        choices=[
+            "reference-missing-scope",
+            "reference-complete-history",
+            "reference-authoritative-history",
+            "mixed-read-write",
+            "mixed-read-write-unambiguous",
+        ],
         default="reference-missing-scope",
     )
     args = parser.parse_args()
@@ -423,6 +488,8 @@ if __name__ == "__main__":
         if args.scenario == "reference-authoritative-history"
         else complete_history_scenario
         if args.scenario == "reference-complete-history"
+        else unambiguous_mixed_read_write_scenario
+        if args.scenario == "mixed-read-write-unambiguous"
         else mixed_read_write_scenario
         if args.scenario == "mixed-read-write"
         else reference_missing_scope_scenario

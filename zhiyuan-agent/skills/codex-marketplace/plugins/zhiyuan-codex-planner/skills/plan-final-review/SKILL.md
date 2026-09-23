@@ -4,6 +4,9 @@ description: Use when a user asks for a final read-only audit of a volunteer dra
 version: 1.0.0
 ---
 
+> 执行口径以 `r1/admission-fact-analysis/references/evidence-policy.md`（跨技能引用，路径以插件根为基准） 为准（提问顺序、冲突处理、单轮问题数等细则在那里）。
+> **动手前先读它**——读一次比凭印象写更省事，也避免和规范悄悄分叉。
+
 # Plan Final Review
 
 ## 适用条件

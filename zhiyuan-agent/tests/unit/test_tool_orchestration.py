@@ -168,3 +168,32 @@ def test_build_tool_batch_report_reads_business_status_from_result_body() -> Non
 
     assert report.status == "completed"
     assert report.steps[0].error == "no_data"
+
+
+def test_the_orchestration_contract_matches_the_real_mcp_tool_schemas() -> None:
+    """编排层对"必需参数"的说法，必须与真实 MCP 工具一致。
+
+    两处描述同一件事，漂移的后果是**用户可见**的：编排层多要一个参数时，模型没传就被
+    `prepare_tool_invocation` 判 `blocked` → 批次报告降级 → `result_synthesis` 给整轮补一句
+    "请补充缺失参数后继续"，**而工具本可以正常回答**。
+
+    实测（2026-09-22）：`admission.get_history` 在编排层多要了 `majorId`（真实工具是
+    学校级口径，没有这个参数）。这条用例就是那次漂移留下的钉子。
+    """
+    from app.engine.tool_orchestration import TOOL_CONTRACTS
+    from app.mcp_server.server import tool_listing
+
+    real = {
+        entry["name"]: set((entry.get("inputSchema") or {}).get("required") or [])
+        for entry in tool_listing()
+    }
+
+    unknown = [c.name for c in TOOL_CONTRACTS if c.name not in real]
+    assert not unknown, f"编排层列了真实工具里没有的名字：{unknown}"
+
+    mismatches = [
+        f"{c.name}: 编排 {sorted(c.required_arguments)} vs 真实 {sorted(real[c.name])}"
+        for c in TOOL_CONTRACTS
+        if set(c.required_arguments) != real[c.name]
+    ]
+    assert not mismatches, "编排层与真实工具的必需参数不一致：" + "；".join(mismatches)

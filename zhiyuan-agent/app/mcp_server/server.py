@@ -58,6 +58,20 @@ _COMMON_INPUT_PROPERTIES: dict[str, Any] = {
     "year": {"type": "integer"},
     "subjectType": {"type": "string"},
     "stateVersion": {"type": "integer"},
+    # 同口径并列用：2–5 个**已确认**的实体（歧义要在进入对比之前解决掉）。
+    "entities": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"schoolId": {"type": "string"}, "majorId": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    "dimensions": {"type": "array", "items": {"type": "string"}},
+    "prepareType": {"type": "string", "enum": ["VOLUNTEER", "PREDICT"]},
+    # 招生单位编号：`admission.get_enrollment_plan` 的必填项，来源是
+    # `catalog.list_admission_units`（免分数）。
+    "schoolUnitId": {"type": "string"},
 }
 
 
@@ -83,6 +97,21 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "areaId", "batch", "schoolId", "year", "subjectType"
     ),
     "admission.check_eligibility": _input_schema(),
+    # 口径四项全部必填：缺一项就没法判断"能不能并排"，而那正是这个工具存在的理由。
+    "admission.compare": _input_schema("entities", "areaId", "batch", "year", "subjectType"),
+    # 批次字典：`batch` 的合法取值只能从这里来（按省份不同）。
+    "catalog.list_batches": _input_schema("areaId"),
+    # 招生单元树：专业级那条链的入口，两个参数都是必需。
+    "catalog.list_admission_units": _input_schema("schoolId", "areaId"),
+    # schoolId 是 Java 侧的必填（`admission_source_school_required`）——上游那套
+    # 「招生单元」是按 (学校, 地区) 展开的，缺了学校就无从校验。
+    # 六项全必填：上游在缺项时**返回空而不是报错**，所以缺参必须在工具入口挡住，
+    # 否则模型会连查几年、年年"0 行"，最后如实说"取不到"——而数据本来就在。
+    # 招生章程：schoolId 必填；year 可选（标题里带年份，给了就选那一年的）。
+    "admission.get_charter": _input_schema("schoolId"),
+    "admission.get_enrollment_plan": _input_schema(
+        "schoolUnitId", "schoolId", "areaId", "year", "subjectType", "batch"
+    ),
 }
 
 TOOL_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -104,7 +133,7 @@ TOOL_OUTPUT_SCHEMA: dict[str, Any] = {
         # 变成一个靠字段猜的问题，而猜错的方向是把过去当未来。
         "kind": {
             "type": "string",
-            "enum": ["catalog", "history", "probability", "enrollment", "policy", "eligibility", "workingPlan"],
+            "enum": ["catalog", "history", "probability", "enrollment", "policy", "eligibility", "workingPlan", "comparison"],
         },
         "status": {"type": "string"},
         "data": {},

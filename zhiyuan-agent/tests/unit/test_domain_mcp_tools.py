@@ -211,6 +211,71 @@ async def test_catalog_tool_requires_entity_resolution_for_free_text(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_major_search_survives_an_empty_entity_resolution() -> None:
+    """"计算机"这种俗称解析不出唯一实体时，检索仍必须能跑。
+
+    `resolve` 的"没有唯一实体"是以 **None** 回来的（Java `resultType=empty` →
+    `data=null`）。这里曾经直接 `resolved.get(...)`，于是最常见的输入
+    （方向统称、俗称）会让工具抛 `AttributeError: 'NoneType' object has no
+    attribute 'get'`，再被包成 `backend_unavailable`——用户读到的结论是
+    "后端不可用"，而后端是好的。
+    """
+    calls = []
+
+    class Backend:
+        async def resolve(self, **kwargs):
+            calls.append(("resolve", kwargs))
+            return None
+
+        async def search_majors(self, **kwargs):
+            calls.append(("search", kwargs))
+            # 形状取自 InternalClientBackend.search_majors：它已经 `_data()` 取过
+            # 一层，所以这里回来的是**列表**，不是 `{resultType, data}` 信封。
+            return [{"majorId": "574", "majorName": "计算机科学与技术"}]
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=Backend())
+    result = await tools.call("catalog.search_majors", {"query": "计算机"})
+
+    assert result["status"] == "ok"
+    assert [call[0] for call in calls] == ["resolve", "search"]
+    assert result["data"][0]["majorName"] == "计算机科学与技术"
+
+
+@pytest.mark.asyncio
+async def test_school_search_with_a_name_goes_to_name_search_not_filters(monkeypatch) -> None:
+    """带名字的检索必须按名字查，不能只拿筛选项去列一遍。
+
+    以前 `query` 在这里被静默丢掉，`query="北京大学"` 返回的是与该名字无关的
+    一批学校——模型得自己发现并绕道；不谨慎的模型会把那份列表当答案念出来。
+    """
+    from app.util import internal_client
+
+    calls = []
+
+    async def by_name(school_name):
+        calls.append(("by_name", school_name))
+        return [{"schoolId": "1", "schoolName": "北京大学"}]
+
+    async def advanced(**kwargs):
+        calls.append(("advanced", kwargs))
+        return [{"schoolId": "15536480217090560", "schoolName": "赣州起元职业学院"}]
+
+    monkeypatch.setattr(internal_client, "search_schools_by_name", by_name)
+    monkeypatch.setattr(internal_client, "catalog_list_schools", advanced)
+
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    named = await backend.search_schools(query="北京大学")
+    filtered = await backend.search_schools(province="北京")
+
+    assert named[0]["schoolName"] == "北京大学"
+    assert filtered[0]["schoolName"] == "赣州起元职业学院"
+    assert calls == [
+        ("by_name", "北京大学"),
+        ("advanced", {"province": "北京", "city": None, "school_type": None, "ownership": None, "education_level": None}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_readonly_context_cannot_call_write_capability() -> None:
     tools = ReadonlyDomainTools(trusted_context(), backend=None)
 
@@ -619,3 +684,478 @@ async def test_missing_group_detail_is_insufficient_data_not_zero_rate() -> None
     assert result["status"] == "insufficient_data"
     assert "majorDetailAvailable=false" in result["limitations"]
     assert "admissionFacts" in result["data"]
+
+
+@pytest.mark.asyncio
+async def test_compare_requires_a_complete_scope() -> None:
+    """口径缺项必须**拒绝**，不许拿"最近一年/默认省份"凑。
+
+    跨年、跨批次的数字并排放进一张表，读者会默认它们可比——那是这张表最危险的错误。
+    """
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id = "1"
+    backend.chat_session_id = "900001"
+    backend.thread_id = "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call(
+        "admission.compare",
+        {"entities": [{"schoolId": "1"}, {"schoolId": "2"}], "areaId": "330000"},
+    )
+
+    assert result["status"] == "needs_clarification"
+    assert set(result["data"]["missingFields"]) == {"batch", "year", "subjectType"}
+
+
+@pytest.mark.asyncio
+async def test_compare_marks_another_year_as_a_scope_mismatch(monkeypatch) -> None:
+    """请求年份没有数据时取最新一年，但**口径标记成不一致** → 整列不可比。
+
+    悄悄拿另一年的数字顶上，才是真正危险的做法：表里有数，读者不会知道
+    那一列其实不是他要的那一年。
+    """
+    from app.util import internal_client
+
+    async def score_line(**kwargs):
+        return {
+            "code": 0,
+            "data": [{"year": 2024, "name": "北京大学", "minScore": "690", "enrollNum": "30"}],
+            "evidence": [{"evidenceId": "ev-1"}],
+        }
+
+    calls: list[dict] = []
+
+    async def compare_candidates(tenant_id, entities, dimensions):
+        calls.append({"entities": entities, "dimensions": dimensions})
+        return {
+            "code": 0,
+            "data": {
+                "entities": entities,
+                "dimensions": dimensions,
+                "cells": [],
+                "unavailableDimensions": ["finalScore", "planNum"],
+                "limitations": ["comparison_scope_mismatch"],
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "query_school_major_score_line", score_line)
+    monkeypatch.setattr(internal_client, "compare_candidates", compare_candidates)
+
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id = "1"
+    backend.chat_session_id = "900001"
+    backend.thread_id = "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call(
+        "admission.compare",
+        {
+            "entities": [{"schoolId": "1"}, {"schoolId": "2"}],
+            "areaId": "330000",
+            "batch": "01",
+            "year": 2025,
+            "subjectType": "N",
+        },
+    )
+
+    assert result["status"] == "ok"
+    assert calls[0]["entities"][0]["admissionYear"] == 2024
+    assert "comparison_scope_mismatch" in result["data"]["limitations"]
+    # 信封保留的是**证据对象**，不是 id 字符串：下游要按 scope/dataVersion 判它能不能用。
+    assert [item["evidenceId"] for item in result["evidenceRefs"]] == ["ev-1"]
+
+
+def test_gateway_collects_evidence_from_the_mcp_text_result() -> None:
+    """工具证据藏在 MCP 结果的 **JSON 字符串**里。
+
+    形状取自真实 rollout 里 codex 发来的 item：
+        item["result"] = {"content": [{"type": "text", "text": "<我们的信封 JSON>"}]}
+    以前 `_collect_records` 只遍历 dict/list、不解析字符串，于是工具签发的证据
+    **永远进不了账本**：模型一引用就 `evidence_not_found`，整轮 fail closed。
+    """
+    from app.gateway.service import _collect_records
+
+    envelope = {
+        "schemaVersion": 1,
+        "kind": "comparison",
+        "status": "ok",
+        "data": {"cells": []},
+        "evidenceRefs": [{"evidenceId": "ev-1", "dataVersion": "v1"}],
+    }
+    item = {
+        "type": "mcpToolCall",
+        "id": "call_1",
+        "result": {"content": [{"type": "text", "text": json.dumps(envelope)}]},
+    }
+
+    records = _collect_records([item], "evidenceLedger", "evidence", "evidenceRefs")
+
+    assert [record["evidenceId"] for record in records] == ["ev-1"]
+
+
+def test_gateway_collects_evidence_from_every_tool_result_not_just_the_last() -> None:
+    """两条工具结果各带一条证据时，**两条都要进账本**。
+
+    这里曾经只进一条。原因不是"遍历不到"，而是 `visited` 用 `id()` 去重、
+    而解析 JSON 字符串会临时造出对象：临时对象被回收后 `id()` 被复用，
+    第二条证据的包裹体就被误判成"已经遍历过"而整条跳过。
+    实测表现：账本里有 1 条、模型引用的恰好是被丢的那条 → `evidence_not_found`。
+    """
+    from app.gateway.service import _collect_records
+
+    def item(call_id: str, evidence_id: str) -> dict:
+        envelope = {"status": "ok", "data": {}, "evidence": [{"evidenceId": evidence_id}]}
+        return {
+            "type": "item/completed",
+            "item": {
+                "type": "McpToolCall",
+                "id": call_id,
+                "tool": "catalog.list_batches",
+                "result": {"content": [{"type": "text", "text": json.dumps(envelope)}]},
+            },
+        }
+
+    records = _collect_records(
+        [item("call_1", "ev-1"), item("call_2", "ev-2")],
+        "evidenceLedger",
+        "evidence",
+        "evidenceRefs",
+    )
+
+    assert sorted(record["evidenceId"] for record in records) == ["ev-1", "ev-2"]
+
+
+@pytest.mark.asyncio
+async def test_admission_units_are_flattened_into_usable_rows(monkeypatch) -> None:
+    """四层嵌套要摊平成行：模型要的是 (年份, 科类, 批次, 单元编号) 这个四元组。
+
+    层名由**位置**决定——上游在这四层里用的是同一组字段名（value/label/children），
+    按字段名认层是认不出来的。
+    """
+    from app.util import internal_client
+
+    async def filter_list(school_id, area_id):
+        return {
+            "code": 0,
+            "data": [
+                {"value": "2025", "label": "2025", "children": [
+                    {"value": "N", "label": "综合", "children": [
+                        {"value": "17", "label": "第一段", "children": [
+                            {"value": "9701372467122640", "label": "北京大学", "code": "1103"},
+                        ]},
+                    ]},
+                ]},
+            ],
+        }
+
+    monkeypatch.setattr(internal_client, "get_plan_major_filter_list", filter_list)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("catalog.list_admission_units", {"schoolId": "1", "areaId": "330000"})
+
+    assert result["status"] == "ok"
+    assert result["data"]["units"] == [
+        {
+            "year": "2025", "yearLabel": "2025",
+            # 科类：**value 拿来查（N/WL/LS）、label 拿来跟用户说（综合/物理/历史）**。
+            # 只带 label 的话，江苏传"物理"会查空；只带 value 的话，模型会念代码。
+            "subjectType": "N", "subjectLabel": "综合",
+            "batch": "17", "batchLabel": "第一段",
+            "schoolUnitId": "9701372467122640", "schoolUnitCode": "1103",
+            "schoolLabel": "北京大学",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_enrollment_plan_requires_a_unit_id() -> None:
+    """没有 unit id 就必须拒绝并指出从哪来——它会一路传到上游才报错，
+    而那个报错（"招生单位编号不能为空"）在链路上看不出该找谁要。"""
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("admission.get_enrollment_plan", {"schoolId": "1"})
+
+    assert result["status"] == "needs_clarification"
+    # 六项一起报：上游缺项时**返回空而不是报错**，逐项挤牙膏会让模型连查几年都"0 行"。
+    assert result["data"]["missingFields"] == [
+        "areaId", "batch", "schoolUnitId", "subjectType", "year",
+    ]
+    assert "catalog.list_admission_units" in str(result)
+
+
+@pytest.mark.asyncio
+async def test_upstream_error_keeps_code_and_message() -> None:
+    """上游的错误码与原文必须带进信封。
+
+    只给一个 `upstream_error` 的话，模型看不出缺的是哪个参数——实测它连调三次
+    都因为同一个必填项失败，而失败信息里没有任何可行动的东西。原文里那句
+    `admission_source_school_required` 才是它自我纠正的依据。
+    """
+    from app.util import internal_client
+
+    async def plan(payload, **kwargs):
+        return {"code": 400, "msg": "admission_source_school_required", "data": None}
+
+    monkeypatch_target = internal_client.get_enrollment_plan
+    internal_client.get_enrollment_plan = plan  # type: ignore[assignment]
+    try:
+        backend = InternalClientBackend.__new__(InternalClientBackend)
+        backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+        backend.current_state_version = 0
+        tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+        result = await tools.call(
+            "admission.get_enrollment_plan",
+            {
+                "schoolUnitId": "9701372467122640",
+                "schoolId": "1",
+                "areaId": "330000",
+                "year": 2025,
+                "subjectType": "N",
+                "batch": "17",
+            },
+        )
+
+        assert result["status"] == "upstream_error"
+        assert "upstream_code:400" in result["limitations"]
+        assert any("admission_source_school_required" in item for item in result["limitations"])
+    finally:
+        internal_client.get_enrollment_plan = monkeypatch_target  # type: ignore[assignment]
+
+
+@pytest.mark.asyncio
+async def test_eligibility_passes_the_major_in_level3(monkeypatch) -> None:
+    """选科资格的三级专业 id 必须落在 **level3** —— 这条曾经是 fail-open。
+
+    Java 侧 `PlanValidationService` 只读 `majors["level3"]`。id 被塞进 level2 时，
+    那边的循环一次都不执行、直接 `return true`：**对任何专业都说"选科要求都满足"**。
+    这比 fail-closed 更糟——用户会据此填报。
+    """
+    from app.util import internal_client
+
+    calls: list[dict] = []
+
+    async def avail(tenant_id, session_id, majors):
+        calls.append(majors)
+        return {"code": 0, "data": False}
+
+    monkeypatch.setattr(internal_client, "check_major_subject_availability", avail)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("admission.check_eligibility", {"majorId": "473"})
+
+    assert calls == [{"level1": [], "level2": [], "level3": ["473"]}]
+    # "不合格"必须**说得出**：布尔以前被当成"后端没返回结构化数据"，
+    # 于是模型只收到 insufficient_data——合格与否都读不到。
+    assert result["status"] == "ok"
+    assert result["data"] == {"eligible": False, "checked": "subject_requirement"}
+
+
+@pytest.mark.asyncio
+async def test_eligibility_refuses_without_a_major() -> None:
+    """没有专业就没有"资格"可言——问清楚，而不是回一个"合格"。"""
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("admission.check_eligibility", {})
+
+    assert result["status"] == "needs_clarification"
+    assert result["data"]["missingFields"] == ["majorId"]
+
+
+@pytest.mark.asyncio
+async def test_history_does_not_require_a_major(monkeypatch) -> None:
+    """历史分数**不要求** majorId —— 不传才是"有分数"的那条口径。
+
+    上游按 `majorId` 是否非空分流：非空 → 专业级表（该省分数多为 0）；
+    空 → 院校/**专业组**级表（投档线在这里）。以前在 major 模式下强制要求
+    majorId，等于把唯一能返回数据的查法挡在门外——模型收到
+    `needs_clarification: majorId`，而它问的那条本来查得到（北大浙江第一段 707 分/位次 2）。
+    """
+    from app.util import internal_client
+
+    calls: list[dict] = []
+
+    async def score_line(**kwargs):
+        calls.append(kwargs)
+        return {"code": 0, "data": [], "evidence": []}
+
+    monkeypatch.setattr(internal_client, "query_school_major_score_line", score_line)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call(
+        "admission.get_history",
+        {"areaId": "330000", "batch": "17", "schoolId": "1", "year": 2024, "subjectType": "N"},
+    )
+
+    # 关键断言：**打到了后端**（而不是在入口被 majorId 挡住）。
+    assert calls and calls[0]["major_id"] == ""
+    assert "missing history scope" not in str(result)
+
+
+async def test_unit_level_history_is_labelled_as_such(monkeypatch) -> None:
+    """不传 majorId 时必须在返回里标明口径：这是院校/专业组级投档线，不是专业级。"""
+    from app.util import internal_client
+
+    async def score_line(**kwargs):
+        return {
+            "code": 0,
+            "data": [{"year": 2024, "name": "北京大学05专业组", "minScore": "686", "minPos": "126"}],
+            "evidence": [{"evidenceId": "ev-1"}],
+        }
+
+    monkeypatch.setattr(internal_client, "query_school_major_score_line", score_line)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call(
+        "admission.get_history",
+        {"areaId": "320000", "batch": "01", "schoolId": "1", "year": 2025, "subjectType": "WL"},
+    )
+
+    assert result["status"] == "ok"
+    assert "caliber_unit_level_not_major" in result["limitations"]
+
+
+@pytest.mark.asyncio
+async def test_charter_picks_the_year_and_converts_html(monkeypatch) -> None:
+    """章程：按年份选题、正文转纯文本、截断要标出来。
+
+    正文是 HTML（实测 95KB、去标签 5581 字），直接给模型既费预算又把
+    `&nbsp;` 抄进回答。上限之外还要留痕：截断了必须能看出来。
+    """
+    from app.util import internal_client
+
+    async def news_page(school_id, current=1, size=20):
+        return {
+            "code": 0,
+            "data": {
+                "records": [
+                    {"id": 2, "title": "北京大学2026年本科招生章程"},
+                    {"id": 1, "title": "北京大学2025年本科招生章程"},
+                ]
+            },
+        }
+
+    asked: list[Any] = []
+
+    async def news_detail(news_id, **kwargs):
+        asked.append(news_id)
+        return {
+            "code": 0,
+            "data": {
+                "id": news_id,
+                "schoolId": 1,
+                "schoolName": "北京大学",
+                "title": "北京大学2025年本科招生章程",
+                "displayTime": "2025-05-29 16:14:00",
+                "content": "<p>第一章&nbsp;总则</p><p>第一条 为深入贯彻…</p>",
+            },
+            "evidence": [{"evidenceId": "ev-charter"}],
+        }
+
+    monkeypatch.setattr(internal_client, "get_school_news", news_page)
+    monkeypatch.setattr(internal_client, "get_school_news_detail", news_detail)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("admission.get_charter", {"schoolId": "1", "year": "2025"})
+
+    assert asked == [1]  # 按标题里的年份选到了 2025 那条
+    assert result["status"] == "ok"
+    assert result["data"]["contentText"] == "第一章 总则\n第一条 为深入贯彻…"
+    assert [item["evidenceId"] for item in result["evidenceRefs"]] == ["ev-charter"]
+    assert "platform_copy_check_school_site" in result["limitations"]
+
+
+@pytest.mark.asyncio
+async def test_charter_says_not_in_catalog_rather_than_not_exists(monkeypatch) -> None:
+    """平台没收录 ≠ 该校没有章程 —— 措辞不能把两件事说成一件。"""
+    from app.util import internal_client
+
+    async def news_page(school_id, current=1, size=20):
+        return {"code": 0, "data": {"records": []}}
+
+    monkeypatch.setattr(internal_client, "get_school_news", news_page)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("admission.get_charter", {"schoolId": "999999"})
+
+    assert result["status"] == "empty"
+    assert result["limitations"] == ["charter_not_in_platform_catalog"]
+
+
+def test_every_capability_has_a_progress_label() -> None:
+    """每个能调用的工具都要有进度标签——**新增工具漏加标签是个真实踩过的坑**。
+
+    没有标签时 `adapt_codex_item` 会把工具名掩成 `domain`（"未知工具只给统一占位"）：
+    用户看不到正在做什么，**验收脚本也断言不了用了哪个工具**（实测：
+    `admission.get_charter` 漏标签，评估器只能看到 `domain`）。
+    """
+    from app.gateway.ui_events import TOOL_LABELS
+    from app.mcp_server.tools_readonly import CAPABILITIES
+
+    assert set(CAPABILITIES) <= set(TOOL_LABELS), sorted(set(CAPABILITIES) - set(TOOL_LABELS))
+
+
+def test_authoritative_evidence_must_carry_a_java_signed_id() -> None:
+    """设计文档 5.1：`authoritative` 只能由 Java 盖（P1b-2 步骤 4 的防回归护栏）。
+
+    自铸证据是个"看起来能跑"的失败模式——链路全绿，只是"权威"变成了自称。
+    这里构造的正是那个形状：id 是 `admission-unit:…`（Agent 自铸的旧写法），
+    却贴着 `sourceLevel=authoritative`。
+    """
+    from app.mcp_server import response
+
+    with pytest.raises(ValueError, match="self-minted"):
+        response.ok(
+            {"items": []},
+            kind="history",
+            state_version=1,
+            evidence=[
+                {
+                    "evidenceId": "admission-unit:x:unknown",
+                    "sourceLevel": "authoritative",
+                    "dataVersion": "unknown",
+                }
+            ],
+        )
+
+
+def test_java_signed_evidence_passes_the_guard() -> None:
+    """对照：真 Java 形状（`ev_` 前缀）必须原样通过——护栏不能把正常的也拦掉。"""
+    from app.mcp_server import response
+
+    signed = {
+        "evidenceId": "ev_01M32Y0A8Q0X7V6T5S4R3P2N1M",
+        "sourceLevel": "authoritative",
+        "dataVersion": "fc7bd2c8d3cd6dad653afc03d4c7b40a",
+        "sourceSystem": "gaotu.batchList",
+    }
+
+    result = response.ok({"items": []}, kind="history", state_version=1, evidence=[signed])
+
+    assert result["evidenceRefs"] == [signed]

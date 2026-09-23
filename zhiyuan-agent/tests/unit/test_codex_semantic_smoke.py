@@ -86,3 +86,32 @@ def test_collect_agent_messages_reads_both_str_and_list_of_dict_text_shapes() ->
     assert agent_messages[0] == {"itemId": "item-str", "text": "plain body text"}
     assert agent_messages[1] == {"itemId": "item-list", "text": "list body text"}
     assert agent_messages[1]["text"] != str(events[1]["item"]["text"])
+
+
+def test_the_smoke_measures_what_production_returns_not_the_raw_model_value() -> None:
+    """P2 成因 4：冒烟要量**生产返回的值**。
+
+    生产把工具批次并进 `executionStatus`（只降不升）。不接这一步，两边量的就是两个
+    不同的东西——模型说 `completed`、工具全失败时，生产红、冒烟绿。
+    """
+    from app.gateway.contracts import TurnOutput
+    from scripts.codex_semantic_smoke import _trace_as_production_returns_it
+
+    failed_tool = {
+        "type": "mcpToolCall",
+        "toolName": "admission.get_history",
+        "arguments": {"schoolId": "school-1"},
+        "status": "failed",
+        "error": "backend unavailable",
+    }
+    optimistic = TurnOutput(response_type="text", message="都办好了", execution_status="completed")
+
+    downgraded = _trace_as_production_returns_it({"events": [failed_tool]}, optimistic, entity_ids=[])
+
+    # 断言**性质**（被拉低），不断言具体码：降到 blocked / partial / failed 里哪一个由
+    # 批次报告的分类决定，那是另一个模块的语义，钉在这里会让两处一起变脆。
+    # （反方向"工具成功不许抬高"由 `test_result_synthesis.py` 的单调性用例覆盖——
+    #  那里能用最少的依赖构造出"成功的批次"，这里构造不出：少一个参数的调用会被批次
+    #  判成 blocked，与工具本身的状态无关。）
+    lowered = downgraded.as_payload()["executionStatus"]
+    assert lowered not in (None, "", "completed"), f"工具失败必须把 completed 拉低，实得 {lowered!r}"

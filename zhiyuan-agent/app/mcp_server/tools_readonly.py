@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
+import re
 from typing import Any
 
 from app.admission.facts import (
@@ -28,6 +30,19 @@ CAPABILITIES = {
     "planning.get_working_plan": "admission_read",
     "admission.get_history": "admission_read",
     "admission.check_eligibility": "admission_read",
+    # 同口径并列。存在的理由是**口径一致性只能在这里强制**：
+    # 让模型自己调 N 次 get_history 再并列，"这两列是不是同一口径"就没人管了，
+    # 而跨年/跨批次的数字并排放进一张表，读者会以为它们可比。
+    "admission.compare": "admission_read",
+    # 批次字典：**没有它，"录取分"这条路根本走不通**。批次码是地区相关的
+    # （浙江第一段=17、上海本科批=01），传"本科批"这种名字上游不报错、只返回空。
+    "catalog.list_batches": "catalog_read",
+    # 招生单元树：专业级那条链的入口，**免分数**。没有它，招生计划与专业级录取都无门可入。
+    "catalog.list_admission_units": "catalog_read",
+    "admission.get_enrollment_plan": "admission_read",
+    # 招生章程（招生简章全文）。**免分数**，而且是"原文条款"那条来源——
+    # 与 getSchoolRule（录取规则摘要，回占位文案）不是一回事。
+    "admission.get_charter": "admission_read",
 }
 WRITE_TOOL_NAMES = frozenset(
     {
@@ -52,6 +67,11 @@ TOOL_KINDS = {
     "admission.check_eligibility": "eligibility",
     "admission.get_current_plan": "workingPlan",
     "planning.get_working_plan": "workingPlan",
+    "admission.compare": "comparison",
+    "catalog.list_batches": "catalog",
+    "catalog.list_admission_units": "catalog",
+    "admission.get_enrollment_plan": "enrollment",
+    "admission.get_charter": "policy",
 }
 
 
@@ -65,6 +85,93 @@ def _ok(name: str, data: Any, **kwargs: Any) -> dict[str, Any]:
 
 def _err(name: str, status: str, message: str, **kwargs: Any) -> dict[str, Any]:
     return error(status, message, kind=_kind_for(name), **kwargs)
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(float(str(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _html_to_text(value: str) -> str:
+    """把章程正文的 HTML 转成纯文本。
+
+    模型要的是**条款文字**，不是标签；`<p>`/`<span style=...>` 会白占预算。
+    实体与 `&nbsp;` 也要解掉——否则"第一章 &nbsp;总 &nbsp;则"会被原样抄进回答。
+    """
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", value, flags=re.S | re.I)
+    # **块级结束标签要换成换行**，不能直接删掉：章程一条一段，删了标签段落就连成
+    # 一片（实测"第一章 总则第一条 为深入贯彻…"），条款边界没了，引用时也没法定位。
+    text = re.sub(r"<\s*(br|/p|/div|/li|/tr|/h[1-6])\s*/?\s*>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text).replace("\xa0", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n{2,}", "\n", text).strip()
+
+
+def _flatten_unit_tree(tree: Any) -> list[dict[str, Any]]:
+    """把四层嵌套（年份→科类→批次→单元）摊平成行。
+
+    层与层用的是同一个形状，所以按**深度**认层：0=年份、1=科类、2=批次、3=招生单元。
+    层名是位置决定的，不是字段名决定的——上游在这四层里用的字段名完全一样。
+    """
+    rows: list[dict[str, Any]] = []
+
+    def walk(nodes: Any, path: list[tuple[str, str]]) -> None:
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            value = str(node.get("value") or "")
+            label = str(node.get("label") or "")
+            if len(path) >= 3:
+                # **value 与 label 都要带出去**：value 是拿来查的（科类 WL/LS/N、
+                # 批次 17/01），label 是拿来跟用户说话的（物理/历史、第一段/本科批）。
+                # 只带 value，模型说话时只能念代码；只带 label，它拿去查询就查空
+                # ——实测江苏传中文"物理"返回 0 行，而上游并不报错。
+                rows.append(
+                    {
+                        "year": path[0][0],
+                        "yearLabel": path[0][1],
+                        "subjectType": path[1][0],
+                        "subjectLabel": path[1][1],
+                        "batch": path[2][0],
+                        "batchLabel": path[2][1],
+                        "schoolUnitId": value,
+                        "schoolUnitCode": str(node.get("code") or ""),
+                        "schoolLabel": label,
+                    }
+                )
+                continue
+            walk(node.get("children"), [*path, (value, label)])
+
+    walk(tree, [])
+    return rows
+
+
+def _pick_comparison_row(rows: list[Any], year: int) -> dict[str, Any] | None:
+    """挑出**请求年份**那一行；没有就取最新一年。
+
+    取最新一年是有意为之：它让实体的 `admissionYear` 与请求口径不一致，
+    于是 Java 那边按"口径不一致 → 整列不可比"处理。悄悄拿另一年的数字顶上，
+    才是真正危险的做法。
+    """
+    candidates = [row for row in rows if isinstance(row, dict)]
+    if not candidates:
+        return None
+    for row in candidates:
+        if _as_int(row.get("year")) == year:
+            return row
+    return max(candidates, key=lambda row: _as_int(row.get("year")) or 0)
 
 
 class ReadonlyDomainTools:
@@ -139,8 +246,13 @@ class ReadonlyDomainTools:
         if self.calls >= self.max_calls:
             return _err(name, "call_budget_exceeded", "readonly tool call budget exceeded", state_version=self.current_state_version)
         if name == "admission.get_history":
+            # **不要求 majorId / groupCode**。上游按"`majorId` 是否非空"分流：
+            # 非空 → 专业级表（`z_enroll_major_data`，实测该省分数多为 0）；
+            # 空 → 院校/**专业组**级表（投档线就在这里，实测有真分数）。
+            # 以前在 major 模式下强制要求 majorId，等于**把唯一能返回数据的查法
+            # 挡在门外**：模型收到 `needs_clarification: majorId`，而它问的那条
+            # 本来查得到（北大浙江第一段 707 分 / 位次 2）。
             required = {"areaId", "batch", "schoolId", "year", "subjectType"}
-            required.add("majorId" if requested_mode == "major" else "groupCode")
             missing = sorted(key for key in required if arguments.get(key) in (None, ""))
             if missing:
                 result = _err(name, 
@@ -173,9 +285,29 @@ class ReadonlyDomainTools:
             return await self.backend.search_schools(**self._trusted_arguments(arguments))
         if name == "catalog.search_majors":
             resolved = await self.backend.resolve(query=arguments.get("query", ""), entity_type="major")
-            if resolved.get("status") == "needs_clarification":
+            # `resolve` 的"没有唯一实体"是以 **None** 回来的（Java 侧
+            # `resultType=empty` → `data=null`），不是 dict。这里曾经直接
+            # `resolved.get(...)`，于是"计算机"这种俗称——目录里没有同名专业，
+            # 恰恰是最常见的一类输入——会让工具抛
+            # `AttributeError: 'NoneType' object has no attribute 'get'`，
+            # 再被包成 `backend_unavailable`。用户读到的结论是"后端不可用"，
+            # 而后端是好的、检索接口本来就会给出多个候选。
+            # `catalog.search_schools` 那一支早就判了 isinstance，这一支漏了。
+            if isinstance(resolved, dict) and resolved.get("status") == "needs_clarification":
                 return resolved
             return await self.backend.search_majors(**self._trusted_arguments(arguments))
+        if name == "catalog.list_admission_units":
+            return await self.backend.list_admission_units(**self._trusted_arguments(arguments))
+        if name == "admission.get_charter":
+            return await self.backend.get_charter(**self._trusted_arguments(arguments))
+        if name == "admission.get_enrollment_plan":
+            return await self.backend.get_enrollment_plan(**self._trusted_arguments(arguments))
+        if name == "catalog.list_batches":
+            return await self.backend.list_batches(**self._trusted_arguments(arguments))
+        if name == "admission.compare":
+            # 不在这里 resolve：对比的实体是**已确认**的院校/专业（调用方给 ID），
+            # 歧义应当在进入对比之前就解决掉，否则表格里会出现"同一个名字的两个东西"。
+            return await self.backend.compare(**self._trusted_arguments(arguments))
         method = {
             "entity.resolve": "resolve",
             "catalog.get_school": "get_school",
@@ -261,6 +393,12 @@ class ReadonlyDomainTools:
         """
         normalized = normalize_history({"data": result.get("data")}, query)
         normalized["evidenceRefs"] = list(result.get("evidence") or result.get("evidenceRefs") or [])
+        # 上游信封里的 limitations 要**带出去**：口径（unit 级 vs 专业级）、
+        # 覆盖范围这些都在那里，这里重建信封时丢掉的话，模型会把这些行当成
+        # 默认口径的"专业级数据"——而它们其实是院校/专业组投档线。
+        normalized["limitations"] = list(
+            result.get("limitations") or normalized.get("limitations") or []
+        )
         normalized["stateVersion"] = self.current_state_version
         normalized["admissionMode"] = self.binding.admission_mode
         return normalized
@@ -279,6 +417,24 @@ class ReadonlyDomainTools:
                     "batch": None,
                 },
             )
+        if isinstance(result, bool):
+            # `admission.check_eligibility` 的返回**就是一个布尔**（选科是否满足）。
+            # 它以前落到下面那条 `not isinstance(result, dict)` 分支，被当成
+            # "后端没返回结构化数据"——于是模型既看不到"合格"也看不到"不合格"，
+            # 只收到一句 insufficient_data。**布尔是结论，不是缺数据**：
+            # 该如实包成结论，让"不合格"有地方说出口。
+            return {
+                "schemaVersion": SCHEMA_VERSION,
+                "kind": _kind_for(name),
+                "status": "ok",
+                "data": {"eligible": result, "checked": "subject_requirement"},
+                "resolvedEntities": [],
+                "evidenceRefs": [],
+                "limitations": [],
+                "nextCursor": None,
+                "stateVersion": self.current_state_version,
+                "admissionMode": mode,
+            }
         if not isinstance(result, dict):
             return _err(name, 
                 "insufficient_data",
@@ -425,11 +581,19 @@ class InternalClientBackend:
         if "code" not in response and "evidence" not in response:
             return response
         code = response.get("code")
+        message = str(response.get("msg") or response.get("message") or "")
+        limitations = list(response.get("limitations") or [])
+        if code not in (None, 0):
+            # 上游的错误码与原文必须一起带出去：只给一个 `upstream_error`，
+            # 模型看不出缺的是哪个参数（实测：它连调三次都因为同一个必填项失败，
+            # 而失败信息里没有任何可行动的东西）。原文里那句
+            # `admission_source_school_required` 才是它自我纠正的依据。
+            limitations = [*limitations, f"upstream_code:{code}", f"upstream_message:{message}"]
         return {
             "status": "ok" if code in (None, 0) else "upstream_error",
             "data": response.get("data"),
             "evidence": list(response.get("evidence") or []),
-            "limitations": list(response.get("limitations") or []),
+            "limitations": limitations,
             "resolvedEntities": list(response.get("resolvedEntities") or []),
         }
 
@@ -439,7 +603,200 @@ class InternalClientBackend:
             return self._data(await internal_client.catalog_lookup_major(query))
         return self._data(await internal_client.catalog_lookup_school(query))
 
+    # 章程正文的硬上限（字符）。不设上限的话，一所大学的章程能把整轮上下文吃掉
+    # ——实测福建师大那条正文去标签后 5581 字，还有更长的。
+    CHARTER_CONTENT_LIMIT = 4000
+
+    async def get_charter(self, **arguments: Any) -> Any:
+        """招生章程：学校发布的**招生简章全文**。
+
+        来源是"院校资讯"里的招生简章（标题自带年份、有上下架标志）。
+        **不要**拿 `getSchoolRule` 那条（录取规则摘要）当原文：该校没有规则时它回
+        占位文案"正在更新中"，而响应**没有标志位**区分——那段文字不能引用。
+        """
+        school_id = str(arguments.get("schoolId") or "").strip()
+        if not school_id:
+            result = _err(
+                "admission.get_charter",
+                "needs_clarification",
+                "schoolId is required",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = ["schoolId"]
+            return result
+        year = str(arguments.get("year") or "").strip()
+
+        listing = await internal_client.get_school_news(school_id)
+        page = (listing or {}).get("data") if isinstance(listing, dict) else None
+        records = [
+            item for item in ((page or {}).get("records") or []) if isinstance(item, dict)
+        ]
+        if not records:
+            # 措辞要准：**平台未收录**不等于"该校没有章程"。
+            return {
+                "status": "empty",
+                "data": {"schoolId": school_id, "schoolsCharterKnown": False},
+                "evidence": [],
+                "limitations": ["charter_not_in_platform_catalog"],
+            }
+        chosen = next(
+            (item for item in records if year and year in str(item.get("title") or "")),
+            records[0],
+        )
+        detail = await internal_client.get_school_news_detail(
+            chosen.get("id"),
+            tenant_id=self.tenant_id,
+            chat_session_id=self.chat_session_id,
+            thread_id=self.thread_id,
+        )
+        payload = self._preserve_envelope(detail)
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        content_html = str(data.get("content") or "")
+        content_text = _html_to_text(content_html)
+        limitations = list(payload.get("limitations") or [])
+        if not content_text:
+            limitations.append("charter_content_empty")
+        elif len(content_text) > self.CHARTER_CONTENT_LIMIT:
+            content_text = content_text[: self.CHARTER_CONTENT_LIMIT]
+            limitations.append("charter_content_truncated")
+        # 平台收录版与学校官网可能有时差：正文可引用，但最终以官网为准。
+        limitations.append("platform_copy_check_school_site")
+        # payload 的 evidence 已经在明文里，外层 `_envelope` 会认；
+        # 这里只把 data 换成人读的形状。
+        return {
+            "status": "ok",
+            "data": {
+                "schoolId": str(data.get("schoolId") or school_id),
+                "schoolName": data.get("schoolName"),
+                "newsId": data.get("id"),
+                "title": data.get("title"),
+                "year": year or None,
+                "displayTime": data.get("displayTime"),
+                "contentText": content_text,
+            },
+            "evidence": list(payload.get("evidence") or []),
+            "limitations": limitations,
+        }
+
+    async def list_admission_units(self, **arguments: Any) -> Any:
+        """该省、该校的**招生单元**树：年份 → 科类 → 批次 → 招生单元。
+
+        上游返回的是四层嵌套，这里**摊平成行**：模型要的是
+        (年份, 科类, 批次, 招生单位编号) 这个四元组，嵌套形状只会让它多绕一层。
+        摊平后的行同时给 `label`（学校在该省的显示名）与 `schoolUnitCode`（省院校代码）。
+        """
+        school_id = str(arguments.get("schoolId") or "").strip()
+        area_id = str(arguments.get("areaId") or "").strip()
+        missing = [name for name, value in (("schoolId", school_id), ("areaId", area_id)) if not value]
+        if missing:
+            result = _err(
+                "catalog.list_admission_units",
+                "needs_clarification",
+                f"missing: {', '.join(missing)}",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = missing
+            return result
+        response = await internal_client.get_plan_major_filter_list(school_id, area_id)
+        payload = response if isinstance(response, dict) else {}
+        if payload.get("code") not in (None, 0):
+            return _err(
+                "catalog.list_admission_units",
+                "upstream_error",
+                str(payload.get("msg") or "招生单元查询失败"),
+                state_version=self.current_state_version,
+            )
+        rows = _flatten_unit_tree(payload.get("data"))
+        return {
+            "status": "ok" if rows else "empty",
+            "data": {"units": rows},
+            "limitations": [] if rows else ["no_admission_units_for_this_school_and_area"],
+        }
+
+    async def get_enrollment_plan(self, **arguments: Any) -> Any:
+        """某个招生单元的招生计划：专业、计划数、学费、选考要求。
+
+        回答的是"这所学校在我省**按什么**招生"——名校常按试验班/大类招，
+        用户嘴里的"计算机"可能只出现在某个试验班的**包含专业**里。这条能如实说清，
+        而且**不需要分数**。
+        """
+        required = {
+            "schoolUnitId": arguments.get("schoolUnitId"),
+            "schoolId": arguments.get("schoolId"),
+            "areaId": arguments.get("areaId"),
+            "year": arguments.get("year"),
+            "subjectType": arguments.get("subjectType") or arguments.get("subject"),
+            "batch": arguments.get("batch"),
+        }
+        missing = sorted(name for name, value in required.items() if str(value or "").strip() == "")
+        if missing:
+            # 六个都要：只给 unit id 或只给 schoolId+unitId 时，上游返回的是**空列表**
+            # 而不是报错（实测：模型因此连查四年、四年都"0 行"，最后只能说"取不到"）。
+            # 缺参必须在这里说清楚，并指出从哪拿——`catalog.list_admission_units`
+            # 返回的每一行就带着 (年份/科类/批次)。
+            result = _err(
+                "admission.get_enrollment_plan",
+                "needs_clarification",
+                "missing enrollment scope: " + ", ".join(missing)
+                + "（先调 catalog.list_admission_units，按它返回的行取值）",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = missing
+            return result
+        payload = {
+            "schoolUnitId": str(required["schoolUnitId"]),
+            "schoolId": str(required["schoolId"]),
+            "areaId": str(required["areaId"]),
+            "year": str(required["year"]),
+            "subject": str(required["subjectType"]),
+            "batch": str(required["batch"]),
+        }
+        return self._preserve_envelope(
+            await internal_client.get_enrollment_plan(
+                payload,
+                tenant_id=self.tenant_id,
+                chat_session_id=self.chat_session_id,
+                thread_id=self.thread_id,
+            )
+        )
+
+    async def list_batches(self, **arguments: Any) -> Any:
+        """批次字典。`admission.get_history` / `admission.compare` 的 `batch` 必须来自这里。
+
+        上游 `batchList[].batch` 就是那个码（浙江第一段 = "17"、上海本科批 = "01"），
+        而且是**按省份不同**的。传"本科批"这种名字上游**不报错**，它只是返回空——
+        于是每一次录取分查询都像"没有数据"，而真相是批次码不对。
+        """
+        area_id = str(arguments.get("areaId") or "").strip()
+        if not area_id:
+            result = _err(
+                "catalog.list_batches",
+                "needs_clarification",
+                "areaId is required",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = ["areaId"]
+            return result
+        return self._preserve_envelope(
+            await internal_client.get_batch_info(
+                area_id,
+                str(arguments.get("prepareType") or "VOLUNTEER"),
+                str(arguments.get("subjectType") or "N"),
+                tenant_id=self.tenant_id,
+                chat_session_id=self.chat_session_id,
+                thread_id=self.thread_id,
+            )
+        )
+
     async def search_schools(self, **arguments: Any) -> Any:
+        # `query` 曾经在这里被**静默丢掉**：工具声明了它，模型也按声明传了，
+        # 而后端只拿省份/城市/类型去筛，于是 `query="北京大学"` 返回的是一批
+        # 与该名字无关的学校（实测第一所是"赣州起元职业学院"）。模型只能自己
+        # 发现并绕道（补上 province=北京），换一个不那么谨慎的模型就会把
+        # 那份列表当答案念给用户。名字条件走按名搜索端点，筛选题材走高级搜索。
+        query = str(arguments.get("query") or arguments.get("name") or "").strip()
+        if query:
+            return self._data(await internal_client.search_schools_by_name(query))
         return self._data(await internal_client.catalog_list_schools(
             province=arguments.get("province"), city=arguments.get("city"),
             school_type=arguments.get("schoolType"), ownership=arguments.get("ownership"),
@@ -448,6 +805,143 @@ class InternalClientBackend:
     async def get_school(self, **arguments: Any) -> Any:
         return self._data(await internal_client.get_school_profile_by_name(
             str(arguments.get("name") or arguments.get("schoolId") or "")))
+
+    # 分数线来源能填的维度。录取率、学费那几个维度来自**别的来源**
+    # （录取率引擎 / 招生计划），这里如实列进 unavailableDimensions，
+    # 而不是留空——留空会被读成"值为 0 或没查到"。
+    COMPARISON_SCORE_DIMENSIONS = ("finalScore", "planNum")
+
+    async def compare(self, **arguments: Any) -> Any:
+        """把 2–5 个院校/专业在**同一口径**下并列。
+
+        口径 = (年份, 省份, 批次, 科类)，四项必须由调用方显式给全：
+        缺一项就拒绝，不用"最近一年"或默认省份凑——跨年、跨批次的数字并排
+        放进一张表，读者会默认它们可比，而那是这张表最危险的错误。
+        """
+        raw_entities = arguments.get("entities")
+        if not isinstance(raw_entities, list) or not (2 <= len(raw_entities) <= 5):
+            return _err(
+                "admission.compare",
+                "needs_clarification",
+                "comparison needs 2 to 5 entities",
+                state_version=self.current_state_version,
+            )
+
+        scope = {
+            "areaId": str(arguments.get("areaId") or "").strip(),
+            "batch": str(arguments.get("batch") or "").strip(),
+            "year": arguments.get("year"),
+            "subjectType": str(arguments.get("subjectType") or "").strip(),
+        }
+        missing = sorted(
+            key for key, value in scope.items() if value in (None, "")
+        )
+        if missing:
+            result = _err(
+                "admission.compare",
+                "needs_clarification",
+                f"missing comparison scope: {', '.join(missing)}",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = missing
+            return result
+
+        requested_dimensions = [
+            str(item) for item in (arguments.get("dimensions") or []) if str(item).strip()
+        ]
+
+        entities: list[dict[str, Any]] = []
+        evidence: list[Any] = []
+        limitations: list[str] = []
+        for raw in raw_entities:
+            if not isinstance(raw, dict):
+                return _err("admission.compare", "invalid_request", "entity must be an object",
+                            state_version=self.current_state_version)
+            school_id = str(raw.get("schoolId") or "").strip()
+            major_id = str(raw.get("majorId") or "").strip()
+            if not school_id:
+                return _err("admission.compare", "needs_clarification", "entity.schoolId is required",
+                            state_version=self.current_state_version)
+            response = await internal_client.query_school_major_score_line(
+                area_id=scope["areaId"],
+                batch=scope["batch"],
+                school_id=school_id,
+                major_id=major_id,
+                year=int(scope["year"]),
+                subject_type=scope["subjectType"],
+                group_code="",
+                tenant_id=self.tenant_id,
+                chat_session_id=self.chat_session_id,
+                thread_id=self.thread_id,
+            )
+            payload = response if isinstance(response, dict) else {}
+            rows = payload.get("data") if isinstance(payload.get("data"), list) else []
+            evidence.extend(payload.get("evidence") or [])
+            row = _pick_comparison_row(rows, int(scope["year"]))
+            if row is None:
+                limitations.append(f"no_score_line_for:{school_id}")
+            entities.append(
+                {
+                    "entityId": f"{school_id}:{major_id}" if major_id else school_id,
+                    "schoolId": school_id,
+                    "schoolName": str((row or {}).get("name") or ""),
+                    "majorId": major_id,
+                    # 口径身份。**学校级与专业级不能并排**：它们的招生单元不同，
+                    # 混在一张表里等于拿两个口径的数字比大小。
+                    "admissionMode": "major" if major_id else "school",
+                    # 被比较量的单位。分数线口径下恒为 score——这个字段只用于
+                    # "是不是同一个口径"的判定，不代表录取率单位。
+                    "rateUnit": "score",
+                    "admissionYear": (_as_int((row or {}).get("year")) or (int(scope["year"]) if row else None)),
+                    "areaId": scope["areaId"],
+                    "batch": scope["batch"],
+                    "finalScore": _as_float((row or {}).get("minScore")),
+                    "planNum": _as_int((row or {}).get("enrollNum")),
+                }
+            )
+
+        dimensions = requested_dimensions or list(self.COMPARISON_SCORE_DIMENSIONS)
+        unavailable_by_source = [
+            item
+            for item in dimensions
+            if item not in self.COMPARISON_SCORE_DIMENSIONS
+            and item not in ("cityName",)
+        ]
+        if unavailable_by_source:
+            limitations.append("dimension_source_not_wired:" + ",".join(sorted(unavailable_by_source)))
+
+        comparison = await internal_client.compare_candidates(
+            self.tenant_id, entities, [d for d in dimensions if d not in unavailable_by_source]
+        )
+        payload_data = (comparison or {}).get("data") or {}
+        if (comparison or {}).get("code") not in (None, 0) or not isinstance(payload_data, dict):
+            raise RuntimeError("comparison_contract_unavailable")
+        payload_data.setdefault("limitations", [])
+        payload_data["limitations"] = list(payload_data["limitations"]) + limitations
+        if unavailable_by_source:
+            payload_data["unavailableDimensions"] = sorted(
+                set(payload_data.get("unavailableDimensions") or []) | set(unavailable_by_source)
+            )
+        # 同一个实体被查两次、或两条证据指向同一条记录时会出现重复条目：
+        # 信封里同一条证据出现两次，下游按 id 合并时不会出错，但会让"引用了
+        # 几条证据"这个计数变假。按 id 去重，保持首次出现的顺序。
+        unique_evidence: list[Any] = []
+        seen_evidence: set[str] = set()
+        for item in evidence:
+            key = str((item or {}).get("evidenceId") or "") if isinstance(item, dict) else str(item)
+            if key and key in seen_evidence:
+                continue
+            seen_evidence.add(key)
+            unique_evidence.append(item)
+
+        # 返回**裸形状**交给外层 `_envelope` 包：自己先包一层的话，证据会被
+        # 它当成"已经没有 evidence 键"而丢掉（它认的键是 `evidence`）。
+        return {
+            "status": "ok",
+            "data": payload_data,
+            "evidence": unique_evidence,
+            "limitations": payload_data["limitations"],
+        }
 
     async def search_majors(self, **arguments: Any) -> Any:
         return self._data(await internal_client.catalog_search_major(
@@ -478,15 +972,41 @@ class InternalClientBackend:
                 "evidence": [],
                 "limitations": ["group_scope_source_unavailable"],
             }
-        return self._preserve_envelope(await internal_client.query_school_major_score_line(
+        payload = self._preserve_envelope(await internal_client.query_school_major_score_line(
             area_id=str(arguments.get("areaId") or ""), batch=str(arguments.get("batch") or ""),
             school_id=str(arguments.get("schoolId") or ""), major_id=str(arguments.get("majorId") or ""),
             year=int(arguments.get("year") or 0), subject_type=str(arguments.get("subjectType") or ""),
             group_code=str(arguments.get("groupCode") or ""),
             tenant_id=self.tenant_id, chat_session_id=self.chat_session_id,
             thread_id=self.thread_id))
+        if not str(arguments.get("majorId") or "").strip():
+            # 口径必须写在明面上：这是**院校/专业组级**投档线。混成"专业级数据"
+            # 会让"这个专业多少分"变成一个用别的数据回答的问题。
+            payload.setdefault("limitations", [])
+            payload["limitations"] = list(payload["limitations"]) + [
+                "caliber_unit_level_not_major"
+            ]
+        return payload
 
     async def check_eligibility(self, **arguments: Any) -> Any:
+        """选科资格。**三级专业 id 必须落在 `level3`。**
+
+        Java 侧 `PlanValidationService.checkMajorSubjectAvailability` 只读
+        `majors["level3"]`。这个 id 以前被塞进 `level2`，于是那边的 for 循环
+        一次都不执行、直接 `return true`——**对任何专业都说"选科要求都满足"**，
+        日志还会打印"所有专业的选科要求都满足"。这比 fail-closed 更糟：
+        它给用户一个假的肯定，而用户会据此填报。
+        """
+        major_id = str(arguments.get("majorId") or "").strip()
+        if not major_id:
+            result = _err(
+                "admission.check_eligibility",
+                "needs_clarification",
+                "majorId is required",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = ["majorId"]
+            return result
         return self._data(await internal_client.check_major_subject_availability(
             self.tenant_id, str(self.chat_session_id),
-            majors={"level1": [], "level2": [str(arguments.get("majorId") or "")], "level3": []}))
+            majors={"level1": [], "level2": [], "level3": [major_id]}))

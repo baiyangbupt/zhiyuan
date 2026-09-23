@@ -194,7 +194,11 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     ),
     ToolContract(
         "admission.get_history",
-        ("schoolId", "majorId", "areaId", "batch", "year", "subjectType"),
+        # 与**真实工具**对齐（`mcp_server/server.py` 的 `_input_schema(...)`）：
+        # 这条查询是**学校级**口径，没有 `majorId`。多要一个参数的后果不是"更严格"，
+        # 而是：模型没传时 `prepare_tool_invocation` 判 blocked → 批次报告降级 →
+        # 合成给整轮补一句"请补充缺失参数"——**而工具本可以正常回答**（实测）。
+        ("schoolId", "areaId", "batch", "year", "subjectType"),
         "只读查询历史录取事实；参数不完整时不得调用。",
     ),
     ToolContract(

@@ -22,6 +22,36 @@ _gate: dict[str, object] = {
     "turn_id": "turn_test",
     "thread_id": "thr_test",
 }
+# 恢复失败的两个形状，抄自真实二进制实测（codex-cli 0.155.1，2026-09-21）：
+#   no_rollout   → -32600 "no rollout found for thread id <id>"（thread 没有 rollout）
+#   incompatible → -32000，**不是** -32600：用它来钉住"只有认得出的那种才重建"
+_resume: dict[str, object] = {"mode": "ok"}
+# 进程内的 thread 表。真实二进制只在**本进程** start/resume 过的 thread 上跑回合：
+# `turn_processor.rs` 的 `load_thread()` 查 `thread_manager.get_thread()`，查不到回
+# `-32600 thread not found: <id>`（codex-rs 源码，2026-09-21 核对）。
+# 替身过去对任何 id 都放行，于是"把死进程的 threadId 交给新进程"在替身上永远是绿的
+# ——而那正是重拉之后每轮都失败的成因。
+_threads: set[str] = set()
+# 这些方法都要求 thread 在本进程里加载过；其余方法（thread/start、thread/resume…）
+# 正是让它进入进程表的入口，不受这条约束。
+_THREAD_SCOPED_METHODS = {"thread/inject_items", "turn/start", "turn/steer", "turn/interrupt"}
+
+
+def _guard_unknown_thread(method: str, request_id: object, params: dict) -> bool:
+    """thread 不在本进程里就回 `-32600 thread not found`。返回 True = 已回错，跳过。"""
+    if method not in _THREAD_SCOPED_METHODS:
+        return False
+    thread_id = str(params.get("threadId") or "")
+    if thread_id in _threads:
+        return False
+    send(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32600, "message": f"thread not found: {thread_id}"},
+        }
+    )
+    return True
 
 
 def send(payload: dict) -> None:
@@ -130,6 +160,8 @@ for line in sys.stdin:
     method = message.get("method")
     request_id = message.get("id")
     params = message.get("params") or {}
+    if _guard_unknown_thread(str(method), request_id, params):
+        continue
 
     # 客户端对我们先前发出的 server→client 请求的应答。
     # 回包没有 method，只有 id + result/error。
@@ -162,6 +194,7 @@ for line in sys.stdin:
         )
     elif method == "thread/start":
         _counters["threadStarts"] += 1
+        _threads.add("thr_test")
         send({"jsonrpc": "2.0", "method": "thread/started", "params": {"threadId": "thr_test"}})
         send(
             {
@@ -171,13 +204,36 @@ for line in sys.stdin:
             }
         )
     elif method == "thread/resume":
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {"thread": {"id": params.get("threadId", "thr_test")}},
-            }
-        )
+        thread_id = params.get("threadId", "thr_test")
+        mode = str(_resume["mode"])
+        if mode == "no_rollout":
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32600,
+                        "message": f"no rollout found for thread id {thread_id}",
+                    },
+                }
+            )
+        elif mode == "incompatible":
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32000, "message": "thread cannot be resumed"},
+                }
+            )
+        else:
+            _threads.add(thread_id)
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"thread": {"id": thread_id}},
+                }
+            )
     elif method == "thread/inject_items":
         send({"jsonrpc": "2.0", "id": request_id, "result": {}})
     elif method == "turn/start":
@@ -216,6 +272,9 @@ for line in sys.stdin:
             )
     elif method == "test/stats":
         send({"jsonrpc": "2.0", "id": request_id, "result": dict(_counters)})
+    elif method == "test/arm_resume":
+        _resume["mode"] = str(params.get("mode") or "ok")
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"mode": _resume["mode"]}})
     elif method == "test/arm_gate":
         _gate["armed"] = True
         send({"jsonrpc": "2.0", "id": request_id, "result": {"armed": True}})
@@ -267,6 +326,26 @@ for line in sys.stdin:
                 }
             )
         send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+    elif method == "test/big_notification":
+        # 大通知：真实二进制在工具结果、历史页很大时会发这种（实测 2026-09-21：
+        # 一次"神秘死亡"对应的 rollout 记录是 229 KiB）。它撑爆过 asyncio 默认的
+        # 64 KiB 行上限，而后果是**把活着的进程判成死的**。
+        size = int(params.get("bytes") or 70000)
+        send(
+            {
+                "jsonrpc": "2.0",
+                "method": "item/agentMessage/delta",
+                "params": {"threadId": "thr_test", "turnId": "turn_test", "delta": "x" * size},
+            }
+        )
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"bytes": size}})
+    elif method == "test/bad_bytes":
+        # 坏字节行：真实二进制不该发，但"不该发"不是协议约束。它以前会带走整个读循环。
+        # 坏字节**且**不是 JSON：换掉坏字节之后它仍然读不成 JSON，
+        # 于是走"忽略这一行"的分支（而不是被解码异常带走整个读循环）。
+        sys.stdout.buffer.write(b'\xff\xfe not-json \xff\n')
+        sys.stdout.buffer.flush()
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"ok": True}})
     elif method == "test/echo":
         send({"jsonrpc": "2.0", "id": request_id, "result": params})
     elif method == "test/error":

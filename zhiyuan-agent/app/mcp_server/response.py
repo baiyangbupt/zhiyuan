@@ -10,9 +10,31 @@
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Iterable
 
 SCHEMA_VERSION = 1
+
+
+def assert_authoritative_evidence_is_signed(evidence: Iterable[Any]) -> None:
+    """设计文档 5.1：`authoritative` 这个章**只能由 Java 盖**。
+
+    Java 签发的证据 id 一律以 `ev_` 开头（ULID）。出现"贴了 authoritative 却没有
+    `ev_` 前缀"的条目，只可能是我们自己在补默认值——而**自铸证据是个"看起来能跑"
+    的失败模式**：链路上一切正常，只是"权威"两个字变成了自称。
+
+    所以这里**硬失败**（抛），既不静默剥章也不放行：剥章会把一次 bug 变成一次
+    静默降级（模型以为自己拿到的是权威数据），放行则正是这次要防的那件事。
+    """
+    for item in evidence:
+        if not isinstance(item, Mapping):
+            continue
+        level = str(item.get("sourceLevel") or item.get("source_level") or "")
+        if level != "authoritative":
+            continue
+        evidence_id = str(item.get("evidenceId") or item.get("evidence_id") or "")
+        if not evidence_id.startswith("ev_"):
+            raise ValueError(f"self-minted authoritative evidence: evidenceId={evidence_id!r}")
 
 
 def ok(
@@ -27,12 +49,14 @@ def ok(
     data_version: str | None = None,
     next_cursor: str | None = None,
 ) -> dict[str, Any]:
+    evidence_items = list(evidence)
+    assert_authoritative_evidence_is_signed(evidence_items)
     result: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
         "kind": kind,
         "status": "ok",
         "data": data,
-        "evidenceRefs": list(evidence),
+        "evidenceRefs": evidence_items,
         "resolvedEntities": list(entities),
         "limitations": list(limitations),
         "nextCursor": next_cursor,

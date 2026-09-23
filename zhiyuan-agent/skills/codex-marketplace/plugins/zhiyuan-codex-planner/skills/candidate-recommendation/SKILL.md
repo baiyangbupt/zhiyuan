@@ -4,6 +4,9 @@ description: Use when a user has enough confirmed score context and constraints 
 version: 1.0.0
 ---
 
+> 执行口径以 `r1/candidate-recommendation/references/recommendation-explanation-guide.md`（跨技能引用，路径以插件根为基准） 为准（提问顺序、冲突处理、单轮问题数等细则在那里）。
+> **动手前先读它**——读一次比凭印象写更省事，也避免和规范悄悄分叉。
+
 # Candidate Recommendation
 
 ## 适用条件

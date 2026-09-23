@@ -4,6 +4,9 @@ description: Use when a user is beginning volunteer planning or their score, sub
 version: 1.0.0
 ---
 
+> 执行口径以 `r1/profile-discovery/references/planner-questioning-guide.md`（跨技能引用，路径以插件根为基准） 为准（提问顺序、冲突处理、单轮问题数等细则在那里）。
+> **动手前先读它**——读一次比凭印象写更省事，也避免和规范悄悄分叉。
+
 # Profile Discovery
 
 ## 适用条件
