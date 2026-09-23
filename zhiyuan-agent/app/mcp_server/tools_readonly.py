@@ -174,6 +174,23 @@ def _pick_comparison_row(rows: list[Any], year: int) -> dict[str, Any] | None:
     return max(candidates, key=lambda row: _as_int(row.get("year")) or 0)
 
 
+def _write_refusal_message(mode: str) -> str:
+    """写工具被拒时**告诉模型怎么做才行**，而不是让它自己试出来（P2 任务书 §一）。
+
+    新链路的写路径是「模型出 `proposalRequest` → Java 编译出 pending → 用户确认 →
+    确认链（pending/resolve → pending-command/execute）执行」——模型**始终没有可调的写工具**。
+    模式（`MCP_MODE`）只决定这段话怎么说：
+    - `write`：指向合法出口（提案），让模型知道"想写就这么做"；
+    - 其它（默认只读）：说明这台实例的写路径没活着，别在这里试。
+    """
+    if mode == "write":
+        return (
+            "写操作不通过工具执行：请用 proposalRequest 出提案（说明对象、变更和影响），"
+            "用户确认后由确认链执行。"
+        )
+    return "本实例只读：写操作不可用（写路径只在写实例上活着）。"
+
+
 class ReadonlyDomainTools:
     def __init__(
         self,
@@ -183,10 +200,14 @@ class ReadonlyDomainTools:
         current_state_version: int = 42,
         max_calls: int = 8,
         backend_timeout: float = 5.0,
+        mode: str = "readonly",
     ) -> None:
         self.binding = binding
         self.backend = backend
         self.current_state_version = current_state_version
+        # `readonly` / `write`：只影响**写工具被拒时怎么解释**（工具面本身不变——
+        # 写路径是提案/确认链，不是给模型一把写枪；P2 报告第三节堵点 2 的结论）。
+        self.mode = mode
         self.max_calls = max_calls
         self.backend_timeout = backend_timeout
         self.calls = 0
@@ -195,7 +216,7 @@ class ReadonlyDomainTools:
     async def call(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         arguments = arguments or {}
         if name in WRITE_TOOL_NAMES:
-            return _err(name, "capability_denied", "readonly tools cannot perform writes", state_version=self.current_state_version)
+            return _err(name, "capability_denied", _write_refusal_message(self.mode), state_version=self.current_state_version)
         if name not in CAPABILITIES:
             return _err(name, "tool_not_found", name, state_version=self.current_state_version)
         requested_mode: str | None = None

@@ -282,6 +282,24 @@ async def test_readonly_context_cannot_call_write_capability() -> None:
     result = await tools.call("plan.propose_changes", {"action": "remove"})
 
     assert result["status"] == "capability_denied"
+    # 只读实例的拒绝话术要说清"这台实例的写路径没活着"，别让模型接着试。
+    assert "只读" in json.dumps(result, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_write_mode_refusal_points_at_the_proposal_path() -> None:
+    """写实例上写工具**仍不可调**，但拒绝话术要指向合法出口（提案）。
+
+    依据是 P2 任务书 §一 那句："写操作路径的工具面要明确到模型能据以判断'这个动作
+    我能不能做'，而不是让它试出来"。新链路的写路径是提案 → 确认 → 执行，
+    所以写实例上模型该听到的是"怎么写才行"，而不是"你不能写"。
+    """
+    tools = ReadonlyDomainTools(trusted_context(), backend=None, mode="write")
+
+    result = await tools.call("plan_apply", {"action": "apply"})
+
+    assert result["status"] == "capability_denied"
+    assert "proposalRequest" in json.dumps(result, ensure_ascii=False)
 
 
 @pytest.mark.asyncio

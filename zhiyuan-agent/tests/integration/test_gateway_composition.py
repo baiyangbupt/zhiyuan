@@ -186,3 +186,26 @@ def test_readonly_command_passes_internal_service_env_to_the_mcp_server() -> Non
     assert "env_vars=" in value
     for name in MCP_ENV_VARS:
         assert name in value, f"{name} 没有透传给 MCP server"
+    # 2026-09-24 起 `MCP_MODE` 也在这张表里：不声明就等于 MCP 侧永远拿不到模式开关
+    # （启动脚本一直在传，而它不在表里 → 谁也没发现）。
+    assert "MCP_MODE" in MCP_ENV_VARS
+
+
+def test_mode_mismatch_between_gateway_and_mcp_is_logged(caplog, monkeypatch) -> None:
+    """两个开关配错时**不会报错**，所以必须主动叫一声。
+
+    写实例配只读 MCP：模型拿不到写路径，而拒绝话术会说"本实例只读"，
+    排查时会先怀疑模型 ✗；反过来只读实例配写 MCP 与部署前提相反 ✗。
+    """
+    from app.gateway.composition import _warn_on_mode_mismatch
+
+    monkeypatch.setenv("MCP_MODE", "readonly")
+    with caplog.at_level("WARNING"):
+        _warn_on_mode_mismatch("codex_write")
+    assert "MCP_MODE" in caplog.text
+
+    caplog.clear()
+    monkeypatch.setenv("MCP_MODE", "write")
+    with caplog.at_level("WARNING"):
+        _warn_on_mode_mismatch("codex_write")
+    assert caplog.text == ""

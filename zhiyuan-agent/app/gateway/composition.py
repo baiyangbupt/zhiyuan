@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
+import os
 import secrets
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from app.config import CodexAppServerConfig
 from app.gateway.service import GatewayService
@@ -20,7 +24,10 @@ NATIVE_USER_INPUT_FLAGS = (
 )
 
 # MCP server 需要的环境变量名（值由 codex 从本进程透传，不写死在这里）。
-MCP_ENV_VARS = ("INTERNAL_SERVICE_URL", "INTERNAL_SERVICE_TIMEOUT_SECONDS")
+# `MCP_MODE` 也在其中：MCP 子进程不继承本进程环境，不声明就等于永远拿不到这个开关
+# （2026-09-24 实测：启动脚本一直在传 `MCP_MODE=readonly`，而它没在这张表里 →
+# MCP 侧读到的是自己的默认值，谁也没发现）。
+MCP_ENV_VARS = ("INTERNAL_SERVICE_URL", "INTERNAL_SERVICE_TIMEOUT_SECONDS", "MCP_MODE")
 
 # 源码依据 codex-rs/codex-mcp/src/client_capabilities.rs：只有这四个命名空间被保留。
 NATIVE_USER_INPUT_CAPABILITIES = {
@@ -89,6 +96,9 @@ async def build_gateway_runtime(
     mode = str(getattr(gateway_config, "mode", "legacy"))
     if mode == "legacy":
         return None
+    # 一致性告警（P2 写模式）：网关模式与 MCP 侧的模式是两个开关，配错时**不报错**
+    # 是最坏的情况——写实例上模型会得到"本实例只读"的拒绝话术，反过来更像漏。
+    _warn_on_mode_mismatch(mode)
 
     resolved_config = codex_config or CodexAppServerConfig()
     skill_root = resolved_config.skill_root or str(
@@ -162,6 +172,25 @@ _SESSION_RUNTIME: dict[str, Any] = {}
 
 def bind_session_runtime(runtime: Any) -> None:
     _SESSION_RUNTIME["instance"] = runtime
+
+
+def _warn_on_mode_mismatch(gateway_mode: str) -> None:
+    """网关模式与 MCP 模式配错时**大声说**——两个开关，谁都不会自己纠偏。
+
+    写实例（`codex_write`）配了只读 MCP：模型照样拿不到写路径，而写工具的拒绝话术会说
+    "本实例只读"，排查时会先怀疑模型 ✗；只读实例配了写 MCP：与"写路径只在写实例上活着"
+    的部署前提相反 ✗。两种都不报错，所以这里主动叫一声。
+    """
+    mcp_mode = os.environ.get("MCP_MODE", "readonly")
+    expected = "write" if gateway_mode == "codex_write" else "readonly"
+    if mcp_mode != expected:
+        logger.warning(
+            "gateway mode %s expects MCP_MODE=%s but got %r — the tool face and the "
+            "confirmation chain disagree (check the instance's env)",
+            gateway_mode,
+            expected,
+            mcp_mode,
+        )
 
 
 def _load_default_instructions(skill_root: str, filename: str) -> str:

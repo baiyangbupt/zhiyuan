@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -287,6 +288,9 @@ async def _call_domain_tool(
                 thread_id=binding.thread_id,
             ),
             current_state_version=state_version,
+            # MCP_MODE 由启动环境传入（composition 的 MCP_ENV_VARS 透传）；
+            # 未设置时按只读——多一个开关不会自己变宽，少一个开关也不会。
+            mode=os.environ.get("MCP_MODE", "readonly"),
         )
     if active_tool_runner is None:
         return error("binding_unconfigured", "trusted binding is unavailable", kind=_kind_for(name), state_version=0)
