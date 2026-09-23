@@ -30,6 +30,7 @@ import { navigateTo } from '@/utils/router';
 import { resolveCreatedSession } from '@/utils/session';
 import { EStorageKey, getStorage, setStorage } from '@/utils/tool';
 import { useIsMinip } from '@/hooks/useIsMinip';
+import { SKIP_PREFILL_FORM, buildDirectSessionParams } from '@/constants/directSession';
 import { PlusOutlined } from '@ant-design/icons';
 
 const formatTime = (record: number | null) =>
@@ -205,6 +206,39 @@ const Session: React.FC = () => {
       };
     },
   });
+
+  /** 建一个空会话直接进对话：不填高考信息，缺什么由对话问。 */
+  const createDirectSession = async () => {
+    setIsLoading(true);
+    try {
+      const { code, data, msg } = await createSession(
+        tenantId,
+        buildDirectSessionParams(botId) as unknown as ICreateSessionParams
+      );
+      if (code !== 0) {
+        message.error(msg || '创建会话失败');
+        return;
+      }
+      const createdSession = await resolveCreatedSession(tenantId, botId, data);
+      if (!createdSession) {
+        message.error('创建成功，但未拿到会话信息，请刷新列表后重试');
+        return;
+      }
+      message.success('已创建会话，直接进入对话');
+      setStorage([{ key: 'infoSummary', value: createdSession.infoSummary }]);
+      navigateTo('/sessionDetailV2', {
+        chatSessionId: createdSession.id,
+        userId: createdSession.userId,
+        userName: createdSession.userName,
+        page: 1,
+        pageSize: 10,
+      });
+    } catch (error) {
+      message.error('请求失败，请稍后重试');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const onVerify = () => {
     const { prepareType, subjectType, memberSubjectList, subjectScoreList } =
@@ -410,7 +444,9 @@ const Session: React.FC = () => {
                 });
 
                 if (code === 0 && data?.canOperate) {
-                  if (storedIsCustomer) {
+                  if (SKIP_PREFILL_FORM) {
+                    await createDirectSession();
+                  } else if (storedIsCustomer) {
                     navigateTo('/customerDetail');
                   } else {
                     setIsLoading(false);

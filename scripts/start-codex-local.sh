@@ -210,6 +210,10 @@ start_service "agent" "$ROOT_DIR/zhiyuan-agent" \
     "CODEX_APP_SERVER_BINDING_REGISTRY_PATH=$RUN_DIR/codex-thread-bindings.sqlite" \
     "CODEX_APP_SERVER_APPROVAL_POLICY=never" \
     "CODEX_APP_SERVER_SANDBOX_POLICY=read-only" \
+    # 整轮截止时间。默认 30s 会**掐断**慢回合（读技能 + 取数 + 长推理很容易超），
+    # 用户看到的是"当前对话引擎暂时不可用"，而链路上只看得到 turn_timeout。
+    # 和 compat 层的 _CHAT_SERVICE_TIMEOUT_SECONDS=180 对齐。
+    "CODEX_APP_SERVER_TIMEOUT_SECONDS=180" \
     "GATEWAY_MODE=codex_readonly" \
     "INTERNAL_SERVICE_URL=$BACKEND_URL" \
     "RANK_SERVICE_URL=$RANK_URL" \
