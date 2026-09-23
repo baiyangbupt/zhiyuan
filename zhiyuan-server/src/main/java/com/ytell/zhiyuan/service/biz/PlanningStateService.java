@@ -10,6 +10,8 @@ import com.ytell.zhiyuan.manager.MajorExtraDataManager;
 import com.ytell.zhiyuan.manager.SchoolManager;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
+import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
+import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerRecommendListResponse;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerSourceDataSnapshot;
 import com.ytell.zhiyuan.model.dto.planning.*;
@@ -183,6 +185,12 @@ public class PlanningStateService {
 
     @Autowired(required = false)
     private SchoolManager schoolManager;
+
+    @Autowired
+    private PendingConfirmationBizService pendingConfirmationBizService;
+
+    @Autowired
+    private ConversationProposalRequestService conversationProposalRequestService;
 
     public PlanningStateDTO getPlanningState(Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
@@ -579,6 +587,62 @@ public class PlanningStateService {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         state.getCandidatePoolState().setItems(resolveCandidateFactsForProposalAnalysis(state));
         return UserGoalProposalBuilder.build(state, req);
+    }
+
+    /**
+     * P2：把"用户复合目标预览"物化成**待确认**（pending）——写闭环的第一段。
+     *
+     * 与 {@link #generateUserGoalFixProposals} 的唯一区别就是这一步：那个只出预览（只读实例继续走它），
+     * 这个把预览变成 pending，并在 pending 的 dataValue 里落下 **Java 产出的 operationId**——
+     * 写闭环的幂等键，用户确认后 execute 必须原样复用它。网关侧取不到这个键会**拒绝执行**
+     * （见 codex 网关 `conversation_actions._execute_claimed_command`），所以它必须由这里落下。
+     * 快照会把 dataValue 原样暴露给网关（`activeProposal.data`），网关不需要自己记录。
+     *
+     * 幂等、supersede、并发防线都由 {@link ConversationProposalRequestService#prepareOnce} 承担：
+     * 同一个 requestId 重放返回同一次结果（**同一个 operationId**）；并发只有一个能插进去；
+     * 被后一次取代的预览明确回"请使用最新预览"（对应用户要在旧卡上确认的那类陈旧场景）。
+     */
+    public PrepareResultDTO prepareUserGoalProposal(Long tenantId, Long chatSessionId, String requestId,
+                                                    String requestDigest, UserGoalFixProposalReq req) {
+        PendingConfirmationRes active = pendingConfirmationBizService.getCurrent(tenantId, chatSessionId);
+        String activePendingStatus = active == null ? null : active.getStatus();
+        return conversationProposalRequestService.prepareOnce(
+                tenantId, chatSessionId, requestId, requestDigest, activePendingStatus,
+                () -> {
+                    FixProposalStateDTO preview = generateUserGoalFixProposals(chatSessionId, req);
+                    String operationId = UUID.randomUUID().toString().replace("-", "");
+                    Map<String, Object> dataValue = new LinkedHashMap<String, Object>();
+                    dataValue.put("operationId", operationId);
+                    dataValue.put("proposalSource", "user_goal");
+                    if (preview != null) {
+                        dataValue.put("sourceVersion", preview.getSourceVersion());
+                        FixProposalDTO primary = primaryProposal(preview);
+                        if (primary != null) {
+                            dataValue.put("proposalId", primary.getProposalId());
+                        }
+                    }
+                    PendingConfirmationUpsertReq upsert = new PendingConfirmationUpsertReq();
+                    upsert.setChatSessionId(chatSessionId);
+                    upsert.setKind("plan_change_proposal");
+                    upsert.setActionFamily("apply_plan_change_proposal");
+                    upsert.setDataValue(dataValue);
+                    PendingConfirmationRes pending = pendingConfirmationBizService.upsert(tenantId, upsert);
+                    return new ConversationProposalRequestService.PrepareOutcome(
+                            pending == null ? null : pending.getPendingId(), operationId, preview);
+                });
+    }
+
+    /** 主提案：预览里第一个 `ready` 的；一个都没有时退回第一条（执行侧还会再校验，不会错写）。 */
+    private static FixProposalDTO primaryProposal(FixProposalStateDTO preview) {
+        if (preview.getProposals() == null) {
+            return null;
+        }
+        for (FixProposalDTO proposal : preview.getProposals()) {
+            if (proposal != null && "ready".equals(proposal.getStatus())) {
+                return proposal;
+            }
+        }
+        return preview.getProposals().isEmpty() ? null : preview.getProposals().get(0);
     }
 
     public ReviewWorkflowRunRes runReviewWorkflow(Long tenantId, Long chatSessionId) {

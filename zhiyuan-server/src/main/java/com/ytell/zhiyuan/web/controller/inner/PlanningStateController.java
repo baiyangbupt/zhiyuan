@@ -16,7 +16,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.util.DigestUtils;
 import org.springframework.web.bind.annotation.*;
+
+import com.alibaba.fastjson.JSON;
+
+import java.nio.charset.StandardCharsets;
 
 import java.util.List;
 
@@ -501,6 +506,22 @@ public class PlanningStateController {
         log.info("generateUserGoalFixProposals: tenantId={}, chatSessionId={}, goalType={}",
                 tenantId, chatSessionId, req == null ? null : req.getGoalType());
         return BaseResponse.success(planningStateService.generateUserGoalFixProposals(chatSessionId, req));
+    }
+
+    @PostMapping("/session/fix-proposals/user-goal/prepare")
+    @ApiOperation("按用户复合目标生成预览并物化为待确认（写闭环第一段，P2）")
+    public BaseResponse<PrepareResultDTO> prepareUserGoalFixProposals(@PathVariable("tenantId") Long tenantId,
+                                                                     @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                                     @ApiParam("幂等键：同一 requestId 重放返回同一次结果（同一个 operationId）")
+                                                                     @RequestParam("requestId") String requestId,
+                                                                     @RequestBody(required = false) UserGoalFixProposalReq req) {
+        UserGoalFixProposalReq safeReq = req == null ? new UserGoalFixProposalReq() : req;
+        // digest 用于识别"同一个 requestId 配不同内容"（服务层会 409），所以取的是请求体的稳定摘要。
+        String digest = DigestUtils.md5DigestAsHex(JSON.toJSONString(safeReq).getBytes(StandardCharsets.UTF_8));
+        log.info("prepareUserGoalFixProposals: tenantId={}, chatSessionId={}, requestId={}",
+                tenantId, chatSessionId, requestId);
+        return BaseResponse.success(
+                planningStateService.prepareUserGoalProposal(tenantId, chatSessionId, requestId, digest, safeReq));
     }
 
     @PostMapping("/session/fix-proposals/apply")
