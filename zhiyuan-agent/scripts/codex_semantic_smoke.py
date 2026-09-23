@@ -30,6 +30,12 @@ from app.gateway.contracts import ConversationTurnSnapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = ROOT / "skills" / "codex"
+# 6 个业务技能在 B7 插件化之后搬到了插件目录下（`skills/codex` 只剩两个 instructions 文件）。
+# harness 把 `skill_root` 当作 codex 的 **cwd**（`thread/start` 的 `cwd`，见 `app/harness/codex.py`），
+# 所以这里必须给技能**真正所在**的那一层：否则模型按相对路径读不到 SKILL.md，
+# 技能正文永远进不了上下文，任何"改技能内容"的测量都是空转（2026-09-23 实测：
+# 40 个 rollout 里正文零命中，模型自述 "No way to read skill files"）。
+SKILLS_DIR = ROOT / "skills" / "codex-marketplace" / "plugins" / "zhiyuan-codex-planner" / "skills"
 load_dotenv(ROOT / ".env")
 
 
@@ -194,7 +200,7 @@ async def run_scenario(
     harness = CodexAppServerHarness(
         [binary, *sum((["--config", item] for item in model_config), []), "app-server", "--stdio"],
         request_timeout=90.0,
-        skill_root=str(SKILL_ROOT),
+        skill_root=str(SKILLS_DIR),
     )
     harness.set_server_request_handler(accept_readonly_elicitation)
     try:

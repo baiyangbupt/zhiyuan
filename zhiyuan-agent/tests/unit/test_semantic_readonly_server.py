@@ -29,7 +29,17 @@ def test_semantic_readonly_server_lists_read_tools_and_the_write_tool(tmp_path: 
     ——"模型没去写"不是因为它克制，是因为那把枪不在桌上。
     """
     names = {tool["name"] for tool in _list_tools(tmp_path)}
-    assert names == {"catalog.search_schools", "admission.get_history", "plan_apply"}
+    assert names == {
+        "catalog.search_schools",
+        "admission.get_history",
+        # 读当前方案的只读工具（2026-09-24 补）：真实链路一直有它
+        # （`admission.get_current_plan` / 新名 `planning.get_working_plan`），夹具原来没有 ✗
+        # ——模型为了拿 targetItemId / expectedSourceVersion，只能拿 plan_apply 顶替
+        # （两轮失败的实际调用都是这个形状：proposalId 写成 `__read_current_plan__` /
+        # `NOOP-PLACEHOLDER-NOT-EXECUTED`）。缺它，量的就不是产品那条链。
+        "admission.get_current_plan",
+        "plan_apply",
+    }
 
 
 def test_semantic_readonly_server_marks_the_write_tool_honestly(tmp_path: Path) -> None:

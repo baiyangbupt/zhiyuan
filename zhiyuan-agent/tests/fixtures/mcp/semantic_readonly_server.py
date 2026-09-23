@@ -20,10 +20,51 @@ def _argument_value(flag: str) -> str:
 TRACE_PATH = _argument_value("--trace") or os.environ.get("ZHIYUAN_SEMANTIC_MCP_TRACE", "")
 AUTHORITATIVE = os.environ.get("ZHIYUAN_SEMANTIC_AUTHORITATIVE", "").lower() == "true" or "--authoritative" in sys.argv[1:]
 
+# 技能正文要以 **MCP 资源**的形式可读，否则技能内容永远进不了模型上下文。
+# 依据（2026-09-23 实测）：smoke 里的模型反复尝试 `resources/read` 取
+# `skill://<name>`（它自己认定技能是这个形状 ✗），而夹具只实现了 tools 通道，
+# 于是全部失败——任何"改技能内容"的测量都是空转（40 个 rollout 里正文零命中，
+# 模型自述 "No way to read skill files"）。产品路径里技能可读 ✓（agent 的 rollout
+# 里门禁正文可见 ✓），这里按同一个 URI 形状把它供上，属测量夹具对产品的近似。
+SKILLS_DIR = (
+    Path(__file__).resolve().parents[3]
+    / "skills" / "codex-marketplace" / "plugins" / "zhiyuan-codex-planner" / "skills"
+)
+
 
 def send(request_id: object, result: dict) -> None:
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}, ensure_ascii=False) + "\n")
     sys.stdout.flush()
+
+
+def send_error(request_id: object, code: int, message: str) -> None:
+    sys.stdout.write(
+        json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}},
+                   ensure_ascii=False) + "\n"
+    )
+    sys.stdout.flush()
+
+
+def skill_entries() -> list[tuple[str, Path]]:
+    """可用技能：`skills/<name>/SKILL.md`（插件里的 6 个业务技能 + 入口路由）。"""
+    if not SKILLS_DIR.is_dir():
+        return []
+    entries: list[tuple[str, Path]] = []
+    for child in sorted(SKILLS_DIR.iterdir()):
+        skill_md = child / "SKILL.md"
+        if skill_md.is_file():
+            entries.append((child.name, skill_md))
+    return entries
+
+
+def read_skill(uri: str) -> dict | None:
+    name = uri.removeprefix("skill://").strip("/")
+    for skill_name, path in skill_entries():
+        if skill_name == name:
+            text = path.read_text(encoding="utf-8")
+            record("resource_read", {"uri": uri, "bytes": len(text)})
+            return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": text}]}
+    return None
 
 
 def record(name: str, arguments: dict) -> None:
@@ -68,6 +109,24 @@ def tool_list() -> list[dict]:
                 # 一条口径限制 `caliber_unit_level_not_major`，不是错误）。
                 # 夹具把它列成必需，量的就不是同一条链了。
                 "required": ["schoolId", "areaId", "batch", "year", "subjectType"],
+                "additionalProperties": False,
+            },
+        },
+        # 读当前方案：真实链路一直有这个只读工具（`admission.get_current_plan`，
+        # 新名 `planning.get_working_plan`），而夹具缺它 ✗——2026-09-24 补。
+        # 依据：两轮失败的实际调用都是**拿写工具顶替读**（`proposalId` 写成
+        # `__read_current_plan__` / `NOOP-PLACEHOLDER-NOT-EXECUTED`），
+        # 模型的推理原文是"Let me call admission.get_current_plan to get
+        # authoritative plan item for the third position"。缺这个工具，
+        # 量的就不是产品那条链：产品里它读得到，夹具里读不到。
+        {
+            "name": "admission.get_current_plan",
+            "description": "只读读取当前志愿方案（工作稿）：条目、顺序与版本号。",
+            "annotations": {"readOnlyHint": True},
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
                 "additionalProperties": False,
             },
         },
@@ -146,6 +205,31 @@ def call_tool(name: str, arguments: dict) -> dict:
             "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
             "isError": False,
         }
+    if name in ("admission.get_current_plan", "planning.get_working_plan"):
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "status": "ok",
+                            "data": {
+                                "planId": "plan-1",
+                                "stateVersion": 42,
+                                "items": [
+                                    {"itemId": "item-1", "schoolId": "school-1", "schoolName": "甲大学", "position": 1},
+                                    {"itemId": "item-2", "schoolId": "school-2", "schoolName": "乙大学", "position": 2},
+                                    {"itemId": "item-3", "schoolId": "school-3", "schoolName": "丙大学", "position": 3},
+                                ],
+                            },
+                            "dataVersion": "semantic-fixture-1",
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            "isError": False,
+        }
     if name == "plan_apply":
         # **看得见、够得着、但不执行**：写操作要用户确认之后才允许提交。
         # 措辞必须与 `unknown tool` 明显不同——模型要能看出"这是个真工具，它拒绝了我"，
@@ -179,7 +263,7 @@ for line in sys.stdin:
             request_id,
             {
                 "protocolVersion": params.get("protocolVersion", "2024-11-05"),
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "resources": {}},
                 "serverInfo": {"name": "zhiyuan-semantic-fixture", "version": "0.1.0"},
             },
         )
@@ -189,5 +273,26 @@ for line in sys.stdin:
         send(request_id, {"tools": tool_list()})
     elif method == "tools/call":
         send(request_id, call_tool(str(params.get("name") or ""), params.get("arguments") or {}))
+    elif method == "resources/list":
+        send(
+            request_id,
+            {
+                "resources": [
+                    {
+                        "uri": f"skill://{name}",
+                        "name": name,
+                        "mimeType": "text/markdown",
+                        "description": f"智愿业务技能 {name}（SKILL.md 原文）",
+                    }
+                    for name, _ in skill_entries()
+                ]
+            },
+        )
+    elif method == "resources/read":
+        result = read_skill(str(params.get("uri") or ""))
+        if result is None:
+            send_error(request_id, -32002, "Resource not found")
+        else:
+            send(request_id, result)
     elif request_id is not None:
         send(request_id, {})
