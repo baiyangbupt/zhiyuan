@@ -95,6 +95,36 @@ source: docs/superpowers/tasks/P2-write-closed-loop/TASK.md
      `{"operationId":"9cd0705f…","proposalId":"ugp_02e9c864…","proposalSource":"user_goal","sourceVersion":0,…}` ✓✓
      ——**operationId 确实落进了 pending 的 dataValue**，正是 execute 段要读的那个位置 ✓。
 
+## 四之三、第四轮（2026-09-24）：真栈 E2E 起跑——又抓到自己两个漏，卡在"写阶段的门禁语义"
+
+**抓到的两个漏（都已修，`2b3f1f1` + 启动脚本）**：
+1. `codex_write` **不在 `GatewayConfig.mode` 的 Literal 里** ✗ → `GATEWAY_MODE=codex_write` 起 agent 时
+   pydantic 直接拒收，`Application startup failed`，而症状只有 **health 000**（排查起点完全不指向配置 ✓）。
+   已修 + allowlist 用例加一条；
+2. 我那份"显式环境"启动脚本（`/tmp/start_agent_write.py`）**漏了 `DEEPSEEK_API_KEY`** ✗ →
+   codex 每个回合秒失败 `engine_unavailable`，日志原文 `Missing environment variable: DEEPSEEK_API_KEY` ✓。
+   已修（从启动者环境读，不写死 ✓）。
+
+**已验到的**：
+- 写模式实例**能正常服务回合** ✓：验收用例 `locked-item-adjust` 在 `GATEWAY_MODE=codex_write` +
+  `MCP_MODE=write` 下**通过** ✓（10.7s ✓）；两个开关一致、日志无 mismatch 告警 ✓；
+- `prepare` 端点的真栈行为 ✓✓（第三节第三轮已验：pending 的 dataValue 里带着 Java 产出的 operationId ✓）。
+
+**卡在哪**：两轮 plan 类用例跑下来**没有 pending 产生** ✗ ——模型在这两轮里**没有出 `proposalRequest`** ✗。
+根因是结构性的：**P3 的 `<HARD-GATE>` 是按只读阶段写的** ✗（"本技能不创建 Proposal / 不执行，
+写请求只说明需用户确认" ✓）——那套话在只读实例上完全正确 ✓，但写实例上它**阻止了唯一的写入口** ✗。
+→ 这正是 P2 步骤 1 的后半（"门禁语义按 P3 的写法进技能" ✓）**还没做** ✗：
+   写阶段要有对应的语义（"用户要写 → 出 `proposalRequest`；是否执行由确认链决定" ✓），
+   且模型要**知道自己在哪个阶段** ✓ ——这一条要裁决：靠快照的 `allowedCapabilities`（Java 侧 ✓）
+   还是靠模式相关的 developer_instructions（网关侧 ✓）。
+
+**另外记一条不属于 P2 的观察**：`plan-generate-readonly` 这轮失败在
+`evidence_scope_violation: planner-tier-mapping-v1` ✓ ——那是 P1 证据校验的 fail-closed 生效 ✓
+（模型引用了不在范围内的证据 ✓），与写闭环无关 ✓。
+
+**驱动已就绪**：`/tmp/write_turn.py`（建会话 → 写意图 → 读 pending → 用 WS 的 compat 形状发确认 ✓；
+还差一个"用既有会话"的开关，给"确认半段"复用 ✓）。
+
 ## 五、下一步
 
 1. ~~定 operationId 的落点~~ ✓ 已做完（走生产者侧：Java prepare 落进 pending.dataValue + 新端点 + agent 写模式改走它）；
