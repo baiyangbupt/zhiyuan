@@ -957,6 +957,30 @@ async def generate_user_goal_planning_fix_proposals(
     )
 
 
+async def prepare_user_goal_planning_fix_proposals(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    *,
+    request_id: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """P2：按结构化用户复合目标生成预览**并物化为待确认**（写闭环第一段）。
+
+    与 `generate_user_goal_planning_fix_proposals` 的区别只有这一点：这个走
+    `/fix-proposals/user-goal/prepare`，Java 会把预览变成 pending，并在 pending 的
+    dataValue 里落下**它产出的 operationId**（写闭环的幂等键）。`requestId` 是幂等键：
+    同一个 requestId 重放返回同一次结果（同一个 operationId），配不同内容会被 Java 409。
+    """
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/fix-proposals/user-goal/prepare"
+            f"?chatSessionId={chat_session_id}&requestId={request_id}"
+        ),
+        json_data=payload or {},
+        error_msg="生成用户目标方案调整待确认失败",
+    )
+
+
 async def apply_planning_fix_proposal(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],

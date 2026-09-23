@@ -523,6 +523,75 @@ async def test_gateway_sends_model_proposal_request_to_java_preview(monkeypatch)
     assert result["proposalPreview"] == {"proposalId": "proposal-1", "status": "ready"}
 
 
+async def test_write_mode_prepares_a_pending_instead_of_a_plain_preview(monkeypatch) -> None:
+    """P2：写模式下走 `prepare`（物化 pending + Java 落下 operationId），**不再**走只出预览的 `generate`。
+
+    对照：把 `generate` 换成"被调到就炸"，确保写模式不会走错端点；
+    返回形状按 `PrepareResultDTO`（预览在 `result` 里）——解析两种形状都要认。
+    """
+    from app.util import internal_client
+
+    seen = {}
+
+    async def prepare(tenant_id, session_id, *, request_id, payload):
+        seen["request_id"] = request_id
+        assert tenant_id == "tenant-1" and session_id == "session-1"
+        assert payload["goalType"] == "exclude_scope"
+        return {
+            "code": 0,
+            "data": {
+                "status": "prepared",
+                "requestId": request_id,
+                "pendingId": "pending-1",
+                "operationId": "op-1",
+                "result": {"proposals": [{"proposalId": "proposal-1", "status": "ready"}]},
+            },
+        }
+
+    async def generate_should_not_be_called(*args, **kwargs):
+        raise AssertionError("写模式不许走只出预览的 generate")
+
+    monkeypatch.setattr(internal_client, "prepare_user_goal_planning_fix_proposals", prepare)
+    monkeypatch.setattr(internal_client, "generate_user_goal_planning_fix_proposals", generate_should_not_be_called)
+
+    class ProposalHarness(FakeCodexHarness):
+        async def start_turn(self, thread_id: str, input_items: list[dict], output_schema=None):
+            return {
+                "turn": {"id": "turn-proposal"},
+                "output": {
+                    "responseType": "text",
+                    "message": "我先生成方案预览",
+                    "proposalRequest": {
+                        "goalType": "exclude_scope",
+                        "userOriginalText": "排除北京",
+                        "confidence": "high",
+                        "sourceVersionGuard": 42,
+                        "negativeScopes": [{"scopeType": "province", "name": "北京"}],
+                    },
+                },
+            }
+
+    gateway = GatewayService(
+        mode="codex_write",
+        codex=ProposalHarness(),
+        legacy=FakeLegacyService(),
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+    result = await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-proposal",
+        content="排除北京",
+    )
+
+    assert result["reply"] == "我先生成方案预览"
+    assert result["proposalPreview"] == {"proposalId": "proposal-1", "status": "ready"}
+    assert seen["request_id"] == "tenant-1:session-1:turn-proposal", "幂等键是 租户:会话:回合"
+
+
 def test_gateway_mode_is_allowlisted() -> None:
     assert GatewayConfig(_env_file=None, mode="codex_shadow").mode == "codex_shadow"
     with pytest.raises(ValueError):

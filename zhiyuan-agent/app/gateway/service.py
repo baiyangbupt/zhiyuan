@@ -1152,17 +1152,39 @@ class GatewayService:
                         "stale_state",
                         "proposal source version does not match the current snapshot",
                     )
-                proposal_response = await internal_client.generate_user_goal_planning_fix_proposals(
-                    tenant_id,
-                    session_id,
-                    output.proposal_request.model_dump(by_alias=True, exclude_none=True),
+                proposal_request_payload = output.proposal_request.model_dump(
+                    by_alias=True, exclude_none=True
                 )
+                if self.mode == "codex_write":
+                    # 写模式：走 prepare —— Java 把预览**物化成 pending**，并在 pending 的
+                    # dataValue 里落下它产出的 operationId（写闭环的幂等键）。requestId 取
+                    # "租户:会话:回合"，于是**同一回合的重试是重放**（同一个 operationId），
+                    # 新回合会按 prepare 的 supersede 规则把旧的标掉。
+                    proposal_response = await internal_client.prepare_user_goal_planning_fix_proposals(
+                        tenant_id,
+                        session_id,
+                        request_id=f"{tenant_id}:{session_id}:{turn_id}",
+                        payload=proposal_request_payload,
+                    )
+                else:
+                    # 只读模式：只出预览，不产生待确认（写路径不在这台实例上活着）。
+                    proposal_response = await internal_client.generate_user_goal_planning_fix_proposals(
+                        tenant_id,
+                        session_id,
+                        proposal_request_payload,
+                    )
                 if (proposal_response or {}).get("code") not in (None, 0):
                     raise OutputContractError(
                         "proposal_preview_unavailable",
                         "Java proposal compiler rejected the request",
                     )
                 proposal_data = (proposal_response or {}).get("data") or {}
+                if isinstance(proposal_data, Mapping) and not proposal_data.get("proposals"):
+                    # prepare 的返回是 PrepareResultDTO：预览在 `result` 里（外面是
+                    # status/requestId/pendingId/operationId）。两种形状都认。
+                    nested = proposal_data.get("result")
+                    if isinstance(nested, Mapping):
+                        proposal_data = nested
                 proposals = proposal_data.get("proposals") if isinstance(proposal_data, Mapping) else None
                 if not isinstance(proposals, list) or not proposals:
                     raise OutputContractError(
