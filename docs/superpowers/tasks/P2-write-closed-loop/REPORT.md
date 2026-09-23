@@ -80,6 +80,21 @@ source: docs/superpowers/tasks/P2-write-closed-loop/TASK.md
 - 没改 P1 证据链 ✓；没在 Gateway 加关键词规则 ✓；没碰前端乐观更新 ✓；
 - `mixed-read-write` 场景期望一个字没动 ✓（写路径要另开场景量 ✓，见任务书 §五）。
 
+## 四之二、第三轮（2026-09-24）：写工具面接线 + 重部署 + operationId 落点的真栈验证
+
+1. **写工具面接线**（`476e3b1`）：MCP 读 `MCP_MODE`（默认只读）✓；写工具仍不可调，但拒绝话术按模式变
+   （写实例指向合法出口"用 proposalRequest 出提案、用户确认后由确认链执行" ✓）；`MCP_ENV_VARS` 补上
+   `MCP_MODE` ✓（MCP 子进程不继承环境，不声明就永远拿不到 ✓）；网关侧一致性告警 ✓。
+2. **重打包重部署 Java** ✓（此前跑的是 9-22 06:29 的 jar ✗）：`mvn -o package -DskipTests` ✓ +
+   `/tmp/restart_backend.py`（继承旧进程环境→停旧→起新→等健康 ✓，日志轮转以便真栈证据干净）。
+3. **operationId 落点的真栈验证** ✓✓：部署后探针**抓到一个编译期发现不了的 bug** ✗——
+   `upsert` 的 `validateUpsert` 要求调用方给 `pendingId`（服务不生成）→ 已修（生成 uuid，与 legacy
+   同一约定 ✓）。复探（真实会话 900357）：
+   - `prepare` 返回 `{status:prepared, pendingId:88db3aaa-…, operationId:9cd0705f…, result:{…}}` ✓
+   - 库里 `assistant_chat_session_pending_confirmation` 的 `data_value` =
+     `{"operationId":"9cd0705f…","proposalId":"ugp_02e9c864…","proposalSource":"user_goal","sourceVersion":0,…}` ✓✓
+     ——**operationId 确实落进了 pending 的 dataValue**，正是 execute 段要读的那个位置 ✓。
+
 ## 五、下一步
 
 1. ~~定 operationId 的落点~~ ✓ 已做完（走生产者侧：Java prepare 落进 pending.dataValue + 新端点 + agent 写模式改走它）；
