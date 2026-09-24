@@ -1,6 +1,6 @@
 ---
 task: P2
-status: PARTIAL（网关侧两段式已接 + operationId 落点已解；② 待写工具面接线后跑真栈）
+status: PARTIAL（代码两半 + 写模式接线 + 写实例规则层都已落地并各自验证；② 真栈 E2E 只差「标准选科编码」这一个测试数据值 + 跑一遍驱动）
 executor: 本地会话（2026-09-24）
 source: docs/superpowers/tasks/P2-write-closed-loop/TASK.md
 ---
@@ -150,6 +150,33 @@ source: docs/superpowers/tasks/P2-write-closed-loop/TASK.md
 harness 自己不带铺状态 ✓），然后：写意图回合 → 期望 `proposalRequest` → prepare → **pending** ✓ →
 再用 WS compat 形状发确认（驱动 `/tmp/write_turn.py` 已就绪，补一个"用既有会话"的开关 ✓）→
 回读 + 重复确认的库计数 ✓。
+
+## 四之五、第六轮（2026-09-24）：E2E 前半段收窄到**一个**未知量——标准选科编码
+
+要跑"写意图 → 提案 → pending"，会话得先有确认画像 ✓。本地栈没有现成画像（`extra_data` 全是
+25 字节批数据 ✗），于是按生产者侧迭代探了"建会话时带成绩"这条正路 ✓，把接口的真实要求逐条钉出来：
+
+| 顺序 | 要求 | 证据（原话） |
+|---|---|---|
+| 1 | `province.code` | `请选择高考省份后再创建会话` → 补 `{"name":"浙江","code":"330000"}` ✓ |
+| 2 | `subjectType.code` | `请选择选科类型后再创建会话` → 补 `{"code":"N"}`（浙江综合 ✓） |
+| 3 | `subjectScoreList` 非空且**字段名要对** | `请填写各科成绩后再创建会话` → 我最初用 `{"name":…}` 得到 **`系统错误`** ✗；真形状是 `{"subject":…,"subjectName":…,"score":…}`（`CreateSessionReq.SubjectScore` ✓）→ 之后报错前进到第 4 条 ✓ |
+| 4 | `subjectList[].value`/`subject` 必须是**标准选科编码** ✗ | `非标准选科编码` ——试过 `"1"/"2"/"3"` ✗、科目名（→`空指针异常` ✗）、`"PHY"/"CHE"/"BIO"` ✗；**这条报错不在 Java 源码里**（全仓 grep 0 命中）→ 来自依赖 jar ✗ |
+
+**第 4 条就是唯一的未知量**（一个词汇表值 ✓）。去哪儿找：前端的选科选项接口
+（`zhiyuan-web/src/interface/api/updateBaseInfo.ts` / `customerDetail.ts` 会取这份字典 ✓）
+或 gaotu SDK 里的编码枚举 ✓。
+
+**除它以外，E2E 的全部零件都已就位** ✓✓：
+- 写模式实例 ✓（`GATEWAY_MODE=codex_write` + `MCP_MODE=write`，health 200 ✓，两个开关一致无告警 ✓）；
+- 写实例规则层 ✓（`3d6e6b5`，测试守住 ✓）；
+- `prepare` 的真栈行为已验 ✓✓（pending 的 dataValue 里带着 Java 产出的 operationId ✓，第三节第三轮）；
+- 驱动 `/tmp/write_turn.py` 已就绪 ✓（建会话 → 写回合 → 读 pending → WS compat 形状发确认 ✓；
+  补一个"用既有会话"的开关即可复用 ✓）；本节的铺画像配方也已落纸 ✓
+  （拿到编码后填进 payload 即可 ✓）。
+
+**注意**：这一段是**测试数据**的事，不是 P2 的代码 ✗——P2 的 agent/Java 两半都已落地并各自验证 ✓；
+E2E 离收口只差"查到那个编码 + 跑一遍驱动 + 确认半段" ✓。
 
 ## 五、下一步
 
