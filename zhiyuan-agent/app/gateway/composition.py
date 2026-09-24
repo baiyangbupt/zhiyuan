@@ -128,6 +128,13 @@ async def build_gateway_runtime(
         developer_instructions = _load_default_instructions(
             skill_root, "developer_instructions.md"
         )
+        if mode == "codex_write":
+            # 写实例的附加规则：技能文本里"写请求只说明需用户确认"那半是**只读阶段**的规则，
+            # 在写实例上要覆盖成"出提案、由确认链执行"。它属于**实例级**规则（知道自己是哪个模式
+            # 的只有网关），所以放在这里、与基础规则同层，而不是改技能文本让两边都含糊。
+            write_rules = _load_default_instructions(skill_root, "developer_instructions.write.md")
+            if write_rules:
+                developer_instructions = f"{developer_instructions}\n\n{write_rules}"
 
     await codex.start()
     # 没有这一步，原生提问会被 client 的默认分支回成 `{"result": null}`——

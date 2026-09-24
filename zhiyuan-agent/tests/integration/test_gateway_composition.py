@@ -34,6 +34,37 @@ async def test_codex_shadow_composition_constructs_gateway_runtime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_write_mode_appends_the_write_instance_rules() -> None:
+    """写实例的附加规则必须进 developer instructions；只读实例**不许**有它。
+
+    依据（2026-09-24 真栈实测）：技能文本里"写请求只说明需用户确认"那半是按只读阶段写的，
+    在写实例上它挡住了唯一的写入口——两轮 plan 类用例都没出 `proposalRequest` ✗。
+    实例级规则由网关自己拼（只有它知道模式），所以这里量"拼没拼上、会不会拼错模式"。
+    """
+    from app.gateway.composition import build_gateway_runtime
+
+    async def build(mode: str) -> str:
+        fake_codex = MagicMock()
+        fake_codex.start = AsyncMock()
+        fake_codex.close = AsyncMock()
+        runtime = await build_gateway_runtime(
+            MagicMock(mode=mode),
+            legacy=MagicMock(),
+            message_store=MagicMock(),
+            binding_loader=MagicMock(),
+            snapshot_loader=MagicMock(),
+            codex=fake_codex,
+        )
+        instructions = runtime.gateway.developer_instructions
+        await runtime.close()
+        return instructions
+
+    marker = "写实例附加规则"
+    assert marker in await build("codex_write"), "写实例没带上附加规则"
+    assert marker not in await build("codex_readonly"), "只读实例不该带写规则"
+
+
+@pytest.mark.asyncio
 async def test_legacy_composition_skips_codex_start() -> None:
     from app.gateway.composition import build_gateway_runtime
 
