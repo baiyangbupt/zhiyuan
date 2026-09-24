@@ -235,6 +235,43 @@ E2E 离收口只差"查到那个编码 + 跑一遍驱动 + 确认半段" ✓。
 它量的是 harness 客户端超时行为 ✓、与 P2 改动无关 ✗ → 记为**满载下的偶发时序抖动** ✓
 （排查时别被它带偏：先单跑它 ✓）。
 
+## 四之七、第八轮（2026-09-24）：又抓到一个真 bug（5 个工具全挂）；"绿"的门槛不在链路、在**数据**
+
+### 抓到的 bug（`5f364f2`）
+
+追模型那句 "需要录取率的调用全部返回 `backend_unavailable`" 时，先复现（进程内扫全部
+工具 ✓），拿到原话：`'InternalClientBackend' object has no attribute 'current_state_version'` ✗——
+该属性**只挂在另一个类**（`ReadonlyDomainTools`）上，而**适配器自己的 5 个方法**用它给信封盖版本戳 ✗：
+
+| 修复前挂掉的 5 个工具 |
+|---|
+| `admission.check_eligibility` ✗ `admission.compare` ✗ `admission.get_charter` ✗ |
+| `admission.get_enrollment_plan` ✗ `catalog.list_admission_units` ✗ |
+
+**推荐路径的入口正好在其中** ✓（模型说的"录取率调用全失败" ✓）。修：适配器接住
+`current_state_version`（server 构造时把权威快照版本同时给它 ✓）+ 回归断言 ✓；
+工具全扫一遍后 `backend_unavailable` **归零** ✓（修复前 5 个）。
+
+### 复现时的一个坑（记下来）
+
+进程内探针**必须显式设 `INTERNAL_SERVICE_URL`** ✗——不设的话 `internal_client` 会落到它的
+**默认地址＝生产** ✓（就是 composition 注释里警告过的那件事 ✓），于是所有调用都返回生产的 404，
+看起来像"端点不存在" ✗（我一度以为 `/session/compare` 没实现 ✓，其实 Java 有、本地也有 ✓）。
+
+### "绿"的门槛在数据不在链路 ✗
+
+工具修好后，模型拿到了**真实后端数据** ✓（原话："浙江考区 330000、综合 `N`、第一段参考线
+494 分 / 位次 184816" ✓），但它在候选推荐与方案构建两轮都**如实拒绝** ✓✓：
+
+> "冲稳保我现在仍然给不出来…**是档位数据源不存在**…编一份出来只需要三十秒，但那是假的，我不做"
+> "按 `prioritize_within_tier` 生成提案需要一个真实的候选…当前 `candidateSet.items = []`"
+
+→ 风险档位（冲/稳/保）依赖 **系统计算的招生单元录取率** ✓，而**本地 test 数据源没有它** ✓
+——这正是 P1b-2 那条结论（"该路从未产出录取率…上游算好的" ✓）从**模型侧**再现 ✓。
+所以：**成功 apply 的门槛不在写闭环，在数据面** ✗；链路本身（提案→pending→claim→execute→
+回写→重复确认被拒 ✓✓）第七轮已全验 ✓。模型的拒绝行为（不编数字、不拿空集包装成提案 ✓）
+本身就是 P3/P2 想要的那种克制 ✓✓。
+
 ## 五、下一步
 
 1. ~~定 operationId 的落点~~ ✓ 已做完（走生产者侧：Java prepare 落进 pending.dataValue + 新端点 + agent 写模式改走它）；
