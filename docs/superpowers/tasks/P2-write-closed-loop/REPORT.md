@@ -178,6 +178,57 @@ harness 自己不带铺状态 ✓），然后：写意图回合 → 期望 `prop
 **注意**：这一段是**测试数据**的事，不是 P2 的代码 ✗——P2 的 agent/Java 两半都已落地并各自验证 ✓；
 E2E 离收口只差"查到那个编码 + 跑一遍驱动 + 确认半段" ✓。
 
+## 四之六、第七轮（2026-09-24）：**写闭环的机械部分全部验通**——三处真缺陷被 E2E 抓出并修掉
+
+### 验到了什么（每一步都有原始输出）
+
+| 步 | 结果 |
+|---|---|
+| 写意图回合 | 模型出提案 ✓（正文自述「写操作在你确认之前一律不执行…只生成一条待你确认的提案」✓ = 写实例规则层生效 ✓） |
+| prepare | 库里出现 pending ✓（`operationId=6fec912d…` / `cc5af919…` ✓ 由 Java 产出 ✓） |
+| 确认（claim） | `pending/resolve(confirm)` 通过 ✓，pending → `applying` ✓ |
+| 执行（execute） | **真的打到 Java 的业务校验** ✓（见下「交接 2」） |
+| **回写** | pending `applying` → `expired` ✓✓（fail 分支 ✓，不再卡住 ✓） |
+| 重复确认 | 被 Java 拒（`40902 pending transition mismatch` ✓）→ **execute 行数不变 = 双写为零** ✓✓ |
+
+### E2E 抓出并修掉的三处真缺陷（`7173494`）
+
+1. **快照缓存自锁** ✗→✓：提案改了服务端状态（pending 落库），而网关缓存的快照是提案**之前**的
+   → 确认时拿旧快照核对 `proposalRef`，必然 `proposal_reference_mismatch` ✗（确认永远被自己的缓存挡住）。
+   修：提案成功后重读权威快照并写缓存 ✓。
+2. **`proposalApply` 两开关必须为 true** ✗→✓：Java 明说 "requires regenerateOrderedPlan and
+   rerunReview"，legacy 客户端默认也一直是 true；我按「保守取 false」写 → 真栈 40001 直接拒 ✗。
+   教训写进注释：**没有依据的"保守"就是猜**，依据在生产者侧 ✓。另补 `userGoalRequest` 透传 ✓。
+3. **execute 之后没有回写** ✗→✓：不回写则 pending 停在 `applying` ✗——而它正是「重复确认」的判定依据
+   （第二次确认会走「applying 且未过期 → 同状态」分支，看起来像没事、实际什么都没落地 ✗）。
+   回写复用**同一个 claim token** ✓（Java 校验归属 ✓）。
+
+### 交接给设计侧的两条发现 ✗（不是 agent 改得动的）
+
+1. **Java 内部不自洽**：`RepairProposalTaxonomy.USER_GOAL_APPLYABLE_STRATEGIES` 列了 6 种可 apply 的
+   user-goal 策略（含 `only_keep_scope` / `must_include_scope` / `exclude_scope` / `tuition_budget_scope` ✓），
+   而 `PendingPlanningCommandBizService` 的 user-goal 分支只认 `FILL_MISSING_COUNT` / `PRIORITIZE_WITHIN_TIER`
+   两种 ✗ → 「把浙大加进方案」这类**最自然的写**被判 `unsupported plan change goalType` ✗（实测原话 ✓）。
+2. **goal → command 的映射**：agent 现在恒发 `apply_plan_change_proposal` ✗，而 legacy 链对
+   **scope 类目标**（加/删学校）走的是 `apply_constraint_and_regenerate` + `constraintUpdate` ✓
+   （见 `app/zhiyuan_agent/tools.py` 的参照调用 ✓）。P2 任务书二之二只记了前者 ✗ → 映射表要补全或裁决。
+
+### 测试数据配方（已落纸，可复用）
+
+建 draft 会话 ✓ → `add-extra-data` 写 `userScoreDetail`，值按 **`CreateSessionReq` 的驼峰+嵌套形状** ✓
+（`province:{name,code}` / `totalScore` / `totalScorePos` / `subjectList:[{name,value,isFirst}]` /
+`batch:{name,code,score}` …）→ 选科 `value` 用**标准两位码**（01 物理 / 05 化学 / 06 生物 ✓，
+取自前端字典 `gaokao_volunteer_flow_config.json` ✓）→ 之后快照 `missingFacts=[]`、`stage=profile_ready` ✓。
+**两个坑**：① 会话创建返回的 `userId` 必须被复用（画像按用户读 ✗，写错用户＝模型看到空画像 ✓）；
+② 井号/引号别当 shell 元字符（本会话踩过两次 ✓）。
+
+### 还差最后一寸（绿）
+
+要跑出**成功的 apply**（真落库），会话得有**候选池/方案**（模型实测会说
+`planning.get_working_plan: insufficient_data` ✗——空方案里没有可填的东西 ✓），
+而 `fill_to_count` / `prioritize_within_tier` 正是 execute 认的两种目标 ✓ → 需要先跑一轮
+「画像 → 候选推荐 → 生成方案」的铺垫 ✓（多回合 ✓）。这是**场景状态**的事，不是链路的事 ✓。
+
 ## 五、下一步
 
 1. ~~定 operationId 的落点~~ ✓ 已做完（走生产者侧：Java prepare 落进 pending.dataValue + 新端点 + agent 写模式改走它）；
