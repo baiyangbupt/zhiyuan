@@ -229,6 +229,12 @@ E2E 离收口只差"查到那个编码 + 跑一遍驱动 + 确认半段" ✓。
 而 `fill_to_count` / `prioritize_within_tier` 正是 execute 认的两种目标 ✓ → 需要先跑一轮
 「画像 → 候选推荐 → 生成方案」的铺垫 ✓（多回合 ✓）。这是**场景状态**的事，不是链路的事 ✓。
 
+**③ 复跑与一条偶发**（2026-09-24 收尾）：全量两跑——第一跑 `2 failed / 1951 passed / 35 skipped`
+（多出的一条是 `test_codex_harness_client.py::test_client_times_out_without_leaking_pending_request` ✗），
+**第二跑恢复 `1 failed / 1952 passed / 35 skipped`** ✓；那条单跑连过 4 次（每次 2.06s ✓）。
+它量的是 harness 客户端超时行为 ✓、与 P2 改动无关 ✗ → 记为**满载下的偶发时序抖动** ✓
+（排查时别被它带偏：先单跑它 ✓）。
+
 ## 五、下一步
 
 1. ~~定 operationId 的落点~~ ✓ 已做完（走生产者侧：Java prepare 落进 pending.dataValue + 新端点 + agent 写模式改走它）；
