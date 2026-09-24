@@ -18,6 +18,10 @@ class TurnTrace:
     message: str = ""
     clarification_requested: bool = False
     proposal_ref: str | None = None
+    # 写路径（P2）：模型**请求编译**的提案目标（`proposalRequest.goalType`）。
+    # 与 `proposal_ref`（引用已有提案）是两件事：写路径上新提案走 `proposalRequest`，
+    # `proposalRef` 保持空——只量 `proposalRef` 会把它整个漏掉（P2 任务书 §五 要新场景的原因）。
+    proposal_goal_type: str | None = None
     orchestration: list[dict[str, Any]] = field(default_factory=list)
     batch_report: dict[str, Any] = field(default_factory=dict)
     execution_status: str = "completed"
@@ -34,6 +38,7 @@ class TurnTrace:
             "message": self.message,
             "clarificationRequested": self.clarification_requested,
             "proposalRef": self.proposal_ref,
+            "proposalGoalType": self.proposal_goal_type,
             "orchestration": self.orchestration,
             "batchReport": self.batch_report,
             "executionStatus": self.execution_status,
@@ -105,6 +110,7 @@ def build_turn_trace(payload: Any, output: TurnOutput, *, entity_ids: list[str])
         message=output.message,
         clarification_requested=output.response_type == "clarification" or bool(output.clarification),
         proposal_ref=output.proposal_ref,
+        proposal_goal_type=(output.proposal_request.goal_type if output.proposal_request else None),
         orchestration=_dedupe_orchestration(orchestration),
         batch_report=build_tool_batch_report(payload).as_payload(),
         execution_status=output.execution_status,

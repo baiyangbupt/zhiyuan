@@ -138,3 +138,24 @@ def test_semantic_eval_checks_conversation_action_type() -> None:
     )
     assert result["passed"] is False
     assert result["failures"] == ["conversation_action_mismatch"]
+
+
+def test_semantic_eval_measures_the_requested_goal_type_not_the_ref() -> None:
+    """写路径量的是 `proposalRequest.goalType`，**不是** `proposalRef`。
+
+    写路径上新提案走 `proposalRequest`、`proposalRef` 保持空 ✓——只量 `proposalRef`
+    （既有的 `proposal_required`）会把整条写路径漏掉，所以 P2 新开了
+    `write-path-proposal` 场景 + 这条判据（真栈实测：模型给出 `goalType=fill_to_count` ✓）。
+    """
+    ok = evaluate_trace(
+        SemanticExpectation(case_id="write-path", proposal_request_goal_type="fill_to_count"),
+        {"proposalRef": None, "proposalGoalType": "fill_to_count"},
+    )
+    assert ok["passed"] is True
+    assert ok["observed"]["proposalGoalType"] == "fill_to_count"
+
+    wrong_goal = evaluate_trace(
+        SemanticExpectation(case_id="write-path", proposal_request_goal_type="fill_to_count"),
+        {"proposalRef": None, "proposalGoalType": "must_include_scope"},
+    )
+    assert wrong_goal["failures"] == ["proposal_goal_type_mismatch"]

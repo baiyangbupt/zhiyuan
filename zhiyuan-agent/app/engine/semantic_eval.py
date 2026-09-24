@@ -21,6 +21,10 @@ class SemanticExpectation:
     limitations_required: bool = False
     next_step_required: bool = False
     conversation_action_type: str | None = None
+    # 写路径（P2）：要求模型**请求编译**一条提案、且目标（`proposalRequest.goalType`）是这个值。
+    # 与 `proposal_required` 不同：后者量的 `proposalRef` 是"引用已有提案"，
+    # 写路径上新提案走 `proposalRequest`（`proposalRef` 保持空）——只量它会整个漏掉。
+    proposal_request_goal_type: str | None = None
 
 
 def evaluate_trace(
@@ -58,6 +62,11 @@ def evaluate_trace(
         failures.append("evidence_missing")
     if expectation.proposal_required and not trace.get("proposalRef"):
         failures.append("proposal_missing")
+    if (
+        expectation.proposal_request_goal_type
+        and trace.get("proposalGoalType") != expectation.proposal_request_goal_type
+    ):
+        failures.append("proposal_goal_type_mismatch")
     if expectation.execution_status and trace.get("executionStatus") != expectation.execution_status:
         failures.append("execution_status_mismatch")
     if expectation.limitations_required and not trace.get("limitations"):
@@ -79,6 +88,7 @@ def evaluate_trace(
             "message": message,
             "clarificationRequested": bool(trace.get("clarificationRequested")),
             "proposalRef": trace.get("proposalRef"),
+            "proposalGoalType": trace.get("proposalGoalType"),
             "executionStatus": trace.get("executionStatus"),
             "limitations": list(trace.get("limitations") or []),
             "nextStep": trace.get("nextStep"),

@@ -106,6 +106,29 @@ def unambiguous_mixed_read_write_scenario() -> tuple[dict[str, object], str, Sem
         ),
     )
 
+def write_path_proposal_scenario() -> tuple[dict[str, object], str, SemanticExpectation]:
+    """P2 写路径场景：写意图应当落成 **`proposalRequest`**（不是自己执行），且目标是链支持的两种。
+
+    与 `mixed-read-write` 的分工（任务书 §五）：那条量"只读阶段不许碰写工具"（期望不动 ✓），
+    这条量写路径本身。快照给一个**没满**的方案（3 条 ✓）——空方案上模型会（正确地）拒绝提案，
+    那样量到的不是写路径而是门禁 ✓（真栈上实测过这个混淆 ✓）。
+    """
+    context, _, _ = reference_missing_scope_scenario()
+    context["snapshot"]["confirmedConstraints"] = {
+        "activePlan": {"artifactId": "plan-1", "items": ["school-1", "school-2", "school-3"]},
+    }
+    return (
+        context,
+        "我的方案现在只有 3 个志愿，请补足到 80 个：直接生成待确认的提案。",
+        SemanticExpectation(
+            case_id="write-path-proposal",
+            forbidden_tool_names={"plan_apply"},
+            # 链（`pending-command/execute`）只 apply 这两种目标 ✓
+            proposal_request_goal_type="fill_to_count",
+        ),
+    )
+
+
 def complete_history_scenario() -> tuple[dict[str, object], str, SemanticExpectation]:
     context, _, _ = reference_missing_scope_scenario()
     context["snapshot"]["confirmedConstraints"] = {
@@ -207,8 +230,15 @@ async def run_scenario(
         await harness.start()
         thread = await harness.create_thread(
             base_instructions=(SKILL_ROOT / "base_instructions.md").read_text(encoding="utf-8"),
-            developer_instructions=(SKILL_ROOT / "developer_instructions.md").read_text(
-                encoding="utf-8"
+            developer_instructions=(
+                (SKILL_ROOT / "developer_instructions.md").read_text(encoding="utf-8")
+                + (
+                    # 写路径场景要带上**写实例规则**（镜像 composition 在 codex_write 下的行为 ✓）：
+                    # 不带的话量到的还是只读实例，"写意图该出提案"这条根本没被打开 ✗。
+                    "\n\n" + (SKILL_ROOT / "developer_instructions.write.md").read_text(encoding="utf-8")
+                    if expectation.case_id == "write-path-proposal"
+                    else ""
+                )
             ),
             approval_policy="never",
         )
@@ -485,6 +515,7 @@ if __name__ == "__main__":
             "reference-authoritative-history",
             "mixed-read-write",
             "mixed-read-write-unambiguous",
+            "write-path-proposal",
         ],
         default="reference-missing-scope",
     )
@@ -496,6 +527,8 @@ if __name__ == "__main__":
         if args.scenario == "reference-complete-history"
         else unambiguous_mixed_read_write_scenario
         if args.scenario == "mixed-read-write-unambiguous"
+        else write_path_proposal_scenario
+        if args.scenario == "write-path-proposal"
         else mixed_read_write_scenario
         if args.scenario == "mixed-read-write"
         else reference_missing_scope_scenario
