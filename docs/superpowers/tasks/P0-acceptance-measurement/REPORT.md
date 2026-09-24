@@ -121,3 +121,36 @@ mixed-read-write run ?: passed=False failures=['response_type_mismatch']
   与台账记的 19/20 不矛盾（同一场景、同一夹具，差异是方差）；
 - **没有把测量脚本入库**（`/tmp/p0_measure.py`）。它是一个薄封装（循环 + Wilson 区间），
   要不要作为复跑入口收进 `scripts/` 由派发方定——**现在它只在 /tmp，重启即失**。
+
+---
+
+## 附：2026-09-24 重测（量具修好后的**第一次可信**测量）
+
+**背景**：P3 轮把量具修好了（此前 smoke 的 CODEX_HOME 没有插件 ✗、`skill_root` 指向
+插件化之前的老目录 ✗、夹具没有技能资源通道 ✗ → 技能正文从来没进过模型上下文 ✗）。
+修后这次测量才是"产品化的只读实例"配置：技能已加载 ✓（P3 版、含门禁 ✓）、正文可读 ✓。
+
+**结果（两场景各 20 次）**：
+
+| 场景 | 通过 | 判据（≥19/20） | 失败构成 |
+|---|---|---|---|
+| `mixed-read-write` | **19/20** | **满足** ✓ | `missing_tools`×1、`execution_status_mismatch`×1 |
+| `reference-complete-history` | **12/20** | **不满足** ✗ | `clarification_mismatch`×8 |
+
+**`reference-complete-history` 那 8 次的根因（已当场复现并留原文）**：模型**答对了**
+（`responseType=fact`、612/598、调了 `admission.get_history` ✓），随后指出**场景口径不存在** ✗：
+
+> "浙江属于综合改革省份，官方科类是「综合」（上游码 N），批次是「分段」（第一段 17 / 第二段 18），
+> **并不存在「物理类 / 本科批」这两个口径**。以上两次查询是照你原话字面传入的…"
+
+即：**场景消息里的「浙江 物理类 本科批」是浙江高考里不存在的组合** ✗（浙江是综合改革、
+分段投档 ✓——这条正是 admission-fact-analysis 技能内那张实测表的内容 ✓）。期望
+（`clarification_required=False`）于是把它判成 `clarification_mismatch` ✗。
+
+**此前它 20/20 的原因也随之说清** ✗：技能读不到 → 模型照字面答题、不会指出口径错 ✗；
+技能真被读到之后 ✓，它按纪律把口径问题报出来 ✓✓（这正是 admission-fact-analysis
+那条纪律想看到的行为 ✓）。
+
+**结论/待裁决**：`mixed-read-write` 判据**满足** ✓；`reference-complete-history` 的**场景输入
+需要修**（把「物理类/本科批」改成浙江真实口径「综合/第一段」✓，并同步快照的 `historyQuery`）✗
+——**动 P0 场景属动基线** ✗，按惯例先记在这里等裁决 ✓，未擅自改 ✓。

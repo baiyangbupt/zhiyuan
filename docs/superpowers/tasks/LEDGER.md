@@ -73,6 +73,8 @@ P2d（契约 schema 与 prompt 对齐）。明细见 `P0-acceptance-measurement/
 
 **复跑（P2e 修掉契约漂移之后）**：`reference-complete-history` 20/20 ✓、`mixed-read-write` **18/20 ✗**——两次失败全是 `forbidden_tools`：模型**真的去调了写工具**。首测那个 19/20 是漂移造成的假象（读的那半被误判 blocked，模型更早收手、根本没走到写的那半）。**P0 这条验收条现在依赖 P3**（不能靠"模型碰巧没动手"，要靠"它动手时被挡住"）。
 
+**2026-09-24 重测（量具修好后的第一次可信测量，两场景各 20 次）**：`mixed-read-write` **19/20 满足** ✓；`reference-complete-history` **12/20 不满足** ✗——8 次 `clarification_mismatch` 的根因是**场景口径本身不存在**（消息写「浙江 物理类 本科批」✗，浙江是综合/分段 ✓）：模型答对了事实、随后按 admission-fact-analysis 的纪律指出口径错 ✗；此前 20/20 是因为技能读不到、照字面答题 ✓。**场景输入待裁决是否修正**（属动 P0 基线 ✗，未擅改 ✓）。详见 `P0-acceptance-measurement/REPORT.md` 附。
+
 **2026-09-22 回归确认**：P2d/P2e 那串改动（schema 补 enum、提示词改 `executionStatus` 语义、工具契约与夹具对齐）之后，整套验收 1 遍 → **16/16，0 业务失败 0 环境失败**（`.runtime/zhiyuan-acceptance-regression-0922.json`）。
 
 **证据边界**：本测量是"真实 Codex + 真实模型 + 夹具工具"那一层；
