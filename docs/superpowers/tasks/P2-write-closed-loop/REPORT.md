@@ -291,6 +291,27 @@ E2E 离收口只差"查到那个编码 + 跑一遍驱动 + 确认半段" ✓。
 在**链**的语境里那个命令是对的 ✓（链就服务这两种目标 ✓）；要不要让链也接 scope 目标，
 才是上面那条裁决 ✓。
 
+## 四之九、第十轮（2026-09-24）：**写路径场景落地**（`8e4e3a2`）
+
+任务书 §五 要求"写模式上来之后应当**换一条场景**去量写路径，而不是放宽 `mixed-read-write`" ✓。
+落成三件：
+
+1. **新判据** `proposal_request_goal_type`（`app/engine/semantic_eval.py`）：量的是
+   `proposalRequest.goalType`。既有的 `proposal_required` 量的是 `proposalRef`（引用已有提案 ✓）
+   ——写路径上新提案走 `proposalRequest`、`proposalRef` **保持空** ✗，只量它会把整条写路径漏掉；
+   trace 侧同步补 `proposalGoalType`（`app/engine/turn_trace.py`）。
+2. **新场景** `write-path-proposal`（`scripts/codex_semantic_smoke.py`）：快照给一个**没满**的方案
+   （3 条 ✓）+ "补足到 80 个"的写意图；期望 `goalType = fill_to_count`（链支持的那两种之一 ✓）
+   且 `plan_apply` 仍不许被调 ✓。**为什么给非空方案**：空方案上模型会（正确地）拒绝提案 ✗
+   ——那样量到的不是写路径而是门禁 ✓（真栈上踩过这个混淆 ✓）。
+3. smoke 在该场景下带上**写实例规则**（镜像 composition 在 `codex_write` 下的行为 ✓），
+   否则量到的还是只读实例 ✗。
+
+**实测（一次通过）**：`passed: True`、`failures: []`、`observed.proposalGoalType = fill_to_count` ✓；
+模型正文自述"写操作在确认前不执行…提案已就绪，等你确认后由确认链执行；本轮我没有调用任何写工具，
+方案状态没有任何变化" ✓。`mixed-read-write` 的期望**一个字没动** ✓。
+全量：`1954 passed / 35 skipped / 1 failed`（旧账 ✓）。
+
 ## 五、下一步
 
 1. ~~定 operationId 的落点~~ ✓ 已做完（走生产者侧：Java prepare 落进 pending.dataValue + 新端点 + agent 写模式改走它）；
