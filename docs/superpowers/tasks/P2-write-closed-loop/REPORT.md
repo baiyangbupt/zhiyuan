@@ -125,6 +125,32 @@ source: docs/superpowers/tasks/P2-write-closed-loop/TASK.md
 **驱动已就绪**：`/tmp/write_turn.py`（建会话 → 写意图 → 读 pending → 用 WS 的 compat 形状发确认 ✓；
 还差一个"用既有会话"的开关，给"确认半段"复用 ✓）。
 
+## 四之四、第五轮（2026-09-24）：写实例的规则层就位；E2E 前半段就差"给会话铺画像"
+
+**改了什么（`3d6e6b5`）**：新增 `skills/codex/developer_instructions.write.md`（写实例附加规则：
+写请求 → 出 `proposalRequest` 说清对象/变更/影响；不自执行、不调写工具；提案里不编数字；
+只读的那半——证据绑定、四态、缺硬事实先澄清——一条不放松），由 `composition` 在 `codex_write`
+时拼进 developer instructions（只读实例不带 ✓，测试两条：写实例带上 / 只读实例不许带 ✓）。
+
+**为什么走指令层而不是快照**（核实过再定 ✓）：Java 的 `fillCapabilities` 恒为只读
+（只加 `catalog_read` / `admission_read` / `review_read` ✗）→ 快照里**没有写能力**可判 ✗；
+而技能文本两边共用 ✗ → 实例级规则只能由"知道自己是哪个模式"的那一层（网关）来加 ✓。
+
+**这轮验证到的**：
+- 写实例上两个 plan 用例**都通过** ✓（`plan-generate-readonly` 17.6s、`locked-item-adjust` 18.5s，
+  2/2、0 失败 ✓）——写模式下只读行为**没有回归** ✓；
+- 但**仍没有提案产生** ✗ ——查明原因：这两个用例本来就是**只读期望** ✓
+  （`plan-generate-readonly` 要的正是只读草案 ✓），不是写意图场景 ✗；
+  按任务书 §五，写路径要**另开场景/另发指令** ✓。
+
+**E2E 前半段的最后一块（已定位）**：写意图要出提案，会话得有**已确认的画像** ✓
+（缺硬事实时模型的正确行为是先澄清 ✗✓，我实测那句"把浙江大学加进我的方案"就是这样 ✓）；
+而本地库里**没有现成画像**（`assistant_chat_session_extra_data` 全是 25 字节的批数据 ✗）。
+→ 下一步：驱动里加"铺画像"一步（走 `internal_client.save_chat_profile` / 成绩详情那类 inner 接口 ✓，
+harness 自己不带铺状态 ✓），然后：写意图回合 → 期望 `proposalRequest` → prepare → **pending** ✓ →
+再用 WS compat 形状发确认（驱动 `/tmp/write_turn.py` 已就绪，补一个"用既有会话"的开关 ✓）→
+回读 + 重复确认的库计数 ✓。
+
 ## 五、下一步
 
 1. ~~定 operationId 的落点~~ ✓ 已做完（走生产者侧：Java prepare 落进 pending.dataValue + 新端点 + agent 写模式改走它）；
