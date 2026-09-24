@@ -579,10 +579,17 @@ class InternalClientBackend:
         tenant_id: int | str,
         chat_session_id: int | str,
         thread_id: str | None = None,
+        current_state_version: int = 42,
     ) -> None:
         self.tenant_id = tenant_id
         self.chat_session_id = chat_session_id
         self.thread_id = thread_id
+        # 本类的若干方法（check_eligibility / compare / get_charter / get_enrollment_plan /
+        # list_admission_units）用它给信封盖版本戳，而它原来只挂在**另一个类**
+        # （ReadonlyDomainTools）上 ✗ → 那 5 个工具全部
+        # `backend_unavailable: 'InternalClientBackend' object has no attribute
+        # 'current_state_version'`（2026-09-24 真栈 E2E 抓到；推荐路径的入口正好在其中 ✗）。
+        self.current_state_version = current_state_version
 
     @staticmethod
     def _data(response: Any) -> Any:

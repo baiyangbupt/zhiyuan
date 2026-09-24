@@ -286,6 +286,9 @@ async def _call_domain_tool(
                 tenant_id=binding.tenant_id,
                 chat_session_id=binding.session_id,
                 thread_id=binding.thread_id,
+                # 权威快照版本要**同时**给适配器：它自己给信封盖版本戳
+                # （不给就 5 个工具全 backend_unavailable ✗，见 tools_readonly 的注释）。
+                current_state_version=state_version,
             ),
             current_state_version=state_version,
             # MCP_MODE 由启动环境传入（composition 的 MCP_ENV_VARS 透传）；

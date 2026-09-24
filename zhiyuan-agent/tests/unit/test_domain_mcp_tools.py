@@ -276,6 +276,22 @@ async def test_school_search_with_a_name_goes_to_name_search_not_filters(monkeyp
 
 
 @pytest.mark.asyncio
+def test_internal_client_backend_carries_the_snapshot_version() -> None:
+    """适配器必须带 `current_state_version`（2026-09-24 真栈 E2E 抓到的"5 个工具全挂"）。
+
+    它原来只挂在 `ReadonlyDomainTools` 上 ✗，而适配器的 `check_eligibility` / `compare` /
+    `get_charter` / `get_enrollment_plan` / `list_admission_units` 都用它给信封盖版本戳 →
+    那 5 个工具全部 `backend_unavailable: 'InternalClientBackend' object has no attribute
+    'current_state_version'`，而**推荐路径的入口正好在其中**（模型实测：需要录取率的调用全失败）。
+    """
+    from app.mcp_server.tools_readonly import InternalClientBackend
+
+    backend = InternalClientBackend(tenant_id=1, chat_session_id=2, current_state_version=7)
+
+    assert backend.current_state_version == 7
+
+
+@pytest.mark.asyncio
 async def test_readonly_context_cannot_call_write_capability() -> None:
     tools = ReadonlyDomainTools(trusted_context(), backend=None)
 
