@@ -272,6 +272,25 @@ E2E 离收口只差"查到那个编码 + 跑一遍驱动 + 确认半段" ✓。
 回写→重复确认被拒 ✓✓）第七轮已全验 ✓。模型的拒绝行为（不编数字、不拿空集包装成提案 ✓）
 本身就是 P3/P2 想要的那种克制 ✓✓。
 
+## 四之八、第九轮（2026-09-24）：**更正我自己的一条误判**——6 vs 2 不是 bug，是两条路径
+
+第七轮我把「taxonomy 列 6 种可 apply 的 user-goal 策略、而 pending-command 链只认 2 种」
+记成「Java 内部不自洽」✗。读了 `RepairProposalApplyPolicy` 之后更正：
+
+| 路径 | 入口 | user-goal 支持的策略 |
+|---|---|---|
+| 直接应用（同步） | `POST /session/fix-proposals/apply` → `RepairProposalApplyPolicy.validateUserGoalProposalForApply` | **6 种**（含 `only_keep_scope` / `must_include_scope` / `exclude_scope` / `tuition_budget_scope` ✓） |
+| 幂等确认链（本任务接的） | `pending-command/execute` → `PendingPlanningCommandBizService.validatePlanChangeProposal` | **2 种**（`fill_to_count` / `prioritize_within_tier` ✓，且校验规则全是这两种自己的字段 ✓） |
+
+→ **两条路径能力不同，不是同一处代码打架** ✗✓。因此：**Java 一行没改** ✓
+（没有缺陷可修；把 6 塞进链的检查反而会放行未实现的策略 ✗）。
+真正剩下的是**能力缺口**（不是 bug）：新链还没实现 scope 类目标（加/删学校）的 apply ✗
+——要么在链里实现它 ✓，要么这类目标走直接应用那条路 ✓（但那条**绕过确认** ✗，与 P2 的立意冲突 ✗）→ **属设计裁决** ✗。
+
+**顺带更正**：我此前把「agent 恒发 `apply_plan_change_proposal`」记成"映射要补全"✗——
+在**链**的语境里那个命令是对的 ✓（链就服务这两种目标 ✓）；要不要让链也接 scope 目标，
+才是上面那条裁决 ✓。
+
 ## 五、下一步
 
 1. ~~定 operationId 的落点~~ ✓ 已做完（走生产者侧：Java prepare 落进 pending.dataValue + 新端点 + agent 写模式改走它）；
