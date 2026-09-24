@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
+import logging
 import uuid
 
 from app.gateway.contracts import ConversationAction, ConversationTurnSnapshot
 from app.util.internal_client import execute_pending_planning_command, resolve_pending_confirmation
+
+logger = logging.getLogger(__name__)
 
 
 # 写闭环的命令类型：与 Java `PendingPlanningCommandBizService` 的常量分支一致。
@@ -152,6 +155,8 @@ async def execute_conversation_action(
             claim_token=claim_token,
             source_version=source_version,
             executor=executor,
+            resolver=resolver,
+            expected_revision=_first_int(data.get("revision")),
         )
     # Pending revision is a separate CAS counter, not the conversation version.
     new_version = data.get("stateVersion")
@@ -191,15 +196,23 @@ def _proposal_apply_payload(
     if isinstance(stored, Mapping):
         return dict(stored)
     guard = _first_int(active.get("sourceVersion"), active_data.get("sourceVersion"), source_version, 0)
-    return {
+    payload = {
         "proposalId": str(active_data.get("proposalId") or proposal_ref),
         "proposalSource": str(active_data.get("proposalSource") or "user_goal"),
         "sourceVersionGuard": int(guard or 0),
-        # 两个开关保守取 false（不重排、不重跑审查）：它们是"额外做什么"，
-        # 不是"要不要执行"；要重排/重审应由待确认内容带出来（上面那条优先）。
-        "regenerateOrderedPlan": bool(active_data.get("regenerateOrderedPlan", False)),
-        "rerunReview": bool(active_data.get("rerunReview", False)),
+        # 两个开关取 true：Java **要求**它们为 true（`PendingPlanningCommandBizService`：
+        # "plan change apply requires regenerateOrderedPlan and rerunReview"），
+        # 而 legacy 客户端的默认也一直是 true ✓。曾经按"保守取 false"写，真栈上直接被 40001 拒 ✗
+        # （2026-09-24 实测）——"保守"在没有依据时就是猜，这里依据在生产者侧。
+        "regenerateOrderedPlan": bool(active_data.get("regenerateOrderedPlan", True)),
+        "rerunReview": bool(active_data.get("rerunReview", True)),
     }
+    # `user_goal` 来源的提案还要求带上原始目标（"user_goal proposal requires userGoalRequest"）：
+    # 由 prepare 落进 pending 的 dataValue（见 Java 侧），这里原样透传。
+    user_goal_request = active_data.get("userGoalRequest", active_data.get("user_goal_request"))
+    if isinstance(user_goal_request, Mapping):
+        payload["userGoalRequest"] = dict(user_goal_request)
+    return payload
 
 
 async def _execute_claimed_command(
@@ -213,6 +226,8 @@ async def _execute_claimed_command(
     claim_token: str,
     source_version: Any,
     executor: Callable[..., Awaitable[Mapping[str, Any]]] | None,
+    resolver: Callable[..., Awaitable[Mapping[str, Any]]] | None = None,
+    expected_revision: int | None = None,
 ) -> ConversationActionResult:
     """claim 之后的第二段：`pending-command/execute`。
 
@@ -246,6 +261,31 @@ async def _execute_claimed_command(
     data = _data(response)
     # **执行失败不许读成 completed**：`_status` 对拿不准的响应一律 `failed` ✓
     # （"HTTP 成功不等于执行成功"那条注释在它上面）。
+    #
+    # 链路的最后一段：把结果**回写**给 pending（`complete` / `fail`）。
+    # 不回写的后果是 pending 永远停在 `applying` ✗——而 `applying` 正是"重复确认"的
+    # 判定依据：第二次确认会走 claim 的"applying 且未过期 → 同状态返回"分支，
+    # 看起来像没事，实际什么都没落地 ✗（2026-09-24 真栈实测）。
+    # `complete`/`fail` 会校验 claim 归属 → **必须复用同一个 claim token** ✓。
+    if status in {"applied", "failed"} and expected_revision and expected_revision > 0:
+        report_action = "complete" if status == "applied" else "fail"
+        try:
+            await (resolver or resolve_pending_confirmation)(
+                session_id,
+                tenant_id=tenant_id,
+                pending_id=pending_id,
+                expected_revision=int(expected_revision),
+                action=report_action,
+                claim_token=claim_token,
+                result_code=str(response.get("code") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 —— 回写失败不改写执行结果，但必须留痕
+            logger.warning("pending outcome report failed (%s, pending=%s): %s", report_action, pending_id, exc)
+    elif status == "applying":
+        logger.warning(
+            "pending command still applying after execute (pending=%s); not reporting complete/fail",
+            pending_id,
+        )
     changes = data.get("actualChanges", data.get("changes", []))
     return ConversationActionResult(
         status, proposal_ref, _first_int(data.get("stateVersion")),

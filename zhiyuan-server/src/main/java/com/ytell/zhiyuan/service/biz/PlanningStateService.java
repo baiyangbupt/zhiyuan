@@ -614,6 +614,12 @@ public class PlanningStateService {
                     Map<String, Object> dataValue = new LinkedHashMap<String, Object>();
                     dataValue.put("operationId", operationId);
                     dataValue.put("proposalSource", "user_goal");
+                    if (req != null) {
+                        // `user_goal` 来源的提案在 apply 时**要求带上原始目标**
+                        // （`PendingPlanningCommandBizService`："user_goal proposal requires userGoalRequest"）
+                        // ——落进 pending 的 dataValue，确认时由网关原样透传。
+                        dataValue.put("userGoalRequest", JSONObject.parseObject(JSONObject.toJSONString(req)));
+                    }
                     if (preview != null) {
                         dataValue.put("sourceVersion", preview.getSourceVersion());
                         FixProposalDTO primary = primaryProposal(preview);

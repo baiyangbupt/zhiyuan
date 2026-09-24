@@ -251,6 +251,10 @@ async def test_confirm_runs_claim_then_execute_with_the_same_claim_token():
     assert call["expected_plan_version"] == 7
     assert "executionPayload" not in call["proposal_apply"], "不许照抄 legacy 的包装层"
     assert call["proposal_apply"]["proposalId"] == "proposal-9"
+    # Java **要求**这两个开关为 true（"plan change apply requires regenerateOrderedPlan
+    # and rerunReview"）——曾经按"保守取 false"写，真栈上被 40001 直接拒 ✗（2026-09-24 实测）。
+    assert call["proposal_apply"]["regenerateOrderedPlan"] is True
+    assert call["proposal_apply"]["rerunReview"] is True
 
 
 @pytest.mark.asyncio
@@ -284,6 +288,10 @@ async def test_duplicate_confirm_executes_only_once():
     executions = []
 
     async def resolver(*args, **kwargs):
+        # 回写（complete/fail）与 claim 分开应答：回写是链路最后一段，
+        # 不属于"第几次确认"的计数。
+        if kwargs.get("action") in {"complete", "fail"}:
+            return {"code": 0, "data": {"status": "applied"}}
         return resolve_results.pop(0)
 
     async def executor(*args, **kwargs):

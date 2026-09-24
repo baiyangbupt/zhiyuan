@@ -604,6 +604,24 @@ class GatewayService:
             await self._restart_runtime()
             return await self.thread_recovery.load_or_resume(key, snapshot)
 
+    async def _refresh_snapshot_cache(self, key: SessionKey, *, tenant_id: str, session_id: str) -> None:
+        """重读权威快照并写进缓存（提案/动作这类**状态变更**之后必须做）。
+
+        失败只告警不抛：刷新是"让下一轮看到最新"，不是本轮的正确性前提——
+        拖着它失败会把一次成功的提案变成一次失败的回合。
+        """
+        try:
+            fresh = _snapshot_payload(
+                await _maybe_await(
+                    self.snapshot_loader(tenant_id=tenant_id, session_id=str(session_id), skill=None)
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("snapshot refresh failed (session=%s): %s", session_id, exc)
+            return
+        self._store_snapshot(key, fresh)
+        self._working_sets[key] = ConversationWorkingSet.from_snapshot(fresh)
+
     async def _restart_runtime(self) -> None:
         """重拉原生 runtime。调用点只有恢复路径：ThreadRecovery 的进程退出分支、
         `_ensure_thread` 的兜底、回合内的兜底——三处都必须经过这里，否则新进程
@@ -1197,6 +1215,11 @@ class GatewayService:
                         "proposal_preview_unavailable",
                         "Java proposal compiler returned an invalid proposal",
                     )
+                # 提案**改变了服务端状态**（写模式下 pending 已落库）：把快照缓存刷掉。
+                # 不刷的后果是自锁：下一轮确认时网关拿**旧**快照核对 `proposalRef`，
+                # 必然 `proposal_reference_mismatch`，而链路看上去只是"确认没生效"
+                # （2026-09-24 真栈实测 —— 确认永远被自己的缓存挡住 ✗）。
+                await self._refresh_snapshot_cache(key, tenant_id=tenant_id, session_id=session_id)
             working_set = self._working_sets.get(key)
             if working_set is not None:
                 working_set.ingest_payload(turn, turn_id=turn_id)
