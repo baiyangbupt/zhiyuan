@@ -347,3 +347,21 @@ legacy 链一直用**另一条**命令做这件事 ✓：`apply_constraint_and_r
 **同日裁决记录**：② 档位数据**维持现状** ✓（写路径已用 `fill_to_count`＋夹具方案测通 ✓，
 "成功 apply"缺的是本地 test 栈的录取率 ✗，不是链路 ✗）；③ P3 判据**接受现判据+归因说明** ✓；
 ④ A 型"该提案还是该反问"**维持现期望** ✓（可识别时给提案 ✓，与 #5 的收敛方向一致 ✓）。
+
+### 第十一轮·真栈复验（2026-09-25）
+
+拿 write 实例跑一遍 scope 目标（"把浙江大学加进我的方案" ✓ → 模型出
+`must_include_scope` 提案 ✓ → 库里 pending 带 `operationId` ✓ → 确认）：
+
+- **映射生效** ✓✓：不再出现 `40001: unsupported plan change goalType` ✗→✓——
+  确认直接打到了 `apply_constraint_and_regenerate` 的路径上 ✓；
+- 链路自身全程正确 ✓✓：claim ✓ → execute ✓ → 真实业务调用 ✓ → 如实报错 ✓ →
+  **回写**（pending `applying` → `expired` ✓✓，不卡住 ✓）；
+- **卡在数据前置** ✗：Java 回 `110: 下载志愿数据文件失败`——这条命令要读
+  `session_volunteer_<会话>_temp.json`（就是普查里 `PlanConfig.file_addr_format` 指向的 OSS 文件 ✓；
+  Java 侧那份配置是**活的** ✓，Python 侧同名类才是死的 ✗），而本地 test 会话没有这个文件 ✗。
+  → **"成功 apply"的门槛再次落在数据面** ✓（与档位数据同源：本地 test 栈缺真实会话数据 ✓），
+    链路与映射都不欠账 ✓。
+
+模型行为也照旧合规 ✓：第一轮它先要画像、不出提案 ✓；追问一次后按指定目标出提案 ✓，
+正文写明"写操作在你确认前不会执行" ✓。
