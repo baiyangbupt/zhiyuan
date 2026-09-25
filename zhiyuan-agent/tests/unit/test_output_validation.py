@@ -443,6 +443,75 @@ def test_evidence_from_another_session_is_still_refused() -> None:
         )
 
 
+def test_evidence_signed_in_a_previous_thread_is_still_accepted() -> None:
+    """P1c-1 验收 5 的判据本身：**thread 不参与证据准入**（重启模拟的本质）。
+
+    `service.py` 的 `self._threads` 是纯进程内 dict、从不持久化——Gateway 一重启，
+    同一 session 拿到新 thread，存量证据不该因此全部作废（隔离边界是
+    `(tenantId, chatSessionId)`，Java 侧一直强制）。这里直接量那条判据：
+    签发时 thread 是 `thr-old`、现在引用它是 `thr-current` → 必须通过。
+    """
+    validated = validate_turn_output(
+        turn_output=_fact_output("ev-1"),
+        current_snapshot=ConversationTurnSnapshot(
+            snapshot_version=42, session_id="900017", planning_stage="candidate_exploration"
+        ),
+        evidence_ledger={
+            "ev-1": {
+                "evidenceId": "ev-1",
+                "sourceLevel": "authoritative",
+                "dataVersion": "2026.09.07",
+                # 记录仍然带着签发线程（审计用），但它**不参与准入判定**。
+                "scope": {"tenantId": 1, "chatSessionId": 900017, "threadId": "thr-old"},
+            }
+        },
+        artifacts={},
+        thread_id="thr-current",
+        tenant_id="1",
+        strict_scope=True,
+    )
+
+    assert validated is not None
+
+
+def test_artifact_from_a_previous_thread_is_still_refused() -> None:
+    """P1c-1 验收 4 的另一半：**artifact 侧的 thread 检查留着**（与证据侧不对称是有意的）。
+
+    证据不绑 thread（易失的运行身份不能承载安全语义）、产物**绑**（它绑定产生它的那条链）。
+    这条防的是后来的人"顺手把两侧一起删了"✗。
+    """
+    output = TurnOutput.model_validate(
+        {
+            "responseType": "recommendation",
+            "message": "候选",
+            "artifactRefs": [
+                {"artifactId": "artifact-1", "artifactType": "candidate", "stateVersion": 42}
+            ],
+            "evidenceRefs": [],
+        }
+    )
+
+    with pytest.raises(OutputContractError, match="artifact_scope_violation"):
+        validate_turn_output(
+            turn_output=output,
+            current_snapshot=ConversationTurnSnapshot(
+                snapshot_version=42, session_id="900017", planning_stage="candidate_exploration"
+            ),
+            evidence_ledger={},
+            artifacts={
+                "artifact-1": {
+                    "artifactId": "artifact-1",
+                    "stateVersion": 42,
+                    "sessionId": "900017",
+                    "threadId": "thr-old",
+                }
+            },
+            thread_id="thr-current",
+            tenant_id="1",
+            strict_scope=True,
+        )
+
+
 def test_evidence_signed_before_a_workspace_write_is_still_accepted() -> None:
     """P1c-1 的验收原话：**第 3 回合产出的证据，在中间发生过一次工作区写入之后，
     第 7 回合引用它必须通过。**
