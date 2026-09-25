@@ -19,6 +19,26 @@ logger = logging.getLogger(__name__)
 
 # 写闭环的命令类型：与 Java `PendingPlanningCommandBizService` 的常量分支一致。
 APPLY_PLAN_CHANGE_PROPOSAL = "apply_plan_change_proposal"
+# 范围类目标（加/删学校、只看省内、学费上限）走的是**另一条**命令 ✗→✓：
+# `apply_plan_change_proposal` 的 user-goal 分支只认计数/排序两种（fill_to_count /
+# prioritize_within_tier），范围类会被 40001 `unsupported plan change goalType` 拒 ✗
+# （2026-09-24 真栈实测）。legacy 链一直用 `apply_constraint_and_regenerate` + 一个
+# `constraintUpdate` 做这件事 ✓（`app/zhiyuan_agent/tools.py` 的参照调用 ✓），
+# 第十一轮把同一个映射补进新链 ✓。
+APPLY_CONSTRAINT_AND_REGENERATE = "apply_constraint_and_regenerate"
+PLAN_CHANGE_GOALS = frozenset({"fill_to_count", "prioritize_within_tier"})
+SCOPE_GOALS = frozenset({"only_keep_scope", "must_include_scope", "exclude_scope", "tuition_budget_scope"})
+# 目标里的范围种类 → `constraintUpdate` 的三个偏好束（与 legacy 的分组一致 ✓）。
+_SCOPE_BUNDLES = {
+    "school": "schoolPreferences",
+    "college": "schoolPreferences",
+    "university": "schoolPreferences",
+    "major": "majorPreferences",
+    "province": "regionPreferences",
+    "city": "regionPreferences",
+    "area": "regionPreferences",
+    "region": "regionPreferences",
+}
 
 
 @dataclass(frozen=True)
@@ -215,6 +235,77 @@ def _proposal_apply_payload(
     return payload
 
 
+def _constraint_update_from_goal(goal: Mapping[str, Any]) -> dict[str, Any] | None:
+    """把 user-goal 的范围翻译成 `constraintUpdate`（形状照 legacy 的 `_intent_constraint_payloads` ✓）。
+
+    每个偏好束 = `{"positive": [...], "negative": [...]}` ✓（名字级 ✓，与 legacy 一致 ✓）。
+    **范围种类不认识的，抛错拒绝执行** ✗：静默丢掉一条排除，用户看不见地在方案里留着一所
+    他要去掉的学校——那比整轮失败糟得多 ✓。
+    """
+    bundles: dict[str, dict[str, list[str]]] = {}
+
+    def add(scope: Any, *, negative: bool) -> None:
+        if not isinstance(scope, Mapping):
+            return
+        name = str(scope.get("name") or scope.get("value") or "").strip()
+        scope_type = str(scope.get("scopeType") or scope.get("scope_type") or "").strip().lower()
+        bundle = _SCOPE_BUNDLES.get(scope_type)
+        if not name or bundle is None:
+            raise ValueError(f"unmappable_goal_scope: {scope_type or '(missing)'}")
+        target = bundles.setdefault(bundle, {"positive": [], "negative": []})
+        target["negative" if negative else "positive"].append(name)
+
+    for scope in goal.get("targetScopes") or goal.get("target_scopes") or []:
+        add(scope, negative=False)
+    for scope in goal.get("negativeScopes") or goal.get("negative_scopes") or []:
+        add(scope, negative=True)
+    if not bundles:
+        return None
+    return {"intentMode": "constraint", **bundles}
+
+
+def _tuition_bounds(goal: Mapping[str, Any]) -> tuple[int | None, int | None]:
+    context = goal.get("context") if isinstance(goal.get("context"), Mapping) else {}
+    return (
+        _first_int(context.get("minTuitionPerYear"), context.get("min_tuition_per_year")),
+        _first_int(context.get("maxTuitionPerYear"), context.get("max_tuition_per_year")),
+    )
+
+
+def _command_for_goal(
+    active_data: Mapping[str, Any], *, proposal_apply: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """按目标类型选命令并装配附加输入（第十一轮：scope 类目标的映射 ✓）。
+
+    - 计数/排序类（`fill_to_count` / `prioritize_within_tier`）→ `apply_plan_change_proposal`
+      + 扁平 `proposalApply` ✓（原路径，行为不变 ✓）；
+    - 范围类（`only_keep_scope` / `must_include_scope` / `exclude_scope` / `tuition_budget_scope`）
+      → `apply_constraint_and_regenerate` + `constraintUpdate`（或学费上下限）✓✓；
+    - 没有目标 / 类型不认识 → 保持原行为（由 Java 去判 ✓，错误码在那边更准 ✓）。
+    """
+    goal = active_data.get("userGoalRequest") or active_data.get("user_goal_request")
+    if not isinstance(goal, Mapping):
+        return APPLY_PLAN_CHANGE_PROPOSAL, {"proposal_apply": proposal_apply}
+    goal_type = str(goal.get("goalType") or goal.get("goal_type") or "").strip()
+    if goal_type not in SCOPE_GOALS:
+        return APPLY_PLAN_CHANGE_PROPOSAL, {"proposal_apply": proposal_apply}
+    constraint_update = _constraint_update_from_goal(goal)
+    min_tuition, max_tuition = _tuition_bounds(goal)
+    if constraint_update is None and min_tuition is None and max_tuition is None:
+        raise ValueError("goal_scope_empty: scope goal carries nothing to apply")
+    kwargs: dict[str, Any] = {
+        # 约束变了就得重排 ✓（legacy 那条路同样如此 ✓）。
+        "regenerate_ordered_plan": True,
+    }
+    if constraint_update is not None:
+        kwargs["constraint_update"] = constraint_update
+    if min_tuition is not None:
+        kwargs["min_tuition_per_year"] = min_tuition
+    if max_tuition is not None:
+        kwargs["max_tuition_per_year"] = max_tuition
+    return APPLY_CONSTRAINT_AND_REGENERATE, kwargs
+
+
 async def _execute_claimed_command(
     *,
     tenant_id: str | int,
@@ -245,6 +336,20 @@ async def _execute_claimed_command(
     expected_plan_version = _first_int(
         active.get("sourceVersion"), active_data.get("sourceVersion"), source_version
     )
+    try:
+        command_type, extra_kwargs = _command_for_goal(
+            active_data,
+            proposal_apply=_proposal_apply_payload(
+                active, active_data, proposal_ref=str(proposal_ref or pending_id), source_version=source_version
+            ),
+        )
+    except ValueError as exc:
+        # 范围种类不认识、或范围目标里什么都没有：**拒绝执行** ✓
+        # （静默丢掉一条排除，用户看不见地在方案里留着一所他要去掉的学校——那更糟 ✓）。
+        code, _, detail = str(exc).partition(":")
+        return ConversationActionResult(
+            "failed", proposal_ref, code=code.strip(), message=detail.strip() or None
+        )
     response = await (executor or execute_pending_planning_command)(
         tenant_id,
         session_id,
@@ -252,10 +357,8 @@ async def _execute_claimed_command(
         pending_id=pending_id,
         claim_token=claim_token,
         expected_plan_version=int(expected_plan_version or 0),
-        command_type=APPLY_PLAN_CHANGE_PROPOSAL,
-        proposal_apply=_proposal_apply_payload(
-            active, active_data, proposal_ref=str(proposal_ref or pending_id), source_version=source_version
-        ),
+        command_type=command_type,
+        **extra_kwargs,
     )
     status = _status(response)
     data = _data(response)

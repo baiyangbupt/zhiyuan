@@ -257,6 +257,108 @@ async def test_confirm_runs_claim_then_execute_with_the_same_claim_token():
     assert call["proposal_apply"]["rerunReview"] is True
 
 
+async def _claim_then_execute(monkeypatch, goal: dict | None):
+    """跑一遍 confirm→execute，把 execute 收到的 kwargs 带回来（scope 映射四条共用）。"""
+    execute_calls = []
+
+    async def resolver(session_id, **kwargs):
+        if kwargs.get("action") in {"complete", "fail"}:
+            return {"code": 0, "data": {"status": "applied"}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        execute_calls.append(kwargs)
+        return {"code": 0, "data": {"status": "applied", "stateVersion": 9}}
+
+    current = snapshot_with_pending({"userGoalRequest": goal} if goal is not None else None)
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=current, resolver=resolver, executor=executor,
+    )
+    return result, execute_calls
+
+
+@pytest.mark.asyncio
+async def test_scope_goal_routes_to_the_constraint_command() -> None:
+    """范围类目标（加学校）走 `apply_constraint_and_regenerate` + `constraintUpdate` ✓。
+
+    依据：`apply_plan_change_proposal` 的 user-goal 分支只认计数/排序两种 ✗——范围类会被
+    40001 `unsupported plan change goalType` 拒 ✓（2026-09-24 真栈实测）；
+    legacy 链一直用 constraint 那条 ✓（`app/zhiyuan_agent/tools.py` 的参照 ✓）。
+    """
+    result, calls = await _claim_then_execute(None, {
+        "goalType": "must_include_scope",
+        "targetScopes": [{"scopeType": "school", "name": "浙江大学"}],
+        "negativeScopes": [],
+    })
+
+    assert result.action_status == "applied"
+    call = calls[0]
+    assert call["command_type"] == "apply_constraint_and_regenerate"
+    assert call["constraint_update"] == {
+        "intentMode": "constraint",
+        "schoolPreferences": {"positive": ["浙江大学"], "negative": []},
+    }
+    assert call["regenerate_ordered_plan"] is True
+    assert "proposal_apply" not in call, "约束那条命令不吃 proposalApply"
+
+
+@pytest.mark.asyncio
+async def test_scope_goal_carries_every_kind_of_scope() -> None:
+    """三类范围各进各的束：school→schoolPreferences、major→majorPreferences、region 同理 ✓；
+    负向进 negative ✓（删学校/去城市就是这一类 ✓）。"""
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "exclude_scope",
+        "targetScopes": [{"scopeType": "major", "name": "临床医学"}],
+        "negativeScopes": [{"scopeType": "province", "name": "北京"},
+                           {"scopeType": "school", "name": "甲大学"}],
+    })
+
+    assert calls[0]["constraint_update"] == {
+        "intentMode": "constraint",
+        "majorPreferences": {"positive": ["临床医学"], "negative": []},
+        "regionPreferences": {"positive": [], "negative": ["北京"]},
+        "schoolPreferences": {"positive": [], "negative": ["甲大学"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_tuition_scope_carries_the_bounds() -> None:
+    """学费类目标走同一命令，但参数是上下限（legacy 那条路亦然 ✓）。"""
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "tuition_budget_scope",
+        "context": {"maxTuitionPerYear": 8000},
+    })
+
+    assert calls[0]["command_type"] == "apply_constraint_and_regenerate"
+    assert calls[0]["max_tuition_per_year"] == 8000
+    assert "constraint_update" not in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_unmappable_goal_scope_refuses_to_execute() -> None:
+    """不认识的 `scopeType` → **拒绝执行** ✓：静默丢掉一条排除（用户看不见地在方案里
+    留着他要去掉的学校）比整轮失败糟得多。"""
+    result, calls = await _claim_then_execute(None, {
+        "goalType": "exclude_scope",
+        "negativeScopes": [{"scopeType": "galaxy", "name": "银河系"}],
+    })
+
+    assert result.action_status == "failed"
+    assert result.code == "unmappable_goal_scope"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_counting_goal_still_uses_the_plan_change_command() -> None:
+    """对照：计数/排序类**行为不变** ✓（原路径 + 扁平 proposalApply ✓）。"""
+    _, calls = await _claim_then_execute(None, {"goalType": "fill_to_count", "targetCount": 80})
+
+    assert calls[0]["command_type"] == "apply_plan_change_proposal"
+    assert calls[0]["proposal_apply"]["proposalId"] == "proposal-9"
+
+
 @pytest.mark.asyncio
 async def test_stale_revision_on_claim_refuses_and_never_executes():
     """异常 1（陈旧 revision）：claim 被判 stale → 拒绝执行、如实回话。"""

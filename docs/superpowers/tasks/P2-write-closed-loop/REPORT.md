@@ -321,3 +321,29 @@ E2E 离收口只差"查到那个编码 + 跑一遍驱动 + 确认半段" ✓。
 5. 补 Java 侧 `prepareUserGoalProposal` 的单测（本轮只到"编译过 + 由 ② 覆盖"✗）；
 6. ② 开跑前先**重打包重部署 Java**：本地跑的还是 2026-09-22 06:29 的 jar ✗，不含新端点 ✓
    （agent 侧已重启到新代码 ✓，health 200 ✓）。
+
+## 四之十、第十一轮（2026-09-25）：scope 类目标接进新链（裁决 ① 落地）
+
+**背景（真栈实测的缺口）** ✗→✓：`apply_plan_change_proposal` 的 user-goal 分支只认
+`fill_to_count` / `prioritize_within_tier` 两种 ✓，而**范围类目标**（加/删学校、只看省内、
+学费上限）确认后会被 40001 `unsupported plan change goalType` 拒 ✗——"最自然的写"走到确认就死。
+legacy 链一直用**另一条**命令做这件事 ✓：`apply_constraint_and_regenerate` + 一个
+`constraintUpdate`（`app/zhiyuan_agent/tools.py` 的参照调用 ✓）。
+
+**落地**（`conversation_actions.py`，映射按生产者形状 ✓）：
+- 目标类型 → 命令：计数/排序类走原路径 ✓（行为不变 ✓）；范围类走 constraint 那条 ✓；
+- `constraintUpdate` 形状照 legacy 的 `_intent_constraint_payloads` ✓：
+  每个偏好束 = `{"positive": [...], "negative": [...]}` ✓（名字级 ✓）；
+  `scopeType` → 束：school/college/university→`schoolPreferences`、major→`majorPreferences`、
+  province/city/area/region→`regionPreferences` ✓；`intentMode=constraint` ✓；
+- 学费类走同一命令 + `min/maxTuitionPerYear`（从目标的 `context` 取 ✓）；
+- **不认识的 `scopeType` → 拒绝执行**（`unmappable_goal_scope` ✓）：静默丢掉一条排除，
+  用户看不见地在方案里留着他要去掉的学校——比整轮失败糟得多 ✓；
+- 范围目标里什么都没有 → `goal_scope_empty` 拒绝 ✓。
+
+**测试**（`test_conversation_actions.py` 新增 5 条 → 26 条全绿 ✓）：范围路由 ✓、三类范围各进各的束 ✓、
+学费上下限 ✓、不认识的种类拒执行 ✓、**计数类行为不变的对照** ✓。全量 `1961 passed / 35 skipped / 1 failed`（旧账）✓。
+
+**同日裁决记录**：② 档位数据**维持现状** ✓（写路径已用 `fill_to_count`＋夹具方案测通 ✓，
+"成功 apply"缺的是本地 test 栈的录取率 ✗，不是链路 ✗）；③ P3 判据**接受现判据+归因说明** ✓；
+④ A 型"该提案还是该反问"**维持现期望** ✓（可识别时给提案 ✓，与 #5 的收敛方向一致 ✓）。
