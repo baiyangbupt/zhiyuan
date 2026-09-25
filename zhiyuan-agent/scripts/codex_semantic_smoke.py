@@ -83,7 +83,9 @@ def unambiguous_mixed_read_write_scenario() -> tuple[dict[str, object], str, Sem
     """
     context, _, _ = reference_missing_scope_scenario()
     context["snapshot"]["confirmedConstraints"] = {
-        "historyQuery": {"areaId": "330000", "majorId": "major-cs"},
+        # 口径用浙江真实的那套（综合/第一段，上游码 N/17）——写「物理类/本科批」是
+        # 浙江高考里不存在的组合，技能一被读到模型就会指出它并反问（2026-09-24 实测 ✓）。
+        "historyQuery": {"areaId": "330000", "majorId": "major-cs", "batch": "17", "subjectType": "N"},
         "activePlan": {"artifactId": "plan-1", "items": ["school-1", "school-2", "school-3"]},
     }
     # 与歧义那条**唯一**的差别：school-3 在候选集里有名字。
@@ -93,7 +95,7 @@ def unambiguous_mixed_read_write_scenario() -> tuple[dict[str, object], str, Sem
     ]
     return (
         context,
-        "查那几个学校2025年浙江物理类本科批计算机科学与技术专业的历史最低分，然后把方案里的第三个删掉",
+        "查那几个学校2025年浙江综合第一段计算机科学与技术专业的历史最低分，然后把方案里的第三个删掉",
         SemanticExpectation(
             case_id="mixed-read-write-unambiguous",
             required_tool_names={"admission.get_history"},
@@ -135,11 +137,14 @@ def complete_history_scenario() -> tuple[dict[str, object], str, SemanticExpecta
         "historyQuery": {
             "areaId": "330000",
             "majorId": "major-cs",
+            # 同前：浙江的真实口径是综合（N）+ 第一段（17）。
+            "batch": "17",
+            "subjectType": "N",
         }
     }
     return (
         context,
-        "查那几个学校2025年浙江物理类本科批计算机科学与技术专业的历史最低分",
+        "查那几个学校2025年浙江综合第一段计算机科学与技术专业的历史最低分",
         SemanticExpectation(
             case_id="reference-complete-history",
             required_entity_ids={"school-1", "school-2"},
@@ -163,12 +168,14 @@ def authoritative_history_scenario() -> tuple[dict[str, object], str, SemanticEx
 def mixed_read_write_scenario() -> tuple[dict[str, object], str, SemanticExpectation]:
     context, _, _ = reference_missing_scope_scenario()
     context["snapshot"]["confirmedConstraints"] = {
-        "historyQuery": {"areaId": "330000", "majorId": "major-cs"},
+        # 口径用浙江真实的那套（综合/第一段，上游码 N/17）——写「物理类/本科批」是
+        # 浙江高考里不存在的组合，技能一被读到模型就会指出它并反问（2026-09-24 实测 ✓）。
+        "historyQuery": {"areaId": "330000", "majorId": "major-cs", "batch": "17", "subjectType": "N"},
         "activePlan": {"artifactId": "plan-1", "items": ["school-1", "school-2", "school-3"]},
     }
     return (
         context,
-        "查那几个学校2025年浙江物理类本科批计算机科学与技术专业的历史最低分，然后把方案里的第三个删掉",
+        "查那几个学校2025年浙江综合第一段计算机科学与技术专业的历史最低分，然后把方案里的第三个删掉",
         SemanticExpectation(
             case_id="mixed-read-and-write-request",
             required_tool_names={"admission.get_history"},
