@@ -127,13 +127,25 @@ export const test = base.extend<Fixtures>({
   cleanGates: [
     async ({}, use) => {
       try {
-        const state = (await controlFetch('/gates', 'GET')) as {
+        // **作用域要收窄** ✓✓：只放行"**本次用例开始之前**就已登记"的闸门 ✓——
+        // 原先"放行一切未放行的" ✗ 有个致命后果 ✓：若它在本用例**中途**被评估一次 ✓，
+        // 就会把**本用例自己的**闸门放掉 ✗ → 那一轮不再被扣住 ✓ → 用例静默地失去意义 ✓
+        //（F10 就是这么红的 ✓：探针显示发送后立刻收到终态 ✓、控制服务里所有闸门都是 released ✓）。
+        // 判据用**登记时间的顺序快照** ✓：先读一次名单 ✓，此后新登记的（本用例的）一概不动 ✓。
+        const before = (await controlFetch('/gates', 'GET')) as {
           gates?: Record<string, { released?: boolean }>;
         };
-        for (const [turnId, gate] of Object.entries(state.gates || {})) {
-          if (!gate?.released) await controlFetch(`/gates/${turnId}/release`, 'POST', {});
+        const stale = Object.entries(before.gates || {}).filter(([, gate]) => !gate?.released);
+        for (const [turnId] of stale) {
+          await controlFetch(`/gates/${turnId}/release`, 'POST', {});
         }
-        await controlFetch(`/runs/${process.env.ZHIYUAN_E2E_RUN_ID || 'browser-run'}/reset`, 'POST', {});
+        // 把它**打出来** ✓✓：万一还有别人在放行 ✓，下一轮日志会直接点名 ✓。
+        console.log(`[cleanGates] 开始前已登记的闸门 ${Object.keys(before.gates || {}).length} 个，` +
+          `其中未放行 ${stale.length} 个 → 放行：${JSON.stringify(stale.map(([id]) => id))}`);
+        // `reset` 仍然只清**本 run** ✓（runId 要传进容器 ✓——这里顺带把实际用的 id 打出来 ✓）。
+        const runId = process.env.ZHIYUAN_E2E_RUN_ID || 'browser-run';
+        await controlFetch(`/runs/${runId}/reset`, 'POST', {});
+        console.log(`[cleanGates] reset runId=${runId} ✓`);
       } catch (error) {
         throw new Error(`开跑前清场失败 ✗（控制服务不可达？）：${String(error)}`);
       }

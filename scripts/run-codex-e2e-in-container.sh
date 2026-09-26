@@ -112,6 +112,7 @@ docker run --rm --network host \
     -e "ZHIYUAN_E2E_MOBILE=${ZHIYUAN_E2E_MOBILE:-}" \
     -e "ZHIYUAN_E2E_SMS_CODE=${ZHIYUAN_E2E_SMS_CODE:-}" \
     -e "ZHIYUAN_E2E_BACKEND_ORIGIN=${ZHIYUAN_E2E_BACKEND_ORIGIN:-http://127.0.0.1:18290}" \
+    -e "ZHIYUAN_E2E_RUN_ID=${ZHIYUAN_E2E_RUN_ID:-browser-run}" \
     -e "ZHIYUAN_E2E_EXPECT_PROXY=${ZHIYUAN_E2E_EXPECT_PROXY:-}" \
     -w /opt/e2e "$IMAGE_TAG" bash -lc '
         set -e
