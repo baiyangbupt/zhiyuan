@@ -32,6 +32,9 @@ public class PlanChangePostconditionReportDTO {
     private List<PriorityRuleResultDTO> priorityRuleResults = Lists.newArrayList();
     private TierQuotaResultDTO tierQuotaResult;
     private Boolean satisfied = false;
+    // 判"不满足"时留下**原因码** ✓（如 `plan_empty_vacuous` ✓）：
+    // 光有 `satisfied=false` 时下游只能猜"是违反了什么、还是根本没有可比对象" ✗。
+    private String reasonCode;
 
     @Data
     public static class RequirementResultDTO {
@@ -44,6 +47,8 @@ public class PlanChangePostconditionReportDTO {
         private Boolean planSatisfied = false;
         private Boolean persisted = false;
         private Boolean satisfied = false;
+        /** 不满足的**原因码** ✓（`plan_empty_vacuous` ✓＝空方案没有可比对象 ✗，不是"违反" ✗）。 */
+        private String reasonCode;
     }
 
     @Data

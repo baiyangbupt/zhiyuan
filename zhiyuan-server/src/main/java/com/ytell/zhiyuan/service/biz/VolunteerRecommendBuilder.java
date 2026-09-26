@@ -262,6 +262,10 @@ public class VolunteerRecommendBuilder {
         school.setPlanSchoolDataId(detail.getPlanSchoolDataId());
         school.setProvince_name(detail.getProvinceName());
         school.setCity_name(detail.getCityName());
+        // 群组本来就带着 ID（`VolunteerDataTransformService:70-75` ✓），以前只写了名字 ✗
+        // → 从这里往下（候选池 / 约束 / 匹配）就只剩名字 ✓。补上，别在源头丢 ✓。
+        school.setProvince_id(detail.getProvinceId());
+        school.setCity_id(detail.getCityId());
         school.setSchool_batch(schoolProfile.getBatch());
         school.setSchool_level(schoolProfile.getLevel());
         school.setSchool_nature(schoolProfile.getNature());

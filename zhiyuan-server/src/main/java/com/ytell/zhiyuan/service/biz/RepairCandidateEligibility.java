@@ -32,14 +32,16 @@ final class RepairCandidateEligibility {
         if (hard == null) {
             return true;
         }
-        if (matchesAnyRegion(item, hard.getMustExcludeRegions())
+        if (regionExcluded(hard.getMustExcludeRegions(), hard.getMustExcludeRegionIds(),
+                item.getProvinceName(), item.getCityName(), item.getProvinceId(), item.getCityId())
                 || matchesAnySchool(item, hard.getMustExcludeSchools())
-                || matchesAnyMajor(item, hard.getMustExcludeMajors())) {
+                || majorExcluded(item, hard.getMustExcludeMajors(), hard.getMustExcludeMajorIds())) {
             return false;
         }
-        return matchesRequiredRegion(item, hard.getMustIncludeRegions())
+        return regionRequired(hard.getMustIncludeRegions(), hard.getMustIncludeRegionIds(),
+                item.getProvinceName(), item.getCityName(), item.getProvinceId(), item.getCityId())
                 && matchesRequiredSchool(item, hard.getMustIncludeSchools())
-                && matchesRequiredMajor(item, hard.getMustIncludeMajors());
+                && majorRequired(item, hard.getMustIncludeMajors(), hard.getMustIncludeMajorIds());
     }
 
     static boolean isEligibleForConfirmedHardConstraints(PlanningUnitDTO unit, PlanningStateDTO state) {
@@ -53,17 +55,60 @@ final class RepairCandidateEligibility {
         if (hard == null) {
             return true;
         }
-        if (matchesAnyRegionScope(hard.getMustExcludeRegions(), unit.getProvinceName(), unit.getCityName())
+        if (regionExcluded(hard.getMustExcludeRegions(), hard.getMustExcludeRegionIds(),
+                unit.getProvinceName(), unit.getCityName(), unit.getProvinceId(), unit.getCityId())
                 || matchesAnyPlanningUnitSchool(unit, hard.getMustExcludeSchools())
-                || matchesAnyPlanningUnitMajor(unit, hard.getMustExcludeMajors())) {
+                || planningUnitMajorExcluded(unit, hard.getMustExcludeMajors(), hard.getMustExcludeMajorIds())) {
             return false;
         }
-        return (defaultList(hard.getMustIncludeRegions()).isEmpty()
-                || matchesAnyRegionScope(hard.getMustIncludeRegions(), unit.getProvinceName(), unit.getCityName()))
+        return regionRequired(hard.getMustIncludeRegions(), hard.getMustIncludeRegionIds(),
+                unit.getProvinceName(), unit.getCityName(), unit.getProvinceId(), unit.getCityId())
                 && (defaultList(hard.getMustIncludeSchools()).isEmpty()
                 || matchesAnyPlanningUnitSchool(unit, hard.getMustIncludeSchools()))
-                && (defaultList(hard.getMustIncludeMajors()).isEmpty()
-                || matchesAnyPlanningUnitMajor(unit, hard.getMustIncludeMajors()));
+                && planningUnitMajorRequired(unit, hard.getMustIncludeMajors(), hard.getMustIncludeMajorIds());
+    }
+
+    /**
+     * 区域：**ID 优先、名字兜底** ✓。
+     *
+     * <p>两边都有 ID 时**以 ID 为准** ✓——名字会"各版本各说各话"（"北京"被按市级字段找 ✗、
+     * "医学"⊂"临床医学"那种放大 ✗ 都是名字惹的 ✓）；任一边缺 ID 就回退名字 ✓——
+     * 不能因为对方没带 ID 就把它判死 ✗。
+     */
+    private static boolean regionIdsMatch(String provinceId, String cityId, List<String> values) {
+        if (provinceId == null && cityId == null) {
+            return false;
+        }
+        for (String value : defaultList(values)) {
+            if (value == null) {
+                continue;
+            }
+            String trimmed = value.trim();
+            if (trimmed.equals(provinceId) || trimmed.equals(cityId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean regionExcluded(List<String> excludeNames, List<String> excludeIds,
+                                          String provinceName, String cityName,
+                                          String provinceId, String cityId) {
+        // 排除看"命中即排" ✓：名字命中或 ID 命中都算 ✓（ID 是权威 ✓，名字命中也可执行 ✓）。
+        return matchesAnyRegionScope(excludeNames, provinceName, cityName)
+                || regionIdsMatch(provinceId, cityId, excludeIds);
+    }
+
+    private static boolean regionRequired(List<String> includeNames, List<String> includeIds,
+                                          String provinceName, String cityName,
+                                          String provinceId, String cityId) {
+        boolean constraintHasIds = !defaultList(includeIds).isEmpty();
+        boolean candidateHasIds = provinceId != null || cityId != null;
+        if (constraintHasIds && candidateHasIds) {
+            return regionIdsMatch(provinceId, cityId, includeIds);
+        }
+        return defaultList(includeNames).isEmpty()
+                || matchesAnyRegionScope(includeNames, provinceName, cityName);
     }
 
     private static HardConstraintsDTO confirmedHardConstraints(PlanningStateDTO state) {
@@ -74,25 +119,67 @@ final class RepairCandidateEligibility {
         }
         if (defaultList(hard.getMustIncludeRegions()).isEmpty()
                 && defaultList(hard.getMustExcludeRegions()).isEmpty()
+                && defaultList(hard.getMustIncludeRegionIds()).isEmpty()
+                && defaultList(hard.getMustExcludeRegionIds()).isEmpty()
                 && defaultList(hard.getMustIncludeSchools()).isEmpty()
                 && defaultList(hard.getMustExcludeSchools()).isEmpty()
                 && defaultList(hard.getMustIncludeMajors()).isEmpty()
-                && defaultList(hard.getMustExcludeMajors()).isEmpty()) {
+                && defaultList(hard.getMustExcludeMajors()).isEmpty()
+                // ID 列表也算数 ✓：只看名字会把"只给了 ID"的约束读成**空约束** ✗
+                // → 整条约束被当成不存在 ✗（2026-09-26 单测红：只给专业 ID 时判成"无约束" ✓）。
+                && defaultList(hard.getMustIncludeMajorIds()).isEmpty()
+                && defaultList(hard.getMustExcludeMajorIds()).isEmpty()) {
             return null;
         }
         return hard;
     }
 
-    private static boolean matchesRequiredRegion(CandidateItemDTO item, List<String> values) {
-        return defaultList(values).isEmpty() || matchesAnyRegion(item, values);
+    /**
+     * 专业：**ID 优先、名字兜底** ✓（与区域同一条规矩 ✓——"专业按 ID"，区域先行 ✓）。
+     *
+     * <p>ID 的用处正是名字判不动的那些格 ✗："临床医学" 在名字侧是**子串**匹配 ✓
+     * （要能命中"临床医学(五年)"✓），于是也会命中"中西医临床医学"✗；躲开医学门类
+     * 只能靠 `majorCategory` 的**整段相等** ✓（2026-09-25 那条裁决 ✓）。
+     * `majorId` 是目录里的**同一个身份** ✓：池里 1008/1454 条带真 ID ✓，
+     * 与 `/catalog/lookup/major` 同一套词汇表 ✓（真栈核对 ✓）。
+     *
+     * <p>`"0"`＝大类/试验班（池里 446 条 ✗）**没有单一专业身份** ✓ → 按"缺 ID"处理 ✓：
+     * 回退名字 ✓、**不判死** ✗——"任一边缺 ID 就回退名字"这条规矩不许破 ✓。
+     */
+    private static boolean majorRequired(CandidateItemDTO item, List<String> includeNames, List<String> includeIds) {
+        boolean constraintHasIds = !defaultList(includeIds).isEmpty();
+        boolean candidateHasId = item != null && hasMajorId(item.getMajorId());
+        if (constraintHasIds && candidateHasId) {
+            return majorIdsMatch(item.getMajorId(), includeIds);
+        }
+        return defaultList(includeNames).isEmpty() || matchesAnyMajor(item, includeNames);
+    }
+
+    /** 排除看"命中即排" ✓：名字命中或 ID 命中都算 ✓（同区域口径 ✓）。 */
+    private static boolean majorExcluded(CandidateItemDTO item, List<String> excludeNames, List<String> excludeIds) {
+        return matchesAnyMajor(item, excludeNames)
+                || majorIdsMatch(item == null ? null : item.getMajorId(), excludeIds);
+    }
+
+    /** `"0"` 与空都算"没有身份" ✓（大类/试验班 ✓）。 */
+    private static boolean hasMajorId(String majorId) {
+        return !Strings.isNullOrEmpty(majorId) && !"0".equals(majorId.trim());
+    }
+
+    private static boolean majorIdsMatch(String majorId, List<String> values) {
+        if (!hasMajorId(majorId)) {
+            return false;
+        }
+        for (String value : defaultList(values)) {
+            if (value != null && majorId.trim().equals(value.trim())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean matchesRequiredSchool(CandidateItemDTO item, List<String> values) {
         return defaultList(values).isEmpty() || matchesAnySchool(item, values);
-    }
-
-    private static boolean matchesRequiredMajor(CandidateItemDTO item, List<String> values) {
-        return defaultList(values).isEmpty() || matchesAnyMajor(item, values);
     }
 
     private static boolean matchesAnyRegion(CandidateItemDTO item, List<String> values) {
@@ -101,8 +188,12 @@ final class RepairCandidateEligibility {
 
     private static boolean matchesAnyRegionScope(List<String> values, String provinceName, String cityName) {
         for (String value : defaultList(values)) {
+            // 与提案编译侧（`ScopeMatcher.matchesRegion`）**同一条判据** ✓：
+            // 大区表 ✓ + 规范化身份相等 ✓（不再用双向子串 ✗——两层判据不一致会让
+            // "编译时匹配上、过滤时匹配不上"这种自相矛盾出现 ✗）。
             if (RegionScopeSupport.matchesRegionScope(value, provinceName, cityName)
-                    || matchesAnyText(Lists.newArrayList(value), provinceName, cityName)) {
+                    || RegionScopeSupport.sameRegionName(provinceName, value)
+                    || RegionScopeSupport.sameRegionName(cityName, value)) {
                 return true;
             }
         }
@@ -121,10 +212,46 @@ final class RepairCandidateEligibility {
         if (unit == null || defaultList(values).isEmpty()) {
             return false;
         }
-        List<PlanningUnitMajorDTO> majors = !defaultList(unit.getSelectedMajors()).isEmpty()
-                ? unit.getSelectedMajors() : unit.getAllMajors();
-        for (PlanningUnitMajorDTO major : defaultList(majors)) {
+        for (PlanningUnitMajorDTO major : planningUnitMajors(unit)) {
             if (major != null && matchesAnyMajorScope(values, planningUnitMajorAsCandidate(unit, major))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 组模式的匹配对象是**单元** ✓（与候选侧同一条"ID 优先" ✓，口径不许分叉 ✗）。 */
+    private static boolean planningUnitMajorRequired(PlanningUnitDTO unit, List<String> includeNames, List<String> includeIds) {
+        boolean constraintHasIds = !defaultList(includeIds).isEmpty();
+        if (constraintHasIds && planningUnitHasMajorIds(unit)) {
+            return planningUnitMajorIdsMatch(unit, includeIds);
+        }
+        return defaultList(includeNames).isEmpty() || matchesAnyPlanningUnitMajor(unit, includeNames);
+    }
+
+    private static boolean planningUnitMajorExcluded(PlanningUnitDTO unit, List<String> excludeNames, List<String> excludeIds) {
+        return matchesAnyPlanningUnitMajor(unit, excludeNames) || planningUnitMajorIdsMatch(unit, excludeIds);
+    }
+
+    private static List<PlanningUnitMajorDTO> planningUnitMajors(PlanningUnitDTO unit) {
+        if (unit == null) {
+            return Lists.newArrayList();
+        }
+        return !defaultList(unit.getSelectedMajors()).isEmpty() ? unit.getSelectedMajors() : unit.getAllMajors();
+    }
+
+    private static boolean planningUnitHasMajorIds(PlanningUnitDTO unit) {
+        for (PlanningUnitMajorDTO major : planningUnitMajors(unit)) {
+            if (major != null && hasMajorId(major.getMajorId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean planningUnitMajorIdsMatch(PlanningUnitDTO unit, List<String> values) {
+        for (PlanningUnitMajorDTO major : planningUnitMajors(unit)) {
+            if (major != null && majorIdsMatch(major.getMajorId(), values)) {
                 return true;
             }
         }
@@ -155,6 +282,8 @@ final class RepairCandidateEligibility {
         }
         item.setSchoolName(unit.getSchoolName());
         item.setProvinceName(unit.getProvinceName());
+        item.setProvinceId(unit.getProvinceId());
+        item.setCityId(unit.getCityId());
         item.setCityName(unit.getCityName());
         item.setSchoolLevel(unit.getSchoolLevel());
         item.setSchoolNature(unit.getSchoolNature());
@@ -259,7 +388,14 @@ final class RepairCandidateEligibility {
             return false;
         }
         String scope = value.trim();
-        if (matchesAnyText(Lists.newArrayList(scope), item.getMajorName(), item.getMajorCategory(), item.getMajorDiscipline())) {
+        // 专业名用子串（"临床医学" 必须能命中 "临床医学(五年)" ✓），
+        // 但 `majorCategory` / `majorDiscipline` 是**粗粒度**分类字段，不能一起丢进双向子串：
+        // `"临床医学".contains("医学")` 为真，于是"只保留临床医学"会命中整个医学门类
+        // （2026-09-25 实测：池里 599 行 `discipline=医学` vs 真正 `category=临床医学类` 只有 71 行，
+        //  且 `"中西医临床医学".contains("医学")` 让排除规则把 71 行真临床医学一起排掉 → 方案清空 ✓）。
+        if (textMatches(item.getMajorName(), scope)
+                || equalsTaxonomy(item.getMajorCategory(), scope)
+                || equalsTaxonomy(item.getMajorDiscipline(), scope)) {
             return true;
         }
         int split = scope.indexOf(':');
@@ -320,6 +456,21 @@ final class RepairCandidateEligibility {
             }
         }
         return false;
+    }
+
+    /**
+     * 粗粒度分类字段（`majorCategory` / `majorDiscipline`）只允许**整段相等**。
+     *
+     * <p>与 {@link #textMatches} 的区别是刻意的：这两个字段是"类/门类"层级，
+     * 用子串比会把细粒度专业名放大成整个门类——`"临床医学"` 会命中所有
+     * `discipline=医学` 的行（实测放大约 8 倍），而 `"中西医临床医学"`
+     * 会反过来把整个医学门类排干净（实测把方案排成 0 单元）。
+     */
+    private static boolean equalsTaxonomy(String field, String scope) {
+        if (Strings.isNullOrEmpty(field) || Strings.isNullOrEmpty(scope)) {
+            return false;
+        }
+        return field.trim().toLowerCase(Locale.ROOT).equals(scope.trim().toLowerCase(Locale.ROOT));
     }
 
     private static boolean textMatches(String field, String pattern) {

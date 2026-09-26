@@ -117,6 +117,13 @@ public class VolunteerRecommendListResponse {
         private String province_name;
         @ApiModelProperty("学校所在城市")
         private String city_name;
+        // 区域 ID：源头（志愿文件）里就有（`area.key` / `city.key` ✓），
+        // `VolunteerDataTransformService` 也早就保住了 ✓——只是**推荐响应这一层曾经把它们丢了** ✗，
+        // 于是候选池、约束、匹配全只剩名字 ✓（"北京"被按市级字段找、找不到的根因之一 ✓）。
+        @ApiModelProperty("学校所在省份 ID（源头 area.key ✓）")
+        private String province_id;
+        @ApiModelProperty("学校所在城市 ID（源头 city.key ✓）")
+        private String city_id;
         @ApiModelProperty("办学层次")
         private String school_batch;
         @ApiModelProperty("办学等级")

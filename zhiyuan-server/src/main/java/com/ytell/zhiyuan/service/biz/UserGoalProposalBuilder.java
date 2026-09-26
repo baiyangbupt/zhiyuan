@@ -754,6 +754,9 @@ final class UserGoalProposalBuilder {
         unit.setSchoolName(representative.getSchoolName());
         unit.setProvinceName(representative.getProvinceName());
         unit.setCityName(representative.getCityName());
+        // 区域 ID 一路带上来 ✓（组模式的区域判定按 ID 优先 ✓，缺 ID 时回退名字 ✓）
+        unit.setProvinceId(representative.getProvinceId());
+        unit.setCityId(representative.getCityId());
         unit.setSchoolLevel(representative.getSchoolLevel());
         unit.setSchoolNature(representative.getSchoolNature());
         unit.setSchoolCategory(representative.getSchoolCategory());
@@ -1068,6 +1071,11 @@ final class UserGoalProposalBuilder {
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         String scopeLabel = scopeLabel(scopes);
+        // 反问**只在该值任何一级都匹配不上时**发生 ✓（2026-09-25 用户裁决）：
+        // "只看北京" 这类意图是明确的 ✓，层级由系统定 ✓（`matchesRegion` 的层级兜底 ✓）；
+        // 但"银河系"这种谁也匹配不上的值 ✓，指向它的应当是"范围需要先确认" ✓，
+        // 而不是"方案和候选池里都没有找到相关选择" ✗（那句把用户引向"没有数据" ✗）。
+        // 所以这里判的是**结果**（有没有匹配）而不是**状态词** ✓——状态词由模型给、口径各异 ✗。
         List<PlanVolunteer> currentMatches = current.stream()
                 .filter(item -> matchesAny(item, scopes))
                 .collect(Collectors.toList());
@@ -1088,6 +1096,11 @@ final class UserGoalProposalBuilder {
                 .sorted(buildCandidatePreviewComparator())
                 .collect(Collectors.toList());
 
+        if (currentMatches.isEmpty() && candidateMatches.isEmpty()
+                && scopes.stream().anyMatch(ScopeMatcher::isUnresolvedRegionScope)) {
+            return buildScopeBlockedProposal(state, req, goalType, REASON_ENTITY_NEEDS_CLARIFICATION,
+                    "“" + scopeLabel + "”还没有对应到明确范围，需要先确认后再生成调整预览。");
+        }
         if (RepairProposalTaxonomy.Strategy.ONLY_KEEP_SCOPE.equals(goalType)) {
             return buildOnlyKeepProposal(state, req, scopeLabel, scopes, current, currentMatches, candidateMatches, selectedUnitIds);
         }
@@ -2401,6 +2414,16 @@ final class UserGoalProposalBuilder {
             return value;
         }
 
+        /**
+         * 区域范围、且"没映射上"——**只在一条都没匹配上时**才拿去反问 ✓（调用点在算完匹配之后 ✓）。
+         * 与 `needsClarification()` 的分工：那个看**状态词**、在匹配之前拦 ✓；
+         * 这个看**结果**、在匹配之后兜 ✓。
+         */
+        boolean isUnresolvedRegionScope() {
+            return "region".equals(entityType)
+                    && ("unresolved".equals(resolutionStatus) || "unknown".equals(resolutionStatus));
+        }
+
         boolean needsClarification() {
             return !isSupportedEntityType(entityType)
                     || "unknown".equals(resolutionStatus)
@@ -2492,17 +2515,31 @@ final class UserGoalProposalBuilder {
                 if (RegionScopeSupport.matchesRegionScope(value, candidate.getProvinceName(), candidate.getCityName())) {
                     return true;
                 }
-                return containsLoose(candidate.getProvinceName(), value)
-                        || containsLoose(candidate.getCityName(), value);
+                return RegionScopeSupport.sameRegionName(candidate.getProvinceName(), value)
+                        || RegionScopeSupport.sameRegionName(candidate.getCityName(), value);
             }
+            // **层级是提示、不是硬约束** ✓：值叫到哪一级就匹配哪一级，另一级兜底。
+            //
+            // 起因（2026-09-25 真栈实测）："只看北京的学校" 被解成 `scopeLevel=city` ✗，
+            // 而北京是**直辖市**——表里只有省级实体，市级子项是海淀/朝阳/大兴这些区 ✓，
+            // 于是"只看 cityName"一条都不中 ✗，结论写成"方案和候选池里都没有找到'北京'相关选择" ✗
+            // （把用户指向"没有数据" ✗）。"只看北京"的意图是明确的 ✓，该由系统定层级 ✓，
+            // 不该拿去反问用户 ✓。
+            //
+            // 兜底是安全的：值若真是市名（如"杭州"）✓，另一级（省）里没有同名项，匹配结果不变 ✓；
+            // 只有"值其实是上一级/下一级名字"时才多中 ✓——那正是要修的形态 ✓。
+            // 比较用**规范化身份相等** ✓（`sameRegionName`：去后缀/空格/大小写后相等 ✓），
+            // 不再用双向子串 ✗——区域这条路径上"身份"必须唯一 ✓，"北京市"="北京" ✓ 由后缀表管 ✓。
             if ("province".equals(scopeLevel)) {
-                return containsLoose(candidate.getProvinceName(), value);
+                return RegionScopeSupport.sameRegionName(candidate.getProvinceName(), value)
+                        || RegionScopeSupport.sameRegionName(candidate.getCityName(), value);
             }
             if ("city".equals(scopeLevel)) {
-                return containsLoose(candidate.getCityName(), value);
+                return RegionScopeSupport.sameRegionName(candidate.getCityName(), value)
+                        || RegionScopeSupport.sameRegionName(candidate.getProvinceName(), value);
             }
-            return containsLoose(candidate.getProvinceName(), value)
-                    || containsLoose(candidate.getCityName(), value);
+            return RegionScopeSupport.sameRegionName(candidate.getProvinceName(), value)
+                    || RegionScopeSupport.sameRegionName(candidate.getCityName(), value);
         }
 
         private static boolean matchesProgramType(String value, String schoolName, String majorName, CandidateItemDTO candidate) {

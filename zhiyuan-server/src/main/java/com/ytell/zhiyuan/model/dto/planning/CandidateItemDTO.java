@@ -17,6 +17,10 @@ public class CandidateItemDTO {
     private String displaySchoolName;
     private String provinceName;
     private String cityName;
+    // 区域 ID（来自志愿文件的 `area.key` / `city.key` ✓）。
+    // 有 ID 才能"按 ID 相等"判同一个地区 ✓；没有时仍旧按规范化名字兜底 ✓。
+    private String provinceId;
+    private String cityId;
     private String schoolBatch;
     private String schoolLevel;
     private String schoolNature;

@@ -12,6 +12,7 @@ import logging
 import uuid
 
 from app.gateway.contracts import ConversationAction, ConversationTurnSnapshot
+from app.util import internal_client
 from app.util.internal_client import execute_pending_planning_command, resolve_pending_confirmation
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,24 @@ def _data(response: Mapping[str, Any]) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _postcondition_satisfied(response: Mapping[str, Any]) -> bool | None:
+    """从满足度报告里读成败（没有报告时返回 None）。
+
+    Java 的**约束路**（`apply_constraint_and_regenerate`）不返回 `status`，但会返回
+    `postconditionReport.satisfied` ✓。以前 `_status()` 只认 `status`，于是这条路的
+    每一次确认都被兜底判成 `failed` ✗——"成功报不出来、失败也不是判出来的"
+    （2026-09-25 真栈实测：`PendingPlanningCommandRes` 根本没有 `status` 字段）。
+    满足度是权威信号，比"字段在不在"更接近"诉求有没有满足" ✓。
+    """
+    for source in (response, _data(response)):
+        if not isinstance(source, Mapping):
+            continue
+        report = source.get("postconditionReport")
+        if isinstance(report, Mapping) and report.get("satisfied") is not None:
+            return bool(report.get("satisfied"))
+    return None
+
+
 def _status(response: Mapping[str, Any]) -> str:
     value = str(response.get("status") or _data(response).get("status") or "").strip().lower()
     raw_code = response.get("code")
@@ -85,6 +104,9 @@ def _status(response: Mapping[str, Any]) -> str:
         return "cancelled"
     if value in {"applied", "completed"}:
         return "applied"
+    satisfied = _postcondition_satisfied(response)
+    if satisfied is not None:
+        return "applied" if satisfied else "failed"
     # A successful HTTP/business response alone does not prove execution.
     return "failed"
 
@@ -177,6 +199,7 @@ async def execute_conversation_action(
             executor=executor,
             resolver=resolver,
             expected_revision=_first_int(data.get("revision")),
+            education_level=_education_level_from_snapshot(parsed_snapshot),
         )
     # Pending revision is a separate CAS counter, not the conversation version.
     new_version = data.get("stateVersion")
@@ -235,7 +258,10 @@ def _proposal_apply_payload(
     return payload
 
 
-def _constraint_update_from_goal(goal: Mapping[str, Any]) -> dict[str, Any] | None:
+def _constraint_update_from_goal(
+    goal: Mapping[str, Any], *, region_ids: Mapping[str, str] | None = None,
+    major_ids: Mapping[str, str] | None = None,
+) -> dict[str, Any] | None:
     """把 user-goal 的范围翻译成 `constraintUpdate`（形状照 legacy 的 `_intent_constraint_payloads` ✓）。
 
     每个偏好束 = `{"positive": [...], "negative": [...]}` ✓（名字级 ✓，与 legacy 一致 ✓）。
@@ -248,12 +274,24 @@ def _constraint_update_from_goal(goal: Mapping[str, Any]) -> dict[str, Any] | No
         if not isinstance(scope, Mapping):
             return
         name = str(scope.get("name") or scope.get("value") or "").strip()
-        scope_type = str(scope.get("scopeType") or scope.get("scope_type") or "").strip().lower()
-        bundle = _SCOPE_BUNDLES.get(scope_type)
+        bundle = _scope_bundle(scope)
         if not name or bundle is None:
-            raise ValueError(f"unmappable_goal_scope: {scope_type or '(missing)'}")
+            raise ValueError(
+                f"unmappable_goal_scope: {_scope_kind_label(scope) or '(missing)'}"
+            )
+        side = "negative" if negative else "positive"
         target = bundles.setdefault(bundle, {"positive": [], "negative": []})
-        target["negative" if negative else "positive"].append(name)
+        target[side].append(name)
+        # 区域**同时**下发权威 ID ✓（与名字同序、同正负 ✓）：Java 侧"ID 优先、名字兜底" ✓。
+        # 解析不出来就不给 ID ✓——不给 ID 不是错误 ✓，匹配会回退名字 ✓。
+        if bundle == "regionPreferences" and region_ids and region_ids.get(name):
+            id_target = bundles.setdefault("regionPreferenceIds", {"positive": [], "negative": []})
+            id_target[side].append(str(region_ids[name]))
+        # 专业同理 ✓（"专业按 ID"，区域先行 ✓）：与名字**同序、同正负** ✓，
+        # Java 侧 "ID 优先、名字兜底" ✓；解析不出来就不给 ✓，匹配回退名字 ✓。
+        if bundle == "majorPreferences" and major_ids and major_ids.get(name):
+            id_target = bundles.setdefault("majorPreferenceIds", {"positive": [], "negative": []})
+            id_target[side].append(str(major_ids[name]))
 
     for scope in goal.get("targetScopes") or goal.get("target_scopes") or []:
         add(scope, negative=False)
@@ -272,8 +310,150 @@ def _tuition_bounds(goal: Mapping[str, Any]) -> tuple[int | None, int | None]:
     )
 
 
+def _scope_kind_label(scope: Mapping[str, Any]) -> str:
+    for key in ("scopeType", "scope_type", "entityType", "entity_type"):
+        value = str(scope.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _scope_bundle(scope: Mapping[str, Any]) -> str | None:
+    """范围种类 → 偏好束。**真载荷的形状比映射表多一层** ✗。
+
+    真栈实测（2026-09-25，会话 9781936）：模型/Java 给的是
+    `{"scopeType": "major_scope", "entityType": "major", "name": "临床医学"}` ✗——
+    而映射表的键是 `major` ✓（单测里手写的也是 `major` ✓），于是整条确认被
+    `unmappable_goal_scope` 拒掉 ✓。所以这里归一化：**先按原值、再按去掉 `_scope`
+    后缀、最后回退 `entityType`** ✓；都不认识仍然拒绝 ✓（静默丢一条排除更糟 ✓）。
+    """
+    for key in ("scopeType", "scope_type", "entityType", "entity_type"):
+        value = str(scope.get(key) or "").strip().lower()
+        if not value:
+            continue
+        for candidate in (value, value[: -len("_scope")] if value.endswith("_scope") else value):
+            bundle = _SCOPE_BUNDLES.get(candidate)
+            if bundle is not None:
+                return bundle
+    return None
+
+
+async def _resolve_region_scope_ids(goal: Mapping[str, Any]) -> dict[str, str]:
+    """把区域范围的名字解析成目录里的**权威 ID**（区域先行 ✓：省/市的 ID 最稳 ✓）。
+
+    **解析不出来就不给 ID** ✓（返回空表 ✓）：那是"这次拿不到权威身份"，不是错误 ✗——
+     匹配会按名字兜底 ✓（候选没带 ID 时也一样 ✓）。真值来自目录：
+        province → `provinceCode` ✓（"北京"→`110000` ✓，直辖市这一支本来就按省级落 ✓）
+        city     → `cityCode` ✓（"杭州"→`330100000000` ✓）
+    """
+    resolved: dict[str, str] = {}
+    for scope in list(goal.get("targetScopes") or goal.get("target_scopes") or []) + list(
+        goal.get("negativeScopes") or goal.get("negative_scopes") or []
+    ):
+        if not isinstance(scope, Mapping) or _scope_bundle(scope) != "regionPreferences":
+            continue
+        name = str(scope.get("name") or scope.get("value") or "").strip()
+        if not name or name in resolved:
+            continue
+        code = ""
+        for lookup, key in ((internal_client.catalog_lookup_city, "cityCode"),
+                            (internal_client.catalog_lookup_province, "provinceCode")):
+            try:
+                payload = await lookup(name)
+            except Exception:  # noqa: BLE001 —— 解析失败不阻断执行 ✓（回退名字 ✓）
+                continue
+            if isinstance(payload, Mapping) and str(payload.get("resultType")) == "exact":
+                data = payload.get("data")
+                if isinstance(data, Mapping) and data.get(key):
+                    code = str(data[key])
+                    break
+        if code:
+            resolved[name] = code
+    return resolved
+
+
+def _education_level_from_snapshot(snapshot: Any) -> str | None:
+    """会话批次 → 目录用的学历层次（`"本科批(批次线436分)"` → `"本科"` ✓）。
+
+    只给目录查询**去歧义**用 ✓（"临床医学"本科/专科各一条 ✗ → 带层次才是 `exact` ✓）。
+    **拿不到就不给** ✗：目录会返回 `multi` ✗，我们不取 ID ✓、回退名字 ✓——
+    行为与今天一致 ✓，不会因为缺层次而误判 ✗。
+    """
+    score_context = getattr(snapshot, "score_context", None)
+    if not isinstance(score_context, Mapping):
+        return None
+    batch = str(score_context.get("batch") or "").strip()
+    if "专科" in batch:
+        return "专科"
+    if "本科" in batch:
+        return "本科"
+    return None
+
+
+async def _resolve_major_scope_ids(
+    goal: Mapping[str, Any], *, education_level: str | None = None
+) -> dict[str, str]:
+    """把专业范围的名字解析成目录里的**权威 majorId** ✓（"专业按 ID"，区域先行 ✓）。
+
+    **解析不出来就不给 ID** ✓（返回空表 ✓）：与区域逐条同规矩 ✓——匹配按名字兜底 ✓。
+    真值来自 `/catalog/lookup/major` ✓，且**只认 `resultType == "exact"`** ✓：
+      - 名字有歧义时目录返回 `multi` ✗（"临床医学"本科/专科各一条 ✓）→ **不给 ID** ✓。
+        给了会把另一条层次的 ID 下发出去，把本科的志愿整批判掉 ✗；
+      - 因此带上 `educationLevel` ✓（真栈实测：带"本科"后同一次查询就是 `exact` ✓）。
+
+    只解析**专业**这一层 ✓：大类/门类（"临床医学类"/"医学"）**不取 ID** ✗——
+    候选身上只有专业级 `majorId` ✓，拿大类 ID 去比是**两套词汇表** ✗，只会误判 ✗
+    （那类范围继续走名字：粗粒度字段**整段相等** ✓，2026-09-25 的裁决 ✓）。
+    """
+    positive = list(goal.get("targetScopes") or goal.get("target_scopes") or [])
+    negative = list(goal.get("negativeScopes") or goal.get("negative_scopes") or [])
+    resolved: dict[str, str] = {}
+    for scope, is_negative in [(item, False) for item in positive] + [(item, True) for item in negative]:
+        if not isinstance(scope, Mapping) or _scope_bundle(scope) != "majorPreferences":
+            continue
+        name = str(scope.get("name") or scope.get("value") or "").strip()
+        if not name or name in resolved:
+            continue
+        try:
+            payload = await internal_client.catalog_lookup_major(name, education_level)
+        except Exception:  # noqa: BLE001 —— 解析失败不阻断执行 ✓（回退名字 ✓）
+            continue
+        if isinstance(payload, Mapping) and str(payload.get("resultType")) == "exact":
+            data = payload.get("data")
+            if isinstance(data, Mapping) and data.get("majorId"):
+                resolved[name] = str(data["majorId"])
+                continue
+        if is_negative and isinstance(payload, Mapping) and str(payload.get("resultType")) == "multi":
+            # **排除类遇到"同名多候选"就拒绝执行** ✓（2026-09-26 裁决 ✓；"反问"在本架构的落地 ✓：
+            # 网关不能对用户说话，能说话的是模型 ✓——所以这里给出**指名的失败** ✓，由模型去问 ✓）。
+            #
+            # 真栈形态：同一个"临床医学"本科/专科各一条 ✓（报告第三十四轮 ✓）。包含类解析不到
+            # 精确项时按名字兜底是**安全的** ✓（用户能在方案里看见选了什么 ✓）；排除类不一样 ✗——
+            # 按名字排会排掉用户**看不见**的东西 ✓，正是报告点名"最糟的失败形态" ✗。
+            # 只拦 `multi`（同名多候选）✓：大类/门类名（"医学"）仍走名字的**整段相等** ✓，
+            # 那是 2026-09-25 定过的口径 ✓，不动它 ✓。
+            # 名单要**可区分** ✓：同名条目光列名字是"临床医学、临床医学" ✗——
+            # 用户没法据此回答 ✓。所以要带上**代码与层次** ✓（真栈形态：本科/100201K ✓、专科/520101K ✓）。
+            def _label(row: Mapping[str, Any]) -> str:
+                level = str(row.get("educationLevel") or "").strip()
+                code = str(row.get("majorUnitCode") or "").strip()
+                tail = "/".join(part for part in (level, code) if part)
+                return "%s（%s）" % (row.get("majorName"), tail) if tail else str(row.get("majorName"))
+
+            rows = [row for row in (payload.get("data") or []) if isinstance(row, Mapping)]
+            detail = "、".join(_label(row) for row in rows[:5]) or name
+            raise ValueError(
+                "exclude_scope_ambiguous: 要排除的「%s」在目录里有 %d 条同名（%s%s），"
+                "无法确定排哪一个——请让用户确认具体是哪一条后再执行。"
+                % (name, len(rows) or 1, detail, "…" if len(rows) > 5 else "")
+            )
+    return resolved
+
+
 def _command_for_goal(
-    active_data: Mapping[str, Any], *, proposal_apply: dict[str, Any]
+    active_data: Mapping[str, Any], *, proposal_apply: dict[str, Any],
+    region_ids: Mapping[str, str] | None = None,
+    major_ids: Mapping[str, str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """按目标类型选命令并装配附加输入（第十一轮：scope 类目标的映射 ✓）。
 
@@ -289,7 +469,7 @@ def _command_for_goal(
     goal_type = str(goal.get("goalType") or goal.get("goal_type") or "").strip()
     if goal_type not in SCOPE_GOALS:
         return APPLY_PLAN_CHANGE_PROPOSAL, {"proposal_apply": proposal_apply}
-    constraint_update = _constraint_update_from_goal(goal)
+    constraint_update = _constraint_update_from_goal(goal, region_ids=region_ids, major_ids=major_ids)
     min_tuition, max_tuition = _tuition_bounds(goal)
     if constraint_update is None and min_tuition is None and max_tuition is None:
         raise ValueError("goal_scope_empty: scope goal carries nothing to apply")
@@ -319,6 +499,7 @@ async def _execute_claimed_command(
     executor: Callable[..., Awaitable[Mapping[str, Any]]] | None,
     resolver: Callable[..., Awaitable[Mapping[str, Any]]] | None = None,
     expected_revision: int | None = None,
+    education_level: str | None = None,
 ) -> ConversationActionResult:
     """claim 之后的第二段：`pending-command/execute`。
 
@@ -337,8 +518,19 @@ async def _execute_claimed_command(
         active.get("sourceVersion"), active_data.get("sourceVersion"), source_version
     )
     try:
+        # 区域先解析出权威 ID ✓（解析失败就不给 ✓，匹配按名字兜底 ✓）。
+        region_ids = await _resolve_region_scope_ids(
+            active_data.get("userGoalRequest") or active_data.get("user_goal_request") or {}
+        )
+        # 专业同理 ✓（学历层次来自会话批次 ✓，只用于目录去歧义 ✓）。
+        major_ids = await _resolve_major_scope_ids(
+            active_data.get("userGoalRequest") or active_data.get("user_goal_request") or {},
+            education_level=education_level,
+        )
         command_type, extra_kwargs = _command_for_goal(
             active_data,
+            region_ids=region_ids,
+            major_ids=major_ids,
             proposal_apply=_proposal_apply_payload(
                 active, active_data, proposal_ref=str(proposal_ref or pending_id), source_version=source_version
             ),

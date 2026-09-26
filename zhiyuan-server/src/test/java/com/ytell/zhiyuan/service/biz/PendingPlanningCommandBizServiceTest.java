@@ -3,6 +3,8 @@ package com.ytell.zhiyuan.service.biz;
 import com.alibaba.fastjson.JSONObject;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.DraftPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyRes;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
@@ -326,11 +328,54 @@ public class PendingPlanningCommandBizServiceTest {
 
         PendingPlanningCommandRes response = service.execute(1L, 101L, req);
 
-        assertEquals(Arrays.asList("constraint_updated", "tuition_updated", "ordered_plan_regenerated"),
+        assertEquals(Arrays.asList("constraint_updated", "tuition_updated", "ordered_plan_regenerated",
+                "working_plan_refilled", "postcondition_verified"),
                 response.getCompletedSteps());
         assertEquals(Integer.valueOf(14), response.getResultPlanVersion());
         verify(planningStateService).updateConstraintState(eq(101L), any(UpdateConstraintStateReq.class));
         verify(chatSessionBizService).updateTuitionRange(1L, 101L, 0, 20000);
+    }
+
+    /**
+     * 约束把工作方案排空时必须**整条命令失败**，不能留一个被清空的方案。
+     *
+     * <p>真栈形态（2026-09-25）：`mustExcludeMajors=["中西医临床医学"]` 经双向子串匹配把
+     * 全部门类为"医学"的候选一起排掉 → 工作方案被同步成 0 行 → 有序方案 0 单元。
+     * 工作方案的清空不可逆：有序方案由它生成，此后任何重生成都从空方案出发（实测：修好
+     * 匹配器后仍为 0 单元）。所以这里要的是"这次没改成"，不是"方案没了"。
+     */
+    @Test
+    void shouldRejectConstraintCommandWhenItWouldEmptyWorkingPlan() {
+        PendingPlanningCommandReq req = constraintReq();
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(stateWithWorkingPlan(12, 3));
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        when(planningStateService.generateOrderedPlan(eq(1L), eq(101L), any(OrderedPlanGenerateReq.class)))
+                .thenReturn(stateWithWorkingPlan(14, 0));
+        when(chatSessionBizService.updateTuitionRange(1L, 101L, 0, 20000)).thenReturn(true);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(PendingPlanningCommandBizService.CONSTRAINT_EMPTIES_PLAN_CODE, error.getStatus());
+    }
+
+    /** 对照：约束只是筛掉一部分、方案还剩条目时，命令照常成功。 */
+    @Test
+    void shouldAllowConstraintCommandWhenWorkingPlanSurvives() {
+        PendingPlanningCommandReq req = constraintReq();
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(stateWithWorkingPlan(12, 3));
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        when(planningStateService.generateOrderedPlan(eq(1L), eq(101L), any(OrderedPlanGenerateReq.class)))
+                .thenReturn(stateWithWorkingPlan(14, 2));
+        when(chatSessionBizService.updateTuitionRange(1L, 101L, 0, 20000)).thenReturn(true);
+
+        PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+        assertEquals(Arrays.asList("constraint_updated", "tuition_updated", "ordered_plan_regenerated",
+                "working_plan_refilled", "postcondition_verified"),
+                response.getCompletedSteps());
     }
 
     @Test
@@ -1275,6 +1320,19 @@ public class PendingPlanningCommandBizServiceTest {
         PlanningStateDTO state = new PlanningStateDTO();
         state.setSessionId(101L);
         state.setVersion(version);
+        return state;
+    }
+
+    private PlanningStateDTO stateWithWorkingPlan(int version, int itemCount) {
+        PlanningStateDTO state = state(version);
+        DraftPlanStateDTO draft = new DraftPlanStateDTO();
+        for (int i = 0; i < itemCount; i++) {
+            DraftItemDTO item = new DraftItemDTO();
+            item.setVolunteerId("v-" + i);
+            item.setSchoolName("测试大学" + i);
+            draft.getItems().add(item);
+        }
+        state.setDraftPlanState(draft);
         return state;
     }
 

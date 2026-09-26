@@ -69,6 +69,34 @@ def test_missing_score_becomes_explicit_missing_fact() -> None:
     assert snapshot.score_context["province"] == "浙江"
 
 
+def test_projection_fills_missing_score_context_from_authoritative_turn_snapshot() -> None:
+    """`turn-snapshot` 已经把 `scoreContext` 算好了 ✓（Java 权威 ✓）——**缺什么补什么** ✓。
+
+    背景（2026-09-26 真栈）：真载荷的 `studentSummary` 里**没有** `batch` ✗，于是投影出的
+    `score_context` 少这一格 ✗ → 网关解析专业 ID 时拿不到学历层次 ✗ → 目录对"临床医学"
+    返回 `multi` ✗（本科/专科各一条 ✓）→ 安全阀按设计不取 ID ✓（只发名字 ✓）→
+    "专业 ID 优先"在真栈上**没被激活** ✗（报告第三十四轮 ✓）。
+
+    口径：**派生值优先** ✓（别处依赖它的形状 ✓），`scoreContext` 只补缺 ✓；
+    别名 `strengthSubjects` → `subjects` 要对上 ✓（否则真载荷的选科会整个丢掉 ✗）。
+    """
+    workspace = fake_backend_workspace()
+    workspace.pop("studentSummary")  # 真栈这条路没有 summary ✗
+    workspace["scoreContext"] = {
+        "province": "江西",
+        "score": 484,
+        "batch": "本科批(批次线429分)",
+        "batchScore": 429,
+        "strengthSubjects": ["化学", "生物"],
+    }
+
+    snapshot = build_snapshot(workspace)
+
+    assert snapshot.score_context["batch"] == "本科批(批次线429分)", "派生拿不到的格由权威值补"
+    assert snapshot.score_context["province"] == "江西"
+    assert snapshot.score_context["subjects"] == ["化学", "生物"], "别名 strengthSubjects 要归到 subjects"
+
+
 def test_projection_maps_canonical_profile_fields_and_pending_proposal() -> None:
     workspace = fake_backend_workspace()
     workspace["profileState"]["explicitProfile"] = {

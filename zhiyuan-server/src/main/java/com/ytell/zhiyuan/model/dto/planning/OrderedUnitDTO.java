@@ -16,6 +16,9 @@ public class OrderedUnitDTO {
     private String schoolName;
     private String provinceName;
     private String cityName;
+    // 区域 ID（随候选带上来 ✓）：计划单元与判定单元都要带 ✓，否则"ID 优先"在组模式上够不着 ✗。
+    private String provinceId;
+    private String cityId;
     private String schoolLevel;
     private String schoolNature;
     private String schoolCategory;

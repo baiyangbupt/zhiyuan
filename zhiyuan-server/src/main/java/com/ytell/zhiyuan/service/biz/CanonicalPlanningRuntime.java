@@ -548,6 +548,8 @@ final class CanonicalPlanningRuntime {
         result.setSchoolName(unit == null ? null : unit.getSchoolName());
         result.setDisplaySchoolName(unit == null ? null : unit.getSchoolName());
         result.setProvinceName(unit == null ? null : unit.getProvinceName());
+        result.setProvinceId(unit == null ? null : unit.getProvinceId());
+        result.setCityId(unit == null ? null : unit.getCityId());
         result.setCityName(unit == null ? null : unit.getCityName());
         result.setSchoolNature(unit == null ? null : unit.getSchoolNature());
         result.setSchoolCategory(unit == null ? null : unit.getSchoolCategory());

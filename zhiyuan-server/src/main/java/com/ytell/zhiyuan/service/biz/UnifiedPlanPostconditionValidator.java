@@ -14,6 +14,7 @@ import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanChangePostconditionReportDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanningUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.RepairReportDTO;
@@ -32,6 +33,16 @@ import java.util.Objects;
 
 @Component
 class UnifiedPlanPostconditionValidator {
+
+    /**
+     * 空方案不算"已满足" ✓（2026-09-26 裁决落地 ✓）：三类约束的共同前提是**得有对象可比** ✓。
+     *
+     * <p>数违反条目这条路（`validateConstraintApply` ✓）在空方案上是**零违反** ✗ →
+     * `satisfied=true` ✗；报告路（`populateRequirements` ✓）的排除类判据 `noneMatch` 同样恒真 ✗。
+     * 两条路都会把"方案没了"读成"约束已满足" ✗——命令侧 `40906` 只护着"约束刚落地"那一条 ✗，
+     * 而满足度报告是**长期可读的证据** ✓，口径不一致时排查的人会先信它 ✗。
+     */
+    static final String EMPTY_PLAN_VACUOUS_REASON = "plan_empty_vacuous";
 
     PlanChangePostconditionReportDTO validate(PendingPlanningCommandReq req,
                                               PlanningStateDTO state,
@@ -93,6 +104,81 @@ class UnifiedPlanPostconditionValidator {
         return report;
     }
 
+    /**
+     * 约束变更（`apply_constraint_and_regenerate`）的满足度：**方案里每一条都不违反已确认硬约束**。
+     *
+     * <p>这条路以前**没有任何满足度信号** ✗：命令层只记"步骤跑完了"（`completedSteps`），
+     * `PendingPlanningCommandRes` 里更没有 `status` 字段，于是网关侧 `_status()` 只能落到兜底
+     * 的 `failed`——"成功"报不出来、"失败"也不是判出来的（2026-09-25 真栈实测 ✓）。
+     *
+     * <p>这里把信号补上，并且**不满足就抛 40905 让事务回滚**：约束没生效，就别改用户的方案。
+     * 判据与筛选同源（`RepairCandidateEligibility` ✓）：组模式下按**单元**判（组内任一专业命中即可 ✓），
+     * 与"筛选时怎么算合格"逐字一致，避免出现"筛的时候合格、验的时候不合格"这种自相矛盾 ✓。
+     */
+    PlanChangePostconditionReportDTO validateConstraintApply(String commandType, PlanningStateDTO state) {
+        boolean majorGroupMode = state != null && state.getCandidatePoolState() != null
+                && "majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel());
+        List<OrderedUnitDTO> units = state == null || state.getOrderedPlanState() == null
+                ? new ArrayList<OrderedUnitDTO>() : defaultList(state.getOrderedPlanState().getUnits());
+        List<CandidateItemDTO> planCandidates = postconditionPlanCandidates(state, majorGroupMode);
+        int total = majorGroupMode ? units.size() : planCandidates.size();
+        int violating = 0;
+        if (majorGroupMode) {
+            for (OrderedUnitDTO unit : units) {
+                if (!RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(
+                        asPlanningUnit(unit), state)) {
+                    violating++;
+                }
+            }
+        } else {
+            for (CandidateItemDTO candidate : planCandidates) {
+                if (!RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state)) {
+                    violating++;
+                }
+            }
+        }
+        PlanChangePostconditionReportDTO report = new PlanChangePostconditionReportDTO();
+        report.setGoalType(commandType);
+        report.setCountMode(majorGroupMode ? "unit" : "volunteer");
+        report.setTargetCount(state == null || state.getCandidatePoolState() == null
+                ? null : state.getCandidatePoolState().getRequiredCount());
+        report.setActualCount(actualCount(state, majorGroupMode));
+        // 空方案 = **零违反** ✗，但那是"没有可比对象" ✗，不是"约束满足" ✓——
+        // 只有**已确认约束**存在时才这么判 ✓（没有约束时"零违反"本来就是对的 ✓）。
+        boolean vacuousEmpty = total == 0 && RepairCandidateEligibility.hasConfirmedHardConstraints(state);
+        report.setSatisfied(violating == 0 && !vacuousEmpty);
+        if (!Boolean.TRUE.equals(report.getSatisfied())) {
+            report.setReasonCode(vacuousEmpty ? EMPTY_PLAN_VACUOUS_REASON : null);
+            throw new BusinessException(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE,
+                    vacuousEmpty
+                            ? "constraint apply postcondition failed: " + EMPTY_PLAN_VACUOUS_REASON
+                            + "（方案里没有可比对象（0 条），不算满足）"
+                            : "constraint apply postcondition failed: violating=" + violating + "/" + total);
+        }
+        return report;
+    }
+
+    private PlanningUnitDTO asPlanningUnit(OrderedUnitDTO unit) {
+        PlanningUnitDTO result = new PlanningUnitDTO();
+        if (unit == null) {
+            return result;
+        }
+        result.setUnitId(unit.getUnitId());
+        result.setPlanSchoolDataId(unit.getPlanSchoolDataId());
+        result.setSchoolId(unit.getSchoolId());
+        result.setSchoolName(unit.getSchoolName());
+        result.setProvinceName(unit.getProvinceName());
+        result.setCityName(unit.getCityName());
+        result.setProvinceId(unit.getProvinceId());
+        result.setCityId(unit.getCityId());
+        result.setSchoolLevel(unit.getSchoolLevel());
+        result.setSchoolNature(unit.getSchoolNature());
+        result.setSchoolCategory(unit.getSchoolCategory());
+        result.setTier(unit.getTier());
+        result.setSelectedMajors(unit.getMajorItems());
+        return result;
+    }
+
     private int actualCount(PlanningStateDTO state, boolean majorGroupMode) {
         if (majorGroupMode) {
             return state != null && state.getOrderedPlanState() != null
@@ -128,11 +214,17 @@ class UnifiedPlanPostconditionValidator {
                     state, majorGroupMode, planCandidates, requirement);
             result.setMatchedCount(matchedCount);
             boolean planSatisfied;
-            if (ProjectedHardRequirementSupport.KIND_EXCLUDE.equalsIgnoreCase(requirement.getKind())) {
+            if (planCandidates.isEmpty()) {
+                // **三类约束的共同前提：得有对象可比** ✓（2026-09-26 裁决落地 ✓）。
+                // 排除类 `noneMatch` ✗ 与包含类 `minCount=0` ✗ 在空方案上都**恒真** ✓——
+                // "方案一条不剩"被读成"约束已满足" ✗，是最会误导人的那种自相矛盾 ✗。
+                result.setReasonCode(EMPTY_PLAN_VACUOUS_REASON);
+                planSatisfied = false;
+            } else if (ProjectedHardRequirementSupport.KIND_EXCLUDE.equalsIgnoreCase(requirement.getKind())) {
                 planSatisfied = planCandidates.stream()
                         .noneMatch(candidate -> ProjectedHardRequirementSupport.matches(candidate, requirement));
             } else if (ProjectedHardRequirementSupport.KIND_ONLY_KEEP.equalsIgnoreCase(requirement.getKind())) {
-                planSatisfied = !planCandidates.isEmpty() && planCandidates.stream()
+                planSatisfied = planCandidates.stream()
                         .allMatch(candidate -> ProjectedHardRequirementSupport.matches(candidate, requirement));
             } else if (ProjectedHardRequirementSupport.KIND_INCLUDE.equalsIgnoreCase(requirement.getKind())) {
                 planSatisfied = matchedCount >= CoverageRequirementSupport.minCount(requirement);
@@ -549,6 +641,8 @@ class UnifiedPlanPostconditionValidator {
         candidate.setSchoolName(unit == null ? null : unit.getSchoolName());
         candidate.setDisplaySchoolName(unit == null ? null : unit.getSchoolName());
         candidate.setProvinceName(unit == null ? null : unit.getProvinceName());
+        candidate.setProvinceId(unit == null ? null : unit.getProvinceId());
+        candidate.setCityId(unit == null ? null : unit.getCityId());
         candidate.setCityName(unit == null ? null : unit.getCityName());
         candidate.setSchoolNature(unit == null ? null : unit.getSchoolNature());
         candidate.setSchoolCategory(unit == null ? null : unit.getSchoolCategory());

@@ -1725,6 +1725,127 @@ public class UserGoalProposalBuilderTest {
         return state;
     }
 
+    /**
+     * "只看北京的学校"**不该反问** ✓（2026-09-25 用户裁决：意图明确、层级由系统定 ✓）。
+     *
+     * <p>真栈形态（会话 9722947）：模型给的是
+     * `{"scopeType":"city","entityType":"city","name":"北京","scopeLevel":"city",
+     *   "resolutionStatus":"unresolved"}` ✗——而北京是**直辖市**、表里只有省级实体，
+     * 市级子项是海淀/朝阳/大兴这些区 ✓。修前"只看 `cityName`"一条都不中 ✗，
+     * 结论写成"方案和候选池里都没有找到'北京'相关选择" ✗（把用户引向"没有数据" ✗）。
+     * 修后层级兜底 ✓（city 级值也匹配 `provinceName` ✓）→ 正常出提案 ✓。
+     */
+    @Test
+    void shouldResolveMunicipalityScopeWithoutAskingBack() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO beijing = candidate("v1", "北京邮电大学", "计算机科学与技术", "计算机类", 90D);
+        beijing.setProvinceName("北京");
+        beijing.setCityName("海淀");
+        CandidateItemDTO tianjin = candidate("v2", "天津仁爱学院", "计算机科学与技术", "计算机类", 88D);
+        tianjin.setProvinceName("天津");
+        tianjin.setCityName("静海");
+        state.getCandidatePoolState().getItems().add(beijing);
+        state.getCandidatePoolState().getItems().add(tianjin);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "北京邮电大学", "计算机科学与技术", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "天津仁爱学院", "计算机科学与技术", false));
+
+        UserGoalFixProposalReq.ScopeDTO scope = scope("city", "北京");
+        scope.setScopeType("city");
+        scope.setName("北京");
+        scope.setScopeLevel("city");
+        scope.setResolutionStatus("unresolved");
+        UserGoalFixProposalReq req = req("only_keep_scope", 12, scope);
+        req.setUserOriginalText("只看北京的学校");
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertFalse(proposal.getBlockingReasonCodes().contains("user_goal_entity_needs_clarification"),
+                "北京意图明确，不该反问");
+        assertFalse(proposal.getBlockingReasonCodes().contains("user_goal_target_not_found"),
+                "北京是直辖市，省级兜底后能匹配上，不该说'没有找到'");
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("v2", proposal.getActions().get(0).getRemoveVolunteerIds().get(0),
+                "只保留北京 ⇒ 天津那条应当被移出");
+    }
+
+    /**
+     * 对照：**任何一级都匹配不上**的范围才反问 ✓——而且指向它的应当是"范围需要先确认" ✓，
+     * 不是"没有找到相关选择" ✗（状态词各说各的，所以这里判的是**结果**而不是状态 ✗✓）。
+     */
+    @Test
+    void shouldAskForClarificationWhenRegionScopeMatchesNothingAtAnyLevel() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO beijing = candidate("v1", "北京邮电大学", "计算机科学与技术", "计算机类", 90D);
+        beijing.setProvinceName("北京");
+        beijing.setCityName("海淀");
+        state.getCandidatePoolState().getItems().add(beijing);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "北京邮电大学", "计算机科学与技术", false));
+
+        UserGoalFixProposalReq.ScopeDTO scope = scope("city", "银河系");
+        scope.setScopeType("city");
+        scope.setName("银河系");
+        scope.setScopeLevel("city");
+        scope.setResolutionStatus("unresolved");
+        UserGoalFixProposalReq req = req("only_keep_scope", 12, scope);
+        req.setUserOriginalText("只看银河系的学校");
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertTrue(proposal.getBlockingReasonCodes().contains("user_goal_entity_needs_clarification"),
+                "谁也对不上的范围应当请用户确认，而不是说'没有数据'");
+    }
+
+    /**
+     * 回归护栏（守住已验通的那条路）✓：`pending_clarification`（"有歧义但名字可用"，
+     * 例："临床医学" 有本科/专科两个同名专业 ✓）**不在这里拦** ✓——真栈上
+     * "只保留临床医学"正是带着这个状态走通并判 `applied` 的 ✓（会话 9791936 ✓）。
+     * 把它也当成"该反问"会让那条路退回反问 ✗。
+     */
+    @Test
+    void shouldNotAskForClarificationWhenScopeIsPendingClarification() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO clinical = candidate("v1", "南昌医学院", "临床医学(五年)", "临床医学类", 90D);
+        state.getCandidatePoolState().getItems().add(clinical);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "南昌医学院", "临床医学(五年)", false));
+
+        UserGoalFixProposalReq.ScopeDTO scope = scope("major", "临床医学");
+        scope.setScopeType("major_scope");
+        scope.setName("临床医学");
+        scope.setResolutionStatus("pending_clarification");
+        UserGoalFixProposalReq req = req("only_keep_scope", 12, scope);
+        req.setUserOriginalText("严格只保留临床医学");
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertFalse(proposal.getBlockingReasonCodes().contains("user_goal_entity_needs_clarification"),
+                "有歧义但名字可用的范围照旧按名字匹配，不退回反问");
+    }
+
+    /**
+     * 区域匹配改成**规范化身份相等**后，真正的省名写法必须仍然命中 ✓
+     * （这是这次收紧的**风险侧** ✗→✓：相等比双向子串严 ✗，容易把该中的丢掉 ✗）。
+     */
+    @Test
+    void shouldMatchRegionAcrossSuffixForms() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO guangxi = candidate("v1", "广西大学", "计算机科学与技术", "计算机类", 90D);
+        guangxi.setProvinceName("广西壮族自治区");
+        guangxi.setCityName("南宁");
+        state.getCandidatePoolState().getItems().add(guangxi);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "广西大学", "计算机科学与技术", false));
+
+        UserGoalFixProposalReq.ScopeDTO scope = scope("region", "广西");
+        scope.setScopeLevel("province");
+        UserGoalFixProposalReq req = req("only_keep_scope", 12, scope);
+        req.setUserOriginalText("只看广西的学校");
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertFalse(proposal.getBlockingReasonCodes().contains("user_goal_target_not_found"),
+                "“广西”与“广西壮族自治区”是同一个身份，必须命中");
+    }
+
     private UserGoalFixProposalReq req(String goalType, Integer sourceVersionGuard, UserGoalFixProposalReq.ScopeDTO scope) {
         UserGoalFixProposalReq req = new UserGoalFixProposalReq();
         req.setGoalType(goalType);

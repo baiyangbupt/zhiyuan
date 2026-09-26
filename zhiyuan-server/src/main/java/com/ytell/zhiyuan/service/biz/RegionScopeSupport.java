@@ -35,6 +35,17 @@ final class RegionScopeSupport {
         return cities != null && cities.stream().anyMatch(city -> regionNameEquals(city, cityName));
     }
 
+    /**
+     * 两个区域名是不是**同一个身份** ✓：去掉"省/市/自治区/特别行政区"后缀、去空格、小写后**相等** ✓。
+     *
+     * <p>与"双向子串"的区别是刻意的 ✗→✓：子串会把"北京"和"北京路"这类不同身份也算命中 ✓，
+     * 而这条路径上"身份"必须唯一 ✓（"临床医学"被"医学"放大那次，根因就是双向子串 ✗）。
+     * 规范化的另一半（"北京市"＝"北京" ✓、"内蒙古自治区"＝"内蒙古" ✓）由后缀表负责 ✓。
+     */
+    static boolean sameRegionName(String left, String right) {
+        return regionNameEquals(left, right);
+    }
+
     static String normalizeAreaName(String value) {
         String text = stripRegionSuffix(Strings.nullToEmpty(value).trim());
         String alias = AREA_ALIASES.get(text);

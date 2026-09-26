@@ -35,6 +35,8 @@ public class PendingPlanningCommandBizService {
     public static final int COMMAND_CONFLICT_CODE = 40903;
     public static final int PLAN_VERSION_CONFLICT_CODE = 40904;
     public static final int POSTCONDITION_FAILED_CODE = 40905;
+    /** 约束变更会把方案排空：拒绝执行并回滚，不留一个被清空的方案。 */
+    public static final int CONSTRAINT_EMPTIES_PLAN_CODE = 40906;
     public static final String APPLY_CONSTRAINT_AND_REGENERATE = "apply_constraint_and_regenerate";
     public static final String ADD_UNITS = "add_units";
     public static final String REPLACE_UNITS = "replace_units";
@@ -96,6 +98,30 @@ public class PendingPlanningCommandBizService {
         return result;
     }
 
+    /**
+     * 约束把方案排空时**拒绝执行**，交给事务整体回滚。
+     *
+     * <p>不追求"部分成功"：宁可整条命令失败、状态保持原样，也不留一个被清空的方案。
+     * 用户能看到的差别是"这次没改成"而不是"我的方案没了"。
+     */
+    private PlanningStateDTO assertConstraintDidNotEmptyPlan(PlanningStateDTO before, PlanningStateDTO after) {
+        int beforeCount = workingPlanItemCount(before);
+        int afterCount = workingPlanItemCount(after);
+        if (beforeCount > 0 && afterCount == 0) {
+            throw new BusinessException(CONSTRAINT_EMPTIES_PLAN_CODE,
+                    "当前约束下方案里没有可保留的条目，未做任何修改（原方案 " + beforeCount + " 条）");
+        }
+        return after;
+    }
+
+    private static int workingPlanItemCount(PlanningStateDTO state) {
+        if (state == null || state.getDraftPlanState() == null
+                || state.getDraftPlanState().getItems() == null) {
+            return 0;
+        }
+        return state.getDraftPlanState().getItems().size();
+    }
+
     private PendingPlanningCommandRes executeCommand(Long tenantId, Long chatSessionId,
                                                      PendingPlanningCommandReq req,
                                                      int sourceVersion) {
@@ -113,8 +139,23 @@ public class PendingPlanningCommandBizService {
                 steps.add("tuition_updated");
             }
             if (Boolean.TRUE.equals(req.getRegenerateOrderedPlan())) {
-                state = planningStateService.generateOrderedPlan(tenantId, chatSessionId, forceOrderedRegenerate());
+                // 两段，顺序不能反 ✓：
+                //   ① 同步——重生成会**按新约束同步工作方案**（同步＝"按合格候选重建草案"）。
+                //      一条把候选全滤掉的约束会把工作方案清成 0 行，而那是**不可逆**的：
+                //      有序方案由工作方案生成，此后任何重生成都从空方案出发
+                //      （2026-09-25 真栈实测：修好匹配器后仍为 0 单元）。所以先记下规模，被排空就回滚。
+                //   ② 补足——把方案按档位目标数拉回规模 ✓。**必须在同步之后**：档位计数若把
+                //      "即将被删掉的条目"算进去，补足量就错了（这是接线 `addAutoSelectedByTier`
+                //      时最容易踩的一处 ✗）。补进来的都是合格候选 ✓，第二段重生成不会再删它们 ✓。
+                PlanningStateDTO beforeRegenerate = planningStateService.getPlanningState(chatSessionId);
+                state = assertConstraintDidNotEmptyPlan(beforeRegenerate,
+                        planningStateService.generateOrderedPlan(tenantId, chatSessionId, forceOrderedRegenerate()));
                 steps.add("ordered_plan_regenerated");
+                planningStateService.refillWorkingPlanByTierTargets(tenantId, chatSessionId);
+                steps.add("working_plan_refilled");
+                state = assertConstraintDidNotEmptyPlan(
+                        planningStateService.getPlanningState(chatSessionId),
+                        planningStateService.generateOrderedPlan(tenantId, chatSessionId, forceOrderedRegenerate()));
             } else {
                 state = planningStateService.getPlanningState(chatSessionId);
             }
@@ -154,6 +195,13 @@ public class PendingPlanningCommandBizService {
         result.setCompletedSteps(steps);
         if (APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())) {
             result.setPostconditionReport(postconditionValidator.validate(req, state, proposalApplyRes));
+            steps.add("postcondition_verified");
+        }
+        if (APPLY_CONSTRAINT_AND_REGENERATE.equals(req.getCommandType())) {
+            // 约束路以前没有满足度信号（DTO 里连 status 都没有 → 网关只能判 failed ✗）。
+            // 补上，并且不满足就抛 40905 回滚：约束没生效就别改用户的方案 ✓。
+            result.setPostconditionReport(
+                    postconditionValidator.validateConstraintApply(req.getCommandType(), state));
             steps.add("postcondition_verified");
         }
         result.setPlanningState(state);

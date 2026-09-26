@@ -1095,6 +1095,22 @@ public class PlanningStateService {
                     hardMode
             );
         }
+        if (req != null && req.getRegionPreferenceIds() != null) {
+            // 区域 ID 只走**硬约束**那一套规矩（加去重、互斥 ✓）——ID 是"筛选身份" ✓，
+            // 不是"偏好" ✗，所以 soft 那条分支不动它 ✓。
+            mergeHardIdGroup(
+                    req.getRegionPreferenceIds(),
+                    hard.getMustIncludeRegionIds(),
+                    hard.getMustExcludeRegionIds());
+        }
+        if (req != null && req.getMajorPreferenceIds() != null) {
+            // 专业 ID 与区域 ID **逐条同规矩** ✓（同一套"筛选身份"口径 ✓），否则
+            // "ID 优先、名字兜底"在两侧取值不一致时会自己打自己 ✗。
+            mergeHardIdGroup(
+                    req.getMajorPreferenceIds(),
+                    hard.getMustIncludeMajorIds(),
+                    hard.getMustExcludeMajorIds());
+        }
         if (hardMode) {
             syncCandidateViewStateWithHardRegionRequirements(state);
         }
@@ -1105,8 +1121,12 @@ public class PlanningStateService {
     private void normalizeConstraintStateLists(HardConstraintsDTO hard, SoftPreferencesDTO soft) {
         hard.setMustIncludeRegions(defaultList(hard.getMustIncludeRegions()));
         hard.setMustExcludeRegions(defaultList(hard.getMustExcludeRegions()));
+        hard.setMustIncludeRegionIds(defaultList(hard.getMustIncludeRegionIds()));
+        hard.setMustExcludeRegionIds(defaultList(hard.getMustExcludeRegionIds()));
         hard.setMustIncludeMajors(defaultList(hard.getMustIncludeMajors()));
         hard.setMustExcludeMajors(defaultList(hard.getMustExcludeMajors()));
+        hard.setMustIncludeMajorIds(defaultList(hard.getMustIncludeMajorIds()));
+        hard.setMustExcludeMajorIds(defaultList(hard.getMustExcludeMajorIds()));
         hard.setMustIncludeSchools(defaultList(hard.getMustIncludeSchools()));
         hard.setMustExcludeSchools(defaultList(hard.getMustExcludeSchools()));
         soft.setPreferRegions(defaultList(soft.getPreferRegions()));
@@ -1115,6 +1135,21 @@ public class PlanningStateService {
         soft.setAvoidRegions(defaultList(soft.getAvoidRegions()));
         soft.setAvoidMajors(defaultList(soft.getAvoidMajors()));
         soft.setAvoidSchools(defaultList(soft.getAvoidSchools()));
+    }
+
+    /**
+     * **身份 ID**（区域 ✓／专业 ✓）的并入/移出：与 `mergeIntentStrengthGroup` 的**硬模式分支逐条同规矩** ✓
+     * （加入去重 ✓、同一值不得同时出现在两侧 ✓）。规矩一致才能在"ID 优先、名字兜底"下不打架 ✓。
+     */
+    private void mergeHardIdGroup(UpdateConstraintStateReq.PreferenceGroup group,
+                                  List<String> hardPositive,
+                                  List<String> hardNegative) {
+        List<String> positive = normalizeIntentStateValues(group == null ? null : group.getPositive());
+        List<String> negative = normalizeIntentStateValues(group == null ? null : group.getNegative());
+        addUniqueValues(hardPositive, positive);
+        addUniqueValues(hardNegative, negative);
+        removeValues(hardNegative, positive);
+        removeValues(hardPositive, negative);
     }
 
     private void mergeIntentStrengthGroup(UpdateConstraintStateReq.PreferenceGroup group,
@@ -4081,6 +4116,9 @@ public class PlanningStateService {
         unit.setSchoolName(representative.getSchoolName());
         unit.setProvinceName(representative.getProvinceName());
         unit.setCityName(representative.getCityName());
+        // 区域 ID 一起带上 ✓（"ID 优先"要一路传到计划单元上 ✓，否则组模式只能按名字 ✓）
+        unit.setProvinceId(representative.getProvinceId());
+        unit.setCityId(representative.getCityId());
         unit.setSchoolLevel(representative.getSchoolLevel());
         unit.setSchoolNature(representative.getSchoolNature());
         unit.setSchoolCategory(representative.getSchoolCategory());
@@ -4169,6 +4207,9 @@ public class PlanningStateService {
         representative.setSchoolName(unit.getSchoolName());
         representative.setProvinceName(unit.getProvinceName());
         representative.setCityName(unit.getCityName());
+        // 反过来（单元 → 代表候选）也一样 ✓：这里漏抄 ID ✗，组模式的"单元匹配"就只能按名字 ✓
+        representative.setProvinceId(unit.getProvinceId());
+        representative.setCityId(unit.getCityId());
         representative.setSchoolLevel(unit.getSchoolLevel());
         representative.setSchoolNature(unit.getSchoolNature());
         representative.setSchoolCategory(unit.getSchoolCategory());
@@ -8217,6 +8258,10 @@ public class PlanningStateService {
         target.setDisplaySchoolName(source.getDisplaySchoolName());
         target.setProvinceName(source.getProvinceName());
         target.setCityName(source.getCityName());
+        // 区域 ID 与名字同源 ✓：clone 漏抄 ID 会让"ID 优先"在克隆过的候选上直接失效 ✗
+        // （组模式初始单元的代表就是克隆来的 ✗ → 单元 `provinceId` 全为 null ✗）
+        target.setProvinceId(source.getProvinceId());
+        target.setCityId(source.getCityId());
         target.setSchoolBatch(source.getSchoolBatch());
         target.setSchoolLevel(source.getSchoolLevel());
         target.setSchoolNature(source.getSchoolNature());
@@ -8298,6 +8343,9 @@ public class PlanningStateService {
         item.setDisplaySchoolName(resolveDisplaySchoolName(school));
         item.setProvinceName(school.getProvince_name());
         item.setCityName(school.getCity_name());
+        // 名字旁边的 ID 一起抄 ✓（有 ID 才能"按 ID 相等"判同一个地区 ✓；缺 ID 时匹配走规范化名字兜底 ✓）
+        item.setProvinceId(school.getProvince_id());
+        item.setCityId(school.getCity_id());
         item.setSchoolBatch(school.getSchool_batch());
         item.setSchoolLevel(school.getSchool_level());
         item.setSchoolNature(school.getSchool_nature());
@@ -10776,6 +10824,62 @@ public class PlanningStateService {
         }
     }
 
+    /**
+     * 约束生效后按档位目标数，从**合格候选**补足工作方案。
+     *
+     * <p>与"同步"是一对：同步负责删掉不合规的 ✓，补足负责把方案拉回目标规模 ✓——
+     * 只有前者时方案只会越改越小，**一次筛空就再也回不来** ✗（2026-09-25 真栈实测：
+     * 工作方案被清成 0 行后，此后任何重生成都从空方案出发 ✓）。
+     *
+     * <p>只追加、不动用户已有条目 ✓（跳过已选与已禁 ✓）。候选由调用方先按约束过滤
+     * （`resolveEffectiveCandidates` ✓），所以补进来的天然合规 ✓，随后
+     * `generateOrderedPlan` 的同步不会把它们删掉 ✓。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public PlanningStateDTO refillWorkingPlanByTierTargets(Long tenantId, Long chatSessionId) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        DraftPlanStateDTO draft = state.getDraftPlanState();
+        CandidatePoolStateDTO pool = state.getCandidatePoolState();
+        // 注意：本类的 `defaultList(...)` 是 **String 专用**的 ✗，候选列表要自己判空 ✓。
+        List<CandidateItemDTO> poolItems = pool == null || pool.getItems() == null
+                ? new ArrayList<CandidateItemDTO>() : pool.getItems();
+        if (draft == null || pool == null || poolItems.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+        refillWorkingPlanByTier(draft, effectiveCandidates, pool.getRequiredTierCounts());
+        syncWorkingPlanUnitsWithItems(draft, effectiveCandidates, pool);
+        recalculateWorkingPlanSummary(draft, pool);
+        saveWorkingPlanState(chatSessionId, state);
+        state.setSessionId(chatSessionId);
+        return state;
+    }
+
+    /**
+     * 补足本体（package-private：单测直接打这一层 ✓，`PlanningStateServiceRefillTest`）。
+     *
+     * <p>候选**按池内顺序**使用 ✓（池本身就是推荐顺序，不在这里重排 ✗）；`tierTargets`
+     * 取自候选池的 `requiredTierCounts` ✓（会话里就有，如 `{冲13, 稳13, 保19}` ✓）。
+     */
+    void refillWorkingPlanByTier(DraftPlanStateDTO draft,
+                                 List<CandidateItemDTO> candidates,
+                                 Map<String, Integer> tierTargets) {
+        if (draft == null || tierTargets == null || tierTargets.isEmpty()) {
+            return;
+        }
+        Set<String> selected = new LinkedHashSet<String>();
+        for (DraftItemDTO item : defaultDraftItems(draft.getItems())) {
+            if (item != null && !Strings.isNullOrEmpty(item.getVolunteerId())) {
+                selected.add(item.getVolunteerId());
+            }
+        }
+        Set<String> banned = new LinkedHashSet<String>(defaultList(draft.getBannedVolunteerIds()));
+        for (Map.Entry<String, Integer> entry : tierTargets.entrySet()) {
+            addAutoSelectedByTier(draft, candidates, selected, banned, entry.getKey(), entry.getValue());
+        }
+    }
+
     private boolean canAutoSelectCandidate(CandidateItemDTO candidate,
                                            Set<String> selectedVolunteerIds,
                                            Set<String> bannedVolunteerIds) {
@@ -10891,6 +10995,8 @@ public class PlanningStateService {
             unit.getMajorItems().add(major);
             if (candidate != null) {
                 unit.setProvinceName(candidate.getProvinceName());
+                unit.setProvinceId(candidate.getProvinceId());
+                unit.setCityId(candidate.getCityId());
                 unit.setCityName(candidate.getCityName());
                 unit.setSchoolLevel(candidate.getSchoolLevel());
                 unit.setSchoolNature(candidate.getSchoolNature());
@@ -11068,6 +11174,13 @@ public class PlanningStateService {
         }
         if (Strings.isNullOrEmpty(unit.getCityName())) {
             unit.setCityName(initialUnit.getCityName());
+        }
+        // 同上 ✓：ID 从初始单元带过来 ✓
+        if (Strings.isNullOrEmpty(unit.getProvinceId())) {
+            unit.setProvinceId(initialUnit.getProvinceId());
+        }
+        if (Strings.isNullOrEmpty(unit.getCityId())) {
+            unit.setCityId(initialUnit.getCityId());
         }
         if (Strings.isNullOrEmpty(unit.getSchoolLevel())) {
             unit.setSchoolLevel(initialUnit.getSchoolLevel());

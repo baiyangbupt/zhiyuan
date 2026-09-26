@@ -31,10 +31,23 @@ import websockets
 
 DEFAULT_ASSET_DIR = Path("assets/production-flow-verification-20260628")
 DEFAULT_BACKEND_URL = "http://127.0.0.1:18090"
-DEFAULT_AGENT_URL = "ws://127.0.0.1:18091/gaotu-assistant-agent/plus/chat/1/bot/test/do"
-DEFAULT_VOLUNTEER_DATA_DIR = Path("data/tmp")
+# 路径里的 tenant/bot 是客户端给的，与票不符即 4403（`ws_chat_compat`）——
+# 所以这里必须与取票用的 `--tenant/--bot` 一致，不能用历史上的 `bot/test`。
+DEFAULT_AGENT_URL = "ws://127.0.0.1:18091/gaotu-assistant-agent/plus/chat/1/bot/1/do"
+# 志愿文件的落点必须与**后端配置**的 `gaotu.temp-data-path` 是同一个目录：
+#   应用 local profile（`zhiyuan-server/application-local.yml`）→ `zhiyuan-server/data/tmp`
+#   隔离 codex-local 栈（`scripts/codex-local-infra.sh` 生成）→ `.local/codex-local/tmp`
+# 投错目录的效果是后端回 `110 下载志愿数据文件失败`，看上去像"本地没有数据"，
+# 实际是文件放到了后端不读的地方。默认值照旧，跑隔离栈时用 `--volunteer-data-dir`
+# 或 `ZHIYUAN_VOLUNTEER_DATA_DIR` 显式指过去。
+DEFAULT_VOLUNTEER_DATA_DIR = Path(os.getenv("ZHIYUAN_VOLUNTEER_DATA_DIR", "data/tmp"))
 DEFAULT_SESSION_OFFSET = 800000
-DEFAULT_USER_ID = "production-flow-local-replay"
+DEFAULT_USER_ID = os.getenv("ZHIYUAN_REPLAY_USER_ID", "production-flow-local-replay")
+# WS 门禁（C1）之后，每个连接都必须带一张 Java 签发的一次性票；票走登录态 tk/pf。
+DEFAULT_TICKET_TOKEN = os.getenv("ZHIYUAN_REPLAY_TICKET_TOKEN", "codex-local-test-token")
+DEFAULT_ORIGIN = os.getenv("ZHIYUAN_REPLAY_ORIGIN", "https://test-www.gaotuzhiyuan.com")
+DEFAULT_TENANT = os.getenv("ZHIYUAN_REPLAY_TENANT", "1")
+DEFAULT_BOT = os.getenv("ZHIYUAN_REPLAY_BOT", "1")
 DEFAULT_REPLAY_DB_HOST = os.getenv("ZHIYUAN_REPLAY_DB_HOST", "")
 DEFAULT_REPLAY_DB_PORT = int(os.getenv("ZHIYUAN_REPLAY_DB_PORT", "3306"))
 DEFAULT_REPLAY_DB_NAME = os.getenv("ZHIYUAN_REPLAY_DB_NAME", "")
@@ -90,9 +103,12 @@ def _http_json(
     payload: dict[str, Any] | None = None,
     *,
     timeout_seconds: float = 15,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     data = None
     headers = {"Accept": "application/json"}
+    if extra_headers:
+        headers.update({str(k): str(v) for k, v in extra_headers.items()})
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -196,6 +212,7 @@ parser.add_argument("--user", required=True)
 parser.add_argument("--password", required=True)
 parser.add_argument("--session-id", type=int, required=True)
 parser.add_argument("--user-name", required=True)
+parser.add_argument("--user-id", required=True)
 opts = parser.parse_args()
 
 conn = mysql.connector.connect(
@@ -218,7 +235,7 @@ try:
             "INSERT INTO assistant_chat_session "
             "(id, tenant_id, bot_id, user_id, user_name, session_status, start_time, create_time, update_time) "
             "VALUES (%s, 1, 1, %s, %s, 1, NOW(), NOW(), NOW())",
-            (opts.session_id, opts.session_id, opts.user_name),
+            (opts.session_id, opts.user_id, opts.user_name),
         )
         action = "inserted"
     else:
@@ -226,13 +243,13 @@ try:
             "UPDATE assistant_chat_session "
             "SET tenant_id = 1, "
             "bot_id = 1, "
-            "user_id = COALESCE(user_id, %s), "
-            "user_name = COALESCE(user_name, %s), "
+            "user_id = %s, "
+            "user_name = %s, "
             "session_status = 1, "
             "start_time = COALESCE(start_time, NOW()), "
             "update_time = NOW() "
             "WHERE id = %s",
-            (opts.session_id, opts.user_name, opts.session_id),
+            (opts.user_id, opts.user_name, opts.session_id),
         )
         action = "updated"
     conn.commit()
@@ -266,6 +283,8 @@ finally:
             str(session_id),
             "--user-name",
             "production-flow-replay",
+            "--user-id",
+            str(args.user_id),
         ],
         check=True,
         capture_output=True,
@@ -545,12 +564,148 @@ def _extract_volunteer_files(asset_session_dir: Path, source_session_id: str, ta
     return copied
 
 
+def _fetch_ws_ticket(args: argparse.Namespace, session_id: str) -> str:
+    """取一张一次性 WS 票据（C1 门禁）。
+
+    票在 Gateway 侧被**原子消费**：一个连接一张，第二次用同一张就是 403。
+    所以每次建连都要重新取，不能复用。
+    """
+    payload = _http_json(
+        "POST",
+        _backend_url(
+            args.backend_url,
+            f"/gaotu-assistant-bot/chat/{args.tenant}/conversation/ws-ticket",
+        ),
+        {"sessionId": session_id, "botId": args.bot},
+        extra_headers={
+            "tk": args.ticket_token,
+            "pf": "WEB",
+            "Origin": args.origin,
+        },
+    )
+    ticket = str(((payload.get("data") or {}) if isinstance(payload.get("data"), dict) else {}).get("ticket") or "")
+    if not ticket:
+        raise RuntimeError(f"ws_ticket_not_issued:{json.dumps(payload, ensure_ascii=False)[:300]}")
+    return ticket
+
+
+def _active_proposal(args: argparse.Namespace, session_id: str) -> dict[str, Any]:
+    """从**后端快照**取当前待确认提案。
+
+    确认帧要带的 `proposalRef` 以后端为准：模型卡片上那份是转述，
+    两边不一致时应当拒掉而不是照模型说的写（快照是唯一可信来源）。
+    """
+    try:
+        payload = _http_json(
+            "GET",
+            _backend_url(
+                args.backend_url,
+                f"/gaotu-assistant-bot/inner/planning/{args.tenant}/session/turn-snapshot",
+                {"chatSessionId": session_id},
+            ),
+            timeout_seconds=30,
+        )
+    except (OSError, error.URLError, TimeoutError, json.JSONDecodeError):
+        return {}
+    snapshot = _unwrap_data(payload)
+    active = snapshot.get("activeProposal") if isinstance(snapshot, dict) else None
+    return active if isinstance(active, dict) else {}
+
+
+def _generate_candidate_pool(args: argparse.Namespace, session_id: str) -> dict[str, Any]:
+    """按用例声明生成候选池。
+
+    生产里候选池由会话流程生成；本地回放只写了一份 planningState 快照，
+    池子状态仍是 `not_generated`，于是模型读到的候选是空的、提案编译成
+    `status=blocked` + `actions=[]`（2026-09-25 实测）。写路径要走到
+    `pending-command/execute` 并**真的改到方案**，这一步必须先做。
+    """
+    payload = _http_json(
+        "POST",
+        _backend_url(
+            args.backend_url,
+            f"/gaotu-assistant-bot/inner/planning/{args.tenant}/session/candidate-pool/generate",
+            {"chatSessionId": session_id},
+        ),
+        # **必须 force** ✓：否则会沿用 asset 里预置的 planning-state 中那份旧池 ✗
+        # （2026-09-26 实测：旧池来自六月快照、只有名字 ✗，于是"ID 明明通了却看不到" ✗）。
+        {"forceRegenerate": True},
+        timeout_seconds=180,
+    )
+    state = ((payload.get("data") or {}) if isinstance(payload.get("data"), dict) else {}).get(
+        "candidatePoolState"
+    ) or {}
+    return {
+        "statusCode": state.get("statusCode"),
+        "items": len(state.get("items") or []),
+        "requiredTierCounts": state.get("requiredTierCounts"),
+    }
+
+
+def _regenerate_initial_plan(args: argparse.Namespace, session_id: str) -> dict[str, Any]:
+    """按**重建后的候选池**重算初始方案 ✓（只生成方案，不做任何写业务 ✓）。
+
+    不这么做的话，方案单元会沿用 asset 里预置的 `initialRecommendationState` ✗——
+    那是旧快照（只有名字、没有区域 ID ✗），于是"ID 优先"在组模式（匹配对象是**单元** ✓）
+    上永远够不着 ✗。
+    """
+    payload = _http_json(
+        "POST",
+        _backend_url(
+            args.backend_url,
+            f"/gaotu-assistant-bot/inner/planning/{args.tenant}/session/initial-plan/generate",
+            {"chatSessionId": session_id},
+        ),
+        {"forceRegenerate": True, "overwriteExistingDraft": True},
+        timeout_seconds=300,
+    )
+    state = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    ordered = (state or {}).get("orderedPlanState") or {}
+    return {"units": len(ordered.get("units") or [])}
+
+
+def _probe_volunteer_visibility(
+    args: argparse.Namespace, session_id: str, copied_files: list[str]
+) -> str | None:
+    """把"后端到底读不读得到这份志愿文件"变成一条显式结论。
+
+    投递目录与后端 `gaotu.temp-data-path` 不是同一个时，后端回
+    `110 下载志愿数据文件失败`——症状与"本地根本没有数据"一模一样。
+    历史上正是这条把"缺数据"和"目录没对准"混成了一件事（"成功 apply"因此
+    被记成数据缺口）。文件既然已经落地了，当场问一次后端，别等到确认那一轮。
+    """
+    if not copied_files:
+        return None
+    try:
+        payload = _http_json(
+            "POST",
+            _backend_url(
+                args.backend_url,
+                f"/gaotu-assistant-bot/inner/chat/{args.tenant}/session/load-volunteer-format-data",
+                {"chatSessionId": session_id},
+            ),
+            {},
+            timeout_seconds=30,
+        )
+    except (OSError, error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return f"volunteer_visibility_probe_failed:{type(exc).__name__}:{exc}"
+    if payload.get("code") == 110:
+        return (
+            "volunteer_files_not_visible_to_backend:"
+            f"code=110,dir={args.volunteer_data_dir},"
+            "hint=该目录必须等于后端 gaotu.temp-data-path"
+        )
+    return None
+
+
 async def _ws_exchange(
     url: str,
     *,
     session_id: str,
     user_id: str,
-    content: str,
+    content: Any,
+    ticket: str,
+    origin: str,
     input_type: str = "text",
     response_timeout: float = 180,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
@@ -560,9 +715,13 @@ async def _ws_exchange(
         "content": content,
         "inputType": input_type,
     }
+    query = parse.urlencode({"chatSessionId": session_id, "ticket": ticket})
+    connector = f"{url}{'&' if parse.urlparse(url).query else '?'}{query}"
     started = time.perf_counter()
     messages: list[dict[str, Any]] = []
-    async with websockets.connect(url, max_size=2**24, open_timeout=30) as ws:
+    async with websockets.connect(
+        connector, max_size=2**24, open_timeout=30, additional_headers={"Origin": origin}
+    ) as ws:
         await ws.send(json.dumps(payload, ensure_ascii=False))
         while True:
             raw = await asyncio.wait_for(ws.recv(), timeout=response_timeout)
@@ -608,10 +767,44 @@ def _content_dict(message: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _nested_message_type(message: dict[str, Any]) -> str:
+    """消息的**有效**类型。
+
+    卡片在 compat 通道里是 `type=text` 的信封，真正的卡（`proposal.preview` /
+    `pendingConfirmationCard`）**JSON 编码在 content 里**。只看外层 type 会漏掉
+    整张卡——2026-09-25 实测：外层只有 `['tool.progress','tool.progress','text']`，
+    而 content 里明明是 `{"type":"proposal.preview",...}`。
+    """
+    outer = str(message.get("type") or "")
+    if outer in {"text", "reply"}:
+        inner = _content_dict(message)
+        inner_type = str(inner.get("type") or "")
+        if inner_type:
+            return inner_type
+    return outer
+
+
+def _action_result(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """回放里"这次确认到底成没成"的**权威读数**。
+
+    确认轮回来的是 `conversationAction.result` 信封，里面 `actionResult.actionStatus`
+    是 `applied` / `failed` / ...。只看正文会漏：正文写"操作已处理。"，而 actionResult
+    里明明是 `failed`（2026-09-25 实测 ✓）——判据必须读这个字段。
+    """
+    for item in messages:
+        inner = _content_dict(item)
+        if str(inner.get("type") or "") != "conversationAction.result":
+            continue
+        action_result = inner.get("actionResult")
+        if isinstance(action_result, dict):
+            return action_result
+    return {}
+
+
 def _pending_cards(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for item in messages:
-        if str(item.get("type") or "") != "pendingConfirmationCard":
+        if _nested_message_type(item) != "pendingConfirmationCard":
             continue
         cards.append(_content_dict(item))
     return cards
@@ -755,6 +948,34 @@ def _summarize_ordered(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _cards_from_snapshot(
+    args: argparse.Namespace, session_id: str, messages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """原生卡（`proposal.preview`）在回放里的落点。
+
+    Codex 链路把提案当**卡片事件**发（`proposal.preview` + Java 编译出的提案体），
+    旧链的 `pendingConfirmationCard` 不再是唯一形状 ✗→✓。卡片体里没有 `pendingId`
+    （那是 prepare 信封上的），所以确认用的 ref 从**后端快照**取——那才是权威来源。
+    """
+    if not any(_nested_message_type(item) == "proposal.preview" for item in messages):
+        return []
+    active = _active_proposal(args, session_id)
+    ref = active.get("proposalRef") or active.get("pendingId")
+    if not ref:
+        return []
+    return [
+        {
+            "type": "proposal.preview",
+            "pendingId": str(ref),
+            "kind": active.get("kind"),
+            "actionFamily": active.get("actionFamily"),
+            "revision": active.get("revision"),
+            "status": active.get("status"),
+            "sourceVersion": active.get("sourceVersion"),
+        }
+    ]
+
+
 def _target_session_id(args: argparse.Namespace, case: dict[str, Any], case_index: int) -> str:
     explicit = str(case.get("targetSessionId") or "").strip()
     if explicit:
@@ -798,6 +1019,13 @@ async def _run_case(args: argparse.Namespace, case: dict[str, Any], case_index: 
             Path(args.volunteer_data_dir),
         )
         result["setup"]["copiedVolunteerFiles"] = copied_files
+        visibility = _probe_volunteer_visibility(args, target_session_id, copied_files)
+        if visibility:
+            # 投递成功但后端读不到：就此停下，别用一轮真实回合去撞一个已知的假失败。
+            result["setup"]["volunteerVisibility"] = visibility
+            result["blockers"].append(visibility)
+            result["status"] = "blocked"
+            return result
         result["setup"]["planningStateWrite"] = _write_extra_data(args.backend_url, target_session_id, "planningState", planning_state)
         result["setup"]["userScoreDetailWrite"] = _write_extra_data(args.backend_url, target_session_id, "userScoreDetail", user_score_detail)
         result["setup"]["userProfileWrite"] = _write_extra_data(args.backend_url, target_session_id, "userprofile", user_profile)
@@ -808,6 +1036,21 @@ async def _run_case(args: argparse.Namespace, case: dict[str, Any], case_index: 
             result["blockers"].append("planningState_write_readback_empty")
             result["status"] = "blocked"
             return result
+        if case.get("generateCandidatePool"):
+            pool = _generate_candidate_pool(args, target_session_id)
+            result["setup"]["candidatePool"] = pool
+            if pool.get("statusCode") != "ready":
+                result["blockers"].append(f"candidate_pool_not_ready:{pool.get('statusCode')}")
+                result["status"] = "blocked"
+                return result
+            # 候选池重建了，**初始方案也得重建** ✓：否则方案单元仍来自 asset 里那份旧快照 ✗
+            # （2026-09-26 实测：旧单元只有名字、没有区域 ID ✗ → "ID 优先"在组模式上够不着 ✗）。
+            initial = _regenerate_initial_plan(args, target_session_id)
+            result["setup"]["initialPlan"] = initial
+            if not initial.get("units"):
+                result["blockers"].append("initial_plan_regenerate_empty")
+                result["status"] = "blocked"
+                return result
         before_state = _get_planning_state(args.backend_url, target_session_id)
         result["before"] = _summarize_ordered(before_state)
         before_match_count = _count_check_matches(before_state, case.get("checks") or {})
@@ -833,10 +1076,13 @@ async def _run_case(args: argparse.Namespace, case: dict[str, Any], case_index: 
             session_id=target_session_id,
             user_id=args.user_id,
             content=str(case["prompt"]),
+            ticket=_fetch_ws_ticket(args, target_session_id),
+            origin=args.origin,
             input_type="text",
             response_timeout=args.response_timeout,
         )
         all_first_turn_messages = primary + followups
+        turn_messages = list(all_first_turn_messages)
         response_text = _text_from_messages(primary)
         cards = _pending_cards(all_first_turn_messages)
         result["observations"]["firstTurnElapsedMs"] = elapsed_ms
@@ -846,6 +1092,34 @@ async def _run_case(args: argparse.Namespace, case: dict[str, Any], case_index: 
         for forbidden in case.get("negativeReplySubstrings") or []:
             if str(forbidden).lower() in response_text.lower():
                 result["failures"].append(f"reply_contains_forbidden:{forbidden}")
+        if not cards and str(case.get("followUpPrompt") or "").strip():
+            # 产品是对话式的：模型先反问、用户再明确要求，是两个回合。
+            # 真栈上实测过这个形状（P2 第十一轮："追问一次后按指定目标出提案"），
+            # 所以第二个回合是**用例显式声明的**，不是harness 自己补的。
+            follow_primary, follow_more, follow_elapsed = await _ws_exchange(
+                args.agent_url,
+                session_id=target_session_id,
+                user_id=args.user_id,
+                content=str(case["followUpPrompt"]),
+                ticket=_fetch_ws_ticket(args, target_session_id),
+                origin=args.origin,
+                input_type="text",
+                response_timeout=args.response_timeout,
+            )
+            second_messages = follow_primary + follow_more
+            turn_messages = turn_messages + second_messages
+            result["observations"]["secondTurnElapsedMs"] = follow_elapsed
+            result["observations"]["secondTurnText"] = _text_from_messages(follow_primary)
+            result["observations"]["secondTurnTypes"] = [str(item.get("type") or "") for item in second_messages]
+            cards = _pending_cards(second_messages)
+            result["observations"]["pendingCards"] = cards
+        if not cards:
+            # 旧链的 `pendingConfirmationCard` 与 Codex 链的 `proposal.preview`
+            # 是两张卡；卡片体没有 `pendingId`，ref 以后端快照为准。
+            cards = _cards_from_snapshot(args, target_session_id, turn_messages)
+            if cards:
+                result["observations"]["pendingCards"] = cards
+                result["observations"]["pendingCardSource"] = "snapshot.activeProposal"
         if not cards:
             result["failures"].append("no_pending_confirmation_card")
             result["status"] = "failed"
@@ -871,20 +1145,26 @@ async def _run_case(args: argparse.Namespace, case: dict[str, Any], case_index: 
         return result
 
     try:
-        confirm_content = json.dumps(
-            {
-                "action": "confirm",
-                "kind": first_card.get("kind") or "plan_mutation",
-                "pendingId": pending_id,
-                "message_id": first_card.get("message_id"),
-            },
-            ensure_ascii=False,
-        )
+        # 确认帧的 content 必须是**对象**：compat 层只在 `isinstance(content, dict)`
+        # 时才把它转成 ConversationAction（`server.py` 的 `content.get("action")` 分支）。
+        # 传 JSON 字符串的后果**没有报错**：action 为 None → 整轮退化成普通聊天，
+        # 模型照样回一句"已提交给确认链执行"，而链上一次调用都没发生 ✗
+        # （2026-09-25 实测：后端日志只有 saveMessage，pending 仍是 active ✓）。
+        confirm_content = {
+            "action": "confirm",
+            "kind": first_card.get("kind") or "plan_mutation",
+            "pendingId": pending_id,
+            # 带上是后端快照的 sourceVersion（权威），确认链会拿它做版本核对。
+            "expectedSourceVersion": first_card.get("sourceVersion"),
+        }
+        # 票是一次性的（Gateway 侧原子消费），确认这一轮必须重新取一张。
         confirm_primary, confirm_followups, confirm_elapsed_ms = await _ws_exchange(
             args.agent_url,
             session_id=target_session_id,
             user_id=args.user_id,
             content=confirm_content,
+            ticket=_fetch_ws_ticket(args, target_session_id),
+            origin=args.origin,
             input_type="pendingConfirmation",
             response_timeout=args.response_timeout,
         )
@@ -896,16 +1176,39 @@ async def _run_case(args: argparse.Namespace, case: dict[str, Any], case_index: 
         result["after"] = _summarize_ordered(after_state)
         after_match_count = _count_check_matches(after_state, case.get("checks") or {})
         result["checks"]["afterMatchCount"] = after_match_count
-        pending_state = _get_extra_data(args.backend_url, target_session_id, "pendingConfirmation")
-        result["observations"]["pendingStatusAfterConfirm"] = pending_state.get("status")
-        if pending_state.get("status") != "applied":
-            result["failures"].append(f"pending_not_applied:{pending_state.get('status')}")
+        # 标准栈的待确认**不在** extra-data 里（那是 legacy 的存法 ✗）：照旧读会让这条
+        # 恒为 `pending_not_applied:None`——看起来像"确认没生效"，实际什么都没读到 ✓。
+        # 权威判定改成两处：快照里还有没有 active 提案，以及方案有没有真的变（下面那条）。
+        legacy_pending = _get_extra_data(args.backend_url, target_session_id, "pendingConfirmation")
+        result["observations"]["pendingStatusAfterConfirm"] = legacy_pending.get("status")
+        result["observations"]["activeProposalAfterConfirm"] = bool(
+            _active_proposal(args, target_session_id)
+        )
+        action_result = _action_result(confirm_primary + confirm_followups)
+        result["observations"]["actionResult"] = action_result
+        if action_result:
+            status = str(action_result.get("actionStatus") or "")
+            if status and status != "applied":
+                # 权威读数：动作没成功就别让"方案条数变少"把它盖过去。
+                result["failures"].append(f"action_not_applied:{status}")
         if after_match_count >= before_match_count and before_match_count > 0:
             result["failures"].append(
                 f"plan_match_count_not_reduced:before={before_match_count},after={after_match_count}"
             )
+        # 空方案上的"匹配数=0"是**真空成立**：`only_keep_*` 数的是"不含关键词的行"，
+        # 一条都没有时它恒为 0 ✗。所以这类判据必须再要一条"结果非空"，
+        # 否则一次把方案清空的失败会被读成绿灯（2026-09-25 实测 ✓）。
+        if str((case.get("checks") or {}).get("type") or "").startswith("only_keep_"):
+            after_total = int((result.get("after") or {}).get("orderedCount") or 0)
+            result["checks"]["afterOrderedCount"] = after_total
+            if after_total <= 0:
+                result["failures"].append("after_plan_empty")
         if "失效" in confirm_text or "没有执行成功" in confirm_text or "缺少" in confirm_text:
             result["failures"].append("confirm_reply_indicates_failure")
+        if "会话不存在" in confirm_text:
+            # 会话行不存在时确认必然打不通；这是准备期的问题，不是模型的问题，
+            # 单列一条，别让它混在 `pending_not_applied` 里看不清。
+            result["failures"].append("confirm_rejected_session_missing")
     except (OSError, asyncio.TimeoutError, json.JSONDecodeError, ValueError) as exc:
         result["blockers"].append(f"confirm_turn_failed:{type(exc).__name__}:{exc}")
         result["status"] = "blocked"
@@ -946,6 +1249,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "backendUrl": args.backend_url,
         "agentUrl": args.agent_url,
         "assetDir": args.asset_dir,
+        # 落点留在结果里：八月那次失败要翻回放脚本才知道文件投到了哪个目录。
+        "volunteerDataDir": str(args.volunteer_data_dir),
         "caseFile": args.case_file,
         "parallelism": args.parallelism,
         "sessionOffset": args.session_offset,
@@ -962,6 +1267,10 @@ def main() -> None:
     parser.add_argument("--volunteer-data-dir", default=str(DEFAULT_VOLUNTEER_DATA_DIR))
     parser.add_argument("--session-offset", type=int, default=DEFAULT_SESSION_OFFSET)
     parser.add_argument("--user-id", default=DEFAULT_USER_ID)
+    parser.add_argument("--tenant", default=DEFAULT_TENANT, help="WS 票与会话的租户")
+    parser.add_argument("--bot", default=DEFAULT_BOT, help="WS 票与会话的 bot")
+    parser.add_argument("--ticket-token", default=DEFAULT_TICKET_TOKEN, help="取 WS 票用的登录态 tk")
+    parser.add_argument("--origin", default=DEFAULT_ORIGIN, help="WS 票与会话的来源，须在允许列表内")
     parser.add_argument("--case-file", default="", help="JSON list or object with a cases list")
     parser.add_argument("--case-id", action="append", help="run only the named case; can be repeated")
     parser.add_argument("--parallelism", type=int, default=1)

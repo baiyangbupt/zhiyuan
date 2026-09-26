@@ -6,21 +6,16 @@ from typing import Any
 from app.admission.facts import AdmissionFactError, canonical_admission_mode
 from app.gateway.contracts import ConversationTurnSnapshot, StatePatch
 
+# `turn-snapshot` 的 `scoreContext` 用 `strengthSubjects` ✓，投影出的用 `subjects` ✓——
+# 别名不对上，真载荷的选科会整个丢掉 ✗（补缺那条路会变成"补进来但没人认得" ✗）。
+_SCORE_CONTEXT_ALIASES = {"strengthSubjects": "subjects"}
+
 
 def _first(mapping: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
     for key in keys:
         if key in mapping:
             return mapping[key]
     return default
-
-
-def _nested(mapping: Mapping[str, Any], *path: str) -> Any:
-    current: Any = mapping
-    for key in path:
-        if not isinstance(current, Mapping):
-            return None
-        current = current.get(key)
-    return current
 
 
 def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
@@ -62,6 +57,19 @@ def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
         }.items()
         if value not in (None, "")
     }
+    # `turn-snapshot` **已经把成绩上下文算好了** ✓（Java 权威 ✓：真载荷含 `batch`/`batchScore`/
+    # `strengthSubjects` ✓），而 `studentSummary` 里**没有 `batch`** ✗（真栈实测 ✓）。
+    # 口径：**派生值优先** ✓（别处依赖它的形状 ✓），这里只**补缺** ✗——
+    # 缺 `batch` 会让网关解析专业 ID 时拿不到学历层次 ✗ → 目录返回 `multi` ✗ →
+    # 安全阀不取 ID ✓ →"专业 ID 优先"在真栈上等于没接（报告第三十四轮 ✓）。
+    authoritative = workspace.get("scoreContext") or workspace.get("score_context")
+    if isinstance(authoritative, Mapping):
+        for key, value in authoritative.items():
+            target = _SCORE_CONTEXT_ALIASES.get(str(key), str(key))
+            # **空值也算缺** ✓：派生出的 `subjects` 在没有 summary 时是 `[]` ✓，
+            # 只判"键在不在"会把它当成已有值 ✗，权威的选科就永远补不进来 ✗。
+            if value not in (None, "") and score_context.get(target) in (None, "", [], {}):
+                score_context[target] = value
     confirmed_constraints = {
         key: value
         for key, value in {

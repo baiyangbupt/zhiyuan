@@ -140,6 +140,8 @@ final class PriorityRuleSupport {
         candidate.setSchoolName(unit == null ? null : unit.getSchoolName());
         candidate.setDisplaySchoolName(unit == null ? null : unit.getSchoolName());
         candidate.setProvinceName(unit == null ? null : unit.getProvinceName());
+        candidate.setProvinceId(unit == null ? null : unit.getProvinceId());
+        candidate.setCityId(unit == null ? null : unit.getCityId());
         candidate.setCityName(unit == null ? null : unit.getCityName());
         candidate.setSchoolLevel(unit == null ? null : unit.getSchoolLevel());
         candidate.setSchoolNature(unit == null ? null : unit.getSchoolNature());

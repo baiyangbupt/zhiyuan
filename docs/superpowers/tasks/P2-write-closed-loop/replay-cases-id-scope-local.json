@@ -1,0 +1,28 @@
+{
+ "cases": [
+  {
+   "caseId": "only_keep_clinical_proposal",
+   "sourceSessionId": "1936",
+   "prompt": "严格只保留临床医学",
+   "generateCandidatePool": false,
+   "expectedActionFamily": "apply_plan_change_proposal",
+   "expectPendingKind": "plan_change_proposal",
+   "checks": {
+    "type": "only_keep_major_contains",
+    "keywords": [
+     "临床医学"
+    ],
+    "requireBeforeMatch": true
+   }
+  },
+  {
+   "caseId": "exclude_clinical_proposal",
+   "sourceSessionId": "1936",
+   "prompt": "不要临床医学这个专业，其他都保留",
+   "generateCandidatePool": false,
+   "expectedActionFamily": "apply_plan_change_proposal",
+   "expectPendingKind": "plan_change_proposal",
+   "checks": {}
+  }
+ ]
+}

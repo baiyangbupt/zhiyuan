@@ -13,6 +13,9 @@ public class PlanningUnitDTO {
     private String schoolName;
     private String provinceName;
     private String cityName;
+    // 区域 ID（随候选带上来 ✓）：组模式的区域判定按 ID 优先 ✓。
+    private String provinceId;
+    private String cityId;
     private String schoolLevel;
     private String schoolNature;
     private String schoolCategory;

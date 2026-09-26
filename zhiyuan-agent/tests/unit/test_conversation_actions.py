@@ -257,7 +257,7 @@ async def test_confirm_runs_claim_then_execute_with_the_same_claim_token():
     assert call["proposal_apply"]["rerunReview"] is True
 
 
-async def _claim_then_execute(monkeypatch, goal: dict | None):
+async def _claim_then_execute(monkeypatch, goal: dict | None, *, snapshot_extra: dict | None = None):
     """跑一遍 confirm→execute，把 execute 收到的 kwargs 带回来（scope 映射四条共用）。"""
     execute_calls = []
 
@@ -271,6 +271,7 @@ async def _claim_then_execute(monkeypatch, goal: dict | None):
         return {"code": 0, "data": {"status": "applied", "stateVersion": 9}}
 
     current = snapshot_with_pending({"userGoalRequest": goal} if goal is not None else None)
+    current.update(snapshot_extra or {})
     result = await execute_conversation_action(
         tenant_id="tenant-7", session_id="s1",
         action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
@@ -308,6 +309,9 @@ async def test_scope_goal_routes_to_the_constraint_command() -> None:
 async def test_scope_goal_carries_every_kind_of_scope() -> None:
     """三类范围各进各的束：school→schoolPreferences、major→majorPreferences、region 同理 ✓；
     负向进 negative ✓（删学校/去城市就是这一类 ✓）。"""
+    # 目录查询**打桩** ✓：否则测试会去打本机目录 ✗（跑得快慢取决于环境 ✓，
+    # 而且是"测试打到真服务"这种最不该有的耦合 ✗）。
+    await _stub_catalog({"北京": "110000"})
     _, calls = await _claim_then_execute(None, {
         "goalType": "exclude_scope",
         "targetScopes": [{"scopeType": "major", "name": "临床医学"}],
@@ -319,6 +323,8 @@ async def test_scope_goal_carries_every_kind_of_scope() -> None:
         "intentMode": "constraint",
         "majorPreferences": {"positive": ["临床医学"], "negative": []},
         "regionPreferences": {"positive": [], "negative": ["北京"]},
+        # 区域**同时**带权威 ID ✓（与名字同序、同正负 ✓）——其余三类不带 ID ✓（区域先行 ✓）。
+        "regionPreferenceIds": {"positive": [], "negative": ["110000"]},
         "schoolPreferences": {"positive": [], "negative": ["甲大学"]},
     }
 
@@ -470,3 +476,349 @@ async def test_missing_operation_id_refuses_to_execute():
     )
     assert result.action_status == "failed"
     assert result.code == "operation_id_missing"
+
+
+@pytest.mark.asyncio
+async def test_constraint_apply_status_comes_from_postcondition_report() -> None:
+    """约束路的成败读 `postconditionReport.satisfied`——这条响应里**没有** `status` ✓。
+
+    真栈形态（2026-09-25）：`apply_constraint_and_regenerate` 的响应只有
+    `commandType/completedSteps/operationId/pendingId/planningState/replayed/resultPlanVersion/sourcePlanVersion`
+    ✗，既无 `status` 也无 `postconditionReport`（那次是 null）→ 网关兜底判 `failed` ✗，
+    于是"成功报不出来、失败也不是判出来的" ✓。Java 侧本轮补上满足度报告（不满足还抛 40905 回滚）✓。
+    """
+    async def resolver(session_id, **kwargs):
+        if kwargs.get("action") in {"complete", "fail"}:
+            return {"code": 0, "data": {"status": "applied"}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        return {
+            "code": 0,
+            "data": {
+                "completedSteps": [
+                    "constraint_updated",
+                    "ordered_plan_regenerated",
+                    "postcondition_verified",
+                ],
+                "postconditionReport": {"satisfied": True, "actualCount": 12, "targetCount": 45},
+            },
+        }
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending({"userGoalRequest": {
+            "goalType": "only_keep_scope",
+            "targetScopes": [{"scopeType": "major", "name": "临床医学"}],
+            "negativeScopes": [],
+        }}),
+        resolver=resolver, executor=executor,
+    )
+
+    assert result.action_status == "applied"
+
+
+@pytest.mark.asyncio
+async def test_constraint_apply_reports_failed_when_postcondition_unsatisfied() -> None:
+    """对照：满足度报告说没满足 ⇒ `failed` ✓（不许读成成功）。"""
+    async def resolver(session_id, **kwargs):
+        if kwargs.get("action") in {"complete", "fail"}:
+            return {"code": 0, "data": {"status": "applied"}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        return {
+            "code": 0,
+            "data": {
+                "postconditionReport": {"satisfied": False, "actualCount": 26, "targetCount": 45},
+            },
+        }
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending({"userGoalRequest": {
+            "goalType": "only_keep_scope",
+            "targetScopes": [{"scopeType": "major", "name": "临床医学"}],
+            "negativeScopes": [],
+        }}),
+        resolver=resolver, executor=executor,
+    )
+
+    assert result.action_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_constraint_apply_without_any_signal_stays_failed() -> None:
+    """兜底不变：既没有 `status` 也没有满足度报告时，**仍是 `failed`** ✓（严格默认 ✓）。"""
+    async def resolver(session_id, **kwargs):
+        if kwargs.get("action") in {"complete", "fail"}:
+            return {"code": 0, "data": {"status": "applied"}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        return {"code": 0, "data": {"completedSteps": ["constraint_updated"]}}
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending({"userGoalRequest": {
+            "goalType": "only_keep_scope",
+            "targetScopes": [{"scopeType": "major", "name": "临床医学"}],
+            "negativeScopes": [],
+        }}),
+        resolver=resolver, executor=executor,
+    )
+
+    assert result.action_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_scope_type_with_scope_suffix_maps_to_the_same_bundle() -> None:
+    """真载荷的 `scopeType` 带 `_scope` 后缀 ✗——照原值查表会**整条被拒** ✓。
+
+    真栈实测（2026-09-25，会话 9781936）：模型/Java 给的是
+    `{"scopeType": "major_scope", "entityType": "major", "name": "临床医学"}` ✗，
+    而映射表的键是 `major` ✓（单测里手写的也是 `major` ✓）。后果是确认被
+    `unmappable_goal_scope` 拒掉：fail-closed ✓、方案没被改动 ✓，但功能等于不可用 ✗。
+    """
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "only_keep_scope",
+        "targetScopes": [{
+            "rawText": "严格只保留临床医学",
+            "resolutionStatus": "pending_clarification",
+            "scopeType": "major_scope",
+            "entityType": "major",
+            "name": "临床医学",
+        }],
+        "negativeScopes": [],
+    })
+
+    assert calls[0]["constraint_update"] == {
+        "intentMode": "constraint",
+        "majorPreferences": {"positive": ["临床医学"], "negative": []},
+    }
+
+
+@pytest.mark.asyncio
+async def test_scope_type_falls_back_to_entity_type() -> None:
+    """没有 `scopeType` 时回退 `entityType` ✓（真载荷两个字段都在，但别只认一个 ✓）。"""
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "must_include_scope",
+        "targetScopes": [{"entityType": "school", "name": "浙江大学"}],
+        "negativeScopes": [],
+    })
+
+    assert calls[0]["constraint_update"]["schoolPreferences"] == {
+        "positive": ["浙江大学"], "negative": []}
+
+
+@pytest.mark.asyncio
+async def test_scope_suffix_normalizes_without_entity_type() -> None:
+    """只有 `scopeType: "major_scope"`（没有 `entityType`）时也认得出来 ✓。
+
+    真载荷两字段都在 ✓，所以上一条用例**不足以**区分"后缀归一化"与"entityType 回退" ✗——
+    这条把两者分开：没有 `entityType` 时只剩后缀归一化这一条路 ✓。
+    """
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "only_keep_scope",
+        "targetScopes": [{"scopeType": "province_scope", "name": "北京"}],
+        "negativeScopes": [],
+    })
+
+    assert calls[0]["constraint_update"]["regionPreferences"] == {
+        "positive": ["北京"], "negative": []}
+
+
+async def _stub_catalog(mapping: dict[str, str], monkeypatch=None) -> None:
+    """把目录查询打桩成"只有这张表里的名字解析得出 ID" ✓（按省/市两个入口分别兜 ✓）。"""
+    from app.util import internal_client as _client
+
+    async def fake_lookup(name: str):
+        code = mapping.get(str(name))
+        if not code:
+            return {"resultType": "empty", "data": None}
+        key = "cityCode" if len(code) > 6 else "provinceCode"
+        return {"resultType": "exact", "data": {key: code, "cityName" if key == "cityCode" else "provinceName": name}}
+
+    _client.catalog_lookup_city = fake_lookup
+    _client.catalog_lookup_province = fake_lookup
+
+
+@pytest.mark.asyncio
+async def test_region_scope_sends_authoritative_id_alongside_name() -> None:
+    """区域范围**同时**下发权威 ID ✓（区域先行：省/市 ID 最稳 ✓），名字留着兜底 ✓。
+
+    "北京"按目录是**省级**（`provinceCode=110000` ✓）——直辖市这一支本来就该按省级落 ✓，
+    与候选池里的 `provinceId`（同为 `110000` ✓）正好对上 ✓。
+    """
+    await _stub_catalog({"北京": "110000"})
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "only_keep_scope",
+        "targetScopes": [{"scopeType": "city_scope", "name": "北京"}],
+        "negativeScopes": [],
+    })
+
+    assert calls[0]["constraint_update"]["regionPreferences"] == {
+        "positive": ["北京"], "negative": []}
+    assert calls[0]["constraint_update"]["regionPreferenceIds"] == {
+        "positive": ["110000"], "negative": []}
+
+
+@pytest.mark.asyncio
+async def test_region_scope_without_resolved_id_still_sends_name() -> None:
+    """解析不出 ID **不阻断** ✓：照旧只发名字 ✓（匹配按名字兜底 ✓），也不发空的 ID 束 ✓。"""
+    await _stub_catalog({})
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "only_keep_scope",
+        "targetScopes": [{"scopeType": "city_scope", "name": "银河系"}],
+        "negativeScopes": [],
+    })
+
+    assert calls[0]["constraint_update"]["regionPreferences"] == {
+        "positive": ["银河系"], "negative": []}
+    assert "regionPreferenceIds" not in calls[0]["constraint_update"]
+
+
+async def _stub_major_catalog(mapping: dict[str, str], *, result_type: str = "exact",
+                              capture: list | None = None) -> None:
+    """专业目录打桩 ✓：只有表里有的名字才解析得出 `majorId` ✓。
+
+    `result_type` 可切 `multi` ✓——真栈上"临床医学"不带层次就是 `multi` ✗（本科/专科各一条 ✓），
+    那时**必须不取 ID** ✗，否则会把另一条层次的 ID 下发出去 ✗。
+    """
+    from app.util import internal_client as _client
+
+    async def fake_lookup(name: str, education_level: str | None = None):
+        if capture is not None:
+            capture.append((str(name), education_level))
+        major_id = mapping.get(str(name))
+        if not major_id:
+            return {"resultType": "empty", "data": None}
+        if result_type != "exact":
+            return {"resultType": result_type, "data": [{"majorId": major_id, "majorName": name}]}
+        return {"resultType": "exact", "data": {"majorId": major_id, "majorName": name}}
+
+    _client.catalog_lookup_major = fake_lookup
+
+
+@pytest.mark.asyncio
+async def test_major_scope_sends_authoritative_id_alongside_name() -> None:
+    """专业范围**同时**下发权威 `majorId` ✓（"专业按 ID"，区域先行 ✓），名字留着兜底 ✓。
+
+    真栈词汇表核对（2026-09-26）：池里的真 `majorId` 与目录 `/catalog/lookup/major`
+    **同一套** ✓（临床医学 `774` ✓），所以两边能直接比 ✓。
+    """
+    await _stub_major_catalog({"临床医学": "774"})
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "only_keep_scope",
+        "targetScopes": [{"scopeType": "major_scope", "entityType": "major", "name": "临床医学"}],
+        "negativeScopes": [],
+    })
+
+    assert calls[0]["constraint_update"]["majorPreferences"] == {
+        "positive": ["临床医学"], "negative": []}
+    assert calls[0]["constraint_update"]["majorPreferenceIds"] == {
+        "positive": ["774"], "negative": []}
+
+
+@pytest.mark.asyncio
+async def test_major_scope_skips_id_when_catalog_result_is_ambiguous() -> None:
+    """目录返回 `multi` ✗（本科/专科同名各一条 ✓）→ **不取 ID** ✓，只发名字 ✓。
+
+    这条是"下发 ID"的**安全阀** ✓：给了错层次的 ID，会让合规志愿整批被判掉 ✗，
+    比"没有 ID、按名字兜底"糟得多 ✓（区域那条同规矩：只认 `exact` ✓）。
+    """
+    await _stub_major_catalog({"临床医学": "774"}, result_type="multi")
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "only_keep_scope",
+        "targetScopes": [{"scopeType": "major", "name": "临床医学"}],
+        "negativeScopes": [],
+    })
+
+    assert calls[0]["constraint_update"]["majorPreferences"] == {
+        "positive": ["临床医学"], "negative": []}
+    assert "majorPreferenceIds" not in calls[0]["constraint_update"]
+
+
+@pytest.mark.asyncio
+async def test_major_scope_passes_session_education_level_to_catalog() -> None:
+    """学历层次从**会话批次**取 ✓（"本科批(批次线436分)" → "本科" ✓），只用于目录去歧义 ✓。
+
+    真栈实测：带"本科"后，"临床医学"的查询结果就是 `exact` ✓（不带是 `multi` ✗）。
+    拿不到层次就不给 ✓——那是"这次拿不到权威身份"，不是错误 ✓。
+    """
+    capture: list = []
+    await _stub_major_catalog({"临床医学": "774"}, capture=capture)
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "only_keep_scope",
+        "targetScopes": [{"scopeType": "major", "name": "临床医学"}],
+        "negativeScopes": [],
+    }, snapshot_extra={"scoreContext": {"batch": "本科批(批次线436分)"}})
+
+    assert capture == [("临床医学", "本科")]
+    assert calls[0]["constraint_update"]["majorPreferenceIds"] == {
+        "positive": ["774"], "negative": []}
+
+
+@pytest.mark.asyncio
+async def test_exclude_scope_sends_major_id_on_the_negative_side() -> None:
+    """排除侧同理 ✓：ID 与名字**同正负** ✓（排除错一个专业，用户是看不见的 ✗）。"""
+    await _stub_major_catalog({"临床医学": "774"})
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "exclude_scope",
+        "targetScopes": [],
+        "negativeScopes": [{"scopeType": "major", "name": "临床医学"}],
+    })
+
+    assert calls[0]["constraint_update"]["majorPreferenceIds"] == {
+        "positive": [], "negative": ["774"]}
+
+
+@pytest.mark.asyncio
+async def test_exclude_scope_with_same_name_candidates_is_refused() -> None:
+    """排除类遇到**同名多候选**就**拒绝执行** ✓（fail-closed ✓），且理由**指名** ✓。
+
+    <p>真栈形态（2026-09-26 ✓）：目录里"临床医学"本科（`774` ✓）/专科（`520101K` ✓）各一条 ✓。
+    包含类解析不到精确项时按名字兜底是**安全的** ✓（用户能在方案里看见选了什么 ✓）；
+    排除类按名字排会排掉用户**看不见**的东西 ✗——报告点名"最糟的失败形态" ✓。
+    网关不能对用户说话 ✓（能说话的是模型 ✓），所以这一支给的是**可转述的失败** ✓。
+    """
+    from app.util import internal_client as _client
+
+    async def fake_lookup(name: str, education_level: str | None = None):
+        return {
+            "resultType": "multi",
+            "data": [
+                {"majorId": "774", "majorName": "临床医学", "educationLevel": "本科"},
+                {"majorId": "520101K", "majorName": "临床医学", "educationLevel": "专科"},
+            ],
+        }
+
+    _client.catalog_lookup_major = fake_lookup
+    result, calls = await _claim_then_execute(None, {
+        "goalType": "exclude_scope",
+        "targetScopes": [],
+        "negativeScopes": [{"scopeType": "major", "name": "临床医学"}],
+    })
+
+    assert result.action_status == "failed"
+    assert result.code == "exclude_scope_ambiguous"
+    assert calls == [], "拒绝执行＝一步都不许走（执行器一次都不该被调）"
+    assert "临床医学" in (result.message or "") and "本科" in (result.message or ""), \
+        "理由要能直接转述给用户（带上候选清单）"
+
+
+@pytest.mark.asyncio
+async def test_include_scope_with_same_name_candidates_still_proceeds_by_name() -> None:
+    """对照 ✓：**包含类**遇到同名多候选**照常执行** ✓（按名字兜底 ✓）——别把安全的那半也拦了 ✗。"""
+    await _stub_major_catalog({"临床医学": "774"}, result_type="multi")
+    _, calls = await _claim_then_execute(None, {
+        "goalType": "only_keep_scope",
+        "targetScopes": [{"scopeType": "major", "name": "临床医学"}],
+        "negativeScopes": [],
+    })
+
+    assert calls[0]["constraint_update"]["majorPreferences"] == {
+        "positive": ["临床医学"], "negative": []}
