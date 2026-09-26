@@ -212,16 +212,38 @@ start_service "rank" "$ROOT_DIR/zhiyuan-rank" \
     "$ROOT_DIR/zhiyuan-rank/.venv/bin/gunicorn" -w 1 -b "127.0.0.1:$RANK_PORT" app:app
 wait_for_http "rank" "$RANK_URL/health"
 
+# 说明（同一个坑今天踩了两次 ✓✓）：下面这一串都是**同一条命令** ✓，中间**不能**夹注释 ✗——
+# `\` 续行后接 `#` 注释会在这里终止命令 ✓，后面的参数会被当成独立命令执行 ✗
+#（实测症状：`--conversation.ws.allowed-origins=…: 没有那个文件或目录` ✓）。
+#   `conversation.ws.allowed-origins` —— WS 票据的来源白名单 ✓。共享配置里写的是
+#   "测试域名 + 127.0.0.1:3001" ✓（注释明说"不做通配" ✓），而隔离栈的 web 跑在 ${WEB_PORT} ✓，
+#   浏览器来自它 ✓ → 不在名单里就 `origin_forbidden` ✗（实测：`POST /conversation/ws-ticket` 403 ✓
+#   → 前端"任何 403 整页跳回 /login" ✓ → 弹回登录页 ✓）。这里用**同一个访问面助手**算出的集合 ✓
+#   （`ACCESS_ALLOWED_ORIGINS` ✓，与 agent 侧同源 ✓），不写第二份判据 ✓，也不做通配 ✓。
 start_service "backend" "$ROOT_DIR/zhiyuan-server" \
     java -jar "$ROOT_DIR/zhiyuan-server/target/zhiyuan-server.jar" \
     "--spring.profiles.active=localtest" \
     "--spring.config.additional-location=file:$SERVER_CONFIG" \
     "--server.port=$BACKEND_PORT" \
     "--server.address=127.0.0.1" \
+    "--conversation.ws.allowed-origins=https://test-www.gaotuzhiyuan.com,http://127.0.0.1:3001,${ACCESS_ALLOWED_ORIGINS}" \
     "--agent.zhiyuan.url=$AGENT_URL" \
     "--volunteer.rank.url=$RANK_URL"
 wait_for_http "backend" "$BACKEND_URL/gaotu-assistant-bot/inner/ops/health"
 
+# 说明（曾是一处真缺陷 ✓）：下面这一串环境赋值是**同一条命令** ✓，中间**不能**夹注释 ✗——
+# `\` 续行后接 `#` 注释会在这里终止命令 ✓，后面的赋值会被当成独立命令执行 ✗
+#（2026-09-26 起合同栈时实测：`CODEX_APP_SERVER_TIMEOUT_SECONDS=180: 未找到命令` ✓）。
+# 各变量的原注释：
+#   CODEX_APP_SERVER_TIMEOUT_SECONDS=180 —— 整轮截止时间。默认 30s 会掐断慢回合，
+#     用户看到"当前对话引擎暂时不可用"而链路上只有 turn_timeout；与 compat 层对齐 ✓。
+# 说明（第三处、同一个坑 ✓✓）：下面这一串也是**同一条命令** ✓，**不能**夹注释 ✗。
+#   `CODEX_EVENT_STORE_REDIS_URL` —— **事件存储** ✓✓。有 store 时 `ConnectionChannel` 发的就是
+#   **编号过的 V1 事件** ✓（`session_runtime.py:100-115` ✓ =
+#   `{protocolVersion,type,sessionId,turnId,streamEpoch,sequence,payload}` ✓）；**没有 store 才退回老信封的映射** ✗
+#   （`_native_event_frame` ✓，其注释写明是"给旧前端"的 ✓）。
+#   隔离栈一直没配它 ✗ → 页面收到的全是老帧 ✓ → 新前端的 V1 reducer 无帧可吃 ✓（实测：帧里没有 turnId ✗）。
+#   共享 agent 早就配了同一个键 ✓（`redis://127.0.0.1:16379/9` ✓）——这里对齐它 ✓。
 start_service "agent" "$ROOT_DIR/zhiyuan-agent" \
     env \
     "CODEX_HOME=$CODEX_HOME_DIR" \
@@ -229,10 +251,8 @@ start_service "agent" "$ROOT_DIR/zhiyuan-agent" \
     "CODEX_APP_SERVER_BINDING_REGISTRY_PATH=$RUN_DIR/codex-thread-bindings.sqlite" \
     "CODEX_APP_SERVER_APPROVAL_POLICY=never" \
     "CODEX_APP_SERVER_SANDBOX_POLICY=read-only" \
-    # 整轮截止时间。默认 30s 会**掐断**慢回合（读技能 + 取数 + 长推理很容易超），
-    # 用户看到的是"当前对话引擎暂时不可用"，而链路上只看得到 turn_timeout。
-    # 和 compat 层的 _CHAT_SERVICE_TIMEOUT_SECONDS=180 对齐。
     "CODEX_APP_SERVER_TIMEOUT_SECONDS=180" \
+    "CODEX_EVENT_STORE_REDIS_URL=${CODEX_EVENT_STORE_REDIS_URL:-redis://127.0.0.1:16379/9}" \
     "GATEWAY_MODE=codex_readonly" \
     "INTERNAL_SERVICE_URL=$BACKEND_URL" \
     "RANK_SERVICE_URL=$RANK_URL" \

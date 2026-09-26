@@ -22,6 +22,14 @@ export interface WebSocketOptions {
    * 重连时必须换一张新的。
    */
   authenticate?: () => Promise<Record<string, string>>;
+  /**
+   * V3 路由（`/ws/chat` ✓）要求**消息里带 tenant** ✓✓——老路由把它写在路径里 ✓
+   *（`/gaotu-assistant-agent/plus/chat/{tenant}/bot/{bot}/do` ✓），而 V3 的入口从
+   * `msg.tenant_id` 读 ✓（`app/server.py:560` ✓），缺了就回
+   * `缺少 tenantId，无法执行本轮对话。` ✗（2026-09-26 真栈实测 ✓）。
+   */
+  tenantId?: string;
+  botId?: string;
 }
 
 export interface UseWebSocketReturn {

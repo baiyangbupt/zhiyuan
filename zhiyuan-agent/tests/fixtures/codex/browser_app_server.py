@@ -109,9 +109,15 @@ def _emit_final(thread_id: str, turn_id: str, *, interrupted: bool) -> None:
 
 def _gated_finish(thread_id: str, turn_id: str) -> None:
     if not _wait_for_release(turn_id):
-        # 超时 = **没放行** ✗：绝不能顺手把终态发了 ✓（否则"卡住"会被测成"通过" ✗）。
+        # 超时 = **没放行** ✗：先留一条能在大声看见的标记 ✓。
         send({"jsonrpc": "2.0", "method": "test/release_timeout",
               "params": {"turnId": turn_id, "waitedSeconds": RELEASE_TIMEOUT_SECONDS}})
+        # **然后仍然把这一轮收尾** ✓✓（用**失败态**，绝不是 completed ✗——任务书 F12 明令
+        # "无假 completed" ✓）。为什么必须收尾 ✓：网关那边的回合是跟着它的 App Server 走的 ✓，
+        # 若这里静音 ✗，那一轮就**永远关不上** ✓，此后**每条新消息都会被拒**
+        #（实测探针原话：`当前回合还在进行，请先等它结束或点停止。` ✓）——
+        # 一次超时会把整栈毒住 ✗✗，这是我自己设计"超时即静默"的副作用 ✓。
+        _finish_once(thread_id, turn_id, interrupted=True)
         return
     _finish_once(thread_id, turn_id, interrupted=False)
 
@@ -122,6 +128,14 @@ def handle(message: dict) -> None:
     request_id = message.get("id")
     params = message.get("params") or {}
 
+    if method == "initialize":
+        # 形状照抄参照替身 ✓（`fake_app_server.py:186` ✓）：**回显**参数 ✓，
+        # 这样测试能断言"客户端到底声明了什么能力" ✓——而不是假定它接受了 ✓。
+        send({"jsonrpc": "2.0", "id": request_id,
+              "result": {"userAgent": "fake-browser-runtime", "runtimeKind": "fake", "received": params}})
+        return
+    if method == "initialized":
+        return  # 通知 ✓：不需要应答 ✓（参照替身同此 ✓）
     if method == "thread/start":
         thread_id = str(params.get("threadId") or f"thr_{len(_threads) + 1}")
         _threads.add(thread_id)
@@ -129,10 +143,16 @@ def handle(message: dict) -> None:
         return
     if method == "thread/resume":
         thread_id = str(params.get("threadId") or "thr_1")
+        # **未知 thread 的 resume：当作新开** ✓✓——并写明为什么这不算放水 ✓：
+        #   参照替身对未知 id 回 `thread not found` ✗（那是保真 ✓，A7 那一族的用例要它 ✓）；
+        #   但**浏览器合同栈**里，绑定（网关/DB 侧 ✓）比替身进程活得久 ✓——
+        #   每次重启隔离栈，替身都是新的 ✓，而旧绑定还在 ✓ → 于是网关一 resume 就失败 ✓，
+        #   整轮变成"当前对话引擎暂时不可用" ✗（实测：`thread_resume_failed` ✓）。
+        #   那是**环境产物** ✗，不是 C4 要验的行为 ✓——C4 验的是"闸门未放行时终态不许到" ✓✓。
         if thread_id not in _threads:
-            send({"jsonrpc": "2.0", "id": request_id,
-                  "error": {"code": -32600, "message": f"thread not found: {thread_id}"}})
-            return
+            _threads.add(thread_id)
+            send({"jsonrpc": "2.0", "method": "test/thread_adopted",
+                  "params": {"threadId": thread_id}})
         send({"jsonrpc": "2.0", "id": request_id, "result": {"thread": {"id": thread_id}}})
         return
     if method == "turn/start":

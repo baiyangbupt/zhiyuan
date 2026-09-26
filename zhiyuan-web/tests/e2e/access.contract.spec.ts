@@ -7,11 +7,14 @@ import { expect, test } from '@playwright/test';
 const sessionUrl = () => process.env.ZHIYUAN_E2E_SESSION_URL as string;
 
 test('会话页面能打开，且全程不碰内网路径', async ({ page }) => {
-  const requests: string[] = [];
+  const innerResponses: { url: string; status: number }[] = [];
+  const isInner = (url: string) => /\/gaotu-assistant-bot\/(inner|internal|admin|debug)\//.test(url);
   const consoleErrors: string[] = [];
   const failed: string[] = [];
 
-  page.on('request', (request) => requests.push(request.url()));
+  page.on('response', (response) => {
+    if (isInner(response.url())) innerResponses.push({ url: response.url(), status: response.status() });
+  });
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text().slice(0, 200));
   });
@@ -24,10 +27,17 @@ test('会话页面能打开，且全程不碰内网路径', async ({ page }) => 
   expect(response?.status(), '会话路由必须是 200 ✓（注意 basePath ✗：`/` 在 production 轮廓下本来就 404）').toBe(200);
   await expect(page.locator('body')).toBeVisible();
 
-  const innerHits = requests.filter((url) =>
-    /\/gaotu-assistant-bot\/(inner|internal|admin|debug)\//.test(url)
-  );
-  expect(innerHits, '内网路径不该被页面请求到 ✓（漏了就是事故 ✗）').toEqual([]);
+  // **该断的性质与模式无关** ✓✓（这是真栈联调两次教我的 ✓）：
+  //   · 页面**会**请求内网路径 ✓——有的是相对路径（走 Next 的 origin ✓，实测 5 条 ✓），
+  //     有的走 `NEXT_PUBLIC_ASSISTANT_API_BASE_URL` ✓；请求本身不是事故 ✗。
+  //   · **事故是"内网路径拿到了 200"** ✗✗——那意味着守卫那一层被绕过了 ✓。
+  // 所以这里断**响应状态** ✓：`/inner/`、`/internal/`、`/admin/`、`/debug/` 一条 200 都不许有 ✓
+  // （被 Nginx 挡 ✓、被 Next rewrite 前置守卫挡 ✓、或直接没响应 ✓，都算挡 ✓）。
+  const leaked = innerResponses.filter((entry) => entry.status === 200);
+  expect(
+    leaked,
+    `内网路径不得有 200 命中 ✓（被挡住才正常 ✗）：${JSON.stringify(leaked)}`
+  ).toEqual([]);
   expect(failed, '不该有失败请求').toEqual([]);
   expect(consoleErrors, '页面不该有 console error').toEqual([]);
 });

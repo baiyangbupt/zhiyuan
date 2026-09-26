@@ -1,7 +1,9 @@
 """带闸门的假 app-server（Task C4 ②）——**重点是"闸门没放行就不许有终态"** ✓✓。
 
 这条不是普通单测 ✓：它是 C4 那条"不依赖固定延时的流式断言"的**地基** ✓——
-如果替身在没放行时也会发 `turn/completed` ✗，"UI 先显示进度、终态还没来" 就成了永远为真的假绿 ✗✓。
+如果替身在没放行时也会发 **`status=completed`** ✗，"UI 先显示进度、终态还没来" 就成了永远为真的假绿 ✗✓。
+（注意 ✓：`turn/completed` 是终态**方法名** ✓，成功与否看 `status` ✓——替身超时后会用 `interrupted` 收尾 ✓，
+ 那是"必须收尾、不许假成功" ✓，不是假绿 ✓。）
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import pytest
 ROOT_DIR = Path(__file__).resolve().parents[3]
 FIXTURES = ROOT_DIR / "zhiyuan-agent" / "tests" / "fixtures" / "codex"
 APP_SERVER = FIXTURES / "browser_app_server.py"
+WRAPPER = FIXTURES / "browser_codex_wrapper.sh"
 CONTROL = FIXTURES / "browser_runtime_control.py"
 
 
@@ -157,7 +160,15 @@ def test_unreleased_turn_fails_loudly_instead_of_faking_a_terminal(stack) -> Non
     messages = session.drain(6.5)  # 替身自己的超时是 5s ✓
     methods = _methods(messages)
     assert "test/release_timeout" in methods, "要明确报「没放行」 ✓"
-    assert "turn/completed" not in methods, "**超时绝不许补终态** ✗✗"
+    # 断言对象要选对 ✓✓：`turn/completed` 是**终态事件的方法名** ✓，"是否真成功"由
+    # `status` 字段区分 ✓（参照替身的中断路径也是 `turn/completed` + `interrupted` ✓）。
+    # 所以断的是"**不许有 status=completed**" ✓（F12 原话"无假 completed" ✓），
+    # 而不是"不许有终态事件" ✗——后者会把"超时也必须收尾"这条正确行为判死 ✓。
+    terminals = [m for m in messages if m.get("method") == "turn/completed"]
+    assert terminals, "超时也必须收尾 ✓（否则网关回合永远关不上 ✗，整栈被毒住 ✓）"
+    assert all(m["params"]["turn"]["status"] != "completed" for m in terminals), "**不许假 completed** ✗✗"
+    assert not [m for m in messages if m.get("method") == "item/completed"
+                and m["params"]["item"]["type"] == "agentMessage"], "超时不该带出答案 ✗"
 
 
 def test_client_supplied_turn_id_is_echoed_for_data_turn_id_assertions(stack) -> None:
@@ -169,3 +180,24 @@ def test_client_supplied_turn_id_is_echoed_for_data_turn_id_assertions(stack) ->
     events = [m for m in messages if m.get("method") in {"item/agentMessage/delta", "item/started"}]
     assert events, "要发出进度 ✓"
     assert all(m["params"]["turnId"] == "turn-injected-7" for m in events), "回合号必须是注入的那个 ✓"
+
+def test_wrapper_accepts_the_real_composition_shape() -> None:
+    """**回归**：真实 argv 的**子命令在最后** ✓。
+
+    实测形状（`app/gateway/composition.py:build_codex_command` ✓）：
+    `<bin> [--config mcp_servers.…={…}] [NATIVE_USER_INPUT_FLAGS…] app-server --stdio` ✓。
+    第一版 wrapper 假设 `$1` 就是 `app-server` ✗ → 真栈上被拒 ✓
+    （日志 `app server exited on its own returncode=64` ✓，退出码 64 正是 wrapper 的用法错误 ✓）。
+    """
+    good = subprocess.run(
+        ["bash", str(WRAPPER), "--config", "mcp_servers.zhiyuan_domain={}", "app-server", "--stdio"],
+        input='{"jsonrpc": "2.0", "id": 1, "method": "thread/start", "params": {}}\n',
+        text=True, capture_output=True, timeout=20,
+    )
+    assert '"result"' in good.stdout, f"真实形状必须被接受 ✓：stdout={good.stdout!r} stderr={good.stderr!r}"
+
+    bad = subprocess.run(
+        ["bash", str(WRAPPER), "--config", "x", "tui"],
+        text=True, capture_output=True, timeout=20,
+    )
+    assert bad.returncode == 64, "非 app-server 子命令仍要拒 ✓"

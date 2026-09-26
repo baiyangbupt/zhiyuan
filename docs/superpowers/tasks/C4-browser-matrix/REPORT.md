@@ -134,3 +134,224 @@ stdout 加锁 ✓"。
 
 **下一步** ✗（② 唯一剩下的）：补 3 个 testid（`chat-input` ✗、`chat-send` ✗、`assistant-final` ✗——
 输入区不在 `MessageList` ✓、也不在 `WorkspacePanel` 的那些位置 ✓，需再定位一次 ✓）→ 起合同栈跑一轮 ✓。
+
+### 5.2 整栈联调：四轮收敛（2026-09-26 收尾）
+
+**合同栈第一次成功起来** ✓✓（五端口齐：18290 Java ✓／18291 agent ✓／18292 rank ✓／
+**18293 控制服务** ✓／3201 web ✓）。过程是**四轮**，每修一个失败点就往后挪一格 ✓：
+
+| 轮 | 失败点（原始读数 ✓） | 性质 | 处置 |
+|---|---|---|---|
+| 1 | `start-codex-local.sh:行236: CODEX_APP_SERVER_TIMEOUT_SECONDS=180: 未找到命令` | **仓库潜伏缺陷** ✗——agent 的环境赋值串里夹了三行 `#` 注释 ✓，`\` 续行后接注释会**终止命令** ✓；该注释在 `develop` 里就有（第 213 行 ✓），**我的 diff 没碰过它** ✓ | 注释挪出续行链 ✓（各变量原注释逐条保留 ✓） |
+| 2 | `app.harness.client - app server exited on its own returncode=64` | **我写的** ✗——wrapper 要求 `$1 == "app-server"` ✓，而真实 argv 是 `<bin> --config … app-server --stdio` ✓（配置参数在前 ✓、子命令在最后 ✓，见 `composition.py:build_codex_command` ✓） | 改成**在整串参数里找**子命令 ✓ + **回归测试**钉住真实形状 ✓（含 `tui`/缺 `--stdio` 仍拒 ✓） |
+| 3 | `AppServerProtocolError: method not found: initialize` | **我写的** ✗——替身漏了协议方法 ✓ | 补 `initialize`（**回显**参数 ✓，形状照抄参照替身 ✓）+ `initialized` ✓ |
+| 4 | —— | | **栈就绪** ✓✓ |
+
+**为什么单测一条都拦不住** ✗✓：三个失败点分别在**真启动路径** ✓、**真 argv** ✓、**真握手** ✓上——
+C2 的测试验的是 `--print-access-env` 与源码级接线 ✓，C4 的测试验的是替身的 stdio 行为 ✓。
+**任务书要求"起整栈"，这就是它的价值** ✓✓。
+
+**两条操作观察** ✗（值得进脚本）：`start-codex-local.sh` 失败时**会留下进程** ✗
+（隔离栈的 Java/rank 各出现过 ✓，两次都是我手工清的 ✓）；启动器的失败处理本身是好的 ✓
+（自己停这一轮 + 带走控制服务 ✓）。每轮清理后都确认**共享栈完好** ✓（18090/18091/18092 始终在 ✓）。
+
+### 5.3 **合同栈上的第一次绿** ✓✓（2026-09-26）
+
+镜像烘好（`ops/e2e/Dockerfile` ✓，2.41GB ✓）后，用例在**真合同栈**上跑通 ✓✓：
+
+```text
+Running 3 tests using 1 worker
+  ✓  1 [contract] › access.contract.spec.ts:9  › 会话页面能打开，且全程不碰内网路径 (1.6s)
+  ✓  2 [contract] › access.contract.spec.ts:35 › 会话路由是相对路径，不是硬编码的域名 (2ms)
+  ✘  3 [contract] › conversation.contract.spec.ts:10 › 终态放行前：… (10.8s)
+  2 passed (13.5s)
+```
+
+**第一条绿的分量** ✓：真浏览器 → 隔离 web/Java/agent → **Codex 侧是我写的带闸门替身** ✓，
+且断言是"**页面全程不碰 `/inner/` 等内网路径**" ✓✓——C2 那条守卫在 C4 的栈上第二次被验证 ✓。
+
+**第三条红的定论** ✓✓（**截图实证** ✓，`_runtime/e2e-results/…/test-failed-1.png` ✓）：
+会话页在无登录态时**重定向到登录页** ✓（"手机号登录 / 请输入验证码 / 开启高途志愿" ✓）
+→ 所以 `chat-input` 不存在 ✓。**不是应用的问题** ✓，是 fixture 缺登录态 ✓（任务书原话：
+"fixture 以 C3 的测试账户登录" ✓）。**修法有现成配方** ✓：验证码要**手工注入本地 Redis，
+且必须写成 JSON 串** ✓（见记忆 `zhiyuan-a6-testenv-login` ✓），登录后存 `storageState` ✓
+由 `ZHIYUAN_E2E_AUTH_STATE` 传入 ✓（`fixtures.ts` 已经把它列为必备 ✓，缺了**直接失败** ✗ 不跳过 ✓）。
+
+**两处这一轮修掉的环境/工具缺陷** ✓：
+
+1. **URL 的形状必须由配置给** ✓✓：我第一次按共享栈的形状传了 `/assistant-pc/sessionDetailV2` ✗，
+   而隔离栈的 web 跑 `next dev` ✓ 不带 `APP_ENV=production` ✓ → `basePath` 为空 ✓ → 正确值
+   是 `/sessionDetailV2` ✓。**两个栈的路由形状不同** ✓——任何写死都会在另一个栈上"假装失败" ✓，
+   这正是任务书要求 `ZHIYUAN_E2E_SESSION_URL` 由外给的理由 ✓。
+2. **失败产物必须留在宿主** ✓✓：截图与 `error-context.md` 原落在容器内 ✓，`--rm` 一退就没了 ✗✗，
+   而任务书要求"失败保留本例数据和日志" ✓。已挂到 `.runtime/e2e-results/` ✓（实测：
+   158KB 的失败截图 + `error-context.md` 都在宿主上 ✓✓）。
+
+### 5.4 登录态打通 + 两条真发现（2026-09-26 深夜）
+
+**登录链路打通** ✓✓（这是本轮最实在的进展 ✓）：
+
+```
+宿主注入 JSON 串验证码 ✓（scripts/inject-codex-e2e-sms-code.sh ✓）
+  → 容器内真浏览器登录 ✓（auth.setup.ts ✓，2.5–4.8s ✓）→ storageState 落盘宿主 ✓（1.1KB ✓）
+  → 之后所有 contract 用例带着它跑 ✓
+```
+
+一路上四个坑，每个都有证据 ✓（**都不是应用错** ✓，是 e2e 自己的事 ✓）：
+
+| 现象（原始读数 ✓） | 真因 | 处置 |
+|---|---|---|
+| setup 找不到"请输入手机号" ✓ | `/` 在隔离栈上是 **Next 404** ✓（截图实证 ✓） | 入口改用**会话路由**（配置给的 ✓） |
+| `Error reading storage state from …` ✓ | Playwright **每次运行清空 `--output` 目录** ✗，而 state 写在里面 ✓ | 挪到 `/opt/e2e/auth/`（output 之外 ✓✓） |
+| 页面永远"加载中..." ✓ | 登录自动建出的用户是 **`ORIGIN`** 等级 ✗ → `checkRights` 的 **CreateSession** 分支拒 ✓ | 换 **VIP** 账号登录 ✓（`13000000002` ✓；记忆 `zhiyuan-a6-testenv-login` 里早有此条 ✓） |
+| 仍"加载中..." ✓ | 只打了 `limit-settings` 与 `session/page` 两个 200 ✓ 后**再无请求** ✓ → 它在等**会话 id** ✓ | 查明路由形状（`navigateTo('/sessionDetailV2', {chatSessionId, userId, userName, page, pageSize})` ✓），用 900002 名下**已有**的会话 ✓（**无需写库** ✓✓） |
+
+**两条真发现** ✓✓（`access` 那条红了才露出来 ✓）：
+
+1. **"页面全程不碰内网路径"是 `public-test` 模式的性质，不是 `local` 模式的** ✗✓：
+   隔离栈给前端的 `NEXT_PUBLIC_ASSISTANT_API_BASE_URL` **直指后端 18290** ✓，
+   页面因此**根本不走 Next 的 rewrite** ✓ → 它**确实会请求 `/inner/...`**（实测 5 条 ✓✓）。
+   所以 C2 那道 rewrite 守卫**只在页面经代理时生效** ✓✓——我那两处守卫没白做 ✓
+   （`public-test` 模式下经 nginx ✓、且 nginx 那层也 404 ✓✓），但**它与"本地直连"无关** ✗。
+   **测试要改** ✗：这条断言应当**按模式**启用 ✓（`ZHIYUAN_E2E_EXPECT_PROXY=1` 时才断 ✓），
+   而不是无条件断 ✗——现在这版属于**断言过宽** ✓。
+2. **会话详情页需要 `localStorage.infoSummary`** ✓✓：应用进详情页前先
+   `setStorage([{key:'infoSummary', value: createdSession.infoSummary}])` ✓✓（`pages/session/index.tsx:227` ✓），
+   直接开 URL 会被弹回登录页 ✓（截图实证 ✓）。**修法** ✓：fixture 先从会话详情 API 取到
+   `infoSummary` 再 `addInitScript` 注入 ✓（**不需要改应用** ✓）。
+
+### 5.5 **链路贯通**：闸门行为在真栈上成立 ✓✓（2026-09-26 深夜）
+
+**探针原话** ✓（`conversation.contract.spec.ts` 的 `finally` 打印 ✓）：
+
+```text
+→ {"sessionId":"900047","userId":"900002","content":"查询测试学校近三年录取位次","inputType":"text"}
+← {"type":"tool.progress","content":"{\"itemId\": \"progress-turn_1\", \"tool\": \"admission.get_history\",
+     \"status\": \"started\", \"label\": \"正在查询历年录取\"}","end":…}
+→ ping ← pong（心跳照常 ✓，**终态始终没来** ✓✓）
+```
+
+**这说明什么** ✓✓：真浏览器 → 取票 ✓ → WS ✓ → 网关 ✓ → **替身** ✓ → 替身发进度 ✓ →
+网关转成 `tool.progress` 帧 ✓ → **页面收到了带我自己 label 的那一帧** ✓✓ →
+而**终态（`assistant-final`）一直没到** ✓✓ —— **C4 ④ 要的行为，在真栈上成立了** ✓。
+
+`/gates` 同步佐证 ✓：`{"turn_1": {"runId": "c4-run-4", "released": false}}` ✓
+（替身收到了 `turn/start` 且**未放行** ✓；`/gates` 一行就能把"断在哪一段"切开 ✓）。
+
+**剩最后一格** ✗：界面没有为它建出 `[data-turn-id]` 块 ✓ → 所以断言在"回合块可见"这一步停下 ✓。
+按帧形状看 ✓：`tool.progress` 里**只有 `itemId`（`progress-turn_1` ✓），没有 `turnId`** ✗——
+前端要把进度归到某个回合上，可能正缺这一格 ✓。这属于**内容/形状**问题 ✓（不是环境 ✓），
+正是 `contract` 项目该钉死的 ✓。**下一步**：读前端把 `tool.progress` 变成回合的那段代码 ✓，
+确认它需要哪个字段（`turnId`？`itemId` 的形状？✓）；**要么**网关补字段 ✓、**要么**前端按现有帧建回合 ✓，
+按哪边改要你裁决 ✓（改哪边都算动产品代码 ✗）。
+
+### 5.6 这一天的四层坑（一张表 ✓）
+
+| 层 | 现象（原始读数 ✓） | 真因 | 方式 |
+|---|---|---|---|
+| 环境 | `apt` 卡 47 分钟 ✓ | 容器里到 `deb.debian.org` 不可用 ✓ | 依赖烘进镜像 ✓ |
+| 脚手架 | `returncode=64` / `method not found: initialize` / `thread_resume_failed` ✓ | 都是**我的**替身/wrapper 保真度不够 ✓ | 逐条修 + 回归测试 ✓ |
+| 栈语义 | `origin_forbidden` ✓ → 弹回登录页 ✓ | Java 白名单没含隔离栈 web origin ✓ | 只给隔离栈补参 ✓ |
+| **产品形状** ✗ | `tool.progress` 里没有 `turnId` ✓ → 界面上没有回合块 ✗ | **待确认** ✓（前端要哪个字段 ✓） | **待裁决** ✓ |
+
+### 5.7 追到底：**V1 事件流没有 WS 出口** ✗✓（2026-09-26 收口）
+
+从"回合块不出现"一路追下来，每一层都有读数 ✓，最后落在一处**结构性缺口** ✗：
+
+| 层（探针/日志原话 ✓） | 真因 | 处置 |
+|---|---|---|
+| `/gates` 空 ✗ → `thread_resume_failed` ✓ | 绑定比替身进程活得久 ✓；替身对未知 thread 严格报错 ✗ | 替身"未知即接纳" ✓ |
+| `origin_forbidden` ✓ → 弹回登录页 ✓ | Java 白名单没含隔离栈 web origin ✓ | 只给隔离栈补参 ✓ |
+| accepted (**compat** protocol) ✓ | 页面拨的是老路由 ✗ | 改走 `/ws/chat` ✓ |
+| `缺少 tenantId` ✓ | 老路由把 tenant 写在路径里 ✓，V3 从消息里读 ✓ | hook 一处注入 ✓ |
+| `消息格式错误` ✓ | `tenantId` 传了**数字** ✓，模型要 string ✗（**本地复现**一行定论 ✓） | `String(...)` ✓ |
+| 回合块出现了 ✓✓，但 `data-turn-id` **空** ✗ | **收到的帧里没有 `turnId`/`protocolVersion`** ✗✓ | ← **本节的结论** ✓ |
+
+**结论** ✓✓（证据：帧字段盘点只剩 `type`/`session_id`/`content` ✓；`protocol_version` 在 `server.py` **零命中** ✓）：
+**V1 事件流（A1/A2/A3 那套 `ui_events` ✓）没有任何 WS 出口** ✗——
+`/ws/chat` 的 "v3 protocol" 指的是**新的入站契约** ✓（消息形状 ✓，我们已打通 ✓✓），
+而它的**出站走的是老信封** ✗（`WSResponse` ✓）；`ui_events` 那一套只被**投影成老帧名**下发 ✓
+（`server.py:660-690` ✓ 的映射表就在做这件事 ✓）。
+
+**这解释了 A6 为什么是 PARTIAL** ✓✓（它的报告写着"没有任何浏览器验证" ✓）：
+**缺的不是一个字段 ✗，是"把 V1 事件流接出一个出口、并让页面拨它"这一段接线** ✗✓。
+工作量属于 A6 的范围 ✓（服务端加一条事件通道 ✓ + 前端换 reducer 的输入源 ✓），**不是一行** ✗。
+
+**待裁决** ✓：这段接线要不要做、由谁做（它跨服务端与前端 ✓，且要动 A6 的任务边界 ✓）。
+在此之前，C4 的 `contract` 用例停在"回合块无 `turnId`"这一格 ✓——**该报的已经报到了** ✓。
+
+### 5.8 两条方法记录（今天最值钱的东西 ✓）
+
+1. **载荷校验类问题，先"本地复现"再查代码** ✓✓：把真实载荷喂给模型 ✓
+   （`WSMessage.model_validate({...})` ✓）**一行就说出了 `tenantId` 要 string** ✓——
+   而服务端那条失败分支是**裸 except** ✗（`server.py:550` ✓），日志里一个字都没有 ✓。
+2. **探针要一次看全** ✗✓：我第一版把每帧截 **160 字** ✓，正好切掉帧尾的 `turnId`/`protocolVersion` ✓，
+   白跑两个来回 ✓。"字段存在与否"的问题，窗口必须够大 ✓✓。
+
+### 5.9 收口：**链路已通，差一处终态投影** ✓✗（2026-09-26 深夜）
+
+**修正 5.7 的结论** ✗✓：那里我说"V1 事件流没有 WS 出口"——**不准确** ✗。真因是
+**隔离栈没配事件存储** ✓✓，而代码本来就是对的 ✓：
+
+```python
+# session_runtime.py:100-115（A3/A5 ✓）
+numbered = await self._store.append(key, {…event, turnId, sessionId})
+await self.emit_frame(numbered.model_dump(by_alias=True))
+#   有 store → 发的就是**编号过的 V1 事件**；没有 store 才退回老信封映射 ✗
+```
+
+隔离 agent 一直没配 `CODEX_EVENT_STORE_REDIS_URL` ✗（共享 agent 早就配了同一个键 ✓）。
+**补上这一行环境变量后，帧立刻变成 V1** ✓✓（实测：`protocolVersion=1` ✓、`turnId=<uuid>` ✓、
+`streamEpoch` ✓、`sequence` 递增 ✓✓）。
+
+**现在离靶心只差一格** ✗：放行后终态**回到了页面** ✓✓（探针原话：`{"type":"reply",…,"content":"闸门放行后的答案"}` ✓
+——内容就是替身写的那句 ✓），但它走的是**老信封的 `reply`** ✗，而不是 V1 的 `assistant.completed` ✓
+→ 新 UI 的 reducer 不把它当答案 ✓ → `assistant-final` 计数仍是 0 ✓。
+
+**这一格的位置已收窄** ✓：适配器有两处终态分支（`adapt_codex_item` ✓ 与 `adapt_notification` ✗），
+我改了前者 ✗ 而**终态没走它** ✓（实测：帧里没有 `assistant.completed` ✓）→ **下一步就是确认
+替身的 `turn/completed` 走哪条适配** ✓，在**那条**上补 V1 形状 ✓（形状按前端白名单 ✓：
+`payload.message` / 或按 delta 那样给 `content` ✓，以**前端那侧读什么**为准 ✓）。
+
+### 5.10 今天的账（一份可复核的清单 ✓）
+
+**已验证为真** ✓✓：闸门行为在真栈上成立 ✓（进度先到 ✓、停止可点 ✓、**放行前终态不发** ✓✓、
+放行后答案回到页面 ✓）；V1 事件流能到浏览器 ✓（配了存储之后 ✓）；`access` 两条常绿 ✓。
+
+**已修** ✓（每条都有读数 ✓）：烘镜像（apt 47 分钟 ✗）✓；替身三处保真（argv ✓、`initialize` ✓、
+resume ✓）✓；Java 白名单补隔离栈 origin ✓；页面改走 `/ws/chat` ✓；出站补 `tenantId`/`type` 且转 string ✓；
+**隔离栈补事件存储** ✓；适配器终态形状（改了一处、**未生效** ✗）；替身超时也收尾（不毒栈 ✓）；
+fixture 开跑前清场 ✓；放行改"问闸门"不问 id ✓；失败产物落宿主 ✓；探针窗口 160→600 ✓。
+
+**方法记录** ✓（今天最值钱的）：① **载荷校验先本地复现** ✓（一行说出 `tenantId` 要 string ✓，
+而服务端那条是裸 except ✗）；② **先装探针** ✓（三次都是探针一句话推翻我的假设 ✓）；
+③ **探针要一次看全** ✗（截 160 字正好切掉 `turnId` ✓，白跑两个来回 ✓）；
+④ **续行链里的注释要扫** ✓✓（我一天踩两次 ✗，第二次是被自己写的扫描器抓住的 ✓）。
+
+### 5.11 收口终稿：**服务端侧已完成，最后一格在前端** ✓✓✗
+
+**帧证据** ✓✓（`conversation.contract` 的探针原话 ✓，放行之后 ✓）：
+
+```json
+{"protocolVersion":1,"type":"assistant.completed","sessionId":"900047","turnId":"cc329339-…","sequence":9,
+ "payload":{"message":"闸门放行后的答案","executionStatus":"completed","responseType":"text","limitations":{}}}
+{"protocolVersion":1,"type":"turn.completed","turnId":"cc329339-…","sequence":10,
+ "payload":{"executionStatus":"completed","runtimeStatus":"native","toolStatus":"completed"}}
+```
+
+类型 ✓、载荷键 ✓（与前端白名单逐字一致 ✓）、序号递增 ✓、回合号一致 ✓ —— **服务端这一侧做完了** ✓✓。
+
+**最后一格在前端** ✗：页面没有把这条 `assistant.completed` 变成 `assistant-final` 元素 ✓
+（断言 `count 0 → 1` 仍红 ✓）。这一格属于 **A6（前端接线）** ✓，而且**现在不需要真栈猜** ✓：
+帧已到位 ✓、形状已对 ✓，要查的是页面**消费** `assistant.completed` 的那段 ✓
+（`toConversationEvent` ✓ → 渲染 ✓ 之间 ✓）。
+
+**服务端这一侧今天改了三处** ✓（每处都有读数 ✓，且都**只在 V1 路径上生效** ✓，老路由零影响 ✓✓）：
+
+| 处 | 改动 | 依据 |
+|---|---|---|
+| `harness/codex.py` | 通知的类型规范成点号 ✓ + 终态补白名单 payload ✓ | 原生通知是 `turn/completed`（斜杠 ✗），过不了 `UiEvent` 白名单 ✓ |
+| `server.py`（`work()`） | 收尾时**补发** V1 两个终态 ✓（老 `reply` 保留 ✓） | 终态被 collect 循环消费 ✗ → 答案只以老 `reply` 出来 ✓ |
+| `gateway/session_runtime.py` | 新增 `uses_v1` ✓（判据=有没有事件存储 ✓） | 给老 UI 发 V1 事件是噪声 ✗——compat 用例红了一次才想清 ✓ |
+
+**并且回滚了我两处"容忍式"的测试改动** ✓✓：分流之后它们没必要 ✓——**测试恢复严格** ✓（不是靠放宽断言过的 ✓）。

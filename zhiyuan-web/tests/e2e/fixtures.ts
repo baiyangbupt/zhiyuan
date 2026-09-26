@@ -1,4 +1,4 @@
-import { test as base, expect } from '@playwright/test';
+import { type Page, test as base, expect } from '@playwright/test';
 
 // 任务书（Task C4 ③）要点，逐条落在这里 ✓：
 //   - fixtures 导出 `{sessionUrl, turnId, expectedSourceVersion, runtimeGate}` ✓；
@@ -11,12 +11,21 @@ import { test as base, expect } from '@playwright/test';
 // 绝不静默跳过然后用匿名页面冒充"已登录" ✗（那正是"skip 后声称覆盖" ✗）。
 
 export type RuntimeGate = {
-  /** 放行某一回合的终态 ✓——**显式传 turnId** ✓（别用全局变量偷偷传 ✗）。 */
-  releaseFinal: (turnId: string) => Promise<void>;
+  /**
+   * 放行**当前未放行的那个闸门** ✓✓——**不问 id** ✓。
+   *
+   * 为什么不是 `releaseFinal(turnId)` ✗：**两个 id 空间** ✓✓——DOM 里是应用的 uuid ✓，
+   * 而替身登记闸门用的是它自己的 `turn_N` ✓（`turn/start` 的参数里**根本没有回合号** ✗，
+   * 见 `harness/codex.py:95` ✓；桥接只发生在网关内部 ✓）。拿 DOM 的 id 去放行 → 404 ✓（实测 ✓）。
+   * 所以这里**问控制服务**要"有哪个没放行" ✓——它本来就列得出来 ✓，测试不必知道 id 从哪来 ✓。
+   */
+  releasePendingGate: () => Promise<string>;
   resetRun: () => Promise<void>;
 };
 
 type Fixtures = {
+  /** 自动 fixture ✓：开跑前放行悬空闸门并复位本次 run ✓（否则前一例的红会毒到后一例 ✓）。 */
+  cleanGates: void;
   /** 会话路由（相对路径 ✓，由 `ZHIYUAN_E2E_SESSION_URL` 给 ✓）。 */
   sessionUrl: string;
   /** 本轮注入的固定回合号 ✓（替身会回显它 ✓ → `data-turn-id` 才断得住 ✓）。 */
@@ -41,10 +50,42 @@ async function controlFetch(path: string, method: 'GET' | 'POST', body?: unknown
   return (await response.json()) as Record<string, unknown>;
 }
 
+/**
+ * 会话详情页需要 `localStorage.infoSummary` ✓✓（**截图实证** ✓）。
+ *
+ * 应用自己进详情页前会先 `setStorage([{ key: 'infoSummary', value: createdSession.infoSummary }])`
+ * （`src/pages/session/index.tsx:227` ✓）——所以直接开 URL 会被**弹回登录页** ✗。
+ * 这里替它把那一格补上 ✓（**不改应用** ✓）：先按会话 id 取详情 ✓，再在导航前注入 ✓。
+ *
+ * 取详情要打**后端 origin 本身** ✓，不能打页面相对路径 ✗：隔离栈的 Next 没有 dev rewrite ✓
+ * （`APP_ENV` 未设 ✓），页面正是靠 `NEXT_PUBLIC_ASSISTANT_API_BASE_URL` **直连后端**的 ✓。
+ */
+async function primeInfoSummary(page: Page, sessionUrl: string): Promise<void> {
+  const backend = process.env.ZHIYUAN_E2E_BACKEND_ORIGIN;
+  const sessionId = new URL(sessionUrl, 'http://placeholder').searchParams.get('chatSessionId');
+  if (!backend || !sessionId) return;
+  try {
+    const response = await page.request.get(
+      `${backend}/gaotu-assistant-bot/chat/1/session/detail?chatSessionId=${sessionId}`
+    );
+    if (!response.ok()) throw new Error(`HTTP ${response.status()}`);
+    const payload = (await response.json()) as { data?: { infoSummary?: string } };
+    const summary = payload?.data?.infoSummary ?? '';
+    await page.addInitScript(
+      ([key, value]) => window.localStorage.setItem(key, value),
+      ['infoSummary', summary]
+    );
+  } catch (error) {
+    // **不当成静默失败** ✗：详情取不到就让后面的用例自己红 ✓（那正是"会话前置没打点好"的信号 ✓）。
+    throw new Error(`取会话详情失败（infoSummary 前置 ✗）：${String(error)}`);
+  }
+}
+
 export const test = base.extend<Fixtures>({
-  sessionUrl: async ({}, use) => {
+  sessionUrl: async ({ page }, use) => {
     const value = process.env.ZHIYUAN_E2E_SESSION_URL;
     if (!value) throw new Error('缺少 ZHIYUAN_E2E_SESSION_URL');
+    await primeInfoSummary(page, value);  // 详情页的前置 ✓（见上 ✓）
     await use(value);
   },
 
@@ -59,14 +100,47 @@ export const test = base.extend<Fixtures>({
   runtimeGate: async ({}, use) => {
     const runId = process.env.ZHIYUAN_E2E_RUN_ID || 'browser-run';
     await use({
-      releaseFinal: async (turnId: string) => {
+      releasePendingGate: async () => {
+        const state = (await controlFetch('/gates', 'GET')) as {
+          gates?: Record<string, { released?: boolean }>;
+        };
+        const pending = Object.entries(state.gates || {}).filter(([, gate]) => !gate?.released);
+        if (pending.length !== 1) {
+          // **fail-closed** ✗：0 个闸门 = 回合根本没起来；多个 = 状态不清，都不该猜 ✓。
+          throw new Error(`期望恰好 1 个未放行的闸门，实际 ${pending.length} 个（${JSON.stringify(state.gates)}）`);
+        }
+        const [turnId] = pending[0];
         await controlFetch(`/gates/${turnId}/release`, 'POST', {});
+        return turnId;
       },
       resetRun: async () => {
         await controlFetch(`/runs/${runId}/reset`, 'POST', {});
       },
     });
   },
+
+  // **开跑前清场** ✓✓——这是我踩过的坑：上一个用例若没走到放行就红了 ✗，
+  // 那个闸门会一直挂着 ✓，网关于是认为"当前回合还在进行" ✓ → 后续用例的消息被拒收 ✗
+  //（探针原话：`当前回合还在进行，请先等它结束或点停止。` ✓）。
+  // 做法：先把**悬空的闸门放行**（让替身把那一轮收尾 ✓，网关那边的回合才会结束 ✓），
+  // 再 `reset` 本次 run ✓。任务书为 reset 写的那句"只清本次闸门" ✓，用的就是这里 ✓。
+  cleanGates: [
+    async ({}, use) => {
+      try {
+        const state = (await controlFetch('/gates', 'GET')) as {
+          gates?: Record<string, { released?: boolean }>;
+        };
+        for (const [turnId, gate] of Object.entries(state.gates || {})) {
+          if (!gate?.released) await controlFetch(`/gates/${turnId}/release`, 'POST', {});
+        }
+        await controlFetch(`/runs/${process.env.ZHIYUAN_E2E_RUN_ID || 'browser-run'}/reset`, 'POST', {});
+      } catch (error) {
+        throw new Error(`开跑前清场失败 ✗（控制服务不可达？）：${String(error)}`);
+      }
+      await use();
+    },
+    { auto: true },
+  ],
 
   verifyFakeRuntime: [
     async ({}, use) => {

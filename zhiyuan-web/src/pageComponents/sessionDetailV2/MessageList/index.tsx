@@ -507,7 +507,15 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
           process.env.NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE || process.env.NEXT_PUBLIC_AGENT_WS_BASE || '',
           process.env.NEXT_PUBLIC_CODEX_ACCESS_MODE,
         );
-  const websocketUrl = `${wsBase}/gaotu-assistant-agent/plus/chat/${tenantId}/bot/${botId}/do?chatSessionId=${routerParams.chatSessionId}`;
+  // **走 V3 路由** ✓✓（2026-09-26 C4 真栈联调定论 ✓）：
+  // 老地址 `/gaotu-assistant-agent/plus/chat/…/do` 是服务端的 **compat 循环** ✗，
+  // 它回的信封是 `{type, content, end}` ✗——**没有 `turnId`/`protocolVersion`** ✓，
+  // 而本页的 reducer（`conversationEvents.mjs` ✓）**只认 V1 事件** ✗ →
+  // 于是进度事件被丢弃 ✓、界面上连回合块都建不出来 ✓（探针实证 ✓）。
+  // `/ws/chat` 是 **V3 路由** ✓（服务端日志打 "v3 protocol" ✓），验证方式与老路由**完全相同** ✓
+  // （同样校验 `ticket` + `chatSessionId` + Origin ✓，见 `_verify_conversation_access` ✓），
+  // 且 C2 的 Nginx 配置里早就为它留了位置 ✓（`location = /ws/chat` + Upgrade 头 ✓）。
+  const websocketUrl = `${wsBase}/ws/chat?chatSessionId=${routerParams.chatSessionId}`;
 
   // 心跳相关配置
   const HEARTBEAT_INTERVAL = 5000; // 心跳发送间隔：5秒
@@ -732,6 +740,9 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
 
   const { sendMessage, disconnect, reconnect, isConnected } = useWebSocket(websocketUrl, {
     authenticate: authenticateForWebSocket,
+    // V3 路由要求消息里带 tenant/bot ✓（老路由把它们写在路径里 ✓；见 hook 里的 withScope ✓）。
+    tenantId,
+    botId,
     onMessage(data, event) {
       if (typeof data === 'object' && data !== null && 'type' in data) {
         const wsData = data as IThinkingMessage;
@@ -1528,6 +1539,12 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                 }}
                 // eslint-disable-next-line react/no-array-index-key
                 key={message.id}
+                // e2e 钩子 ✓（Task C4）：**答案落定后**才带这个 testid ✓——
+                // 还在 `answerLoading` 时它不存在 ✓，所以"终态没到"那条断言才断得实 ✓。
+                // 前提：每个用例开**独立会话** ✓（任务书要求 ✓），否则历史里会有多条 ✓。
+                data-testid={
+                  message.messageFrom === '0' && !answerLoading ? 'assistant-final' : undefined
+                }
                 className={`${style.messageBubble} ${style.aiMessage}`}
               >
                 <div>

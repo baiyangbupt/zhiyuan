@@ -68,6 +68,14 @@
     能用的只有 Node **20.20.2** ✗——任务书那句"Node ≥ 22.14.0"**在本机无法满足** ✗。
   - 另：本机 yum 源与 `vault.centos.org` 都**已失效** ✗（CentOS 7 EOL ✓，403／无 baseurl ✓），
     要取老 RPM 只能走 `mirrors.aliyun.com/centos-vault/...` ✓。
+  - **容器内的 `deb.debian.org` 同样不可用** ✗✓（2026-09-26 实测两次 ✓）：`apt-get update` 的
+    索引头回来的快 ✓，但 `bookworm/main amd64 Packages [8790 kB]` 这行**长时间不动** ✗——
+    一次卡了 **47 分钟** ✓、另一次在 `docker build` 里同样卡住 ✓。**结论：容器里也要换源** ✓
+    （`ops/e2e/Dockerfile` 已改成走 `mirrors.aliyun.com` ✓，且注意 bookworm 用 **deb822** 格式
+    `/etc/apt/sources.list.d/debian.sources` ✗——只改老的 `sources.list`/`*.list` 会**静默无效** ✓）。
+  - 同一类事实还有个操作后果 ✓✓：**别在容器里跑 `playwright install --with-deps`** ✗——
+    那个 apt 每次都要付账 ✓，而这台网络上它可能付不起 ✓。依赖与 chromium 应当**烘进镜像** ✓
+    （`ops/e2e/Dockerfile` ✓ + `docker build -t zhiyuan-e2e-playwright:1.55.0 ops/e2e` ✓）。
   - **结论** ✗：C4 的浏览器自动化**不能在这台机器上做** ✗；可行路径是**换机器跑**
     （C3 清单本来就要求"从另一台设备/网络" ✓）或在**容器**里跑 ✓（docker 可用 ✓）。
   - 因装驱动而动的 `package.json`／`package-lock.json`／`yarn.lock` **已全部回滚** ✓

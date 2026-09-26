@@ -24,16 +24,22 @@ fail() {
 [[ -x "$PYTHON_BIN" ]] || fail "测试 venv 的 python 不可执行：$PYTHON_BIN（可用 CODEX_BROWSER_PYTHON 指定 ✓）"
 [[ -f "$APP_SERVER" ]] || fail "找不到 browser_app_server.py：$APP_SERVER"
 
-[[ $# -ge 1 ]] || fail "缺少子命令：期望 'app-server --stdio …'（收到 0 个参数 ✗）"
-SUBCOMMAND="$1"
-shift
-[[ "$SUBCOMMAND" == "app-server" ]] || fail "只认 'app-server' ✓（收到 '$SUBCOMMAND' ✗）"
-
-# `--stdio` 必须在 ✓：非 stdio 模式我们没实现 ✓，静默放过去只会浪费一轮 ✗。
+# 真实形状（2026-09-26 实测，`app/gateway/composition.py:build_codex_command` ✓）：
+#     <bin> [--config mcp_servers.…={…}] [NATIVE_USER_INPUT_FLAGS…] app-server --stdio
+# —— 配置参数**在子命令之前** ✓，**子命令在最后** ✓。第一版我假设 `$1` 就是 `app-server` ✗，
+# 于是在真栈上被拒（退出码 64 ✓，日志 `app server exited on its own returncode=64` ✓）。
+# 所以只能"**在整串参数里找**"，不能看位置 ✓。
+[[ $# -ge 1 ]] || fail "没有任何参数：期望 '… app-server --stdio'（收到 0 个 ✗）"
+APP_SERVER_SEEN=false
 STDIO_SEEN=false
 for arg in "$@"; do
+    [[ "$arg" == "app-server" ]] && APP_SERVER_SEEN=true
     [[ "$arg" == "--stdio" ]] && STDIO_SEEN=true
 done
+[[ "$APP_SERVER_SEEN" == true ]] || fail "参数里没有 app-server 子命令 ✓（收到：$* ✗）"
+# `--stdio` 必须在 ✓：非 stdio 模式我们没实现 ✓，静默放过去只会浪费一轮 ✗。
 [[ "$STDIO_SEEN" == true ]] || fail "缺少 --stdio ✓（收到：$* ✗）"
 
+# 注意 ✓：`--config …` 我们不消费 ✓（替身不发真实 MCP 调用 ✓，只发合成的 MCP 项 ✓，
+# 那正是闸门用例要的形状 ✓）；原样透传即可 ✓。
 exec "$PYTHON_BIN" "$APP_SERVER" "$@"

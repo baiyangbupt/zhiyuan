@@ -12,7 +12,33 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
     reconnectInterval = 3000,
     maxReconnectAttempts = Number.POSITIVE_INFINITY,
     authenticate,
+    tenantId,
+    botId,
   } = options;
+
+  // **V3 路由（`/ws/chat` ✓）要求消息里带 tenant** ✓✓：老路由把它写在路径里 ✓
+  //（`/gaotu-assistant-agent/plus/chat/{tenant}/bot/{bot}/do` ✓），而 V3 的入口从
+  // `msg.tenant_id` 读 ✓（`app/server.py:560` ✓），缺了就回
+  // `缺少 tenantId，无法执行本轮对话。` ✗（2026-09-26 真栈实测 ✓）。
+  // 在这里**一处**补齐 ✓：所有出站对象都经过它 ✓，不必去每个调用点各加一遍 ✗。
+  // 另外补 `type` ✓✓：V3 的 `WSMessage` 把它列为**必填**的字面量 ✓（`app/schemas/ws.py:22` ✓，
+  // 取值 `chat`/`pendingConfirmation`/… ✓），而老形状**没有这个字段** ✗（它靠"有 content"推断是 chat ✓）。
+  // 缺了它 V3 直接判 `消息格式错误` ✗（实测 ✓）。默认给 `chat` ✓——页面发起的这些出站里，
+  // 带 control 语义的那几种（澄清/中断/改口 ✓）走的是 `conversationProtocol.mjs` 的**显式**构造 ✓，
+  // 那些对象里已有 `type` ✓，会被这里的展开**保留** ✓✓（`...message` 在后 ✓）。
+  // **类型也要对** ✓✓：`tenantId`/`botId` 在页面上是**数字** ✓，而 V3 的模型要求 string ✗——
+  // 传数字会被判 `Input should be a valid string` ✓（**本地复现**得出 ✓：把真实载荷直接喂给
+  // `WSMessage.model_validate(...)` ✓，一行就说出原因 ✓✓，比翻日志快得多 ✓——因为服务端那条
+  // 失败分支是**裸 except** ✗，什么都不记 ✓）。
+  const withScope = (message: WebSocketMessage | string) =>
+    typeof message === 'string'
+      ? message
+      : {
+          tenantId: tenantId === undefined ? undefined : String(tenantId),
+          botId: botId === undefined ? undefined : String(botId),
+          type: 'chat',
+          ...message,
+        };
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -102,8 +128,7 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
           pendingMessagesRef.current = [];
           pendingMessages.forEach(message => {
             try {
-              const data = typeof message === 'string' ? message : JSON.stringify(message);
-              socket.send(data);
+              socket.send(JSON.stringify(withScope(message)));
               console.log('📤 Queued message sent successfully');
             } catch (error) {
               console.error('❌ Failed to send queued message:', error);
@@ -166,8 +191,7 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
     (message: WebSocketMessage | string) => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         try {
-          const data = typeof message === 'string' ? message : JSON.stringify(message);
-          wsRef.current.send(data);
+          wsRef.current.send(JSON.stringify(withScope(message)));
           console.log('📤 Message sent successfully');
         } catch (error) {
           console.error('❌ Failed to send message:', error);

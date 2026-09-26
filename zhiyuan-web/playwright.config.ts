@@ -28,9 +28,22 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   projects: [
+    // 登录态前置 ✓：登录一次、存 storageState ✓（验证码必须**先在宿主注入** ✓，
+    // 见 `scripts/inject-codex-e2e-sms-code.sh` ✓）。
+    // 注意 ✗：**不依赖 `dependencies`**——那会把 setup 的失败降级成 dependents 的 `skipped` ✗✗，
+    // 正是任务书禁止的"skip 后声称覆盖" ✓。runner 改为**显式先跑 setup、失败即中止** ✓✓。
+    { name: 'setup', testMatch: '**/*.setup.ts' },
     // 合同栈：真实浏览器 + Gateway + Java 隔离库 ✓，Codex 侧是**可控闸门**的假实现 ✓。
-    { name: 'contract', testMatch: '**/*.contract.spec.ts' },
+    {
+      name: 'contract',
+      testMatch: '**/*.contract.spec.ts',
+      use: { storageState: process.env.ZHIYUAN_E2E_AUTH_STATE || undefined },
+    },
     // 真实栈：同一套栈，但换真实 Codex 与真实（或经批准的隔离）上游 ✓。
-    { name: 'real', testMatch: '**/*.real.spec.ts' },
+    {
+      name: 'real',
+      testMatch: '**/*.real.spec.ts',
+      use: { storageState: process.env.ZHIYUAN_E2E_AUTH_STATE || undefined },
+    },
   ],
 });
