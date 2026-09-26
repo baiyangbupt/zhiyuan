@@ -73,7 +73,20 @@ def adapt_codex_item(item: Mapping[str, Any]) -> dict[str, Any] | None:
     if item_type in {"item/agentMessage/delta", "agentMessage/delta", "assistant.delta"}:
         return {"type": "assistant.delta", "content": _text(item, "delta", "text", "content")}
     if item_type in {"turn/completed", "item/agentMessage/completed", "assistant.completed"}:
-        return {"type": "assistant.completed", "content": _text(item, "message", "text", "content")}
+        # **形状按 V1 白名单来** ✓✓（那是契约本身 ✓）：前端 `assistant.completed` 的载荷键是
+        # `message/responseType/executionStatus/limitations` ✓（`conversationEvents.mjs:35` ✓）。
+        # 先前这里给的是 `content` ✗——V1 模型**没有这个字段** ✗，于是它被丢掉 ✓：
+        # 答案文本到了、形状对不上 ✓（实测：帧到了、UI 渲染不出答案 ✓）。
+        # 老 UI 不受影响 ✓：它的答案走 `reply` 帧 ✓（`_native_reply_frame` ✓），不看这条事件 ✓。
+        return {
+            "type": "assistant.completed",
+            "payload": {
+                "message": _text(item, "message", "text", "content"),
+                "responseType": "text",
+                "executionStatus": "completed",
+                "limitations": [],
+            },
+        }
     if item_type in {"mcpToolCall", "item/mcpToolCall", "mcp_tool_call"}:
         status = _text(item, "status") or "completed"
         return {"type": "planning.status", "status": status}

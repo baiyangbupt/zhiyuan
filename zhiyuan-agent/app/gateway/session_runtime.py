@@ -89,6 +89,17 @@ class ConnectionChannel:
         """
         self._turn_id = str(ui_turn_id or "")
 
+    @property
+    def uses_v1(self) -> bool:
+        """这条连接是否走 **V1 事件路径** ✓✓——判据就是"有没有事件存储" ✓。
+
+        有 store ⇒ 发出去的是编号过的 V1 事件 ✓（`emit` 的路径 ✓）；
+        没有 store ⇒ 只能退回老信封投影 ✗（老 UI ✓）。
+        调用方据此决定"要不要发 V1 专属的事件" ✓（见 `server.py` 终态那处 ✓）——
+        **给老 UI 发 V1 事件就是噪声** ✗✓。
+        """
+        return self._store is not None
+
     async def emit(self, event: dict[str, Any]) -> None:
         """把一个**事件**入队。入队即返回，**绝不 await 浏览器**。
 

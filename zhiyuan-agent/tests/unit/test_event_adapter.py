@@ -27,7 +27,21 @@ def test_event_adapter_maps_safe_assistant_delta_and_completion() -> None:
     completed = adapt_codex_item({"type": "turn/completed", "message": "已完成"})
 
     assert delta == {"type": "assistant.delta", "content": "候选"}
-    assert completed == {"type": "assistant.completed", "content": "已完成"}
+    # 终态走 **V1 白名单形状** ✓✓（`conversationEvents.mjs:35` ✓）：前端 V1 那条路
+    # （`toConversationEvent` ✓，页面导入的就是它 ✓）从 `payload.message` 取答案 ✓；
+    # 先前给的是 `content` ✗——V1 模型没有这个字段 ✓，会被丢掉 ✓
+    #（真栈实测：帧到了、UI 渲染不出答案 ✓）。
+    # 两者形状不同是**契约本身**这样写的 ✓（delta 走 `content` ✓、completed 走白名单 ✓），
+    # 不是这里写错 ✓——所以断言也照契约分开写 ✓。
+    assert completed == {
+        "type": "assistant.completed",
+        "payload": {
+            "message": "已完成",
+            "responseType": "text",
+            "executionStatus": "completed",
+            "limitations": [],
+        },
+    }
 
 
 def test_event_adapter_drops_unknown_internal_items() -> None:

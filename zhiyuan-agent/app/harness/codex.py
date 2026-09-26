@@ -303,10 +303,46 @@ def _sandbox_mode(value: str | dict[str, Any] | None) -> str | None:
         raise ValueError(f"unsupported sandbox policy type: {type_name}") from exc
 
 
+# 原生通知的**斜杠**名字 → V1 事件合同的**点号**名字 ✓✓。
+#
+# 为什么必须映射 ✓：`_notification_to_event` 原先把类型设成 method 本身 ✗（`turn/completed` ✓），
+# 而 `UiEvent` 的类型白名单是**点号**的（`turn.completed` ✓，`app/gateway/ui_events.py:18-30` ✓）→
+# 事件**过不了事件存储的入流校验** ✗ → `ConnectionChannel` 退回老信封的投影 ✓✓
+#（实测：放行后答案以 `reply` 回到页面 ✗、V1 那条 `assistant.completed` 从未出现 ✓）。
+_TERMINAL_TYPE_MAP = {
+    "turn/completed": "turn.completed",
+    "turn/failed": "turn.completed",
+    "turn/interrupted": "turn.completed",
+    "item/agentMessage/completed": "assistant.completed",
+    "item/agentMessage/delta": "assistant.delta",
+    "item/mcpToolCall": "tool.progress",
+}
+
+
 def _notification_to_event(notification: dict[str, Any]) -> dict[str, Any]:
     params = notification.get("params") or {}
     event = dict(params) if isinstance(params, dict) else {}
-    event.setdefault("type", notification.get("method"))
+    raw_type = str(notification.get("method") or event.get("type") or "").strip()
+    event["type"] = _TERMINAL_TYPE_MAP.get(raw_type, raw_type)
+    # 终态要带**白名单里的 payload** ✓✓（前端只认这些键 ✓：`conversationEvents.mjs:35-36` ✓）：
+    # `assistant.completed` → `message/responseType/executionStatus/limitations` ✓；
+    # `turn.completed` → `executionStatus/toolStatus/runtimeStatus` ✓。
+    if event["type"] == "assistant.completed" and "payload" not in event:
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        message = item.get("text") or event.get("message") or event.get("delta") or ""
+        event["payload"] = {
+            "message": str(message),
+            "responseType": "text",
+            "executionStatus": "completed",
+            "limitations": [],
+        }
+    if event["type"] == "turn.completed" and "payload" not in event:
+        status = str((event.get("turn") or {}).get("status") or "completed").lower()
+        event["payload"] = {
+            "executionStatus": status,
+            "toolStatus": "completed" if status == "completed" else status,
+            "runtimeStatus": "native",
+        }
     return event
 
 

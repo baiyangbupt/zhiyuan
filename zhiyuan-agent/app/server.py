@@ -576,6 +576,34 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
 
         async def work(msg=msg, turn_id=turn_id, tenant_id=tenant_id) -> None:
             result = await _run_native_turn(gateway, msg, tenant_id, turn_id, channel)
+            # **终态也要走 V1 通道** ✓✓——这是 C4 真栈追出来的最后一格 ✓：
+            # 替身的 `turn/completed` 会被 collect 循环**消费**掉 ✓（不经过 `_notification_to_event` ✗，
+            # 实测：帧里从未出现 `assistant.completed` ✓），于是答案**只**以老信封的 `reply` 出来 ✗ →
+            # 新 UI 的 reducer（只认 V1 ✓）看不到答案 ✓。这里**两条都发** ✓：
+            # 老 UI 靠 `reply` ✓、新 UI 靠这两个 V1 终态 ✓；非 V1 帧会被新 reducer 判否 ✓，不会重复渲染 ✓。
+            # 载荷键照前端白名单 ✓（`conversationEvents.mjs:35-36` ✓）。
+            # 只在 **V1 路径**上发 ✓✓（compat 路由服务的是老 UI ✓，给它发 V1 事件是噪声 ✗）：
+            # 判据是"这条连接有没有事件存储" ✓（`ConnectionChannel.uses_v1` ✓）。
+            if not channel.uses_v1:
+                await channel.emit_frame(_native_reply_frame(result, msg.session_id))
+                return
+            await channel.emit({
+                "type": "assistant.completed",
+                "payload": {
+                    "message": str(result.get("reply") or ""),
+                    "responseType": "text",
+                    "executionStatus": "completed",
+                    "limitations": [],
+                },
+            })
+            await channel.emit({
+                "type": "turn.completed",
+                "payload": {
+                    "executionStatus": "completed",
+                    "toolStatus": "completed",
+                    "runtimeStatus": "native",
+                },
+            })
             await channel.emit_frame(_native_reply_frame(result, msg.session_id))
 
         key = SessionKey(tenant_id=tenant_id, session_id=str(msg.session_id))
