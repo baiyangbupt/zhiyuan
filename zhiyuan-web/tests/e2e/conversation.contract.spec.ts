@@ -109,3 +109,39 @@ test('F12 停止：真中断收尾，且不会冒出假 successful 的答案', a
   //  两者一起保证：这里的"没有答案"是**真的没有** ✓，不是"等得不够久" ✓。）
   await expect(turn.getByTestId('assistant-final')).toHaveCount(0);
 });
+
+// **F10：断线/刷新** ✓（任务书原文："cursor 去重、恢复待答卡、不会把旧队列发到新会话" ✓）。
+//
+// 这里做浏览器侧能断的两件 ✓：① 刷新后**回合能恢复** ✓；② **不重复渲染** ✓✓（cursor 去重 ✓）。
+// （"换会话不带旧队列"那半要另一条会话 ✓，未做 ✗。）
+//
+// 为什么可断 ✓：闸门一直扣着 ✓（替身没放行 ✓），所以刷新前后**回合都还没结束** ✓——
+// 这正是"断线后恢复"该验的场景 ✓；而序号（`sequence` ✓）与 `streamEpoch` ✓ 是去重的依据 ✓。
+test('F10 刷新：断线重连后回合能恢复，且不重复渲染', async ({
+  page,
+  sessionUrl,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  const input = page.getByTestId('chat-input');
+  await expect(input).toBeVisible({ timeout: 10_000 });
+  await input.fill('查询测试学校近三年录取位次');
+  await page.getByTestId('chat-send').click();
+
+  const turn = page.locator('[data-turn-id]').last();
+  await expect(turn).toBeVisible({ timeout: 20_000 });
+  await expect(turn.getByTestId('turn-progress')).toContainText('历年录取', { timeout: 20_000 });
+
+  // **刷新** ✓（断线重连 ✓）。闸门仍扣着 ✓ → 回合在服务端**还没结束** ✓。
+  await page.reload({ waitUntil: 'domcontentloaded' });
+
+  // ① 回合**恢复**了 ✓（同一轮的进度重新出现 ✓——它来自事件流的重放/续传 ✓）。
+  const turnAfter = page.locator('[data-turn-id]').last();
+  await expect(turnAfter.getByTestId('turn-progress')).toContainText('历年录取', { timeout: 30_000 });
+  // ② **不重复渲染** ✓✓（cursor 去重的判据 ✓）：刷新后同一轮**只有一个**回合块 ✓。
+  await expect(page.locator('[data-turn-id]')).toHaveCount(1, { timeout: 10_000 });
+  // ③ 终态仍然没到 ✓（闸门没放行 ✓——刷新不该把它"刷出来" ✓）。
+  await expect(turnAfter.getByTestId('assistant-final')).toHaveCount(0);
+});
