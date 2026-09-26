@@ -75,3 +75,37 @@ test('终态放行前：进度已显示、停止仍可点、答案还没有', as
     console.log('=== 探针：WS/请求（末 30 条）===\n' + socketFrames.slice(-30).join('\n'));
   }
 });
+
+// **F12：停止 / 无假 completed** ✓（任务书原文："真 interrupt；卡片关闭；无假 completed" ✓）。
+//
+// 为什么这条能进 contract ✓：它要的是"**真中断**"而不是"看起来停了" ✓——
+// 替身对 `turn/interrupt` 发的是**真中断终态** ✓（`status: interrupted` ✓，
+// 见 `browser_app_server.py` ✓，有单测盯着"中断不发假 completed" ✓✓）。
+// 所以这里可以断言：点了停止之后，**答案永远不会出现** ✓——假 completed 会让它出现 ✓。
+test('F12 停止：真中断收尾，且不会冒出假 successful 的答案', async ({
+  page,
+  sessionUrl,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime; // 自动 fixture ✓：跑前已校验 runtimeKind=fake ✓
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  const input = page.getByTestId('chat-input');
+  await expect(input).toBeVisible({ timeout: 10_000 });
+  await input.fill('查询测试学校近三年录取位次');
+  await page.getByTestId('chat-send').click();
+
+  const turn = page.locator('[data-turn-id]').last();
+  await expect(turn).toBeVisible({ timeout: 20_000 });
+  // 先确认它在"跑"（进度到了 ✓），否则下面"停止按钮消失"可能只是因为还没开始 ✓。
+  await expect(turn.getByTestId('turn-progress')).toContainText('历年录取', { timeout: 20_000 });
+
+  await turn.getByTestId('turn-stop').click();
+
+  // ① **真中断**：回合进入终态 ✓（停止按钮只在 `!turn.terminal` 时渲染 ✓）。
+  await expect(turn.getByTestId('turn-stop')).toHaveCount(0, { timeout: 20_000 });
+  // ② **无假 completed**：答案元素**始终不出现** ✓✓——这是 F12 的重点 ✓。
+  //（替身没放行 ✓；而中断走的是 `interrupted` 终态 ✓，不是 completed ✓。
+  //  两者一起保证：这里的"没有答案"是**真的没有** ✓，不是"等得不够久" ✓。）
+  await expect(turn.getByTestId('assistant-final')).toHaveCount(0);
+});
