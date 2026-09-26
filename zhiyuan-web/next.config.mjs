@@ -12,6 +12,17 @@ const normalizeOrigin = (value, fallback = defaultProductionOrigin) => {
   return normalized || fallback;
 };
 
+// 内网面在**代理层**就挡住 ✓（Task C2）：`/gaotu-assistant-bot/:path*` 那条通用规则
+// 会把 `/inner/...` 一并透到后端 ✗——rewrite 是**按顺序**匹配的 ✓，所以这些守卫必须排在它前面 ✓。
+// 目标指向一个不存在的路径 ✓：Next 于是回 404 ✓（rewrites 没有"直接返回 404"的写法 ✓）。
+const INTERNAL_PATH_GUARDS = [
+  '/gaotu-assistant-bot/inner/:path*',
+  '/gaotu-assistant-bot/internal/:path*',
+  '/gaotu-assistant-bot/admin/:path*',
+  '/gaotu-assistant-bot/debug/:path*',
+  '/internal/evidence/:path*',
+].map((source) => ({ source, destination: '/__codex_internal_blocked__' }));
+
 const configObj = {
   transpilePackages: ['antd', '@sentry/nextjs'],
   productionBrowserSourceMaps: true,
@@ -120,7 +131,7 @@ const configObj = {
     );
     return config;
   },
-  async rewrites() {
+async rewrites() {
     // 开发环境API代理
     if (process.env.APP_ENV === 'dev') {
       const devDomainInner = process.env.NEXT_PUBLIC_ASSISTANT_API_BASE_URL || 'http://localhost:8080';
@@ -129,6 +140,7 @@ const configObj = {
 
       console.log('🔧 开发环境启用API代理');
       return [
+        ...INTERNAL_PATH_GUARDS,
         {
           source: '/gaotu-assistant-bot/:path*',
           destination: `${devDomainInner}/gaotu-assistant-bot/:path*`,
@@ -156,6 +168,7 @@ const configObj = {
        if (process.env.APP_ENV === 'test') {
         console.log('🔧 测试环境启用API代理');
         return [
+          ...INTERNAL_PATH_GUARDS,
           {
             source: '/gaotu-assistant-bot/:path*',
             destination: 'https://gaotu-test.ytell.cn/gaotu-assistant-bot/:path*',

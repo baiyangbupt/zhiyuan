@@ -18,6 +18,7 @@ import {
   getMessageListApi,
   getFeedbackApi,
 } from '@/service/apis/sessionDetail';
+import { socketBase } from '@/utils/conversationSocket.mjs';
 import style from './style.module.scss';
 import { TextSegment } from '@/interface/api/sessionDetail';
 import useAuthParams from '@/hooks/useAuthParams';
@@ -495,13 +496,17 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   const [answerLoading, setAnswerLoading] = useState<boolean>(false);
   const [isTimeout, setIsTimeout] = useState<boolean>(false); // 是否已超时
   const [thinkingHints, setThinkingHints] = useState<string[]>([]);
-  const configuredWsBase =
-    process.env.NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE || process.env.NEXT_PUBLIC_AGENT_WS_BASE || '';
-  const sameOriginWsBase =
+  // 走统一判据 ✓（`@/utils/conversationSocket.mjs` ✓，Task C2）：公开测试模式**忽略一切显式 base** ✗
+  // （含历史遗留的 `NEXT_PUBLIC_AGENT_WS_BASE` ✗）、按 `window.location` 同源派生 ✓；
+  // 其他模式保持既有优先级 ✓（override → 遗留 base → 同源 ✓）。SSR 下仍给空串 ✓。
+  const wsBase =
     typeof window === 'undefined'
       ? ''
-      : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
-  const wsBase = configuredWsBase || sameOriginWsBase;
+      : socketBase(
+          window.location,
+          process.env.NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE || process.env.NEXT_PUBLIC_AGENT_WS_BASE || '',
+          process.env.NEXT_PUBLIC_CODEX_ACCESS_MODE,
+        );
   const websocketUrl = `${wsBase}/gaotu-assistant-agent/plus/chat/${tenantId}/bot/${botId}/do?chatSessionId=${routerParams.chatSessionId}`;
 
   // 心跳相关配置
@@ -1923,12 +1928,15 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       )}
       <div className={style.sendMessage}>
         <Input
+          // e2e 用的稳定钩子 ✓（Task C4 ✓）：文案会改 ✓，testid 不会 ✓。
+          data-testid="chat-input"
           value={userInput}
           onChange={e => setUserInput(e.target.value)}
           placeholder="请输入您的问题或需求..."
           onKeyDown={handleKeyDown}
           suffix={
             <Button
+              data-testid="chat-send"
               type="primary"
               shape="round"
               onClick={() => {

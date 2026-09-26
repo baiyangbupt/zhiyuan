@@ -9,6 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 PREFLIGHT = ROOT_DIR / "scripts" / "preflight-codex-local.sh"
 START = ROOT_DIR / "scripts" / "start-codex-local.sh"
 STOP = ROOT_DIR / "scripts" / "stop-codex-local.sh"
+SMOKE_PUBLIC = ROOT_DIR / "scripts" / "smoke-codex-public.sh"
 
 
 def _run(script: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -118,6 +119,92 @@ def test_preflight_rejects_a_run_directory_with_path_traversal(tmp_path: Path) -
 
     assert result.returncode != 0
     assert "run directory must be a direct child" in result.stderr
+
+
+def _access_env(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    """`--print-access-env`：把脚本**实际会用的**访问面变量打出来（不启动任何服务 ✓）。
+
+    没有这个出口就只能断言源码文本 ✗——那测不出"值到底落实成了什么" ✗
+    （任务书 Task C2 原话："脚本将值落实到实际使用的 NEXT_PUBLIC 变量及 Agent Origin allowlist"）。
+    """
+    return _run(START, "--print-access-env", *args, env=env)
+
+
+def test_public_smoke_script_rejects_bad_origin_before_any_request() -> None:
+    """冒烟脚本的守卫：**没给 origin / 不是 https / 带路径**都要在发请求前就拒 ✓
+    （否则会对着错的地址跑一轮，还把它当成"失败"记下来 ✗）。"""
+    for args, needle in (
+        ([], "--origin is required"),
+        (["--origin", "http://insecure.example"], "must be https"),
+        (["--origin", "https://h.example/path"], "must not carry a path"),
+        (["--origin", "https://h.example", "--unknown"], "unknown option"),
+    ):
+        result = _run(SMOKE_PUBLIC, *args)
+        assert result.returncode != 0, args
+        assert needle in result.stderr, (args, result.stderr)
+
+
+def test_local_mode_keeps_loopback_ws_override() -> None:
+    result = _access_env(env={"CODEX_LOCAL_ACCESS_MODE": "local"})
+
+    assert result.returncode == 0, result.stderr
+    assert 'NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE="ws://127.0.0.1:18291"' in result.stdout
+
+
+def test_public_test_mode_clears_ws_override_and_requires_explicit_test_outer() -> None:
+    """公开模式：**清空 WS override** ✓（同源由 `window.location` 派生 ✓）+
+    outer 必须是**显式配置的受控测试源** ✓（不许留 production 默认 ✗）。"""
+    result = _access_env(env={
+        "CODEX_LOCAL_ACCESS_MODE": "public-test",
+        "CODEX_LOCAL_PUBLIC_ORIGIN": "https://test-wwww.gaotuzhiyuan.com",
+        "CODEX_LOCAL_OUTER_API_BASE_URL": "https://test-api.gaotuzhiyuan.com",
+    })
+
+    assert result.returncode == 0, result.stderr
+    assert "NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE=\"\"" in result.stdout
+    assert "NEXT_PUBLIC_OUTER_API_BASE_URL=https://test-api.gaotuzhiyuan.com" in result.stdout
+
+
+def test_public_test_rejects_origin_with_path_or_credentials() -> None:
+    for bad in (
+        "https://test-wwww.gaotuzhiyuan.com/console",
+        "https://user:pass@test-wwww.gaotuzhiyuan.com",
+    ):
+        result = _access_env(env={
+            "CODEX_LOCAL_ACCESS_MODE": "public-test",
+            "CODEX_LOCAL_PUBLIC_ORIGIN": bad,
+            "CODEX_LOCAL_OUTER_API_BASE_URL": "https://test-api.gaotuzhiyuan.com",
+        })
+
+        assert result.returncode != 0, f"{bad} 应被拒"
+        assert "public origin" in result.stderr.lower()
+
+
+def test_public_test_rejects_outer_that_is_self_or_default_production() -> None:
+    """outer 指向**自己**（同源）或在没显式配置时回落到**默认生产域名** ✗ 都要拒。"""
+    base = {
+        "CODEX_LOCAL_ACCESS_MODE": "public-test",
+        "CODEX_LOCAL_PUBLIC_ORIGIN": "https://test-wwww.gaotuzhiyuan.com",
+    }
+    same_origin = _access_env(env={**base, "CODEX_LOCAL_OUTER_API_BASE_URL": "https://test-wwww.gaotuzhiyuan.com"})
+    assert same_origin.returncode != 0, "outer 指向自己应被拒"
+    assert "outer" in same_origin.stderr.lower()
+
+    unset = _access_env(env=base)
+    assert unset.returncode != 0, "公开模式必须显式给 outer，不许回落到生产默认"
+    assert "outer" in unset.stderr.lower()
+
+
+def test_web_launch_consumes_the_resolved_access_values() -> None:
+    """**声明了但没人消费** ✗ 是这类改动最容易留下的坑 ✓（任务书原话：
+    "不只声明一个未消费的 PUBLIC_TEST_ORIGIN" ✗）。所以这里盯**接线**：
+    解析出的值必须真的进 Web 的环境 ✓，而两处硬设必须消失 ✗。"""
+    source = START.read_text(encoding="utf-8")
+
+    assert '"NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE=$ACCESS_WS_OVERRIDE"' in source
+    assert '"NEXT_PUBLIC_OUTER_API_BASE_URL=$ACCESS_OUTER_API_BASE_URL"' in source
+    assert "NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE=ws://127.0.0.1:" not in source, "硬设 loopback 必须消失"
+    assert "NEXT_PUBLIC_OUTER_API_BASE_URL=https://www.gaotuzhiyuan.com" not in source, "硬设生产 outer 必须消失"
 
 
 def test_lifecycle_scripts_require_a_per_run_process_marker() -> None:

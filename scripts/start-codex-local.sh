@@ -4,6 +4,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
+# 访问面口径（模式/WS override/outer）与预检**共用同一份判据** ✓（见该文件头注释 ✓）。
+# shellcheck source=scripts/codex-local-access.sh
+source "$ROOT_DIR/scripts/codex-local-access.sh"
+
 SERVER_CONFIG="${CODEX_LOCAL_SERVER_CONFIG:-}"
 DATA_SOURCE="${CODEX_LOCAL_DATASET:-}"
 CODEX_HOME_DIR="${CODEX_LOCAL_CODEX_HOME:-}"
@@ -15,6 +19,7 @@ RUN_DIR="${CODEX_LOCAL_RUN_DIR:-}"
 CODEX_BIN="${CODEX_APP_SERVER_BIN:-codex}"
 SKIP_WEB=false
 SKIP_BUILD=false
+PRINT_ACCESS_ENV=false
 
 usage() {
     cat <<'EOF'
@@ -37,6 +42,7 @@ Options:
   --run-dir PATH             Fresh directory below .runtime/ for this run.
   --skip-web                 Do not start Next.js.
   --skip-build               Use the existing backend jar.
+  --print-access-env         Print the effective access-mode env and exit 0.
   -h, --help                 Show this help.
 EOF
 }
@@ -102,6 +108,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_BUILD=true
             shift
             ;;
+        --print-access-env)
+            PRINT_ACCESS_ENV=true
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -111,6 +121,14 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# 访问面先解析 ✓：模式不认识/公开模式缺 origin/outer 都在这里**拒** ✓，
+# 而且发生在 preflight 与建目录之前 ✓（错配置不该留下任何痕迹 ✓）。
+codex_local_access_resolve "$AGENT_PORT" "$WEB_PORT"
+if [[ "$PRINT_ACCESS_ENV" == true ]]; then
+    codex_local_access_print
+    exit 0
+fi
 
 if [[ -z "$RUN_DIR" ]]; then
     RUN_DIR="$ROOT_DIR/.runtime/codex-local-$(date +%Y%m%d-%H%M%S)-$$"
@@ -199,6 +217,7 @@ start_service "backend" "$ROOT_DIR/zhiyuan-server" \
     "--spring.profiles.active=localtest" \
     "--spring.config.additional-location=file:$SERVER_CONFIG" \
     "--server.port=$BACKEND_PORT" \
+    "--server.address=127.0.0.1" \
     "--agent.zhiyuan.url=$AGENT_URL" \
     "--volunteer.rank.url=$RANK_URL"
 wait_for_http "backend" "$BACKEND_URL/gaotu-assistant-bot/inner/ops/health"
@@ -220,6 +239,7 @@ start_service "agent" "$ROOT_DIR/zhiyuan-agent" \
     "MCP_MODE=readonly" \
     "MCP_WRITE_TOOLS_ENABLED=false" \
     "LOGFIRE_ENABLED=false" \
+    env "CODEX_WS_ALLOWED_ORIGINS=$ACCESS_ALLOWED_ORIGINS" \
     "$ROOT_DIR/zhiyuan-agent/.venv/bin/uvicorn" app.server:app --host 127.0.0.1 --port "$AGENT_PORT"
 wait_for_http "agent" "$AGENT_URL/health"
 
@@ -230,8 +250,9 @@ if [[ "$SKIP_WEB" == false ]]; then
         "NEXT_PUBLIC_API_BASE_URL=$BACKEND_URL" \
         "NEXT_PUBLIC_ASSISTANT_API_BASE_URL=$BACKEND_URL" \
         "NEXT_PUBLIC_AGENT_API_BASE_URL=$AGENT_URL" \
-        "NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE=ws://127.0.0.1:$AGENT_PORT" \
-        "NEXT_PUBLIC_OUTER_API_BASE_URL=https://www.gaotuzhiyuan.com" \
+        "NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE=$ACCESS_WS_OVERRIDE" \
+        "NEXT_PUBLIC_OUTER_API_BASE_URL=$ACCESS_OUTER_API_BASE_URL" \
+        "NEXT_PUBLIC_CODEX_ACCESS_MODE=$ACCESS_MODE" \
         "$ROOT_DIR/zhiyuan-web/node_modules/.bin/next" dev -H 127.0.0.1 -p "$WEB_PORT"
     wait_for_http "web" "$WEB_URL/gaotu-assistant-agent/health"
 fi

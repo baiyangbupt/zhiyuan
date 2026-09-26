@@ -102,3 +102,55 @@ server as a child of the Agent process; no persistent MCP process is launched.
 The preflight does not prove that a supplied database is resettable. That is an
 operator-owned property represented by `CODEX_LOCAL_DATASET=private-resettable`.
 Real Pending/CAS HTTP E2E must run only after that private dataset is prepared.
+
+## 访问面：本地模式与公开测试模式（Task C2）
+
+隔离栈有两套**访问面**口径，由 `CODEX_LOCAL_ACCESS_MODE` 选择 ✓：
+
+| 模式 | WebSocket | outer API |
+|---|---|---|
+| `local`（默认 ✓） | `NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE=ws://127.0.0.1:$AGENT_PORT` ✓ | `CODEX_LOCAL_OUTER_API_BASE_URL`，未配则用生产默认 ✓ |
+| `public-test` | **清空** override ✓——浏览器按 `window.location` 派生**同源 wss** ✓ | **必须显式**给受控测试源 ✓；缺了就拒 ✓，也不许指向 origin 自己 ✓ |
+
+公开测试模式还要给 `CODEX_LOCAL_PUBLIC_ORIGIN=https://<host>` ✓：**必须是无路径、无凭证的 https origin** ✓，
+否则启动前就失败 ✓。这些判据与守卫只有一份 ✓（`scripts/codex-local-access.sh` ✓，
+`start` 与 `preflight` 共用 ✓）——两处各写一份早晚自相矛盾 ✗。
+
+看"实际会用的值"而不启动任何东西：
+
+```bash
+CODEX_LOCAL_ACCESS_MODE=public-test \
+CODEX_LOCAL_PUBLIC_ORIGIN=https://test-wwww.gaotuzhiyuan.com \
+CODEX_LOCAL_OUTER_API_BASE_URL=https://<受控测试源> \
+bash scripts/start-codex-local.sh --print-access-env
+```
+
+反向代理的位置块见 `ops/nginx/codex-test.locations.conf` ✓（`map`/`log_format` 属 http 层 ✓，
+其余放现有 HTTPS server 内 ✓，部署前 `nginx -t` ✓）；公开域冒烟：
+`bash scripts/smoke-codex-public.sh --origin https://<host> [--base-path /]` ✓
+（无票据时只跑匿名检查并如实写 `authenticated=not_run` ✓）。
+
+安全口径：**只放行对话需要的精确路径** ✓——`/inner/`、`/internal/`、`/admin/`、`/debug/` 一律 404 ✓；
+Java/Agent/Rank 与两个数据端口都只监听回环 ✓。
+
+## 验收环境与人工清单（Task C3）
+
+- 环境基线（四服务端口/版本 ✓、数据面共用实例的提示 ✓✓、DNS/TLS 阻塞项 ✓）：
+  `docs/validation/codex-native-environment.md` ✓
+- 人工浏览器清单（本地 → 公开域 → 收尾 ✓，每步写明要记什么 ✓，禁止记录原始凭证 ✗）：
+  `docs/validation/codex-native-browser-checklist.md` ✓
+- 合成数据的建/清：
+
+  ```bash
+  # 看要建什么（默认 dry-run ✓，不写库）
+  zhiyuan-agent/.venv/bin/python scripts/seed-codex-acceptance.py --run-id r1
+  # 真写：必须指名实例 ✓（按"容器公布的 3306 == 要连的端口"核对 ✓）
+  zhiyuan-agent/.venv/bin/python scripts/seed-codex-acceptance.py \
+      --expect-instance zhiyuan-codex-local-mysql-1 --run-id r1 --apply
+  # 只清本次 runId 建的行 ✓（删除范围只来自 fixture-ids.json ✓）
+  zhiyuan-agent/.venv/bin/python scripts/seed-codex-acceptance.py \
+      --reset .runtime/codex-acceptance/r1/fixture-ids.json --apply
+  ```
+
+  **注意** ✓：本机这套 MySQL/Redis **同时被跑着的共享栈用着** ✗——reset 永远只按 fixture
+  里记录的 id 删 ✓，绝不整栈重置 ✓。
