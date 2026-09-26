@@ -131,3 +131,55 @@ zhiyuan-web: node --test + tsc --noEmit
 - 用的是真实 codex 二进制 + 真实模型（deepseek-flash）+ 真实 Java + 真实 MySQL/Redis。
 - 上游（gaotu）**没有真实调用**：域内工具走的是本地 Java 与本地数据。
 - 种子数据是手插的，不是 C3 的正规 fixture。
+
+
+---
+
+## 续作（2026-09-26，实现会话；上一节的 `PARTIAL` 仍在 ✗）
+
+> 评审入口：`docs/superpowers/tasks/2026-09-26-评审入口（C线三份与B6补充）.md` §3 ✓
+
+> 上一轮把"整条链路第一次走通"做完了 ✓；这一轮接着做 **C3 里自足、不依赖浏览器的那部分** ✓。
+> **改动未提交** ✗。判定照旧由设计侧给 ✓（实现方不自评 ✓）。
+
+**新增** ✓：
+
+| 产物 | 说明 |
+|---|---|
+| `scripts/seed-codex-acceptance.py` ✓ | 合成数据的**建/清**（runId 作用域 ✓）：默认 dry-run ✓、`--apply` 才写 ✓、`--expect-instance` 指名 + **端口归属**核对 ✓✓ |
+| `zhiyuan-agent/tests/unit/test_seed_codex_acceptance.py` ✓ | **8 passed** ✓：确定性 id ✓、**reset 只覆盖 fixture 记录的 id** ✓✓、缺 `createdRows` 拒绝 ✓、表名/列名只允许标识符 ✓、实例核对三态 ✓、dry-run 不写库 ✓ |
+| `docs/validation/codex-native-environment.md` ✓ | 环境基线：四服务端口/版本 ✓、数据面**共用实例**的发现 ✓✓、DNS/TLS 阻塞项 ✓、解释器与浏览器现状 ✓ |
+| `docs/validation/codex-native-browser-checklist.md` ✓ | 人工浏览器清单（本地 ✓ / 公开域 ✓ / 收尾 ✓ 三段，每步写明**要记什么** ✓） |
+
+**两条要紧的实测发现** ✓✓：
+
+1. **数据实例是共用的** ✗✓：`zhiyuan-codex-local` 那套 MySQL/Redis（13306/16379 ✓）
+   **正被跑着的共享栈用着** ✓（Java 配置指向它 ✓）。所以"reset 只删本次 runId"不是礼貌要求 ✓，
+   是**动它就会连共享栈数据一起清掉** ✗✗——脚本因此把删除范围钉死在 fixture 的 `createdRows` ✓，
+   并有单测盯着 ✓。
+2. **公开域那半在本机不具备条件** ✗：`test-wwww.gaotuzhiyuan.com` **DNS 解析不到** ✗
+   （`getent hosts` ✓ 与 `curl --head` ✓ 都失败 ✓）。按任务书要求写成**具体阻塞项** ✓，
+   不对公网域下的行为下任何"通过"结论 ✗。
+
+**`--apply` 实测：已完成 ✓✓**（2026-09-26，**用户点名授权**："允许向 13306 的 zhiyuan_codex_local 库写入，
+并在验证后删除 c3-live 那批 tenant/session 行" ✓）。原始对账读数 ✓：
+
+| | 写入前基线 | 写后 | 删后 |
+|---|---|---|---|
+| `assistant_chat_session` | 412 | 416（+4 ✓）| **412** ✓ |
+| `assistant_tenant_info` | 0 | 2（+2 ✓）| **0** ✓ |
+| `assistant_chat_session_extra_data` | 568 | — | **568** ✓ |
+| 最近三个会话 id | 10041936 / 10031936 / 10021936 | — | **完全一致** ✓ |
+
+- seed 建的 6 行都在 runId 推出来的号上 ✓（租户 96270/96271 ✓、会话 9862700/701/710/711 ✓）；
+- reset **只删了 fixture 记录的 6 行** ✓；980 万号段里既有的 **24 个回放会话一行未动** ✓✓
+  （这正是"reset 只限本次 runId"在真库上的证据 ✓）；
+- `credentials.json` 权限 **0600** ✓（fixture 里不含凭证 ✓）；
+- **fail-closed 亲测** ✓✓：第一次 reset 忘了给 `--expect-instance`，脚本**拒绝删除** ✓
+  （"读不到容器 的端口" ✓）——守卫不是摆设 ✓；
+- 顺带踩到两处操作坑 ✓：seed 要 **3.10 且带 `mysql-connector` 的解释器** ✗（agent 的 venv 没有 ✗）；
+  命令里用 `| tail` 会**吞掉退出码** ✗（我因此把一次失败当成了成功 ✓）。
+
+**仍未做（阻塞项）** ✗：浏览器里的人工基线（**本机 glibc 2.17 ✗、chromium 要 2.18/2.25 ✗** →
+改走**容器** ✓，见环境文档第四节 ✓）；公开域的 DNS/TLS 与"另一台设备"检查（DNS ✗）；
+数据端口 `0.0.0.0` 的修复需**栈的主人**重建容器 ✓。
