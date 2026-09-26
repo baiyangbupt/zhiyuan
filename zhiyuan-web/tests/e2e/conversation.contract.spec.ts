@@ -145,3 +145,52 @@ test('F10 刷新：断线重连后回合能恢复，且不重复渲染', async (
   // ③ 终态仍然没到 ✓（闸门没放行 ✓——刷新不该把它"刷出来" ✓）。
   await expect(turnAfter.getByTestId('assistant-final')).toHaveCount(0);
 });
+
+// **F02：歧义 → 原生卡** ✓（任务书原文："选项+自由输入；**原 request 回答继续同 Turn**" ✓）。
+//
+// 靠**场景表**驱动 ✓✓：先把本 run 的场景设成 `clarification` ✓ → 替身这一轮会先发一次
+// `item/tool/requestUserInput` ✓（`browser_app_server.py` 的 `_scenario` ✓），
+// 桥把它变成原生卡 ✓、并**等答案** ✓——答案用**原 rpc id**回去 ✓ → 替身才继续 ✓（有单测盯着 ✓）。
+test('F02 歧义：原生卡给出选项与自由输入，回答后仍在同一回合里继续', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  await runtimeGate.setScenario('clarification');   // ← 本用例的场景 ✓
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  const input = page.getByTestId('chat-input');
+  await expect(input).toBeVisible({ timeout: 10_000 });
+  await input.fill('查一下计算机');
+  await page.getByTestId('chat-send').click();
+
+  // ① **原生卡**出现 ✓，且是"选择"型 ✓（选项 ✓）。
+  const card = page.getByTestId('clarification-card');
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  await expect(card).toHaveAttribute('data-input-kind', 'choice');   // 选项型 ✓
+  // ② 选项**看得见** ✓（替身在 questions 里给的两个 ✓）。
+  await expect(card.getByText('计算机科学与技术')).toBeVisible();
+  await expect(card.getByText('软件工程')).toBeVisible();
+  // ③ **自由输入**也在 ✓（同一张卡里可自己填 ✓）。
+  await expect(card.getByPlaceholder('请输入')).toBeVisible();
+
+  // 记下回合号 ✓：回答之后要**还是同一个回合** ✓✓（这就是"继续同 Turn" ✓）。
+  const turnBefore = page.locator('[data-turn-id]').last();
+  const turnIdBefore = await turnBefore.getAttribute('data-turn-id');
+
+  // 回答：用**自由输入**那一栏 ✓（选项与自由输入都要能走通 ✓，这里选后者 ✓）。
+  await card.getByPlaceholder('请输入').fill('软件工程');
+  await card.getByTestId('clarification-submit').click();
+
+  // ④ **同一回合继续** ✓✓：回答后没有冒出第二个回合块 ✓，回合号也没变 ✓。
+  await expect(page.locator('[data-turn-id]')).toHaveCount(1, { timeout: 20_000 });
+  await expect(page.locator('[data-turn-id]').last()).toHaveAttribute('data-turn-id', turnIdBefore || '');
+
+  // ⑤ 放行后照常收尾 ✓（场景不影响闸门语义 ✓）。
+  await runtimeGate.releasePendingGate();
+  await expect(page.locator('[data-turn-id]').last().getByTestId('assistant-final')).toHaveCount(1, {
+    timeout: 20_000,
+  });
+});

@@ -43,6 +43,7 @@ class GateRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._gates: dict[str, dict[str, Any]] = {}
+        self._scenarios: dict[str, str] = {}
         self._actions: list[dict[str, Any]] = []
 
     def register(self, run_id: str, turn_id: str) -> None:
@@ -71,6 +72,18 @@ class GateRegistry:
                 self._gates.pop(key, None)
             self._actions.append({"action": "reset", "runId": run_id, "cleared": len(doomed), "at": time.time()})
             return len(doomed)
+
+    # ── 场景（Task C4 的 F02/F07/… 要按 case 驱动替身"演什么" ✓）──────────────────
+    # 为什么不写进 env 而要放服务里 ✓：**测试可以在用例中途换场景** ✓✓
+    #（比如"先要一次澄清，再正常收尾" ✓），而 env 是连接时就定死的 ✗。
+    def set_scenario(self, run_id: str, name: str) -> None:
+        with self._lock:
+            self._scenarios[run_id] = name
+            self._actions.append({"action": "set_scenario", "runId": run_id, "scenario": name, "at": time.time()})
+
+    def scenario(self, run_id: str) -> str:
+        with self._lock:
+            return self._scenarios.get(run_id, "gate_then_answer")
 
     def actions(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -106,6 +119,10 @@ def build_handler(registry: GateRegistry) -> type[BaseHTTPRequestHandler]:
                 turn_id = path[len("/gates/"):]
                 self._send(200, {"turnId": turn_id, "released": registry.is_released(turn_id)})
                 return
+            if path.startswith("/runs/") and path.endswith("/scenario"):
+                run_id = path[len("/runs/"):-len("/scenario")]
+                self._send(200, {"runId": run_id, "scenario": registry.scenario(run_id)})
+                return
             if path == "/gates":
                 self._send(200, {"gates": registry.snapshot(), "actions": registry.actions()})
                 return
@@ -130,6 +147,12 @@ def build_handler(registry: GateRegistry) -> type[BaseHTTPRequestHandler]:
             if path == "/gates":
                 registry.register(str(payload.get("runId") or ""), str(payload.get("turnId") or ""))
                 self._send(200, {"registered": True})
+                return
+            if path.startswith("/runs/") and path.endswith("/scenario"):
+                run_id = path[len("/runs/"):-len("/scenario")]
+                name = str(payload.get("scenario") or "").strip() or "gate_then_answer"
+                registry.set_scenario(run_id, name)
+                self._send(200, {"runId": run_id, "scenario": name})
                 return
             if path.startswith("/runs/") and path.endswith("/reset"):
                 run_id = path[len("/runs/"):-len("/reset")]

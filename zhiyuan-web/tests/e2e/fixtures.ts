@@ -100,6 +100,11 @@ export const test = base.extend<Fixtures>({
   runtimeGate: async ({}, use) => {
     const runId = process.env.ZHIYUAN_E2E_RUN_ID || 'browser-run';
     await use({
+      setScenario: async (name: string) => {
+        await controlFetch(`/runs/${process.env.ZHIYUAN_E2E_RUN_ID || 'browser-run'}/scenario`, 'POST', {
+          scenario: name,
+        });
+      },
       releasePendingGate: async () => {
         const state = (await controlFetch('/gates', 'GET')) as {
           gates?: Record<string, { released?: boolean }>;

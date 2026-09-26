@@ -244,6 +244,13 @@ wait_for_http "backend" "$BACKEND_URL/gaotu-assistant-bot/inner/ops/health"
 #   （`_native_event_frame` ✓，其注释写明是"给旧前端"的 ✓）。
 #   隔离栈一直没配它 ✗ → 页面收到的全是老帧 ✓ → 新前端的 V1 reducer 无帧可吃 ✓（实测：帧里没有 turnId ✗）。
 #   共享 agent 早就配了同一个键 ✓（`redis://127.0.0.1:16379/9` ✓）——这里对齐它 ✓。
+# 说明（第四处、**同一个坑第三次** ✗✗）：下面这一串同样是**一条命令** ✓，**不能**夹注释 ✗。
+#   `CODEX_APP_SERVER_USER_INPUT_MODE` —— **原生提问（A4 的桥）** ✓✓。
+#   它的默认值是保守的 `structured_final` ✗（`app/config.py:157` ✓，注释原话：
+#   "**开关没接上之前声明成 native，就是把'没测过的组合'当默认**" ✓）；
+#   而那两个开关（`features.default_mode_request_user_input` /
+#   `tools.experimental_request_user_input`）**只在声明 native 时才传** ✓（`composition.py:74-77` ✓）。
+#   所以契约栈要练这条桥 ✓，就得在这里显式打开 ✓✓——**只给隔离栈** ✓（共享栈不动 ✗）。
 start_service "agent" "$ROOT_DIR/zhiyuan-agent" \
     env \
     "CODEX_HOME=$CODEX_HOME_DIR" \
@@ -252,7 +259,7 @@ start_service "agent" "$ROOT_DIR/zhiyuan-agent" \
     "CODEX_APP_SERVER_APPROVAL_POLICY=never" \
     "CODEX_APP_SERVER_SANDBOX_POLICY=read-only" \
     "CODEX_APP_SERVER_TIMEOUT_SECONDS=180" \
-    "CODEX_EVENT_STORE_REDIS_URL=${CODEX_EVENT_STORE_REDIS_URL:-redis://127.0.0.1:16379/9}" \
+    "CODEX_APP_SERVER_USER_INPUT_MODE=${CODEX_APP_SERVER_USER_INPUT_MODE:-native}" \
     "GATEWAY_MODE=codex_readonly" \
     "INTERNAL_SERVICE_URL=$BACKEND_URL" \
     "RANK_SERVICE_URL=$RANK_URL" \

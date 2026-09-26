@@ -201,3 +201,37 @@ def test_wrapper_accepts_the_real_composition_shape() -> None:
         text=True, capture_output=True, timeout=20,
     )
     assert bad.returncode == 64, "非 app-server 子命令仍要拒 ✓"
+
+
+def test_clarification_scenario_asks_then_resumes_after_the_answer(stack) -> None:
+    """**场景表的第一支** ✓✓：`clarification` = 先要一次澄清 ✓，拿到答案后再收尾 ✓。
+
+    这验的是夹具本身 ✓（F02 的地基 ✓）：
+      · 替身发的是 `item/tool/requestUserInput` ✓ + `params.questions[]` ✓
+        （`app/gateway/user_input.py:31/113-120` ✓ 要的就是这个形状 ✓）；
+      · 客户端用**原 rpc id** 回答案 ✓（桥就是这么回的 ✓）→ 替身**收下并继续** ✓✓；
+      · 全程不需要真栈 ✓——所以形状错误会在**单测**里就暴露 ✓，不会等到浏览器里 ✓。
+    """
+    session, base, registry = stack
+    registry.set_scenario("run-1", "clarification")
+
+    session.send({"jsonrpc": "2.0", "id": 1, "method": "turn/start",
+                  "params": {"threadId": "thr_1", "turnId": "turn-clarify-1"}})
+
+    asked = session.drain(0.8)
+    request = next((m for m in asked if m.get("method") == "item/tool/requestUserInput"), None)
+    assert request is not None, f"要发一次澄清请求 ✓（收到：{_methods(asked)}）"
+    questions = (request.get("params") or {}).get("questions") or []
+    assert questions and questions[0].get("id"), "questions 要有 id ✓（桥按 id 收答案 ✓）"
+    assert (request.get("params") or {}).get("turnId") == "turn-clarify-1", "请求要带回合号 ✓"
+    assert "turn/completed" not in _methods(asked), "答案没回来之前不许收尾 ✓"
+
+    # 客户端角色：用**原 rpc id** 回答案 ✓
+    session.send({"jsonrpc": "2.0", "id": request["id"], "result": {"answers": {"q1": ["软件工程"]}}})
+
+    resumed = session.drain(1.0)
+    assert "test/clarification_answered" in _methods(resumed), "收到答案后要继续 ✓（不是忽略它 ✗）"
+    # 放行之后才收尾 ✓（场景不影响闸门语义 ✓）
+    _release(base, "turn-clarify-1")
+    final = session.drain(1.5)
+    assert "turn/completed" in _methods(final), "放行后照常收尾 ✓"

@@ -37,8 +37,13 @@ PROGRESS_TOOL = os.environ.get("CODEX_BROWSER_PROGRESS_TOOL", "admission.get_his
 
 _threads: set[str] = set()
 _turn_counter = 0
+_clarify_request_id = 9000
 # 终态**只发一次** ✓（中断与放行可能同时到 ✓）：两个集合都在锁里改 ✓。
 _finished_turns: set[str] = set()
+# 澄清的答案：替身发 server→client 请求 ✓，客户端用**原 rpc id** 回 ✓
+#（`app/gateway/user_input.py:99` 的桥就是这么回的 ✓）→ 主循环收下 ✓，等待线程取用 ✓。
+_answers: dict[int, Any] = {}
+_answers_lock = threading.Lock()
 _state_lock = threading.Lock()
 # stdout 会被主线程与等待线程同时写 ✗——不加锁会写出半行 JSON ✗✗（读方直接解析失败 ✓）。
 _send_lock = threading.Lock()
@@ -80,6 +85,46 @@ def _wait_for_release(turn_id: str) -> bool:
     return False
 
 
+def _scenario() -> str:
+    """本 run 的场景 ✓（由测试经控制服务设置 ✓；默认 `gate_then_answer` ✓）。"""
+    status, payload = _control("GET", f"/runs/{RUN_ID}/scenario")
+    if status == 200 and payload.get("scenario"):
+        return str(payload["scenario"])
+    return "gate_then_answer"
+
+
+def _ask_clarification(thread_id: str, turn_id: str) -> None:
+    """发一次"请用户选"的服务端请求 ✓✓——形状照桥那边要的 ✓：
+
+    `item/tool/requestUserInput` + `params.questions[]` ✓（`user_input.py:31/113-120` ✓）。
+    桥会把它变成**原生卡** ✓（`clarification.requested` ✓，载荷键见前端白名单 ✓）
+    并**等答案** ✓；答案用**原 rpc id** 回 ✓ → 主循环存进 `_answers` ✓ → 这里取用 ✓。
+    """
+    global _clarify_request_id
+    _clarify_request_id += 1
+    questions = [{
+        "id": "q1",
+        "header": "查什么",
+        "question": "“计算机”指的是哪一类？（可选项，也可以自己填）",
+        "options": [
+            {"label": "计算机科学与技术", "description": "专业代码 080901"},
+            {"label": "软件工程", "description": "专业代码 080902"},
+        ],
+    }]
+    send({"jsonrpc": "2.0", "id": _clarify_request_id, "method": "item/tool/requestUserInput",
+          "params": {"threadId": thread_id, "turnId": turn_id, "questions": questions}})
+
+
+def _take_answer(request_id: int, timeout: float = 30.0) -> Any:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with _answers_lock:
+            if request_id in _answers:
+                return _answers.pop(request_id)
+        time.sleep(0.05)
+    return None
+
+
 def _emit_progress(thread_id: str, turn_id: str) -> None:
     send({
         "jsonrpc": "2.0",
@@ -108,6 +153,12 @@ def _emit_final(thread_id: str, turn_id: str, *, interrupted: bool) -> None:
 
 
 def _gated_finish(thread_id: str, turn_id: str) -> None:
+    # **场景** ✓：`clarification` = 先要一次澄清 ✓，拿到答案后再等放行 ✓（F02 靶子 ✓）。
+    if _scenario() == "clarification":
+        _ask_clarification(thread_id, turn_id)
+        answer = _take_answer(_clarify_request_id)
+        send({"jsonrpc": "2.0", "method": "test/clarification_answered",
+              "params": {"turnId": turn_id, "answer": answer}})
     if not _wait_for_release(turn_id):
         # 超时 = **没放行** ✗：先留一条能在大声看见的标记 ✓。
         send({"jsonrpc": "2.0", "method": "test/release_timeout",
@@ -192,7 +243,13 @@ def main() -> int:
         except json.JSONDecodeError:
             continue
         if message.get("method") is None:
-            continue  # 对 server→client 请求的应答 ✓：合同栈不需要 ✓
+            # 对 server→client 请求的**应答** ✓（澄清的答案就从这里回来 ✓——
+            # 客户端用原 rpc id 回 ✓，桥等到了才继续 ✓）。存下来给等待线程取 ✓。
+            request_id = message.get("id")
+            if isinstance(request_id, int):
+                with _answers_lock:
+                    _answers[request_id] = message.get("result")
+            continue
         handle(message)
     return 0
 
