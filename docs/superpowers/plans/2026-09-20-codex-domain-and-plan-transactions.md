@@ -249,6 +249,13 @@ FrozenPlanPayloadDTO 字段：`workingPlan:DraftPlanStateDTO`、`orderedPlan:Ord
 
 ## Task B6：Proposal → Pending → 真实执行闭环
 
+> **交付记录（2026-09-26，实现会话）** ✓：本节由 `tasks/P2-write-closed-loop/` **交付** ✓
+> （没有另建 `B6-*` 目录 ✗——报告与证据都在那一份里 ✓，避免两处写同一件事 ✗）。
+> 真栈已走通：提案 → pending → claim → execute → `applied` ✓ + 回写 `complete` ✓；
+> 区域与专业的"ID 优先"、空方案判据、排除类同名多候选的 fail-closed 都在其中 ✓
+> （`REPORT.md` 末尾「本轮交付清单」+ 第三十三～三十五轮 ✓；改动**未提交** ✗）。
+
+
 **Files:** Create `J/service/biz/ConversationProposalService.java`、`J/model/dto/planning/ConversationProposalPrepareReq.java`、`ConversationProposalPrepareRes.java`、`JT/service/biz/ConversationProposalServiceTest.java`；Modify `J/web/controller/inner/PlanningStateController.java`、`J/service/biz/PendingPlanningCommandBizService.java`、`J/model/dto/planning/PendingPlanningCommandReq.java`、`J/service/biz/PendingConfirmationBizService.java`、`J/service/biz/PlanningStateService.java`；Modify `A/app/gateway/conversation_actions.py`、`A/app/gateway/service.py`、`A/app/util/internal_client.py`；Create `A/tests/integration/test_conversation_apply_roundtrip.py`；Extend `JT/service/biz/PendingPlanningCommandRollbackIntegrationTest.java`。
 
 **Interfaces:** 新 `POST /inner/planning/{tenant}/session/proposal/prepare?chatSessionId=...` 消费 `{requestId,sourceVersion,kind,userGoal,previewId,profilePatch}`，kind=adjust仅userGoal、generate仅previewId、profile仅profilePatch，其他分支字段必须为空；生成 `{proposalRef,pendingId,pendingRevision,sourceVersion,operationId,diff,expiresAt}`。执行只引用 Pending 保存的 frozen payload，浏览器/模型提交的 commandType/claimToken 不采用。
