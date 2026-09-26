@@ -21,7 +21,3 @@ def get_working_plan_summary(planning_state: dict[str, Any] | None) -> dict[str,
     return (get_working_plan_state(planning_state).get("summary") or {})
 
 
-def get_working_plan_items(planning_state: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Return the item list of the active working-plan state."""
-    return list(get_working_plan_state(planning_state).get("items") or [])
-

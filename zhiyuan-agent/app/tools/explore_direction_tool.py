@@ -461,24 +461,6 @@ async def should_use_generic_direction_analysis(request_context: RequestContext)
     return bool(decision.shouldAnalyze)
 
 
-def likely_generic_direction_question(text: str | None) -> bool:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return False
-    generic_patterns = (
-        "适合什么方向",
-        "适合哪些方向",
-        "适合哪个方向",
-        "适合什么专业方向",
-        "适合哪些专业方向",
-        "往哪条路",
-        "走哪条路",
-        "什么方向适合我",
-        "哪些方向适合我",
-    )
-    return any(pattern in normalized for pattern in generic_patterns)
-
-
 def _contains_any_text(value: str | None, keywords: list[str]) -> bool:
     if not value:
         return False

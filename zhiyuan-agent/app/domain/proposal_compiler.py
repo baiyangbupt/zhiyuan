@@ -199,32 +199,6 @@ def structured_goal_type_from_constraint_intent_type(constraint_intent_type: str
     return "exclude_scope"
 
 
-def structured_goal_from_composite_proposal(source: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Extract a valid structured PlanGoal from a composite proposal payload."""
-    if not isinstance(source, dict):
-        return None
-    composite = source.get("composite_proposal") or source.get("compositeProposal")
-    if not isinstance(composite, dict):
-        return None
-    goal = composite.get("goal")
-    if not isinstance(goal, dict):
-        return None
-    goal_type = str(goal.get("goal_type") or goal.get("goalType") or "").strip()
-    if goal_type not in STRUCTURED_USER_GOAL_TYPES:
-        return None
-    if goal.get("needs_clarification") is True or goal.get("needsClarification") is True:
-        return None
-    if goal_type == "tuition_budget_scope":
-        if _as_int(goal.get("max_tuition_per_year") or goal.get("maxTuitionPerYear")) <= 0:
-            return None
-        return goal
-    if goal_type in {"only_keep_scope", "must_include_scope"} and not goal.get("target_scopes") and not goal.get("targetScopes"):
-        return None
-    if goal_type == "exclude_scope" and not goal.get("negative_scopes") and not goal.get("negativeScopes"):
-        return None
-    return goal
-
-
 def resolve_structured_goal_clarification(
     source: dict[str, Any] | None,
 ) -> StructuredGoalClarificationResolution:
@@ -263,20 +237,6 @@ def resolve_structured_goal_clarification(
         questions=questions,
         scope_values=list(dict.fromkeys(value for value in scope_values if value)),
     )
-
-
-def structured_proposal_needs_clarification(payload: dict[str, Any] | None) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    composite = payload.get("composite_proposal") or payload.get("compositeProposal")
-    if not isinstance(composite, dict):
-        return False
-    if str(composite.get("feasibility") or "").strip() == "needs_clarification":
-        return True
-    goal = composite.get("goal")
-    if not isinstance(goal, dict):
-        return False
-    return goal.get("needs_clarification") is True or goal.get("needsClarification") is True
 
 
 def _structured_goal_req_scopes_for_scope(
@@ -405,55 +365,6 @@ def _structured_intent_selected_item_from_goal_scope(
     if scope_type == "program_type" and negative:
         return {"physical_constraints": {"special_limits": [f"不接受{value}" for value in clean_values]}}
     return None
-
-
-def structured_intent_payload_from_composite_proposal(source: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(source, dict):
-        return None
-    override = source.get("intent_payload_override") or source.get("intentPayloadOverride")
-    if isinstance(override, dict) and isinstance(override.get("selected"), list):
-        return override
-    composite = source.get("composite_proposal") or source.get("compositeProposal")
-    if not isinstance(composite, dict):
-        return None
-    goal = composite.get("goal")
-    if not isinstance(goal, dict):
-        return None
-    goal_type = str(goal.get("goal_type") or goal.get("goalType") or "").strip()
-    constraint_intent_type = "default"
-    if goal_type == "only_keep_scope":
-        constraint_intent_type = "only_keep"
-    elif goal_type == "must_include_scope":
-        constraint_intent_type = "must_have"
-
-    selected: list[dict[str, Any]] = []
-    for scope in goal.get("target_scopes") or goal.get("targetScopes") or []:
-        if not isinstance(scope, dict):
-            continue
-        item = _structured_intent_selected_item_from_goal_scope(
-            scope_type=_scope_entity_type(scope) or "",
-            values=_scope_value_list(scope),
-            negative=False,
-        )
-        if item:
-            selected.append(item)
-    for scope in goal.get("negative_scopes") or goal.get("negativeScopes") or []:
-        if not isinstance(scope, dict):
-            continue
-        item = _structured_intent_selected_item_from_goal_scope(
-            scope_type=_scope_entity_type(scope) or "",
-            values=_scope_value_list(scope),
-            negative=True,
-        )
-        if item:
-            selected.append(item)
-    if not selected:
-        return None
-    return {
-        "selected": selected,
-        "intentMode": "constraint",
-        "constraintIntentType": constraint_intent_type or "default",
-    }
 
 
 _RUNTIME_UNBACKED_CONFIRM_SENTENCE_RE = re.compile(r"(?:是否先确认|是否确认|确认要我.*执行)")
@@ -1049,11 +960,6 @@ def content_has_current_plan_mutation_anchor(content: str | None) -> bool:
     return bool(compact and any(marker in compact for marker in _CURRENT_PLAN_MUTATION_MARKERS))
 
 
-def content_has_unsupported_pin_lock_action_anchor(content: str | None) -> bool:
-    compact = _compact_text(content)
-    return bool(compact and any(marker in compact for marker in _UNSUPPORTED_PIN_LOCK_ACTION_MARKERS))
-
-
 _INTENT_COMMIT_MARKERS = (
     "加入",
     "加到",
@@ -1486,59 +1392,6 @@ def resolve_no_formal_plan_review_boundary(
         reference_resolution="special_path_without_formal_plan",
         requires_model_decision=False,
         reply_focus=reply_focus,
-        blocking_reasons=["missing_formal_plan"],
-    )
-
-
-def resolve_no_formal_plan_current_plan_guard(
-    content: str | None,
-    *,
-    planning_summary: Any = None,
-    recent_intent_summary: str = "",
-) -> NeedsPlanFirstResolution:
-    """Block explicit current-plan review/analyze/mutation when no formal plan exists."""
-
-    compact = _compact_text(content)
-    if not compact or planning_summary is None or _planning_summary_has_current_plan(planning_summary):
-        return NeedsPlanFirstResolution()
-
-    if any(marker in compact for marker in _FUTURE_REFERENCE_MARKERS):
-        return NeedsPlanFirstResolution()
-
-    has_current_plan_reference = any(marker in compact for marker in _CURRENT_PLAN_REFERENCE_MARKERS)
-    if not has_current_plan_reference:
-        return NeedsPlanFirstResolution()
-
-    has_review_or_analysis = any(marker in compact for marker in _REVIEW_BOUNDARY_MARKERS) or any(
-        marker in compact for marker in ("分析", "审查", "看看", "检查", "优化", "调整")
-    )
-    has_mutation = any(marker in compact for marker in _CURRENT_PLAN_MUTATION_MARKERS)
-    has_plan_scope = any(marker in compact for marker in _CURRENT_PLAN_SCOPE_MARKERS)
-    if not (has_review_or_analysis or has_mutation or has_plan_scope):
-        return NeedsPlanFirstResolution()
-
-    target_issues: list[str] = []
-    _append_needs_plan_first_target_issues(
-        target_issues,
-        compact,
-        has_current_plan_mutation=has_mutation,
-        has_current_plan_query=has_review_or_analysis or has_current_plan_reference or has_plan_scope,
-        recent_intent_summary=recent_intent_summary,
-    )
-    primary_reply, display_payload, reply_plan = _compile_needs_plan_first_reply(
-        content,
-        target_issues=target_issues,
-        recent_intent_summary=recent_intent_summary,
-    )
-
-    return NeedsPlanFirstResolution(
-        side_effect="needs_plan_first",
-        reference_resolution="no_referent",
-        requires_model_decision=False,
-        target_issues=target_issues,
-        primary_reply=primary_reply,
-        display_payload=display_payload,
-        reply_plan=reply_plan,
         blocking_reasons=["missing_formal_plan"],
     )
 
@@ -2083,27 +1936,6 @@ def plan_sink_contract(compiled: dict[str, Any]) -> tuple[bool, list[str]]:
     return not reasons, reasons
 
 
-def plan_sink_metadata_or_none(
-    compiled: dict[str, Any],
-    *,
-    session_id: str,
-    source: str,
-) -> dict[str, Any] | None:
-    contract_ok, contract_reasons = plan_sink_contract(compiled)
-    if not contract_ok:
-        logger.warning(
-            "Compiled plan blocked before sink: session_id=%s source=%s reasons=%s",
-            session_id,
-            source,
-            contract_reasons,
-        )
-        return None
-    return {
-        "compiledProposalId": compiled["compiledProposalId"],
-        "sinkType": "plan",
-    }
-
-
 def fix_proposal_sink_contract(compiled: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     if not str(compiled.get("compiledProposalId") or "").strip():
@@ -2161,34 +1993,6 @@ def ready_fix_proposals(facts: dict[str, Any] | None) -> list[dict[str, Any]]:
             proposal = {**proposal, "proposal_source": proposal_source}
         ready.append(proposal)
     return ready
-
-
-def selected_fix_proposal_id(source: dict[str, Any] | None, facts: dict[str, Any] | None) -> str:
-    candidates: list[Any] = []
-    if isinstance(source, dict):
-        candidates.extend(
-            [
-                source.get("selected_proposal_id"),
-                source.get("selectedProposalId"),
-                source.get("target_proposal_id"),
-                source.get("targetProposalId"),
-            ]
-        )
-    fix_proposals = facts.get("fix_proposals") if isinstance(facts, dict) else None
-    if isinstance(fix_proposals, dict):
-        candidates.extend(
-            [
-                fix_proposals.get("selected_proposal_id"),
-                fix_proposals.get("selectedProposalId"),
-                fix_proposals.get("target_proposal_id"),
-                fix_proposals.get("targetProposalId"),
-            ]
-        )
-    for candidate in candidates:
-        text = str(candidate or "").strip()
-        if text:
-            return text
-    return ""
 
 
 def normalize_fix_proposal_target_strategies(
@@ -2249,20 +2053,6 @@ def fix_proposal_matches_target_scope(
         if not proposal_issue_codes or not (proposal_issue_codes & set(target_issue_codes)):
             return False
     return bool(target_strategies or target_issue_codes)
-
-
-def filter_ready_fix_proposals_by_target_scope(
-    ready: list[dict[str, Any]],
-    target_strategies: list[str],
-    target_issue_codes: list[str],
-) -> list[dict[str, Any]]:
-    if not target_strategies and not target_issue_codes:
-        return ready
-    return [
-        proposal
-        for proposal in ready
-        if fix_proposal_matches_target_scope(proposal, target_strategies, target_issue_codes)
-    ]
 
 
 def select_ready_fix_proposal(

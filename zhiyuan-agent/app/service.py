@@ -361,20 +361,6 @@ def _is_route_observability_message(message: Any) -> bool:
     return False
 
 
-def _iter_route_observability_events(messages: list[Any] | None) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    for message in messages or []:
-        if not isinstance(message, ModelResponse):
-            continue
-        for part in getattr(message, "parts", []) or []:
-            if not isinstance(part, TextPart):
-                continue
-            data = _parse_tool_return_json(part.content)
-            if isinstance(data, dict) and data.get("type") == "routeObservability":
-                events.append(data)
-    return events
-
-
 def _llm_config_value(llm_client: LLMClient, field_name: str) -> str | None:
     config = getattr(llm_client, "config", None)
     value = getattr(config, field_name, None)
@@ -426,31 +412,6 @@ def _iter_tool_return_parts(messages: list[Any] | None) -> list[ToolReturnPart]:
             if isinstance(part, ToolReturnPart):
                 parts.append(part)
     return parts
-
-
-def _select_current_tool_context_messages(
-    new_messages: list[Any] | None,
-    all_messages: list[Any] | None,
-    runtime_history: RuntimeHistoryView,
-) -> list[Any]:
-    """Pick the current-turn message slice that still contains tool calls/returns.
-
-    Pydantic direct-tool-return runs may expose only the synthesized direct text
-    in ``new_messages`` while the full current turn, including tool call/return
-    parts, is only visible in ``all_messages``. Pending-card creation must inspect
-    the full tool context, but it must not scan stale history from previous turns.
-    """
-    current = list(new_messages or [])
-    if _iter_tool_return_parts(current):
-        return current
-
-    runtime_len = len(runtime_history.model_history or [])
-    inferred: list[Any] = []
-    if all_messages and len(all_messages) >= runtime_len:
-        inferred = list(all_messages[runtime_len:])
-    if _iter_tool_return_parts(inferred):
-        return inferred
-    return current or inferred
 
 
 def _message_text_chars(messages: list[Any] | None) -> int:
@@ -1706,27 +1667,6 @@ def _intent_preview_payload_from_semantic_decision(
     }
 
 
-def _align_intent_preview_payload_with_semantic_decision(
-    *,
-    session_id: str,
-    payload: dict[str, Any] | None,
-    semantic_decision: dict[str, Any] | None,
-    observability: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    if not _intent_preview_payload_mismatches_semantic_decision(payload, semantic_decision):
-        return payload
-    semantic_payload = _intent_preview_payload_from_semantic_decision(
-        session_id,
-        semantic_decision,
-    )
-    if semantic_payload is None:
-        return payload
-    if isinstance(observability, dict):
-        observability["latestIntentPreviewPayload"] = semantic_payload
-        observability["intentPreviewPayloadSource"] = "semantic_side_effect_decision"
-    return semantic_payload
-
-
 def _merge_selected_intent_payload(intent_payload: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(intent_payload, dict):
         return {}
@@ -1832,47 +1772,6 @@ def _intent_payload_has_negative_value(payload: dict[str, Any] | None) -> bool:
         ("physicalConstraints", "specialLimits"),
     ]
     return _intent_payload_has_any_value(payload, paths)
-
-
-def _intent_preview_missing_required_constraint_scope(payload: dict[str, Any] | None) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    try:
-        preview = parse_intent_analysis_payload(
-            json.dumps(_normalize_intent_preview_payload_for_parse(payload), ensure_ascii=False)
-        )
-    except Exception:
-        return False
-    raw_constraint_type = str(getattr(preview, "constraintIntentType", "") or "").strip()
-    if raw_constraint_type not in {"only_keep", "must_have"}:
-        return False
-    selected_values = [
-        item.value
-        for item in preview.items
-        if item.selected and isinstance(item.value, dict) and item.value
-    ]
-    if not selected_values and preview.status != "existing_only":
-        return True
-    if not selected_values:
-        selected_values = [
-            item.value
-            for item in preview.existingItems
-            if isinstance(item.value, dict) and item.value
-        ]
-    try:
-        merged = merge_selected_values(selected_values)
-    except Exception:
-        return True
-    return not _intent_payload_has_positive_value(merged)
-
-
-def _intent_preview_incomplete_constraint_reply(payload: dict[str, Any] | None) -> str:
-    constraint_type = ""
-    if isinstance(payload, dict):
-        constraint_type = str(payload.get("constraintIntentType") or payload.get("constraint_intent_type") or "").strip()
-    if constraint_type == "must_have":
-        return "我理解你是想让方案里至少保留某个方向，但这次没有稳定识别出具体要保留的专业、院校或地域。请直接补充要保留的范围，我再给你列出可采纳内容。"
-    return "我理解你是想把后续范围收紧，但这次没有稳定识别出具体要保留的专业、院校或地域。请直接补充要保留的范围，我再给你列出可采纳内容。"
 
 
 def _intent_confirmation_mechanism_line(
@@ -2752,14 +2651,6 @@ def _normalize_intent_preview_payload_for_parse(payload: dict[str, Any]) -> dict
     return normalized
 
 
-def _tool_calls_are_readonly_explore_or_compare(messages: list[Any] | None) -> bool:
-    tool_names = [str(part.tool_name or "").strip() for part in _iter_tool_call_parts(messages)]
-    if not tool_names:
-        return False
-    readonly_tools = {"explore_topic", "compare_entities", "answer_policy"}
-    return all(name in readonly_tools for name in tool_names)
-
-
 async def _resolve_intent_mode_from_message(message_id: Any) -> str:
     if not message_id:
         return "preference"
@@ -2775,34 +2666,6 @@ async def _resolve_intent_mode_from_message(message_id: Any) -> str:
     except Exception:
         logger.warning("Failed to resolve intent mode from card: message_id=%s", message_id, exc_info=True)
     return "preference"
-
-
-def _score_detail_ready_for_generate_plan(score_detail: ScoreDetail | None) -> bool:
-    if score_detail is None:
-        return False
-    return bool(
-        str(getattr(score_detail, "province", "") or "").strip()
-        and _as_int(getattr(score_detail, "total_score", 0)) > 0
-        and [item for item in getattr(score_detail, "subject_list", []) or [] if str(item or "").strip()]
-    )
-
-
-async def _load_session_score_detail_for_generation(session_id: str) -> ScoreDetail | None:
-    try:
-        score_response = await get_user_score_detail(session_id)
-    except Exception:
-        logger.warning(
-            "Failed to load score detail before generate-plan pending sink: session_id=%s",
-            session_id,
-            exc_info=True,
-        )
-        return None
-    if not isinstance(score_response, dict) or score_response.get("code") != 0:
-        return None
-    raw_data = score_response.get("data", {}).get("userScoreDetail", {})
-    if not isinstance(raw_data, dict) or not raw_data:
-        return None
-    return _parse_score_detail_from_backend(raw_data)
 
 
 def _build_fix_proposal_pending_state(
@@ -2978,21 +2841,6 @@ def _format_fix_proposal_card_content(
     return "\n".join(lines).strip() or "确认后会按这条处理建议调整当前方案。"
 
 
-def _fix_proposal_pending_primary_reply(proposal: dict[str, Any]) -> str:
-    title = _normalize_fix_proposal_user_text(str(proposal.get("title") or "这条处理建议").strip())
-    summary = _normalize_fix_proposal_user_text(str(proposal.get("summary") or "").strip()).strip("。；; ")
-    lines = [f"已列出这条调整预览：{title}。"]
-    if summary and summary != title:
-        lines.extend(["", f"这条建议主要是：{summary}。"])
-    lines.extend(
-        [
-            "",
-            "具体调整内容在下面卡片里。确认前不会改动当前方案；点“确认执行”后，我会按这条建议处理，并重新刷新方案和审查结果。",
-        ]
-    )
-    return _sanitize_reply_for_user("\n".join(lines))
-
-
 async def _create_pending_fix_proposal_confirmation_response(
     session_id: str,
     proposal: dict[str, Any],
@@ -3114,53 +2962,6 @@ def _extract_recent_intent_analysis_payload(messages: list[Any] | None) -> dict[
         if any(key in data for key in ("items", "existingItems", "impactAnalysis", "impactText")):
             return data
     return None
-
-
-def _extract_confirmable_intent_payload_from_interest_tool(messages: list[Any] | None) -> dict[str, Any] | None:
-    """Recover a structured intent preview carried by a misrouted Explore tool."""
-
-    for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name not in _INTENT_INTEREST_ANALYSIS_TOOL_NAMES:
-            continue
-        data = _parse_tool_return_json(part.content)
-        if not isinstance(data, dict):
-            continue
-        if str(data.get("analysisStage") or "").strip() != "confirmed":
-            continue
-        if str(data.get("status") or "").strip() not in {"ready", "existing_only"}:
-            continue
-        items = data.get("items")
-        if not isinstance(items, list) or not any(isinstance(item, dict) and item.get("selected") is not False for item in items):
-            continue
-        return data
-    return None
-
-
-def _record_observability_duration(
-    request_context: RequestContext,
-    key: str,
-    duration_ms: int,
-) -> None:
-    observability = getattr(request_context, "agent_observability", None)
-    if not isinstance(observability, dict):
-        return
-    value = max(0, int(duration_ms))
-    current = observability.get(key)
-    if isinstance(current, (int, float)):
-        observability[key] = int(current) + value
-    else:
-        observability[key] = value
-
-
-def _increment_observability_counter(
-    request_context: RequestContext,
-    key: str,
-) -> None:
-    observability = getattr(request_context, "agent_observability", None)
-    if not isinstance(observability, dict):
-        return
-    current = observability.get(key)
-    observability[key] = int(current) + 1 if isinstance(current, (int, float)) else 1
 
 
 def _observability_timing_fields(request_context: RequestContext) -> dict[str, Any]:
@@ -3299,27 +3100,6 @@ def _latest_readonly_tool_reply(messages: list[Any] | None) -> str | None:
     return None
 
 
-def _turn_has_readonly_explore_result(messages: list[Any] | None) -> bool:
-    return bool(_latest_readonly_explore_reply(messages))
-
-
-def _reply_contains_readonly_plan_query_facts(reply: str) -> bool:
-    compact = _compact_plan_reply_text(reply)
-    if not compact:
-        return False
-    return any(
-        marker in compact
-        for marker in (
-            "当前方案里共命中",
-            "候选里共命中",
-            "当前方案里暂时没有命中",
-            "候选里暂时没有命中",
-            "下面仅展示",
-            "符合“",
-        )
-    )
-
-
 def _summarize_tool_calls_for_observability(
     tool_calls: list[ToolCallPart],
     tool_returns: list[ToolReturnPart],
@@ -3430,10 +3210,6 @@ def _tool_calls_include_plan_chain(messages: list[Any] | None) -> bool:
     return any(part.tool_name in plan_tool_names for part in _iter_tool_call_parts(messages))
 
 
-def _tool_calls_include_intent_preview(messages: list[Any] | None) -> bool:
-    return any(part.tool_name in _INTENT_PREVIEW_TOOL_NAMES for part in _iter_tool_call_parts(messages))
-
-
 def _semantic_decision_requests_intent_preview(decision: dict[str, Any] | None) -> bool:
     if not isinstance(decision, dict):
         return False
@@ -3456,49 +3232,6 @@ def _tool_calls_allow_unbacked_intent_recovery(
     if semantic_intent_preview and _tool_calls_include_plan_chain(messages):
         return True
     return False
-
-
-def _tool_returns_intent_non_pending(messages: list[Any] | None) -> bool:
-    for part in _iter_tool_return_parts(messages):
-        if part.tool_name not in _INTENT_PREVIEW_TOOL_NAMES:
-            continue
-        data = _parse_tool_return_json(part.content)
-        if str((data or {}).get("status") or "").strip() in {"existing_only", "empty"}:
-            return True
-        text = str(getattr(part, "content", "") or "")
-        if _is_existing_only_intent_notice_text(text):
-            return True
-    return False
-
-
-def _latest_existing_only_intent_payload(messages: list[Any] | None) -> dict[str, Any] | None:
-    payload = _extract_recent_intent_analysis_payload(messages)
-    if not isinstance(payload, dict):
-        return None
-    if str(payload.get("status") or "").strip() != "existing_only":
-        return None
-    if str(payload.get("analysisStage") or "").strip() != ANALYSIS_STAGE_CONFIRMED:
-        return None
-    return payload
-
-
-def _build_existing_only_no_plan_reply(payload: dict[str, Any] | None) -> str:
-    merged = _merge_existing_intent_payload(payload)
-    summary = _summarize_intent_values(
-        merged,
-        intent_mode=str((payload or {}).get("intentMode") or "constraint").strip() or "constraint",
-        constraint_intent_type=str(
-            (payload or {}).get("constraintIntentType")
-            or (payload or {}).get("constraint_intent_type")
-            or "default"
-        ).strip() or "default",
-    )
-    lines = ["这条报考想法已经记录过，本轮不用重复采纳。"]
-    if summary:
-        lines.append(f"当前记录：{summary}。")
-    lines.append("现在还没有可调整的方案或候选结果，所以这一步不会直接改方案。")
-    lines.append("下一步可以先生成候选和方案；有方案后，我再按这条想法帮你检查哪些需要保留、替换或移出。")
-    return _sanitize_reply_for_user("\n".join(lines))
 
 
 def _tool_returns_interest_stage_intent_analysis(messages: list[Any] | None) -> bool:
@@ -3805,10 +3538,6 @@ def _reply_discusses_changeable_intent_or_plan(reply: str) -> bool:
     return has_changeable_subject and has_changeable_action
 
 
-def _reply_is_existing_only_intent_notice(reply: str) -> bool:
-    return _is_existing_only_intent_notice_text(str(reply or ""))
-
-
 def _is_existing_only_intent_notice_text(text: str) -> bool:
     normalized = str(text or "")
     compact = _compact_plan_reply_text(normalized)
@@ -3829,25 +3558,6 @@ def _is_existing_only_intent_notice_text(text: str) -> bool:
 
 def _reply_claims_intent_recorded_without_pending(reply: str) -> bool:
     return proposal_compiler.runtime_reply_claims_intent_recorded_without_pending(reply)
-
-
-def _recorded_intent_claim_without_pending_reply(reply: str) -> str:
-    subject = ""
-    for pattern in (
-        r"[“\"]([^”\"\n]{1,80})[”\"]",
-        r"把([^。！？\n]{1,80}?)(?:作为后续|写入|记下来)",
-    ):
-        match = re.search(pattern, reply or "")
-        if match:
-            subject = str(match.group(1) or "").strip(" ，,。")
-            if subject:
-                break
-    subject_prefix = f"这次关于“{subject}”的想法" if subject else "这次想法"
-    return (
-        f"{subject_prefix}还没有写入后续报考参考，也没有生成可采纳内容。"
-        "如果要正式采用，我会先列清楚要采用的内容或调整预览；"
-        "你确认或点“采纳”前，不会写入后续报考参考，也不会改动当前方案。"
-    )
 
 
 def _reply_looks_like_unbacked_intent_preview(reply: str) -> bool:
@@ -4244,51 +3954,6 @@ def _intent_side_effect_decision_focus_summary(decision: dict[str, Any] | None) 
     return "；".join(parts)
 
 
-def _append_downgraded_intent_focus_summary(reply: str, decision: dict[str, Any] | None) -> str:
-    summary = _intent_side_effect_decision_focus_summary(decision)
-    if not summary or not isinstance(reply, str) or not reply.strip():
-        return reply
-    compact_reply = _compact_plan_reply_text(reply)
-    summary_terms = [
-        term
-        for term in re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", summary)
-        if len(term) >= 2
-    ]
-    if summary_terms and all(term in compact_reply for term in summary_terms):
-        return reply
-    return _normalize_user_facing_terms(f"{reply.rstrip()}\n\n这次识别到的方向：{summary}。")
-
-
-def _append_pending_intent_boundary(reply: str, *, has_pending_intent: bool) -> str:
-    """Keep pending intent analysis visibly non-mutating across follow-up turns."""
-    if not has_pending_intent or not isinstance(reply, str) or not reply.strip():
-        return reply
-    compact = _compact_plan_reply_text(reply)
-    if any(marker in compact for marker in ("尚未确认", "待确认内容", "确认前不会写入后续参考")):
-        return reply
-    if any(marker in compact for marker in ("已正式生效", "已经生效")):
-        return reply
-    normalized = reply
-    for source, target in (
-        ("已经记录到后续参考", "仍在等待采纳"),
-        ("已记录到后续参考", "仍在等待采纳"),
-        ("已经写入后续报考参考", "仍在等待采纳"),
-        ("已写入后续报考参考", "仍在等待采纳"),
-        ("已经记下来", "仍在等待采纳"),
-        ("已记下来", "仍在等待采纳"),
-        ("已记录", "待采纳"),
-        ("已经记录", "待采纳"),
-        ("已加入", "待采纳"),
-        ("已经加入", "待采纳"),
-    ):
-        normalized = normalized.replace(source, target)
-    return (
-        normalized.rstrip()
-        + "\n\n补充说明：这次内容还没有采纳，点“采纳”前不会写入后续报考参考，采纳/确认前不会生效；"
-        "如果要正式采用，请点击“采纳”。"
-    )
-
-
 _PENDING_INTENT_FOLLOWUP_USER_TOKENS = (
     "先不确认",
     "不确认",
@@ -4321,79 +3986,6 @@ _PENDING_INTENT_FOLLOWUP_REPLY_TOKENS = (
     "要求会影响",
     "意向会影响",
 )
-
-
-def _is_pending_intent_followup_turn(content: str, reply: str) -> bool:
-    """Whether an existing pending intent is relevant to this read-only turn.
-
-    A session may contain persisted backend pending-intent state while the user
-    asks an unrelated Explore question. In that case appending a confirmation
-    boundary is confusing. Keep the boundary only when this turn explicitly
-    references the pending preference/requirement or its impact.
-    """
-    compact_content = _compact_plan_reply_text(content)
-    compact_reply = _compact_plan_reply_text(reply)
-    return any(token in compact_content for token in _PENDING_INTENT_FOLLOWUP_USER_TOKENS) or any(
-        token in compact_reply for token in _PENDING_INTENT_FOLLOWUP_REPLY_TOKENS
-    )
-
-
-def _prompt_looks_like_candidate_pool_query(content: str | None) -> bool:
-    compact = re.sub(r"\s+", "", str(content or "").strip())
-    if not compact:
-        return False
-    return (
-        any(marker in compact for marker in ("候选", "候选列表", "候选里", "当前能选", "能选的结果"))
-        and any(marker in compact for marker in ("看", "查", "刷新", "结果", "有没有", "多不多", "机会"))
-    )
-
-
-def _candidate_pool_missing_info_reply(
-    content: str | None,
-    missing_inputs: list[str] | None = None,
-) -> str:
-    focus_clause = "按你说的筛选方向"
-    missing = {str(item or "").strip() for item in (missing_inputs or []) if str(item or "").strip()}
-    need_score = bool({"score", "rank", "score_or_rank", "rank_or_score"} & missing) or not missing
-    need_text = "高考分数和全省位次" if need_score else "省份、分数/位次、选科等基础信息"
-    return (
-        f"当前还不能{focus_clause}刷新候选列表或展示候选结果，因为候选池还没有生成，"
-        f"并且缺少{need_text}。"
-        f"你补充{need_text}后，我再{focus_clause}刷新候选结果。"
-        "这轮不会加入方案，也不会改动当前方案。"
-    )
-
-
-def _conditional_candidate_readonly_boundary_reply(
-    content: str | None,
-    *,
-    reason_code: str,
-    missing_inputs: list[str] | None = None,
-) -> str:
-    focus_clause = "这类候选"
-    missing = {str(item or "").strip() for item in (missing_inputs or []) if str(item or "").strip()}
-
-    if reason_code == "selection_scope":
-        return (
-            "这轮先按候选可行性查看处理，暂时还没有定位到要加入方案的具体候选，"
-            "所以不会加入方案，也不会改动当前方案。"
-            "你可以补充学校、专业、地域等筛选范围，或先在候选列表里点选目标；"
-            "我再按新的范围帮你确认是否值得加入。"
-        )
-    if reason_code == "missing_inputs":
-        need_score = bool({"score", "rank", "score_or_rank", "rank_or_score"} & missing) or not missing
-        need_text = "高考分数、全省位次和选科等基础信息" if need_score else "省份、分数/位次、选科等基础信息"
-        return (
-            f"这轮先按候选可行性查看处理，但当前还不能判断{focus_clause}是否适合加入方案，"
-            f"因为还缺少{need_text}。"
-            f"你补充{need_text}后，我再继续看这类候选值不值得加入。"
-            "这轮不会加入方案，也不会改动当前方案。"
-        )
-    return (
-        f"这轮先按候选可行性查看处理，当前候选里暂时没有稳定命中适合直接加入方案的{focus_clause}，"
-        "所以不会加入方案，也不会改动当前方案。"
-        "你可以继续补充筛选范围，或先看看当前候选结果后再决定要不要加入。"
-    )
 
 
 def _build_pending_readonly_impact_reply(pending_state: dict[str, Any]) -> str:
@@ -4663,39 +4255,6 @@ def _append_pending_apply_then_readonly_followup(
     return f"{base}\n\n{followup}"
 
 
-def _build_pending_conflict_new_request_reply(pending_state: dict[str, Any]) -> str:
-    kind = str((pending_state or {}).get("kind") or "").strip()
-    summary = str((pending_state or {}).get("summary") or "").strip()
-    if _is_plan_pending_kind(kind):
-        lines = [
-            "当前已经有一项方案调整正在等待确认。",
-        ]
-        lines.append(f"待确认调整：{summary}。" if summary else "这项调整确认前不会改动当前方案。")
-        lines.extend(
-            [
-                "这轮新诉求不会直接覆盖它，也不会再生成第二张待确认卡。",
-                "你可以先确认执行、取消这项调整，或明确说要放弃当前待确认内容后重新提新的调整。",
-            ]
-        )
-        return "\n".join(lines)
-    if kind == "intent_change":
-        lines = [
-            "当前已经有一项想法或报考条件正在等待采纳。",
-        ]
-        lines.append(f"待采纳内容：{summary}。" if summary else "这项内容采纳前不会写入后续报考参考。")
-        lines.extend(
-            [
-                "这轮新诉求不会直接覆盖它，也不会再生成第二张待采纳卡。",
-                "你可以先点“采纳”、取消这项内容，或明确说要放弃当前待采纳内容后重新整理新的条件。",
-            ]
-        )
-        return "\n".join(lines)
-    return (
-        "当前已经有一项内容正在等待确认。这轮新诉求不会直接覆盖它，也不会再生成第二张待确认卡。"
-        "请先确认、取消，或明确说要放弃当前待确认内容后重新整理。"
-    )
-
-
 def _last_user_visible_text_response(messages: list[Any] | None) -> ModelResponse | None:
     for message in reversed(messages or []):
         if not isinstance(message, ModelResponse) or _is_route_observability_message(message):
@@ -4847,20 +4406,6 @@ def _latest_turn_tool_names(messages: list[Any] | None) -> list[str]:
     return [part.tool_name for part in _iter_tool_call_parts(_messages_after_index(messages, boundary))]
 
 
-def _latest_turn_looks_readonly(messages: list[Any] | None) -> bool:
-    if _latest_turn_is_readonly_interruption_fallback(messages):
-        return True
-    tool_names = _latest_turn_tool_names(messages)
-    if not tool_names:
-        return False
-    if any(name in _INTENT_PREVIEW_TOOL_NAMES for name in tool_names):
-        return False
-    for name in tool_names:
-        if name not in _READONLY_DIRECT_TOOL_NAMES:
-            return False
-    return True
-
-
 def _latest_turn_is_readonly_interruption_fallback(messages: list[Any] | None) -> bool:
     boundary = _latest_user_turn_boundary(messages)
     for message in _messages_after_index(messages, boundary):
@@ -4869,10 +4414,6 @@ def _latest_turn_is_readonly_interruption_fallback(messages: list[Any] | None) -
         if str(getattr(message, "model_name", "") or "") == "agent-interruption-readonly-fallback":
             return True
     return False
-
-
-def _readonly_closure_ack_reply() -> str:
-    return "先按刚才的分析结论理解。这轮没有待确认的偏好或方案动作，也不会改动方案；后面想继续看具体学校、专业或方案调整，随时告诉我。"
 
 
 def _parse_tool_call_args(args: Any) -> dict[str, Any]:
@@ -5014,13 +4555,6 @@ def _no_pending_short_text_action(content: str) -> str:
     if normalized in _NO_PENDING_SHORT_CONFIRM_TEXTS:
         return "confirm"
     return ""
-
-
-def _is_readonly_closure_ack(content: str) -> bool:
-    normalized = _normalize_confirmation_only_text(content, strip_fullwidth_question=True)
-    if not normalized:
-        return False
-    return normalized in _READONLY_CLOSURE_ACK_PHRASES
 
 
 def _no_pending_confirmation_guard_reply() -> str:
@@ -5186,13 +4720,6 @@ def _prompt_explicitly_readonly(content: str | None) -> bool:
     if not compact:
         return False
     return any(marker in compact for marker in _READONLY_USER_PROMPT_MARKERS)
-
-
-def _prompt_rejects_current_plan_action(content: str | None) -> bool:
-    compact = re.sub(r"\s+", "", str(content or "").strip())
-    if not compact:
-        return False
-    return any(marker in compact for marker in _PLAN_ACTION_NEGATIVE_ACK_MARKERS)
 
 
 def _build_basic_plan_status_reply(planning: PlanningSummary) -> str:
@@ -5440,52 +4967,6 @@ def _describe_interrupted_readonly_request(
     if compact:
         return f"你刚才问的是“{compact}”"
     return "你刚才这个问题"
-
-
-def _build_agent_interruption_fallback_reply(
-    content: str,
-    planning: PlanningSummary | None,
-    agent_observability: dict[str, Any] | None = None,
-    *,
-    batch: str | None = "01",
-) -> str | None:
-    """Return a safe user-facing reply when the model run is interrupted.
-
-    This is intentionally conservative: it only uses already loaded planning
-    summary facts and never claims that a tool action was completed.
-    """
-    if not isinstance(agent_observability, dict) or not agent_observability.get("failedNode"):
-        return None
-
-    if (
-        _agent_interruption_looks_readonly(content, agent_observability)
-        and not _interrupted_prompt_prefers_plan_status_fallback(content, planning)
-    ):
-        subject = _describe_interrupted_readonly_request(content, batch, agent_observability)
-        return (
-            "这轮模型服务中断了，我没有改动你的方案，也没有把偏好写入后续参考。"
-            f"{subject}，这次没能完整生成分析结论；"
-            "你可以继续围绕刚才的问题追问，我会按只读分析处理。"
-        )
-
-    prefix = (
-        "这轮模型服务中断了，我先不改动你的方案或偏好。"
-        "为了不让你一直等，我先根据已经读取到的信息给一个安全版结论："
-    )
-    if planning is not None and (planning.ordered_total > 0 or planning.working_total > 0):
-        status_reply = _build_basic_plan_status_reply(planning).strip()
-        if status_reply:
-            return f"{prefix}\n\n{status_reply}"
-
-    return (
-        "这轮模型服务中断了，我先不改动你的方案或偏好。"
-        "你可以再发一次刚才的问题，我会继续按当前会话信息处理；"
-        "如果涉及方案调整，我仍会先给预览，等你确认后再执行。"
-    )
-
-
-def _should_guard_plan_reply(content: str) -> bool:
-    return any(keyword in content for keyword in _PLAN_STYLE_GUARD_PROMPT_KEYWORDS)
 
 
 def _normalize_user_facing_terms(reply: str) -> str:
@@ -5954,15 +5435,6 @@ def _normalize_plan_reply_style(reply: str) -> str:
         return "我先给出当前判断。你可以继续看结论、调整建议，或在确认后执行具体改动。"
 
     return "\n".join(normalized_lines)
-
-
-def _reply_is_internal_plan_error(reply: str) -> bool:
-    if not isinstance(reply, str):
-        return False
-    compact = _compact_plan_reply_text(reply)
-    return compact in {"会话不存在", "sessionnotfound", "chat session not found"} or bool(
-        re.fullmatch(r"(?:错误|异常)[:：]?.{0,30}", compact)
-    )
 
 
 def _compact_plan_reply_text(reply: str) -> str:
@@ -6562,41 +6034,6 @@ def _review_reply_overclaims_admission_safety(reply: str, result: dict[str, Any]
     return True
 
 
-def _review_reply_needs_boundary(reply: str, result: dict[str, Any] | None) -> bool:
-    if not isinstance(result, dict) or not isinstance(reply, str):
-        return False
-    if str(result.get("action_family") or "").strip() != "review_plan":
-        return False
-    if str(result.get("result_kind") or "").strip() != "review_result":
-        return False
-    compact = _compact_plan_reply_text(reply)
-    return bool(compact) and "审查" not in compact
-
-
-def _adjustment_reply_needs_structured_fallback(reply: str, result: dict[str, Any] | None) -> bool:
-    if not isinstance(result, dict) or not isinstance(reply, str):
-        return False
-    if str(result.get("action_family") or "").strip() != "analyze_adjustment":
-        return False
-    if str(result.get("result_kind") or "").strip() != "adjustment_analysis":
-        return False
-    markers = (
-        "补充建议 0 条",
-        "调序建议 0 条",
-        "替换建议 0 条",
-        "移除建议 0 条",
-        "候选供给：",
-        "下面列 2 条代表例子",
-        "fix_proposals",
-    )
-    if any(marker in reply for marker in markers):
-        return True
-    if re.search(r"@\d+", reply):
-        return True
-    compact = _compact_plan_reply_text(reply)
-    return len(compact) > 900 and "调整分析已完成" in reply
-
-
 def _review_prompt_prefers_unavailable_guidance(user_prompt: str | None) -> bool:
     compact = _compact_plan_reply_text(str(user_prompt or ""))
     if not compact:
@@ -6936,10 +6373,6 @@ class _StructuredPlanRerouteResult:
     route_decision: dict[str, Any]
     pending_result: _RuntimeCompiledPendingResult | None = None
     workspace_refresh_targets: list[str] = field(default_factory=list)
-
-
-def _reply_looks_like_unbacked_plan_action_boundary(reply: str) -> bool:
-    return proposal_compiler.runtime_reply_looks_like_unbacked_plan_action_boundary(reply)
 
 
 def _latest_direct_confirm_pending_payload(

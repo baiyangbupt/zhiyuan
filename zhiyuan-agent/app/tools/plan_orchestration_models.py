@@ -154,22 +154,6 @@ _SCOPE_REQUIRED_GOAL_TYPES = {
 }
 
 
-def resolve_plan_goal_type(
-    plan_goal_type: str | None,
-    constraint_intent_type: str | None = None,
-) -> PlanGoalTypeValue | None:
-    """Normalize the high-level plan goal type from structured inputs only."""
-    normalized_goal = str(plan_goal_type or "").strip()
-    if normalized_goal:
-        return normalized_goal  # type: ignore[return-value]
-    normalized_constraint = str(constraint_intent_type or "").strip()
-    return _CONSTRAINT_TO_PLAN_GOAL.get(normalized_constraint)
-
-
-def plan_goal_requires_scope(goal_type: str | None) -> bool:
-    return str(goal_type or "").strip() in _SCOPE_REQUIRED_GOAL_TYPES
-
-
 class PlanGoal(BaseModel):
     """Structured user goal above action_family.
 
@@ -207,49 +191,6 @@ class PlanGoal(BaseModel):
             if note and note not in notes:
                 notes.append(note)
         return notes
-
-
-def build_plan_goal_intent_updates(plan_goal: PlanGoal | None) -> list[dict[str, Any]]:
-    """Return pending intent update metadata derived from a confirmed PlanGoal.
-
-    This only builds preview/confirmation metadata. It does not write intent
-    state and it deliberately returns nothing when the goal still needs
-    clarification.
-    """
-    if plan_goal is None or plan_goal.needs_clarification:
-        return []
-    if plan_goal.goal_type == "only_keep_scope":
-        return [
-            {
-                "intentMode": "constraint",
-                "constraintIntentType": "only_keep",
-                "targetScopes": plan_goal.target_scopes,
-            }
-        ]
-    if plan_goal.goal_type == "must_include_scope":
-        return [
-            {
-                "intentMode": "constraint",
-                "constraintIntentType": "must_have",
-                "targetScopes": plan_goal.target_scopes,
-            }
-        ]
-    if plan_goal.goal_type == "exclude_scope":
-        return [
-            {
-                "intentMode": "constraint",
-                "constraintIntentType": "default",
-                "negativeScopes": plan_goal.negative_scopes,
-            }
-        ]
-    if plan_goal.goal_type == "prefer_scope":
-        return [
-            {
-                "intentMode": "preference",
-                "targetScopes": plan_goal.target_scopes,
-            }
-        ]
-    return []
 
 
 CompositeFeasibility = Literal["ready", "preview_only", "blocked", "needs_clarification"]

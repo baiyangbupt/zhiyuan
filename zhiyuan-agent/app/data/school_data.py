@@ -86,46 +86,6 @@ def build_area_index(school_list: list[str]) -> dict[str, list[str]]:
     return dict(area_to_school)
 
 
-def fuzzy_match_school_name(
-    query: str,
-    school_set: set[str],
-    area_index: dict[str, list[str]],
-    max_candidates: int = 10,
-) -> list[str]:
-    """Find candidate school names by keyword and substring matching.
-
-    Args:
-        query: User-typed school name
-        school_set: Set of all standard school names
-        area_index: The area/keyword-to-schools index
-        max_candidates: Maximum number of candidates to return
-
-    Returns:
-        List of matching standard school name strings
-    """
-    if query in school_set:
-        return [query]
-
-    candidates: list[str] = []
-    seen: set[str] = set()
-
-    # Keyword match via area index
-    for char in query:
-        for name in area_index.get(char, []):
-            if name not in seen:
-                candidates.append(name)
-                seen.add(name)
-
-    # Substring match
-    for name in school_set:
-        if query in name or name in query:
-            if name not in seen:
-                candidates.append(name)
-                seen.add(name)
-
-    return candidates[:max_candidates]
-
-
 # Initialize data at module load time
 _data_dir = Path(__file__).resolve().parent.parent.parent / "data" / "option"
 _bachelor_csv = _data_dir / "school_bachelor.csv"

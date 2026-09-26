@@ -54,15 +54,6 @@ def _normalize_text_list(values: Any) -> list[str]:
     return normalized
 
 
-def _merge_unique(base: list[str], extra: list[str]) -> list[str]:
-    merged: list[str] = []
-    for value in [*base, *extra]:
-        text = str(value or "").strip()
-        if text and text not in merged:
-            merged.append(text)
-    return merged
-
-
 def _candidate_tag_value_variants(value: str) -> list[str]:
     """Build conservative variants for filter-tag values.
 

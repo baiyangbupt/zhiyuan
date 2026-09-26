@@ -249,16 +249,6 @@ def normalize_review_issue_code(value: Any) -> str | None:
     return text
 
 
-def normalize_structured_review_issue_value(value: Any) -> str | None:
-    """Map already-structured scope values to review issue codes.
-
-    This intentionally does not inspect the original user utterance. It is used
-    only after an LLM/tool caller has placed a value into a structured scope
-    field, where certain controlled risk labels are not valid majors/schools.
-    """
-    return normalize_review_issue_code(value)
-
-
 def review_issue_label(code: str | None, summary: str | None = None) -> str:
     rule = get_review_issue_rule(code)
     if rule:
@@ -490,10 +480,3 @@ def build_review_issue_scopes(
     return scopes
 
 
-def summarize_review_issue_scope(issue: dict[str, Any]) -> str:
-    label = str(issue.get("label") or issue.get("code") or "issue").strip()
-    unit_count = int(issue.get("affected_unit_count") or 0)
-    volunteer_count = int(issue.get("affected_volunteer_count") or 0)
-    if unit_count > 0 or volunteer_count > 0:
-        return f"{label}({unit_count}u/{volunteer_count}v)"
-    return label

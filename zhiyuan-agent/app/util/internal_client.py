@@ -330,22 +330,6 @@ async def _get_pending_resource(
 # ── 消息相关 ──────────────────────────────────────────────────────
 
 
-async def get_all_messages(thread_id: str) -> Dict[str, Any]:
-    """异步获取聊天会话的所有消息。
-
-    Args:
-        thread_id: 会话 ID
-
-    Returns:
-        服务器返回的 JSON 响应数据，包含所有消息。
-    """
-    return await http_client.get(
-        endpoint="/gaotu-assistant-bot/inner/chat/1/message/list-all",
-        params={"chatSessionId": thread_id},
-        error_msg="获取消息失败",
-    )
-
-
 async def create_chat_session(
     tenant_id: Union[str, int],
     create_session_req: Dict[str, Any],
@@ -726,29 +710,6 @@ async def get_extra_data(
 # ── 消息分析进度 ──────────────────────────────────────────────────
 
 
-async def get_message_analyze_progress(
-    chat_session_id: str,
-) -> Dict[str, Any]:
-    return await get_extra_data(chat_session_id, "messageAnalyzeProgress")
-
-
-async def save_message_analyze_progress(
-    chat_session_id: str, data_value: Dict[str, Any]
-) -> Dict[str, Any]:
-    payload = {
-        "chatSessionId": chat_session_id,
-        "dataKey": "messageAnalyzeProgress",
-        "dataType": "JSON_OBJECT",
-        "dataValue": data_value,
-        "version": 0,
-    }
-    return await http_client.post(
-        endpoint="/gaotu-assistant-bot/inner/chat/1/session/add-extra-data",
-        json_data=payload,
-        error_msg="存储消息分析进度失败",
-    )
-
-
 # ── 用户画像 ──────────────────────────────────────────────────────
 
 
@@ -1106,56 +1067,8 @@ async def save_chat_profile(
     )
 
 
-async def get_last_chat_profile_version(
-    chat_session_id: Union[str, int],
-) -> int:
-    """异步获取对话信息最新版本号。"""
-    result = await get_last_extra_data(chat_session_id, "chatprofile")
-    return result.get("data", {}).get("dataVersion", 0)
-
-
-async def get_chat_profile(
-    chat_session_id: Union[str, int], version: int = 0
-) -> Dict[str, Any]:
-    """异步获取对话信息数据。"""
-    return await get_extra_data(chat_session_id, "chatprofile", version)
-
-
-async def get_session_situation(
-    chat_session_id: Union[str, int],
-) -> Dict[str, Any]:
-    """异步获取会话情况。"""
-    return await get_extra_data(chat_session_id, "sessionSituation")
-
-
 # ── 推荐相关 ──────────────────────────────────────────────────────
 
-
-async def get_last_school_recommend_version(
-    chat_session_id: Union[str, int],
-) -> int:
-    """获取学校推荐最新版本号。"""
-    result = await get_last_extra_data(chat_session_id, "schoolRecommend")
-    logger.info("获取学校推荐数据: {}", result)
-    return result.get("data", {}).get("dataVersion", 0)
-
-
-async def get_last_major_recommend_version(
-    chat_session_id: Union[str, int],
-) -> int:
-    """获取专业推荐最新版本号。"""
-    result = await get_last_extra_data(chat_session_id, "majorRecommend")
-    logger.info("获取专业推荐数据: {}", result)
-    return result.get("data", {}).get("dataVersion", 0)
-
-
-async def get_last_baike_recommend_version(
-    chat_session_id: Union[str, int],
-) -> int:
-    """获取推荐百科最新版本号。"""
-    result = await get_last_extra_data(chat_session_id, "baikeRecommend")
-    logger.info("获取对话百科版本: {}", result)
-    return result.get("data", {}).get("dataVersion", 0)
 
 async def get_major_profile_by_name(major_name: str) -> Dict[str, Any]:
     """
@@ -1179,36 +1092,6 @@ async def get_major_profile_by_name(major_name: str) -> Dict[str, Any]:
         error_msg="获取专业信息失败"
     )
 
-async def get_major_category_profile_by_name(category_name: str) -> Dict[str, Any]:
-    """
-    根据专业类名获取专业类信息
-
-    Args:
-        category_name: 专业类名，例如 "哲学类"
-
-    Returns:
-        Dict[str, Any]: 服务器返回的JSON响应数据，包含专业类相关信息
-    """
-    params = {
-        "categoryName": category_name
-    }
-
-    logger.info("获取专业类信息: {}", category_name)
-
-    return await http_client.get(
-        endpoint="/gaotu-assistant-bot/inner/major-category/getMajorCategoryProfileByName",
-        params=params,
-        error_msg="获取专业类信息失败"
-    )
-
-
-async def get_major_recommend(
-    chat_session_id: Union[str, int], version: int = 0
-) -> Dict[str, Any]:
-    """异步获取专业推荐数据。"""
-    return await get_extra_data(chat_session_id, "majorRecommend", version)
-
-
 async def get_majors_recommend(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],
@@ -1220,30 +1103,6 @@ async def get_majors_recommend(
         endpoint="/gaotu-assistant-bot/inner/recommend/majors",
         params=params,
         error_msg="获取专业推荐失败",
-    )
-
-
-async def get_school_majors_recommend(
-    tenant_id: Union[str, int],
-    chat_session_id: Union[str, int],
-    use_truncated_logic: bool = True,
-) -> Dict[str, Any]:
-    """异步获取学校专业推荐。"""
-    params = {
-        "tenantId": tenant_id,
-        "chatSessionId": chat_session_id,
-        "useTruncatedLogic": str(use_truncated_logic).lower(),
-    }
-    logger.info(
-        "获取学校专业推荐 - 租户ID: {}, 会话ID: {}, 使用截断逻辑: {}",
-        tenant_id,
-        chat_session_id,
-        use_truncated_logic,
-    )
-    return await http_client.get(
-        endpoint="/gaotu-assistant-bot/inner/recommend/schoolMajors",
-        params=params,
-        error_msg="获取学校专业推荐失败",
     )
 
 
@@ -1422,18 +1281,6 @@ async def check_major_subject_availability(
 # ── 用户填报方案摘要 ──────────────────────────────────────────────
 
 
-async def get_user_program_major3_summary(
-    thread_id: str,
-) -> Dict[str, Any]:
-    """获取用户填报方案中 level3 专业的总结。"""
-    return await get_extra_data(thread_id, "userProgram3MajorSummary")
-
-
-async def get_user_program_area_summary(thread_id: str) -> Dict[str, Any]:
-    """获取用户填报方案中地区的总结。"""
-    return await get_extra_data(thread_id, "userProgramAreaSummary")
-
-
 # ── 专业 / 学校信息查询 ──────────────────────────────────────────
 
 
@@ -1582,18 +1429,6 @@ async def analyze_schools(
         ),
         json_data=payload,
         error_msg="分析学校志愿失败",
-    )
-
-
-async def submit_volunteer(
-    chat_session_id: Union[str, int],
-) -> Dict[str, Any]:
-    """异步提交志愿。"""
-    logger.info("提交志愿 - 会话ID: {}", chat_session_id)
-    return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/chat/1/volunteer/submit?chatSessionId={chat_session_id}",
-        json_data={},
-        error_msg="提交志愿失败",
     )
 
 

@@ -1115,10 +1115,6 @@ _LABEL_MAP: dict[str, str] = {
 }
 
 
-def _is_negative_key(sub_key: str) -> bool:
-    return sub_key.startswith("negative_")
-
-
 def _label_for_intent_mode(label: str, *, intent_mode: str) -> str:
     if intent_mode == INTENT_MODE_CONSTRAINT:
         return label
@@ -2303,14 +2299,6 @@ def _impact_title(intent_mode: str) -> str:
     return "对当前方案、候选机会与下一步分析的关联判断"
 
 
-def _impact_title_for_stage(intent_mode: str, analysis_stage: str) -> str:
-    if analysis_stage == ANALYSIS_STAGE_INTEREST:
-        if intent_mode == INTENT_MODE_CONSTRAINT:
-            return "这个方向与当前方案、候选范围的兴趣阶段分析"
-        return "这个方向与当前方案、候选机会的兴趣阶段分析"
-    return _impact_title(intent_mode)
-
-
 def _build_single_turn_recovery_context(
     ctx: RunContext[RequestContext],
 ) -> RunContext[RequestContext]:
@@ -2377,16 +2365,6 @@ def _as_string_list(value: Any) -> list[str]:
             result.extend(_as_string_list(item))
         return result
     return []
-
-def _is_intent_confirmation_utterance(value: str) -> bool:
-    normalized = re.sub(r"\s+", "", str(value or "").strip())
-    normalized = normalized.strip("。.!！?")
-    if not normalized:
-        return False
-    if normalized in _INTENT_CONFIRM_UTTERANCE_PHRASES:
-        return True
-    return normalized.startswith(("确认", "就按", "按这个", "可以按")) and len(normalized) <= 12
-
 
 def _normalize_intent_payload(
     payload: dict | None,

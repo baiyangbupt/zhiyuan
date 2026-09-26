@@ -63,3 +63,8 @@ logs/
 /recodex
 zhiyuan-web/Dockerfile.standardtest.local
 *.local-pre-merge.md
+
+
+# 本地运行时的临时产物（回放脚本与后端 temp-data-path 会往这里写会话志愿文件 ✓）
+data/tmp/
+.codex-local/
