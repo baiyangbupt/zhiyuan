@@ -1,0 +1,171 @@
+"""带闸门的假 app-server（Task C4 ②）——**重点是"闸门没放行就不许有终态"** ✓✓。
+
+这条不是普通单测 ✓：它是 C4 那条"不依赖固定延时的流式断言"的**地基** ✓——
+如果替身在没放行时也会发 `turn/completed` ✗，"UI 先显示进度、终态还没来" 就成了永远为真的假绿 ✗✓。
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import queue
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+ROOT_DIR = Path(__file__).resolve().parents[3]
+FIXTURES = ROOT_DIR / "zhiyuan-agent" / "tests" / "fixtures" / "codex"
+APP_SERVER = FIXTURES / "browser_app_server.py"
+CONTROL = FIXTURES / "browser_runtime_control.py"
+
+
+def _load(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+control = _load(CONTROL, "browser_runtime_control")
+
+
+class ServerSession:
+    """把子进程的 stdout 收进队列 ✓——不这样就得阻塞读，超时无从谈起 ✗。"""
+
+    def __init__(self, env_extra: dict[str, str]) -> None:
+        env = dict(os.environ)
+        env.update(env_extra)
+        self.process = subprocess.Popen(
+            [sys.executable, str(APP_SERVER)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env,
+        )
+        self.lines: "queue.Queue[dict]" = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self) -> None:
+        assert self.process.stdout is not None
+        for raw in self.process.stdout:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                self.lines.put(json.loads(raw))
+            except json.JSONDecodeError:
+                self.lines.put({"raw": raw})
+
+    def send(self, payload: dict) -> None:
+        assert self.process.stdin is not None
+        self.process.stdin.write(json.dumps(payload) + "\n")
+        self.process.stdin.flush()
+
+    def drain(self, seconds: float = 0.6) -> list[dict]:
+        """收一段时间的消息 ✓（用它来断言"**没有**终态" ✗——必须等一小会儿才可信 ✓）。"""
+        got: list[dict] = []
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            try:
+                got.append(self.lines.get(timeout=0.05))
+            except queue.Empty:
+                continue
+        return got
+
+    def close(self) -> None:
+        self.process.kill()
+        self.process.wait(timeout=10)
+
+
+@pytest.fixture()
+def stack():
+    server = control.serve("127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = "http://127.0.0.1:%d" % server.server_address[1]
+    session = ServerSession({
+        "CODEX_BROWSER_CONTROL_BASE": base,
+        "CODEX_BROWSER_RUN_ID": "run-1",
+        "CODEX_BROWSER_RELEASE_TIMEOUT": "5",
+    })
+    try:
+        yield session, base, server.registry
+    finally:
+        session.close()
+        server.shutdown()
+        server.server_close()
+
+
+def _methods(messages: list[dict]) -> list[str]:
+    return [str(m.get("method") or "") for m in messages]
+
+
+def _release(base: str, turn_id: str) -> None:
+    request = urllib.request.Request(f"{base}/gates/{turn_id}/release", data=b"{}", method="POST")
+    urllib.request.urlopen(request, timeout=5).read()
+
+
+def test_progress_arrives_but_the_terminal_waits_for_the_gate(stack) -> None:
+    session, base, registry = stack
+    session.send({"jsonrpc": "2.0", "id": 1, "method": "turn/start",
+                  "params": {"threadId": "thr_1", "turnId": "turn-fixed-1"}})
+
+    before = session.drain(0.8)
+    methods = _methods(before)
+    assert "item/agentMessage/delta" in methods, "先要有进度 ✓"
+    assert "item/started" in methods, "工具进度也要到 ✓（UI 靠它显示阶段 ✓）"
+    assert "turn/completed" not in methods, "**闸门没放行就不许有终态** ✗✓"
+    assert registry.is_released("turn-fixed-1") is False
+
+    _release(base, "turn-fixed-1")
+    after = session.drain(1.5)
+    methods = _methods(after)
+    assert "turn/completed" in methods, "放行后终态才到 ✓"
+    assert any(m.get("method") == "item/completed" and m["params"]["item"]["type"] == "agentMessage"
+               for m in after), "终态要带合法的结构化输出 ✓（否则测的是输出修复路径 ✗）"
+
+
+def test_interrupt_produces_a_real_interrupted_terminal(stack) -> None:
+    """F12 的地基 ✓：中断要发**真中断** ✓，绝不能补一个假的 completed ✗。"""
+    session, _, _ = stack
+    session.send({"jsonrpc": "2.0", "id": 1, "method": "turn/start",
+                  "params": {"threadId": "thr_1", "turnId": "turn-int-1"}})
+    session.drain(0.5)
+
+    session.send({"jsonrpc": "2.0", "id": 2, "method": "turn/interrupt",
+                  "params": {"threadId": "thr_1", "turnId": "turn-int-1"}})
+    after = session.drain(1.0)
+
+    terminals = [m for m in after if m.get("method") == "turn/completed"]
+    assert terminals, "中断要有终态 ✓"
+    assert terminals[-1]["params"]["turn"]["status"] == "interrupted"
+    assert not [m for m in after if m.get("method") == "item/completed"
+                and m["params"]["item"]["type"] == "agentMessage"], "中断不该带出答案 ✗"
+
+
+def test_unreleased_turn_fails_loudly_instead_of_faking_a_terminal(stack) -> None:
+    """超时 = 没放行 ✗：必须**大声失败** ✓（不许顺手补终态 ✗——那会把"卡住"测成"通过" ✗✗）。"""
+    session, _, _ = stack
+    session.send({"jsonrpc": "2.0", "id": 1, "method": "turn/start",
+                  "params": {"threadId": "thr_1", "turnId": "turn-timeout-1"}})
+
+    messages = session.drain(6.5)  # 替身自己的超时是 5s ✓
+    methods = _methods(messages)
+    assert "test/release_timeout" in methods, "要明确报「没放行」 ✓"
+    assert "turn/completed" not in methods, "**超时绝不许补终态** ✗✗"
+
+
+def test_client_supplied_turn_id_is_echoed_for_data_turn_id_assertions(stack) -> None:
+    """任务书要 `data-turn-id` 那类断言 ✓ → 回合号必须能用客户端给的 ✓。"""
+    session, base, _ = stack
+    session.send({"jsonrpc": "2.0", "id": 1, "method": "turn/start",
+                  "params": {"threadId": "thr_1", "turnId": "turn-injected-7"}})
+    messages = session.drain(0.6)
+    events = [m for m in messages if m.get("method") in {"item/agentMessage/delta", "item/started"}]
+    assert events, "要发出进度 ✓"
+    assert all(m["params"]["turnId"] == "turn-injected-7" for m in events), "回合号必须是注入的那个 ✓"
