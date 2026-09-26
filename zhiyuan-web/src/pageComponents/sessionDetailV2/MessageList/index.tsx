@@ -1898,6 +1898,15 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                     turn.terminal ? undefined : () => handleSteerTurn(turn.id, '补充说明')
                   }
                 />
+                {/*
+                  **把 V1 终态的答案画出来** ✓✓（C4 真栈追出来的最后一格 ✓）：
+                  reducer 早把它存进 `turn.answer.message` 了 ✓（`conversationSession.mjs:101` ✓），
+                  而这个回合块只画了进度/停止/卡片 ✗ —— **答案没人渲染** ✓，所以界面上看不到 ✓。
+                  数据在、形状对、就是差这一处渲染 ✓。
+                */}
+                {turn.terminal && turn.answer && turn.answer.message ? (
+                  <div data-testid="assistant-final">{turn.answer.message}</div>
+                ) : null}
                 {!turn.terminal ? (
                   <button
                     type="button"

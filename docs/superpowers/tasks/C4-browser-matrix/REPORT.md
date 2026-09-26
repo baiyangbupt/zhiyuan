@@ -355,3 +355,24 @@ fixture 开跑前清场 ✓；放行改"问闸门"不问 id ✓；失败产物�
 | `gateway/session_runtime.py` | 新增 `uses_v1` ✓（判据=有没有事件存储 ✓） | 给老 UI 发 V1 事件是噪声 ✗——compat 用例红了一次才想清 ✓ |
 
 **并且回滚了我两处"容忍式"的测试改动** ✓✓：分流之后它们没必要 ✓——**测试恢复严格** ✓（不是靠放宽断言过的 ✓）。
+
+### 5.12 **绿了** ✓✓✓（2026-09-26 收官）
+
+```text
+Running 3 tests using 1 worker
+  ✓  1 [contract] › access.contract.spec.ts:9  › 会话页面能打开，且全程不碰内网路径 (1.1s)
+  ✓  2 [contract] › access.contract.spec.ts:45 › 会话路由是**相对路径**，不是硬编码的域名 (7ms)
+  ✓  3 [contract] › conversation.contract.spec.ts:10 › 终态放行前：进度已显示、停止仍可点、答案还没有 (1.7s)
+  3 passed (9.1s)   （另有 setup 的登录态 ✓ 一并通过 ✓）
+```
+
+**最后补的那一格** ✓（前端渲染 ✓）：reducer 早把答案存进 `turn.answer.message` ✓
+（`conversationSession.mjs:101` ✓），而回合块只画进度/停止/卡片 ✗ —— **数据在、形状对、差一处渲染** ✓✓。
+在回合块里补一个带 `assistant-final` 的答案元素即通 ✓。
+
+**它的可信度来自哪里** ✓✓（这是这条用例最要紧的地方 ✓）：
+
+- "**放行前终态不许到**"不是"等得不够久" ✗ —— 是替身**没放行就真的不发终态** ✓✓，
+  而这条性质**有 4 条单测盯着** ✓（`test_browser_app_server.py` ✓：放行前无终态 ✓、
+  中断发真中断 ✓、超时**大声失败且用失败态收尾**（不毒栈 ✓）、注入的 turnId 被回显 ✓）；
+- 用时 **1.7 秒** ✓ 也佐证了这一点 ✓——它不是靠 timeout 变得"看起来没到" ✓。
