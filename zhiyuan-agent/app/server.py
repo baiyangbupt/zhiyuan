@@ -727,6 +727,18 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
         emit = _session_emitter(runtime, channel, key)
 
         async def work(msg=msg, turn_id=turn_id, tenant_id=tenant_id) -> None:
+            if msg.conversation_action is not None and runtime is not None:
+                # **确认/取消不挂在本轮上** ✓✗（理由见 `SessionRuntime.detach_work` ✓）：
+                # 那一段要活到"结果事件入流"为止 ✓，而客户端在这中间掉线是常态（F13 ✓）——
+                # 挂在回合里的话，掉线判 `turn_interrupted` ✗ 会把执行之后**发结果**的那一步一起带走 ✗，
+                # 事件流里就永远缺一条 `conversationAction.result` ✓，重连后卡片无从恢复 ✗
+                # （实测：工作区照样 0→3 ✓，卡却停在"待确认" ✓）。
+                runtime.detach_work(
+                    key,
+                    lambda: _run_action_work(gateway, msg, tenant_id, turn_id, emit, channel),
+                    label="conversation_action",
+                )
+                return
             result = await _run_native_turn(gateway, msg, tenant_id, turn_id, emit)
             await _emit_turn_terminal(
                 emit=emit, channel=channel, result=result, session_id=msg.session_id
@@ -912,6 +924,25 @@ async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -
         },
     })
     await channel.emit_frame(_native_reply_frame(result, session_id))
+
+
+async def _run_action_work(gateway, msg, tenant_id: str, turn_id: str, emit, channel) -> None:
+    """确认/取消的收尾：执行 + 终态发射 ✓——**独立于回合** ✓（见 `SessionRuntime.detach_work` ✓）。
+
+    兜底必须写在这里 ✗：整段被取消时 ✓，外面那层 `except` 根本轮不到 ✓；
+    而"取消"要原样往上抛 ✓（`CancelledError` 不是业务失败 ✗，吞掉会掩盖真正的取消语义 ✓）。
+    """
+    try:
+        result = await _run_native_turn(gateway, msg, tenant_id, turn_id, emit)
+        await _emit_turn_terminal(
+            emit=emit, channel=channel, result=result, session_id=msg.session_id
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "conversation action failed: session_id=%s turn_id=%s", msg.session_id, turn_id
+        )
 
 
 async def _run_native_turn(gateway, msg, tenant_id: str, turn_id: str, emit) -> dict:

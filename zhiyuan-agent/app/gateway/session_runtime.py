@@ -177,9 +177,43 @@ class SessionRuntime:
         self._active: dict[SessionKey, ActiveTurn] = {}
         self._channels: dict[SessionKey, ConnectionChannel] = {}
         self._tasks: dict[SessionKey, asyncio.Task[Any]] = {}
+        # 不随"某一轮/某条连接"走的活儿 ✓（见 `detach_work` ✓）：只保住引用 ✓，不参与回合互斥 ✗。
+        self._detached: set[asyncio.Task[Any]] = set()
         self._store = store
         self._interrupt_impl = interrupt_impl
         self._steer_impl = steer_impl
+
+    def detach_work(
+        self, key: SessionKey, work: Callable[[], Awaitable[Any]], *, label: str
+    ) -> None:
+        """把一段活儿挂到**会话**上，而不是挂到"当前这一轮/这条连接"上 ✓✗。
+
+        为什么必须有它 ✗✓（2026-09-27 真栈实测 ✓）：确认（`conversationAction`）那一段
+        本来就跑在**回合**里 ✓——浏览器一点确认就整页重连（F13 那条 ✓），这一轮会被判
+        `turn_interrupted` ✗ → 于是**执行早已出站**（Java 那侧照样落库 ✓、工作区从 0 前进到 3 ✓），
+        而网关这一侧"发结果"的那一步**被一起带走** ✗：事件流里一条 `conversationAction.result`
+        都没有 ✓，重连后卡片无从恢复 ✗——用户看到的是"点了确认，卡还停在待确认" ✓。
+
+        事务不该被取消（任务书口径 ✓），**结果事件也不该** ✓：这段活儿与连接死没死无关 ✓，
+        它发的事件照旧进事件存储 ✓（`ConnectionChannel.emit` 先入流再发帧 ✓），
+        重连时由游标补发 ✓。
+
+        与 `submit` 的分工 ✓：那个是**回合**（有互斥、有 busy 判定 ✓、可中断 ✓）；
+        这个是**动作收尾**（不可中断 ✓、不占回合位 ✗）——混进 `submit` 会让"确认"被
+        自己那一轮打断（就是上面那条 ✗）。
+        """
+        task = asyncio.create_task(work())
+        self._detached.add(task)
+
+        def _done(done: asyncio.Task[Any]) -> None:
+            self._detached.discard(done)
+            if done.cancelled():
+                return
+            error = done.exception()
+            if error is not None:
+                logger.warning("detached %s failed for %s: %r", label, key, error)
+
+        task.add_done_callback(_done)
 
     def attach_connection(self, key: SessionKey, channel: ConnectionChannel) -> None:
         """记住这个会话当前该往哪条连接推事件。
