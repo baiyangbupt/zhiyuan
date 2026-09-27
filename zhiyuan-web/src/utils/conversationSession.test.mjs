@@ -206,3 +206,74 @@ test('有摘要或实体或约束时才算有结构化理解', () => {
   assert.equal(hasStructuredUnderstanding({ entities: ['浙江大学'] }), true);
   assert.equal(hasStructuredUnderstanding({ constraints: ['学费≤10000'] }), true);
 });
+
+test('老信封的本地占位代际不挡住真代际（混流不该判换代）', () => {
+  // 手里那个代际只是老信封的**本地占位**（`local` ✓）时，真 V1 事件一到必须直接采纳，
+  // 不能判"换代"→ resync → 清空界面 ✓。
+  // 实测背景：失败回合总会带一条老信封兜底帧 ✓（网关有意两条都发 ✓），
+  // 于是每失败一次界面就被清一次 ✓，用户看到的是"回合块没了" ✓。
+  const withLocal = reduceConversation(
+    createConversationState('42'),
+    event({ streamEpoch: 'local', sequence: 3, type: 'recoverable.error', payload: { message: 'x' } }),
+  );
+  assert.equal(withLocal.streamEpoch, 'local');
+
+  const after = reduceConversation(
+    withLocal,
+    event({ streamEpoch: 'epoch-real', sequence: 40, type: 'tool.progress' }),
+  );
+
+  assert.equal(after.needsResync, false, '真代际到达不该判 resync');
+  assert.equal(after.streamEpoch, 'epoch-real');
+  assert.equal(after.lastSequence, 40, '采纳代际时要一并采纳序号');
+});
+
+test('两条本地占位之间照旧连续（同一条 lane 不该自我换代）', () => {
+  const first = reduceConversation(
+    createConversationState('42'),
+    event({ streamEpoch: 'local', sequence: 1, type: 'tool.progress' }),
+  );
+  const second = reduceConversation(
+    first,
+    event({ streamEpoch: 'local', sequence: 2, type: 'assistant.completed', payload: { message: 'x' } }),
+  );
+  assert.equal(second.needsResync, false);
+  assert.equal(second.lastSequence, 2);
+});
+
+test('真代际之间照旧判换代（这条不能放松）', () => {
+  const state = reduceConversation(
+    createConversationState('42'),
+    event({ streamEpoch: 'epoch-a', sequence: 5, type: 'tool.progress' }),
+  );
+  const after = reduceConversation(
+    state,
+    event({ streamEpoch: 'epoch-b', sequence: 6, type: 'tool.progress' }),
+  );
+  assert.equal(after.needsResync, true, '两条真时间线之间必须 resync');
+});
+
+test('真代际在手时，老信封的本地帧既不顶替也不判缺口', () => {
+  // 探针实测的顺序（F15 ✓）：V1 的 progress/error/completed 先到 ✓（真代际 ✓），
+  // 老信封的兜底帧**最后到** ✓ —— 它必须只折叠内容，不能碰代际与序号、更不能判 resync ✓。
+  const real = reduceConversation(
+    createConversationState('42'),
+    event({ streamEpoch: 'epoch-real', sequence: 60, type: 'turn.completed' }),
+  );
+  assert.equal(real.needsResync, false);
+
+  const after = reduceConversation(
+    real,
+    event({
+      streamEpoch: 'local',
+      sequence: 4,
+      type: 'recoverable.error',
+      payload: { message: '当前对话引擎暂时不可用，请稍后重试。' },
+    }),
+  );
+
+  assert.equal(after.needsResync, false, '本地帧不该把真时间线判成缺口');
+  assert.equal(after.streamEpoch, 'epoch-real', '代际不许被顶替');
+  assert.equal(after.lastSequence, 60, '序号不许回退');
+  assert.equal(after.turns.t.error.message, '当前对话引擎暂时不可用，请稍后重试。', '内容照常折叠');
+});

@@ -19,6 +19,7 @@ import {
   getFeedbackApi,
 } from '@/service/apis/sessionDetail';
 import { socketBase } from '@/utils/conversationSocket.mjs';
+import { cursorFromState } from '@/utils/conversationCursor.mjs';
 import style from './style.module.scss';
 import { TextSegment } from '@/interface/api/sessionDetail';
 import useAuthParams from '@/hooks/useAuthParams';
@@ -28,14 +29,17 @@ import {
   pendingClarifications,
   reduceConversation,
 } from '@/utils/conversationSession.mjs';
-import { toConversationEvent } from '@/utils/conversationEvents.mjs';
+import { isConversationV1Event, toConversationEvent } from '@/utils/conversationEvents.mjs';
 import { fetchWsTicketApi } from '@/service/apis/conversationAccess';
 import {
   buildClarificationAnswerFrame,
+  buildPendingConfirmationFrame,
   buildTurnInterruptFrame,
   buildTurnSteerFrame,
+  stableClientRequestId,
 } from '@/utils/conversationProtocol.mjs';
 import ClarificationCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ClarificationCard';
+import ProposalCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ProposalCard';
 import UnderstandingCard from '@/pageComponents/sessionDetailV2/ConversationEvents/UnderstandingCard';
 import { WebSocketMessage } from '@/hooks/websocket';
 import TypingAnimation from '@/components/generating/TypingAnimation';
@@ -307,6 +311,31 @@ const workspaceActionFallbackCopy = (contentObj: Record<string, any>) => {
     actionText: '查看更新',
   };
 };
+
+/**
+ * **动作回包按 `proposalRef` 找** ✓✓——不能只看**提案那个回合** ✗：
+ * 网关为"采纳/放弃"这动作**另起一轮** ✓（`conversationAction.result` 挂在新回合上 ✓），
+ * 而卡片画在提案那一轮里 ✓ → 只看本回合就永远是"待确认" ✓
+ *（实测：事件流里明明有 `actionStatus: "cancelled"` ✓，卡上还是"待确认" ✓）。
+ * 取**最后一条**匹配的 ✓（同一张卡可能先 applying 后 applied ✓）。
+ */
+function findActionResultFor(state: any, proposalRef?: string) {
+  if (!proposalRef) return undefined;
+  // **终态不许被迟到的失败盖掉** ✓✓（与 reducer 里"迟到的 applying 不能刷回终态"同一条精神 ✓）：
+  // 实测（F08 双击 ✓）：第一次点"采纳"→ claim → execute **只跑了一次** ✓ → `applied` ✓；
+  // 第二次点击的 claim 落在"已经执行完的 pending"上 ✗ → 回一条 `failed` ✗✓ ——
+  // 取"最后一条"就会把它显示成"未生效" ✗✓，而用户那次确认其实**成功了** ✓。
+  const terminal = new Set(['applied', 'cancelled', 'declined', 'expired']);
+  let found: { actionStatus?: string; proposalRef?: string } | undefined;
+  for (const candidate of Object.values(state?.turns || {}) as any[]) {
+    const result = candidate?.actionResult;
+    if (!result || String(result.proposalRef || '') !== String(proposalRef)) continue;
+    const status = String(result.actionStatus || '');
+    if (found && terminal.has(String(found.actionStatus || '')) && !terminal.has(status)) continue;
+    found = result;
+  }
+  return found;
+}
 
 const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) => {
   const {
@@ -648,11 +677,17 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     createConversationState(conversationSessionId),
   );
   const localSequenceRef = useRef(0);
+  // **续传游标** ✓：`(代际, 序号)`，只在页面还活着时有意义 ✓。
+  // 刻意**不落盘** ✗✓——刷新会清掉 reducer 状态、却清不掉存储 ✗：带着"我看过到 N"
+  // 的旧游标重连，服务端只会补一条尾巴 ✗，而页面其实什么状态都没有 ✗ →
+  // 在飞回合的前半段永远回不来 ✓（F10 要的正是"整回合恢复" ✓）。
+  const cursorRef = useRef<{ epoch: string; sequence: number } | null>(null);
 
   useEffect(() => {
     // 换会话就是换一条时间线：旧状态留着会让新会话页面上挂着上一个会话的答案。
     conversationStateRef.current = createConversationState(conversationSessionId);
     localSequenceRef.current = 0;
+    cursorRef.current = null; // 游标属于那条时间线，换会话就必须作废
     setConversationState(conversationStateRef.current);
   }, [conversationSessionId]);
 
@@ -670,16 +705,80 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
         ? conversationStateRef.current
         : createConversationState(event.sessionId);
     const next = reduceConversation(base, event);
+    // **帧 → 状态的可开关探针** ✓✓：这一层是"帧到了、界面却没建起来"这类问题的落点 ✓——
+    // 实测靠它一次点名了两处（老信封/V1 混流判换代 ✓、本地帧触发缺口 ✓）。
+    // 默认**关** ✓（每条帧一行会很吵 ✓）；在控制台执行
+    // `localStorage.setItem('zhiyuan.conversationTrace','1')` 再刷新即可开 ✓。
+    if (
+      typeof window !== 'undefined' &&
+      window.localStorage?.getItem('zhiyuan.conversationTrace') === '1'
+    ) {
+      console.log(
+        '[conv] ' +
+          JSON.stringify({
+          rawType: (frame as { type?: string })?.type,
+          isV1: isConversationV1Event(frame),
+          type: (event as { type?: string })?.type,
+          epoch: (event as { streamEpoch?: string })?.streamEpoch,
+          seq: (event as { sequence?: number })?.sequence,
+          stateSession: conversationStateRef.current.sessionId,
+          stateEpoch: conversationStateRef.current.streamEpoch,
+          stateSeq: conversationStateRef.current.lastSequence,
+          eventSession: (event as { sessionId?: string })?.sessionId,
+          applied: next !== base,
+          needsResync: (next as { needsResync?: boolean })?.needsResync,
+          turns: Object.keys((next as { turns?: object })?.turns || {}).length,
+          }),
+      );
+    }
     if (next === base) return event;
     conversationStateRef.current = next;
     setConversationState(next);
+    // 每次推进都跟着走 ✓：老信封（代际 `local`）拿不出游标 → 置空 ✓，
+    // 免得把就地编的本地序号当成真游标发出去 ✗（见 `conversationCursor.mjs` ✓）。
+    cursorRef.current = cursorFromState(next);
     if (next.needsResync) {
-      // 缺口/换代只在这里暴露一次：让用户看到一个"正在重新同步"的提示，
-      // 比默默少几条消息好——后者看起来像消息丢了，而用户无从判断。
-      console.warn('会话事件流需要重新同步');
+      // **这里以前只打一行 console.warn** ✗：用户看到的是"消息少了几条"，
+      // 而他不知道该不该刷新 ✓。现在真的做重同步 ✓（与 `session.resync` 那条路收尾一致 ✓）：
+      // **丢掉本地时间线** ✓（游标随之作废 ✓）、按消息历史整体对齐一次 ✓。
+      // 丢掉是安全的：已结束的回合本来就在消息历史里 ✓，只有"在飞的那一轮"需要事件流 ✓，
+      // 而它下一帧就会从新的基线重新建起来 ✓。
+      console.warn('会话事件流需要重新同步：丢弃本地时间线，改按消息历史重建');
+      conversationStateRef.current = createConversationState(conversationSessionId);
+      cursorRef.current = null;
+      setConversationState(conversationStateRef.current);
+      fetchLatestMessageList();
     }
     return event;
-  }, [conversationSessionId]);
+  }, [conversationSessionId, fetchLatestMessageList]);
+
+  // **提案的采纳/放弃** ✓：帧的形状**照既有那条** ✓（老的消息卡也是这么发的 ✓）——
+  // `inputType: pendingConfirmation` + `conversationAction.{confirm,cancel}_proposal` ✓
+  // + `expectedSourceVersion`（服务端据此判版本冲突 ✓，别用 DOM 里的号 ✗）
+  // + `intent: 'explicit'`（区分"用户点的"与"顺手点的" ✓）。
+  // **不新造协议** ✓：出站这一半 P2 那一轮就完整了 ✓，缺的只是把它接到 V1 的卡上 ✓。
+  const handleProposalDecision = useCallback(
+    async (
+      proposal: { proposalRef?: string; sourceVersion?: number } | undefined,
+      action: 'confirm' | 'cancel',
+    ) => {
+      const proposalRef = String(proposal?.proposalRef || '');
+      if (!proposalRef) return;
+      // **帧走纯函数** ✓（`conversationProtocol.mjs` ✓）——手拼过一次，结果是全静默 ✗✓：
+      // `content` 塞了对象 ✓，而 schema 要求**空串** ✗ → 服务端回"消息格式错误" ✓ 且不记日志 ✓。
+      await sendMessageRef.current?.(
+        buildPendingConfirmationFrame({
+          sessionId: conversationSessionId,
+          userId: String((routerParams as any)?.userId || ''),
+          action,
+          proposalRef,
+          sourceVersion: proposal?.sourceVersion,
+          clientRequestId: stableClientRequestId('proposal', proposalRef),
+        }),
+      );
+    },
+    [conversationSessionId, routerParams],
+  );
 
   const handleClarificationAnswer = useCallback(
     (requestId: string, answer: Record<string, unknown>, clientRequestId: string) => {
@@ -735,7 +834,19 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     if (!ticket) {
       throw new Error('ws_ticket_missing');
     }
-    return { ticket: String(ticket) };
+    // **续传游标挂在这里** ✓✓：`authenticate` 每次**连接尝试**都会被调一次 ✓
+    //（hook 里用 `new URLSearchParams(params)` 拼进 URL ✓），于是带上去的就是
+    // "连接那一刻"的游标 ✓。塞进 `websocketUrl` 反而会随每次渲染重算 ✗——
+    // URL 一变 hook 就断连重连，直接掉进重连循环 ✗。
+    // 没游标（刷新后 / 还没读到编号事件 / 走的是老信封）就**不带** ✓：
+    // 服务端按"没有游标"处理 → 补整个当前回合 ✓，而不是只补一条尾巴 ✗。
+    const params: Record<string, string> = { ticket: String(ticket) };
+    const cursor = cursorRef.current;
+    if (cursor) {
+      params.epoch = cursor.epoch;
+      params.since = String(cursor.sequence);
+    }
+    return params;
   }, [tenantId, botId, routerParams.chatSessionId]);
 
   const { sendMessage, disconnect, reconnect, isConnected } = useWebSocket(websocketUrl, {
@@ -1899,6 +2010,22 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                   }
                 />
                 {/*
+                  **提案卡** ✓✓（`proposal.preview` ✓）：事件早到了 ✓（网关算完预览 → 翻成合同形状 ✓），
+                  缺的一直是"没人画它" ✗——与 `assistant-final` / `turn-error` 同一个病 ✓。
+                  出站那一半**早就完整** ✓：确认/取消用的还是既有那条 `conversationAction` 帧 ✓
+                  （`confirm_proposal` / `cancel_proposal` + `expectedSourceVersion` + `intent: 'explicit'` ✓）。
+                */}
+                {turn.proposal ? (
+                  <ProposalCard
+                    proposal={turn.proposal}
+                    actionResult={findActionResultFor(
+                      conversationStateRef.current,
+                      turn.proposal.proposalRef,
+                    )}
+                    onDecide={(action) => handleProposalDecision(turn.proposal, action)}
+                  />
+                ) : null}
+                {/*
                   **把 V1 终态的答案画出来** ✓✓（C4 真栈追出来的最后一格 ✓）：
                   reducer 早把它存进 `turn.answer.message` 了 ✓（`conversationSession.mjs:101` ✓），
                   而这个回合块只画了进度/停止/卡片 ✗ —— **答案没人渲染** ✓，所以界面上看不到 ✓。
@@ -1906,6 +2033,22 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                 */}
                 {turn.terminal && turn.answer && turn.answer.message ? (
                   <div data-testid="assistant-final">{turn.answer.message}</div>
+                ) : null}
+                {/*
+                  **可恢复错误也要画出来** ✓✓——与上面那条一模一样的病 ✗：
+                  reducer 早把 `recoverable.error` 存进 `turn.error` 了 ✓
+                  （`conversationSession.mjs:113` ✓），而这里从来不渲染它 ✗ →
+                  模型输出坏掉的那一轮，用户那边**什么都没发生** ✗（实测：F15 整轮静默 ✓）。
+                  文案用服务端给的 `message` ✓；它缺了才退回一句通用话 ✓（**不许空着** ✗）。
+                */}
+                {turn.error ? (
+                  <div data-testid="turn-error">
+                    {/* 两种键都要认 ✓✓：V1 事件带 `message` ✓，而**同一条失败**在老信封那条路上
+                        带的是 `content` ✓——两条都会到（网关有意两条都发 ✓：老 UI 靠 reply ✓、
+                        新 UI 靠 V1 ✓），谁后到谁覆盖 ✓（实测：后到的老信封把文案覆盖成空 ✗，
+                        于是只剩兜底那句 ✓）。 */}
+                    {turn.error.message || turn.error.content || '本轮没有完成，请稍后重试'}
+                  </div>
                 ) : null}
                 {!turn.terminal ? (
                   <button

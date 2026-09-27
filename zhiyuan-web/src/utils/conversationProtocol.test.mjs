@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   buildClarificationAnswerFrame,
+  buildPendingConfirmationFrame,
   buildTurnInterruptFrame,
   buildTurnSteerFrame,
   stableClientRequestId,
@@ -77,4 +78,37 @@ test('缺会话或请求号时直接拒绝，不发出半个请求', () => {
 test('重发沿用同一个 clientRequestId', () => {
   // 换新的 id 重试，等于让服务端把同一次作答执行两次。
   assert.equal(stableClientRequestId('answer', 'q1'), stableClientRequestId('answer', 'q1'));
+});
+
+test('待采纳确认帧：content 必须是空串（服务端的 schema 就这么写）', () => {
+  // 这条钉的是**踩过的坑** ✓：手拼帧时把 `content` 塞成了对象 ✓，
+  // 而 `WSMessage.content` 是 `str` ✓ → 服务端拒收 ✓、**且不记日志** ✗✓
+  //（实测：点"放弃"什么都没发生 ✓，agent 日志里只有握手 ✓）。
+  const frame = buildPendingConfirmationFrame({
+    sessionId: '900047',
+    userId: '900002',
+    action: 'cancel',
+    proposalRef: 'ugp_1',
+    sourceVersion: 0,
+    clientRequestId: 'proposal-ugp_1',
+  });
+
+  assert.equal(frame.type, 'pendingConfirmation');
+  assert.equal(frame.content, ''); // ← 空串 ✓，不是对象 ✗
+  assert.equal(typeof frame.content, 'string');
+  assert.equal(frame.conversationAction.actionType, 'cancel_proposal');
+  assert.equal(frame.conversationAction.expectedSourceVersion, 0);
+  assert.equal(frame.conversationAction.intent, 'explicit');
+});
+
+test('采纳与放弃只差 actionType', () => {
+  const base = { sessionId: 's', userId: 'u', proposalRef: 'p', sourceVersion: 1 };
+  assert.equal(
+    buildPendingConfirmationFrame({ ...base, action: 'confirm' }).conversationAction.actionType,
+    'confirm_proposal',
+  );
+  assert.equal(
+    buildPendingConfirmationFrame({ ...base, action: 'cancel' }).conversationAction.actionType,
+    'cancel_proposal',
+  );
 });

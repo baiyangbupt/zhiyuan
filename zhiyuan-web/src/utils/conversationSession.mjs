@@ -11,6 +11,12 @@
  * 3. **终态只落一次**：重复的终态事件不产生第二次完成。
  */
 
+/**
+ * 老信封转换产物用的**本地占位代际** ✓——由 `conversationEvents.mjs` 生成 ✓，
+ * 字面量必须与那边一致 ✓（它不是一条时间线 ✓，只是"这条帧没有真编号"的标记 ✓）。
+ */
+export const LOCAL_EPOCH = 'local';
+
 export const EMPTY_STATE = Object.freeze({
   sessionId: '',
   streamEpoch: null,
@@ -147,6 +153,32 @@ export function reduceConversation(state, event) {
     // 采纳代际的同时也要采纳序号：不推进的话下一条正常事件会被当成"缺口"，
     // 于是首帧之后立刻永久 resync。
     return { ...adopted, lastSequence: event.sequence };
+  }
+  if (state.streamEpoch === LOCAL_EPOCH && event.streamEpoch !== LOCAL_EPOCH) {
+    // **手里那个代际只是本地占位时，真代际一到就直接采纳** ✓✓。
+    //
+    // 老信封转换产物用的是常量 `local`（`conversationEvents.mjs` ✓），它**不是**一条
+    // 时间线 ✓。把它当真代际去比对，就会变成"每次混流都换代"✗——而失败回合**总会**
+    // 带一条老信封兜底帧 ✓（网关有意两条都发 ✓：老 UI 靠 reply ✓、新 UI 靠 V1 ✓），
+    // 于是每失败一次就清一次界面 ✓✗，用户看到的是"回合块没了" ✓。
+    // A6 报告早就点过这个风险（"老信封路径需要与真代际分开命名空间 ✗，
+    // 否则一旦混流就会不断触发换代 resync" ✓）——这里就是那一步 ✓。
+    // 与首帧同一种处置 ✓：采纳真代际、不判换代 ✓（序号也一并采纳 ✓）。
+    const adopted = applyToTurn(
+      { ...state, streamEpoch: event.streamEpoch, lastSequence: 0 },
+      event,
+    );
+    return { ...adopted, lastSequence: event.sequence };
+  }
+  if (event.streamEpoch === LOCAL_EPOCH && state.streamEpoch !== LOCAL_EPOCH) {
+    // **本地占位不带时间线信息** ✓✓：手里已经是**真代际**时，这条老信封帧既不能顶替它 ✓、
+    // 也不能触发 resync ✗——它只是"这帧没有真编号"的标记 ✓。
+    // 实测（探针原文 ✓）：失败回合的老信封兜底帧**最后到** ✓ →
+    // `applied=true, needsResync=true` ✗ → 刚刚建好的回合块被判成缺口清掉 ✓，
+    // 用户看到的是"消息发出去了、回合没了" ✓。
+    // 所以：**照常折叠进回合**（内容该显示就显示 ✓），但代际与序号**一动不动** ✗、
+    // 缺口判断也**不参与** ✓。
+    return applyToTurn(state, event);
   }
   if (event.streamEpoch !== state.streamEpoch) {
     return { ...state, needsResync: true };

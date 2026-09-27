@@ -60,4 +60,36 @@ export const buildTurnSteerFrame = ({ sessionId, turnId, text, clientRequestId }
 });
 
 /** 稳定的重发 id：同一次作答重试必须沿用同一个 id，换新的等于答两次。 */
+/**
+ * **待采纳内容的采纳/放弃** ✓（老的消息卡与新的提案卡共用这一帧 ✓）。
+ *
+ * 两个细节必须照做 ✓（判据在服务端的 schema：`app/schemas/ws.py` 的 `WSMessage` ✓）：
+ * ① `content` **必须是空串** ✗✓——schema 里它是 `content: str` ✓，塞对象会被拒 ✓；
+ *    而"被拒"的表现是服务端回一条 `消息格式错误` ✓、**且不记日志** ✗✓
+ *    （实测：点了"放弃"什么都没发生 ✓，agent 日志里只有握手 ✓——埋在组件里只能靠人眼复核 ✓，
+ *     这正是本模块开头那句"出站帧抽成纯函数"要防的事 ✓）。
+ * ② `type` 取 `pendingConfirmation` ✓（服务端 Literal 里有它 ✓；默认的 `chat` 语义不对 ✗）。
+ */
+export const buildPendingConfirmationFrame = ({
+  sessionId,
+  userId,
+  action,
+  proposalRef,
+  sourceVersion,
+  clientRequestId,
+}) => ({
+  type: 'pendingConfirmation',
+  sessionId,
+  userId,
+  content: '',
+  inputType: 'pendingConfirmation',
+  conversationAction: {
+    actionType: action === 'confirm' ? 'confirm_proposal' : 'cancel_proposal',
+    proposalRef,
+    expectedSourceVersion: sourceVersion,
+    intent: 'explicit',
+  },
+  ...(clientRequestId ? { clientRequestId } : {}),
+});
+
 export const stableClientRequestId = (kind, key) => `${kind}-${key}`;

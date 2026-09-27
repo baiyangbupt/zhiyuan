@@ -227,13 +227,20 @@ export const ClarificationCard: React.FC<ClarificationCardProps> = ({
                       {question.isOther ? <Radio value={OTHER_OPTION}>其他（自己填）</Radio> : null}
                     </Space>
                   </Radio.Group>
-                  {question.isOther && picked.choice === OTHER_OPTION ? (
+                  {question.isOther ? (
                     <Input
                       disabled={locked}
                       maxLength={2000}
                       value={picked.other}
                       onChange={event =>
-                        setChoices(prev => ({ ...prev, [question.id]: { ...picked, other: event.target.value } }))
+                        // **在框里打字就等于"自己填"** ✓：取值一并切到 OTHER_OPTION ✓——
+                        // 否则会出现"有文本、但没选任何一项"这个中间态 ✗，
+                        // 提交时被判成空答案 ✗（设计口径：choice 每题 **radio + 自由输入** ✓，
+                        // 自由输入是**常显**的 ✓，不再藏在"其他"单选项后面 ✓）。
+                        setChoices(prev => ({
+                          ...prev,
+                          [question.id]: { choice: OTHER_OPTION, other: event.target.value },
+                        }))
                       }
                       onKeyDown={onKeyDown}
                       placeholder="请输入"
