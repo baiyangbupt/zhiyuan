@@ -770,8 +770,12 @@ test('F13 applying 时断线：事务不被取消，重连后读得到最终结�
     .getByRole('paragraph')
     .filter({ hasText: '我把这个要求整理成了提案，确认后生效。' })
     .count();
+  // 再钻一层 ✓：数**回合块**（`[data-turn-id]` ✓）——分清"回合被重复落" ✗ 与"一个回合里画两遍" ✗。
+  const turnBlocks = await page.locator('[data-turn-id]').count();
+  const historyItems = await page.locator('[data-message-id], [class*="messageItem"]').count();
   console.log(
-    `[f13] 渲染份数（只数段落 ✓）：用户那句 ${userMsgCopies} 份、助手那句 ${assistantCopies} 份（干净会话下各应为 1 ✓）`,
+    `[f13] 渲染份数（只数段落 ✓）：用户那句 ${userMsgCopies} 份、助手那句 ${assistantCopies} 份（干净会话下各应为 1 ✓）；` +
+      `回合块 ${turnBlocks} 个、历史条目 ${historyItems} 个`,
   );
   console.log(
     `[f13] before: version=${String(before.version)} phase=${String(before.phase)}；` +
