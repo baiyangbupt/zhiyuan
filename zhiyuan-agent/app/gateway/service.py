@@ -619,7 +619,9 @@ class GatewayService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("snapshot refresh failed (session=%s): %s", session_id, exc)
             return
-        self._store_snapshot(key, fresh)
+        # **权威写入** ✓：刚刚那次提案/动作已经把服务端状态改了 ✓，重读回来的这份就是事实 ✓
+        # ——哪怕它的版本比缓存里那张小（reset / supersede 之后本来就该小 ✓）。
+        self._store_snapshot(key, fresh, authoritative=True)
         self._working_sets[key] = ConversationWorkingSet.from_snapshot(fresh)
 
     async def _restart_runtime(self) -> None:
@@ -670,14 +672,24 @@ class GatewayService:
         self._working_sets[key] = ConversationWorkingSet.from_snapshot(snapshot)
         return snapshot
 
-    def _store_snapshot(self, key: SessionKey, snapshot: ConversationTurnSnapshot) -> bool:
+    def _store_snapshot(
+        self, key: SessionKey, snapshot: ConversationTurnSnapshot, *, authoritative: bool = False
+    ) -> bool:
         """写入快照缓存，**按版本淘汰**：不比缓存旧的那份才写得进去。
 
         迟到的旧快照（重放、并发回合、后端回滚）如果直接覆盖，用户会看到
         "东西自己变回去了"，而链路上没有任何迹象。返回是否真的写入。
+
+        `authoritative=True` 时**跳过淘汰**：这是"我们自己刚改了状态、刚重读回来"的那份 ✓
+        （见 `_refresh_snapshot_cache` ✓）。为什么必须能跳过 ✗✓：版本**会合法地往回走** ✗——
+        会话被 reset（待确认与规划状态清掉 ✓）或被后一次预览 supersede 之后 ✓，
+        读回来的版本比缓存里那张**更小** ✓，而它才是对的 ✓。不跳过的后果实测过 ✓：
+        提案已经落库（pending 建出来了 ✓）、缓存却钉在旧快照上（`activeProposal` 已清 ✗）→
+        **提案卡根本不出现** ✗，而报错落在"卡要进已生效"上 ✓，看着像写链坏了 ✗
+        （2026-09-27：F08 在"同一条会话被重复使用"时假红 ✓，换新盐即好 ✗——那正是这个守卫在作祟 ✓）。
         """
         cached = self._snapshots.get(key)
-        if cached is not None:
+        if cached is not None and not authoritative:
             try:
                 if int(snapshot.snapshot_version) < int(cached.snapshot_version):
                     return False
