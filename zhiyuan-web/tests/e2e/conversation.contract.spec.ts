@@ -663,6 +663,104 @@ test('F09 版本冲突：旧卡确认被拒，且不自动确认新预览', asyn
   expect(after.version, '被拒的确认不许推进正式版本 ✓').toBe(before.version);
 });
 
+// **F13：applying 时断线** ✓（任务书原文："**不取消已提交事务**；**查原 operation 恢复最终结果**" ✓）。
+//
+// 先在真栈上把行为探明（2026-09-27 ✓，纯 inner 接口、不碰浏览器 ✓）：
+//   claim → `applying` ✓；断 8 秒后仍是 `applying` ✓（**事务没被取消** ✓）；
+//   拿**同一个 operationId + claimToken** 重放 → `code 0 / resultPlanVersion 3 / postcondition.satisfied=true` ✓✓；
+//   再重放一次 → 工作区 3→3 ✓（**不双写** ✓）。
+// 探针顺带露出的一条 ✗：**没人回写时 pending 会一直停在 `applying`** ✗（我当客户端时跳过了
+// `pending/resolve(complete)` ✓）——而 `applying` 正是"重复确认"的判定依据 ✓，所以这一格必须有人兜 ✓。
+//
+// 浏览器这一侧的走法 ✓：点确认 → **立刻整页重连**（掉 WS ✓）——认领/执行/回写都在**网关**那侧跑 ✓，
+// 掉线不该影响它 ✗。重连后要能读到**最终结果** ✓：
+//   ① 正式内容前进了 ✓（事务没被取消 ✓）；② 再重连一次，版本**不动** ✓（没有第二次写 ✓）；
+//   ③ 卡要能显示终态 ✓（这一条是本用例真正的靶子 ✓：重连后状态是**重建**出来的 ✓）。
+//
+// **本用例当前是红的 ✗（记档不掩盖 ✓）**，2026-09-27 实测读数与定位 ✓：
+//   `[f13] before: version=0 phase=candidate_generated；after: version=3 phase=reviewed；settled: version=3` ✓
+//   ——①②都过 ✓，只有 ③ 红 ✗。**定位**：四条会话的事件流里 F07/F08/F09 各有一条
+//   `conversationAction.result` ✓（`redis XRANGE conv:{1:<sid>}:stream` ✓），**F13 那条一条都没有** ✗
+//   ——掉线把网关"**发结果**"那一步带走了 ✗（事务在 Java 侧照旧完成 ✓，所以工作区照样前进 ✓），
+//   于是结果既没实时送达 ✓、也没进事件流 ✓，重连后**无从恢复** ✗。
+//   要修的是"结果事件必须与连接死没死无关" ✓（执行/发结果不随 socket 取消 ✓），属 C 线 ✓。
+test('F13 applying 时断线：事务不被取消，重连后读得到最终结果', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  await runtimeGate.setScenario('proposal');
+
+  const sessionId =
+    new URL(sessionUrl, 'http://placeholder').searchParams.get('chatSessionId') || '';
+  const backend = process.env.ZHIYUAN_E2E_BACKEND_ORIGIN || 'http://127.0.0.1:18290';
+  const readState = async () => {
+    const response = await page.request.get(
+      `${backend}/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=${sessionId}`,
+    );
+    const body = (await response.json().catch(() => null)) as { data?: Record<string, unknown> } | null;
+    return body?.data || {};
+  };
+
+  await runtimeGate.resetSessionState(sessionId);
+  await runtimeGate.seedVolunteerData(sessionId);
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  const before = await readState();
+
+  await page.getByTestId('chat-input').fill('帮我补足到 80 个志愿');
+  await page.getByTestId('chat-send').click();
+  await expect(
+    page.locator('[data-turn-id]').last().getByTestId('turn-progress'),
+  ).toContainText('历年录取', { timeout: 20_000 });
+  await runtimeGate.releaseAllPending();
+
+  const card = page.getByTestId('proposal-card');
+  await expect(card.getByTestId('proposal-status')).toContainText('待确认', { timeout: 20_000 });
+
+  // **点完立刻掉线** ✓：点击这一帧已经出站 ✓，随后的整页导航把 WS 掐掉 ✓——
+  // 网关那侧的 claim→execute→回写不受影响 ✓（它不靠浏览器 ✓）。
+  await card.getByTestId('proposal-confirm').click();
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+
+  // ① 事务没被取消 ✓：等正式内容前进（重连后服务端仍在把它做完 ✓）。
+  await expect
+    .poll(async () => String((await readState()).version ?? ''), {
+      message: '断线不许取消已提交的事务 ✓（正式版本必须前进 ✓）',
+      timeout: 30_000,
+    })
+    .not.toBe(String(before.version ?? ''));
+  const after = await readState();
+
+  // ② 再重连一次：版本不动 ✓（同一条 operation 不许写第二次 ✓）。
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  // **先确认"人还在本会话里"** ✗✓：重连后如果页面被带去了别的会话 ✓，
+  // 第 ③ 条会红得毫无道理 ✗（实测就撞到过：快照里是**别的会话**的内容 ✓）——先钉住这一条 ✓。
+  await expect(
+    page.getByText('帮我补足到 80 个志愿').first(),
+    '重连之后必须还停在本会话 ✓（本用例只发过这一句 ✓）',
+  ).toBeVisible({ timeout: 20_000 });
+  const settled = await readState();
+
+  console.log(
+    `[f13] before: version=${String(before.version)} phase=${String(before.phase)}；` +
+      `after: version=${String(after.version)} phase=${String(after.phase)}；` +
+      `settled: version=${String(settled.version)} phase=${String(settled.phase)}`,
+  );
+  expect(String(settled.version), '断线重连不许把同一条命令写两遍 ✓').toBe(String(after.version));
+
+  // ③ 卡要显示终态 ✓（重连后状态是重建的 ✓——这条红了就是"查原 operation 恢复最终结果"这一格缺 ✓）。
+  await expect(
+    page.getByTestId('proposal-status').first(),
+    '重连后卡要能读到最终结果 ✓（"已生效"那一档 ✓）',
+  ).toContainText(/已生效|已采纳/, { timeout: 30_000 });
+});
+
 // **F02：歧义 → 原生卡** ✓（任务书原文："选项+自由输入；**原 request 回答继续同 Turn**" ✓）。
 //
 // 靠**场景表**驱动 ✓✓：先把本 run 的场景设成 `clarification` ✓ → 替身这一轮会先发一次
