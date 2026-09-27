@@ -64,8 +64,16 @@
 | 900032 | **0** ✓ | `active`, revision 1 ✓ | F09 冲突被拒 → 不产生写 ✓ |
 | 900035 | **0** ✓ | `active`, revision 1 ✓ | F07 后半取消 → 不产生写 ✓ |
 
+**P2 待做 ② 关账** ✓✓（"写工具面接线"✗ —— 2026-09-28 核实：**已经做过了，且口径已改** ✓）：
+`composition.py:30` 的 `MCP_ENV_VARS` 已含 `MCP_MODE` ✓（透传 ✓）、`composition.py:191-195` 的
+**一致性检查**在位 ✓（`gateway mode … expects MCP_MODE=…` ✓）、`service.py:468` 写明
+"`codex_write` 与 readonly 的差别**不在模型能调什么**，而在**确认链是否活着**" ✓✓
+——所以"写模式要开的是确认链，不是给模型一把写枪"这句结论已经落到代码里 ✓，
+**不需要**再给 MCP 接写工具 ✗。唯一残留：`MCP_WRITE_TOOLS_ENABLED` / `McpConfig.write_tools_enabled`
+**没有任何读者** ✗（启动脚本仍传 `=false` ✓），已在 `config.py` 就地标注"开与不开行为一样" ✗✓。
+
 待办（不属于本线）：`test_dialog_quality_gate` 那 94 个缺文件 ✗；"库里 2 条却渲染 8 份" ✗ 未定。
-分支：`wip/2026-09-28-p2-write-loop-green` ✓（已推 origin ✓，`develop` 之上 28 个提交 ✓）。
+分支：`wip/2026-09-28-p2-write-loop-green` ✓（已推 origin ✓，`develop` 之上 30 个提交 ✓）。
 
 ## 2026-09-23 事故与恢复：`app/gateway/service.py` 被误覆盖
 
