@@ -760,22 +760,32 @@ test('F13 applying 时断线：事务不被取消，重连后读得到最终结�
   // 页面上它出现 >1 份就是**重复渲染** ✓。查的是"库里 2 条却渲染 8 份"那条未定项 ✗：
   // 那条现象出在**修前**的失败页面上（三次整页加载 ✓），而今天改的正是"快照/重放"那条路 ✓，
   // 所以先量一次现在的数 ✓，别凭印象说它没了 ✗。
-  // **只数段落节点** ✗✓：`getByText` 会把**父容器**一起算进来 ✓（实测：1 个 `p` + 2 层祖先 = 3 ✓，
-  // 差点把"嵌套"读成"重复渲染" ✗）——所以按 role=paragraph 数 ✓。
-  const userMsgCopies = await page
-    .getByRole('paragraph')
-    .filter({ hasText: '帮我补足到 80 个志愿' })
-    .count();
-  const assistantCopies = await page
-    .getByRole('paragraph')
+  // **量法要先稳** ✗✓（2026-09-28 三组数对不上的教训 ✓）：
+  //   · **只数段落**（`getByText` 会把父容器算进来 ✓，1 个 p + 2 层祖先 = 3 ✗）；
+  //   · **等到数量连续两次相同**再读 ✓（最后一次 goto 之后，历史拉取与事件补发还在赛跑 ✓，
+  //     先前量到的其实是中间态 ✗）；单次最多等 ~6 秒 ✓，不挂 ✓。
+  const paragraphs = page.getByRole('paragraph');
+  const settle = async (): Promise<number> => {
+    let last = -1;
+    for (let i = 0; i < 24; i += 1) {
+      const now = await paragraphs.count();
+      if (now === last) return now;
+      last = now;
+      await page.waitForTimeout(250);
+    }
+    return last;
+  };
+  const paraTotal = await settle();
+  const userMsgCopies = await paragraphs.filter({ hasText: '帮我补足到 80 个志愿' }).count();
+  const assistantCopies = await paragraphs
     .filter({ hasText: '我把这个要求整理成了提案，确认后生效。' })
     .count();
-  // 再钻一层 ✓：数**回合块**（`[data-turn-id]` ✓）——分清"回合被重复落" ✗ 与"一个回合里画两遍" ✗。
   const turnBlocks = await page.locator('[data-turn-id]').count();
-  const historyItems = await page.locator('[data-message-id], [class*="messageItem"]').count();
+  // 把**顺序**也打出来 ✓：同一句连着出现 = 重复 ✓；和别的句子交替 = 可能只是合法的重复发言 ✓。
+  const tail = (await paragraphs.allTextContents()).slice(-6).map(t => t.slice(0, 14));
   console.log(
-    `[f13] 渲染份数（只数段落 ✓）：用户那句 ${userMsgCopies} 份、助手那句 ${assistantCopies} 份（干净会话下各应为 1 ✓）；` +
-      `回合块 ${turnBlocks} 个、历史条目 ${historyItems} 个`,
+    `[f13] 稳定后：段落共 ${paraTotal} 个；用户那句 ${userMsgCopies} 份、助手那句 ${assistantCopies} 份` +
+      `（干净会话下各应为 1 ✓）；回合块 ${turnBlocks} 个；末尾顺序 ${JSON.stringify(tail)}`,
   );
   console.log(
     `[f13] before: version=${String(before.version)} phase=${String(before.phase)}；` +
