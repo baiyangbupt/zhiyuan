@@ -178,6 +178,11 @@ function sessionIdFor(baseId: number, title: string): number {
   // 同一条会话被反复试会把状态写脏 ✓（实测：pending=1 而快照=0 ✓，两个计数器对不上 ✓，
   // 于是**同一个守门值不可能同时成立** ✗）。要"干净会话"就得换一条 ✓。
   // 默认空 ✓（不加盐 = 原来的行为 ✓）；跑需要干净状态的用例时把它设成 run id 之类 ✓。
+  //
+  // **重复跑必须换值** ✗✓（2026-09-27 实测 ✓）：同一套盐跑第二遍 → 第二/三条用例拿到**用过的会话** ✓
+  //（池子只有 32 格 ✓，加盐也只是在里面轮转 ✗）→ 症状是"服务端 pending 建出来了 ✓、刷新后的快照却没带
+  // activeProposal ✗ → 提案卡不出现 ✓"，报错却落在"卡要进已生效"上 ✗，看着像写链坏了 ✗。
+  // 所以每次调用给一个**唯一**值 ✓（如 `<run-id>-<时间戳>` ✓），别用不会变的东西 ✗。
   const salt = process.env.ZHIYUAN_E2E_SESSION_SALT || '';
   for (const char of salt) hash = (hash * 31 + (char.codePointAt(0) || 0)) >>> 0;
   for (let step = 0; step < SESSION_POOL_SIZE; step += 1) {

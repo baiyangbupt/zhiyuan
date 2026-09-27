@@ -42,7 +42,7 @@ export default defineConfig({
     {
       name: 'contract',
       testMatch: '**/*.contract.spec.ts',
-      grepInvert: /F07 后半|F08/,
+      grepInvert: /F07 后半|F08|F09/,
       use: { storageState: process.env.ZHIYUAN_E2E_AUTH_STATE || undefined },
     },
     // **需要 `codex_write` 栈的用例** ✓（当前只有 F07 后半那条 ✓——起栈时要
@@ -53,7 +53,7 @@ export default defineConfig({
     {
       name: 'write',
       testMatch: '**/*.contract.spec.ts',
-      grep: /F07 后半|F08/,
+      grep: /F07 后半|F08|F09/,
       use: { storageState: process.env.ZHIYUAN_E2E_AUTH_STATE || undefined },
     },
     // 真实栈：同一套栈，但换真实 Codex 与真实（或经批准的隔离）上游 ✓。

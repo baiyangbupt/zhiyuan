@@ -443,18 +443,13 @@ test('F07 提案草稿：模型产出能过契约，且这一轮正常收尾', a
   await expect(card.getByTestId('proposal-summary')).toContainText('80');
 });
 
-// **F07/F08/F09/F13（写路径）还没成用例** ✗——它们的**地基**已经就位 ✓：
-//   · 契约栈可按 run 起在 `codex_write`（见 `scripts/start-codex-local.sh` 的 `CODEX_LOCAL_GATEWAY_MODE` ✓）；
-//   · 替身会发形状照 `contracts.py` 的 `proposalRequest`（场景 `proposal` ✓）；
-//   · 控制服务有**场景参数**通道 ✓（替身拿不到的数据由测试喂 ✓）。
-// 还差两件 ✓（都不是"再写个断言"能解决的 ✗）：
-//   1. **喂守门值**：`sourceVersionGuard` = 工作区状态的 `data.version` ✓（实测该字段存在 ✓：
-//      `/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=…` ✓ →
-//      `{"data":{"…","version":0,…}}` ✓）；而那台会话是 `phase: profile_ready` ✓——
-//      **成功提案需要先有候选池/方案** ✗（与 P2 报告第九轮那条一致 ✓），所以这条用例要**多轮铺垫** ✓；
-//   2. **前端能画提案卡** ✗（含确认/取消按钮 ✓，`conversationAction` 出站已存在 ✓）——
-//      P2 报告第九轮的原话就是"仅剩前端按真实结果更新确认卡片需浏览器" ✓。
-// 两件都被**记档** ✓，不在这里留一条半截用例假装覆盖 ✗（那正是本仓反复强调的 ✗）。
+// **F07/F08/F09/F13（写路径）** ✓——**地基**（2026-09-26 记的那两件 ✓）**都已落地** ✓✓：
+//   1. **喂守门值 → 已解** ✓：现在由 `seedVolunteerData` 铺**志愿数据 + 同源的 `userScoreDetail`** ✓
+//      （见 `tests/fixtures/codex/browser_runtime_control.py` ✓），提案编译拿得到候选池 ✓，
+//      `sourceVersionGuard` 实测 0 且与工作区 `version` 相等 ✓；
+//   2. **前端提案卡 → 已落地** ✓（`ProposalCard` ✓：待确认 / 已生效 / 未生效 / 已放弃 ✓）。
+// 已成的用例：**F07 后半** ✓、**F08** ✓、**F09** ✓；**F13（applying 时断线）仍未成用例** ✗，
+// 它要的是"断线后按 operationId 查回最终结果" ✓——先在真栈上探明行为，再落用例 ✓（不写半截 ✗）。
 
 // **F07 后半：放弃提案** ✓（任务书原文："调整与取消 → diff 准确；**取消不改变正式内容**；
 // active Pending 终止" ✓）。
@@ -591,6 +586,81 @@ test('F08 确认：双击不双写，且 applied 后读得到 workspace', async 
   );
   expect(after.version, '采纳之后正式版本必须前进 ✓').not.toBe(before.version);
   expect(after.phase, '工作区阶段要推进到"有方案"那一档 ✓').not.toBe(before.phase);
+});
+
+// **F09：版本冲突** ✓（任务书原文："`stale_state`；**原 Proposal 不能重用**；**不能自动确认新预览**" ✓）。
+//
+// 冲突怎么造 ✓✓：**同一条会话连开两轮**——第二轮编译会按 supersede 规则把第一轮那条待确认
+// 标掉 ✓（Java 原话"请使用最新预览" ✓）。此时在**第一张卡**上点确认 ✓，服务端必须拒 ✓。
+//
+// 断什么（都落在用户看得见的东西上 ✓）：
+//   ① 没有任何卡进"已生效" ✓——旧卡不能被重用 ✓、新预览**更不能**被顺手自动确认 ✗（那是替用户做决定 ✓）；
+//   ② 正式内容不前进 ✓（被拒的确认不许写 ✓）。
+// 写法上**不依赖卡的张数** ✓：supersede 之后前端可能把旧卡收起来 ✗，所以断言"没有卡进已生效" ✓，
+// 而不是"第几张卡是什么" ✗。
+test('F09 版本冲突：旧卡确认被拒，且不自动确认新预览', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  await runtimeGate.setScenario('proposal');
+
+  const sessionId =
+    new URL(sessionUrl, 'http://placeholder').searchParams.get('chatSessionId') || '';
+  const backend = process.env.ZHIYUAN_E2E_BACKEND_ORIGIN || 'http://127.0.0.1:18290';
+  const readState = async () => {
+    const response = await page.request.get(
+      `${backend}/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=${sessionId}`,
+    );
+    const body = (await response.json().catch(() => null)) as { data?: Record<string, unknown> } | null;
+    return body?.data || {};
+  };
+
+  await runtimeGate.resetSessionState(sessionId);
+  await runtimeGate.seedVolunteerData(sessionId);
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  const before = await readState();
+
+  // 一轮：发消息 → 等进度 → 放行（放行必须等进度出现 ✓，理由同 F07 ✓）。
+  const sendAndSettle = async (text: string) => {
+    await page.getByTestId('chat-input').fill(text);
+    await page.getByTestId('chat-send').click();
+    await expect(
+      page.locator('[data-turn-id]').last().getByTestId('turn-progress'),
+    ).toContainText('历年录取', { timeout: 20_000 });
+    await runtimeGate.releaseAllPending();
+  };
+
+  await sendAndSettle('帮我补足到 80 个志愿');
+  await expect(
+    page.getByTestId('proposal-status').first(),
+    '第一轮要先出"待确认" ✓（没有它就没有"旧卡"可言 ✓）',
+  ).toContainText('待确认', { timeout: 20_000 });
+
+  // 二轮：同一条会话再开一轮 → 第一轮那条待确认被取代 ✓（这就是 F09 要的"版本已变" ✓）。
+  await sendAndSettle('再帮我补足到 80 个志愿');
+  await expect(
+    page.getByTestId('proposal-status').last(),
+    '第二轮也要出"待确认" ✓（新预览是"不能被自动确认"的那一个 ✓）',
+  ).toContainText('待确认', { timeout: 20_000 });
+
+  // 在**第一张卡**上点确认 ✓：被取代的那条必须落回"未生效"这一档 ✓。
+  await page.getByTestId('proposal-confirm').first().click();
+  await expect(
+    page.getByTestId('proposal-status').filter({ hasText: /已生效|已采纳/ }),
+    '冲突被拒时**任何**卡都不许进"已生效" ✓✓（旧卡不能重用 ✓ + 新预览不许被自动确认 ✗）',
+  ).toHaveCount(0, { timeout: 20_000 });
+
+  const after = await readState();
+  console.log(
+    `[f09] before: version=${String(before.version)} phase=${String(before.phase)}；` +
+      `after: version=${String(after.version)} phase=${String(after.phase)}`,
+  );
+  expect(after.version, '被拒的确认不许推进正式版本 ✓').toBe(before.version);
 });
 
 // **F02：歧义 → 原生卡** ✓（任务书原文："选项+自由输入；**原 request 回答继续同 Turn**" ✓）。
