@@ -54,7 +54,18 @@
    → 刷新被拒 → 缓存钉在旧快照 → **提案卡不出现** ✗）。A/B：同一个盐连跑两遍，
    修前 4 passed → **2 failed（F08+F13）** ✗，修后 **4 passed → 4 passed** ✓✓。
 
+**库计数证据** ✓✓（P2 任务书第 ③ 条要的那一层 ✓；`assistant_planning_pending_command` ✓，
+`operation_id` 上**有唯一键** ✓，所以"一次操作一行"是结构保证 ✓）。取最近一次写路径 4 条用例各自的会话 ✓：
+
+| 会话 | `apply_plan_change_proposal` 行数 | 待确认状态 | 用例 |
+|---|---|---|---|
+| 900024 | **1** ✓ | `applied`, revision 3 ✓ | F08 双击 → **一次写** ✓ |
+| 900034 | **1** ✓ | `applied`, revision 3 ✓ | F13 断线重连 → **没有第二次写** ✓ |
+| 900032 | **0** ✓ | `active`, revision 1 ✓ | F09 冲突被拒 → 不产生写 ✓ |
+| 900035 | **0** ✓ | `active`, revision 1 ✓ | F07 后半取消 → 不产生写 ✓ |
+
 待办（不属于本线）：`test_dialog_quality_gate` 那 94 个缺文件 ✗；"库里 2 条却渲染 8 份" ✗ 未定。
+分支：`wip/2026-09-28-p2-write-loop-green` ✓（已推 origin ✓，`develop` 之上 28 个提交 ✓）。
 
 ## 2026-09-23 事故与恢复：`app/gateway/service.py` 被误覆盖
 
