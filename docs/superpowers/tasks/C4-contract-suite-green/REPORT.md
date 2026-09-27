@@ -114,6 +114,44 @@ env ZHIYUAN_E2E_ORIGIN=http://127.0.0.1:3201 \
 cat /tmp/codex-fake-runtime.log
 ```
 
+### 六之二、写路径那一份怎么跑（`--project write`）＋ 会话盐怎么用
+
+写路径四条（F07 后半 / F08 / F09 / F13）**要 `codex_write` 栈** ✗✓：起栈时多给一个
+`CODEX_LOCAL_GATEWAY_MODE=codex_write` ✓。默认 `codex_readonly` 时确认链**不在这台实例上活着** ✗，
+报错会落在"卡要进已生效"上 ✓ —— 看着像写链坏了 ✗，先看栈的模式 ✓。
+
+```bash
+CODEX_LOCAL_GATEWAY_MODE=codex_write \
+  bash /root/dev/zhiyuan/scripts/start-codex-contract.sh --run-id <RUN_ID>
+bash /root/dev/zhiyuan/scripts/inject-codex-e2e-sms-code.sh 13000000002 498921
+env ZHIYUAN_E2E_ORIGIN=http://127.0.0.1:3201 \
+    ZHIYUAN_E2E_SESSION_URL='/sessionDetailV2?chatSessionId=900047&userId=900002&page=1&pageSize=10' \
+    ZHIYUAN_E2E_SESSION_SALT=<每次调用都不同的值> \
+    ZHIYUAN_E2E_RUN_ID=<RUN_ID> ZHIYUAN_E2E_MOBILE=13000000002 ZHIYUAN_E2E_SMS_CODE=498921 \
+    bash /root/dev/zhiyuan/scripts/run-codex-e2e-in-container.sh --project write
+```
+
+**`ZHIYUAN_E2E_SESSION_SALT` 是什么**：不是产品功能 ✗，是**夹具的开关** ✓。
+`fixtures.ts` 的 `sessionUrl` **不看 URL 里的 chatSessionId** ✗，而是按**用例标题**派生一条 ✓，
+盐被折进**同一个滚动哈希** ✓（`fixtures.ts:186` ✓）：**同标题 + 同盐 → 同一条会话** ✓，
+**盐一变 → 这一轮所有用例换一套会话** ✓。默认空串 ✓（= 原行为 ✓）。runner 只**透传**它 ✓
+（`run-codex-e2e-in-container.sh:116` ✓），**没人给默认值** ✗ —— 设不设是调用方的事 ✓。
+
+**三条规矩**（都是踩出来的 ✓）：
+
+1. **基准必须是池顶 `900047`** ✓：派生只往**下**走 32 格 ✓（`SESSION_POOL_SIZE = 32` ✓），
+   而池子只有 `900003–900047` ✓ —— 基准给低了就会派到池外 ✗，症状是"**页面弹回登录页**" ✗
+   （后端日志 `conversation access denied: session_forbidden` ✓）。
+2. **想要干净的一轮，就给一个每次调用都不同的值** ✓（如 `<run-id>-<日期>` ✓），**别用固定常量** ✗：
+   **同一个盐连跑两遍 = 同一批会话** ✗ —— 那**不是**干净复跑 ✓。
+3. **它只"躲开"脏状态，不修它** ✗，也**不保证会话没被用过** ✓（池子只有 32 格 ✓，跑多了照样撞上
+   以前用过的 ✓）。排查**任何与内容/状态有关**的问题前，**先去后端日志取准本轮实际用的会话号** ✓
+   （`prepareUserGoalFixProposals` / `pageMessage` 两行都带 ✓）——**别信派生结果** ✗
+   （2026-09-27 就因此把"复用会话的旧历史"误判成"跨会话串台" ✗）。
+
+**一条正名** ✓：“复用会话 → 提案卡不出现”那条假红已在 2026-09-28 修掉 ✓（`d583e4b` ✓：
+状态变更后的快照刷新越过版本淘汰 ✓）。在那之前盐是"绕坑"的必需品 ✗，现在它只是**要干净会话时**的开关 ✓。
+
 ---
 
 ## 七、续作：把 contract 半场补齐（2026-09-26 晚）——**11 passed** ✓✓
