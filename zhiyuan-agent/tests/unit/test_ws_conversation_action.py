@@ -114,3 +114,41 @@ async def test_gateway_websocket_rejects_missing_tenant_before_calling_gateway()
 
     assert socket.sent[0]["type"] == "recoverable.error"
     assert "缺少 tenantId" in socket.sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_ping_is_answered_in_place_and_never_becomes_a_turn():
+    """心跳必须**当场回 pong** ✓✓——native 路由原本没有这个分支 ✗，于是每 5s 一条的心跳
+    被当成**一轮对话**跑 ✓：占一个回合 ✓、真调一次模型 ✓、失败了再发 `recoverable.error` ✓。
+    后果不止是浪费 ✓✗：客户端收到一批"凭空出现的新回合" ✓ → 判成缺口 ✓ → 重同步
+    **把在飞回合的界面丢掉** ✗（实测：一轮用例里回合块每 5s 被清一次 ✓，
+    表现成"发消息后回合块不出现" ✓，两条用例因此红 ✓）。
+    """
+
+    class Socket:
+        def __init__(self):
+            self.app = SimpleNamespace(state=SimpleNamespace(gateway_tenant_id="1"))
+            self.sent: list[dict] = []
+            self.received = False
+
+        async def receive_json(self):
+            if self.received:
+                raise WebSocketDisconnect()
+            self.received = True
+            return {
+                "type": "chat", "sessionId": "s1", "userId": "u1",
+                "content": "", "inputType": "ping", "timestamp": 123,
+            }
+
+        async def send_text(self, value: str):
+            self.sent.append(json.loads(value))
+
+    class Gateway:
+        async def handle_turn(self, **kwargs):
+            raise AssertionError("心跳**不许**变成一轮对话 ✗")
+
+    socket = Socket()
+    await _handle_gateway_ws_loop(socket, Gateway())
+
+    assert [frame["type"] for frame in socket.sent] == ["pong"]
+    assert socket.sent[0]["timestamp"] == 123  # 原样回带 ✓（前端拿它对时延 ✓）

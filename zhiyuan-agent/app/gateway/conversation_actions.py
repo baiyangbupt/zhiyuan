@@ -200,6 +200,8 @@ async def execute_conversation_action(
             resolver=resolver,
             expected_revision=_first_int(data.get("revision")),
             education_level=_education_level_from_snapshot(parsed_snapshot),
+            # 计划版本从快照带进去 ✓（`_execute_claimed_command` 里拿不到 snapshot ✓）。
+            snapshot_version=_first_int(parsed_snapshot.snapshot_version),
         )
     # Pending revision is a separate CAS counter, not the conversation version.
     new_version = data.get("stateVersion")
@@ -224,6 +226,14 @@ def _first_int(*values: Any) -> int | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+# canonical 三件套：Java `FixProposalApplyReq` 的驼峰字段名 ✓ + 各链自己的 snake 别名 ✓。
+CANONICAL_METADATA_FIELDS = (
+    ("canonicalObjectiveDigest", "canonical_objective_digest"),
+    ("solverVersion", "solver_version"),
+    ("solverInputDigest", "solver_input_digest"),
+)
 
 
 def _proposal_apply_payload(
@@ -255,7 +265,90 @@ def _proposal_apply_payload(
     user_goal_request = active_data.get("userGoalRequest", active_data.get("user_goal_request"))
     if isinstance(user_goal_request, Mapping):
         payload["userGoalRequest"] = dict(user_goal_request)
+    # **canonical 元数据要原样带上** ✓✓：Java 的 `RepairProposalApplyPolicy.validateCanonicalMetadata`
+    # （:95-100 ✓）在**提案不是 legacy 那种**（带 `solverResult` 或三件套之一 ✗）时，
+    # 要求 apply 请求里**必须**有 `canonicalObjectiveDigest` / `solverVersion` / `solverInputDigest`
+    # 中至少一个 ✓，否则 `409 canonical Proposal 元数据缺失，请重新生成调整预览` ✗
+    # （2026-09-27 真栈实测：网关自拼的那份没带 ✓ → 卡显示"未生效" ✓）。
+    # 取法与 legacy 工具那条链一致 ✓（`tools.py:10032-10038` ✓）：从**提案**上读 ✓，
+    # 两种命名都认 ✓；没有就不编 ✗（编一个 digests 不匹配的只会换个错 ✓）。
+    # **待确认与快照今天都不带它们** ✗（实测：pending 的 `dataValue` 只有 7 个键 ✓、workspace 的
+    # `activeProposal` 只有 9 个键 ✓）——所以由 `_canonical_metadata_from_producer` 在 execute 时
+    # **回生产者现取一次** ✓（只读 ✓）后并进来 ✓；这里保留"带上就用"的分支 ✓
+    # （生产者哪天把它写进 `dataValue`/`activeProposal` ✓，这条就不必再远程取 ✓）。
+    for camel, snake in CANONICAL_METADATA_FIELDS:
+        value = active.get(camel) or active_data.get(camel) or active.get(snake) or active_data.get(snake)
+        if isinstance(value, str) and value.strip():
+            payload[camel] = value.strip()
     return payload
+
+
+async def _canonical_metadata_from_producer(
+    tenant_id: str | int,
+    session_id: str,
+    *,
+    proposal_id: str,
+    user_goal_request: Any,
+) -> dict[str, str]:
+    """缺 canonical 三件套时**回生产者现取一次** ✓（只读 ✓，不改任何状态 ✓）。
+
+    非取不可的理由 ✗：Java 的 `RepairProposalApplyPolicy.validateCanonicalMetadata`（:95-100 ✓）
+    对 user_goal 的 apply **要求请求里带三件套之一** ✓，而网关手里那两份载荷都不带 ✓
+    （2026-09-27 真栈实测 ✓，报错原文 `409 canonical Proposal 元数据缺失，请重新生成调整预览` ✓）。
+
+    为什么是 `generate` 而不是别的 ✓：它收的正是 `UserGoalFixProposalReq` ✓——pending 的
+    `dataValue.userGoalRequest` 就是它 ✓（形状实测吻合 ✓）——而且它与 Java 自己在 apply 里调的
+    `generateUserGoalFixProposals(...)` **是同一个构建器** ✓，所以按 `proposalId` 命中的那份，
+    digests 就是这一份的 ✓。只读预览**不落 pending** ✓（写模式的编译走 prepare ✗，两者不是一回事 ✓），
+    这一步不会把"确认"变成"写" ✓。
+    """
+    wanted = str(proposal_id or "").strip()
+    if not isinstance(user_goal_request, Mapping) or not user_goal_request or not wanted:
+        return {}
+    try:
+        response = await internal_client.generate_user_goal_planning_fix_proposals(
+            tenant_id, session_id, dict(user_goal_request)
+        )
+    except Exception as exc:  # noqa: BLE001 —— 取不到就不取 ✗：不改写执行结果 ✓（照旧 409 ✓，留痕 ✓）
+        logger.warning("canonical metadata fetch failed (proposal=%s): %s", wanted, exc)
+        return {}
+    if (response or {}).get("code") not in (None, 0):
+        logger.warning(
+            "canonical metadata fetch rejected: code=%s proposal=%s",
+            (response or {}).get("code"),
+            wanted,
+        )
+        return {}
+    data = _data(response)
+    proposals = data.get("proposals")
+    if not proposals:
+        # prepare 的返回是 `result` 包一层、generate 的是平铺 ✓——两种形状都认 ✓（编译那关同款 ✓）。
+        nested = data.get("result")
+        if isinstance(nested, Mapping):
+            proposals = nested.get("proposals")
+    items = proposals if isinstance(proposals, list) else []
+    match = next(
+        (
+            item
+            for item in items
+            if isinstance(item, Mapping)
+            and str(item.get("proposalId") or item.get("proposal_id") or "").strip() == wanted
+        ),
+        None,
+    )
+    if match is None:
+        # **不按策略兜底** ✗：Java 自己会兜 ✓（`findReadyUserGoalProposalByStrategy` ✓）——
+        # 那是 Java 的判据 ✓；网关这里拿错一份的 digests 只会让"带上了但不对"更难查 ✗。
+        logger.warning("canonical metadata: proposal %s missing in producer preview (%d 份)", wanted, len(items))
+        return {}
+    metadata = {
+        camel: str(value).strip()
+        for camel, snake in CANONICAL_METADATA_FIELDS
+        for value in (match.get(camel) or match.get(snake),)
+        if isinstance(value, str) and value.strip()
+    }
+    logger.info("execute stage canonical metadata: proposal=%s fields=%s", wanted, sorted(metadata))
+    return metadata
 
 
 def _constraint_update_from_goal(
@@ -500,6 +593,7 @@ async def _execute_claimed_command(
     resolver: Callable[..., Awaitable[Mapping[str, Any]]] | None = None,
     expected_revision: int | None = None,
     education_level: str | None = None,
+    snapshot_version: int | None = None,
 ) -> ConversationActionResult:
     """claim 之后的第二段：`pending-command/execute`。
 
@@ -509,13 +603,69 @@ async def _execute_claimed_command(
     这是同一次操作，"重复确认不双写"的依据就没了。
     """
     operation_id = str(active_data.get("operationId") or active.get("operationId") or "").strip()
+    # **一次 execute 打一行** ✓（不刷屏 ✓）：这一层的失败**不抛异常** ✗——
+    # 它是把 Java 响应体里的业务码翻成"未生效" ✓，所以外面只看得到"卡显示未生效" ✓，
+    # 而"输入里到底有没有 operationId / 拿的是哪个 proposalRef"得在这里说 ✓
+    #（实测靠它一次排掉了"operationId 没落进快照"这条假设 ✓）。
+    logger.info(
+        "execute stage inputs: proposalRef=%s dataKeys=%s activeKeys=%s operationId=%r",
+        proposal_ref,
+        sorted(active_data.keys())[:12],
+        sorted(active.keys())[:14],
+        operation_id,
+    )
     if not operation_id:
         return ConversationActionResult(
             "failed", proposal_ref, code="operation_id_missing",
             message="待确认内容里没有 Java 产出的 operationId，拒绝执行（不自铸幂等键）。",
         )
+    # **"计划版本"有两个消费者，Java 要求它们拿到同一个值** ✓✓：
+    # ① `pending-command/execute` 拿 `expectedPlanVersion` 与 **planning state 的 `version`** 比
+    # （`PendingPlanningCommandBizService:77-81` ✓）；
+    # ② apply 那条路还要求它**等于 `sourceVersionGuard`**（`RepairProposalApplyPolicy.validateStateVersionGuard`
+    # ✓，不等 → 409 "当前方案已变化，请重新生成修复建议" ✗）。
+    # 所以不能各取各的 ✗：先定下"计划版本"，再用**同一份 payload 的守门值**回推 expected ✓。
+    # 来源按任务书（`P2-write-closed-loop/TASK.md` 二之二 ✓）取 **`activeProposal.sourceVersion`**
+    # ✓（Java 已扁平暴露 ✓）——2026-09-27 真栈读数：四个候选**全是 0** ✓（`expected=0 guard=0
+    # snapshot=0 activeSourceVersion=0` ✓），与 Java 的 `state.version=0` 相等 ✓，这一关是过的 ✓
+    # （当轮 409 的真因是 canonical 元数据缺失 ✗，见下面 `_proposal_apply_payload` ✓）。
+    plan_version = _first_int(
+        active.get("sourceVersion"),
+        active_data.get("sourceVersion"),
+        active.get("sourceBackendVersion", active.get("source_backend_version")),
+        active_data.get("sourceBackendVersion", active_data.get("source_backend_version")),
+        snapshot_version,
+        source_version,
+    )
+    proposal_apply = _proposal_apply_payload(
+        active, active_data, proposal_ref=str(proposal_ref or pending_id), source_version=plan_version
+    )
+    # 三件套**手上没有**时才去问生产者 ✓（只读 ✓）：不取就是照旧 409 ✓（卡显示"未生效" ✓），
+    # 取到了才可能走到"已生效" ✓。只在 user_goal 那条路上做 ✓（新链路只编译这一种 ✓）。
+    if str(proposal_apply.get("proposalSource") or "") == "user_goal" and not any(
+        camel in proposal_apply for camel, _ in CANONICAL_METADATA_FIELDS
+    ):
+        proposal_apply.update(
+            await _canonical_metadata_from_producer(
+                tenant_id,
+                session_id,
+                proposal_id=str(proposal_apply.get("proposalId") or ""),
+                user_goal_request=proposal_apply.get("userGoalRequest"),
+            )
+        )
+    # pending 里存了 `proposalApply` 就是**生产者的守门值** ✓——expected 跟着它走 ✓，
+    # 这样万一 Java 回 `40904`，报出来的就是"守门值本身过期了" ✓（生产侧的事 ✓），
+    # 而不是"网关送错了值" ✗。
     expected_plan_version = _first_int(
-        active.get("sourceVersion"), active_data.get("sourceVersion"), source_version
+        proposal_apply.get("sourceVersionGuard"), proposal_apply.get("sourceVersion"), plan_version
+    )
+    logger.info(
+        "execute stage plan version: expected=%s guard=%s snapshot=%s activeSourceVersion=%s sourceBackendVersion=%s",
+        expected_plan_version,
+        _first_int(proposal_apply.get("sourceVersionGuard"), proposal_apply.get("sourceVersion")),
+        snapshot_version,
+        active.get("sourceVersion"),
+        active_data.get("sourceBackendVersion", active_data.get("source_backend_version")),
     )
     try:
         # 区域先解析出权威 ID ✓（解析失败就不给 ✓，匹配按名字兜底 ✓）。
@@ -531,9 +681,7 @@ async def _execute_claimed_command(
             active_data,
             region_ids=region_ids,
             major_ids=major_ids,
-            proposal_apply=_proposal_apply_payload(
-                active, active_data, proposal_ref=str(proposal_ref or pending_id), source_version=source_version
-            ),
+            proposal_apply=proposal_apply,
         )
     except ValueError as exc:
         # 范围种类不认识、或范围目标里什么都没有：**拒绝执行** ✓
@@ -554,6 +702,15 @@ async def _execute_claimed_command(
     )
     status = _status(response)
     data = _data(response)
+    # 一行出真相 ✓：`_status` 把业务码翻成状态 **不抛异常** ✗，外面只看得到"卡显示未生效" ✗——
+    # 所以原始业务码/消息必须在这里落地 ✓（409 那一轮就是靠它定位的 ✓）。
+    logger.info(
+        "execute stage response: status=%s rawStatus=%r code=%r message=%r",
+        status,
+        response.get("status"),
+        response.get("code"),
+        response.get("message") or data.get("message"),
+    )
     # **执行失败不许读成 completed**：`_status` 对拿不准的响应一律 `failed` ✓
     # （"HTTP 成功不等于执行成功"那条注释在它上面）。
     #

@@ -82,6 +82,11 @@ class ConnectionChannel:
         """这条连接属于哪个会话。第一条消息到达时才知道，所以是延迟绑定。"""
         self._session_key = key
 
+    @property
+    def session_key(self) -> SessionKey | None:
+        """这条连接绑的会话（还没收到过消息时为 None）✓——收尾时要用它去摘连接 ✓。"""
+        return self._session_key
+
     def bind_turn(self, ui_turn_id: str) -> None:
         """记住当前回合号：编号事件要把它写进 envelope。
 

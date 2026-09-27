@@ -1220,6 +1220,67 @@ class GatewayService:
                 # 必然 `proposal_reference_mismatch`，而链路看上去只是"确认没生效"
                 # （2026-09-24 真栈实测 —— 确认永远被自己的缓存挡住 ✗）。
                 await self._refresh_snapshot_cache(key, tenant_id=tenant_id, session_id=session_id)
+                # **预览里的"版本"必须换成待确认的修订号** ✓✓：Java 编译返回的预览带的是
+                # **编译前**的 `sourceVersion` ✗，而确认/放弃时服务端拿它核版本 ✓ →
+                # 必然判 `stale_state` ✗（实测：卡上点"放弃" ✓，回来的 `actionStatus` 就是
+                # `stale_state` ✓；对照 pending 行：`revision: 1` ✓，而预览里是 `sourceVersion: 0` ✗）。
+                # 刷新后的快照里 `activeProposal.data.revision` 才是**这张卡要用**的那个 ✓
+                #（白名单里的 `sourceVersion` 正好是它的位置 ✓，不用扩载荷 ✗）。
+                # **两样都要换成"待确认那一条"的值** ✓✓（实测形状，curl turn-snapshot 得的原文 ✓）：
+                #   `activeProposal.revision = 1` ✓（在**顶层** ✓，不是 `data.revision` ✗）；
+                #   `activeProposal.proposalRef = <pendingId>` ✓（**不是**编译器的 `ugp_…` ✗——
+                #   卡片若带 `ugp_…` 去确认 ✓，服务端拿快照里这个核对 ✓ → 必然对不上 ✗）。
+                # 白名单里的 `proposalRef`/`sourceVersion` 正好是这两个位置 ✓，载荷不用扩 ✗。
+                fresh = self._snapshots.get(key)
+                active = getattr(fresh, "active_proposal", None) if fresh is not None else None
+                logger.info(
+                    "proposal preview override: snapshot=%s active=%s attrs=%s",
+                    type(fresh).__name__ if fresh is not None else "None",
+                    type(active).__name__ if active is not None else "None",
+                    sorted(getattr(active, "__dict__", {}).keys())[:12]
+                    if not isinstance(active, Mapping) and active is not None
+                    else sorted(active.keys())[:12] if isinstance(active, Mapping) else [],
+                )
+                if active is not None and isinstance(proposal_preview, Mapping):
+                    override = dict(proposal_preview)
+                    # **`active_proposal` 是模型，不是 dict** ✗✓（实测：按字典读**一次都没命中** ✓，
+                    # 而版本看起来"对"是因为 Java 在 pending 存在后自己就返回 1 ✓——差点被这个巧合骗过去 ✓）。
+                    # 所以字典键与属性两条路都走 ✓，别名（驼峰/snake）也各试一次 ✓。
+                    def _field(*names: str) -> Any:
+                        if isinstance(active, Mapping):
+                            for name in names:
+                                if active.get(name) is not None:
+                                    return active[name]
+                            return None
+                        for name in names:
+                            value = getattr(active, name, None)
+                            if value is not None:
+                                return value
+                        return None
+
+                    # **要覆盖的是快照的 `sourceVersion`，不是 `revision`** ✗✓（实测判据原文 ✓）：
+                    # `conversation_actions.py:139-152` 拿 `activeProposal.sourceVersion`（或
+                    # `data.sourceVersion` / `data.sourceBackendVersion` ✓）与动作里的
+                    # `expectedSourceVersion` 相减 ✓，不等就 `proposal_version_mismatch` ✓。
+                    # `revision` 是**另一个字段** ✓（同文件 156 行起另有用处 ✓）——
+                    # 上一轮我把 `sourceVersion` 覆盖成了 `revision` ✓，于是"身份对了、版本错了" ✓✗。
+                    source_version = _field("sourceVersion", "source_version")
+                    if source_version is None:
+                        # 判据里的第二、三个来源在 `active.data` 上 ✓（`conversation_actions.py:142-143` ✓）。
+                        active_data = active.get("data") if isinstance(active, Mapping) else None
+                        if isinstance(active_data, Mapping):
+                            source_version = (
+                                active_data.get("sourceVersion")
+                                or active_data.get("source_version")
+                                or active_data.get("sourceBackendVersion")
+                                or active_data.get("source_backend_version")
+                            )
+                    if source_version is not None:
+                        override["sourceVersion"] = source_version
+                    active_ref = _field("proposalRef", "proposal_ref", "pendingId", "pending_id")
+                    if active_ref:
+                        override["proposalRef"] = str(active_ref)
+                    proposal_preview = override
             working_set = self._working_sets.get(key)
             if working_set is not None:
                 working_set.ingest_payload(turn, turn_id=turn_id)
@@ -1267,6 +1328,11 @@ class GatewayService:
         except (OutputContractError, ValueError, KeyError) as exc:
             return {"error": str(exc), "events": []}
         except Exception as exc:
+            # **堆栈必须留下** ✗✓：原来只回一个类名（`RuntimeError` ✗）——
+            # 用户看到的是"引擎暂时不可用" ✓，而日志里**没有任何可查的东西** ✗：
+            # 实测就是这么卡住的（首轮一个 `RuntimeError` ✗，来回猜了几轮 ✓）。
+            # 回给用户的那句仍然是通用的 ✓（不泄漏内部细节 ✓），但日志要能定位 ✓。
+            logger.exception("codex turn crashed: %s", type(exc).__name__)
             return {"error": type(exc).__name__, "events": []}
 
     def _evidence_inputs(

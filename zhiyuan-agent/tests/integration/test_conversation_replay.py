@@ -111,6 +111,23 @@ async def test_replay_requires_resync_when_generation_changed(store) -> None:
     assert await store.replay(key, "epoch-from-another-life", after=1) is None
 
 
+async def test_current_epoch_matches_the_one_events_carry(store) -> None:
+    """重连补发要按**当前**代际读，而服务端手上没有客户端游标——读法归存储。
+
+    没有它，调用方只能"先摸一条事件出来取代际"：空流时摸不到，于是重连
+    在"还没有任何事件"的会话上要么猜、要么跳过补发。
+    """
+    key = _key()
+    assert await store.current_epoch(key) is None  # 还没有任何事件
+
+    appended = await store.append(key, _event())
+    epoch = await store.current_epoch(key)
+
+    assert epoch == appended.stream_epoch
+    # 拿到代际就能直接重放：这正是重连那条路径要的两步。
+    assert await store.replay(key, epoch, after=0) is not None
+
+
 async def test_replay_requires_resync_when_cursor_is_ahead(store) -> None:
     """cursor 超前说明客户端记的是另一条时间线，不能让它无限等。"""
     key = _key()

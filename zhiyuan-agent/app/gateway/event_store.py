@@ -210,6 +210,17 @@ class RedisEventStore:
         value = await self._redis.get(counter)
         return int(value) if value is not None else 0
 
+    async def current_epoch(self, key: SessionKey) -> str | None:
+        """这条会话当前的事件代际；没有则 None（该会话还没有任何事件）。
+
+        重放要**按代际**做（`replay` 的代际不符就要求 resync ✓），而重连时
+        服务端手上没有客户端的游标 ✓——它需要"现在这条时间线是哪一条" ✓，
+        所以这个读法属于存储，不该让调用方去猜键名。
+        """
+        _, _, epoch_key = _key_names(key)
+        value = await self._redis.get(epoch_key)
+        return value if value is not None else None
+
     async def admit(self, key: SessionKey, request_id: str, request_digest: str) -> str:
         """请求占位。同 id 同摘要 = 重发，同 id 异摘要 = 冲突。"""
         request_key = _request_key(key, request_id)
