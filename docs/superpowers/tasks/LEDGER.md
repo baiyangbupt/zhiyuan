@@ -30,6 +30,32 @@
 | [P2e](P2e-tool-contract-drift/) | 工具契约三处漂移的比对（P2d 遗留检查） | P2d 报告第四节第 2 条 | 本地会话（2026-09-22） | 2026-09-22 | `DONE`：查出两次真实漂移——`admission.get_history` 在编排层多要 `majorId`（真实工具是学校级口径、缺它只追加限制不是错误）→ 后果是模型没传就判 blocked、整轮被降级并补"请补充缺失参数"；夹具两处比真实更严。已修 + 新增比对用例（红-绿）+ 更正一条**与 bug 同向的旧断言**；全量 1939 通过 | — | P0 的 20×2 测量发生在本修正之前，已按报告里的命令复跑（见 `P0-acceptance-measurement`） |
 | [P3](P3-process-gates/) | 流程门禁（superpowers 手法迁移；落点是 6 个 skill 的语义） | 推进计划 §五 | 本地会话（2026-09-23） | 2026-09-23（口头） | `DONE_WITH_CONCERNS`：6 个技能补 `<HARD-GATE>`（+39 行，**未动代码**）；**最终配置下判据达标**——`mixed-read-write` **0/20 forbidden_tools + 20/20 passed** ✓✓（此前 18–19/20 带 1–2 次写尝试 ✗）。**但如实说：这不是门禁的功劳** ✗——让现象消失的是**量具/场景三处修正**（① 量具 home 装插件；② 修 `skill_root` + 夹具补 `skill://` 资源通道，技能正文由 0 命中变可读 ✓；③ 夹具补 `admission.get_current_plan`——真实链路一直有的只读工具；模型两轮失败都是**拿写工具顶替读**：`proposalId="__read_current_plan__"` / `"NOOP-PLACEHOLDER-NOT-EXECUTED"` ✗）。门禁在**产品路径**上是实打实的语义（agent rollout 里门禁正文可见 ✓、写意图题路由到 `profile-discovery` 且不调写工具 ✓），但这条量具量不出它相对旧技能的增量 ✗（留底 0/20 vs 最终 0/20；修正前三次采样 2/0/2）。回归：全量 `1942 passed / 35 skipped / 1 failed`（旧账）✓、16 案例 **15/16**（0 业务失败）✓ | — | 三条修正已按"按建议推进"落地 ✓（量具首次真的能测技能内容 ✓）；**新增待裁决**：要与"旧技能"做可归因对照，需 ~100+ 次/侧样本或换一条能放大的判据 ✗。见 `P3/REPORT.md` 第一、三之二、三之二之二、三之二之三节 |
 
+## 2026-09-28 更新：P2 写闭环 / C4 写路径四条全绿
+
+`wip/2026-09-26-p2-c-line`（26 个提交，未推送）上，**写路径四条在 `codex_write` 栈上全绿** ✓：
+
+| 用例 | 口径 | 读数 |
+|---|---|---|
+| F07 后半 放弃提案 | 取消不改变正式内容 ✓ | 2.3s ✓ |
+| F08 确认双击 | 两次点击 → **一次** execute ✓、applied 后读得到 workspace ✓ | `[f08] version=0 → 3`、`phase=candidate_generated → reviewed` ✓ |
+| F09 版本冲突 | 旧卡被拒 ✓、**不自动确认新预览** ✓、正式内容不前进 ✓ | `[f09] version=0 → 0` ✓ |
+| F13 applying 时断线 | 事务不被取消 ✓、不双写 ✓、重连后读得到最终结果 ✓ | 两遍 4 passed ✓（同盐连跑） |
+
+另有 `contract` **12 passed** ✓、agent 全量 **2007 passed** ✓（唯一红是既有的
+`test_dialog_quality_gate` 缺 `zhiyuan-server/data/tmp/` 那批志愿文件 ✗，与本线无关）。
+
+这一轮修掉的三处**网关/生产者侧**缺口（都有真栈读数 ✓）：
+
+1. **600e16e 系列**：apply 的前置——canonical 三件套由 `prepare` 落进 pending 的 `dataValue` ✓
+   （网关"存着就用、没有现取" ✓）；
+2. **`602e16e`**：确认/取消的收尾**不随回合取消** ✓（掉线会把"发结果"那一步带走 ✗ →
+   事件流里 0 条 `conversationAction.result` ✓）；
+3. **`d583e4b`**：状态变更后的快照刷新要能**越过版本淘汰** ✓（reset/supersede 后版本合法往回走 ✗
+   → 刷新被拒 → 缓存钉在旧快照 → **提案卡不出现** ✗）。A/B：同一个盐连跑两遍，
+   修前 4 passed → **2 failed（F08+F13）** ✗，修后 **4 passed → 4 passed** ✓✓。
+
+待办（不属于本线）：`test_dialog_quality_gate` 那 94 个缺文件 ✗；"库里 2 条却渲染 8 份" ✗ 未定。
+
 ## 2026-09-23 事故与恢复：`app/gateway/service.py` 被误覆盖
 
 死代码 A 批删除后的"按文件名整体回滚"把 legacy `app/service.py`（387549 字节）覆盖到了同名的网关 `app/gateway/service.py` 上，后者含三方未提交改动（P1b-3 Python 半、P1c-2、P2d）。**无 golden copy 可用**，已按"keep（9-21 19:58 快照）为底 + 任务报告与无损测试为规格"重建三处改动，逐项做到对应测试红转绿；全量 = `1 failed（既有 test_dialog_quality_gate）/ 1924 passed / 50 skipped`（带 `CODEX_TEST_REDIS_URL` ＝ 1939/35，与 P2e 记的基线一致）。**残留：不是逐字节还原**（P2b 记的调用点 `:1121` ⟶ 重建版 `:1180`，我的实现多约 50 行）。**真栈复验已补（2026-09-23 19:00）**：A/B 对照（原版 vs 重建版，同一事实题、同答 658）＋断依赖（核验端点打 500 → 整轮硬失败、18 字、无事实性回答）＋恢复四条全过，与 P1c-2 原验收逐项一致；带 `CODEX_TEST_REDIS_URL` 全量 = 1939/35，与 P2e 基线精确一致。**重查路径**：机制与 fail-closed 那一半已在真栈复现（会话 900325：重查一次 → 仍失效 → 整轮作废；backend 恰好 2 次 verify 调用），"重查后成功"那一半未撞到（单测已覆盖该组合）；同期还观测到一次模型抄错 ULID 导致的 `evidence_not_found`（模型侧老毛病，与重建无关）。16 案例验收回归 **16/16，0 业务失败 0 环境失败**。
