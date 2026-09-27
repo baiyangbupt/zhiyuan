@@ -625,6 +625,16 @@ public class PlanningStateService {
                         FixProposalDTO primary = primaryProposal(preview);
                         if (primary != null) {
                             dataValue.put("proposalId", primary.getProposalId());
+                            // **canonical 三件套一并落下** ✓✓：apply 那条路上
+                            // `RepairProposalApplyPolicy.validateCanonicalMetadata`（:95-100）
+                            // 要求请求里**必须带**它们之一（除非提案是 legacy 那种），
+                            // 而网关手上只有 dataValue（`activeProposal.data`）——
+                            // 不落的话确认那一刻必然 `409 canonical Proposal 元数据缺失`，
+                            // 卡上只显示"未生效"，看起来像写链坏了
+                            // （2026-09-27 真栈实测）。空值不落：网关按"非空才透传"读。
+                            putIfNotBlank(dataValue, "canonicalObjectiveDigest", primary.getCanonicalObjectiveDigest());
+                            putIfNotBlank(dataValue, "solverVersion", primary.getSolverVersion());
+                            putIfNotBlank(dataValue, "solverInputDigest", primary.getSolverInputDigest());
                         }
                     }
                     PendingConfirmationUpsertReq upsert = new PendingConfirmationUpsertReq();
@@ -653,6 +663,14 @@ public class PlanningStateService {
             }
         }
         return preview.getProposals().isEmpty() ? null : preview.getProposals().get(0);
+    }
+
+    /** 只在非空时落键：空串/null 落进去会让网关"带上了一个空的 canonical 元数据"，
+     * 而 Java 侧的判据是"至少一个非空"，两边对同一个字段的理解必须一致。 */
+    private static void putIfNotBlank(Map<String, Object> target, String key, String value) {
+        if (!Strings.isNullOrEmpty(value)) {
+            target.put(key, value);
+        }
     }
 
     public ReviewWorkflowRunRes runReviewWorkflow(Long tenantId, Long chatSessionId) {
