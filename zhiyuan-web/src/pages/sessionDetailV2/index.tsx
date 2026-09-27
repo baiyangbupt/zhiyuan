@@ -234,6 +234,16 @@ const SessionDetailV2 = () => {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [scrollEleIndex, setScrollEleIndex] = useState<number>(-1);
+  /**
+   * 会话里**最后一条提案**的落定状态（详情接口给 ✓）：冷加载时卡片状态只活在事件流里 ✗，
+   * 刷新/重连后没有游标、服务端也只补在飞回合 ✓ → 卡重建不出来 ✗（F13 的第③条 ✓），
+   * 所以详情里带一格 ✓，由 `MessageList` 在"回合里没画过"时补一张只读卡 ✓。
+   */
+  const [lastProposal, setLastProposal] = useState<{
+    proposalRef?: string;
+    proposalId?: string;
+    actionStatus?: string;
+  } | null>(null);
   const [entityCardList, setEntityCardList] = useState<IDialogueResData>({});
   const [sessionStatus, setSessionStatus] = useState<string>('');
   const [infoSummary, setInfoSummary] = useState<string>('');
@@ -490,6 +500,8 @@ const SessionDetailV2 = () => {
       if (code === 0 && data) {
         setSessionStatus(data.sessionStatus || '');
         setInfoSummary(data.infoSummary || '');
+        // 详情里"最后一条提案"那一格（服务端新加 ✓）：冷加载重建卡片用 ✓（见 state 声明处的注释 ✓）。
+        setLastProposal((data as any).lastProposal || null);
         setStudentName(String(data.userName || '').trim());
         setPrepareTypeDesc(data.prepareType?.desc || '');
         setPrepareTypeCode(data.prepareType?.code || '');
@@ -644,6 +656,7 @@ const SessionDetailV2 = () => {
         setFetchFlag={setFetchFlag}
         doChatRights={doChatRights || undefined}
         onWorkspaceIntent={handleWorkspaceIntent}
+        lastProposal={lastProposal}
         alwaysShowQuickReplyActions={isMobile}
         quickReplyActions={
           isMobile

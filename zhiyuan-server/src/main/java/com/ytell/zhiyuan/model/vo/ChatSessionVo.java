@@ -31,6 +31,8 @@ public class ChatSessionVo {
     private CreateSessionReq.PrepareType prepareType;
     private Integer examYear;
     private StudentPlanningSummaryDTO studentSummary;
+    /** 会话里**最后一条**提案的状态——冷加载时前端靠它把卡片画出来（见 {@link LastProposalVo}）。 */
+    private LastProposalVo lastProposal;
 
     public static ChatSessionVo fromEntity(ChatSession chatSession, BotVo botVo, String infoSummary) {
         ChatSessionVo vo = new ChatSessionVo();

@@ -113,6 +113,20 @@ interface IMessageListProps {
   quickReplyActions?: IQuickReplyAction[];
   alwaysShowQuickReplyActions?: boolean;
   onWorkspaceIntent?: (intent: Omit<PlanningWorkspaceIntent, 'nonce'>) => void;
+  /**
+   * **会话里最后一条提案的落定状态**（来自会话详情 ✓）：冷加载时补一张卡用 ✓✗。
+   *
+   * 为什么需要 ✗✓：卡片状态今天**只活在事件流里** ✓（`proposal.preview` / `conversationAction.result` ✓），
+   * 而刷新/重连之后客户端**没有游标** ✓（`conversationCursor.mjs` 的口径：游标不落盘 ✓），
+   * 服务端那条路只补"在飞回合" ✗，已结束回合的卡片事件一条都不补 ✓ → 卡**重建不出来** ✗
+   * （F13 用例的第③条 ✓）。所以服务端把"最后一条提案 + 动作状态"放进会话详情 ✓，
+   * 这里在**没有回合卡**时补一张**只读**的卡 ✓（状态照 `ProposalCard` 的映射 ✓，`applied` → 已生效 ✓）。
+   */
+  lastProposal?: {
+    proposalRef?: string;
+    proposalId?: string;
+    actionStatus?: string;
+  } | null;
 }
 export interface IMessageParams {
   onNewMessage: (payload: IWsMessage) => void;
@@ -345,6 +359,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     quickReplyActions,
     alwaysShowQuickReplyActions,
     onWorkspaceIntent,
+    lastProposal,
     setScrollEleIndex,
     setFetchFlag,
     doChatRights,
@@ -2071,6 +2086,26 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
               </div>
             );
           })}
+          {/*
+            **冷加载补一张"最后一条提案"的卡** ✓✗（理由见 props 里 `lastProposal` 那段 ✓）：
+            回合块只在**事件到达**时才长出来 ✗，刷新之后一个都没有 ✓——所以这里按
+            "回合里没画过这个 `proposalRef`" 判一次 ✓，补一张**只读**的卡 ✓（终态时按钮本来就收起 ✓）。
+          */}
+          {lastProposal?.proposalRef &&
+          !Object.values(conversationState.turns || {}).some(
+            (turn: any) =>
+              String(turn?.proposal?.proposalRef || '') === String(lastProposal.proposalRef),
+          ) ? (
+            <ProposalCard
+              proposal={{ proposalRef: lastProposal.proposalRef }}
+              actionResult={{
+                actionStatus: lastProposal.actionStatus,
+                proposalRef: lastProposal.proposalRef,
+              }}
+              onDecide={() => undefined}
+              disabled
+            />
+          ) : null}
           <div ref={bottomRef} />
         </Spin>
       </div>

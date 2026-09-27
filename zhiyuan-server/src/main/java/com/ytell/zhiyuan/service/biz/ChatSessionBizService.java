@@ -27,6 +27,7 @@ import com.ytell.zhiyuan.model.dto.gaotu.RecommendNumResponse;
 import com.ytell.zhiyuan.model.dto.gaotu.req.ProgramPageReq;
 import com.ytell.zhiyuan.model.dto.gaotu.req.RecommendNumReq;
 import com.ytell.zhiyuan.model.dto.inner.ChatSessionExtraDataReq;
+import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO;
 import com.ytell.zhiyuan.model.dto.planning.StudentPlanningSummaryDTO;
 import com.ytell.zhiyuan.model.dto.volunteer.VolunteerSchoolGroup;
@@ -78,6 +79,9 @@ public class ChatSessionBizService {
     private ChatSessionSharedService chatSessionSharedService;
     @Autowired
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
+    /** 会话详情里"最后一条提案"那一格要读它（见 `buildLastProposal`）。 */
+    @Autowired
+    private PendingConfirmationBizService pendingConfirmationBizService;
     @Autowired
     private GaotuService gaotuService;
     @Autowired
@@ -183,7 +187,58 @@ public class ChatSessionBizService {
         ChatSessionVo vo = ChatSessionVo.fromEntity(chatSession, botVo, getSessionExtraSummaryData(chatSession), prepareType);
         vo.setExamYear(scoreDetail != null ? scoreDetail.getExamYear() : null);
         vo.setStudentSummary(buildStudentPlanningSummary(scoreDetail));
+        vo.setLastProposal(buildLastProposal(tenantId, chatSessionId));
         return vo;
+    }
+
+    /**
+     * 会话里**最后一条**提案的状态——给浏览器冷加载把卡片画出来（见 {@link LastProposalVo}）。
+     *
+     * <p>取的是**待确认的当前行**（`pendingConfirmationBizService.getCurrent`）：它就是"最近一次提案"，
+     * 且带着动作落定后的状态（applied / cancelled / expired），不做额外过滤——
+     * 冷加载要的恰恰是"已经落定的那一条"。
+     */
+    private LastProposalVo buildLastProposal(Long tenantId, Long chatSessionId) {
+        PendingConfirmationRes pending;
+        try {
+            pending = pendingConfirmationBizService.getCurrent(tenantId, chatSessionId);
+        } catch (Exception ex) {
+            // 详情接口不该因为提案那一格取不到就整个失败：卡片少一张，会话照常打开。
+            log.warn("getUserSessionDetail: lastProposal unavailable, chatSessionId={}", chatSessionId, ex);
+            return null;
+        }
+        if (pending == null || Strings.isNullOrEmpty(pending.getPendingId())) {
+            return null;
+        }
+        Object proposalId = null;
+        Object sourceVersion = null;
+        Map<String, Object> dataValue = pending.getDataValue();
+        if (dataValue != null) {
+            proposalId = dataValue.get("proposalId");
+            sourceVersion = dataValue.get("sourceVersion");
+        }
+        return LastProposalVo.builder()
+                .proposalRef(pending.getPendingId())
+                .proposalId(proposalId == null ? null : String.valueOf(proposalId))
+                .actionStatus(pending.getStatus())
+                .sourceVersion(asInteger(sourceVersion))
+                .revision(pending.getRevision())
+                .build();
+    }
+
+    /** `dataValue` 里的值是 JSON 反序列化出来的 `Object`：不是数字就当作没有，别让详情接口为此报错。 */
+    private Integer asInteger(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(String.valueOf(value).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private StudentPlanningSummaryDTO buildStudentPlanningSummary(CreateSessionReq scoreDetail) {
