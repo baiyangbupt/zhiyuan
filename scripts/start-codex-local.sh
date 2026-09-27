@@ -251,6 +251,11 @@ wait_for_http "backend" "$BACKEND_URL/gaotu-assistant-bot/inner/ops/health"
 #   而那两个开关（`features.default_mode_request_user_input` /
 #   `tools.experimental_request_user_input`）**只在声明 native 时才传** ✓（`composition.py:74-77` ✓）。
 #   所以契约栈要练这条桥 ✓，就得在这里显式打开 ✓✓——**只给隔离栈** ✓（共享栈不动 ✗）。
+# 说明（第五处、**也是"续行链里夹注释"那个坑** ✓✓）：下面这串同样是**一条命令** ✓，注释只能写在块外 ✗。
+#   `GATEWAY_MODE` —— **默认一个字节都不变** ✓✓：写模式是 P2 的 `codex_write` ✓，它的语义不是
+#   "给模型开写工具" ✗，而是"**确认链**在这台实例上是活的" ✓——所以 `MCP_MODE=readonly` 保持不变
+#   是**对的** ✓，别顺手一起改 ✗。可覆盖的形状与上面 `CODEX_APP_SERVER_USER_INPUT_MODE` 一致 ✓；
+#   谁要用：契约栈跑 F07/F08/F09/F13 那几格时 ✓（写路径的用例 ✗）。
 start_service "agent" "$ROOT_DIR/zhiyuan-agent" \
     env \
     "CODEX_HOME=$CODEX_HOME_DIR" \
@@ -259,8 +264,9 @@ start_service "agent" "$ROOT_DIR/zhiyuan-agent" \
     "CODEX_APP_SERVER_APPROVAL_POLICY=never" \
     "CODEX_APP_SERVER_SANDBOX_POLICY=read-only" \
     "CODEX_APP_SERVER_TIMEOUT_SECONDS=180" \
+    "CODEX_EVENT_STORE_REDIS_URL=redis://127.0.0.1:16379/9" \
     "CODEX_APP_SERVER_USER_INPUT_MODE=${CODEX_APP_SERVER_USER_INPUT_MODE:-native}" \
-    "GATEWAY_MODE=codex_readonly" \
+    "GATEWAY_MODE=${CODEX_LOCAL_GATEWAY_MODE:-codex_readonly}" \
     "INTERNAL_SERVICE_URL=$BACKEND_URL" \
     "RANK_SERVICE_URL=$RANK_URL" \
     "MCP_MODE=readonly" \

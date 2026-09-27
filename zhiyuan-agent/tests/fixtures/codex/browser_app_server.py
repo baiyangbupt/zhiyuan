@@ -34,6 +34,8 @@ RUN_ID = os.environ.get("CODEX_BROWSER_RUN_ID", "browser-run")
 RELEASE_TIMEOUT_SECONDS = float(os.environ.get("CODEX_BROWSER_RELEASE_TIMEOUT", "60"))
 # 进度里报的工具名 ✓：UI 会把它映成"历年录取"这类字样 ✓（C4 的流式用例就断言这个 ✓）。
 PROGRESS_TOOL = os.environ.get("CODEX_BROWSER_PROGRESS_TOOL", "admission.get_history")
+# "模型格式坏"场景里塞的泄漏标记 ✓（F15）：用例断言它**不出现**在页面上 ✓。
+LEAK_MARKER = os.environ.get("CODEX_BROWSER_LEAK_MARKER", "RAW-MODEL-LEAK-MARKER")
 
 _threads: set[str] = set()
 _turn_counter = 0
@@ -47,6 +49,22 @@ _answers_lock = threading.Lock()
 _state_lock = threading.Lock()
 # stdout 会被主线程与等待线程同时写 ✗——不加锁会写出半行 JSON ✗✗（读方直接解析失败 ✓）。
 _send_lock = threading.Lock()
+# **替身自己的账本** ✓✓：它跑在 agent 的子进程里，stdout 被网关读走 ✗——
+# "闸门到底放行了没有、替身轮询的是哪个 id"这类问题，外面的探针看不见 ✗，
+# 只能靠猜 ✓（2026-09-26 实测：放行明明落了、替身却等到超时 ✗，猜了两个来回 ✗）。
+# 路径可覆盖 ✓；默认**不带进程号**（一条栈里正常只有一份替身 ✓，多份时自己覆盖 ✓）。
+TRACE_PATH = os.environ.get("CODEX_BROWSER_FAKE_TRACE", "/tmp/codex-fake-runtime.log")
+
+
+def _trace(event: str, **fields: Any) -> None:
+    try:
+        with open(TRACE_PATH, "a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps({"at": round(time.time(), 3), "event": event, **fields}, ensure_ascii=False)
+                + "\n"
+            )
+    except OSError:
+        pass  # 账本写不进去**不能**影响替身本身 ✓：它是探针，不是被测物 ✓。
 
 
 def send(payload: dict) -> None:
@@ -59,8 +77,10 @@ def _finish_once(thread_id: str, turn_id: str, *, interrupted: bool) -> None:
     """终态**最多一条** ✓——中断先到就不再补"放行后的答案" ✓✓。"""
     with _state_lock:
         if turn_id in _finished_turns:
+            _trace("finish_once.skipped", turnId=turn_id, interrupted=interrupted)
             return
         _finished_turns.add(turn_id)
+    _trace("finish_once", turnId=turn_id, interrupted=interrupted)
     _emit_final(thread_id, turn_id, interrupted=interrupted)
 
 
@@ -74,14 +94,29 @@ def _control(method: str, path: str, payload: dict | None = None) -> tuple[int, 
         return error.code, json.loads(error.read().decode("utf-8") or "{}")
 
 
-def _wait_for_release(turn_id: str) -> bool:
-    """轮询控制服务 ✓。返回 False = **超时**（调用方要按"没放行"处理 ✓）。"""
+def _wait_for_release(turn_id: str) -> bool | None:
+    """轮询控制服务 ✓。`True` = 放行 ✓；`False` = **超时**（一直没放行 ✓）；`None` = **闸门已不存在** ✓。
+
+    **"不存在"与"没放行"必须分开** ✗✓：`cleanGates` 会先放行、再 `reset` ✓，
+    而 `reset` 把闸门**删掉** ✗——只认 `released` 的话，"已清理"会被读成"没放行" ✗ →
+    空等 60s ✓（实测：一轮用例白等 60s ✓，还把下一条拖成超时 ✓；
+    账本里 `timeout … lastPayload {"released": false}` ✓ 而控制服务的动作表里明明有 `release` ✓）。
+    """
     deadline = time.time() + RELEASE_TIMEOUT_SECONDS
+    status, payload = 0, {}
+    _trace("wait_for_release.start", turnId=turn_id, controlBase=CONTROL_BASE)
     while time.time() < deadline:
         status, payload = _control("GET", f"/gates/{turn_id}")
         if status == 200 and payload.get("released"):
+            _trace("wait_for_release.released", turnId=turn_id)
             return True
+        if status == 200 and payload.get("known") is False:
+            _trace("wait_for_release.cleared", turnId=turn_id)
+            return None
         time.sleep(0.05)
+    # 超时时把**最后一次读数**记下来 ✓✓：是"这个 id 不在名单里" ✗
+    # 还是"在、但 released 一直是 false" ✗，两种因的处置完全不同 ✓。
+    _trace("wait_for_release.timeout", turnId=turn_id, lastStatus=status, lastPayload=payload)
     return False
 
 
@@ -91,6 +126,19 @@ def _scenario() -> str:
     if status == 200 and payload.get("scenario"):
         return str(payload["scenario"])
     return "gate_then_answer"
+
+
+def _scenario_params() -> dict[str, Any]:
+    """本 run 的**场景参数** ✓✓（测试喂 ✓）——剧本里替身自己拿不到的数据走这里 ✓。
+
+    最典型的是提案的 `sourceVersionGuard` ✓：它是"会话当前的工作区版本" ✓，
+    要经网关/后端才读得到 ✗。缺了它那一轮会被 Java 判 stale ✓，
+    看起来像"链路坏了" ✗，其实是剧本没喂参数 ✓。
+    """
+    status, payload = _control("GET", f"/runs/{RUN_ID}/scenario-params")
+    if status == 200 and isinstance(payload.get("params"), dict):
+        return payload["params"]
+    return {}
 
 
 def _ask_clarification(thread_id: str, turn_id: str) -> None:
@@ -106,6 +154,11 @@ def _ask_clarification(thread_id: str, turn_id: str) -> None:
         "id": "q1",
         "header": "查什么",
         "question": "“计算机”指的是哪一类？（可选项，也可以自己填）",
+        # **必须声明 `isOther`** ✓✓：题干自己就写着"也可以自己填" ✓，而桥与卡片都按这条
+        # 判据才给自由输入 ✓（`user_input.py:294` ✓、`ClarificationCard.tsx` ✓）——
+        # 漏了它，卡上只剩两个选项 ✗（F02 实测就是这么红的 ✓；另一个替身
+        # `fake_app_server.py:138` 一直有这一条 ✓，是这里漏了 ✗）。
+        "isOther": True,
         "options": [
             {"label": "计算机科学与技术", "description": "专业代码 080901"},
             {"label": "软件工程", "description": "专业代码 080902"},
@@ -143,6 +196,71 @@ def _emit_final(thread_id: str, turn_id: str, *, interrupted: bool) -> None:
         send({"jsonrpc": "2.0", "method": "turn/completed",
               "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "interrupted"}}})
         return
+    # 场景 `broken_output`（F15 靶子 ✓）：终态正文**违反契约** ✗——它能被解析 ✓，
+    # 但 `responseType` 不在契约的 Literal 里 ✓，而 `message` 里塞了一个泄漏标记 ✓。
+    # 这样两条断言才有劲 ✓：① 用户看到的是**可恢复错误** ✓；② 那段原始文本**不许**出现在页面上 ✗——
+    # 只造"根本解析不出来"的坏输出 ✗，第 ② 条就会因为"压根没东西可泄"而空转 ✓。
+    # 场景 `proposal`（F07/F08 靶子 ✓）：终态正文里带一个**提案草稿** ✓——
+    # 形状照 `contracts.py` 的 `ProposalRequest` ✓（"模型产出的语义草稿" ✓，
+    # 之后由 Java 的编译器接手 ✓）。这一格要验的是**确认链**（提案 → 待确认 → 确认/取消 ✓），
+    # 所以正文必须真的能过契约与编译 ✓，不能只发个像样的字符串 ✗。
+    if _scenario() == "proposal":
+        params = _scenario_params()
+        text = json.dumps(
+            {
+                # **`responseType` 别写 recommendation** ✗✓：契约的校验器要求
+                # "recommendation / review 输出必须带 `artifactRefs`" ✓（实测原文：
+                # `Value error, artifactRefs is required for recommendation/review output` ✓）——
+                # 而提案是靠 `proposalRequest` 字段承载的 ✓，与响应类型无关 ✓，
+                # 所以这里用 `text` 就够 ✓（多写一个 recommendation 只会被整条拒掉 ✗）。
+                "responseType": "text",
+                "message": "我把这个要求整理成了提案，确认后生效。",
+                "executionStatus": "completed",
+                "proposalRequest": {
+                    "proposalSource": "user_goal",
+                    # **必须是"确认链"认得的那两种之一** ✓✓（`fill_to_count` /
+                    # `prioritize_within_tier` ✓）——P2 报告 283 行的原话：
+                    # 幂等确认链只认这两者 ✓；其余 6 种（含 `exclude_scope` ✗）走的是
+                    # **直接应用**那条 ✓——那条**不产生待确认** ✗，于是也就没有 `proposal.preview` ✓
+                    # （实测：换成 `exclude_scope` 时整轮成功、却一条 preview 都没有 ✓）。
+                    "goalType": "fill_to_count",
+                    "userOriginalText": "帮我补足到 80 个志愿",
+                    "targetCount": 80,
+                    "confidence": "high",
+                    # **版本守门值由测试喂** ✓（见 `_scenario_params` 的注释 ✓）。
+                    "sourceVersionGuard": int(params.get("sourceVersionGuard") or 0),
+                    "negativeScopes": [
+                        {
+                            "scopeType": "school",
+                            "name": "浙江大学",
+                            "normalizedName": "浙江大学",
+                        }
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        )
+        send({"jsonrpc": "2.0", "method": "item/completed",
+              "params": {"threadId": thread_id, "turnId": turn_id,
+                         "item": {"id": f"msg-{turn_id}", "type": "agentMessage", "text": text}}})
+        send({"jsonrpc": "2.0", "method": "turn/completed",
+              "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}})
+        return
+    if _scenario() == "broken_output":
+        text = json.dumps(
+            {
+                "responseType": "bogus_kind",
+                "message": f"{LEAK_MARKER} 这段是模型原样输出、不该给用户看",
+                "executionStatus": "completed",
+            },
+            ensure_ascii=False,
+        )
+        send({"jsonrpc": "2.0", "method": "item/completed",
+              "params": {"threadId": thread_id, "turnId": turn_id,
+                         "item": {"id": f"msg-{turn_id}", "type": "agentMessage", "text": text}}})
+        send({"jsonrpc": "2.0", "method": "turn/completed",
+              "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}})
+        return
     text = json.dumps({"responseType": "text", "message": "闸门放行后的答案",
                        "executionStatus": "completed"}, ensure_ascii=False)
     send({"jsonrpc": "2.0", "method": "item/completed",
@@ -159,7 +277,20 @@ def _gated_finish(thread_id: str, turn_id: str) -> None:
         answer = _take_answer(_clarify_request_id)
         send({"jsonrpc": "2.0", "method": "test/clarification_answered",
               "params": {"turnId": turn_id, "answer": answer}})
-    if not _wait_for_release(turn_id):
+    if _scenario() == "broken_output":
+        # **这一格不等放行** ✓✓：它要验的是"模型给了坏输出，系统怎么收场" ✓，
+        # 与闸门无关 ✗。等着放行会把用例变成"放行时序"的题目 ✓——
+        # 实测 F15 就是这么红的：它那一轮**压根没等到放行** ✗，
+        # 60s 超时后才以"中断"收尾 ✓，而用例早就在 20s 断言上红了 ✓。
+        _finish_once(thread_id, turn_id, interrupted=False)
+        return
+    outcome = _wait_for_release(turn_id)
+    if outcome is None:
+        # 闸门**被清掉了** ✓（不是放行 ✗，是 `cleanGates` 的 reset 收走了 ✓）：
+        # 立刻按失败态收尾 ✓——再等下去只是白等 60s ✓，而且会把下一条用例拖成超时 ✓。
+        _finish_once(thread_id, turn_id, interrupted=True)
+        return
+    if not outcome:
         # 超时 = **没放行** ✗：先留一条能在大声看见的标记 ✓。
         send({"jsonrpc": "2.0", "method": "test/release_timeout",
               "params": {"turnId": turn_id, "waitedSeconds": RELEASE_TIMEOUT_SECONDS}})
@@ -188,7 +319,15 @@ def handle(message: dict) -> None:
     if method == "initialized":
         return  # 通知 ✓：不需要应答 ✓（参照替身同此 ✓）
     if method == "thread/start":
-        thread_id = str(params.get("threadId") or f"thr_{len(_threads) + 1}")
+        # **线程 id 必须跨进程唯一** ✓✓：原来是 `thr_1/thr_2…` ✗——而**绑定表是持久的** ✓
+        #（Java 侧按 (租户, 会话, 线程) 存 ✓），替身一重启 id 就从 1 重来 ✗ → 同一个 `thr_1`
+        # 被绑到**不同会话**上 ✓ → 后端报 `binding_thread_identity_conflict` ✗ → 网关回
+        # `binding_registration_failed` ✗ → 整轮"引擎暂时不可用" ✓。
+        # 实测症状很误导：**每轮起栈后的第一条用例必红** ✓（后面几条因为 id 恰好对得上而绿 ✓），
+        # 看起来像"首轮有问题" ✗；堆栈与后端日志两处才把它钉死 ✓。
+        # 真实 codex 的 thread id 本来就是全局唯一的 ✓——所以这一改是**恢复保真** ✓，
+        # 不是给测试打补丁 ✓。
+        thread_id = str(params.get("threadId") or f"thr_{os.getpid()}_{len(_threads) + 1}")
         _threads.add(thread_id)
         send({"jsonrpc": "2.0", "id": request_id, "result": {"thread": {"id": thread_id}}})
         return
@@ -213,7 +352,12 @@ def handle(message: dict) -> None:
         # 客户端（测试构建 ✓）给了回合号就用它 ✓——没有才自己编 ✓。
         turn_id = str(params.get("turnId") or params.get("clientTurnId") or f"turn_{_turn_counter}")
         # 先在控制服务**登记**这个闸门 ✓（reset 才能按 runId 清到它 ✓）。
-        _control("POST", "/gates", {"runId": RUN_ID, "turnId": turn_id})
+        register_status, _ = _control("POST", "/gates", {"runId": RUN_ID, "turnId": turn_id})
+        # 登记**成不成功**要落账 ✓✓：`_control` 失败时返回的是状态码 ✓，不看就会
+        # 变成"登记悄悄丢了 ✗ → 替身空等 60s ✗"，而那看起来像网关的问题 ✗✓。
+        _trace("turn_start", threadId=thread_id, turnId=turn_id, runId=RUN_ID,
+               counter=_turn_counter, registerStatus=register_status,
+               clientTurnId=params.get("turnId") or params.get("clientTurnId"))
         send({"jsonrpc": "2.0", "id": request_id,
               "result": {"turn": {"id": turn_id, "status": "inProgress"}, "received": params}})
         send({"jsonrpc": "2.0", "method": "item/agentMessage/delta",

@@ -34,9 +34,26 @@ export default defineConfig({
     // 正是任务书禁止的"skip 后声称覆盖" ✓。runner 改为**显式先跑 setup、失败即中止** ✓✓。
     { name: 'setup', testMatch: '**/*.setup.ts' },
     // 合同栈：真实浏览器 + Gateway + Java 隔离库 ✓，Codex 侧是**可控闸门**的假实现 ✓。
+    //
+    // **写路径那几条排除在外** ✓✓（`grepInvert` ✓）：它们要求栈跑在 `codex_write` 上 ✗
+    //（只读模式下确认链不在这台实例上活着 ✓，点了也走不到 claim/execute ✓）——
+    // 混在一起的话，"栈起成了只读"会被读成"功能坏了" ✗，而"写路径还没做完"会被读成"合同栈红" ✗✗。
+    // 排除的判据是**用例标题**里的 `F07 后半` ✓（与用例里的注释同一处口径 ✓）。
     {
       name: 'contract',
       testMatch: '**/*.contract.spec.ts',
+      grepInvert: /F07 后半|F08/,
+      use: { storageState: process.env.ZHIYUAN_E2E_AUTH_STATE || undefined },
+    },
+    // **需要 `codex_write` 栈的用例** ✓（当前只有 F07 后半那条 ✓——起栈时要
+    // `CODEX_LOCAL_GATEWAY_MODE=codex_write` ✓，见 `scripts/start-codex-local.sh` ✓）
+    // **新增写路径用例时，两处 grep 都要加** ✗✓（`contract` 的 `grepInvert` 与这里的 `grep` ✓）——
+    // 漏一处的话它要么跑在只读栈上（红得没道理 ✓），要么被过滤掉**一条都不跑** ✗✓
+    //（实测：`--project write --grep F08` 交集为空 ✓，输出里只有 setup ✓，看起来像"用例没写对" ✗）。
+    {
+      name: 'write',
+      testMatch: '**/*.contract.spec.ts',
+      grep: /F07 后半|F08/,
       use: { storageState: process.env.ZHIYUAN_E2E_AUTH_STATE || undefined },
     },
     // 真实栈：同一套栈，但换真实 Codex 与真实（或经批准的隔离）上游 ✓。

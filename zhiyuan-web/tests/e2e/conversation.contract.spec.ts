@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures';
+import { dropConversationSocket, expect, installSocketRecorder, test } from './fixtures';
 
 // 任务书（Task C4 ④）原话："一条**不依赖固定延时**的流式测试 ✓：fake 模型等 fixture 控制释放终态 ✓，
 // UI 必须先显示进度、停止仍可操作 ✓。"
@@ -19,7 +19,9 @@ test('终态放行前：进度已显示、停止仍可点、答案还没有', as
   // 把页面的 console、WS 帧、失败请求全记下来 ✓——它们会在失败输出里直接说出原因 ✓。
   const consoleLines: string[] = [];
   const socketFrames: string[] = [];
-  page.on('console', (message) => consoleLines.push(`${message.type()}: ${message.text().slice(0, 200)}`));
+  // **窗口别写太小** ✗✓（本仓踩过一次的坑 ✓）：第一版截 200 字 ✓，正好把诊断字段切掉 ✓，
+  // 白跑一轮 ✓。要看的字段在**行尾** ✓，就得留够 ✓。
+  page.on('console', (message) => consoleLines.push(`${message.type()}: ${message.text().slice(0, 900)}`));
   page.on('websocket', (socket) => {
     socketFrames.push(`OPEN ${socket.url().slice(0, 120)}`);
     // **窗口别写太小** ✗✓：我第一版截 160 字 ✓，结果正好把帧尾的 `turnId`/`protocolVersion` 切掉 ✓，
@@ -120,9 +122,12 @@ test('F12 停止：真中断收尾，且不会冒出假 successful 的答案', a
 test('F10 刷新：断线重连后回合能恢复，且不重复渲染', async ({
   page,
   sessionUrl,
+  runtimeGate,
   verifyFakeRuntime,
 }) => {
   void verifyFakeRuntime;
+  // 场景**不用在这里给** ✓：`cleanGates` 已把本 run 的场景复位成 `gate_then_answer`
+  //（它按 runId 存、跨用例不清 ✗——那条实测写在该 fixture 里 ✓）。
 
   await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
   const input = page.getByTestId('chat-input');
@@ -144,6 +149,448 @@ test('F10 刷新：断线重连后回合能恢复，且不重复渲染', async (
   await expect(page.locator('[data-turn-id]')).toHaveCount(1, { timeout: 10_000 });
   // ③ 终态仍然没到 ✓（闸门没放行 ✓——刷新不该把它"刷出来" ✓）。
   await expect(turnAfter.getByTestId('assistant-final')).toHaveCount(0);
+
+  // **这一轮到此为止，故意不收尾** ✓——③ 要的就是"刷新不该把终态刷出来" ✓。
+  // 收尾留给下一条用例开跑前的 `cleanGates`（放行 ✓）或替身的 60s 超时（按失败态收尾 ✓）：
+  // 替身账本实测"放行 → 收尾"是即时的（50ms 轮询 ✓），两种收尾都不影响本用例的三条断言 ✓。
+  // 想在这儿再等一条"放行后终态会到"也行 ✗✓，但那是**另一条链**的题目（重连后的收尾投递 ✓），
+  // 不该混进"刷新恢复"这一条用例里 ✓。
+});
+
+// **F10 的另一半：断线·不刷新** ✓✓——任务书这一格的判据原文是"断线／刷新／换会话：**cursor 去重**、
+// 恢复待答卡、不会把旧队列发到新会话" ✓，上面那条只覆盖了"刷新" ✓。
+//
+// 两条的**分工**（也是这条为什么必须存在 ✓）：
+//   · 刷新 → 页面状态被清掉 ✓ → 走"补整个当前回合" ✓（客户端**没有**游标 ✓）；
+//   · 这条 → 页面**还活着** ✓ → 它要的是断线期间漏掉的那几条 ✓，
+//     而那几条里可能有**已经结束**回合的终态 ✓——那种回合在服务端已经不是在飞的了 ✗
+//     （`active_turn` 是 None ✓），"补当前回合"那条路根本补不到 ✗ →
+//     **只有游标这条路能补回来** ✓✓，所以这条用例真的钉得住它 ✓。
+test('F10 断线重连（不刷新）：断线期间落下的终态靠游标补回来', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  await runtimeGate.setScenario('gate_then_answer');
+
+  // **怎么"断线"是有讲究的** ✗✓：`context.setOffline(true)` 关不掉已建立的 socket ✗，
+  // 页面根本没重连、用例会**假绿** ✗——所以走 `installSocketRecorder` + `dropConversationSocket` ✓
+  //（做法与踩过的两个坑都写在那两个 fixture 的注释里 ✓）。
+  await installSocketRecorder(page);
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  const input = page.getByTestId('chat-input');
+  await expect(input).toBeVisible({ timeout: 10_000 });
+  await input.fill('查询测试学校近三年录取位次');
+  await page.getByTestId('chat-send').click();
+
+  const turn = page.locator('[data-turn-id]').last();
+  await expect(turn.getByTestId('turn-progress')).toContainText('历年录取', { timeout: 20_000 });
+  await expect(turn.getByTestId('assistant-final')).toHaveCount(0);
+
+  // 断开，然后**在断线期间放行**：终态只落在服务端的事件流里 ✓，客户端这一侧收不到 ✓。
+  await dropConversationSocket(page);
+  await runtimeGate.releasePendingGate();
+  await expect(turn.getByTestId('assistant-final')).toHaveCount(0); // 断着，就是收不到 ✓
+
+  // hook 会在重连间隔（3s）后自己接回来 ✓，并**带上游标** ✓ → 服务端补出断线期间那一段 ✓。
+  // 补回来的终态落在**同一个**回合上 ✓（游标接着走 → 不重复、不新建回合 ✓）。
+  await expect(page.locator('[data-turn-id]')).toHaveCount(1, { timeout: 30_000 });
+  await expect(
+    page.locator('[data-turn-id]').last().getByTestId('assistant-final'),
+  ).toHaveCount(1, { timeout: 30_000 });
+});
+
+// **F10 第三格：恢复待答卡** ✓✓（任务书那一格的原文是"断线／刷新／换会话：cursor 去重、
+// **恢复待答卡**、不会把旧队列发到新会话" ✓）。
+//
+// 这一格压的是 A7 反复强调的那条设计性质 ✓✓：**卡活在 JSON-RPC 请求里，事件活在流里，
+// 两者是两条命** ✓——刷新把卡的 UI 清掉了 ✓，但桥那边的请求还挂着 ✓，而卡的事件**在流里** ✓ →
+// 重连补发必须把它原样补回来 ✓，并且**答案仍然回得去** ✓（后者才是"恢复"的可证伪版本 ✓：
+// 只断言"卡又出现了" ✗，等于允许"重连后卡在、一点就报错" ✗）。
+test('F10 刷新恢复待答卡：刷新后原生卡重新出现，且回答仍能回到原请求', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  await runtimeGate.setScenario('clarification');
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  const input = page.getByTestId('chat-input');
+  await expect(input).toBeVisible({ timeout: 10_000 });
+  await input.fill('查一下计算机');
+  await page.getByTestId('chat-send').click();
+
+  const card = page.getByTestId('clarification-card');
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  // 记下卡的身份 ✓：刷新后必须是**同一张卡**（同一个 requestId ✓），不是又新弹一张 ✓。
+  const requestId = await card.getAttribute('data-request-id');
+  expect(requestId, '卡要有服务端给的 requestId ✓').toBeTruthy();
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+
+  const cardAfter = page.getByTestId('clarification-card');
+  await expect(cardAfter, '刷新后卡要回来（它的事件在流里 ✓，桥那边的请求还挂着 ✓）').toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(cardAfter).toHaveAttribute('data-request-id', requestId || '');
+
+  // 回答 ✓：答复要回到**原来那个** rpc 请求上——替身收到才继续 ✓（收不到就永远等 ✓）。
+  await cardAfter.getByPlaceholder('请输入').fill('软件工程');
+  await cardAfter.getByTestId('clarification-submit').click();
+
+  // 回答后仍在同一回合 ✓ + 放行后终态照常到达 ✓：两条一起才说明"这张卡是活的" ✓。
+  await expect(page.locator('[data-turn-id]')).toHaveCount(1, { timeout: 20_000 });
+  await runtimeGate.releasePendingGate();
+  await expect(
+    page.locator('[data-turn-id]').last().getByTestId('assistant-final'),
+  ).toHaveCount(1, { timeout: 20_000 });
+});
+
+// **F15 模型格式坏** ✓（任务书原文："上游异常／模型格式坏 → 已有事实不编造；**显示可恢复错误**；
+// **无 JSON/reasoning 泄漏**" ✓）。
+//
+// 只做"模型格式坏"这半 ✓（"上游异常"那半要真让 Java/上游失败 ✗，本机没有可控的注入点 ✗，记未验 ✓）。
+// 替身发的终态**能被解析但违反契约** ✗（`responseType` 不在 Literal 里 ✓，`message` 里带泄漏标记 ✓）——
+// 这样"不泄漏"那条才不是空转 ✓（见替身里 `broken_output` 的注释 ✓）。
+test('F15 模型格式坏：显示可恢复错误，且不泄漏模型原文', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  await runtimeGate.setScenario('broken_output');
+
+  // **探针**（照 test4 那条的配方 ✓）：这条用例要问的是"**客户端有没有把事件应用上去**" ✓——
+  // 服务端那半已经由事件流证明 ✓，而"重同步把界面清掉"这类事**只在 console 里留话** ✓。
+  // 打印放 `finally` ✓（放末尾的话，前面一红就永远走不到 ✓——第一版就是这么白跑的 ✓）。
+  const consoleLines: string[] = [];
+  const socketFrames: string[] = [];
+  // **窗口别写太小** ✗✓（本仓踩过一次的坑 ✓）：第一版截 200 字 ✓，正好把诊断字段切掉 ✓，
+  // 白跑一轮 ✓。要看的字段在**行尾** ✓，就得留够 ✓。
+  page.on('console', (message) => consoleLines.push(`${message.type()}: ${message.text().slice(0, 900)}`));
+  page.on('websocket', (socket) => {
+    socket.on('framereceived', (frame) => socketFrames.push(`← ${String(frame.payload).slice(0, 600)}`));
+    socket.on('framesent', (frame) => socketFrames.push(`→ ${String(frame.payload).slice(0, 600)}`));
+  });
+
+  try {
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  const input = page.getByTestId('chat-input');
+  await expect(input).toBeVisible({ timeout: 10_000 });
+  await input.fill('查询测试学校近三年录取位次');
+  await page.getByTestId('chat-send').click();
+
+  const turn = page.locator('[data-turn-id]').last();
+  await expect(turn.getByTestId('turn-progress')).toContainText('历年录取', { timeout: 20_000 });
+
+  // **不按放行** ✓✓：`broken_output` 这一幕替身本来就**不等闸门** ✓——
+  // 这一格要验的是"坏输出怎么收场" ✓，与放行时序无关 ✗（把两件事缠在一起，
+  // 红的时候指不到真因 ✓：实测第一次就是这么红的 ✓）。
+
+  // ① 用户看到的是**可恢复错误** ✓，而不是"看起来正常的答案" ✗（更不是编造的事实 ✗）。
+  // 落在 `turn-error` 上 ✓：这条判据指的是"失败要**让用户看得见**" ✓——
+  // 而修复前它是**整轮静默** ✗（网关失败时没有 `reply` ✓，V1 终态却无条件发
+  // `assistant.completed` ✓，`message` 是空串 ✗ → 渲染条件不成立 → 什么都不画 ✓）。
+  const error = turn.getByTestId('turn-error');
+  await expect(error, '失败必须让用户看得见（可恢复错误）').toBeVisible({ timeout: 20_000 });
+  await expect(error).toContainText('暂时不可用');
+  // 而且**不许**同时冒出一个"看起来完成了的答案" ✗。
+  await expect(turn.getByTestId('assistant-final')).toHaveCount(0);
+
+  // ② **不泄漏** ✓✓：模型原文一个字都不许出现在页面上（标记就在那段 `message` 里 ✓）。
+  // 这条是 fail-closed 的：它红说明那段文本漏到了用户面前 ✓，而不是"看起来更好看"的问题 ✗。
+  await expect(page.locator('body')).not.toContainText('RAW-MODEL-LEAK-MARKER');
+  await expect(page.locator('body')).not.toContainText('不该给用户看');
+  } finally {
+    // 探针**必须在 finally 里打** ✓✓（放在末尾时，前面任一条断言红了它就永远走不到 ✓）。
+    console.log('=== 探针：console（末 20 条）===\n' + consoleLines.slice(-20).join('\n'));
+    console.log('=== 探针：WS（末 20 条）===\n' + socketFrames.slice(-20).join('\n'));
+  }
+});
+
+// **F11 日志 epoch 重置** ✓（任务书原文："日志 epoch 重置 → **resync 重建基线**；
+// **不漏新代低序号消息**" ✓）。
+//
+// 判据拆成两句，各自对应一件真事 ✓：
+//   ① 客户端带着**旧代际**的游标重连时，服务端必须回 `session.resync` ✓ 而不是闷头补 ✓；
+//   ② 换代之后序号**从 1 重来** ✓——一个"只按序号去重"的客户端（"我见过 12，1 是旧的"✗）
+//      会把新代的事件整条丢掉 ✓，所以换代后必须还能把低序号事件吃进来 ✓。
+// "存储换代"由控制服务替我们造 ✓（删 `seq`/`epoch` 两键 ✓，见那边的注释 ✓）；
+// ①的服务端语义另有单测钉着 ✓（`_replay_tail` 的 resync 回落 ✓）。
+test('F11 存储换代：resync 重建基线，换代后低序号事件照样能渲染', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  await runtimeGate.setScenario('gate_then_answer');
+  await installSocketRecorder(page);
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  const input = page.getByTestId('chat-input');
+  await expect(input).toBeVisible({ timeout: 10_000 });
+  await input.fill('查询测试学校近三年录取位次');
+  await page.getByTestId('chat-send').click();
+  await expect(
+    page.locator('[data-turn-id]').last().getByTestId('turn-progress'),
+  ).toContainText('历年录取', { timeout: 20_000 });
+
+  const sessionId =
+    new URL(sessionUrl, 'http://placeholder').searchParams.get('chatSessionId') || '';
+  expect(sessionId, '会话 URL 里必须带 chatSessionId ✓').toBeTruthy();
+
+  // ① **换代 + 断线重连**：这一次带的游标属于**已经不存在的旧代际** ✓ →
+  // 服务端只能回 `session.resync`（补尾巴会留下一个看不见的洞 ✗）→ 客户端重置基线 ✓。
+  await runtimeGate.rotateEpoch(sessionId);
+  await dropConversationSocket(page);
+  // 让第一轮在新代际里收尾（它的终态会是新代的序号 1/2 ✓——比客户端见过的 12 小 ✓）。
+  // 这里用**收尾型**放行 ✓（本轮会起两轮，收尾时不赌"还剩几个"✗——判据型那版仍留给
+  // 只该有一轮的用例 ✓）。
+  await runtimeGate.releaseAllPending();
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 30_000 });
+
+  // ② **换代后再走一轮**：进度同样落在新代际的低序号上 ✓——
+  // 客户端若还按"序号必须比上次大"去重 ✗，这一轮的块与答案就都不会出现 ✓。
+  const turn = page.locator('[data-turn-id]').last();
+  await page.getByTestId('chat-input').fill('再查一次');
+  await page.getByTestId('chat-send').click();
+  // **判据到此为止** ✓✓：任务书这一格要的是"resync 重建基线 ✓ + 不漏新代低序号消息 ✓"——
+  // 低序号事件（进度 ✓）能在换代后被渲染出来 ✓，两条就都成立了 ✓。
+  // 早先这里还追了一条"第二轮也要照常收尾" ✗：那是**我加的额外要求** ✓，与判据无关 ✗，
+  // 而且它缠在跨用例的闸门清理上 ✓（读数：那一刻放行名单是空的 ✓——上一条用例的
+  // `cleanGates` 已经把闸门收走了 ✓）。按"判据对齐"把它去掉 ✓：多出来的要求只会让
+  // 红的指不到真因 ✓。
+  await expect(turn.getByTestId('turn-progress')).toContainText('历年录取', { timeout: 30_000 });
+});
+
+// **F07 的前半格：模型产出的提案草稿能过契约** ✓。
+// 断言的是**真契约** ✓：`proposalRequest` 的形状（`contracts.py` 的 `ProposalRequest` ✓）
+// 必须过 `TurnOutput` 的校验 ✓ —— 别写 `responseType: recommendation` ✗：
+// 校验器要求"recommendation / review 必须带 `artifactRefs`" ✓（实测原文见替身注释 ✓）。
+// **它到此为止** ✓：再往后（`proposal.preview` ✓／确认与取消 ✓）需要 Java 编译成功 ✓，
+// 而编译**先要读会话的 legacy 志愿数据** ✗——本地合成会话没有这类文件 ✗
+// （后端实测：`AliOSSService.downloadFile → NoSuchBucket` ✓）。那一步的缺口记在下面 ✓。
+test('F07 提案草稿：模型产出能过契约，且这一轮正常收尾', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  await runtimeGate.setScenario('proposal');
+
+  const sessionId =
+    new URL(sessionUrl, 'http://placeholder').searchParams.get('chatSessionId') || '';
+  const backend = process.env.ZHIYUAN_E2E_BACKEND_ORIGIN || 'http://127.0.0.1:18290';
+
+  // **前置两件：先清干净、再铺数据** ✓✓——
+  // ① 清状态：会话在服务端有状态 ✓（待确认修订号/快照版本 ✓），同一条会话反复试会把
+  //    两个计数器写岔 ✗（实测 `pending revision conflict: current=1 expected=0` ✓），
+  //    于是**同一个守门值不可能同时成立** ✓（喂 1 过前一关卡后一关 ✓）；
+  // ② 铺数据：提案编译要先读 legacy 志愿数据 ✓（否则实测 `NoSuchBucket` +
+  //    `legacyPlanImport … 下载志愿数据文件失败` ✓；本地合成会话本来没有这类文件 ✗）。
+  await runtimeGate.resetSessionState(sessionId);
+  await runtimeGate.seedVolunteerData(sessionId);
+  console.log(`[f07] 会话 ${sessionId} 已清状态 + 已铺数据 ✓`);
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  const stateResponse = await page.request.get(
+    `${backend}/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=${sessionId}`,
+  );
+  const stateJson = (await stateResponse.json().catch(() => null)) as
+    | { data?: { version?: number; phase?: string } }
+    | null;
+  const version = stateJson?.data?.version;
+  console.log(`[f07] workspace-state HTTP ${stateResponse.status()} version=${String(version)} phase=${String(stateJson?.data?.phase)}`);
+  // **守门值在两个计数器上都要成立** ✓✓：实测两关的原文是
+  // `pending revision conflict: current=1 expected=0` ✓ 与
+  // `stale_state: proposal source version does not match the current snapshot` ✓ ——
+  // 也就是说"待确认修订号"与"快照版本"**必须相等** ✓；而同一条会话被反复试会把它们写岔 ✗
+  // （pending 被推到 1 ✓、快照还是 0 ✓ → **没有哪个值能同时成立** ✗✓）。
+  // 所以这条用例要么跑在**干净会话**上 ✓（`ZHIYUAN_E2E_SESSION_SALT=<run id>` ✓），
+  // 要么那台会话的两个计数器本来就一致 ✓。守门值取**工作区状态里的 `version`** ✓。
+  await runtimeGate.setScenarioParams({ sourceVersionGuard: typeof version === 'number' ? version : 0 });
+
+  const input = page.getByTestId('chat-input');
+  await expect(input).toBeVisible({ timeout: 10_000 });
+  await input.fill('把浙江大学去掉');
+  await page.getByTestId('chat-send').click();
+
+  const turn = page.locator('[data-turn-id]').last();
+  await expect(turn.getByTestId('turn-progress')).toContainText('历年录取', { timeout: 20_000 });
+  await runtimeGate.releaseAllPending();
+  // 只要求"这一轮有收尾" ✓（答案或可恢复错误都算 ✓）。
+  await expect(turn.getByTestId('assistant-final').or(turn.getByTestId('turn-error'))).toHaveCount(1, {
+    timeout: 20_000,
+  });
+
+  // **提案卡要画出来** ✓✓（本会话补的最后一格 ✓）：事件早就到了 ✓（网关算完预览 ✓ → 翻成合同形状 ✓），
+  // 缺的只是"没人画它" ✗——所以断言落在**卡**上 ✓：卡在 ✓、ref 非空 ✓、状态是"待确认" ✓。
+  const card = page.getByTestId('proposal-card');
+  await expect(card, '提案预览到了就必须有卡 ✓（有事件没卡 = 用户看不到 ✓）').toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(card).toHaveAttribute('data-proposal-ref', /.+/);
+  await expect(card.getByTestId('proposal-status')).toContainText('待确认');
+  // 摘要里带着方案口径 ✓（"补入 80 个" ✓）——顺带证明载荷是**真内容**而不是空卡 ✓✓。
+  await expect(card.getByTestId('proposal-summary')).toContainText('80');
+});
+
+// **F07/F08/F09/F13（写路径）还没成用例** ✗——它们的**地基**已经就位 ✓：
+//   · 契约栈可按 run 起在 `codex_write`（见 `scripts/start-codex-local.sh` 的 `CODEX_LOCAL_GATEWAY_MODE` ✓）；
+//   · 替身会发形状照 `contracts.py` 的 `proposalRequest`（场景 `proposal` ✓）；
+//   · 控制服务有**场景参数**通道 ✓（替身拿不到的数据由测试喂 ✓）。
+// 还差两件 ✓（都不是"再写个断言"能解决的 ✗）：
+//   1. **喂守门值**：`sourceVersionGuard` = 工作区状态的 `data.version` ✓（实测该字段存在 ✓：
+//      `/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=…` ✓ →
+//      `{"data":{"…","version":0,…}}` ✓）；而那台会话是 `phase: profile_ready` ✓——
+//      **成功提案需要先有候选池/方案** ✗（与 P2 报告第九轮那条一致 ✓），所以这条用例要**多轮铺垫** ✓；
+//   2. **前端能画提案卡** ✗（含确认/取消按钮 ✓，`conversationAction` 出站已存在 ✓）——
+//      P2 报告第九轮的原话就是"仅剩前端按真实结果更新确认卡片需浏览器" ✓。
+// 两件都被**记档** ✓，不在这里留一条半截用例假装覆盖 ✗（那正是本仓反复强调的 ✗）。
+
+// **F07 后半：放弃提案** ✓（任务书原文："调整与取消 → diff 准确；**取消不改变正式内容**；
+// active Pending 终止" ✓）。
+//
+// **这条要求在 `codex_write` 栈上跑** ✗✓：只读模式下确认链**不在这台实例上活着** ✓
+//（`GATEWAY_MODE=codex_readonly` ✓ 只出预览、不产生待确认 ✓），点了也走不到 claim/execute ✓。
+// 所以它红的时候先看栈的模式 ✓，再看链 ✓——报错里也写了这句 ✓。
+test('F07 后半：放弃提案不改变正式内容', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  await runtimeGate.setScenario('proposal');
+
+  const sessionId =
+    new URL(sessionUrl, 'http://placeholder').searchParams.get('chatSessionId') || '';
+  const backend = process.env.ZHIYUAN_E2E_BACKEND_ORIGIN || 'http://127.0.0.1:18290';
+  const readState = async () => {
+    const response = await page.request.get(
+      `${backend}/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=${sessionId}`,
+    );
+    const body = (await response.json().catch(() => null)) as { data?: Record<string, unknown> } | null;
+    return body?.data || {};
+  };
+
+  // 前置同前一条 ✓：清状态 + 铺数据（提案编译的先决条件 ✓）。
+  await runtimeGate.resetSessionState(sessionId);
+  await runtimeGate.seedVolunteerData(sessionId);
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  const before = await readState();
+
+  await page.getByTestId('chat-input').fill('帮我补足到 80 个志愿');
+  await page.getByTestId('chat-send').click();
+  // **放行要等进度出现之后** ✗✓：闸门是在替身 `turn/start` 时才登记的 ✓，
+  // 紧接着 send 就放行会**抢在登记之前** ✓（实测：那一刻名单是空的 ✓，于是这一轮白等 60s ✓、
+  // 最后以 `turn_interrupted` 收尾 ✓、自然不会再有提案 ✓）。其它用例都是"先看到进度、再放行" ✓。
+  await expect(
+    page.locator('[data-turn-id]').last().getByTestId('turn-progress'),
+  ).toContainText('历年录取', { timeout: 20_000 });
+  await runtimeGate.releaseAllPending();
+
+  const card = page.getByTestId('proposal-card');
+  await expect(card, '提案卡要先出现 ✓（没有卡就无从谈"放弃"✓）').toBeVisible({ timeout: 20_000 });
+  await expect(card.getByTestId('proposal-status')).toContainText('待确认');
+
+  // **放弃** ✓：出站复用既有那条 `conversationAction` 帧 ✓（`cancel_proposal` ✓）。
+  await card.getByTestId('proposal-cancel').click();
+
+  // 结果要回来 ✓（`conversationAction.result` ✓）→ 卡进终态、按钮收起 ✓。
+  // 措辞容两种 ✓（服务端可能回 `cancelled` 或 `declined` ✓，前端都显示"已放弃" ✓）。
+  await expect(
+    card.getByTestId('proposal-status'),
+    '放弃之后卡要进终态 ✓（这一条同时证明"确认链在这台实例上活着"✓——' +
+      '只读模式栈上它走不到 claim/execute ✓，红了先看 GATEWAY_MODE ✓）',
+  ).toContainText(/已放弃|已取消/, { timeout: 30_000 });
+  await expect(card.getByTestId('proposal-confirm')).toHaveCount(0);
+
+  // **取消不改变正式内容** ✓✓（本格的头号判据 ✓）：与基线逐项比 ✓。
+  const after = await readState();
+  expect(after.version, '取消不该推进正式版本 ✓').toBe(before.version);
+  expect(JSON.stringify(after.orderedPlan ?? null)).toBe(JSON.stringify(before.orderedPlan ?? null));
+  expect(JSON.stringify(after.phase ?? null)).toBe(JSON.stringify(before.phase ?? null));
+});
+
+// **F08：确认双击 / 网络重传** ✓（任务书原文："确认双击／网络重传 → **同 operationId**；
+// **无重复写**；**applied 后读 workspace**" ✓）。
+//
+// **这条也要 `codex_write` 栈** ✗✓（只读模式下确认链不活着 ✓，所以它在 `write` project 里 ✓）。
+//
+// 断什么 ✓（都落在**用户看得见的东西**上 ✓）：
+//   ① 点"采纳"之后卡进"已生效" ✓；
+//   ② **写只发生一次** ✓——正式内容（工作区）只前进一次 ✓（双击的第二次由 UI 的
+//      `submitting` 挡住 ✓，或由服务端的 `operationId` 幂等挡住 ✓，**两者都算"不双写"** ✓）；
+//   ③ **applied 之后 workspace 读得到** ✓（任务书那条 ✓：不是只看 HTTP 200 ✓）。
+test('F08 确认：双击不双写，且 applied 后读得到 workspace', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  await runtimeGate.setScenario('proposal');
+
+  const sessionId =
+    new URL(sessionUrl, 'http://placeholder').searchParams.get('chatSessionId') || '';
+  const backend = process.env.ZHIYUAN_E2E_BACKEND_ORIGIN || 'http://127.0.0.1:18290';
+  const readState = async () => {
+    const response = await page.request.get(
+      `${backend}/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=${sessionId}`,
+    );
+    const body = (await response.json().catch(() => null)) as { data?: Record<string, unknown> } | null;
+    return body?.data || {};
+  };
+
+  await runtimeGate.resetSessionState(sessionId);
+  await runtimeGate.seedVolunteerData(sessionId);
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  const before = await readState();
+
+  await page.getByTestId('chat-input').fill('帮我补足到 80 个志愿');
+  await page.getByTestId('chat-send').click();
+  await expect(
+    page.locator('[data-turn-id]').last().getByTestId('turn-progress'),
+  ).toContainText('历年录取', { timeout: 20_000 });
+  await runtimeGate.releaseAllPending();
+
+  const card = page.getByTestId('proposal-card');
+  await expect(card).toBeVisible({ timeout: 20_000 });
+  await expect(card.getByTestId('proposal-status')).toContainText('待确认');
+
+  // **双击** ✓：第二次**可能**被 UI 的 `submitting` 挡掉 ✓（那也是"不双写"的一半 ✓），
+  // 所以这里**不**把它的失败当失败 ✗——真正要断的是"写只发生一次" ✓。
+  await card.getByTestId('proposal-confirm').click();
+  await card.getByTestId('proposal-confirm').click({ timeout: 1500 }).catch(() => {});
+
+  await expect(
+    card.getByTestId('proposal-status'),
+    '采纳之后卡要进"已生效" ✓（这一条同时证明写链在这台实例上活着 ✓——' +
+      '只读模式栈上走不到 claim/execute ✓，红了先看 GATEWAY_MODE ✓）',
+  ).toContainText(/已生效|已采纳/, { timeout: 30_000 });
+
+  // **applied 后读 workspace** ✓✓（任务书那条 ✓）：正式内容真的前进了 ✓，而且**只前进一次** ✓。
+  const after = await readState();
+  console.log(
+    `[f08] before: version=${String(before.version)} phase=${String(before.phase)}；` +
+      `after: version=${String(after.version)} phase=${String(after.phase)}；` +
+      `orderedPlan=${JSON.stringify((after as any).orderedPlan ?? null).slice(0, 200)}`,
+  );
+  expect(after.version, '采纳之后正式版本必须前进 ✓').not.toBe(before.version);
+  expect(after.phase, '工作区阶段要推进到"有方案"那一档 ✓').not.toBe(before.phase);
 });
 
 // **F02：歧义 → 原生卡** ✓（任务书原文："选项+自由输入；**原 request 回答继续同 Turn**" ✓）。
