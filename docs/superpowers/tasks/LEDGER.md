@@ -72,7 +72,18 @@
 **不需要**再给 MCP 接写工具 ✗。唯一残留：`MCP_WRITE_TOOLS_ENABLED` / `McpConfig.write_tools_enabled`
 **没有任何读者** ✗（启动脚本仍传 `=false` ✓），已在 `config.py` 就地标注"开与不开行为一样" ✗✓。
 
-待办（不属于本线）：`test_dialog_quality_gate` 那 94 个缺文件 ✗；"库里 2 条却渲染 8 份" ✗ 未定。
+待办（不属于本线）：`test_dialog_quality_gate` 那条红 ✗ —— **是数据/环境，不是代码** ✓（2026-09-28 定）：
+
+`test_final_action_explicit_clone_sources_have_volunteer_fixture` 读用例里的
+`cloneBackendStateFromSessionId` ✓，要求 `zhiyuan-server/data/tmp/session_volunteer_<id>.json` **存在** ✓
+（本机只有 2 个、且是别的 id ✗ → 94 条 violation ✓）。而这些文件是**源会话的原始志愿数据** ✓ ——
+`examples/dialog_regression_runner.py:1505+` 的 clone 只做**源→目标复制** ✓（它自己的 docstring：
+"Disposable cloned sessions need the same local **source files**" ✓），**源文件得来自真实环境** ✓
+（生产抽样：`docs/release-3.1.0-production-session-sampling.md` ✓）。
+**不要伪造** ✗：填一批内容不对的文件会让那条线的实跑**静默跑偏** ✗（比红着更糟 ✓）。
+要真绿，得把真实源文件带过来、或对着真实环境跑一次抽样 ✓ —— 属 dialog 回归那条线 ✓。
+
+另一条：**"库里 2 条却渲染 8 份"** ✗ 仍未定 ✓（trace 里只见到一份该会话的响应 ✓）。
 分支：`wip/2026-09-28-p2-write-loop-green` ✓（已推 origin ✓，`develop` 之上 30 个提交 ✓）。
 
 ## 2026-09-23 事故与恢复：`app/gateway/service.py` 被误覆盖
