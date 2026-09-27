@@ -760,10 +760,18 @@ test('F13 applying 时断线：事务不被取消，重连后读得到最终结�
   // 页面上它出现 >1 份就是**重复渲染** ✓。查的是"库里 2 条却渲染 8 份"那条未定项 ✗：
   // 那条现象出在**修前**的失败页面上（三次整页加载 ✓），而今天改的正是"快照/重放"那条路 ✓，
   // 所以先量一次现在的数 ✓，别凭印象说它没了 ✗。
-  const userMsgCopies = await page.getByText('帮我补足到 80 个志愿').count();
-  const assistantCopies = await page.getByText('我把这个要求整理成了提案，确认后生效。').count();
+  // **只数段落节点** ✗✓：`getByText` 会把**父容器**一起算进来 ✓（实测：1 个 `p` + 2 层祖先 = 3 ✓，
+  // 差点把"嵌套"读成"重复渲染" ✗）——所以按 role=paragraph 数 ✓。
+  const userMsgCopies = await page
+    .getByRole('paragraph')
+    .filter({ hasText: '帮我补足到 80 个志愿' })
+    .count();
+  const assistantCopies = await page
+    .getByRole('paragraph')
+    .filter({ hasText: '我把这个要求整理成了提案，确认后生效。' })
+    .count();
   console.log(
-    `[f13] 渲染份数：用户那句 ${userMsgCopies} 份、助手那句 ${assistantCopies} 份（干净会话下各应为 1 ✓）`,
+    `[f13] 渲染份数（只数段落 ✓）：用户那句 ${userMsgCopies} 份、助手那句 ${assistantCopies} 份（干净会话下各应为 1 ✓）`,
   );
   console.log(
     `[f13] before: version=${String(before.version)} phase=${String(before.phase)}；` +
