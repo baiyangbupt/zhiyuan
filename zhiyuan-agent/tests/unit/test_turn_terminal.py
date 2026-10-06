@@ -45,6 +45,16 @@ async def test_a_failed_turn_emits_a_recoverable_error_not_an_empty_answer() -> 
     assert set(payload) == {"code", "message"}
     assert payload["message"] == _RECOVERABLE_TURN_FAILURE  # **不许空着** ✓
     assert "output_schema_invalid" in payload["code"]  # 技术细节留给 code ✓
+    # **失败不许报 completed** ✗✓：这一支原来与成功分支发同一个写死的 payload ✗，
+    # 于是一次解析失败在终态上长得和"一切正常"一模一样 ✓。降级值取 harness 对原生
+    # 失败终态的同一映射（`app/harness/codex.py:339-345` ✓）。
+    assert events[1]["payload"] == {
+        "executionStatus": "failed",
+        "toolStatus": "failed",
+        "runtimeStatus": "native",
+    }
+    # 失败时**没有** assistant.completed ✓：空答案帧会让前端渲染出空白气泡 ✓。
+    assert "assistant.completed" not in [event["type"] for event in events]
 
 
 @pytest.mark.asyncio
@@ -58,6 +68,84 @@ async def test_a_successful_turn_still_emits_the_answer() -> None:
 
     assert [event["type"] for event in events] == ["assistant.completed", "turn.completed"]
     assert events[0]["payload"]["message"] == "答案"
+    # 没有观测（缺 `output` ✓）时按最保守的默认值发 ✓——与合成器的默认一致 ✓，
+    # 但**不许**把失败冒充成 completed ✗（失败支在上面已覆盖 ✓）。
+    assert events[1]["payload"] == {
+        "executionStatus": "completed",
+        "toolStatus": "completed",
+        "runtimeStatus": "native",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_partial_turn_reports_its_real_status_not_completed() -> None:
+    """**终态取真实结果** ✓✓：网关早把状态算好了 ✓（`output.executionStatus` 经
+    `synthesize_execution_status` **只降不升** ✓），写死 `completed` 等于在最后一步
+    又升回去 ✗——用户要求读+写、系统只做了读，界面照样报"完成" ✓✗。
+    `limitations` 也要原样带给用户 ✓（它就是"哪里没做到"的说明 ✓）。
+    """
+    channel = _Channel(uses_v1=True)
+    events, emit = _collector()
+
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=channel,
+        result={
+            "reply": "先给你能查到的部分。",
+            "output": {
+                "message": "先给你能查到的部分。",
+                "responseType": "text",
+                "executionStatus": "partial",
+                "limitations": ["部分省份数据未覆盖"],
+            },
+            "trace": {"batchReport": {"status": "partial"}},
+        },
+        session_id="900047",
+    )
+
+    assert [event["type"] for event in events] == ["assistant.completed", "turn.completed"]
+    answer = events[0]["payload"]
+    assert answer["executionStatus"] == "partial"
+    assert answer["limitations"] == ["部分省份数据未覆盖"]
+    assert events[1]["payload"] == {
+        "executionStatus": "partial",
+        "toolStatus": "partial",
+        "runtimeStatus": "native",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tools_can_succeed_while_the_request_is_blocked() -> None:
+    """**两个问题不许互相推导** ✓✓：`toolStatus` 是"这些调用成功了吗" ✓、
+    `executionStatus` 是"用户的诉求满足了吗" ✓——工具全绿而诉求被阻断是常态
+    （比如数据缺失 ✓），把 toolStatus 抄成 executionStatus ✗ 会让前端以为
+    "工具都成功 ⇒ 诉求已满足" ✓✗，与合成器"只降不升"的方向正好相反 ✓。
+    """
+    channel = _Channel(uses_v1=True)
+    events, emit = _collector()
+
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=channel,
+        result={
+            "reply": "这一问需要先把省份补上。",
+            "output": {
+                "responseType": "clarification",
+                "executionStatus": "blocked",
+                "limitations": ["缺少省份信息，无法给出分数线"],
+            },
+            "trace": {"batchReport": {"status": "completed"}},
+        },
+        session_id="900047",
+    )
+
+    terminal = events[-1]
+    assert terminal["type"] == "turn.completed"
+    assert terminal["payload"] == {
+        "executionStatus": "blocked",
+        "toolStatus": "completed",  # 工具都成功了 ✓——但它抬不动诉求 ✓
+        "runtimeStatus": "native",
+    }
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,9 @@ export const isConversationV1Event = event =>
   && typeof event.sequence === 'number';
 
 const V1_PAYLOAD_WHITELIST = {
+  // 回合开始的墙钟时间戳：排序仍由 reducer 按 sequence 做（不必依赖时钟），
+  // 时间戳只作展示/诊断用；不给它留位置的话它会被静默过滤掉。
+  'turn.started': ['startedAt'],
   'tool.progress': ['itemId', 'tool', 'status', 'label'],
   'turn.phase': ['phase', 'status', 'label'],
   'understanding.preview': ['summary', 'entities', 'constraints'],

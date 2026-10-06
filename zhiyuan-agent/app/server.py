@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import asyncio
+import time
 import uuid
 from importlib import metadata
 from collections.abc import Mapping
@@ -727,6 +728,17 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
         emit = _session_emitter(runtime, channel, key)
 
         async def work(msg=msg, turn_id=turn_id, tenant_id=tenant_id) -> None:
+            # **回合开始要有一条 `turn.started`** ✓✓：白名单里有它 ✓、前端 reducer
+            # 也在等它 ✓（`conversationSession.mjs:48-52` ✓——回合排序用的 `startedAt`
+            # 就来自这条 ✓，而它此前永远为空 ✗，全仓没有任何生产者 ✓✗）。
+            # 放在 work 的**第一行**（不是 submit 之后 ✓）：work 是"被接受的回合"本身 ✓，
+            # 这一条也由此**先于**同回合的任何 tool.progress 入流 ✓（顺序是事件流的合同 ✓）。
+            # 时间戳进 payload ✓（白名单 `conversationEvents.mjs` 的同名条目 ✓）；
+            # 排序仍由 reducer 按 `sequence` 做 ✓——时间戳只是给人看的信息 ✓。
+            await emit({
+                "type": "turn.started",
+                "payload": {"startedAt": int(time.time() * 1000)},
+            })
             if msg.conversation_action is not None and runtime is not None:
                 # **确认/取消不挂在本轮上** ✓✗（理由见 `SessionRuntime.detach_work` ✓）：
                 # 那一段要活到"结果事件入流"为止 ✓，而客户端在这中间掉线是常态（F13 ✓）——
@@ -845,8 +857,31 @@ def _proposal_preview_payload(preview: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _observed_tool_status(result: Mapping[str, Any]) -> str:
+    """工具批次的观测状态（`batchReport.status` ✓）。
+
+    它回答的是"这些调用成功了吗"，与 `executionStatus`（"用户的诉求满足了吗"）
+    是**两个问题** ✓——所以只从 trace 里取观测值，**不**从 executionStatus 推导 ✓
+    （`synthesize_execution_status` 的合成方向也是单向的：工具失败会拉低诉求，
+    反过来不成立 ✓）。取不到就按"没观测到工具失败"记 completed ✓（与合成器同默认 ✓）。
+    """
+    trace = result.get("trace")
+    batch_report = trace.get("batchReport") if isinstance(trace, Mapping) else None
+    if isinstance(batch_report, Mapping) and batch_report.get("status"):
+        return str(batch_report["status"])
+    return "completed"
+
+
 async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -> None:
     """回合收尾：V1 发事件 ✓、老信封发帧 ✓；**失败走可恢复错误** ✓✓。
+
+    **终态状态取真实结果，不再写死** ✓✓：原来 `assistant.completed` 与 `turn.completed`
+    一律报 `completed` ✗ —— 而网关早把真实状态算好了 ✓（`output.executionStatus` /
+    `output.limitations` 经 `synthesize_execution_status` **只降不升** ✓，工具批次状态在
+    `trace.batchReport` ✓）。写死等于把"只降不升"这件事**在最后一步又升回去** ✗：
+    用户要求读+写、系统只做了读，界面照样报"完成" ✓✗；同理，失败分支发的也是
+    `completed` ✗✗，前端拿它当"用户诉求已满足"的依据就不成立 ✓。
+    载荷键一个不多一个不少 ✓（前端白名单 `conversationEvents.mjs:35-36` ✓），形状不变 ✓。
 
     **终态也要走 V1 通道** ✓✓——这是 C4 真栈追出来的最后一格 ✓：替身的 `turn/completed`
     会被 collect 循环**消费**掉 ✓（不经过 `_notification_to_event` ✗，实测：帧里从未出现
@@ -865,8 +900,21 @@ async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -
         # 判据是"这条连接有没有事件存储" ✓（`ConnectionChannel.uses_v1` ✓）。
         await channel.emit_frame(_native_reply_frame(result, session_id))
         return
+    # 真实状态先取出来 ✓：成功分支用它 ✓，失败分支再按"降级"覆盖 ✗✓。
+    output = result.get("output") if isinstance(result.get("output"), Mapping) else {}
+    execution_status = str(output.get("executionStatus") or "completed")
+    response_type = str(output.get("responseType") or "text")
+    limitations = [str(item) for item in (output.get("limitations") or []) if str(item)]
+    tool_status = _observed_tool_status(result)
     error_code = result.get("error")
     if error_code:
+        # **失败不许报 completed** ✓✓：这一支原来与成功分支发同一个写死的 payload ✗，
+        # 于是一次解析失败/证据作废在终态上长得和"一切正常"一模一样 ✓。
+        # `output` 缺失时没有可广播的观测，就按**最保守**的降级值发（harness 对
+        # 原生失败终态的映射同此：`app/harness/codex.py:339-345` ✓）。
+        execution_status = "failed"
+        tool_status = "failed"
+        limitations = []
         await emit({
             "type": "recoverable.error",
             "payload": {
@@ -909,17 +957,17 @@ async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -
         await emit({
             "type": "assistant.completed",
             "payload": {
-                "message": str(result.get("reply") or ""),
-                "responseType": "text",
-                "executionStatus": "completed",
-                "limitations": [],
+                "message": str(result.get("reply") or output.get("message") or ""),
+                "responseType": response_type,
+                "executionStatus": execution_status,
+                "limitations": limitations,
             },
         })
     await emit({
         "type": "turn.completed",
         "payload": {
-            "executionStatus": "completed",
-            "toolStatus": "completed",
+            "executionStatus": execution_status,
+            "toolStatus": tool_status,
             "runtimeStatus": "native",
         },
     })
@@ -1121,7 +1169,7 @@ async def _handle_control_message(ws, raw, runtime, tenant_id, channel) -> bool:
     """
     message_type = str(raw.get("type") or "")
     if message_type == "clarificationAnswer":
-        return await _handle_clarification_answer(ws, raw, tenant_id, channel)
+        return await _handle_clarification_answer(ws, raw, runtime, tenant_id, channel)
     if message_type not in {"turnInterrupt", "turnSteer"}:
         return False
     session_id = str(raw.get("sessionId") or "").strip()
@@ -1153,7 +1201,7 @@ async def _handle_control_message(ws, raw, runtime, tenant_id, channel) -> bool:
     return True
 
 
-async def _handle_clarification_answer(ws, raw, tenant_id, channel) -> bool:
+async def _handle_clarification_answer(ws, raw, runtime, tenant_id, channel) -> bool:
     """把用户的作答送回 broker，由它用**原来的 rpc id** 回给 Codex。"""
     broker = getattr(getattr(ws.app.state, "gateway_service", None), "user_input_broker", None)
     if broker is None:
@@ -1186,8 +1234,27 @@ async def _handle_clarification_answer(ws, raw, tenant_id, channel) -> bool:
         await channel.emit_frame(
             {"type": "recoverable.error", "content": "同一张卡收到了不同答案，请刷新后重试。", "end": False}
         )
-    else:
+    elif not channel.uses_v1:
+        # 老 UI 那条路（没有事件存储 ✓）保持原帧 ✓：V1 事件它解析不了 ✗。
         await channel.emit_frame({"type": "clarification.resolved", "content": "", "end": False})
+    else:
+        # **已作答的卡要当场收起** ✓✓——旧代码发的是**老信封帧** ✗（没有 `requestId` ✗、
+        # 不是 V1 ✗）：前端把它当 content 解析成 `null` ✓ 直接丢掉 ✓
+        # （`conversationEvents.mjs:57-80` ✓），`conversationSession.mjs:81-90` 的
+        # resolved 分支**永远不触发** ✓✗ —— 卡明明答完了还停在"待你作答" ✓。
+        # 修法：走 **V1 事件**（经 session emitter ✓，与终态同一条路 ✓），
+        # payload 就两个键 ✓（白名单 `conversationEvents.mjs:32` ✓）。
+        # 回合号：客户端在这条控制消息里带了它记的**业务回合号** ✓
+        # （`conversationProtocol.mjs:22-40` ✓）——不先绑上，信封的 turnId 可能是空的 ✓，
+        # reducer 按 turnId 找回合找不到 → 同样丢 ✓。
+        turn_id = str(raw.get("turnId") or "")
+        if turn_id:
+            channel.bind_turn(turn_id)
+        emit = _session_emitter(runtime, channel, key)
+        await emit({
+            "type": "clarification.resolved",
+            "payload": {"requestId": request_id, "status": "answered"},
+        })
     return True
 
 

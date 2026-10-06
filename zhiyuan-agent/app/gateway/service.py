@@ -439,9 +439,31 @@ def _progress_emitter(
     """
     if emit is None:
         return None
+    # **`turn.phase` 要有人发** ✓✓：白名单里一直有它 ✓、前端 reducer 也在等它 ✓
+    #（`conversationSession.mjs:51-52` ✓），全仓却**没有任何生产者** ✗——阶段永远是空的 ✓。
+    # 最小实现：**首次**工具进度到达时补一条（阶段就是"正在调工具/取数" ✓，标签用
+    # 第一个工具自己的标签 ✓——`TOOL_LABELS` 是"只解释正在发生的操作" ✓）。
+    # 只发一次：重查轮复用同一个 emitter ✓（`collect_kwargs` ✓），阶段不会被重复播报 ✓。
+    phase_sent = False
 
     async def callback(notification: dict[str, Any]) -> None:
-        for event in adapt_notification(notification, ui_turn_id):
+        nonlocal phase_sent
+        events = adapt_notification(notification, ui_turn_id)
+        if not phase_sent:
+            first_tool = next(
+                (event for event in events if event.get("type") == "tool.progress"), None
+            )
+            if first_tool is not None:
+                phase_sent = True
+                await emit({
+                    "type": "turn.phase",
+                    "payload": {
+                        "phase": "querying",
+                        "status": "started",
+                        "label": (first_tool.get("payload") or {}).get("label") or "",
+                    },
+                })
+        for event in events:
             await emit(event)
 
     return callback

@@ -227,3 +227,21 @@ test('旧信封里认不出类型的帧被丢弃，而不是画成默认气泡',
   const frame = { type: 'text', content: '普通回复' };
   assert.equal(toConversationEvent(frame, { sessionId: '42', streamEpoch: 'e1', sequence: 1 }), null);
 });
+
+test('回合开始事件保留墙钟时间戳，白名单外的字段不过去', () => {
+  // 时间戳只是诊断信息（排序仍按 sequence）——但白名单里没有位置的话它会被
+  // 静默过滤掉：服务端发了也白发，这是"两边一起改"那条约定的一部分。
+  const normalized = normalizeConversationEvent({
+    protocolVersion: 1,
+    type: 'turn.started',
+    sessionId: '42',
+    turnId: 't1',
+    streamEpoch: 'e1',
+    sequence: 1,
+    payload: { startedAt: 1728000000000, internal: 'do-not-display' },
+  });
+
+  assert.equal(normalized.type, 'turn.started');
+  assert.equal(normalized.payload.startedAt, 1728000000000);
+  assert.equal(normalized.payload.internal, undefined, '白名单外的字段不该进渲染面');
+});

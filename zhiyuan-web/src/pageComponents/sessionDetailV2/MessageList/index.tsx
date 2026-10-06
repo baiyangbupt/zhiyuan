@@ -2006,7 +2006,30 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
           {Object.values(conversationState.turns).map((turn: any) => {
             const steps = Object.values(turn.steps || {}) as any[];
             const pending = pendingClarifications(turn);
-            if (steps.length === 0 && pending.length === 0) return null;
+            // **老信封转出来的"空回合"不画** ✓✓：native 路由把终态**两条都发** ✓
+            //（V1 事件给新 UI ✓、老信封帧给老 UI ✓）——而旧帧没有 `turnId` ✗
+            //（`WSResponse` 没这个字段 ✓），前端把它转成 V1 事件时回合号只能是空串 ✓
+            //（`conversationEvents.mjs` 的 `toConversationEvent` ✓），于是 reducer 里
+            // 多出一个 `''` 回合 ✓，内容与真回合**完全重复** ✓（错误/提案/动作结果 ✓）。
+            // 修前它被下面那条 gate 挡住 ✓；补进 answer/proposal/error 之后它**冒出来了** ✗✓
+            //（实测：F15 的 `.last()` 落到空块上 → 看不到进度 ✓；F12 的停止按钮留在空块上 ✓；
+            // F07 的终态断言被空块顶掉 ✓）。
+            // 状态**照旧保留** ✓：`findActionResultFor` 按 proposalRef 全量找 ✓，
+            // 删状态会让提案卡读不到执行结果 ✗——只是不渲染 ✓。
+            if (!turn.id) return null;
+            // **纯文本回合也要画** ✓✓：答案/提案/错误都渲染在**这个块里** ✓
+            // （`assistant-final` / `ProposalCard` / `turn-error` ✓），而原来的 gate 只看
+            // 工具进度与待答卡 ✗——一个"没有工具调用、直接回答"的回合（如打招呼/常识问答）
+            // 整块不画 ✓✗，答案就只剩 REST 历史那一份 ✓：事件流那一份**永远不出现** ✓。
+            // 补进三个渲染条件即可 ✓；**一个回合仍然只画一份** ✓（三者各自渲染一次 ✓，
+            // 不去重、不改历史那条路 ✓）。
+            if (
+              steps.length === 0 &&
+              pending.length === 0 &&
+              !turn.answer &&
+              !turn.proposal &&
+              !turn.error
+            ) return null;
             return (
               <div key={turn.id} data-turn-id={turn.id} style={{ padding: '4px 12px' }}>
                 {steps.length > 0 ? (
