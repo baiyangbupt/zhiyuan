@@ -50,7 +50,7 @@ export const getConversationEvidenceApi = (
   evidenceId: string,
 ) =>
   request<{ chatSessionId: string; evidenceId: string }, ConversationEvidence>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/evidence?chatSessionId=${chatSessionId}&evidenceId=${encodeURIComponent(evidenceId)}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/evidence?chatSessionId=${chatSessionId}&evidenceId=${encodeURIComponent(evidenceId)}`,
     method: 'get',
   });
 // 定义筛选类型

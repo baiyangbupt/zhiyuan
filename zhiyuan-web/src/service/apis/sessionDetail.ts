@@ -33,7 +33,6 @@ import {
   PlanningReviewWorkflowRunRes,
   PlanningDataFreshnessCheckReq,
   PlanningDataFreshnessCheckRes,
-  PlanningDataFreshnessScheduleState,
   OrderedPlanActionRes,
   PlanningStateRes,
   PlanningWorkspaceStateRes,
@@ -291,16 +290,9 @@ export const getSessionDetailApi = (tenantId: string, chatSessionId: string) =>
     method: 'get',
   });
 
-// 获取统一 planningState
-export const getPlanningStateApi = (tenantId: string, chatSessionId: string) =>
-  request<{}, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/state?chatSessionId=${chatSessionId}`,
-    method: 'get',
-  });
-
 export const getPlanningWorkspaceStateApi = (tenantId: string, chatSessionId: string) =>
   request<{}, PlanningWorkspaceStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/workspace-state?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/workspace-state?chatSessionId=${chatSessionId}`,
     method: 'get',
   });
 
@@ -310,35 +302,22 @@ export const checkPlanningDataFreshnessApi = (
   data: PlanningDataFreshnessCheckReq = {}
 ) =>
   request<PlanningDataFreshnessCheckReq, PlanningDataFreshnessCheckRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/data-freshness/check?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/data-freshness/check?chatSessionId=${chatSessionId}`,
     method: 'post',
     data,
     special: [84009],
   });
 
-export const getPlanningDataFreshnessScheduleApi = (tenantId: string, chatSessionId: string) =>
-  request<{}, PlanningDataFreshnessScheduleState>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/data-freshness/schedule?chatSessionId=${chatSessionId}`,
-    method: 'get',
-  });
-
-export const runPlanningReviewApi = (tenantId: string, chatSessionId: string) =>
-  request<{}, any>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/review/run?chatSessionId=${chatSessionId}`,
-    method: 'post',
-    data: {},
-  });
-
 export const runPlanningReviewWorkflowApi = (tenantId: string, chatSessionId: string) =>
   request<{}, PlanningReviewWorkflowRunRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/review-workflow/run?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/review-workflow/run?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {},
   });
 
 export const generatePlanningFixProposalsApi = (tenantId: string, chatSessionId: string) =>
   request<{}, PlanningFixProposalState>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/fix-proposals/generate?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/fix-proposals/generate?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {},
   });
@@ -349,7 +328,7 @@ export const applyPlanningFixProposalApi = (
   data: PlanningFixProposalApplyReq
 ) =>
   request<PlanningFixProposalApplyReq, PlanningFixProposalApplyRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/fix-proposals/apply?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/fix-proposals/apply?chatSessionId=${chatSessionId}`,
     method: 'post',
     data,
   });
@@ -361,7 +340,7 @@ export const generatePlanningCandidatePoolApi = (
   refreshSourceData: boolean = false
 ) =>
   request<{ forceRegenerate: boolean; refreshSourceData: boolean }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/candidate-pool/generate?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/candidate-pool/generate?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       forceRegenerate,
@@ -380,7 +359,7 @@ export const generatePlanningInitialPlanApi = (
     { forceRegenerate: boolean; regroupByTier: boolean; overwriteExistingDraft: boolean },
     PlanningStateRes
   >({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/initial-plan/generate?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/initial-plan/generate?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       forceRegenerate,
@@ -391,7 +370,7 @@ export const generatePlanningInitialPlanApi = (
 
 export const exportPlanningOrderedPlanApi = (tenantId: string, chatSessionId: string) =>
   request<{}, any>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/export?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/ordered-plan/export?chatSessionId=${chatSessionId}`,
     method: 'post',
     responseType: 'blob',
   });
@@ -402,14 +381,14 @@ export const queryPlanningCandidatePoolApi = (
   data: PlanningCandidatePoolQueryReq
 ) =>
   request<PlanningCandidatePoolQueryReq, PlanningCandidatePoolQueryRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/candidate-pool/query?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/candidate-pool/query?chatSessionId=${chatSessionId}`,
     method: 'post',
     data,
   });
 
 export const getPlanningCandidateFilterOptionsApi = (tenantId: string, chatSessionId: string) =>
   request<{}, PlanningCandidateFilterOptionsRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/candidate-pool/filter-options?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/candidate-pool/filter-options?chatSessionId=${chatSessionId}`,
     method: 'get',
   });
 
@@ -419,7 +398,7 @@ export const updatePlanningCandidateViewStateApi = (
   data: PlanningCandidateViewState
 ) =>
   request<PlanningCandidateViewState, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/candidate-view-state?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/candidate-view-state?chatSessionId=${chatSessionId}`,
     method: 'patch',
     data,
   });
@@ -431,7 +410,7 @@ export const selectPlanningWorkingPlanItemsApi = (
   source: string = 'manual_workspace'
 ) =>
   request<{ volunteerIds: string[]; source: string }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/working-plan/select?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/working-plan/select?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       volunteerIds,
@@ -439,67 +418,16 @@ export const selectPlanningWorkingPlanItemsApi = (
     },
   });
 
-export const selectPlanningDraftItemsApi = selectPlanningWorkingPlanItemsApi;
-
 export const removePlanningWorkingPlanItemsApi = (
   tenantId: string,
   chatSessionId: string,
   volunteerIds: string[]
 ) =>
   request<{ volunteerIds: string[] }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/working-plan/remove?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/working-plan/remove?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       volunteerIds,
-    },
-  });
-
-export const removePlanningDraftItemsApi = removePlanningWorkingPlanItemsApi;
-
-export const lockPlanningWorkingPlanItemsApi = (
-  tenantId: string,
-  chatSessionId: string,
-  volunteerIds: string[],
-  locked: boolean
-) =>
-  request<{ volunteerIds: string[]; locked: boolean }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/working-plan/lock?chatSessionId=${chatSessionId}`,
-    method: 'post',
-    data: {
-      volunteerIds,
-      locked,
-    },
-  });
-
-export const lockPlanningDraftItemsApi = lockPlanningWorkingPlanItemsApi;
-
-export const banPlanningWorkingPlanItemsApi = (
-  tenantId: string,
-  chatSessionId: string,
-  volunteerIds: string[]
-) =>
-  request<{ volunteerIds: string[] }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/working-plan/ban?chatSessionId=${chatSessionId}`,
-    method: 'post',
-    data: {
-      volunteerIds,
-    },
-  });
-
-export const banPlanningDraftItemsApi = banPlanningWorkingPlanItemsApi;
-
-export const generatePlanningOrderedPlanApi = (
-  tenantId: string,
-  chatSessionId: string,
-  forceRegenerate: boolean = true,
-  regroupByTier: boolean = true
-) =>
-  request<{ forceRegenerate: boolean; regroupByTier: boolean }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/generate?chatSessionId=${chatSessionId}`,
-    method: 'post',
-    data: {
-      forceRegenerate,
-      regroupByTier,
     },
   });
 
@@ -510,7 +438,7 @@ export const movePlanningOrderedItemApi = (
   targetPosition: number
 ) =>
   request<{ volunteerId: string; targetPosition: number }, OrderedPlanActionRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/move?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/ordered-plan/move?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       volunteerId,
@@ -525,7 +453,7 @@ export const movePlanningOrderedUnitApi = (
   targetPosition: number
 ) =>
   request<{ unitId: string; targetPosition: number }, OrderedPlanActionRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/unit/move?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/ordered-plan/unit/move?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       unitId,
@@ -539,7 +467,7 @@ export const removePlanningOrderedUnitApi = (
   unitIds: string[]
 ) =>
   request<{ unitIds: string[] }, OrderedPlanActionRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/unit/remove?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/ordered-plan/unit/remove?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       unitIds,
@@ -552,7 +480,7 @@ export const sortPlanningOrderedPlanApi = (
   sortField: 'admissionRatio' | 'schoolRank' | 'finalScore'
 ) =>
   request<{ sortField: string }, OrderedPlanActionRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/sort?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/chat/${tenantId}/planning/session/ordered-plan/sort?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       sortField,
