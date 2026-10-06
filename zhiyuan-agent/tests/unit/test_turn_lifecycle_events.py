@@ -64,6 +64,10 @@ class _InlineRuntime:
     def attach_connection(self, key, channel) -> None:
         self.attached = (key, channel)
 
+    def current_channel(self, key):
+        """本替身不做会话域路由 ✓（`publish` 恒 False ✓）→ 收尾退回本连接 ✓。"""
+        return None
+
     async def submit(self, key, *, client_request_id, ui_turn_id, work):
         self.submitted.append((key, client_request_id, ui_turn_id))
         await work()
@@ -332,6 +336,10 @@ async def test_an_accepted_turn_is_announced_before_anything_else_in_it() -> Non
         "assistant.completed",
         "turn.completed",
     ]
+    # 事件**自带回合号** ✓（envelope 的必填字段 ✓，存储直接取它 ✓）：通道上绑的那个
+    # 会随**后一条消息**改写 ✗，不能当成"这条事件属于哪一轮"的唯一来源 ✓
+    #（见 `_session_emitter` 的 `turn_id` 与 `ConnectionChannel.emit` ✓）。
+    assert [event.get("turnId") for event in channel.events] == ["ui-turn-1"] * 4
     started = channel.events[0]["payload"]
     assert set(started) == {"startedAt"}
     assert isinstance(started["startedAt"], int) and started["startedAt"] > 0
@@ -386,10 +394,13 @@ async def test_an_answered_clarification_is_announced_as_a_v1_event() -> None:
 
     assert handled is True
     assert channel.turns == ["ui-turn-1"]
-    # payload 就两个键 ✓（白名单 `conversationEvents.mjs:32` 只放这两个 ✓）。
+    # payload 就两个键 ✓（白名单 `conversationEvents.mjs:32` 只放这两个 ✓）；
+    # 顶层再带一个**回合号** ✓（envelope 的必填字段 ✓，存储取它 ✓）——
+    # 光靠 `bind_turn` 的话，这条卡会被记到"发卡之后到来的那条消息"名下 ✗。
     assert channel.events == [
         {
             "type": "clarification.resolved",
+            "turnId": "ui-turn-1",
             "payload": {"requestId": "ui-question-1", "status": "answered"},
         }
     ]

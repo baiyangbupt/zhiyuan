@@ -377,3 +377,83 @@ async def test_the_old_envelope_lane_gets_a_frame_and_no_v1_events() -> None:
 
     assert events == []
     assert len(channel.frames) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_terminal_judges_v1_by_the_sessions_current_connection() -> None:
+    """通道判定按**收尾那一刻**的会话当前连接 ✓✓，不是入队时刻捕获的那条 ✗。
+
+    捕获的那条可能已经被顶替（用户重连/刷新 ✓）：继续按它判，新 UI 那条连接会被
+    当成老 UI ✗ → 只收到老信封帧 ✓，而新 UI 的 reducer 判否 ✗ → 答案与"已生效"都到不了 ✓✗。
+    """
+    captured = _Channel(uses_v1=False)  # 入队时刻那条：老 UI 形态
+    current = _Channel(uses_v1=True)  # 收尾时刻的会话当前连接：新 UI 形态
+    events, emit = _collector()
+
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=captured,
+        result={"reply": "答案"},
+        session_id="900047",
+        channel_resolver=lambda: current,
+    )
+
+    assert [event["type"] for event in events] == ["assistant.completed", "turn.completed"]
+    assert captured.frames == []  # 老信封那条帧不许再发到旧连接上 ✓
+    assert len(current.frames) == 1  # 终态的老信封帧照旧发（新连接自己判否 ✓）
+
+    # 反方向同理：捕获的是新 UI、当前连接已经是老 UI → 只发老信封帧 ✓，不发 V1 ✓。
+    captured, current = _Channel(uses_v1=True), _Channel(uses_v1=False)
+    events, emit = _collector()
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=captured,
+        result={"reply": "答案"},
+        session_id="900047",
+        channel_resolver=lambda: current,
+    )
+    assert events == []
+    assert len(current.frames) == 1
+
+    # 没有当前连接（用户全关了页面）→ 退回捕获的那条 ✓（行为与从前一致 ✓）。
+    captured, events, emit = _Channel(uses_v1=True), *_collector()
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=captured,
+        result={"reply": "答案"},
+        session_id="900047",
+        channel_resolver=lambda: None,
+    )
+    assert [event["type"] for event in events] == ["assistant.completed", "turn.completed"]
+
+
+@pytest.mark.asyncio
+async def test_an_action_result_is_emitted_even_when_the_turn_also_failed() -> None:
+    """`execute` 已回终局、收尾又出别的问题时，结果事件**照样进流** ✓✓。
+
+    不变量（任务书）：只要 execute 回了终局（applied/cancelled/failed ✓），
+    `conversationAction.result` 就必须进事件流（可丢帧、不可丢流 ✓）——
+    它是"这次写入算不算数"的唯一凭据 ✓；漏了它，库里已经落地的改动在页面上
+    永远停在"待确认" ✗（用户只能反复点同一个确认 ✓✗）。
+    """
+    channel = _Channel(uses_v1=True)
+    events, emit = _collector()
+
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=channel,
+        result={
+            "reply": "",
+            "error": "gateway_failure",
+            "actionResult": {"actionStatus": "applied", "proposalRef": "pending-1", "code": "0"},
+        },
+        session_id="900047",
+    )
+
+    assert [event["type"] for event in events] == [
+        "conversationAction.result",
+        "recoverable.error",
+        "turn.completed",
+    ]
+    assert events[0]["payload"]["actionStatus"] == "applied"
+    assert events[0]["payload"]["proposalRef"] == "pending-1"

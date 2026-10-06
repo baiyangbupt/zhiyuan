@@ -117,7 +117,14 @@ class ConnectionChannel:
                     self._session_key,
                     {
                         **event,
-                        "turnId": self._turn_id,
+                        # 事件**自带的回合号优先** ✓✓：`bind_turn` 是"这条连接当前在跑哪一轮"，
+                        # 它会随**后一条消息**改写 ✗——而一段活儿的收尾（确认/取消那一段 ✓，
+                        # 见 `SessionRuntime.detach_work` ✓）可能落在别的消息之后 ✓：
+                        # 再按 `_turn_id` 盖章就把 `conversationAction.result` 记到**别人那一轮**名下 ✗
+                        # （实测：一条结果事件被盖成用户随后那条聊天消息的回合 ✓）。
+                        # 前端虽然按 `proposalRef` 全量找结果 ✓（`findActionResultFor` ✓）卡不至于不翻 ✓，
+                        # 但那条回合同样会被标成"已终态" ✓ → 后续增量被 reducer 丢掉 ✗✓。
+                        "turnId": str(event.get("turnId") or self._turn_id),
                         "sessionId": self._session_key.session_id,
                     },
                 )
@@ -234,6 +241,14 @@ class SessionRuntime:
             return False
         await channel.emit(event)
         return True
+
+    def current_channel(self, key: SessionKey) -> ConnectionChannel | None:
+        """该会话**当前**该往哪条连接推（没有则 None ✓）✓——**收尾那一刻**再问 ✓。
+
+        收尾（`_emit_turn_terminal` ✓）要按它判"走 V1 事件还是老信封" ✓：入队时刻捕获的
+        那条连接可能已经断了 ✗、或已被新连接顶替 ✗（判错就是"新 UI 收到老信封" ✓）。
+        """
+        return self._channels.get(key)
 
     def active_turn(self, key: SessionKey) -> ActiveTurn | None:
         turn = self._active.get(key)

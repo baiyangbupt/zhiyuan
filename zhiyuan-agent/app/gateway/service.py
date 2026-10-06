@@ -1137,7 +1137,15 @@ class GatewayService:
         action: Any,
         snapshot: ConversationTurnSnapshot | Mapping[str, Any],
     ) -> dict[str, Any]:
-        """显式执行动作，并在后端成功变更后刷新权威会话状态。"""
+        """显式执行动作，并在后端成功变更后刷新权威会话状态。
+
+        **重读失败不许吞掉终局** ✓✓：`execute_action` 已经回来了（`applied`/`cancelled` ✓，
+        写入已经落地 ✓），后面这一步只是**顺带**刷新缓存快照 ✓——它失败时若把异常抛出去 ✗，
+        调用方（`_run_native_turn` ✓）只会回一条通用 `gateway_failure` ✗，
+        `actionResult` 随之丢失 ✗ → `conversationAction.result` **永远进不了事件流** ✗，
+        而库里那次写入**是成功的** ✓：页面上卡停在"待确认"，用户只能反复点 ✓✗
+        （任务书的不变量：只要 execute 回了终局，结果事件就必须进流 ✓）。
+        """
         result = await self.execute_action(
             tenant_id=tenant_id,
             session_id=session_id,
@@ -1147,15 +1155,23 @@ class GatewayService:
         payload: dict[str, Any] = {"actionResult": result.as_dict()}
         if result.action_status not in {"applied", "cancelled"}:
             return payload
-        refreshed = _snapshot_payload(
-            await _maybe_await(
-                self.snapshot_loader(
-                    tenant_id=tenant_id,
-                    session_id=str(session_id),
-                    skill=None,
+        try:
+            refreshed = _snapshot_payload(
+                await _maybe_await(
+                    self.snapshot_loader(
+                        tenant_id=tenant_id,
+                        session_id=str(session_id),
+                        skill=None,
+                    )
                 )
             )
-        )
+        except Exception:
+            # 缓存这侧降级（接下来的回合会自己重读 ✓），但终局**照原样**带回去 ✓。
+            logger.warning(
+                "action applied but snapshot refresh failed: tenant=%s session=%s",
+                tenant_id, session_id, exc_info=True,
+            )
+            return payload
         key = _session_key(tenant_id, session_id)
         self._store_snapshot(key, refreshed)
         self._working_sets[key] = ConversationWorkingSet.from_snapshot(refreshed)

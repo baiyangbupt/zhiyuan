@@ -203,7 +203,14 @@ async def test_window_gone_resets_the_baseline_to_the_watermark() -> None:
 
 @pytest.mark.asyncio
 async def test_nothing_is_sent_when_no_turn_is_running() -> None:
-    """没有在跑的回合、也没有游标：别出声——静默重连不该被塞一条控制帧。"""
+    """没有在跑的回合、也没有游标：别出声——静默重连不该被塞一条控制帧。
+
+    **但连接要登记** ✓✓：不登记的话，这条会话的"当前连接"还是那条已经死掉的旧连接 ✗，
+    而**不挂回合**的活儿（确认/取消 ✓，见 `SessionRuntime.detach_work` ✓）照样想推给它 ✗
+    → 服务端明明执行成功、事件流里也有结果 ✓，用户页面却永远等不到"已生效" ✗
+    （实测复现：重连后的新连接 `received result frames: 0` ✓）。
+    登记**不违反**"别出声" ✓：一条帧都不发 ✓（不补发、不 resync ✓）。
+    """
     store = _ReplayStore(epoch="epoch-a", events=[_event(1, "turn-live")])
     channel = _Channel()
     runtime = _Runtime(store, None)
@@ -211,13 +218,18 @@ async def test_nothing_is_sent_when_no_turn_is_running() -> None:
     await _replay_on_connect(_socket(store), runtime, channel)
 
     assert channel.frames == []
-    assert channel.bound == []
-    assert runtime.attached == []
+    assert channel.bound == [("session", _key())]
+    assert runtime.attached == [_key()]
+    # 不补发 ⇒ 连存储都不读 ✓（`current_epoch` 是补发的第一步 ✓）。
+    assert store.calls == ["attach"]
 
 
 @pytest.mark.asyncio
 async def test_nothing_is_sent_when_the_session_never_wrote_an_event() -> None:
-    """回合在跑、流里却一条都没有（存储刚重建/被清）：不补，也不假装 resync 过。"""
+    """回合在跑、流里却一条都没有（存储刚重建/被清）：不补，也不假装 resync 过。
+
+    登记照旧 ✓（理由同上一条 ✓）——"补不出东西"不是"这条连接不配收后续事件"。
+    """
     store = _ReplayStore(epoch=None, events=[])
     channel = _Channel()
     runtime = _Runtime(store, _running_turn())
@@ -225,7 +237,7 @@ async def test_nothing_is_sent_when_the_session_never_wrote_an_event() -> None:
     await _replay_on_connect(_socket(store), runtime, channel)
 
     assert channel.frames == []
-    assert runtime.attached == []
+    assert runtime.attached == [_key()]
 
 
 class _PublishingRuntime:

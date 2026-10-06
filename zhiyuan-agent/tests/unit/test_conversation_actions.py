@@ -168,6 +168,46 @@ async def test_execute_action_and_refresh_replaces_cached_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_a_failed_snapshot_refresh_does_not_lose_the_applied_result():
+    """写入已落地、重读快照那一步失败：**终局照原样带回** ✓✓。
+
+    任务书的不变量：只要 execute 回了终局（applied/cancelled/failed ✓），
+    `conversationAction.result` 就必须进事件流（可丢帧、不可丢流 ✓）。
+    重读是**顺带**刷新缓存 ✓——它把异常抛出去 ✗ 的话，调用方只会回一条通用
+    `gateway_failure` ✗、`actionResult` 随之丢失 ✗ → 结果事件永远发不出去 ✗，
+    而库里那次写入**是成功的** ✓：页面上卡停在"待确认" ✗（用户只能反复点 ✓✗）。
+    """
+
+    async def snapshot_loader(**kwargs):
+        raise RuntimeError("java read failed")
+
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=None,
+        legacy=None,
+        message_store=None,
+        binding_loader=lambda **kwargs: None,
+        snapshot_loader=snapshot_loader,
+    )
+    resolver = AsyncMock(return_value={"code": 0, "data": {"status": "applied", "stateVersion": 8}})
+    with patch(
+        "app.gateway.conversation_actions.resolve_pending_confirmation",
+        new=resolver,
+    ):
+        result = await gateway.execute_action_and_refresh(
+            tenant_id="t1",
+            session_id="s1",
+            action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+            snapshot=snapshot(),
+        )
+
+    assert result["actionResult"]["actionStatus"] == "applied"  # 终局没被吞掉 ✓
+    assert "snapshotVersion" not in result  # 没读到就没有版本号 ✓
+    # 缓存不写坏值 ✓：这次读失败不进缓存 ✓（下一轮会自己重读 ✓）。
+    assert SessionKey(tenant_id="t1", session_id="s1") not in gateway._snapshots
+
+
+@pytest.mark.asyncio
 async def test_action_path_executes_on_the_authoritative_snapshot_not_the_stale_cache():
     """缓存 stale、Java 已更新时，确认必须按**权威**快照执行 ✓✓。
 

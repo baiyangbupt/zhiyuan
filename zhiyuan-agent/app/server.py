@@ -635,7 +635,19 @@ async def _replay_active_turn(store, runtime, channel, key: SessionKey) -> None:
     2. **先登记连接、再读存储**——这中间的实时事件会同时进队列与重放列表
        （客户端按 (代际, 序号) 去重）；先读后登记则会**丢**那条。这套合同里
        "缺口只允许 resync"（A6 不变量），所以宁可重、不可丢。
+
+    补发**以"有在跑的回合"为前提** ✗✓，**登记不以它为前提** ✓✓：没有在跑的回合时
+    也要把这条连接登记成"会话当前连接"（见下面那段的实测理由 ✓）——别的活儿
+    （确认/取消 ✓）不挂回合 ✓，它们的终态同样走"会话当前连接" ✓。
     """
+    # **没游标的连接也要重新登记为"会话当前连接"** ✓✓——哪怕这一刻没有在跑的回合 ✓：
+    # 确认/取消那一段**不挂回合**（`SessionRuntime.detach_work` ✓），它可能正跑在
+    # 用户上一次连接上 ✓；那时页面重连（刷新/断线 ✓）而这里直接 return ✗，事件就会
+    # 推给一条**已经死了**的旧连接 ✓✗——服务端明明 `applied` 了 ✓、事件流里也有结果 ✓，
+    # 页面却永远等不到"已生效" ✗（实测复现：重连后 `ws2 received result frames: 0` ✓）。
+    # 登记不改补发语义 ✓：新连接不补任何事件（下面照旧只补**当前回合** ✓）。
+    channel.bind_session(key)
+    runtime.attach_connection(key, channel)
     turn = runtime.active_turn(key)
     if turn is None:
         return
@@ -643,9 +655,7 @@ async def _replay_active_turn(store, runtime, channel, key: SessionKey) -> None:
     if epoch is None:
         # 回合在跑、流里却一条都没有：补不出东西，不如不补（也不假装 resync 过）。
         return
-    channel.bind_session(key)
     channel.bind_turn(turn.ui_turn_id)
-    runtime.attach_connection(key, channel)
     events = await store.replay(key, epoch, after=0)
     watermark = await store.watermark(key)
     if events is None:
@@ -725,7 +735,13 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
         key = SessionKey(tenant_id=tenant_id, session_id=str(msg.session_id))
         # **终态与进度都走会话域** ✓✓：一个回合的收尾可能发生在**重连之后** ✓
         #（F10 的刷新 ✓），发到"当初那条连接"上就是永远收不到 ✗（见 `_session_emitter` ✓）。
-        emit = _session_emitter(runtime, channel, key)
+        emit = _session_emitter(runtime, channel, key, turn_id=turn_id)
+
+        def _current_channel():
+            """**收尾那一刻**再问"这个会话现在挂在哪条连接上" ✓（判 V1/老信封用的就是它）✓。"""
+            if runtime is None:
+                return None
+            return runtime.current_channel(key)
 
         async def work(msg=msg, turn_id=turn_id, tenant_id=tenant_id) -> None:
             # **回合开始要有一条 `turn.started`** ✓✓：白名单里有它 ✓、前端 reducer
@@ -747,13 +763,17 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
                 # （实测：工作区照样 0→3 ✓，卡却停在"待确认" ✓）。
                 runtime.detach_work(
                     key,
-                    lambda: _run_action_work(gateway, msg, tenant_id, turn_id, emit, channel),
+                    lambda: _run_action_work(
+                        gateway, msg, tenant_id, turn_id, emit, channel,
+                        channel_resolver=_current_channel,
+                    ),
                     label="conversation_action",
                 )
                 return
             result = await _run_native_turn(gateway, msg, tenant_id, turn_id, emit)
             await _emit_turn_terminal(
-                emit=emit, channel=channel, result=result, session_id=msg.session_id
+                emit=emit, channel=channel, result=result, session_id=msg.session_id,
+                channel_resolver=_current_channel,
             )
 
         # 编号事件要写会话与回合号：它们是 envelope 的必填字段。
@@ -798,16 +818,23 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
         continue
 
 
-def _session_emitter(runtime: object, channel, key: SessionKey):
+def _session_emitter(runtime: object, channel, key: SessionKey, *, turn_id: str | None = None):
     """把事件发到**这个会话当前的连接**；没有当前连接时才退回本连接的通道。
 
     为什么不能只用本连接的通道：一个回合的收尾可能发生在**重连之后**（F10 的刷新）
     ——那时"这条消息当初那条连接"已经关了，往上发就是永远收不到（实测：刷新后放行
     闸门，终态 20 秒到不了，而它其实已经写进事件流了）。`SessionRuntime.publish`
     就是为这件事存在的：它发给该会话**当前**的那一条连接。
+
+    `turn_id`：这一批事件属于**哪一轮** ✓——在**发事件这一刻**把它带上 ✓，而不是让通道
+    按"最后一条消息绑的回合"盖章 ✗：两者不同的话（确认那一段在飞时用户又发了一条 ✓，
+    实测过 ✓），`conversationAction.result` 会被记到用户那条新消息的回合名下 ✗，
+    而那一轮会被前端标成"已终态" ✓ → 它自己的增量跟着被丢 ✓。
     """
 
     async def emit(event: dict[str, Any]) -> None:
+        if turn_id:
+            event = {**event, "turnId": turn_id}
         if runtime is not None and await runtime.publish(key, event):
             return
         await channel.emit(event)
@@ -876,7 +903,39 @@ def _observed_tool_status(result: Mapping[str, Any]) -> str:
     return "completed"
 
 
-async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -> None:
+def _action_result_payload(result: Mapping[str, Any], action_result: Mapping[str, Any]) -> dict[str, Any]:
+    """`conversationAction.result` 的载荷形状（前端白名单 ✓，一个键不多 ✓）。
+
+    键名照前端白名单 ✓（`conversationEvents.mjs:34`：proposalRef / actionStatus /
+    newStateVersion / workspaceVersion ✓）；`workspaceVersion` 在**外层**的
+    `snapshotVersion` 里 ✓（白名单没有 actualChanges 的位置 ✗，不带 ✓）。
+
+    **失败原因不许静默** ✓✓（110 / 40904 / 84009 / -1 …）：卡要能说出"未生效 +
+    为什么" ✓——Java 的业务码与消息在 `actionResult.code/message` 上（网关
+    `_execute_claimed_command` 从响应体里翻出来 ✓），这里原样带给前端 ✓
+    （前端白名单 `conversationEvents.mjs` 同款扩了 `code`/`message` ✓）。
+    """
+    payload = {
+        key: action_result[key]
+        for key in ("proposalRef", "actionStatus", "newStateVersion")
+        if action_result.get(key) is not None
+    }
+    if result.get("snapshotVersion") is not None:
+        payload["workspaceVersion"] = result["snapshotVersion"]
+    for key in ("code", "message"):
+        if action_result.get(key) is not None:
+            payload[key] = action_result[key]
+    return payload
+
+
+async def _emit_turn_terminal(
+    *,
+    emit,
+    channel,
+    result: dict,
+    session_id: str,
+    channel_resolver: Callable[[], Any] | None = None,
+) -> None:
     """回合收尾：V1 发事件 ✓、老信封发帧 ✓；**失败走可恢复错误** ✓✓。
 
     **终态状态取真实结果，不再写死** ✓✓：原来 `assistant.completed` 与 `turn.completed`
@@ -899,6 +958,14 @@ async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -
     `recoverable.error` 的映射 ✓（`_native_reply_frame` ✓，判据同样是 `result.get("error")` ✓）——
     V1 这条漏了 ✗，两条路不对称 ✓。
     """
+    # **通道判定要看"收尾那一刻"** ✓✓（`channel_resolver` = 会话当前连接 ✓）：
+    # 入队时刻捕获的那条可能已经被顶替（用户重连/刷新 ✓）——继续按它判，
+    # 新 UI 那条连接会被当成老 UI ✗（只收到老信封帧 ✓），而老信封帧新 UI 的
+    # reducer 判否 ✗ → 用户既看不到 V1 答案、也等不到动作结果 ✓✗。
+    if channel_resolver is not None:
+        current = channel_resolver()
+        if current is not None:
+            channel = current
     if not channel.uses_v1:
         # compat 路由服务的是老 UI ✓：给它发 V1 事件是噪声 ✗。
         # 判据是"这条连接有没有事件存储" ✓（`ConnectionChannel.uses_v1` ✓）。
@@ -911,6 +978,13 @@ async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -
     limitations = [str(item) for item in (output.get("limitations") or []) if str(item)]
     tool_status = _observed_tool_status(result)
     error_code = result.get("error")
+    # **动作结果先发、且不挑分支** ✓✓：`execute` 已经回终局（applied/cancelled/failed ✓，
+    # 见 `execute_action_and_refresh` ✓）而收尾**顺带**失败时（失败码 ✓、快照重读失败 ✓），
+    # 结果事件照样必须进流 ✓——它是"这次写入算不算数"的唯一凭据 ✓：漏了它，
+    # 库里已经落地的改动在页面上永远停在"待确认" ✗（用户只能反复点 ✓✗）。
+    action_result = result.get("actionResult")
+    if isinstance(action_result, Mapping) and action_result:
+        await emit({"type": "conversationAction.result", "payload": _action_result_payload(result, action_result)})
     if error_code:
         # **失败不许报 completed** ✓✓：这一支原来与成功分支发同一个写死的 payload ✗，
         # 于是一次解析失败/证据作废在终态上长得和"一切正常"一模一样 ✓。
@@ -937,31 +1011,7 @@ async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -
         # 而且**不会报错** ✓，所以从外面看像"链路没走到" ✗）。
         # 键名照前端白名单 ✓（`conversationEvents.mjs:33` 只放
         # `proposalRef` / `diff` / `sourceVersion` / `expiresAt` ✓）。
-        # **采纳/放弃的结果也要发成事件** ✓✓——与提案预览**同一个病** ✗✓：
-        # 网关早把它算好了 ✓（`execute_action_and_refresh` 返回 `actionResult` ✓，含
-        # `actionStatus` ∈ {applied, cancelled} ✓），而这里不发的话 ✓，前端那张卡永远停在
-        # "待确认" ✗（实测：点了放弃 ✓，事件流里只有 `assistant.completed("操作已处理。")` ✓，
-        # 一条 `conversationAction.result` 都没有 ✓）。
-        # 键名照前端白名单 ✓（`conversationEvents.mjs:34`：proposalRef / actionStatus /
-        # newStateVersion / workspaceVersion ✓）；`workspaceVersion` 在**外层**的
-        # `snapshotVersion` 里 ✓（白名单没有 actualChanges/code/message 的位置 ✗，不带 ✓）。
-        action_result = result.get("actionResult")
-        if isinstance(action_result, Mapping) and action_result:
-            action_payload = {
-                key: action_result[key]
-                for key in ("proposalRef", "actionStatus", "newStateVersion")
-                if action_result.get(key) is not None
-            }
-            if result.get("snapshotVersion") is not None:
-                action_payload["workspaceVersion"] = result["snapshotVersion"]
-            # **失败原因不许静默** ✓✓（110 / 40904 / 84009 / -1 …）：卡要能说出"未生效 +
-            # 为什么" ✓——Java 的业务码与消息在 `actionResult.code/message` 上（网关
-            # `_execute_claimed_command` 从响应体里翻出来 ✓），这里原样带给前端 ✓
-            #（前端白名单 `conversationEvents.mjs` 同款扩了 `code`/`message` ✓）。
-            for key in ("code", "message"):
-                if action_result.get(key) is not None:
-                    action_payload[key] = action_result[key]
-            await emit({"type": "conversationAction.result", "payload": action_payload})
+        # （采纳/放弃的结果事件在上面**统一**发 ✓：成功/失败两支都要发 ✓，见那里的注释 ✓。）
         proposal_preview = result.get("proposalPreview")
         if isinstance(proposal_preview, Mapping) and proposal_preview:
             await emit({
@@ -988,7 +1038,9 @@ async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -
     await channel.emit_frame(_native_reply_frame(result, session_id))
 
 
-async def _run_action_work(gateway, msg, tenant_id: str, turn_id: str, emit, channel) -> None:
+async def _run_action_work(
+    gateway, msg, tenant_id: str, turn_id: str, emit, channel, *, channel_resolver=None
+) -> None:
     """确认/取消的收尾：执行 + 终态发射 ✓——**独立于回合** ✓（见 `SessionRuntime.detach_work` ✓）。
 
     兜底必须写在这里 ✗：整段被取消时 ✓，外面那层 `except` 根本轮不到 ✓；
@@ -997,7 +1049,8 @@ async def _run_action_work(gateway, msg, tenant_id: str, turn_id: str, emit, cha
     try:
         result = await _run_native_turn(gateway, msg, tenant_id, turn_id, emit)
         await _emit_turn_terminal(
-            emit=emit, channel=channel, result=result, session_id=msg.session_id
+            emit=emit, channel=channel, result=result, session_id=msg.session_id,
+            channel_resolver=channel_resolver,
         )
     except asyncio.CancelledError:
         raise
@@ -1268,7 +1321,7 @@ async def _handle_clarification_answer(ws, raw, runtime, tenant_id, channel) -> 
         turn_id = str(raw.get("turnId") or "")
         if turn_id:
             channel.bind_turn(turn_id)
-        emit = _session_emitter(runtime, channel, key)
+        emit = _session_emitter(runtime, channel, key, turn_id=turn_id or None)
         await emit({
             "type": "clarification.resolved",
             "payload": {"requestId": request_id, "status": "answered"},
