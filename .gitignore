@@ -69,3 +69,6 @@ zhiyuan-web/Dockerfile.standardtest.local
 # 本地运行时的临时产物（回放脚本与后端 temp-data-path 会往这里写会话志愿文件 ✓）
 data/tmp/
 .codex-local/
+
+# 私有运行时目录（含 DB 密码的配置/隔离栈 runtime-home）——2026-10-06 加固
+.local/
