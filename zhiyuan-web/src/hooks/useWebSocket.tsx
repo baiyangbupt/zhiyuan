@@ -194,7 +194,11 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
           wsRef.current.send(JSON.stringify(withScope(message)));
           console.log('📤 Message sent successfully');
         } catch (error) {
-          console.error('❌ Failed to send message:', error);
+          // 发送抛错 = 这条连接已经不可用：消息不能只记个日志就丢（用户的话被静默吞掉）。
+          // 进待发队列，等 connect() 建起新连接后由 onopen 补发。
+          console.error('❌ Failed to send message, queueing for resend:', error);
+          pendingMessagesRef.current.push(message);
+          void connect();
         }
       } else {
         console.warn('⚠️ WebSocket is not connected');
@@ -207,13 +211,14 @@ export const useWebSocket = (url: string, options: WebSocketOptions = {}): UseWe
           );
           console.warn('待发队列已满，丢弃了最旧的待发消息');
         }
-        if (!isConnected) {
-          console.log('Attempting to reconnect...');
-          void connect();
-        }
+        // 不再用 React 状态 `isConnected` 做闸门：它可能滞后于 wsRef.current
+        // （刚断开/假死重建中），会把这里唯一的重连尝试压掉。connect() 自己在
+        // OPEN/CONNECTING 时会安全空转，重复调用没有副作用。
+        console.log('Attempting to reconnect...');
+        void connect();
       }
     },
-    [isConnected, connect]
+    [connect]
   );
 
   const disconnect = useCallback(() => {

@@ -82,6 +82,72 @@ export async function dropConversationSocket(page: Page): Promise<void> {
   });
 }
 
+/**
+ * 把页面**最近一条**对话 WebSocket 变成"**假死**"（TCP 半开：对端不再回任何东西，
+ * 也永远没有 FIN）——2026-10-06 事故（确认更新后页面静默死亡、只能靠 F5 恢复）的台面复刻。
+ *
+ * 复刻的是"应用**看起来**一切正常，实际什么都没在通"这一档：
+ *   · `onmessage/onclose/onerror` 全部置空 → 服务端的任何帧（含 pong 与结果帧）都**不再投递**，
+ *     而且**永远不会有 onclose**——这正是自动重连指望不上的那种断法；
+ *   · `send` 换成只记账不发送 → 出站帧全部**黑洞**（TCP 半开时 `send()` 本来就"成功"：
+ *     写进内核缓冲就返回，谁也收不到）；
+ *   · `close` 吞掉 → **任何一方都关不掉它**（半开连接没有被礼貌关闭的机会）；
+ *   · `readyState` 保持 OPEN（真实 socket 的 readyState 本来就没变）→ 应用必须靠
+ *     **心跳超时**（≥30s 没有 pong）自己发现，别无他路。
+ *
+ * 供 `installSocketRecorder` 之后使用（实例账本挂在 `window.__conversationSockets` ✓）。
+ * 记账落在 `window.__zombieSocketSends` ✓（数组里是**试图发出**的原始 JSON 串 ✓）——
+ * 断言"心跳没停"数它 ✓，也顺便证明这些帧一条都没真发出去 ✓。
+ */
+export async function zombifyConversationSocket(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const bag = window as unknown as {
+      __conversationSockets?: WebSocket[];
+      __zombieSocketSends?: string[];
+      __zombieSocketBaseline?: number;
+    };
+    // **按 URL 认对话 socket** ✗✓：Next dev 的 HMR 也会开 WebSocket ✓、StrictMode 下
+    // 对话连接本身可能建过一条随即被关掉 ✓——"账本最后一条"并不等于"活着的对话连接" ✗。
+    // `/ws/chat` 是这条对话通道的唯一稳定特征 ✓。
+    const conversation = (bag.__conversationSockets || []).filter(socket => socket.url.includes('/ws/chat'));
+    const socket = conversation[conversation.length - 1];
+    if (!socket) throw new Error('没有可假死的对话 WebSocket（先 installSocketRecorder ✓）');
+    // 基线：假死这一刻已存在几条对话 socket ✓——判"重连发生过"用**增量**，不用绝对数 ✓
+    //（StrictMode / 上一次连接残留都会把绝对数抬高 ✓，用它断"第二条"会假绿 ✗）。
+    bag.__zombieSocketBaseline = conversation.length;
+    bag.__zombieSocketSends = [];
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    socket.send = ((data: string) => {
+      bag.__zombieSocketSends?.push(String(data));
+    }) as WebSocket['send'];
+    socket.close = (() => {}) as WebSocket['close'];
+  });
+}
+
+/** 读假死 socket 上**试图发出**的帧（原始 JSON 串）；配合 `zombifyConversationSocket` 用 ✓。 */
+export async function readZombieSocketSends(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const bag = window as unknown as { __zombieSocketSends?: string[] };
+    return [...(bag.__zombieSocketSends || [])];
+  });
+}
+
+/** 假死（`zombifyConversationSocket`）之后**新建立**的对话 WebSocket 条数 ✓。
+ *  ≥1 = 重连真的发生过 ✓（用增量而非绝对数：HMR / StrictMode 会把绝对数抬高 ✓）。 */
+export async function conversationSocketsCreatedSinceZombify(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const bag = window as unknown as {
+      __conversationSockets?: WebSocket[];
+      __zombieSocketBaseline?: number;
+    };
+    const now = (bag.__conversationSockets || []).filter(socket => socket.url.includes('/ws/chat')).length;
+    return now - (bag.__zombieSocketBaseline ?? now);
+  });
+}
+
 type Fixtures = {
   /** 自动 fixture ✓：开跑前放行悬空闸门并复位本次 run ✓（否则前一例的红会毒到后一例 ✓）。 */
   cleanGates: void;

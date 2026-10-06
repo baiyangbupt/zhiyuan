@@ -46,6 +46,7 @@ import TypingAnimation from '@/components/generating/TypingAnimation';
 import SendPng from '@/images/icons/send.png';
 import { marked } from 'marked';
 import { createFetchQueue } from './fetchQueue.mjs';
+import { createHeartbeatWatchdog, HEARTBEAT_TIMEOUT_MS } from '@/utils/heartbeatWatchdog.mjs';
 import { applyPendingActionResult, parseConversationActionResult } from '@/utils/conversationEvents.mjs';
 
 marked.use({ gfm: true, breaks: true });
@@ -563,15 +564,21 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
 
   // 心跳相关配置
   const HEARTBEAT_INTERVAL = 5000; // 心跳发送间隔：5秒
-  const HEARTBEAT_TIMEOUT = 30000; // 心跳超时时间：30秒（超过这个时间没收到pong就认为失败）
 
   // 回答超时配置
   const ANSWER_TIMEOUT = 30000; // 回答超时时间：30秒（超过这个时间没收到回复就显示放弃等待按钮）
 
   // 心跳定时器引用（合并发送和检测功能）
   const heartbeatTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const lastPingTimeRef = useRef<number>(0);
-  const lastPongTimeRef = useRef<number>(0);
+  // 假死检测（2026-10-06 修复）：
+  // 判据只有"最近一次 pong 距今多久"（见 utils/heartbeatWatchdog.mjs 的复盘注释）。
+  // ✗ 别再退回"距上次 ping 的时长"——每次心跳 tick 都会把那个时间戳重写成 now，
+  //   它永远 < 5s，判死分支一次都进不去；而 TCP 半开（对端不响、也没有 FIN）
+  //   不会触发 onclose/onerror，于是连接假死后页面被永久静默吞掉、只能靠 F5 恢复。
+  const heartbeatWatchdogRef = useRef<ReturnType<typeof createHeartbeatWatchdog> | null>(null);
+  if (heartbeatWatchdogRef.current === null) {
+    heartbeatWatchdogRef.current = createHeartbeatWatchdog({ timeoutMs: HEARTBEAT_TIMEOUT_MS });
+  }
   // 保存最新的连接状态和重连函数
   const isConnectedRef = useRef<boolean>(false);
   const reconnectRef = useRef<(() => void) | undefined>(undefined);
@@ -915,8 +922,8 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
 
       // 判断是否是 pong 消息
       if (typeof data === 'object' && data !== null && 'type' in data && data.type === 'pong') {
-        // 更新最后收到 pong 的时间
-        lastPongTimeRef.current = Date.now();
+        // pong 是"连接还活着"的唯一凭据：清零假死窗口（ping 本身不算）。
+        heartbeatWatchdogRef.current?.touchPong();
         // pong 消息不需要执行 fetchMessageList 和 setAnswerLoading
         return;
       }
@@ -969,32 +976,30 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     },
   });
 
-  // 心跳逻辑（合并发送和检测功能，使用一个定时器）
+  // 心跳逻辑（合并发送和假死检测，使用一个定时器）
   useEffect(() => {
-    // 心跳处理函数：发送心跳 + 检测超时
+    // 心跳处理函数：发送心跳 + 检测连接假死
     const handleHeartbeat = () => {
       const now = Date.now();
 
-      // 1. 检测心跳是否超时（每次执行都检查）
-      if (isConnectedRef.current && lastPingTimeRef.current > 0) {
-        const timeSinceLastPing = now - lastPingTimeRef.current;
-        const hasReceivedPong = lastPongTimeRef.current >= lastPingTimeRef.current;
-
-        // 如果发送了 ping 但超过超时时间还没收到对应的 pong，认为心跳失败
-        if (!hasReceivedPong && timeSinceLastPing > HEARTBEAT_TIMEOUT) {
-          console.warn('⚠️ 心跳超时，尝试重新连接');
-          // 清理定时器
-          if (heartbeatTimerRef.current) {
-            clearInterval(heartbeatTimerRef.current);
-            heartbeatTimerRef.current = null;
-          }
-          // 重置时间戳
-          lastPingTimeRef.current = 0;
-          lastPongTimeRef.current = 0;
-          // 触发重连
-          reconnectRef.current?.();
-          return;
+      // 1. 检测连接假死（每次执行都检查）
+      //    判据 = "距最近一次 pong 已静默 ≥ 30s"（见 heartbeatWatchdog 注释）；
+      //    半开连接不会有 onclose/onerror，这里是唯一能发现问题的地方。
+      if (isConnectedRef.current && heartbeatWatchdogRef.current?.isSilent(now)) {
+        console.warn('⚠️ 心跳超时（30s 未收到 pong），判定连接假死，主动重建连接');
+        // 清理定时器
+        if (heartbeatTimerRef.current) {
+          clearInterval(heartbeatTimerRef.current);
+          heartbeatTimerRef.current = null;
         }
+        heartbeatWatchdogRef.current.stop();
+        // 假死连接上在飞的等待必须收尾，否则输入框停在"生成中"，用户连重发都做不到
+        //（正常 onclose 路径本来也会 resetAnswerLoading，这里保持一致）。
+        resetAnswerLoading();
+        // 触发重连：reconnect() = 先断开死连接（含空 url 兜底）再取新票重连。
+        // 取票接口如果也失败了，下一次用户发送还会再触发 connect()（见 useWebSocket.sendMessage）。
+        reconnectRef.current?.();
+        return;
       }
 
       // 2. 如果连接已建立，发送心跳
@@ -1006,14 +1011,14 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
           inputType: 'ping',
           timestamp: now,
         };
-        lastPingTimeRef.current = now;
         sendMessageRef.current(pingMessage);
         console.log('💓 发送心跳 ping:', pingMessage);
       }
     };
 
     if (!isConnected) {
-      // 连接断开时，清理心跳定时器
+      // 连接断开时，停止盯防并清理心跳定时器（重连成功后会重新 reset，不拿旧时间戳判死）
+      heartbeatWatchdogRef.current?.stop();
       if (heartbeatTimerRef.current) {
         clearInterval(heartbeatTimerRef.current);
         heartbeatTimerRef.current = null;
@@ -1021,16 +1026,18 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       return;
     }
 
-    // 连接建立后，立即执行一次（发送心跳 + 检测超时）
+    // 连接建立后，静默窗口从这一刻起算（新连接允许"还没收到第一口 pong"），并立即执行一次
+    heartbeatWatchdogRef.current?.reset();
     handleHeartbeat();
 
-    // 设置定时器：每5秒执行一次（发送心跳 + 检测超时）
+    // 设置定时器：每5秒执行一次（发送心跳 + 检测假死）
     heartbeatTimerRef.current = setInterval(() => {
       handleHeartbeat();
     }, HEARTBEAT_INTERVAL);
 
     // 清理函数
     return () => {
+      heartbeatWatchdogRef.current?.stop();
       if (heartbeatTimerRef.current) {
         clearInterval(heartbeatTimerRef.current);
         heartbeatTimerRef.current = null;

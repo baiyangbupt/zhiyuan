@@ -38,14 +38,14 @@ export default defineConfig({
     // **写路径那几条排除在外** ✓✓（`grepInvert` ✓）：它们要求栈跑在 `codex_write` 上 ✗
     //（只读模式下确认链不在这台实例上活着 ✓，点了也走不到 claim/execute ✓）——
     // 混在一起的话，"栈起成了只读"会被读成"功能坏了" ✗，而"写路径还没做完"会被读成"合同栈红" ✗✗。
-    // 排除的判据是**用例标题**里的 `F07 后半` / `补录成绩` ✓（与用例里的注释同一处口径 ✓）。
+    // 排除的判据是**用例标题**里的 `F07 后半` / `补录成绩` / `F14 假死` ✓（与用例里的注释同一处口径 ✓）。
     {
       name: 'contract',
       testMatch: '**/*.contract.spec.ts',
-      grepInvert: /F07 后半|F08|F09|F13|补录成绩/,
+      grepInvert: /F07 后半|F08|F09|F13|补录成绩|F14 假死/,
       use: { storageState: process.env.ZHIYUAN_E2E_AUTH_STATE || undefined },
     },
-    // **需要 `codex_write` 栈的用例** ✓（F07 后半 / F08 / F09 / F13 / 补录成绩 ✓——起栈时要
+    // **需要 `codex_write` 栈的用例** ✓（F07 后半 / F08 / F09 / F13 / 补录成绩 / F14 假死 ✓——起栈时要
     // `CODEX_LOCAL_GATEWAY_MODE=codex_write` ✓，见 `scripts/start-codex-local.sh` ✓）
     // **新增写路径用例时，两处 grep 都要加** ✗✓（`contract` 的 `grepInvert` 与这里的 `grep` ✓）——
     // 漏一处的话它要么跑在只读栈上（红得没道理 ✓），要么被过滤掉**一条都不跑** ✗✓
@@ -53,7 +53,7 @@ export default defineConfig({
     {
       name: 'write',
       testMatch: '**/*.contract.spec.ts',
-      grep: /F07 后半|F08|F09|F13|补录成绩/,
+      grep: /F07 后半|F08|F09|F13|补录成绩|F14 假死/,
       use: { storageState: process.env.ZHIYUAN_E2E_AUTH_STATE || undefined },
     },
     // 真实栈：同一套栈，但换真实 Codex 与真实（或经批准的隔离）上游 ✓。

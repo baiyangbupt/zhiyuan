@@ -1,4 +1,12 @@
-import { dropConversationSocket, expect, installSocketRecorder, test } from './fixtures';
+import {
+  conversationSocketsCreatedSinceZombify,
+  dropConversationSocket,
+  expect,
+  installSocketRecorder,
+  readZombieSocketSends,
+  test,
+  zombifyConversationSocket,
+} from './fixtures';
 
 // 任务书（Task C4 ④）原话："一条**不依赖固定延时**的流式测试 ✓：fake 模型等 fixture 控制释放终态 ✓，
 // UI 必须先显示进度、停止仍可操作 ✓。"
@@ -1128,4 +1136,238 @@ test('流式增量：先显示 delta 流文本，终态到达后整段替换且�
     timeout: 20_000,
   });
   await expect(turn.getByTestId('assistant-stream')).toHaveCount(0);
+});
+
+// **F14：确认执行窗口内连接"假死"（TCP 半开）** ✓✓——2026-10-06 一晚三次的真事故复刻：
+// 点「确认更新」后，执行窗口（Java 同步 execute，实测 ~24s）里连接**静默死亡**：
+// 服务端日志直到 F5 都没有 close（不是服务端/代理掐的 ✗）、浏览器也不给 onclose/onerror
+//（TCP 半开 ✓）→ pong 断了、用户消息全部黑洞、卡停在"待确认" ✓，只有 F5 能救 ✗。
+//
+// **修前为什么救不回来** ✗（`MessageList/index.tsx` 心跳效应）：判死判据量的是
+// "距上次 **ping** 的时长" ✓，而每个心跳 tick 都会把它重写成 now ✓ → `> 30s` 这一支
+// **一次都不可能触发** ✗ → 从来没有过重连发起。修后判据只剩"距最近一次 **pong** 的静默时长" ✓
+//（`utils/heartbeatWatchdog.mjs` ✓，纯函数、有单测钉着 ✓），假死连接在 30s（+一个 ≤5s 的
+// 心跳档期粒度）内被判死、断开、重建 ✓。
+//
+// 台面（`zombifyConversationSocket` ✓）：事件不投递（含 pong 与结果帧 ✗）、出站黑洞
+//（`send()` 在 TCP 半开时本来就"成功" ✓）、**关不掉** ✓、`readyState` 仍是 OPEN ✓——
+// 也就是说：除了"心跳超时"，没有任何别的信号能发现它 ✓（这正是本条要断的东西 ✓）。
+//
+// 断言都落在用户看得见的东西上 ✓：
+//   ① 执行窗口里心跳**不断** ✓（ping 仍按 5s 档"试图"发出 ✓——页面没有被静默冻结 ✓）；
+//   ② 假死后 **≤45s** 出现**新的一条**对话 WebSocket ✓（30s 静默 ⇒ 判死 ⇒ 重建 ✓；
+//      45s = 30s + ≤5s 档期粒度 + 取票/建连余量 ✓，实测判死耗时打进日志 ✓）；
+//   ③ 新连接上 **pong 恢复到达** ✓（心跳在新连接上活着 ✓，也是"重连成功"的协议层证据 ✓）；
+//   ④ **追平**：卡进"已生效" ✓ + 工作区版本 +1 + 新成绩落库 ✓（刷新能拿到的一切 ✓）；
+//   ⑤ 输入**不被锁死** ✓：重连后真的发一句话、走完一个新回合并拿到终态 ✓
+//      （修前这条走不到——② 已经先红 ✓）。
+//
+// 放在文件**末尾** ✓：会话按用例标题哈希分配（`fixtures.ts` 的 `sessionIdFor` ✓），
+// 追加在末尾不改既有用例的分配序号 ✓（F13 语义也一个字没动 ✓）。
+test('F14 假死：确认执行窗口内连接半开——心跳不断、约 30s 判死重连、状态追平、输入可用', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  // 预算 = 自举 + 出卡 + 执行 ~24s + 判死 ~30s + 重放对齐 + 追发一条 ~10s ✓。
+  test.setTimeout(180_000);
+  await runtimeGate.setScenario('score_update');
+
+  const sessionId =
+    new URL(sessionUrl, 'http://placeholder').searchParams.get('chatSessionId') || '';
+  const backend = process.env.ZHIYUAN_E2E_BACKEND_ORIGIN || 'http://127.0.0.1:18290';
+  const readState = async () => {
+    const response = await page.request.get(
+      `${backend}/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=${sessionId}`,
+    );
+    const body = (await response.json().catch(() => null)) as { data?: Record<string, unknown> } | null;
+    return body?.data || {};
+  };
+
+  // 探针（先装再导航 ✓）：出站帧用于**等到确认帧真的出站**再假死 ✓；入站帧用于数 pong ✓。
+  const sentFrames: string[] = [];
+  const receivedFrames: string[] = [];
+  // **pong 不能按"紧凑 JSON"抠字符串** ✗✓：服务端是 `json.dumps({"type": "pong"})` ✓
+  // （`app/server.py` 心跳分支 ✓），线上形状 `{"type": "pong"}`——冒号后**有空格** ✓。
+  // 实测（2026-10-06）：按 `"type":"pong"` 匹配时一条都数不到 ✗，③ 收到 0 个 pong 假红 ✗。
+  // 解析成对象再看字段 ✓，对空白/键序都不敏感 ✓；解不开的帧就是"不是 pong" ✓。
+  const isPongFrame = (frame: string) => {
+    try {
+      return (JSON.parse(frame) as { type?: unknown }).type === 'pong';
+    } catch {
+      return false;
+    }
+  };
+  const countPongs = () => receivedFrames.filter(isPongFrame).length;
+  await installSocketRecorder(page);
+  page.on('websocket', socket => {
+    socket.on('framesent', frame => sentFrames.push(String(frame.payload)));
+    socket.on('framereceived', frame => receivedFrames.push(String(frame.payload)));
+  });
+
+  await runtimeGate.resetSessionState(sessionId);
+  await runtimeGate.seedVolunteerData(sessionId);
+
+  // 基线成绩换成"浙江"这份 ✓：理由与 `补录成绩` 用例逐字相同（本环境上游只配了浙江 ✓，
+  // 不换的话点确认必以 110 收场 ✗——那是正确分支，但不是本用例要走的 happy path ✗）。
+  // 各科一并补 ✓（合并校验要求非空 ✓；卡上"各科"仍只能来自 Java 合并结果 ✓）。
+  const extraApi = `${backend}/gaotu-assistant-bot/inner/chat/1/session`;
+  const scoreResp = await page.request.get(
+    `${extraApi}/get-extra-data?chatSessionId=${sessionId}&keyList=userScoreDetail&version=0`,
+  );
+  const scoreRaw = ((await scoreResp.json()) as { data?: Record<string, unknown> }).data?.userScoreDetail;
+  const scoreDetail = (typeof scoreRaw === 'string' ? JSON.parse(scoreRaw) : scoreRaw) as Record<string, unknown>;
+  scoreDetail.province = { code: '330000', name: '浙江省' };
+  scoreDetail.batch = { code: '17', level: '本科', score: 500, name: '第一段' };
+  scoreDetail.subjectScoreList = [
+    { subject: '01', subjectName: '物理', score: 78 },
+    { subject: '05', subjectName: '化学', score: 82 },
+    { subject: '06', subjectName: '生物', score: 77 },
+  ];
+  const patchResp = await page.request.post(`${extraApi}/add-extra-data`, {
+    data: {
+      chatSessionId: Number(sessionId),
+      dataKey: 'userScoreDetail',
+      dataType: 'JSON_OBJECT',
+      dataValue: scoreDetail,
+      version: 0,
+    },
+  });
+  expect(patchResp.ok(), '基线各科铺不上后面全红 ✓，先在这里失败 ✓').toBeTruthy();
+
+  // **先把自举做掉，再开始测量** ✓✓（否则下面 `settleWorkspaceBootstrap` 本身是靶子外的碎玻璃 ✓）。
+  // 未自举的会话在**页面挂载那一刻**有一条**栈的既有竞态** ✗（2026-10-06 实测 3 次踩中 ✓）：
+  // 页面会同时发多条 workspace-state 读 ✓，而读路径 `loadPlanningState` 会为 legacy 会话
+  // **懒导入并落盘**（`PlanningStateService.java:5292-5316` ✓，方法注释自陈"会 savePlanningState" ✓）——
+  // 它和页面自己的 `initial-plan/generate` 抢同一行 planningState（extra_data ✓），后写覆盖前写 ✗
+  // → phase 停在 `candidate_generated` ✓、settle 15s 超时 ✓。实测指纹：174093B 的"只有候选池"
+  // 行（statusCode=not_generated ✓）盖掉了正常约 1.1MB 的"候选池+草案+排序、version=1" 行 ✓；
+  // 同一会话（900042）20:36 过、20:38 挂 ✓ = 时序竞态 ✓，与 F14 的靶子（假死重连）无关 ✗。
+  // 预热 = 在**没有并发读者**时先跑一次生成 ✓（走 inner 端点 ✓，与用例里其它 inner 调用同一面 ✓；
+  // 无凭证也通 ✓）：落盘后页面再开只会 load ✓、不再触发懒导入 ✓，`ensureInitialPlanReady`
+  // 看到草案已有内容会跳过 ✓ → 竞态缺少发生条件 ✓。预热**只影响本用例** ✓；
+  // 下面共用 `settleWorkspaceBootstrap` 的语义**一个字没动** ✓（F07/F08/F09/F13 不受影响 ✓）。
+  const prewarm = await page.request.post(
+    `${backend}/gaotu-assistant-bot/inner/planning/1/session/initial-plan/generate?chatSessionId=${sessionId}`,
+    { data: {} },
+  );
+  expect(prewarm.ok(), '自举预热请求必须成功（HTTP 200 ✓）').toBeTruthy();
+  const prewarmBody = (await prewarm.json().catch(() => null)) as {
+    code?: unknown;
+    data?: { phase?: unknown };
+  } | null;
+  expect(String(prewarmBody?.data?.phase ?? ''), '预热后 phase 必须是 ordered ✓').toBe('ordered');
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  await settleWorkspaceBootstrap(readState, runtimeGate);
+  const before = await readState();
+  const beforeScore = Number((before as any).studentSummary?.score ?? 0);
+  const beforeRank = Number((before as any).studentSummary?.rank ?? 0);
+  const newScore = Number.isFinite(beforeScore) && beforeScore > 0 ? beforeScore + 1 : 641;
+  const newRank = Number.isFinite(beforeRank) && beforeRank > 0 ? beforeRank - 1 : 3100;
+  await runtimeGate.setScenarioParams({
+    sourceVersionGuard: typeof before.version === 'number' ? before.version : 0,
+    totalScore: newScore,
+    totalScorePos: newRank,
+    userOriginalText: `总分改成 ${newScore}，位次 ${newRank}`,
+  });
+
+  // 第一轮：出补录卡（走法与 `补录成绩` 用例一致 ✓）。
+  await page.getByTestId('chat-input').fill(`我这次总分 ${newScore}，位次 ${newRank}`);
+  await page.getByTestId('chat-send').click();
+  await expect(
+    page.locator('[data-turn-id]').last().getByTestId('turn-progress'),
+  ).toContainText('历年录取', { timeout: 20_000 });
+  await runtimeGate.releaseAllPending();
+  const card = page.getByTestId('proposal-card');
+  await expect(card, '补录草稿编译成功就必须有卡 ✓').toBeVisible({ timeout: 20_000 });
+  await expect(card.getByTestId('proposal-status')).toContainText('待确认', { timeout: 20_000 });
+
+  // 点确认；**等确认帧真的出站**再假死 ✓——顺序反了的话服务端根本没收到确认，
+  // 后面等的"版本 +1"就永远等不到，红得没道理 ✗。
+  await card.getByTestId('proposal-confirm').click();
+  await expect
+    .poll(() => sentFrames.some(frame => frame.includes('"inputType":"pendingConfirmation"')), {
+      message: '确认帧必须先在电线上出现 ✓（否则假死扮的是"没点确认" ✗）',
+      timeout: 10_000,
+    })
+    .toBe(true);
+  // 需求 c 的前半：确认之后输入**不许被锁** ✓（锁了就连重试的机会都没有 ✓）。
+  await expect(page.getByTestId('chat-input')).toBeEnabled();
+
+  // 假死（T0）：事件不再投递、出站黑洞、关不掉、readyState 仍是 OPEN ✓。
+  await zombifyConversationSocket(page);
+  const zombieAt = Date.now();
+  const pongsAtZombie = countPongs();
+
+  // ① 执行窗口内心跳不断：ping 仍按 5s 档在**试图**发出 ✓（15s 内至少 3 条 ✓；
+  //    它们同时也在账本里证明"一条都没真发出去" ✓——这就是半开 ✓）。
+  await expect
+    .poll(
+      async () =>
+        (await readZombieSocketSends(page)).filter(frame => frame.includes('"inputType":"ping"')).length,
+      {
+        message: '假死期间心跳必须继续在发 ✓（页面不许被静默冻结 ✗）',
+        timeout: 20_000,
+      },
+    )
+    .toBeGreaterThanOrEqual(3);
+
+  // ② 判死 + 重连：假死后出现**新的一条**对话 WebSocket ✓（≤45s ✓：
+  //    30s 静默判死 + ≤5s 心跳档期粒度 + 取票/建连余量 ✓，实测耗时打进日志 ✓）。
+  await expect
+    .poll(() => conversationSocketsCreatedSinceZombify(page), {
+      message: '假死连接必须在"30s 静默 + 一个心跳档期"内被判死并重建 ✓（修前永远等不到新连接 ✗）',
+      timeout: 45_000,
+    })
+    .toBeGreaterThanOrEqual(1);
+  const detectedMs = Date.now() - zombieAt;
+  console.log(`[f14] 假死→新连接用时 ${detectedMs}ms（判死窗口 30s + 档期粒度 ≤5s ✓）`);
+
+  // ③ 新连接上 pong 恢复到达 ✓：假死后 zombie 不再发 ping ✓ → 之后数到的每一条 pong
+  //    都只可能来自新连接 ✓（心跳在新连接上活着 ✓）。
+  await expect
+    .poll(() => countPongs(), {
+      message: '新连接必须重新有 pong 到达 ✓（没有 = 心跳在新连接上没起来 ✗）',
+      timeout: 20_000,
+    })
+    .toBeGreaterThanOrEqual(pongsAtZombie + 2);
+
+  // ④ 追平 1/2：服务端把执行做完 ✓（~24s ✓，与"补录成绩"用例同一件同步执行 ✓）。
+  await expect
+    .poll(async () => String((await readState()).version ?? ''), {
+      message: '确认提交的事务必须在假死/重连期间照常完成 ✓（重连不影响服务端 ✓）',
+      timeout: 60_000,
+    })
+    .not.toBe(String(before.version ?? ''));
+
+  // ④ 追平 2/2：卡进"已生效" ✓——"刷新能看到的东西，重连也要能看到" ✓。
+  await expect(
+    card.getByTestId('proposal-status'),
+    '重连后卡要自己追平到"已生效" ✓（追不平就是"只能靠 F5" ✗）',
+  ).toContainText(/已生效|已更新/, { timeout: 60_000 });
+
+  const after = await readState();
+  console.log(
+    `[f14] before: version=${String(before.version)} score=${String(beforeScore)}；` +
+      `after: version=${String(after.version)} score=${String((after as any).studentSummary?.score)}`,
+  );
+  expect(Number((after as any).studentSummary?.score), '追平后新成绩必须在工作区里 ✓').toBe(newScore);
+  expect(Number(after.version), '追平后版本要 +1 ✓').toBe(Number(before.version) + 1);
+
+  // ⑤ 输入可用且**真的通**：重连后发一句话，走完一个新回合并拿到终态 ✓。
+  await expect(page.getByTestId('chat-input')).toBeEnabled();
+  await runtimeGate.setScenario('gate_then_answer');
+  await page.getByTestId('chat-input').fill('重连之后，这句话必须能到服务端');
+  await page.getByTestId('chat-send').click();
+  const newTurn = page.locator('[data-turn-id]').last();
+  await expect(
+    newTurn.getByTestId('turn-progress'),
+    '重连后发的消息必须真的到服务端 ✓（到不了 = send 还在黑洞里 ✗）',
+  ).toContainText('历年录取', { timeout: 20_000 });
+  await runtimeGate.releasePendingGate();
+  await expect(newTurn.getByTestId('assistant-final')).toHaveCount(1, { timeout: 20_000 });
 });
