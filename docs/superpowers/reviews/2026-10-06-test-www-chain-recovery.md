@@ -89,6 +89,20 @@ create-session 第 4 步是同一个调用**（同一方法、同参数面），
 单测：agent 1906 passed（+7 新增）+ web 36 passed；唯一红仍是既有的
 dialog_quality_gate 夹具缺失（数据/环境，非代码）。
 
+**批次二（同日追加）**：① `conversation_action` 路径改读权威快照
+（`get_authoritative_snapshot`，native+compat 两处）——补录成绩后立刻确认不再吃
+陈旧缓存（红绿证据：stale→`proposal_version_mismatch` vs applied）；
+② 老信封空 `recoverable.error` 不再擦掉非空文案（reducer 只拦空值合并；
+纠正侦察前提——帧映射早已有，空文案来自生产端 `_native_reply_frame`）；
+③ 删死开关 `MCP_WRITE_TOOLS_ENABLED`（grep 零读者）。agent 全量 1910 passed。
+
+**最终 e2e（新 jar + 前端切换 + 批次二 web 侧）**：contract **12 passed** ✓
+（F15 场景在浏览器链路里见到完整新事件序列含真实 failed 终态）；
+write 项目 **3 passed + F09 红**——F09 的`after` 状态（version=0/candidate_generated）
+正是用例要证明的"确认被拒、版本未推进"，红点只在测试自身的 `before` 读数为空
+（`readState()` 拿到 `{}`）；已单独派线调查定性（产品/夹具/flake），结论回来前
+**不宣布写路径全绿**。前端切换后工作台 17+1 条调用全部走 facade（浏览器实测路径可见）。
+
 ## 三、当日两起事故与根治
 
 1. **`.next` 共用**：隔离栈 `next dev`（3201）与标准栈 `next start`（3001）长期共用
