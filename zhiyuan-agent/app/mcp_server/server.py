@@ -113,6 +113,37 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "admission.get_enrollment_plan": _input_schema(
         "schoolUnitId", "schoolId", "areaId", "year", "subjectType", "batch"
     ),
+    # 候选预览：只收过滤与分页。**身份字段(tenantId/sessionId)不在这里**——
+    # 它们由受信 binding 注入；就算模型塞了，`_trusted_arguments` 也会丢掉。
+    "recommendation.preview_candidates": {
+        "type": "object",
+        "properties": {
+            "filters": {
+                "type": "object",
+                "properties": {
+                    # 档位是这套数据的原生分档：冲/稳/保。
+                    "tiers": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["冲", "稳", "保"]},
+                    },
+                    "provinceNames": {"type": "array", "items": {"type": "string"}},
+                    "cityNames": {"type": "array", "items": {"type": "string"}},
+                    "schoolKeywords": {"type": "array", "items": {"type": "string"}},
+                    "majorKeywords": {"type": "array", "items": {"type": "string"}},
+                    "negativeProvinceNames": {"type": "array", "items": {"type": "string"}},
+                    "negativeCityNames": {"type": "array", "items": {"type": "string"}},
+                    "negativeSchoolKeywords": {"type": "array", "items": {"type": "string"}},
+                    "negativeMajorKeywords": {"type": "array", "items": {"type": "string"}},
+                },
+                "additionalProperties": False,
+            },
+            # 一次最多 20 条（硬上限，超了截断不报错）；total 给的是全量条数。
+            "page": {"type": "integer", "minimum": 1},
+            "pageSize": {"type": "integer", "minimum": 1},
+        },
+        "required": [],
+        "additionalProperties": False,
+    },
 }
 
 TOOL_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -134,7 +165,7 @@ TOOL_OUTPUT_SCHEMA: dict[str, Any] = {
         # 变成一个靠字段猜的问题，而猜错的方向是把过去当未来。
         "kind": {
             "type": "string",
-            "enum": ["catalog", "history", "probability", "enrollment", "policy", "eligibility", "workingPlan", "comparison"],
+            "enum": ["catalog", "history", "probability", "enrollment", "policy", "eligibility", "workingPlan", "comparison", "candidate"],
         },
         "status": {"type": "string"},
         "data": {},

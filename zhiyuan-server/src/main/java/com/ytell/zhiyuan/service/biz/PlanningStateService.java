@@ -1411,9 +1411,17 @@ public class PlanningStateService {
         return state;
     }
 
-    private CandidatePoolStateDTO buildCandidatePoolStateFromResponse(Long chatSessionId,
-                                                                       PlanningStateDTO state,
-                                                                       VolunteerRecommendListResponse response) {
+    /**
+     * 候选成形（响应 → 候选池状态）。**从本类抽出的可复用包内方法**。
+     *
+     * <p>只抽出可见性，逻辑与调用点一字未改：它本身不含 savePlanningState / version 自增
+     * （那两件在 {@link #generateCandidatePool} 里，见 1396-1408 那段）。抽出来的理由是
+     * 只读的候选预览（{@link CandidatePreviewService}）需要同一份成形逻辑——复制一份
+     * 迟早会与这里分叉，而"候选长什么样"正是两边都要回答的问题。</p>
+     */
+    CandidatePoolStateDTO buildCandidatePoolStateFromResponse(Long chatSessionId,
+                                                               PlanningStateDTO state,
+                                                               VolunteerRecommendListResponse response) {
         CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
         candidatePoolState.setGeneratedAt(OffsetDateTime.now().toString());
         candidatePoolState.setSourceVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
@@ -5265,7 +5273,13 @@ public class PlanningStateService {
         return loadPlanningState(chatSessionId, true);
     }
 
-    private PlanningStateDTO loadPlanningStateReadOnly(Long chatSessionId) {
+    /**
+     * 只读加载规划状态：**不做 legacy 懒导入、不落盘**。
+     *
+     * <p>只读调用方（候选预览）用这条而不是 {@link #loadPlanningState}——后者会为
+     * legacy 会话懒导入并 savePlanningState（版本会动），那正是只读纵切不能发生的事。</p>
+     */
+    PlanningStateDTO loadPlanningStateReadOnly(Long chatSessionId) {
         ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
                 chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         PlanningStateDTO state = extraData == null || Strings.isNullOrEmpty(extraData.getDataValue())
@@ -7958,7 +7972,8 @@ public class PlanningStateService {
         return derived;
     }
 
-    private List<CandidateItemDTO> flattenCandidates(List<VolunteerRecommendListResponse.VolunteerSchool> schools, String tier) {
+    /** 逐条候选成形（冲刺/稳妥/保底三段共用）。**包内可见**，只读预览复用同一份。 */
+    List<CandidateItemDTO> flattenCandidates(List<VolunteerRecommendListResponse.VolunteerSchool> schools, String tier) {
         List<CandidateItemDTO> items = Lists.newArrayList();
         if (schools == null) {
             return items;

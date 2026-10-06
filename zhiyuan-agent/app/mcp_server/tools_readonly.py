@@ -43,6 +43,13 @@ CAPABILITIES = {
     # 招生章程（招生简章全文）。**免分数**，而且是"原文条款"那条来源——
     # 与 getSchoolRule（录取规则摘要，回占位文案）不是一回事。
     "admission.get_charter": "admission_read",
+    # 候选预览：只读的候选纵切（推荐 → 成形 → 一页样例）。
+    # 挂在既有 `admission_read` 上而不是新造能力名：Java 侧
+    # `ConversationSnapshotService.fillCapabilities` 只签发 catalog_read /
+    # admission_read 两种能力，新名字在真实回合里会被**全部拒绝**——
+    # 工具注册了却谁也调不到，比不注册更坏。候选属于"志愿/录取"域，
+    # admission_read 是它的现役归属。
+    "recommendation.preview_candidates": "admission_read",
 }
 WRITE_TOOL_NAMES = frozenset(
     {
@@ -72,6 +79,7 @@ TOOL_KINDS = {
     "catalog.list_admission_units": "catalog",
     "admission.get_enrollment_plan": "enrollment",
     "admission.get_charter": "policy",
+    "recommendation.preview_candidates": "candidate",
 }
 
 
@@ -329,6 +337,10 @@ class ReadonlyDomainTools:
             # 不在这里 resolve：对比的实体是**已确认**的院校/专业（调用方给 ID），
             # 歧义应当在进入对比之前就解决掉，否则表格里会出现"同一个名字的两个东西"。
             return await self.backend.compare(**self._trusted_arguments(arguments))
+        if name == "recommendation.preview_candidates":
+            # 只收过滤与分页；tenant/session 由受信 binding 注入——
+            # `_trusted_arguments` 会把模型塞的 tenantId/sessionId 全部丢掉。
+            return await self.backend.preview_candidates(**self._trusted_arguments(arguments))
         method = {
             "entity.resolve": "resolve",
             "catalog.get_school": "get_school",
@@ -969,6 +981,114 @@ class InternalClientBackend:
             "data": payload_data,
             "evidence": unique_evidence,
             "limitations": payload_data["limitations"],
+        }
+
+    # 候选预览一次带回的条数上限。与 Java 侧硬上限一致：**全量候选留在服务器**，
+    # 模型拿到的是"一页样例 + 全量计数"，整池候选吃不掉一轮上下文。
+    CANDIDATE_PREVIEW_PAGE_SIZE_CAP = 20
+
+    # 过滤器别名 → Java 侧字段名。模型措辞不稳定（tier/tiers、province/provinceNames、
+    # 蛇形/驼峰、单值/列表），这里统一归一；**不认识的键原样透传**——
+    # 猜不出的维度宁可让上游如实回 `filter_unsupported:*`，也不能静默丢掉。
+    _PREVIEW_FILTER_ALIASES = {
+        "tier": "tiers",
+        "tiers": "tiers",
+        "province": "provinceNames",
+        "provinces": "provinceNames",
+        "province_names": "provinceNames",
+        "provinceNames": "provinceNames",
+        "negative_province_names": "negativeProvinceNames",
+        "negativeProvinceNames": "negativeProvinceNames",
+        "city": "cityNames",
+        "cities": "cityNames",
+        "city_names": "cityNames",
+        "cityNames": "cityNames",
+        "negative_city_names": "negativeCityNames",
+        "negativeCityNames": "negativeCityNames",
+        "school": "schoolKeywords",
+        "school_keywords": "schoolKeywords",
+        "schoolKeywords": "schoolKeywords",
+        "negative_school_keywords": "negativeSchoolKeywords",
+        "negativeSchoolKeywords": "negativeSchoolKeywords",
+        "major": "majorKeywords",
+        "major_keywords": "majorKeywords",
+        "majorKeywords": "majorKeywords",
+        "negative_major_keywords": "negativeMajorKeywords",
+        "negativeMajorKeywords": "negativeMajorKeywords",
+        "school_tags": "schoolTags",
+        "schoolTags": "schoolTags",
+        "negative_school_tags": "negativeSchoolTags",
+        "negativeSchoolTags": "negativeSchoolTags",
+        "major_tags": "majorTags",
+        "majorTags": "majorTags",
+        "negative_major_tags": "negativeMajorTags",
+        "negativeMajorTags": "negativeMajorTags",
+    }
+
+    @classmethod
+    def _normalize_preview_filters(cls, raw: Any) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            return {}
+        normalized: dict[str, Any] = {}
+        for key, value in raw.items():
+            name = cls._PREVIEW_FILTER_ALIASES.get(str(key), str(key))
+            if isinstance(value, str):
+                value = [value] if value.strip() else []
+            if isinstance(value, list):
+                normalized[name] = [str(item) for item in value if str(item).strip()]
+            else:
+                normalized[name] = value
+        return normalized
+
+    async def preview_candidates(self, **arguments: Any) -> Any:
+        """候选预览（只读）：过滤后全量计数 + 一页样例，**不落规划状态**。
+
+        `returned_items_are_sample` 是**边界声明**（同 `discover_options` 口径）：
+        `total` 是全量条数，`items` 只是这一页，不能拿这 20 条概括分布。
+        """
+        page = _as_int(arguments.get("page")) or 1
+        requested_size = _as_int(arguments.get("pageSize", arguments.get("page_size")))
+        page_size = (
+            requested_size
+            if requested_size and requested_size > 0
+            else self.CANDIDATE_PREVIEW_PAGE_SIZE_CAP
+        )
+        page_size = min(page_size, self.CANDIDATE_PREVIEW_PAGE_SIZE_CAP)
+        filters = self._normalize_preview_filters(arguments.get("filters"))
+
+        response = await internal_client.preview_candidates(
+            self.tenant_id,
+            self.chat_session_id,
+            filters=filters,
+            page=max(page, 1),
+            page_size=page_size,
+        )
+        payload = self._preserve_envelope(response)
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        items = [item for item in (data.get("items") or []) if isinstance(item, dict)]
+        total = _as_int(data.get("total")) or 0
+        limitations = list(payload.get("limitations") or [])
+        for limitation in data.get("limitations") or []:
+            if limitation not in limitations:
+                limitations.append(limitation)
+        return {
+            "status": payload.get("status") or "ok",
+            "data": {
+                "items": items,
+                "total": total,
+                "returned_total": len(items),
+                # 样例边界：total 是全量条数，items 只是这一页。
+                "returned_items_are_sample": total > len(items),
+                "page": data.get("page", max(page, 1)),
+                "page_size": data.get("pageSize", page_size),
+                "profile_version": data.get("profileVersion"),
+                "data_version": data.get("dataVersion"),
+                "limitations": limitations,
+                # 预览不是写操作：不存在"预览把候选加入/落盘"这种事。
+                "state_mutation": False,
+            },
+            "evidence": list(payload.get("evidence") or []),
+            "limitations": limitations,
         }
 
     async def search_majors(self, **arguments: Any) -> Any:

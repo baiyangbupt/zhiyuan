@@ -1584,6 +1584,37 @@ async def query_planning_candidate_pool(
     )
 
 
+async def preview_candidates(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    *,
+    filters: Optional[Dict[str, Any]] = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> Dict[str, Any]:
+    """候选预览（**只读**）：Top-N 候选 + 过滤后全量计数，不落规划状态。
+
+    与 `query_planning_candidate_pool` 的区别是**写不写**：那条走
+    `candidate-pool/query`，Java 侧会 `refreshRecommendationOverlay →
+    savePlanningState`（规划版本自增）；这条走 `candidate-preview`，
+    只读加载规划状态 + `recommendVolunteerList(saveToFile=false)`，
+    规划版本不变——预览不该改变被预览的东西。
+    """
+    payload: Dict[str, Any] = {
+        "filters": filters or {},
+        "page": page,
+        "pageSize": page_size,
+    }
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/candidate-preview"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data=payload,
+        error_msg="候选预览失败",
+    )
+
+
 async def select_working_plan_items(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],

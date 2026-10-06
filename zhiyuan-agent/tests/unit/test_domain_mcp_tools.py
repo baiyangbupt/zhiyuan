@@ -801,6 +801,90 @@ async def test_compare_marks_another_year_as_a_scope_mismatch(monkeypatch) -> No
     assert [item["evidenceId"] for item in result["evidenceRefs"]] == ["ev-1"]
 
 
+@pytest.mark.asyncio
+async def test_preview_candidates_uses_trusted_identity_and_declares_sample(monkeypatch) -> None:
+    """候选预览只读纵切的三条合同：**受信身份、20 条硬上限、样例边界**。
+
+    - 模型塞进来的 tenantId/sessionId 必须被丢掉——否则它能把任何会话的候选
+      装进自己的回合（身份只能来自受信 binding）；
+    - 一次最多 20 条，全量留在服务器，`returned_items_are_sample` 是给模型的
+      **边界声明**：不能拿这一页概括分布；
+    - `state_mutation=False`：预览不改任何状态（Java 侧的版本号实证在真栈 E2E）。
+    """
+    from app.util import internal_client
+
+    calls: list[dict] = []
+
+    async def preview_candidates(tenant_id, chat_session_id, *, filters=None, page=1, page_size=20):
+        calls.append(
+            {
+                "tenant_id": tenant_id,
+                "chat_session_id": chat_session_id,
+                "filters": filters,
+                "page": page,
+                "page_size": page_size,
+            }
+        )
+        return {
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "items": [
+                    {"entityId": "v1", "volunteerId": "v1", "tier": "冲", "finalScore": 600.5},
+                ],
+                "total": 25,
+                "page": page,
+                "pageSize": page_size,
+                "profileVersion": 7,
+                "dataVersion": "dv-1",
+                "limitations": ["filter_unsupported:schoolTags"],
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "preview_candidates", preview_candidates)
+
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id = "1"
+    backend.chat_session_id = "900047"
+    backend.thread_id = "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call(
+        "recommendation.preview_candidates",
+        {
+            # 别名（tier→tiers、school_tags→schoolTags）要归一，不能到不了上游。
+            "filters": {"tier": "冲", "school_tags": ["985"]},
+            "page": 1,
+            "pageSize": 100,
+            # 冒充身份：必须被 `_trusted_arguments` 丢掉。
+            "tenantId": "999",
+            "sessionId": "888",
+        },
+    )
+
+    assert result["kind"] == "candidate"
+    assert result["status"] == "ok"
+    assert calls == [
+        {
+            "tenant_id": "1",
+            "chat_session_id": "900047",
+            "filters": {"tiers": ["冲"], "schoolTags": ["985"]},
+            "page": 1,
+            "page_size": 20,
+        }
+    ]
+    assert result["data"]["total"] == 25
+    assert result["data"]["returned_total"] == 1
+    assert result["data"]["returned_items_are_sample"] is True
+    assert result["data"]["state_mutation"] is False
+    assert result["data"]["profile_version"] == 7
+    assert result["data"]["data_version"] == "dv-1"
+    # 上游的"过滤维度不支持"要如实带出去（data 与外层 limitations 都要有），不能吞。
+    assert "filter_unsupported:schoolTags" in result["data"]["limitations"]
+    assert "filter_unsupported:schoolTags" in result["limitations"]
+
+
 def test_gateway_collects_evidence_from_the_mcp_text_result() -> None:
     """工具证据藏在 MCP 结果的 **JSON 字符串**里。
 

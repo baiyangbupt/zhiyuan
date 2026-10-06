@@ -6,6 +6,8 @@ import com.ytell.zhiyuan.model.dto.planning.CandidateFilterOptionsDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolQueryReq;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolQueryRes;
+import com.ytell.zhiyuan.model.dto.planning.CandidatePreviewReq;
+import com.ytell.zhiyuan.model.dto.planning.CandidatePreviewRes;
 import com.ytell.zhiyuan.model.dto.planning.CandidateViewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ConversationEvidenceDTO;
 import com.ytell.zhiyuan.model.dto.planning.DataFreshnessCheckReq;
@@ -24,6 +26,7 @@ import com.ytell.zhiyuan.model.dto.planning.OrderedUnitRemoveReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningWorkspaceStateRes;
 import com.ytell.zhiyuan.model.dto.planning.ReviewWorkflowRunRes;
+import com.ytell.zhiyuan.service.biz.CandidatePreviewService;
 import com.ytell.zhiyuan.service.biz.ConversationAccessService;
 import com.ytell.zhiyuan.service.biz.EvidenceLedgerService;
 import com.ytell.zhiyuan.service.biz.PlanningStateService;
@@ -71,6 +74,8 @@ public class PlanningFacadeController {
     private PlanningStateService planningStateService;
     @Autowired
     private EvidenceLedgerService evidenceLedgerService;
+    @Autowired
+    private CandidatePreviewService candidatePreviewService;
 
     /**
      * 会话归属校验，facade 的唯一入口。
@@ -104,6 +109,17 @@ public class PlanningFacadeController {
         requireOwnedSession(tenantId, chatSessionId);
         log.info("facade queryCandidatePool: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
         return BaseResponse.success(planningStateService.queryCandidatePool(tenantId, chatSessionId, req));
+    }
+
+    @PostMapping("/candidate-preview")
+    @ApiOperation("候选预览（只读，不落规划状态）")
+    public BaseResponse<CandidatePreviewRes> previewCandidates(@PathVariable("tenantId") Long tenantId,
+                                                               @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                               @RequestBody(required = false) CandidatePreviewReq req) {
+        requireOwnedSession(tenantId, chatSessionId);
+        log.info("facade previewCandidates: tenantId={}, chatSessionId={}, page={}", tenantId, chatSessionId,
+                req == null ? null : req.getPage());
+        return BaseResponse.success(candidatePreviewService.preview(tenantId, chatSessionId, req));
     }
 
     @GetMapping("/candidate-pool/filter-options")

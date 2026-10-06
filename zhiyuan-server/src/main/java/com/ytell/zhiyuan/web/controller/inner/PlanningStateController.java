@@ -3,6 +3,7 @@ package com.ytell.zhiyuan.web.controller.inner;
 import com.ytell.zhiyuan.common.base.BaseResponse;
 import com.ytell.zhiyuan.model.dto.planning.*;
 import com.ytell.zhiyuan.service.biz.CandidateComparisonService;
+import com.ytell.zhiyuan.service.biz.CandidatePreviewService;
 import com.ytell.zhiyuan.service.biz.ConversationSnapshotService;
 import com.ytell.zhiyuan.service.biz.PendingPlanningCommandBizService;
 import com.ytell.zhiyuan.service.biz.PlanningStateService;
@@ -33,6 +34,8 @@ public class PlanningStateController {
 
     @Autowired
     private PlanningStateService planningStateService;
+    @Autowired
+    private CandidatePreviewService candidatePreviewService;
     @Autowired
     private PendingPlanningCommandBizService pendingPlanningCommandBizService;
     @Autowired
@@ -201,6 +204,16 @@ public class PlanningStateController {
                                                                              @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
         log.info("getCandidateFilterOptions: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
         return BaseResponse.success(planningStateService.getCandidateFilterOptions(tenantId, chatSessionId));
+    }
+
+    @PostMapping("/session/candidate-preview")
+    @ApiOperation("候选预览（只读，不落规划状态）")
+    public BaseResponse<CandidatePreviewRes> previewCandidates(@PathVariable("tenantId") Long tenantId,
+                                                               @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                               @RequestBody(required = false) CandidatePreviewReq req) {
+        log.info("previewCandidates: tenantId={}, chatSessionId={}, page={}, pageSize={}", tenantId, chatSessionId,
+                req == null ? null : req.getPage(), req == null ? null : req.getPageSize());
+        return BaseResponse.success(candidatePreviewService.preview(tenantId, chatSessionId, req));
     }
 
     @GetMapping("/session/data-freshness")

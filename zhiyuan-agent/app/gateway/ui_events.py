@@ -56,6 +56,7 @@ TOOL_LABELS: dict[str, str] = {
     "catalog.list_batches": "正在读取批次",
     "catalog.list_admission_units": "正在读取招生单元",
     "admission.get_charter": "正在读取招生章程",
+    "recommendation.preview_candidates": "正在预览候选",
 }
 
 
