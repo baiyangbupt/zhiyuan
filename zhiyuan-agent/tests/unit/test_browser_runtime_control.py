@@ -123,3 +123,40 @@ def test_actions_are_recorded_for_evidence(running_control) -> None:
     _, payload = _get(f"{base}/gates")
     actions = [row["action"] for row in payload["actions"]]
     assert actions == ["release", "reset"], "动作要留痕 ✓（e2e 报告要引用它 ✓）"
+
+
+def _fake_seed_file(directory, name: str, size: int):
+    """造一个**只有大小**没内容的假种子文件 ✓（truncate 不占磁盘 ✓，不碰真数据 ✓）。"""
+    path = directory / name
+    with path.open("wb") as handle:
+        handle.truncate(size)
+    return path
+
+
+def test_default_seed_source_skips_oversized_full_dumps(tmp_path) -> None:
+    """默认种子源：**最大但超过 4MB 的全量档要被跳过** ✓，取**次大的合规档** ✓✓。
+
+    背景（2026-10-06 晚间 ✓）：演示/真栈的成功 confirm 会把**全量志愿数据**（17–31MB ✓）
+    落回本会话自己的文件 ✓；"挑最大"挑到它 → 种出的会话方案已满 80/80 ✓ →
+    提案编译直接 no-op（"已经达到补齐目标 80" ✓）→ F07 后半/F08/F09/F13 四条**误红** ✓。
+    这里钉住选择逻辑本身 ✓：不依赖输入次序 ✓、不碰 docker / 不碰真种子文件 ✓。
+    """
+    own = _fake_seed_file(tmp_path, "session_volunteer_900001.json", 100)
+    small = _fake_seed_file(tmp_path, "session_volunteer_900002.json", 361_903)  # 300–400KB 合规档
+    mid = _fake_seed_file(tmp_path, "session_volunteer_900003.json", 1_821_360)  # 1.8MB 合规档（次大）
+    huge = _fake_seed_file(tmp_path, "session_volunteer_900004.json", 30_936_365)  # 全量档（最大 ✗）
+
+    # 次序打乱着给 ✓：函数必须自己定序 ✓（旧实现吃"调用方先按大小 sort"的前提 ✗）。
+    picked = control.select_default_volunteer_source([huge, small, own, mid], own.name)
+    assert picked == mid, "最大的 30MB 全量档必须被跳过 ✓，取次大的 1.8MB 合规档 ✓"
+    assert picked.stat().st_size == 1_821_360
+
+
+def test_default_seed_source_excludes_own_and_fails_when_all_oversized(tmp_path) -> None:
+    """两条排除缺一不可 ✓：目标自己（自食 ✓）与全量档（no-op 污染源 ✓）全被排除后必须**报错** ✓。"""
+    own = _fake_seed_file(tmp_path, "session_volunteer_900001.json", 365_290)
+    huge = _fake_seed_file(tmp_path, "session_volunteer_900004.json", 31_320_803)
+
+    # 自己虽然合规且"最大" ✓，但**不能**被选中 ✗——剩下的全量档也不合规 → 没有可用源 ✓。
+    with pytest.raises(FileNotFoundError, match="全量档"):
+        control.select_default_volunteer_source([own, huge], own.name)

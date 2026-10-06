@@ -176,3 +176,57 @@ PREDICT 档案会话；VOLUNTEER 策略缺失待数据侧补齐。
 （症状伪装成"卡住/不返回"）——正确备份固化为 `/tmp/env-18291.demo.fixed`；
 ② 验证线在用户会话上跑脚本会抢"会话当前连接"通道 → 用户点确认后看不到结果
 （服务端实际 applied）——多连接争通道属既有语义，验证脚本要避开真人会话。
+
+## 六、留档：服务端"读路径懒导入"与页面自举竞态（一页纸，待排期）
+
+> 定性：**真缺陷**（服务端，非测试问题）。今晚两条写用例先后被它打红，规避已入测试
+> （`conversation.contract.spec.ts:1240-1251` 有完整现场注释），但**根因未修**，故单列留档。
+
+**机制（文件:行）**：
+
+- 读路径 `PlanningStateService.loadPlanningState(Long)`（`PlanningStateService.java:5272-5274`）
+  转发到 `loadPlanningState(chatSessionId, true)`（:5292-5316）：extra_data 无行时
+  `tryImportLegacyPlanningState`（:5367）**懒导入**，（:5298-5300）**`savePlanningState` 落盘**——
+  **一次"读"会写库**，方法注释（:5276-5280）自陈"后者会为 legacy 会话懒导入并
+  savePlanningState（版本会动）"，并因此另开了一条 `loadPlanningStateReadOnly`（:5282-5290）。
+- `savePlanningState`（:7225-7260）是**整文档无条件写**：行缺失走 INSERT（:7229-7256），
+  行存在走 `updateById` 全量覆盖（:7257-7259），**没有"我拿的是不是比库里旧的快照"判据**。
+- 撞车对象：页面挂载时的自举写 `initial-plan/generate`（`WorkspacePanel.ensureInitialPlanReady`）——
+  它把候选池+草案+排序一次写成正常行；而并发的懒导入快照**只有候选池**（无草案/无排序）。
+  懒导入慢（要下载 17MB 级别志愿数据），**后落即覆盖** → 自举结果被"打回"候选池态。
+
+**并发现场（本机日志原文，2026-10-06 20:43-20:44）**：
+
+```
+20:43:54.647 legacyPlanImport success chatSessionId=900021 source=original candidates=120 preferred=0 ordered=0 tierCounts={冲=0,稳=0,保=0}
+20:43:54.676 legacyPlanImport success chatSessionId=900021 …（另一线程，同秒第二次）
+20:43:54.682 legacyPlanImport success chatSessionId=900021 …（第三次）
+20:43:54.766 接口请求开始 - /chat/1/planning/session/initial-plan/generate 参数:{"chatSessionId":["900021"]}
+20:44:53.774 接口请求开始 - /inner/planning/1/session/initial-plan/generate 参数:{"chatSessionId":["900040"]}（耗时 801ms）
+20:44:54.442 legacyPlanImport success chatSessionId=900040 … ordered=0   ← 懒导入落在自举窗口内
+```
+
+即：同一会话**同一秒内有 2-3 条并发首次读**都在做懒导入（页面 workspace-state、
+filter-options，测试 inner 读），而自举写随时可能插进来——覆盖方向谁后写谁赢。
+
+**对照指纹（实测）**：被覆盖后 phase 停在 `candidate_generated`，
+行是 **174093B 的"只有候选池"**（statusCode=not_generated）vs 正常约 **1.1MB
+的"候选池+草案+排序、version=1"**；同一会话（900042）**20:36 过、20:38 挂**——纯时序，
+与用例靶子无关。
+
+**与今天已修的那条的边界**：上午修的 `DuplicateKeyException` → 读回赢家行 `updateById`
+（:7236-7254）只治**并发 INSERT 撞唯一键**（症状是读接口 500"系统错误"）；
+本条是**UPDATE 全量覆盖**，不在那次修复范围内。
+
+**现有规避**（只压制，不根治）：① F14 用例先走 inner 端点"预热"自举
+（`spec.ts:1252-1261`，无并发读者时先落盘 → 页面只 load 不再触发懒导入）；
+② 通用夹具 `settleWorkspaceBootstrap` 把基线定在自举落定后（缩窗不关窗）。
+
+**建议方向**（待产品/排期，任选其一）：
+① 懒导入落盘改**只补缺**语义（写前重查存在即不写，或 CAS/版本比较，旧快照不覆盖新行）；
+② 读路径彻底不写：懒导入挪到显式写路径（workspace-state 首载端点），读只做内存投影；
+③ 最小改动：`savePlanningState` 增加"ordered 快照不倒退"守卫（新状态 orderedPlanState
+为空而库里有内容时拒绝覆盖）。②最正、①风险最小，都需要回归 planner 全链路。
+
+**关联**：`docs/superpowers/reviews/2026-10-06-test-www-chain-recovery.md` §二（DuplicateKey 修复）；
+测试侧现场注释 `zhiyuan-web/tests/e2e/conversation.contract.spec.ts:1240-1251`。

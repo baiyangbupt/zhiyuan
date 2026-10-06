@@ -53,6 +53,43 @@ CONTROL_PORT = 18293
 BACKEND_ORIGIN = os.environ.get("CODEX_BROWSER_BACKEND_ORIGIN", "http://127.0.0.1:18290")
 SCORE_DATA_KEY = "userScoreDetail"
 
+# 默认种子源的**大小上限** ✓✓（2026-10-06 晚间踩到 ✓）：演示/真栈的成功 confirm 会把
+# **全量志愿数据**落回**本会话自己的**文件 ✓（`persistSourceData` ✓，实测 17MB→31MB 档 ✓）——
+# 默认"挑最大"于是挑到这类**全量档** ✗，用它种出来的会话方案已满 ✓：提案编译直接回
+# `info`「当前方案已有 80 个志愿，已经达到补齐目标 80，本轮不需要新增」✗
+#（`requiresConfirmation=false` ✗）→ F07 后半 / F08 / F09 / F13 四条**误红** ✓✓
+#（对照实验：同一套流程、同一会话，只把源换回截断档 → `ready` +「补入 35 个」✓）。
+# 按大小一刀切**看不到内容** ✗，但"过大 ⇒ 全量档"这条经验足够把两类分开 ✓：
+# 合规档实测都能编译出**可确认**提案 ✓——实测合规档两档 ✓：约 **1.8MB** 的 OTON 截断档
+#（900018–900047 一族 ✓）与 **300–400KB** 的 OTOO 截断档（900017/900021/900042/900045 一族 ✓）。
+# **别按会话号记名单** ✗：这族文件自己也会被 confirm 回写放大 ✓（今晚 900031/900036 被写成
+# 17–31MB ✓；本文件改完后那一轮，F14/补录成绩的 confirm 又把 900018/900032 写成了 30.9MB ✓）
+#——只有"大小"这条判据不随会话轮流变 ✓。
+SEED_MAX_SOURCE_BYTES = 4 * 1024 * 1024
+
+
+def select_default_volunteer_source(candidates: list[Path], own_file_name: str) -> Path:
+    """默认种子源的选择 ✓（纯函数 ✓：不碰 docker / 不碰后端 ✓，单测直接打这一层 ✓）。
+
+    两条排除 + 一条选择 ✓：**目标自己的文件** ✗（"自食" ✓：成功 confirm 会把全量数据
+    落回本会话 ✓，再挑自己就会把刚 reset 掉的成绩又拷回来 ✓）、**过大的全量档** ✗
+    （`SEED_MAX_SOURCE_BYTES` ✓，理由见常量注释 ✓）；剩下按**大小取最大** ✓
+    （village 数据越大、候选池越足 ✓，实测 17MB → 6236 候选 ✓）。
+    同大小时按文件名定序 ✓——选择可复现 ✓，不依赖目录枚举次序 ✗。
+    """
+    eligible = [
+        path
+        for path in candidates
+        if path.name != own_file_name and path.stat().st_size <= SEED_MAX_SOURCE_BYTES
+    ]
+    if not eligible:
+        where = candidates[0].parent if candidates else "?"
+        raise FileNotFoundError(
+            "没有可用的志愿数据源（已排除目标自身与 >"
+            f"{SEED_MAX_SOURCE_BYTES // (1024 * 1024)}MB 的全量档）：{where}"
+        )
+    return max(eligible, key=lambda path: (path.stat().st_size, path.name))
+
 
 class GateRegistry:
     """闸门状态 ✓（进程内 ✓，只在合同栈用 ✓）。
@@ -144,7 +181,7 @@ class GateRegistry:
         import shutil  # 与 redis 一样：延迟导入 ✓，不碰它的用例不该因此起不来 ✓
 
         temp_dir = TEMP_DATA_PATH
-        candidates = sorted(temp_dir.glob("session_volunteer_*.json"), key=lambda p: p.stat().st_size)
+        candidates = list(temp_dir.glob("session_volunteer_*.json"))
         # **"挑最大"必须排掉自己** ✗✓（2026-10-06 踩到 ✓）：补录确认（execute）第 7 步会把
         # **全量志愿数据**落回**本会话自己的**文件 ✓（`persistSourceData` ✓，实测它比基准源
         # 900036（17MB）还大 ✓）→ 再跑同一会话时"挑最大"就挑到自己 ✓；而 reset 刚删掉本会话
@@ -154,12 +191,10 @@ class GateRegistry:
         if source_session:
             source = temp_dir / f"session_volunteer_{source_session}.json"
         else:
-            candidates = [path for path in candidates if path.name != own_file_name]
-            if candidates:
-                # 默认挑**最大**的那份 ✓：village 数据越大，候选池越足 ✓（实测 17MB → 6236 候选 ✓）。
-                source = candidates[-1]
-            else:
-                raise FileNotFoundError(f"没有可用的志愿数据源：{temp_dir}")
+            # 默认挑**最大**的那份 ✓（village 数据越大，候选池越足 ✓）——但先排除两条 ✓：
+            # 目标自己（自食 ✓）与**过大的全量档** ✓（confirm 回写的 17–31MB 档能把方案种到
+            # 满 80/80 ✓，提案编译直接 no-op ✗——理由与实测见 `SEED_MAX_SOURCE_BYTES` 注释 ✓）。
+            source = select_default_volunteer_source(candidates, own_file_name)
         if not source.exists():
             raise FileNotFoundError(f"源文件不存在：{source}")
         target = temp_dir / f"session_volunteer_{session_id}.json"
