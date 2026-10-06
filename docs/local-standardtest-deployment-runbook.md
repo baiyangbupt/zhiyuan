@@ -154,6 +154,10 @@ PC 端链接没有 `source=minip` 时，登录成功后的预期跳转是：
 不应进仓：
 
 - 私有环境文件：`zhiyuan-web/.env.standardtest`、`zhiyuan-agent/.env`。
+  - **2026-10-06 起 `.env.standardtest` 是仓内实体文件** ✓（此前是指向 `.local-prod-3.0.2/zhiyuan-web/`
+    的软链，该目录在一次磁盘清理中被误删导致 3001 无法启动 ✗）。**不要删除 `.local-prod-3.0.2`
+    之类的"旧目录"前先 `find /root/dev/zhiyuan -xtype l` 查悬空链** ✓；备份副本在
+    `.local/standardtest-env-backup/.env.standardtest` ✓。
 - pid 和日志：`.pids*`、`logs/`。
 - 运行时志愿文件：`zhiyuan-server/data/tmp/session_volunteer_*.json`。
 - 生产回捞原始资产和本地回放结果：`assets/`。
