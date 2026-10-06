@@ -12,6 +12,7 @@ __pycache__/
 # Frontend
 zhiyuan-web/node_modules/
 zhiyuan-web/.next/
+zhiyuan-web/.next-dev/
 zhiyuan-web/logs/
 .local-prod-3.0.2/
 

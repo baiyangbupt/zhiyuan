@@ -286,6 +286,7 @@ if [[ "$SKIP_WEB" == false ]]; then
         "NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE=$ACCESS_WS_OVERRIDE" \
         "NEXT_PUBLIC_OUTER_API_BASE_URL=$ACCESS_OUTER_API_BASE_URL" \
         "NEXT_PUBLIC_CODEX_ACCESS_MODE=$ACCESS_MODE" \
+        "NEXT_DIST_DIR=.next-dev" \
         "$ROOT_DIR/zhiyuan-web/node_modules/.bin/next" dev -H 127.0.0.1 -p "$WEB_PORT"
     wait_for_http "web" "$WEB_URL/gaotu-assistant-agent/health"
 fi

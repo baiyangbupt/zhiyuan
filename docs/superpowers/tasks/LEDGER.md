@@ -3,6 +3,23 @@
 > 状态唯一来源。协议见 `README.md`。
 > 状态流：`DISPATCHED` → `REPORTED` → `ACCEPTED` / `ACCEPTED_WITH_FOLLOWUP` / `REJECTED` / `SUPERSEDED`
 
+> **2026-10-05 现场复核（非已派发任务状态）**：`test-www` 的 `/ws/chat` 升级请求 404，
+> 公开 `/inner/planning/...` 无登录返回 200 数据；C4/P2 合同栈绿灯不能放行公网。
+> 链路分层、B4/B5/B7 遗留与执行次序见
+> [链路与功能计划复核](../reviews/2026-10-05-test-www-chain-functional-review.md)。
+
+> **2026-10-06 执行更新（链路打通，非已派发任务状态）**：
+> ① 两处断点根因钉死——公网 `/ws/chat` 缺代理 location（兜底转主站 Next）；匿名 `/inner`
+> 是"代理直通 + Java 排除拦截 + Next 生产无守卫"三层叠加。② **P1 本机段全绿**：
+> 无票/错 Origin 403（不消费票）→ 合法票 WS 101 → turn.started/phase/progress → 终态
+> {completed} → 消息落 Java（`scripts/probe-standardtest-ws-chain.py`）。③ Next 生产守卫
+> （rewrites 首部 + middleware 双机制）与工作台公开 facade（17+1 端点，ownership/401）
+> 已部署共享栈；空会话「同会话补录」后端已实现（847 Java 测试全绿）。④ 核心对话四修复
+> （终态真实状态/纯文本回合渲染/turn.started 生产者/clarification.resolved V1）在隔离栈
+> contract 12 + write 4 全绿。⑤ 事故两起已根治：两栈 `.next` 共用（distDir 分离）、磁盘
+> 100% 满 8 天（清缓存 + BGSAVE）。**剩余 2 项红在代理侧**（`ops/nginx/test-www.locations.conf`
+> 待部署）。证据与交办见 [2026-10-06 链路打通与恢复](../reviews/2026-10-06-test-www-chain-recovery.md)。
+
 | ID | 标题 | 来源 | 执行会话 | 派发 | 实现方状态 | 评审判定 | 产出后续 |
 |---|---|---|---|---|---|---|---|
 | [T001](T001-sse-capture/) | 采集 DeepSeek `/responses` 流式断开现场 | 修订计划 P0 | deepseek | 2026-09-10 | `BLOCKED` | `ACCEPTED` | T003 |

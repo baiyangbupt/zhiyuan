@@ -3,6 +3,14 @@
 > 版本：v2.0；日期：2026-09-20。状态：设计与实施任务书，未代表集成或公网验收完成。
 > 代码基线：zhiyuan `4a23d50`，本地 Codex `5c5308f`；PATH 中二进制为 `codex-cli 0.155.1`。源码与运行二进制必须分别验收。
 
+> **2026-10-05 状态修订**：下文第 2 节与第 8 节是 9-20 的历史设计/域名目标，不是当前生产状态。
+> 用户实际走的 `test-www` 标准入口与原 C 线的 `test-wwww` 隔离域分轨验收；目前前者的
+> `/ws/chat` 升级请求 404，且无需登录的公开 `/inner/planning/...` 返回 200 数据，均为放行阻断。
+> B4 推荐与 B5 完整预览仍 PARTIAL，P2 四项写路径只在受控合同栈全绿。
+> 最新证据、功能进度、优先级与执行交办见
+> [2026-10-05 链路与功能计划复核](superpowers/reviews/2026-10-05-test-www-chain-functional-review.md)；
+> 保留原方案的范围和 `test-wwww` 目标，暂不拿 `test-www` 的首页可达替代其 DNS/TLS/WSS 验收。
+
 ## 1. 决策与阅读顺序
 
 采用 **现有前端 + 智愿 Gateway + Codex App Server + Domain MCP + Java/Rank/Solver**。把 Codex 作为主要对话运行时，让它负责理解、工具编排、原生提问、历史与压缩；Java 保存业务事实、画像、方案、证据和写入事务。保留 sessionDetailV2 工作台，逐步替换旧对话执行路径。

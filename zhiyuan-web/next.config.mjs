@@ -28,6 +28,12 @@ const configObj = {
   productionBrowserSourceMaps: true,
   reactStrictMode: false,
   basePath,
+  // 隔离栈的 `next dev`（3201）与标准栈的 `next start`（3001）**长期共用同一个 `.next`** ✗——
+  // dev 一启动就把生产构建的 server 文件清掉 ✓，运行中的 3001 随即 500 ✓
+  // （2026-10-06 实证：公网 /assistant-pc/login 500）。拆目录根治：
+  // dev 栈由 `scripts/start-codex-local.sh` 注入 `NEXT_DIST_DIR=.next-dev` ✓，
+  // 生产/标准栈不设该变量、保持默认 `.next` ✓，两边可并行跑。
+  distDir: process.env.NEXT_DIST_DIR || '.next',
   swcMinify: true,
   compiler: {
     reactRemoveProperties: process.env.NODE_ENV === 'production',
@@ -206,6 +212,20 @@ async rewrites() {
       );
       console.log('🔧 线上环境启用API代理');
       return [
+        // 内网面守卫（2026-10-06，P0）✓。三个实测约束决定了这个形状：
+        // 1. 必须 `basePath: false` ✓——浏览器请求根路径（不带 /assistant-pc ✗），
+        //    否则守卫匹配不到真实流量；
+        // 2. `basePath: false` 的目标**必须是外部 http(s) URL** ✓（Next 13.5 校验 ✗，
+        //    相对死路径会让构建直接失败：`Error: Invalid rewrites found`）；
+        // 3. 所以死路径落在上游上：**Agent 的未映射路径** ✓——实测回干净的 404 JSON ✓
+        //    （后端对未映射路径统一回 500 ✗，Agent 才符合"404 拒绝"的验收口径 ✓）。
+        // 目标里没有可达的业务端点 ✓：请求到此为止，不触碰任何 inner 数据面 ✓。
+        // basePath 形态（/assistant-pc/...）由 `src/middleware.ts` 兜住 ✓（两机制互补）。
+        ...INTERNAL_PATH_GUARDS.map((guard) => ({
+          source: guard.source,
+          destination: `${agentApiBase}/__codex_internal_blocked__`,
+          basePath: false,
+        })),
         {
           source: '/gaotu-assistant-bot/:path*',
           destination: `${assistantApiBase}/gaotu-assistant-bot/:path*`,

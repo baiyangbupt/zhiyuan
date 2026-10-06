@@ -54,6 +54,13 @@ cd /root/dev/zhiyuan/zhiyuan-web
 ./node_modules/.bin/env-cmd -f .env.standardtest ./node_modules/.bin/next start -H 0.0.0.0 -p 3001
 ```
 
+**构建目录与隔离栈分离（2026-10-06）**：隔离栈的 `next dev`（3201）曾与这里共用同一个
+`zhiyuan-web/.next`，dev 一热重载就把生产构建的 server 文件清掉（公网 `/assistant-pc/` 500）。
+现由 `next.config.mjs` 的 `distDir: process.env.NEXT_DIST_DIR || '.next'` 分离：
+**本栈保持默认 `.next`**，隔离栈由 `scripts/start-codex-local.sh` 注入 `.next-dev`。
+重建顺序照旧：`env-cmd -f .env.standardtest next build`（必须在当前 `.next`，即不要在
+隔离栈 dev 进程活跃时构建）→ 重启 3001。
+
 Backend 必须监听 `18090`，并指向标准测试 Agent/Rank：
 
 ```bash
@@ -101,6 +108,18 @@ curl -sS -o /dev/null -w 'agent_proxy:%{http_code}\n' \
   'https://test-www.gaotuzhiyuan.com/gaotu-assistant-agent/health'
 ```
 
+### 加固与 WS 链路（2026-10-06 新增）
+
+- `bash scripts/smoke-standardtest-hardening.sh`：断言 P0/P1 目标态——匿名 `/inner` 404、
+  `/ws/chat` 无票 403（到 Agent 验票路由）、既有公开路由不回归。**部署代理加固前，
+  inner 与 ws/chat 两项为预期红**。
+- `zhiyuan-agent/.venv/bin/python scripts/probe-standardtest-ws-chain.py <chatSessionId>`：
+  本机段全链（无票/错 Origin 403 → 合法票 101 → turn 事件 → 终态）。会话需属
+  `tk: codex-local-test-token` 对应的用户 900001（可取新建 draft 会话）。
+- 代理侧交付物：`ops/nginx/test-www.locations.conf`（`/ws/chat` location + inner 守卫），
+  部署与验收步骤见该文件注释；完整状态见
+  [2026-10-06 复核](../superpowers/reviews/2026-10-06-test-www-chain-recovery.md)。
+
 ## PC 首页 Token 跳转
 
 PC 端链接没有 `source=minip` 时，登录成功后的预期跳转是：
@@ -118,6 +137,8 @@ PC 端链接没有 `source=minip` 时，登录成功后的预期跳转是：
 | 首页 token 登录后不跳转 | `test-www /gaotu-assistant-bot/chat/user/login/by-token` 是否到 `18090` 且业务 `code=0` |
 | 登录页空白或不执行自动登录 | `test-www` 和 `3001` 的 `pages/login-*.js` chunk 是否返回 `200` |
 | 对话输入闪一下又消失 | `/gaotu-assistant-agent/plus/chat` 是否到 `18091`，Agent 是否监听 `0.0.0.0:18091` |
+| 发消息完全无响应（连不上） | 公网 `/ws/chat` 是否有代理 location（2026-10-06 前一直缺，见复核 §一）；跑 `smoke-standardtest-hardening.sh` 第 5 项 |
+| 取票失败（code -1）/ 登录异常 | Redis 是否 `MISCONF`（`docker exec zhiyuan-codex-local-redis-1 redis-cli info persistence` 看 `rdb_last_bgsave_status`）；**先查磁盘 `df -h /`**（10-06 曾 100% 满致 8 天未落盘） |
 | 直接访问 `3001` API 失败 | `.env.standardtest` 是否仍是 Docker 专用 `host.docker.internal` |
 | 改了 ENV 但代理仍走旧端口 | 是否重新执行过 `next build` |
 | PC 端误进 `/customer` | URL/storage 是否带 `source=minip`，PC 链接应进入 `/session` |
