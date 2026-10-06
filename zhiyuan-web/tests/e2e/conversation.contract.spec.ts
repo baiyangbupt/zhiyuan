@@ -7,6 +7,44 @@ import { dropConversationSocket, expect, installSocketRecorder, test } from './f
 // （`browser_app_server.py` ✓，有单测盯着 ✓）——所以下面几条断言不是"等得够久" ✗，
 // 而是"终态确实还没来" ✓✓。
 
+/**
+ * **等"页面自举"落定，再取基线** ✓✓（2026-10-06 实测：写路径四条整片红就出在这里 ✗）。
+ *
+ * 为什么会有这一步 ✗：会话被 `resetSessionState` 清过、又 `seedVolunteerData` 铺了数据之后 ✓，
+ * 是"有候选池、**没有方案**"的那一档 ✓——面板挂载时会自己 POST 一次
+ * `initial-plan/generate` ✓（`WorkspacePanel/index.tsx` 的 `ensureInitialPlanReady` ✓），
+ * 把工作区版本 **0→1**、phase 推到 `ordered` ✓（实测耗时 350–850ms ✓）。
+ * 用例若赶在它**之前**读基线 ✗：`before` 是 0 ✓，随后那次自举把版本推到 1 ✓，
+ * "版本不动 / 版本前进"断到的就全是**自举**、不是被测动作 ✗✗（实测原文：
+ * F07 后半 `Expected: 0, Received: 1` ✓、F08 的确认被
+ * `planning version conflict: current=1 expected=0` 拒 ✓、F09/F13 同理 ✓）。
+ *
+ * 这不削弱任何断言 ✓✓：它只是把基线定在**用户真正看到的那一档**（自举之后的稳定态 ✓）；
+ * 断言仍在原处、仍是原口径 ✓。自举若 15s 还不落定才红 ✓——那本身就是
+ * "面板没把这条会话带起来"的真问题 ✓，不该被吞 ✗。
+ *
+ * 落定之后**顺手把替身的守门值对准** ✓✓（`sourceVersionGuard` ✓）：它是 fixture 的**输入** ✓，
+ * 不是断言 ✓——自举前会话版本是 0 ✓、守门值留的也是 0 ✓；自举把版本推到 1 ✓ 之后，
+ * 还拿 0 去编译 ✗ → 直接以 `stale_state: proposal source version does not match the current snapshot`
+ * 被拒 ✓（实测：2026-10-06 第三轮四条一起红在"没有提案卡" ✓）。取值**从读回来的状态里拿** ✓，
+ * 不猜 ✗——口径与 F07 前半那条"守门值取工作区 version"完全相同 ✓。
+ */
+async function settleWorkspaceBootstrap(
+  readState: () => Promise<Record<string, unknown>>,
+  runtimeGate: { setScenarioParams: (params: Record<string, unknown>) => Promise<void> },
+): Promise<void> {
+  await expect
+    .poll(async () => String((await readState()).phase ?? ''), {
+      message: '页面加载后的初始方案自举没落定 ✗（工作区 phase 应推进到 ordered ✓）',
+      timeout: 15_000,
+    })
+    .toBe('ordered');
+  const settled = await readState();
+  await runtimeGate.setScenarioParams({
+    sourceVersionGuard: typeof settled.version === 'number' ? settled.version : 0,
+  });
+}
+
 test('终态放行前：进度已显示、停止仍可点、答案还没有', async ({
   page,
   sessionUrl,
@@ -401,6 +439,16 @@ test('F07 提案草稿：模型产出能过契约，且这一轮正常收尾', a
   console.log(`[f07] 会话 ${sessionId} 已清状态 + 已铺数据 ✓`);
 
   await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  // **守门值也要在页面自举落定之后取** ✓✓（理由同 `settleWorkspaceBootstrap` ✓）：
+  // 若在自举之前读到 0 ✗、而编译落在自举之后 ✓，这一条会以
+  // `stale_state: proposal source version does not match the current snapshot` 红掉 ✗——断的却是自举 ✓。
+  await settleWorkspaceBootstrap(async () => {
+    const response = await page.request.get(
+      `${backend}/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=${sessionId}`,
+    );
+    const body = (await response.json().catch(() => null)) as { data?: Record<string, unknown> } | null;
+    return body?.data || {};
+  }, runtimeGate);
   const stateResponse = await page.request.get(
     `${backend}/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=${sessionId}`,
   );
@@ -483,6 +531,8 @@ test('F07 后半：放弃提案不改变正式内容', async ({
 
   await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  // **基线要在页面自举落定之后取** ✓✓（否则断到的是自举，不是被测动作 ✗——见 `settleWorkspaceBootstrap` ✓）。
+  await settleWorkspaceBootstrap(readState, runtimeGate);
   const before = await readState();
 
   await page.getByTestId('chat-input').fill('帮我补足到 80 个志愿');
@@ -553,6 +603,8 @@ test('F08 确认：双击不双写，且 applied 后读得到 workspace', async 
 
   await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  // **基线要在页面自举落定之后取** ✓✓（否则断到的是自举，不是被测动作 ✗——见 `settleWorkspaceBootstrap` ✓）。
+  await settleWorkspaceBootstrap(readState, runtimeGate);
   const before = await readState();
 
   await page.getByTestId('chat-input').fill('帮我补足到 80 个志愿');
@@ -623,6 +675,8 @@ test('F09 版本冲突：旧卡确认被拒，且不自动确认新预览', asyn
 
   await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  // **基线要在页面自举落定之后取** ✓✓（否则断到的是自举，不是被测动作 ✗——见 `settleWorkspaceBootstrap` ✓）。
+  await settleWorkspaceBootstrap(readState, runtimeGate);
   const before = await readState();
 
   // 一轮：发消息 → 等进度 → 放行（放行必须等进度出现 ✓，理由同 F07 ✓）。
@@ -718,6 +772,8 @@ test('F13 applying 时断线：事务不被取消，重连后读得到最终结�
 
   await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  // **基线要在页面自举落定之后取** ✓✓（否则断到的是自举，不是被测动作 ✗——见 `settleWorkspaceBootstrap` ✓）。
+  await settleWorkspaceBootstrap(readState, runtimeGate);
   const before = await readState();
 
   await page.getByTestId('chat-input').fill('帮我补足到 80 个志愿');

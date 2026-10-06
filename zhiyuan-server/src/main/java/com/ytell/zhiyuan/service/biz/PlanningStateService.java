@@ -29,6 +29,7 @@ import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -7218,7 +7219,25 @@ public class PlanningStateService {
             extraData.setDataType(DataType.JSON_OBJECT);
             extraData.setDataVersion(0);
             extraData.setDataValue(dataValue);
-            chatSessionExtraDataSharedService.save(extraData);
+            try {
+                chatSessionExtraDataSharedService.save(extraData);
+            } catch (DuplicateKeyException duplicate) {
+                // 唯一键 `uk_chat_session_id_data_key_data_version` 是并发防线：空会话的**首次**读
+                // 会先懒导入（legacy import）再落这一行，而同一时刻可能有多个首次读在跑
+                // （页面自己的 workspace-state / candidate-pool/filter-options，以及测试的 inner 读）——
+                // 它们都看到"没有行"，于是只有一个 INSERT 成功，其余拿 DuplicateKeyException，
+                // 并让整个**读**接口回 `{"code":-1,"msg":"系统错误"}`（前端面板直接拿不到状态）。
+                // 处理：读回赢家那行、把本次计算结果更新上去（同源数据的最后一次写获胜，
+                // 与"两个 update 并发"的既有语义一致；不灵的话（行又没了）原样抛出）。
+                ChatSessionExtraData raced = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                        chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+                if (raced == null) {
+                    throw duplicate;
+                }
+                raced.setDataType(DataType.JSON_OBJECT);
+                raced.setDataValue(dataValue);
+                chatSessionExtraDataSharedService.updateById(raced);
+            }
             return;
         }
         extraData.setDataType(DataType.JSON_OBJECT);
