@@ -174,3 +174,21 @@ def test_the_marketplace_lists_this_plugin() -> None:
     entries = {item["name"]: item for item in marketplace["plugins"]}
     assert "zhiyuan-codex-planner" in entries
     assert entries["zhiyuan-codex-planner"]["source"]["path"] == "./plugins/zhiyuan-codex-planner"
+
+
+def test_write_rules_require_looking_up_codes_before_the_card() -> None:
+    """写实例的补录规则必须写死"先查编码、再出卡"（2026-10-06 真事故）：
+
+    模型把各科出成 `[{"score": 88}, …]`（没有科目编码），合并后 `subject=null`
+    一路炸到下游；批次同理（名字不是编码）。修复的**入口那一半**就是把两张编码表
+    变成规则里的前置动作——规则不写，模型照样只报分数。
+    """
+    rules = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.write.md"
+    ).read_text(encoding="utf-8")
+
+    assert "catalog.get_subject_options" in rules, "科目编码表没有出现在补录规则里"
+    assert "catalog.get_batch_options" in rules, "批次编码表没有出现在补录规则里"
+    assert "先查编码" in rules and "没有编码就没有卡" in rules
+    # 拒绝原因（非标准选科编码）也要写在规则里：模型知道自己会被什么挡下。
+    assert "非标准选科编码" in rules

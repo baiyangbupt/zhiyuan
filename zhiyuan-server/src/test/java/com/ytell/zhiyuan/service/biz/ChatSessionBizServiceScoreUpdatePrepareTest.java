@@ -87,6 +87,8 @@ public class ChatSessionBizServiceScoreUpdatePrepareTest {
                         return res;
                     }
                 });
+        // 科类推导（单科类省份补全）另有测试；这里回 null = 推导不出来，保持原有校验行为。
+        ReflectionTestUtils.setField(service, "scoreCatalogService", mock(ScoreCatalogService.class));
         // 幂等状态机替换成"直接跑 work"——它的状态机另有测试。
         ReflectionTestUtils.setField(service, "conversationProposalRequestService",
                 new ConversationProposalRequestService() {
@@ -205,16 +207,19 @@ public class ChatSessionBizServiceScoreUpdatePrepareTest {
         req.setTotalScore(621);
         req.setTotalScorePos(8123);
         req.setExamYear(2026);
+        // 各科编码必须是**标准码**（08/10/11 语数外）：非标准码现在会在落库前被
+        // 110 挡下（见 ChatSessionBizServiceScoreUpdateSubjectCodeTest），这份夹具
+        // 走的是"编码齐备"的绿灯路径。
         CreateSessionReq.SubjectScore chinese = new CreateSessionReq.SubjectScore();
-        chinese.setSubject("yuwen");
+        chinese.setSubject("08");
         chinese.setSubjectName("语文");
         chinese.setScore(118);
         CreateSessionReq.SubjectScore math = new CreateSessionReq.SubjectScore();
-        math.setSubject("shuxue");
+        math.setSubject("10");
         math.setSubjectName("数学");
         math.setScore(131);
         CreateSessionReq.SubjectScore english = new CreateSessionReq.SubjectScore();
-        english.setSubject("yingyu");
+        english.setSubject("11");
         english.setSubjectName("英语");
         english.setScore(126);
         req.setSubjectScoreList(Lists.newArrayList(chinese, math, english));

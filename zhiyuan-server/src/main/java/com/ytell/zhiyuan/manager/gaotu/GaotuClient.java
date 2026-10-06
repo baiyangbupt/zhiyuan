@@ -34,6 +34,11 @@ public class GaotuClient {
     private static final String MEMBER_SCORE_PATH = "/hl-wish/ci/ci_feign/member/noToken/getMemberScoreByMemberId";
     private static final String COMMON_INFO_PATH = "/hl-wish/ci/memberWhitelist/noToken/commonInfo";
     private static final String BATCH_LIST_PATH = "/hl-wish/ci/h5/batchData/anno/batchListByPolicy";
+    /**
+     * 选科策略（含**科目编码字典**与科类列表）。与前端
+     * `sessionDetail.ts::getSubjectPolicy` 打的是同一条上游。
+     */
+    private static final String SUBJECT_POLICY_PATH = "/hl-wish/ci/selectSubjectPolicy/noToken/subjectPolicy";
     private static final String REPORT_LIST_PATH = "/hl-wish/practice-evaluation/feign/evaluation/report/list";
     private static final String REPORT_INFO_PATH = "/hl-wish/practice-evaluation/feign/evaluation/report/getById";
     private static final String PROGRAM_LIST_PATH = "/hl-wish/ci/ci_feign/volunteer/generateExpertAIProgram";
@@ -168,6 +173,22 @@ public class GaotuClient {
         });
         attachEvidence(response, EvidenceLedgerService.SOURCE_GAOTU_BATCH_LIST, params, scope);
         return response;
+    }
+
+    /**
+     * 选科策略：该省的**科目编码字典** + 科类列表 + 填报方式。
+     *
+     * <p>不签发证据：它与批次字典同属**枚举字典**（"这张表有哪些格子"），不是观测到的
+     * 招生事实（"格子里是什么"）。给字典签证据会让下游把"编码表长这样"当成一条可引用的
+     * 权威观测。</p>
+     */
+    public ResponseDTO<SubjectPolicyResponseDTO> getSubjectPolicy(String areaId) {
+        String url = gaotuProperties.getZhiyuanUrl() + SUBJECT_POLICY_PATH;
+        Map<String, Object> params = Maps.newHashMap();
+        params.put("areaId", areaId);
+        return JsonHttpUtil.get(url, params, getHeader(),
+                new TypeReference<ResponseDTO<SubjectPolicyResponseDTO>>() {
+                });
     }
 
     /**

@@ -27,6 +27,9 @@ public class GaotuClientDebugController {
     @Autowired
     private com.ytell.zhiyuan.service.biz.AdmissionSourceService admissionSourceService;
 
+    @Autowired
+    private com.ytell.zhiyuan.service.biz.ScoreCatalogService scoreCatalogService;
+
     @GetMapping("/member/id")
     @ApiOperation("根据sid获取用户ID")
     public Long getMemberId(@ApiParam("用户SID") @RequestParam String customerId) {
@@ -50,6 +53,37 @@ public class GaotuClientDebugController {
             @ApiParam("线程ID，证据签发范围") @RequestParam(required = false) String threadId) {
         return gaotuClient.getBatchList(areaId, prepareType, subject,
                 EvidenceScope.of(tenantId, chatSessionId, threadId));
+    }
+
+    /**
+     * 补录成绩的**批次编码表**：`[{code, name, level, score, pos}]`。
+     *
+     * <p>模型补录前先查这一份：`batch.code` 是地区相关的（浙江第一段=17、第二段=18），
+     * 传"本科批"这种名字上游不报错、只返回空；`level` 是 01 本科 / 02 专科的编码
+     * （建档策略按它取，见 `ProvinceVolunteerStrategyManager`）。</p>
+     */
+    @GetMapping("/catalog/batch-options")
+    @ApiOperation("批次编码表（补录成绩用）")
+    public ResponseDTO<java.util.List<java.util.Map<String, Object>>> getBatchOptions(
+            @ApiParam("地区ID（省份编码）") @RequestParam Long areaId,
+            @ApiParam("科类编码（可选；多科类省份必给：浙江 N、江苏 WL/LS）") @RequestParam(required = false) String subjectType,
+            @ApiParam("租户ID，证据签发范围") @RequestParam(required = false) Long tenantId,
+            @ApiParam("会话ID，证据签发范围") @RequestParam(required = false) Long chatSessionId,
+            @ApiParam("线程ID，证据签发范围") @RequestParam(required = false) String threadId) {
+        return scoreCatalogService.listBatchOptions(areaId, subjectType,
+                EvidenceScope.of(tenantId, chatSessionId, threadId));
+    }
+
+    /**
+     * 补录成绩的**科目编码表**：`[{code, name}]`，01-07 选考 + 08/10/11 语数外。
+     *
+     * <p>上游选科策略只回选考科目，语数外由 Java 侧补齐（`ScoreCatalogService`）。</p>
+     */
+    @GetMapping("/catalog/subject-options")
+    @ApiOperation("科目编码表（补录成绩用）")
+    public ResponseDTO<java.util.List<java.util.Map<String, Object>>> getSubjectOptions(
+            @ApiParam("地区ID（省份编码）") @RequestParam Long areaId) {
+        return scoreCatalogService.listSubjectOptions(areaId);
     }
 
     @PostMapping("/report/info")

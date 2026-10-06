@@ -924,7 +924,10 @@ async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -
             "payload": {
                 # 键名照前端白名单 ✓（`conversationEvents.mjs:37` 只放 `code`/`message` ✓）。
                 "code": str(error_code),
-                "message": _RECOVERABLE_TURN_FAILURE,
+                # 文案取网关算好的 `reply`：普通失败它就是通用文案（不变 ✓）；
+                # **补录的业务拒绝**那里是 Java 的 110 原文（"请选择批次后再创建会话"）✓
+                # ——用户读到的就是可行动的下一句，而不是"引擎暂时不可用" ✗。
+                "message": str(result.get("reply") or _RECOVERABLE_TURN_FAILURE),
             },
         })
     else:

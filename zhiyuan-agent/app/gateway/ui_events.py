@@ -54,6 +54,8 @@ TOOL_LABELS: dict[str, str] = {
     "admission.check_eligibility": "正在核对选科要求",
     "admission.compare": "正在并列比较",
     "catalog.list_batches": "正在读取批次",
+    "catalog.get_batch_options": "正在读取批次编码",
+    "catalog.get_subject_options": "正在读取科目编码",
     "catalog.list_admission_units": "正在读取招生单元",
     "admission.get_charter": "正在读取招生章程",
     "recommendation.preview_candidates": "正在预览候选",

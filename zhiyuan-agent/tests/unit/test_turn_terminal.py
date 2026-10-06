@@ -58,6 +58,53 @@ async def test_a_failed_turn_emits_a_recoverable_error_not_an_empty_answer() -> 
 
 
 @pytest.mark.asyncio
+async def test_score_update_business_rejection_reaches_the_user_not_the_generic_text() -> None:
+    """补录被后端**业务性拒绝**时，用户要看到 Java 的原文（2026-10-06 实测：空会话补录
+    被 Java 110「请选择批次后再创建会话」拒了，而用户看到的只有"当前对话引擎暂时不可用"
+    ——可行动的下一步被通用文案吞掉）。技术细节仍留在 `code` 里 ✓；其它错误一律通用文案 ✓。"""
+    channel = _Channel(uses_v1=True)
+    events, emit = _collector()
+
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=channel,
+        result={
+            "error": "score_update_unavailable: 请选择批次后再创建会话",
+            "reply": "请选择批次后再创建会话",
+        },
+        session_id="900047",
+    )
+
+    payload = events[0]["payload"]
+    assert payload["message"] == "请选择批次后再创建会话"
+    assert "score_update_unavailable" in payload["code"]
+
+    # 通用失败仍是通用文案（不外泄内部细节）。
+    events, emit = _collector()
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=channel,
+        result={"error": "output_schema_invalid: responseType", "reply": _RECOVERABLE_TURN_FAILURE},
+        session_id="900047",
+    )
+    assert events[0]["payload"]["message"] == _RECOVERABLE_TURN_FAILURE
+
+
+def test_the_compat_lane_carries_the_score_update_reason_too() -> None:
+    """老信封那条路（`_native_reply_frame`）同样把原因带给用户 ✓——
+    两条路的文案都取网关算好的 `reply`，不许一边有一边没有 ✓。"""
+    from app.server import _native_reply_frame
+
+    frame = _native_reply_frame(
+        {"error": "score_update_unavailable: 请选择批次后再创建会话", "reply": "请选择批次后再创建会话"},
+        "900047",
+    )
+
+    assert frame["type"] == "recoverable.error"
+    assert "请选择批次后再创建会话" in frame["content"]
+
+
+@pytest.mark.asyncio
 async def test_a_successful_turn_still_emits_the_answer() -> None:
     channel = _Channel(uses_v1=True)
     events, emit = _collector()

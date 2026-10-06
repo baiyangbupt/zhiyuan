@@ -250,6 +250,53 @@ async def test_java_rejection_or_missing_summary_fails_closed(monkeypatch, respo
     assert exc.value.code == "score_update_unavailable"
 
 
+@pytest.mark.asyncio
+async def test_java_rejection_text_is_carried_into_the_contract_error(monkeypatch):
+    """Java 的 110 原文必须原样带走 ✗✓（2026-10-06 实测：`code:110 /
+    msg:"请选择批次后再创建会话"` 被替换成一句英文通用文案，用户最终只看到
+    "当前对话引擎暂时不可用"——**缺的是批次**这个可行动的事实被整段吞掉）。"""
+    monkeypatch.setattr(
+        internal_client,
+        "prepare_score_update",
+        _Recorder({"code": 110, "msg": "请选择批次后再创建会话"}),
+    )
+    gateway = _gateway()
+
+    with pytest.raises(OutputContractError) as exc:
+        await gateway._prepare_score_update_preview(
+            _session_key("t1", "s1"),
+            tenant_id="t1",
+            session_id="s1",
+            turn_id="turn-9",
+            request=_request(),
+            snapshot=_snapshot(),
+        )
+
+    assert exc.value.code == "score_update_unavailable"
+    assert "请选择批次后再创建会话" in str(exc.value)
+
+
+def test_recoverable_reply_surfaces_only_score_update_business_text() -> None:
+    """失败回复的放行规则：**只有**补录的业务拒绝用 Java 原文，其它一律通用文案
+    （内部异常串不上用户面）。"""
+    from app.gateway.service import _recoverable_turn_reply
+
+    assert (
+        _recoverable_turn_reply("score_update_unavailable: 非标准选科编码")
+        == "非标准选科编码"
+    )
+    # Java 没给 msg 时的英文兜底**不上用户面**（用户看不懂，回通用文案）。
+    assert (
+        _recoverable_turn_reply(
+            "score_update_unavailable: Java score update preview rejected the request"
+        )
+        == "当前对话引擎暂时不可用，请稍后重试。"
+    )
+    # 其它错误的原文（`RuntimeError` / `KeyError: 'x'` …）不外泄。
+    assert _recoverable_turn_reply("RuntimeError") == "当前对话引擎暂时不可用，请稍后重试。"
+    assert "KeyError" not in _recoverable_turn_reply("KeyError: 'x'")
+
+
 def test_summary_text_renders_everything_java_computed() -> None:
     assert _score_update_summary_text(SUMMARY) == (
         "浙江省 · 物理类 · 本科批 · 2026 年 · 总分 641 · 位次 3100 · 语文 118、数学 131、英语 126"

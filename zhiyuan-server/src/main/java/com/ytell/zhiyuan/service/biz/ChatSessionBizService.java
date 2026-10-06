@@ -124,6 +124,9 @@ public class ChatSessionBizService {
     /** score_update 动作族的 prepare 幂等/取代语义（与用户目标提案同一条状态机）。 */
     @Autowired
     private ConversationProposalRequestService conversationProposalRequestService;
+    /** 补录的编码表（科目/批次/单科类省份的科类推导）。 */
+    @Autowired
+    private ScoreCatalogService scoreCatalogService;
 
     /**
      * 分页获取用户会话列表
@@ -254,6 +257,7 @@ public class ChatSessionBizService {
         // 3. 与建会话完全同一套校验与权益判据。
         normalizeCreateSessionDefaults(merged);
         validateCreateSessionReq(merged);
+        validateScoreUpdateSubjectCodes(merged);
         CheckRightsResVo checkRightsResVo = userBizService.checkRights(
                 userId, OperateCheckPoint.CreateSession, merged.getPrepareType());
         if (!Boolean.TRUE.equals(checkRightsResVo.getCanOperate())) {
@@ -327,6 +331,7 @@ public class ChatSessionBizService {
         normalizeScoreUpdateDefaults(merged);
         normalizeCreateSessionDefaults(merged);
         validateCreateSessionReq(merged);
+        validateScoreUpdateSubjectCodes(merged);
         CheckRightsResVo checkRightsResVo = userBizService.checkRights(
                 userId, OperateCheckPoint.CreateSession, merged.getPrepareType());
         if (!Boolean.TRUE.equals(checkRightsResVo.getCanOperate())) {
@@ -495,6 +500,45 @@ public class ChatSessionBizService {
             int currentYear = java.time.Year.now().getValue();
             log.warn("updateScoreDetail: examYear missing, default to current year {}", currentYear);
             req.setExamYear(currentYear);
+        }
+        fillProvinceDefaultsIfMissing(req);
+    }
+
+    /**
+     * 补录草稿缺**科类/填报类型**时按省策略补（2026-10-06 实测的两处缺法）。
+     *
+     * <p>①科类：空会话补录时模型没有任何渠道能拿到科类编码（科目表/批次表都不含科类），
+     * 草稿缺科类 → 合并校验 110「请选择选科类型后再创建会话」，卡片永远出不来。单科类
+     * 省份（浙江 N/综合）没有"选"的成分，按策略补上；多科类省份（江苏 WL/LS）仍报缺。</p>
+     *
+     * <p>②填报类型：缺省落到 VOLUNTEER（智能填报），但**上游策略是按省签发的**——本机
+     * 实测 900005/浙江 的 PREDICT（模拟填报）取数成功、VOLUNTEER 直接 84009「当前策略
+     * 已失效」（确认后 execute 在拉全量志愿数据那一跳炸掉）。前端口径本来就是策略优先
+     * （`ScoreSupplement`/`customerDetailSession` 都取 `policy.prepareType.code`），
+     * 这里对齐：只在草稿/既有成绩都没带时才推导，带了的不覆盖。</p>
+     */
+    private void fillProvinceDefaultsIfMissing(CreateSessionReq req) {
+        if (req == null || req.getProvince() == null || Strings.isNullOrEmpty(req.getProvince().getCode())) {
+            return;
+        }
+        boolean needSubjectType = req.getSubjectType() == null || Strings.isNullOrEmpty(req.getSubjectType().getCode());
+        boolean needPrepareType = req.getPrepareType() == null || Strings.isNullOrEmpty(req.getPrepareType().getCode());
+        if (!needSubjectType && !needPrepareType) {
+            return;
+        }
+        ScoreCatalogService.ProvinceDefaults defaults = scoreCatalogService.provinceDefaultsOrNull(req.getProvince().getCode());
+        if (defaults == null) {
+            return;
+        }
+        if (needSubjectType && defaults.getSubjectType() != null) {
+            req.setSubjectType(defaults.getSubjectType());
+            log.info("scoreUpdate: subjectType missing, filled unique province subjectType={} province={}",
+                    defaults.getSubjectType().getCode(), req.getProvince().getCode());
+        }
+        if (needPrepareType && defaults.getPrepareType() != null) {
+            req.setPrepareType(defaults.getPrepareType());
+            log.info("scoreUpdate: prepareType missing, filled province prepareType={} province={}",
+                    defaults.getPrepareType().getCode(), req.getProvince().getCode());
         }
     }
 
@@ -951,6 +995,38 @@ public class ChatSessionBizService {
         }
     }
 
+    /**
+     * 补录各科的**编码加固**（2026-10-06 真事故）：模型只报分数不报科目的草稿
+     * （`subjectScoreList=[{"score":88},{"score":85}]`）合并后 `subject=null`，
+     * 一路流到组查询串的拼接处才炸（NPE → 回包 `code:-1 message:null`，
+     * 用户只看到"失败"两个字，连失败原因都没有）。
+     *
+     * <p>在**落库之前**以业务码 110 挡下：每个元素都必须带非空 `subject`，且是标准编码
+     * （01-07 选考 + 08/10/11 语数外，口径见
+     * {@link ScoreCatalogService#STANDARD_SUBJECT_CODES}）。缺 `subjectName` 的按编码补一个
+     * ——卡上给人看的是名称，模型只给编码时不能让卡显示成光秃秃的"08 118"。</p>
+     *
+     * <p>元素为 null、编码为空、编码非标准，三者同一句话（模型能做的动作是一样的：
+     * 先查编码表再补一次），不逐项挤牙膏。</p>
+     */
+    private void validateScoreUpdateSubjectCodes(CreateSessionReq req) {
+        if (req == null || CollectionUtil.isEmpty(req.getSubjectScoreList())) {
+            // 空列表由 validateCreateSessionReq 负责（110「请填写各科成绩后再创建会话」）。
+            return;
+        }
+        for (CreateSessionReq.SubjectScore item : req.getSubjectScoreList()) {
+            if (item == null || Strings.isNullOrEmpty(item.getSubject())
+                    || !ScoreCatalogService.isStandardSubjectCode(item.getSubject())) {
+                throw new BusinessException(110, "非标准选科编码");
+            }
+            String code = item.getSubject().trim();
+            item.setSubject(code);
+            if (Strings.isNullOrEmpty(item.getSubjectName())) {
+                item.setSubjectName(ScoreCatalogService.subjectNameFor(code));
+            }
+        }
+    }
+
     public void normalizeCreateSessionDefaults(CreateSessionReq createSessionReq) {
         if (createSessionReq == null) {
             return;
@@ -1212,15 +1288,25 @@ public class ChatSessionBizService {
 
 
     private ProgramPageReq toProgramQuery(ChatSession chatSession, CreateSessionReq createSessionReq) {
+        // 组查询的四个维度缺一不可：以前是在这里直接 getXxx().getCode() —— 批次/省份/科类
+        // 任一为空就是 NPE（回包 code:-1 message:null，失败原因被吞掉）。缺项要回**能行动的** 110。
+        if (createSessionReq.getBatch() == null || Strings.isNullOrEmpty(createSessionReq.getBatch().getCode())
+                || createSessionReq.getProvince() == null || Strings.isNullOrEmpty(createSessionReq.getProvince().getCode())
+                || createSessionReq.getSubjectType() == null || Strings.isNullOrEmpty(createSessionReq.getSubjectType().getCode())) {
+            throw new BusinessException(110, "成绩信息不完整，请先补全省份、批次与科类");
+        }
+        List<String> subjectCodeList = ScoreCatalogService.electiveSubjectCodes(createSessionReq.getSubjectScoreList());
+        if (subjectCodeList.isEmpty()) {
+            // 全被过滤或全为空码：以前这里会拼出空串甚至炸在流的 null 上；空串上游不报错、
+            // 只返回空，看起来像"没有数据"。宁可直接 110。
+            throw new BusinessException(110, "成绩信息缺少选考科目编码");
+        }
         ProgramPageReq req = new ProgramPageReq();
         req.setMemberId(Long.valueOf(chatSession.getUserId()));
         req.setBatch(createSessionReq.getBatch().getCode());
         req.setAreaId(createSessionReq.getProvince().getCode());
         req.setScore(createSessionReq.getTotalScore());
         req.setYear(String.valueOf(createSessionReq.getExamYear()));
-
-        List<String> subjectFobiddenList = Lists.newArrayList("08", "10", "11");
-        List<String> subjectCodeList = createSessionReq.getSubjectScoreList().stream().filter(one -> !subjectFobiddenList.contains(one.getSubject())).map(one -> one.getSubject()).sorted().collect(Collectors.toList());
 
         String subjects = Joiner.on("").join(subjectCodeList);
         req.setSubjects(subjects);

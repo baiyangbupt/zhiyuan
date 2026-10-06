@@ -150,6 +150,20 @@ public class VolunteerSourceDataSyncService {
     }
 
     private ProgramPageReq toProgramQuery(ChatSession chatSession, CreateSessionReq createSessionReq) {
+        // 组查询的四个维度缺一不可：以前直接 getXxx().getCode() —— 批次/省份/科类任一为空
+        // 就是 NPE（2026-10-06 真事故：`subject=null` 的元素在下面的流里先炸，回包
+        // `code:-1 message:null`，失败原因被吞掉）。缺项要回**能行动的** 110。
+        if (createSessionReq.getBatch() == null || Strings.isNullOrEmpty(createSessionReq.getBatch().getCode())
+                || createSessionReq.getProvince() == null || Strings.isNullOrEmpty(createSessionReq.getProvince().getCode())
+                || createSessionReq.getSubjectType() == null || Strings.isNullOrEmpty(createSessionReq.getSubjectType().getCode())) {
+            throw new BusinessException(110, "成绩信息不完整，请先补全省份、批次与科类");
+        }
+        List<String> subjectCodeList = ScoreCatalogService.electiveSubjectCodes(createSessionReq.getSubjectScoreList());
+        if (subjectCodeList.isEmpty()) {
+            // null 元素 / 空码 / 全主科：以前要么 NPE、要么拼出空串（上游不报错、只返回空，
+            // 看起来像"没有数据"）。宁可直接 110。
+            throw new BusinessException(110, "成绩信息缺少选考科目编码");
+        }
         ProgramPageReq req = new ProgramPageReq();
         req.setMemberId(Long.valueOf(chatSession.getUserId()));
         req.setBatch(createSessionReq.getBatch().getCode());
@@ -157,12 +171,6 @@ public class VolunteerSourceDataSyncService {
         req.setScore(createSessionReq.getTotalScore());
         req.setYear(String.valueOf(createSessionReq.getExamYear()));
 
-        List<String> subjectForbiddenList = Lists.newArrayList("08", "10", "11");
-        List<String> subjectCodeList = createSessionReq.getSubjectScoreList().stream()
-                .filter(one -> !subjectForbiddenList.contains(one.getSubject()))
-                .map(CreateSessionReq.SubjectScore::getSubject)
-                .sorted()
-                .collect(Collectors.toList());
         req.setSubjects(Joiner.on("").join(subjectCodeList));
         req.setSubjectType(createSessionReq.getSubjectType().getCode());
         req.setPrepareType(createSessionReq.getPrepareType() != null

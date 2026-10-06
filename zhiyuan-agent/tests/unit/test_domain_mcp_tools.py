@@ -1277,3 +1277,144 @@ def test_java_signed_evidence_passes_the_guard() -> None:
     result = response.ok({"items": []}, kind="history", state_version=1, evidence=[signed])
 
     assert result["evidenceRefs"] == [signed]
+
+
+@pytest.mark.asyncio
+async def test_batch_options_carry_codes_levels_and_batch_evidence(monkeypatch) -> None:
+    """补录批次表：`code` 是模型要填进草稿的批次码，`level` 是本专科**编码**
+    （建档策略按 `provinceCode + level` 取，传"本科"这种名字会静默取不到）。
+
+    2026-10-06 的真事故形状：模型的卡上只有分数、没有批次码——这张表就是给它补编码的。
+    批次线是**观测**：证据要跟着一起出来（与 `catalog.list_batches` 同源）。
+    """
+    from app.util import internal_client
+
+    calls: list[dict] = []
+
+    async def batch_options(area_id, subject_type="", **kwargs):
+        calls.append({"area_id": area_id, "subject_type": subject_type, **kwargs})
+        return {
+            "code": 0,
+            "data": [
+                {"code": "17", "name": "第一段", "level": "01", "score": 494, "pos": 184816},
+                {"code": "18", "name": "第二段", "level": "02", "score": 266, "pos": 292753},
+            ],
+            "evidence": [{"evidenceId": "ev_batch_1", "sourceSystem": "gaotu.batchList"}],
+        }
+
+    monkeypatch.setattr(internal_client, "get_batch_options", batch_options)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call(
+        "catalog.get_batch_options", {"provinceCode": "330000", "subjectType": "N"}
+    )
+
+    assert result["status"] == "ok"
+    assert result["kind"] == "catalog"
+    assert result["data"][0] == {
+        "code": "17", "name": "第一段", "level": "01", "score": 494, "pos": 184816,
+    }
+    assert result["data"][1]["level"] == "02"
+    assert [item["evidenceId"] for item in result["evidenceRefs"]] == ["ev_batch_1"]
+    # 受信身份注入，模型塞的东西进不去（与其它工具同一条纪律）。
+    assert calls[0]["area_id"] == "330000"
+    assert calls[0]["subject_type"] == "N"
+    assert calls[0]["tenant_id"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_batch_options_require_a_province_code(monkeypatch) -> None:
+    """省份必填：批次码是**按省份**的（浙江第一段=17、上海本科批=01），
+    没有省份这张表无从查起——缺参要在工具入口说清，别让模型拿到一屏空数组。"""
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("catalog.get_batch_options", {})
+
+    assert result["status"] == "needs_clarification"
+    assert result["data"]["missingFields"] == ["provinceCode"]
+
+
+@pytest.mark.asyncio
+async def test_batch_options_say_that_score_does_not_filter_batches(monkeypatch) -> None:
+    """`score` 是契约里的保留字段：上游批次策略只按 (省份, 科类) 出批次线。
+    传了分数若不作声，模型会把"我传了 610 分"读成因果。"""
+    from app.util import internal_client
+
+    async def batch_options(area_id, subject_type="", **kwargs):
+        return {"code": 0, "data": [{"code": "17", "name": "第一段", "level": "01", "score": 494}]}
+
+    monkeypatch.setattr(internal_client, "get_batch_options", batch_options)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call(
+        "catalog.get_batch_options", {"provinceCode": "330000", "score": 610}
+    )
+
+    assert result["status"] == "ok"
+    assert "batch_policy_ignores_score" in result["limitations"]
+
+
+@pytest.mark.asyncio
+async def test_subject_options_expose_the_standard_encoding_mapping(monkeypatch) -> None:
+    """科目编码表：01-07 选考 + 08/10/11 语数外（上游只回选考，主科由 Java 补全）。
+    模型拿它把"语文 112"落到 `{"subject": "08"}`——只带分数的草稿会被 110 拒。"""
+    from app.util import internal_client
+
+    async def subject_options(area_id):
+        return {
+            "code": 0,
+            "data": [
+                {"code": "01", "name": "物理"},
+                {"code": "05", "name": "化学"},
+                {"code": "08", "name": "语文"},
+                {"code": "10", "name": "数学"},
+                {"code": "11", "name": "英语"},
+            ],
+        }
+
+    monkeypatch.setattr(internal_client, "get_subject_options", subject_options)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("catalog.get_subject_options", {"provinceCode": "330000"})
+
+    assert result["status"] == "ok"
+    assert result["kind"] == "catalog"
+    mapping = {item["code"]: item["name"] for item in result["data"]}
+    assert mapping["01"] == "物理"
+    assert mapping["08"] == "语文"
+    assert mapping["10"] == "数学"
+    assert mapping["11"] == "英语"
+
+
+@pytest.mark.asyncio
+async def test_subject_options_keep_java_rejection_text(monkeypatch) -> None:
+    """Java 拒绝时（110「未查询到该省份的选科策略」）原文必须带出去：
+    模型要能看出"这个省查不到"并改问用户，而不是把空表当"这个省没有科目"念。"""
+    from app.util import internal_client
+
+    async def subject_options(area_id):
+        return {"code": 110, "msg": "未查询到该省份的选科策略", "data": None}
+
+    monkeypatch.setattr(internal_client, "get_subject_options", subject_options)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("catalog.get_subject_options", {"provinceCode": "999999"})
+
+    assert result["status"] == "upstream_error"
+    assert "upstream_code:110" in result["limitations"]
+    assert any("未查询到该省份的选科策略" in item for item in result["limitations"])

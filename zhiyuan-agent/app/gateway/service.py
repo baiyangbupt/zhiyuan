@@ -388,6 +388,28 @@ def _score_update_summary_text(summary: Mapping[str, Any]) -> str:
     return " · ".join(parts)
 
 
+# 补录被 Java 拒时的通用描述：只在 Java **没有**回 msg 时才用它兜底（原文优先）。
+_SCORE_UPDATE_DEFAULT_REJECTION = "Java score update preview rejected the request"
+
+# 回合失败时回给用户的通用文案（不泄漏内部细节）。
+_RECOVERABLE_TURN_FAILURE = "当前对话引擎暂时不可用，请稍后重试。"
+
+# **唯一**会把内部错误原文带上用户面的前缀：补录预览/执行的业务拒绝。Java 的 110
+# 原文（"请选择批次后再创建会话"/"非标准选科编码"…）是**可行动的**：它告诉用户/模型
+# 缺的是什么、下一步查什么。2026-10-06 实测里它被通用文案吞掉，用户连"缺批次"都读不出来。
+_SCORE_UPDATE_ERROR_PREFIX = "score_update_unavailable:"
+
+
+def _recoverable_turn_reply(error: Any) -> str:
+    """失败回给用户的那句话：默认通用文案，**唯**放行补录的业务拒绝原文。"""
+    text = str(error or "")
+    if text.startswith(_SCORE_UPDATE_ERROR_PREFIX):
+        detail = text[len(_SCORE_UPDATE_ERROR_PREFIX):].strip()
+        if detail and detail != _SCORE_UPDATE_DEFAULT_REJECTION:
+            return detail
+    return _RECOVERABLE_TURN_FAILURE
+
+
 def _maybe_await(value: Any) -> Any:
     return value if inspect.isawaitable(value) else _Immediate(value)
 
@@ -885,9 +907,15 @@ class GatewayService:
         else:
             response = await internal_client.preview_score_update(tenant_id, session_id, payload)
         if (response or {}).get("code") not in (None, 0):
+            # **Java 的 msg 要原样带走**（2026-10-06 实测：这条回包是
+            # `code:110 / msg:"请选择批次后再创建会话"`，而网关把它替换成了一句英文
+            # 通用文案，用户最终只看到"当前对话引擎暂时不可用"——**缺的是批次**这个
+            # 可行动的事实被整段吞掉）。Java 的 110 原文本来就是写给用户和模型看的，
+            # 这里只在它**没有**原文时才回退到通用描述。
+            java_msg = str((response or {}).get("msg") or (response or {}).get("message") or "").strip()
             raise OutputContractError(
                 "score_update_unavailable",
-                "Java score update preview rejected the request",
+                java_msg or _SCORE_UPDATE_DEFAULT_REJECTION,
             )
         data = (response or {}).get("data") or {}
         # prepare 的返回是 PrepareResultDTO（预览在 `result` 里，外面是 pendingId 等）；
@@ -1223,7 +1251,9 @@ class GatewayService:
             )
             return {
                 "mode": self.mode,
-                "reply": "当前对话引擎暂时不可用，请稍后重试。",
+                # 失败回复：默认通用文案；**补录的业务拒绝**放行 Java 原文
+                # （"请选择批次后再创建会话"这种话才让用户知道下一步做什么）。
+                "reply": _recoverable_turn_reply(codex_result.get("error")),
                 "events": codex_result.get("events", []),
                 "snapshotVersion": snapshot.snapshot_version,
                 "statePatch": state_patch.model_dump(by_alias=True) if state_patch else None,

@@ -89,6 +89,10 @@ public class ChatSessionBizServiceTest {
         ReflectionTestUtils.setField(chatSessionBizService, "gaotuService", gaotuService);
         ReflectionTestUtils.setField(chatSessionBizService, "volunteerStrategyManager", volunteerStrategyManager);
         ReflectionTestUtils.setField(chatSessionBizService, "userBizService", userBizService);
+        // 补录缺省（科类/填报类型）从省策略推导——本类用例走不到推导后的分支，
+        // 桩回 null（= 推导不出来），保持各用例原有的校验/兜底行为。
+        ReflectionTestUtils.setField(chatSessionBizService, "scoreCatalogService",
+                Mockito.mock(ScoreCatalogService.class));
     }
 
     @Test

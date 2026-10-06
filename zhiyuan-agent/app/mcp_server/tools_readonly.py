@@ -37,6 +37,12 @@ CAPABILITIES = {
     # 批次字典：**没有它，"录取分"这条路根本走不通**。批次码是地区相关的
     # （浙江第一段=17、上海本科批=01），传"本科批"这种名字上游不报错、只返回空。
     "catalog.list_batches": "catalog_read",
+    # 补录编码表：**没有它，"对话式补录"出的卡就是一张废卡**。2026-10-06 真事故：
+    # 模型手里只有分数，把 subjectScoreList 出成 [{"score":88},…]（无科目编码），
+    # 合并后 null 编码一路炸到下游；批次同理（"本科批"不是批次码）。
+    # 模型补录前先查这两张表，用返回的 code 出草稿。
+    "catalog.get_batch_options": "catalog_read",
+    "catalog.get_subject_options": "catalog_read",
     # 招生单元树：专业级那条链的入口，**免分数**。没有它，招生计划与专业级录取都无门可入。
     "catalog.list_admission_units": "catalog_read",
     "admission.get_enrollment_plan": "admission_read",
@@ -76,6 +82,9 @@ TOOL_KINDS = {
     "planning.get_working_plan": "workingPlan",
     "admission.compare": "comparison",
     "catalog.list_batches": "catalog",
+    # 补录编码表：字典/枚举，形状是 catalog（不是观测事实，批次线证据挂在批次查询上）。
+    "catalog.get_batch_options": "catalog",
+    "catalog.get_subject_options": "catalog",
     "catalog.list_admission_units": "catalog",
     "admission.get_enrollment_plan": "enrollment",
     "admission.get_charter": "policy",
@@ -333,6 +342,10 @@ class ReadonlyDomainTools:
             return await self.backend.get_enrollment_plan(**self._trusted_arguments(arguments))
         if name == "catalog.list_batches":
             return await self.backend.list_batches(**self._trusted_arguments(arguments))
+        if name == "catalog.get_batch_options":
+            return await self.backend.get_batch_options(**self._trusted_arguments(arguments))
+        if name == "catalog.get_subject_options":
+            return await self.backend.get_subject_options(**self._trusted_arguments(arguments))
         if name == "admission.compare":
             # 不在这里 resolve：对比的实体是**已确认**的院校/专业（调用方给 ID），
             # 歧义应当在进入对比之前就解决掉，否则表格里会出现"同一个名字的两个东西"。
@@ -826,6 +839,62 @@ class InternalClientBackend:
                 chat_session_id=self.chat_session_id,
                 thread_id=self.thread_id,
             )
+        )
+
+    async def get_batch_options(self, **arguments: Any) -> Any:
+        """**补录成绩用**的批次编码表：`[{code, name, level, score, pos}]`。
+
+        与 `catalog.list_batches`（上游 DTO 原样透传，给查录取分用）的分工：
+        这条返回的是**补录草稿要填的编码**——`batch.code` + `level`（01 本科/02 专科）。
+        省份必填（批次码按省份不同）；多科类省份（江苏）需要 `subjectType`
+        （WL/LS，也可以给选考科目码/名称，Java 侧翻译）。`score` 是契约保留字段：
+        上游批次策略不按分数筛批次，传了也只是原样收下（结果里如实标注）。
+        """
+        area_id = str(arguments.get("provinceCode") or arguments.get("areaId") or "").strip()
+        if not area_id:
+            result = _err(
+                "catalog.get_batch_options",
+                "needs_clarification",
+                "provinceCode is required",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = ["provinceCode"]
+            return result
+        payload = self._preserve_envelope(
+            await internal_client.get_batch_options(
+                area_id,
+                str(arguments.get("subjectType") or ""),
+                tenant_id=self.tenant_id,
+                chat_session_id=self.chat_session_id,
+                thread_id=self.thread_id,
+            )
+        )
+        if payload.get("status") == "ok" and str(arguments.get("score") or "").strip():
+            # 批次不是按分数筛出来的：不说的话模型会把"我传了 610 分"读成因果。
+            payload["limitations"] = [
+                *(payload.get("limitations") or []),
+                "batch_policy_ignores_score",
+            ]
+        return payload
+
+    async def get_subject_options(self, **arguments: Any) -> Any:
+        """**补录成绩用**的科目编码表：`[{code, name}]`（01-07 选考 + 08/10/11 语数外）。
+
+        补录草稿的 `subjectScoreList[].subject` 只能取这里的 `code`：
+        只报分数（无编码）或报科目名，都会在落库前被 110 拒。
+        """
+        area_id = str(arguments.get("provinceCode") or arguments.get("areaId") or "").strip()
+        if not area_id:
+            result = _err(
+                "catalog.get_subject_options",
+                "needs_clarification",
+                "provinceCode is required",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = ["provinceCode"]
+            return result
+        return self._preserve_envelope(
+            await internal_client.get_subject_options(area_id)
         )
 
     async def search_schools(self, **arguments: Any) -> Any:

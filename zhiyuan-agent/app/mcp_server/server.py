@@ -55,6 +55,8 @@ _COMMON_INPUT_PROPERTIES: dict[str, Any] = {
     "ownership": {"type": "string"},
     "educationLevel": {"type": "string"},
     "areaId": {"type": "string"},
+    # 省份编码（补录编码表用的名字；与 areaId 同义，兼容两种叫法）。
+    "provinceCode": {"type": "string", "description": "省份编码（6 位，如 330000 浙江）"},
     "batch": {"type": "string"},
     "year": {"type": "integer"},
     "subjectType": {"type": "string"},
@@ -102,6 +104,19 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "admission.compare": _input_schema("entities", "areaId", "batch", "year", "subjectType"),
     # 批次字典：`batch` 的合法取值只能从这里来（按省份不同）。
     "catalog.list_batches": _input_schema("areaId"),
+    # 补录编码表：省份必填（批次码/科目码都是**按省份**的）。`subjectType` 可选，
+    # 多科类省份（江苏 WL/LS）必须给；`score` 是契约保留字段（上游批次策略不按分数筛，
+    # 传了会在结果 limitations 里如实标注）。
+    "catalog.get_batch_options": {
+        "type": "object",
+        "properties": {
+            **_COMMON_INPUT_PROPERTIES,
+            "score": {"type": "integer", "description": "高考总分（契约保留：不参与批次筛选）"},
+        },
+        "required": ["provinceCode"],
+        "additionalProperties": False,
+    },
+    "catalog.get_subject_options": _input_schema("provinceCode"),
     # 招生单元树：专业级那条链的入口，两个参数都是必需。
     "catalog.list_admission_units": _input_schema("schoolId", "areaId"),
     # schoolId 是 Java 侧的必填（`admission_source_school_required`）——上游那套

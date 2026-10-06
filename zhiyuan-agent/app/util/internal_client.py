@@ -528,6 +528,47 @@ async def get_batch_info(
     )
 
 
+async def get_batch_options(
+    area_id: Union[str, int],
+    subject_type: str = "",
+    *,
+    tenant_id: Union[str, int, None] = None,
+    chat_session_id: Union[str, int, None] = None,
+    thread_id: Optional[str] = None,
+) -> Any:
+    """**补录成绩用**的批次编码表：`[{code, name, level, score, pos}]`。
+
+    与 `get_batch_info`（上游 DTO 原样透传）的分工：这条是给模型**补编码**用的归一化
+    形状——`code` 是补录请求 `batch.code` 的取值（浙江第一段=17、第二段=18），
+    `level` 是 01 本科 / 02 专科的编码（建档策略按 `provinceCode + level` 取，
+    传"本科"这种名字会静默取不到）。`subject_type` 给科类码（浙江 N、江苏 WL/LS）；
+    多科类省份不给时 Java 侧会明确拒绝并列出可选科类。
+    """
+    params: Dict[str, Any] = {"areaId": area_id}
+    if subject_type:
+        params["subjectType"] = subject_type
+    params.update(_evidence_scope_params(tenant_id, chat_session_id, thread_id))
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/gaotu/catalog/batch-options",
+        params=params,
+        error_msg="catalog 查询批次编码表失败",
+    )
+
+
+async def get_subject_options(area_id: Union[str, int]) -> Any:
+    """**补录成绩用**的科目编码表：`[{code, name}]`。
+
+    选考科目（01-07）+ 语数外（08/10/11，上游选科策略不含，由 Java 侧补全）。
+    补录请求 `subjectScoreList[].subject` 只能取这里的 code——只报分数、或报科目名，
+    都会在落库前被 110 拒（2026-10-06 的真事故）。
+    """
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/gaotu/catalog/subject-options",
+        params={"areaId": area_id},
+        error_msg="catalog 查询科目编码表失败",
+    )
+
+
 async def get_plan_major_filter_list(
     school_id: Union[str, int], area_id: Union[str, int]
 ) -> Any:
