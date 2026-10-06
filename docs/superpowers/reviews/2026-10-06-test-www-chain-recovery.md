@@ -142,3 +142,37 @@ F09 一度红，定向调查定性为**真实产品竞态**并已修：
 - 后续优化（已定位）：`conversation_action` 路径的快照缓存可能旧（补录后紧急操作会用到
   缓存快照，建议强制重读）；`assistant.delta` 未流式（首字延迟感知）；老信封伴发帧的
   长期收敛；dialog_quality_gate 夹具（需真实数据，禁造数）。
+
+## 五、晚间扩展（对话式补录 / 演示通道 / 环境口径）
+
+> 同日 15:00–20:00。这部分把"对话引擎化、自成一体"的第一块业务写链做成并验证。
+
+**对话式补录成绩（提案卡闭环）**：模型输出 `scoreUpdateRequest`（与 proposalRequest 互斥）
+→ Java prepare 产 pending → `proposal.preview` 卡 →
+确认走 `conversationAction`（claim→pending-command/execute）→ 落库+版本+1+stale →
+`conversationAction.result{newStateVersion,code,message}` → 工作台按 `workspaceVersion` 刷新。
+验收：contract 13 / write 5 全绿；真栈一次完整 applied（610/22000/六科标准码）。
+过程中修两真 bug：execute 客户端 10s 超时在写提交后掐死（→60s，单测钉住）；
+seed 自食（成功 confirm 把全量源落回本会话成最大文件）。
+
+**编码映射缺口（补录事故暴露）**：模型在 JSON 串内写未转义英文引号 → 解析失败 → 修复回合
+看不到坏文本、重复犯错 → "引擎暂不可用"。修复三件套：① 新增只读工具
+`catalog.get_batch_options / get_subject_options`（写规则改为"先查编码再出卡"）；
+② Java 校验加固（非标编码 110 落库前拦下、toProgramQuery null-safe、单科类省自动补
+subjectType）；③ 错误透传（Java 原文直达卡面/消息）。另：结构化输出容错加固——
+修复回合附原始文本、解析层窄口径救回（去围栏/尾逗号/成对值内引号→「」，必留痕）、
+base_instructions 引号规则（放宽为"优先「」/必要时规范转义/禁未转义裸引号"）。
+
+**环境口径发现（数据侧待办）**：本环境上游策略只对部分 member/口径有效——
+member 900002 + PREDICT 可全量取数；900005 仅有 PREDICT、VOLUNTEER 无策略（84009）。
+UI"先对话"建的会话是 VOLUNTEER 口径 → 在该 member 上确认必 84009。演示/验收暂用
+PREDICT 档案会话；VOLUNTEER 策略缺失待数据侧补齐。
+
+**演示通道**：内网直连（`http://10.218.4.10:3201`，dev web 绑 0.0.0.0 + WS 直连
+`10.218.4.10:18291` 真 codex）——真模型真工具，供用户体验"对话式办事"；
+测试用替身环境已清理（18294/3202 已停）。
+
+**事故与协调教训（如实）**：① 演示 agent 两次因误用旧 env 备份退回替身模式/丢白名单
+（症状伪装成"卡住/不返回"）——正确备份固化为 `/tmp/env-18291.demo.fixed`；
+② 验证线在用户会话上跑脚本会抢"会话当前连接"通道 → 用户点确认后看不到结果
+（服务端实际 applied）——多连接争通道属既有语义，验证脚本要避开真人会话。
