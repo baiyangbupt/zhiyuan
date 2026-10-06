@@ -35,7 +35,7 @@ import {
   sortPlanningOrderedPlanApi,
   updatePlanningCandidateViewStateApi,
 } from '@/service/apis/sessionDetail';
-import { IUserInfoParams } from '@/interface/api/sessionDetail';
+import { IUpdateScoreDetailRes, IUserInfoParams } from '@/interface/api/sessionDetail';
 import {
   PlanningCandidateFilterOptionsRes,
   PlanningCandidateItem,
@@ -66,6 +66,7 @@ import ArtifactRenderer from '../ConversationEvents/ArtifactRenderer';
 import EvidenceDrawer from '../ConversationEvents/EvidenceDrawer';
 import AdmissionFactCard from '../ConversationEvents/AdmissionFactCard';
 import PlanningStatus from '../ConversationEvents/PlanningStatus';
+import ScoreSupplementModal, { ScoreSupplementEntry } from '../ScoreSupplement';
 import style from './style.module.scss';
 import { MAJOR_CATEGORY_TO_DISCIPLINES } from './majorCategoryMap';
 
@@ -652,6 +653,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   })();
   const [planningState, setPlanningState] = useState<PlanningStateRes | null>(null);
   const [planningLoading, setPlanningLoading] = useState(false);
+  const [scoreSupplementOpen, setScoreSupplementOpen] = useState(false);
   const [dataFreshnessChecking, setDataFreshnessChecking] = useState(false);
   const [actionLoading, setActionLoading] = useState<
     'candidate' | 'workingPlan' | 'ordered' | 'review' | null
@@ -679,6 +681,19 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const normalizedPrepareTypeCode = normalizePrepareTypeCode(prepareTypeCode, prepareTypeDesc);
   const planYear = resolvePlanYear(prepareTypeCode, prepareTypeDesc, examYear);
   const planYearTitle = `${planYear}招生计划`;
+  /**
+   * 空会话判据：workspace-state 的 studentSummary 已回来、但 score 为空
+   * （后端在 userScoreDetail 与候选池都没有成绩时才给空 score）。
+   *
+   * 注意：空会话的 /session/detail 里 prepareType 就是 null（它从 userScoreDetail 派生，
+   * 此刻还没有记录），所以**不能**要求 normalizedPrepareTypeCode 非空，否则恰好漏掉目标场景。
+   * 这里只排除明确是模拟填报（PREDICT）的会话。
+   */
+  const studentSummaryScore = planningState?.studentSummary?.score;
+  const shouldShowScoreSupplement =
+    normalizedPrepareTypeCode !== 'PREDICT' &&
+    Boolean(planningState?.studentSummary) &&
+    (studentSummaryScore === undefined || studentSummaryScore === null);
   const [candidatePoolLoading, setCandidatePoolLoading] = useState(false);
   const [candidateCacheVersion, setCandidateCacheVersion] = useState(0);
   const [showBackTop, setShowBackTop] = useState(false);
@@ -1683,6 +1698,19 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       message.error('获取工作台状态异常，请稍后重试');
     }
     setPlanningLoading(false);
+  };
+
+  /**
+   * 补录成绩成功：`requiresWorkspaceReload=true` → 重拉 workspace-state。
+   * 版本 +1 与 staleFlags 会驱动候选/方案区按既有逻辑自然刷新（入口随 score 出现而消失）。
+   * 响应缺省该字段时同样重拉（后端契约里成功必为 true，保守取新）。
+   */
+  const handleScoreSupplementSuccess = async (res?: IUpdateScoreDetailRes | null) => {
+    setScoreSupplementOpen(false);
+    if (res?.requiresWorkspaceReload === false) {
+      return;
+    }
+    await fetchWorkspaceState();
   };
 
   const ensureInitialPlanReady = async () => {
@@ -5144,6 +5172,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           />
         </div>
       )}
+      {shouldShowScoreSupplement ? (
+        <ScoreSupplementEntry
+          onOpen={() => setScoreSupplementOpen(true)}
+          disabled={planningLoading}
+        />
+      ) : null}
       <div className={`${style.stageHeader} ${overviewCollapsed ? style.stageHeaderCollapsed : ''}`}>
         <div className={`${style.metricsGrid} ${overviewCollapsed ? style.metricsGridCollapsed : ''}`}>
           <div className={style.metricCard}>
@@ -6191,6 +6225,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         </Spin>
       </div>
       {renderSchoolHistoryModal()}
+
+      <ScoreSupplementModal
+        open={scoreSupplementOpen}
+        tenantId={routerParams.tenantId}
+        chatSessionId={routerParams.chatSessionId}
+        examYear={examYear}
+        prepareTypeCode={prepareTypeCode}
+        prepareTypeDesc={prepareTypeDesc}
+        onCancel={() => setScoreSupplementOpen(false)}
+        onSuccess={handleScoreSupplementSuccess}
+      />
 
       {showBackTop ? (
         <Button

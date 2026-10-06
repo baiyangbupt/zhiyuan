@@ -54,6 +54,10 @@ import {
   ISessionListResItem,
   ISubjectRes,
 } from '@/interface/api/assistant';
+import {
+  IUpdateScoreDetailParams,
+  IUpdateScoreDetailRes,
+} from '@/interface/api/sessionDetail';
 
 // 获取推荐院校
 export const getRecommendSchoolApi = (data: IUserInfoParams) =>
@@ -511,4 +515,26 @@ export const updateSessionTuitionRangeApi = (
     url: `/gaotu-assistant-bot/chat/${tenantId}/session/update-tuition-range?chatSessionId=${chatSessionId}`,
     method: 'post',
     data,
+  });
+
+/**
+ * 空会话「补充成绩」（产品裁决=同会话补录）。
+ *
+ * - 成功：data.requiresWorkspaceReload=true → 调用方应重拉 workspace-state；
+ * - 110 校验类：HTTP 200 + code=110，由调用方在表单内提示；
+ * - 84009 / -1：上游策略失效等 → toast 透出 msg 并提示刷新后重试；
+ * - 非本人：真实 HTTP 403，走既有全局处理。
+ *
+ * `special` 抑制全局错误 toast，由调用方按上述分支自行呈现（避免重复提示）。
+ */
+export const updateSessionScoreDetailApi = (
+  tenantId: string,
+  chatSessionId: string,
+  data: IUpdateScoreDetailParams
+) =>
+  request<IUpdateScoreDetailParams, IUpdateScoreDetailRes>({
+    url: `/gaotu-assistant-bot/chat/${tenantId}/session/update-score-detail?chatSessionId=${chatSessionId}`,
+    method: 'post',
+    data,
+    special: [110, 84009, -1],
   });

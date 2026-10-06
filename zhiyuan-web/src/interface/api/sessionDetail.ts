@@ -292,3 +292,32 @@ export interface ISubjectTypeAndExamObject {
   code: string;
   desc: string;
 }
+
+/** 空会话「补充成绩」：单科成绩条目（subject 编码与建会话 subjectScoreList 一致）。 */
+export interface IScoreDetailSubjectScore {
+  subject: string;
+  subjectName: string;
+  score: number;
+}
+
+/** 空会话「补充成绩」请求体：CreateSessionReq 的增量子集（全部必填项见后端校验）。 */
+export interface IUpdateScoreDetailParams {
+  province: IProvinceAndSex;
+  batch: { code: string; name: string; level: string; score?: number };
+  subjectType: ISubjectTypeAndExamObject;
+  subjectScoreList: IScoreDetailSubjectScore[];
+  totalScore: number;
+  totalScorePos?: number;
+  examYear?: number;
+}
+
+/** 空会话「补充成绩」响应：requiresWorkspaceReload 为 true 时前端应重拉 workspace-state。 */
+export interface IUpdateScoreDetailRes {
+  success: boolean;
+  chatSessionId: number;
+  planningVersion: number;
+  staleFlags?: Record<string, unknown>;
+  requiresWorkspaceReload?: boolean;
+  volunteerSourceDataSynced?: boolean;
+  volunteerSourceDataFetchedAt?: string;
+}

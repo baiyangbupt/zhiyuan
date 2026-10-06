@@ -1,0 +1,79 @@
+.entryCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 20px 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid #ffd9cf;
+  background: linear-gradient(135deg, #fff6f2 0%, #ffece4 100%);
+}
+
+.entryIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #ff443d;
+  color: #fff;
+  font-size: 18px;
+}
+
+.entryBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.entryTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: #3d2b28;
+  line-height: 20px;
+}
+
+.entryDesc {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #8a6f69;
+  line-height: 18px;
+}
+
+.modalBody {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.modalHint {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fff7f5;
+  color: #8a6f69;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.formAlert {
+  margin-bottom: 12px;
+}
+
+.scoreModalBody {
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+  .entryCard {
+    flex-wrap: wrap;
+    margin: 10px 12px 0;
+    padding: 12px;
+  }
+
+  .entryDesc {
+    display: none;
+  }
+}
