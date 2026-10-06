@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any, AsyncIterator, cast
 
 from app.harness.client import AppServerClient
 from app.harness.turn_result import CodexTurnResult, TurnStatus
+
+logger = logging.getLogger(__name__)
 
 
 class CodexAppServerHarness:
@@ -453,6 +456,228 @@ def _lenient_json(value: str) -> Any:
     return json.loads(value, strict=False)
 
 
+def _try_json_object(value: str) -> dict[str, Any] | None:
+    """解析出 dict 才算命中；其它一律 None（与三层抽取的判据一致）。"""
+    try:
+        parsed = _lenient_json(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _strip_leading_and_trailing_fence(text: str) -> str:
+    """整段被 markdown 围栏包住时去掉围栏（含未收口的围栏）。
+
+    只有"开头就是围栏"才动：围栏在正文中间的情形由 `_FENCE_PATTERN` 那一层管。
+    内容一个字符不改，只去掉 ``` 那一行与语言标签。
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("```"):
+        return text
+    body = stripped[3:]
+    newline = body.find("\n")
+    if newline == -1:
+        return text
+    body = body[newline + 1 :].rstrip()
+    if body.endswith("```"):
+        body = body[:-3]
+    return body.strip()
+
+
+def _strip_trailing_commas(text: str) -> str:
+    """去掉对象/数组收尾前的尾逗号（`,}` / `,]`）。
+
+    严格 JSON 里尾逗号本来就不合法，去掉它不会改变任何**合法**写法；字符串里的
+    逗号不动（那是内容）。只在字符串外判断，转义状态照常跟踪。
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if in_string:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if char == ",":
+            probe = index + 1
+            while probe < length and text[probe] in " \t\r\n":
+                probe += 1
+            if probe < length and text[probe] in "}]":
+                index += 1  # 尾逗号：丢掉，别的一个字符不动
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _previous_unescaped_quote(text: str, position: int) -> int | None:
+    index = position - 1
+    while index >= 0:
+        if text[index] == '"':
+            backslashes = 0
+            probe = index - 1
+            while probe >= 0 and text[probe] == "\\":
+                backslashes += 1
+                probe -= 1
+            if backslashes % 2 == 0:
+                return index
+        index -= 1
+    return None
+
+
+def _next_unescaped_quote(text: str, position: int) -> int | None:
+    index = position
+    while index < len(text):
+        if text[index] == '"':
+            backslashes = 0
+            probe = index - 1
+            while probe >= 0 and text[probe] == "\\":
+                backslashes += 1
+                probe -= 1
+            if backslashes % 2 == 0:
+                return index
+        index += 1
+    return None
+
+
+# 内部引号扫描上限：正常回答里不会有这么多，超了就是形状不对，直接放弃。
+_SALVAGE_MAX_SCANNED_QUOTES = 64
+
+
+def _repair_in_string_quotes(text: str) -> str | None:
+    """把"能证明在字符串值内部"的英文引号成对换成「」，证明不了返回 None。
+
+    2026-10-06 真事故：模型在 `message` 字符串里写
+    `有的省是"第一段/第二段"，有的是"本科批/专科批"`，四个未转义 `"` 让
+    `json.loads` 报 `Expecting ',' delimiter`，整轮死在 `output_missing`。
+
+    证明链（任何一步不成立就放弃——宁失败不可改错内容）：
+      1. 严格解析的失败点必须是 `Expecting ',' delimiter`。这正是"一个字符串被
+         提前关闭、后面跟着的却是正文"的形状；别的报错（缺值、缺逗号在结构位）
+         不在救回范围。
+      2. 失败点的字符必须是**非 ASCII 正文**：ASCII 的 `"`/字母/数字都可能是
+         合法的下一个 token（`{"a": "x" "b": "y"}` 的失败点就是 `"`），不能算证据。
+      3. 失败点之前要有那个"提前关闭字符串"的引号。
+      4. 从失败点往后把引号当候选收尾逐个试探：某个引号后面跟的是 JSON 分隔符
+         （`,`/`}`/`]`）时，它才是字符串真正的收尾；被它跳过的都是内部引号。
+      5. 内部引号必须成对（偶数），且每一对引号之间至少有一个非 ASCII 字符
+         （包的确实是中文正文，而不是 `"message"` 这种结构片段）。
+      6. 替换后再解析一次必须成功——最终以"整段能解析"为准，最多重试 1 次。
+    """
+    try:
+        _lenient_json(text)
+    except json.JSONDecodeError as exc:
+        if exc.msg != "Expecting ',' delimiter":
+            return None
+        error_position = exc.pos
+    except (TypeError, ValueError):
+        return None
+    else:
+        return None
+
+    if error_position >= len(text) or ord(text[error_position]) <= 127:
+        return None
+
+    closing = _previous_unescaped_quote(text, error_position)
+    if closing is None:
+        return None
+
+    internal = [closing]
+    cursor = error_position
+    while len(internal) <= _SALVAGE_MAX_SCANNED_QUOTES:
+        found = _next_unescaped_quote(text, cursor)
+        if found is None:
+            return None
+        after = found + 1
+        while after < len(text) and text[after] in " \t\r\n":
+            after += 1
+        if after < len(text) and text[after] in ",}]":
+            break
+        internal.append(found)
+        cursor = found + 1
+    else:
+        return None
+    if len(internal) < 2 or len(internal) % 2 != 0:
+        return None
+
+    for opening, partner in zip(internal[0::2], internal[1::2]):
+        if not any(ord(char) > 127 for char in text[opening + 1 : partner]):
+            return None
+
+    repaired = list(text)
+    for index, position in enumerate(internal):
+        repaired[position] = "「" if index % 2 == 0 else "」"
+    candidate = "".join(repaired)
+    return candidate if _try_json_object(candidate) is not None else None
+
+
+def _salvage_json(text: str) -> tuple[dict[str, Any] | None, list[str]]:
+    """严格解析失败后的**窄口径**救回；返回 (解析结果, 用过的处理)。
+
+    只做三种可证明的处理：
+      ① 去 markdown 围栏（无损：只去掉 ``` 与语言标签）；
+      ② 去尾随逗号（无损：尾逗号在严格 JSON 里本来就不合法）；
+      ③ 字符串值内成对的英文引号 → 「」（**会改内容**，所以证明链在
+         `_repair_in_string_quotes` 里，任何一步证明不了就整体放弃）。
+    ③ 最多重解析 1 次；仍然不成功就返回 None，让上层走修复回合。
+    """
+    candidate = text
+    actions: list[str] = []
+    defenced = _strip_leading_and_trailing_fence(candidate)
+    if defenced != candidate:
+        candidate = defenced
+        actions.append("fence")
+    without_trailing = _strip_trailing_commas(candidate)
+    if without_trailing != candidate:
+        candidate = without_trailing
+        actions.append("trailing_comma")
+    if actions:
+        parsed = _try_json_object(candidate)
+        if parsed is not None:
+            return parsed, actions
+    repaired = _repair_in_string_quotes(candidate)
+    if repaired is not None:
+        parsed = _try_json_object(repaired)
+        if parsed is not None:
+            return parsed, [*actions, "in_string_quotes"]
+    return None, []
+
+
+_SALVAGE_EXCERPT_CHARS = 200
+
+
+def _salvage_excerpt(text: str) -> str:
+    return text[:_SALVAGE_EXCERPT_CHARS] + ("…" if len(text) > _SALVAGE_EXCERPT_CHARS else "")
+
+
+def _salvage_candidates(stripped: str, span: str | None) -> list[tuple[str, str]]:
+    """救回层要试的候选文本，顺序与严格层同款：direct → fenced(最后一个优先) → embedded。"""
+    candidates: list[tuple[str, str]] = [("direct", stripped)]
+    fenced_blocks = [
+        match.group(1).strip()
+        for match in _FENCE_PATTERN.finditer(stripped)
+        if match.group(1).strip()
+    ]
+    candidates.extend(("fenced", block) for block in reversed(fenced_blocks))
+    if span is not None:
+        candidates.append(("embedded", span))
+    return candidates
+
+
 def _parse_json_object(value: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Layered extraction of a JSON object from model output.
 
@@ -465,7 +690,11 @@ def _parse_json_object(value: str) -> tuple[dict[str, Any] | None, dict[str, Any
       3. embedded - no fenced hit; take the outermost balanced {...} span in the
          prose and try to parse it. No field-level patching, no regex scraping:
          if that span isn't valid JSON, this is a miss.
-      4. missing - none of the above produced a dict.
+      4. salvaged - only after 1-3 all miss: narrow, provable repairs (fence
+         strip / trailing comma / in-string quotes to 「」, see `_salvage_json`).
+         A hit is logged at WARNING with a truncated excerpt; a failure keeps the
+         historical `missing` answer.
+      5. missing - none of the above produced a dict.
     """
     stripped = value.strip()
 
@@ -501,6 +730,25 @@ def _parse_json_object(value: str) -> tuple[dict[str, Any] | None, dict[str, Any
             embedded = None
         if isinstance(embedded, dict):
             return embedded, {"source": "embedded", "candidateCount": None}
+
+    # 第四层：窄口径救回。只在严格三层**全部落空**之后跑，命中必留痕（WARNING +
+    # 截断摘录）——救回是"把话听清"，不是"放松校验"，所以它改动过什么必须能查。
+    for layer, candidate in _salvage_candidates(stripped, span):
+        salvaged, actions = _salvage_json(candidate)
+        if salvaged is None:
+            continue
+        logger.warning(
+            "salvaged malformed model JSON (layer=%s actions=%s excerpt=%r)",
+            layer,
+            ",".join(actions),
+            _salvage_excerpt(candidate),
+        )
+        return salvaged, {
+            "source": "salvaged",
+            "candidateCount": None,
+            "salvageLayer": layer,
+            "salvageActions": actions,
+        }
 
     return None, _missing_extraction()
 

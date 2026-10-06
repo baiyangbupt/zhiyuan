@@ -176,6 +176,35 @@ def test_the_marketplace_lists_this_plugin() -> None:
     assert entries["zhiyuan-codex-planner"]["source"]["path"] == "./plugins/zhiyuan-codex-planner"
 
 
+def test_base_rules_require_escaping_ascii_quotes_inside_json_string_values() -> None:
+    """字符串值里的英文双引号必须转义（2026-10-06 真事故，session 10041948）。
+
+    模型在 `message` 里写了 `有的省是"第一段/第二段"，有的是"本科批/专科批"`——
+    未转义的 `"` 让 `json.loads` 在 `Expecting ',' delimiter` 上失败 → harness 抽不出
+    结构化输出 → 修复回合也救不回来 → 用户看到"当前对话引擎暂时不可用"。
+    解析层的窄口径救回（`app/harness/codex.py`）与修复回合带原文是另外两道闸；
+    这一条是**最前面那道**——规则不写，模型照样从源头写坏。
+
+    分层口径（2026-10-06 真栈复现后放宽，协调方拍板）：绝对禁令会让模型连
+    合法转义（`\\"`）与逐字引用用户原话都拒绝（真栈实测三回合皆拒），
+    伤对话质量；改为「」/『』优先 + 确需时按 JSON 转义 + 禁止未转义的裸引号。
+    """
+    base = (
+        Path(__file__).parents[2] / "skills" / "codex" / "base_instructions.md"
+    ).read_text(encoding="utf-8")
+    lowered = base.lower()
+
+    assert "「」" in base and "『』" in base, "引号替代写法没有出现在基础规则里"
+    assert "double quote" in lowered
+    assert "string value" in lowered
+    assert "json" in lowered
+    # 精确锁定分层口径：转义写法（backslash + quote）必须写在规则里（含微型正例），
+    # 禁止的是**未转义**的裸引号。
+    assert '\\"' in base, "规则里没有给出转义写法（backslash + quote）"
+    assert "escape" in lowered or "escaped" in lowered
+    assert "unescaped" in lowered
+
+
 def test_write_rules_require_looking_up_codes_before_the_card() -> None:
     """写实例的补录规则必须写死"先查编码、再出卡"（2026-10-06 真事故）：
 

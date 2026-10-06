@@ -424,6 +424,60 @@ def _session_key(tenant_id: str | int, session_id: str | int) -> SessionKey:
     return SessionKey(tenant_id=str(tenant_id), session_id=str(session_id))
 
 
+_REPAIR_OUTPUT_EXCERPT_LIMIT = 1500
+
+
+def _agent_message_text(item: Any) -> str | None:
+    """从一个事件 item 里取 agent 最终文本；不是 agentMessage 就返回 None。"""
+    if not isinstance(item, Mapping):
+        return None
+    if item.get("type") not in (None, "agentMessage"):
+        return None
+    text = item.get("text")
+    if isinstance(text, str) and text.strip():
+        return text
+    return None
+
+
+def _last_agent_text(turn_payload: Any) -> str | None:
+    """取上一回合**最后一段原始 agent 文本**（修复回合要把坏文本摆给模型看）。
+
+    2026-10-06 真事故：模型在 JSON 字符串值里写了未转义的 `"`，harness 解析
+    失败 → `output_missing` → 修复回合只拿到一句 issue，看不到自己写坏的那段
+    文本，于是又写坏一遍。这里把原文找回来（形状兜底：终态事件自带的 item、
+    `collected.events` 里的 agentMessage item/completed、事件适配后的
+    `payload.message`），取**最后一个**——重查等场景下多个回合的事件拼在一起，
+    最后那段才是模型刚写的。
+    """
+    if not isinstance(turn_payload, Mapping):
+        return None
+    found = _agent_message_text(turn_payload.get("item"))
+    events = turn_payload.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, Mapping):
+                continue
+            text = _agent_message_text(event.get("item"))
+            if text is not None:
+                found = text
+                continue
+            payload = event.get("payload")
+            if isinstance(payload, Mapping) and isinstance(payload.get("message"), str):
+                if payload["message"].strip():
+                    found = payload["message"]
+    return found
+
+
+def _repair_output_excerpt(raw_output: str | None) -> str | None:
+    """修复提示里随附的上一回合原文：最多 1500 字符（超出截断，提示里注明）。"""
+    if raw_output is None:
+        return None
+    text = raw_output.strip()
+    if not text:
+        return None
+    return text[:_REPAIR_OUTPUT_EXCERPT_LIMIT]
+
+
 class _Immediate:
     def __init__(self, value: Any) -> None:
         self.value = value
@@ -1425,7 +1479,17 @@ class GatewayService:
                         raise OutputContractError("output_missing", "completed turn did not return structured output")
                     return TurnOutput.model_validate(raw_output), False
                 except (OutputContractError, ValidationError) as exc:
-                    repaired = await self._repair_turn_output(thread_id, str(exc))
+                    raw_text = _last_agent_text(turn_payload)
+                    logger.warning(
+                        "turn output rejected (%s); attempting one repair turn (raw text %s)",
+                        exc,
+                        "included" if raw_text else "unavailable",
+                    )
+                    repaired = await self._repair_turn_output(
+                        thread_id,
+                        str(exc),
+                        raw_output=raw_text,
+                    )
                     if repaired is None:
                         raise OutputContractError("output_schema_invalid", str(exc)) from exc
                     repaired_events = repaired.get("events") or []
@@ -1819,22 +1883,44 @@ class GatewayService:
             turn.update(collected.payload)
         return turn
 
-    async def _repair_turn_output(self, thread_id: str, issue: str) -> dict[str, Any] | None:
+    async def _repair_turn_output(
+        self,
+        thread_id: str,
+        issue: str,
+        *,
+        raw_output: str | None = None,
+    ) -> dict[str, Any] | None:
+        """让模型修一次不合格的最终输出；拿不到合法结构化输出返回 None。
+
+        `raw_output` 是**上一回合的原始最终文本**（截断到 1500 字符，见
+        `_repair_output_excerpt`）。2026-10-06 真事故：模型在 JSON 字符串值里写了
+        未转义的英文双引号（`有的省是"第一段/第二段"…`）→ 解析失败 →
+        修复回合只拿到 `output_missing` 一句 issue，看不到自己写坏的那段文本，
+        于是**重复同类错误**，整轮升级成 `output_schema_invalid`，用户看到
+        "当前对话引擎暂时不可用"。把坏文本摆回去 + 写死引号规则，修复回合才有
+        可执行的修改目标。没拿到文本（旧 harness / 非 collect 路径）时，提示词
+        退化成原来的形状，行为不变。
+        """
         if not hasattr(self.codex, "start_turn_and_collect"):
             return None
+        instruction = (
+            "上一回合已经完成用户问题和已有工具调用，但最终结构化输出未通过契约校验。"
+            "不要重新解释用户意图、不要调用新工具、不要编造事实；仅依据本线程已有上下文和工具结果，"
+            "修正并返回符合输出 Schema 的最终结果。"
+            "硬性要求：只输出一段合法 JSON（不要 markdown 围栏、不要任何解释文字）；"
+            "字符串值内不得出现英文双引号（\"），需要引用时一律用「」或『』；"
+            "字符串内的引号、反斜杠、换行必须按 JSON 规则转义。"
+            "校验问题：" + issue
+        )
+        excerpt = _repair_output_excerpt(raw_output)
+        if excerpt is not None:
+            instruction += (
+                "\n\n上一回合失败输出的原始文本（最多截取前 1500 字符，用于定位；"
+                "截断处不完整属正常）：\n" + excerpt
+            )
         collected = await self.codex.start_turn_and_collect(
             thread_id,
-            [
-                {
-                    "type": "text",
-                    "text": (
-                        "上一回合已经完成用户问题和已有工具调用，但最终结构化输出未通过契约校验。"
-                        "不要重新解释用户意图、不要调用新工具、不要编造事实；仅依据本线程已有上下文和工具结果，"
-                        "修正并返回符合输出 Schema 的最终结果。校验问题："
-                        + issue
-                    ),
-                }
-            ],
+            [{"type": "text", "text": instruction}],
             TURN_OUTPUT_SCHEMA,
         )
         if collected.status != "completed" or not isinstance(collected.output, dict):
