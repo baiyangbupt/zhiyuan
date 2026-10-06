@@ -96,12 +96,22 @@ dialog_quality_gate 夹具缺失（数据/环境，非代码）。
 纠正侦察前提——帧映射早已有，空文案来自生产端 `_native_reply_frame`）；
 ③ 删死开关 `MCP_WRITE_TOOLS_ENABLED`（grep 零读者）。agent 全量 1910 passed。
 
-**最终 e2e（新 jar + 前端切换 + 批次二 web 侧）**：contract **12 passed** ✓
-（F15 场景在浏览器链路里见到完整新事件序列含真实 failed 终态）；
-write 项目 **3 passed + F09 红**——F09 的`after` 状态（version=0/candidate_generated）
-正是用例要证明的"确认被拒、版本未推进"，红点只在测试自身的 `before` 读数为空
-（`readState()` 拿到 `{}`）；已单独派线调查定性（产品/夹具/flake），结论回来前
-**不宣布写路径全绿**。前端切换后工作台 17+1 条调用全部走 facade（浏览器实测路径可见）。
+**最终 e2e（新 jar + 前端切换 + 批次二 web 侧）**：contract **12 passed** ✓；
+write **4 passed ×2** ✓（第二轮先清空 fixture 场景参数，证明不依赖残留守门值）。
+F09 一度红，定向调查定性为**真实产品竞态**并已修：
+
+- **空会话首次读的懒导入并发撞键**（`PlanningStateService.savePlanningState`）：
+  空会话首屏的多个并发首次读（面板 workspace-state/filter-options、测试 inner 读）
+  都做 legacy 懒导入，只有一个 INSERT 成功，其余 `DuplicateKeyException` 让**读**接口
+  回 `{"code":-1,"msg":"系统错误"}`——真实用户可复现（面板直接拿不到状态）。
+  修法：撞键时读回赢家行 `updateById` 覆盖（与并发 update 后写赢同语义），读不回才重抛。
+- 修掉该缺陷后还暴露过一层测试时序（面板对"有候选池无方案"会话会自举
+  `initial-plan/generate`，0.4–0.9s 内把版本 0→1，用例基线取在自举前就断到自举本身）；
+  e2e 侧新增 `settleWorkspaceBootstrap` 把基线定在自举落定后的稳定态，
+  **未动任何断言行**。绿轮读数：F08 `v1→v4`（只前进一次）、F09 `v1→v1`（被拒的确认
+  没推进）、F13 `v1→v4→settled v4`（事务未取消、重连读到"已生效"）。
+
+前端切换后工作台 17+1 条调用全部走 facade（浏览器实测路径可见）。
 
 ## 三、当日两起事故与根治
 
