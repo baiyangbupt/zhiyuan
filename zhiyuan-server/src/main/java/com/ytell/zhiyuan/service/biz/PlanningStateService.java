@@ -440,6 +440,80 @@ public class PlanningStateService {
         return null;
     }
 
+    /**
+     * 空会话（draft）**同会话补录成绩**后刷新规划状态：版本 +1、候选池相关全部置 stale、
+     * 并把候选池状态里冗余的成绩上下文换成新值。
+     *
+     * <p>三件事必须一起做，缺一不可：</p>
+     * <ul>
+     *   <li><b>版本 +1</b>：Python 网关按版本淘汰快照缓存（`GatewayService._store_snapshot`），
+     *       版本不动时"补录后重读到的快照"和缓存里那张分不出来，前端也拿不到"状态变了"的信号；</li>
+     *   <li><b>置 stale</b>：候选池的 userScore/batchScore/省份已经变了，
+     *       旧候选、旧推荐、旧方案与审查结论都不再作数。走
+     *       {@link ReviewInvalidationPolicy#markCandidatePoolDependentsStale}（与候选池刷新同一套失效面），
+     *       再补上 `candidatePool`/`recommendationOverlay` 两个开关——它们是"重算"的入口；</li>
+     *   <li><b>刷新候选池成绩上下文</b>：与 {@code buildCandidatePoolStateFromResponse}（1353-1358）
+     *       写进去的是同一组字段，避免工作台上"分数是旧的、候选是新标的"这种自相矛盾。</li>
+     * </ul>
+     *
+     * <p>画像用 {@code fillIfEmpty} 语义合并进 profileState（与 {@code syncProfileStateFromLegacy} 一致），
+     * 不覆盖既有非空值。`preferenceChanged` 为 true 时额外按"偏好变更"失效（专家推荐/排序/审查）。</p>
+     *
+     * @return 刷新后的版本与失效标记，供接口回给前端
+     */
+    public PlanningStateVersionDTO applyScoreDetailUpdate(Long chatSessionId,
+                                                          CreateSessionReq scoreDetail,
+                                                          UserProfileData userProfileData,
+                                                          boolean preferenceChanged) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        hydrateProfileState(state.getProfileState(), scoreDetail, userProfileData);
+        if (state.getCandidateViewState() == null) {
+            state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
+        }
+        refreshCandidatePoolScoreContext(state.getCandidatePoolState(), scoreDetail);
+
+        state.setSessionId(chatSessionId);
+        state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+        state.setPhase("profile_ready");
+        state.getStaleFlags().setCandidatePool(true);
+        state.getStaleFlags().setRecommendationOverlay(true);
+        ReviewInvalidationPolicy.markCandidatePoolDependentsStale(state);
+        if (preferenceChanged) {
+            ReviewInvalidationPolicy.markPreferenceIntentStale(state);
+        }
+        state.getStaleFlags().setReasonCode("score_detail_updated");
+        state.getStaleFlags().setMessage(preferenceChanged
+                ? "成绩与报考意向已补录，候选池、专家推荐与当前方案需要重新计算。"
+                : "成绩信息已补录，候选池、专家推荐与当前方案需要重新计算。");
+        savePlanningState(chatSessionId, state);
+
+        PlanningStateVersionDTO versionDTO = new PlanningStateVersionDTO();
+        versionDTO.setVersion(state.getVersion());
+        versionDTO.setStaleFlags(state.getStaleFlags());
+        return versionDTO;
+    }
+
+    /**
+     * 把候选池状态里的成绩上下文（`userScore` / `batchScore` / `sourceProvinceName`）换成新成绩。
+     * 字段与 `buildCandidatePoolStateFromResponse` 保持一致；候选条目本身不动，
+     * 是否重算由 `staleFlags.candidatePool` 决定。
+     */
+    private void refreshCandidatePoolScoreContext(CandidatePoolStateDTO candidatePoolState,
+                                                  CreateSessionReq scoreDetail) {
+        if (candidatePoolState == null || scoreDetail == null) {
+            return;
+        }
+        if (scoreDetail.getTotalScore() != null) {
+            candidatePoolState.setUserScore(scoreDetail.getTotalScore());
+        }
+        if (scoreDetail.getBatch() != null && scoreDetail.getBatch().getScore() != null) {
+            candidatePoolState.setBatchScore(Math.round(scoreDetail.getBatch().getScore()));
+        }
+        if (scoreDetail.getProvince() != null && !Strings.isNullOrEmpty(scoreDetail.getProvince().getName())) {
+            candidatePoolState.setSourceProvinceName(scoreDetail.getProvince().getName());
+        }
+    }
+
     public CandidateViewStateDTO getCandidateViewState(Long chatSessionId) {
         PlanningStateDTO state = getPlanningState(chatSessionId);
         if (state.getCandidateViewState() == null) {

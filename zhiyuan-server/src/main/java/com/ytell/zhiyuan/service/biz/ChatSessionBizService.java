@@ -22,6 +22,7 @@ import com.ytell.zhiyuan.manager.rank.VolunteerRankClient;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.RecommendSubMajorRequest;
 import com.ytell.zhiyuan.model.dto.RecommendSubMajorResponse;
+import com.ytell.zhiyuan.model.dto.UpdateScoreDetailRes;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.gaotu.RecommendNumResponse;
 import com.ytell.zhiyuan.model.dto.gaotu.req.ProgramPageReq;
@@ -29,6 +30,8 @@ import com.ytell.zhiyuan.model.dto.gaotu.req.RecommendNumReq;
 import com.ytell.zhiyuan.model.dto.inner.ChatSessionExtraDataReq;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO;
+import com.ytell.zhiyuan.model.dto.inner.VolunteerSourceDataSnapshot;
+import com.ytell.zhiyuan.model.dto.planning.PlanningStateVersionDTO;
 import com.ytell.zhiyuan.model.dto.planning.StudentPlanningSummaryDTO;
 import com.ytell.zhiyuan.model.dto.volunteer.VolunteerSchoolGroup;
 import com.ytell.zhiyuan.model.entity.biz.ChatSession;
@@ -108,6 +111,10 @@ public class ChatSessionBizService {
     private PlanningStateService planningStateService;
     @Autowired
     private VolunteerFileAsyncService volunteerFileAsyncService;
+    @Autowired
+    private VolunteerSourceDataSyncService volunteerSourceDataSyncService;
+    @Autowired
+    private ConversationAccessService conversationAccessService;
 
     /**
      * 分页获取用户会话列表
@@ -170,6 +177,245 @@ public class ChatSessionBizService {
         userScoreData.setDataValue(JSONObject.toJSONString(scoreDetail));
         chatSessionExtraDataSharedService.updateById(userScoreData);
         return true;
+    }
+
+    /**
+     * **空会话（draft）同会话补录成绩**：把"建会话时故意没做"的那几件事，
+     * 在同一个会话里补齐，不再引导用户去表单新建。
+     *
+     * <p>顺序是有讲究的（每一步的失败都会回滚整个事务）：</p>
+     * <ol>
+     *   <li><b>归属</b>：租户 + 用户 + 会话三者一致，不一致与"不存在"同回 403
+     *       （{@link ConversationAccessService#requireOwnedSession}）；</li>
+     *   <li><b>合并</b>：空会话的 userScoreDetail 行本来就不存在，补录只带增量字段；
+     *       以既有行为底做深度合并，原有 prepareType/意向等字段必须保留；</li>
+     *   <li><b>校验</b>：复用建会话的 {@code normalizeCreateSessionDefaults} +
+     *       {@code validateCreateSessionReq}（省份/批次/选科/各科成绩/总分）；
+     *       权益走同一条 {@code checkRights}；</li>
+     *   <li><b>写 userScoreDetail</b>：行不存在则 insert（空会话没有这一行），存在则 update；
+     *       同时补齐 recommend 链路依赖的 volunteerCount/volunteerModel（建会话第 2-3 步）；</li>
+     *   <li><b>画像</b>：仅当带意向/优势学科时，按"不覆盖既有非空值"合并写 userprofile/userInitProfile；</li>
+     *   <li><b>志愿数据文件</b>：{@code fetchLatestSourceData(persist=true)} —— **必须在成绩落库之后**，
+     *       它内部也读 userScoreDetail，缺行会 404；</li>
+     *   <li><b>规划状态</b>：版本 +1、候选池相关置 stale、候选池成绩上下文换新
+     *       （{@link PlanningStateService#applyScoreDetailUpdate}）。</li>
+     * </ol>
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public UpdateScoreDetailRes updateScoreDetail(Long tenantId, Long chatSessionId, CreateSessionReq req) {
+        long requestStart = System.currentTimeMillis();
+        if (req == null) {
+            throw new BusinessException(110, "补录成绩参数不能为空");
+        }
+        UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
+        // 1. 归属：不一致与"不存在"同回 403，不泄露会话是否存在。
+        conversationAccessService.requireOwnedSession(tenantId, chatSessionId, userBaseData.getUserId());
+
+        // 2. 以既有成绩为底合并增量（保留原有 prepareType/意愿等字段）。
+        CreateSessionReq merged = mergeScoreDetail(loadSessionScoreDetail(chatSessionId), req);
+        normalizeScoreUpdateDefaults(merged);
+
+        // 3. 与建会话完全同一套校验与权益判据。
+        normalizeCreateSessionDefaults(merged);
+        validateCreateSessionReq(merged);
+        CheckRightsResVo checkRightsResVo = userBizService.checkRights(
+                userBaseData.getUserId(), OperateCheckPoint.CreateSession, merged.getPrepareType());
+        if (!Boolean.TRUE.equals(checkRightsResVo.getCanOperate())) {
+            throw new BusinessException(110, checkRightsResVo.getReason());
+        }
+        specialDeal(merged);
+        fillSubjectListFromUserProfileIfNeeded(userBaseData.getUserId(), merged);
+
+        // 4. 补齐 recommend 流水线依赖的填报数量/模式（建会话第 2-3 步）。
+        long enrichStart = System.currentTimeMillis();
+        enrichVolunteerCountAndModel(merged);
+        log.info("updateScoreDetail step=enrichVolunteerCountModel tenantId={} chatSessionId={} costMs={}",
+                tenantId, chatSessionId, System.currentTimeMillis() - enrichStart);
+
+        // 5. 写 userScoreDetail（空会话没有这一行 → insert）。
+        upsertScoreInfo(chatSessionId, merged);
+
+        // 6. 携带意向/优势学科时同步画像（merge 不覆盖既有非空值）。
+        boolean preferenceChanged = hasProfileIntent(merged);
+        UserProfileData profileData = preferenceChanged ? syncUserProfileForScoreUpdate(chatSessionId, merged) : null;
+
+        // 7. 志愿全量数据：本机落一份 + 异步传 OSS（成绩已在上一步写好，缺行 404 不会发生）。
+        long sourceDataStart = System.currentTimeMillis();
+        VolunteerSourceDataSnapshot snapshot = volunteerSourceDataSyncService.fetchLatestSourceData(tenantId, chatSessionId, true);
+        log.info("updateScoreDetail step=fetchLatestSourceData tenantId={} chatSessionId={} costMs={}",
+                tenantId, chatSessionId, System.currentTimeMillis() - sourceDataStart);
+
+        // 8. 规划状态：bump 版本 + 置 stale + 刷新候选池成绩上下文。
+        PlanningStateVersionDTO versionDTO = planningStateService.applyScoreDetailUpdate(
+                chatSessionId, merged, profileData, preferenceChanged);
+
+        UpdateScoreDetailRes res = new UpdateScoreDetailRes();
+        res.setSuccess(true);
+        res.setChatSessionId(chatSessionId);
+        res.setPlanningVersion(versionDTO == null ? null : versionDTO.getVersion());
+        res.setStaleFlags(versionDTO == null ? null : versionDTO.getStaleFlags());
+        res.setRequiresWorkspaceReload(Boolean.TRUE);
+        res.setVolunteerSourceDataSynced(Boolean.TRUE);
+        res.setVolunteerSourceDataFetchedAt(snapshot == null ? null : snapshot.getFetchedAt());
+        log.info("updateScoreDetail step=finish tenantId={} chatSessionId={} preferenceChanged={} planningVersion={} totalCostMs={}",
+                tenantId, chatSessionId, preferenceChanged, res.getPlanningVersion(), System.currentTimeMillis() - requestStart);
+        return res;
+    }
+
+    /** 空会话的 userScoreDetail 行不存在；读取失败按"没有"处理，交给补录去写。 */
+    private CreateSessionReq loadSessionScoreDetail(Long chatSessionId) {
+        if (chatSessionId == null) {
+            return null;
+        }
+        try {
+            ChatSessionExtraData userScoreData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                    chatSessionId, ChatSessionExtraDataConstants.USER_SCORE_KEY);
+            if (userScoreData == null || Strings.isNullOrEmpty(userScoreData.getDataValue())) {
+                return null;
+            }
+            return JSONObject.parseObject(userScoreData.getDataValue(), CreateSessionReq.class);
+        } catch (Exception e) {
+            log.warn("loadSessionScoreDetail failed, chatSessionId={}", chatSessionId, e);
+            return null;
+        }
+    }
+
+    /**
+     * 补录请求只保证"增量正确"：以既有成绩 JSON 为底，把请求里**非空的**字段深度合并进去
+     * （嵌套对象逐字段合并，数组/标量整体替换）。这样 prepareType、意愿、学费区间等
+     * 没在补录表单里出现的字段不会被抹掉。
+     */
+    private CreateSessionReq mergeScoreDetail(CreateSessionReq existing, CreateSessionReq incoming) {
+        JSONObject target = existing == null ? new JSONObject() : (JSONObject) JSON.toJSON(existing);
+        JSONObject source = (JSONObject) JSON.toJSON(incoming);
+        deepMergeJson(target, source);
+        return JSONObject.parseObject(target.toJSONString(), CreateSessionReq.class);
+    }
+
+    private void deepMergeJson(JSONObject target, JSONObject source) {
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            Object sourceValue = entry.getValue();
+            // JSON.toJSON 会把 null 字段一并带出：null = 补录请求没带这个字段，不能覆盖既有值。
+            if (sourceValue == null) {
+                continue;
+            }
+            Object targetValue = target.get(entry.getKey());
+            if (sourceValue instanceof JSONObject && targetValue instanceof JSONObject) {
+                deepMergeJson((JSONObject) targetValue, (JSONObject) sourceValue);
+            } else {
+                target.put(entry.getKey(), sourceValue);
+            }
+        }
+    }
+
+    /** 补录表单不保证带这些推导字段：缺的按可推导/可兜底的值补上，避免下游拿到 "null" 年份。 */
+    private void normalizeScoreUpdateDefaults(CreateSessionReq req) {
+        if (req.getExamYear() == null) {
+            int currentYear = java.time.Year.now().getValue();
+            log.warn("updateScoreDetail: examYear missing, default to current year {}", currentYear);
+            req.setExamYear(currentYear);
+        }
+    }
+
+    /** 写 userScoreDetail：行不存在则 insert（空会话），存在则整行 update。 */
+    private void upsertScoreInfo(Long chatSessionId, CreateSessionReq scoreDetail) {
+        ChatSessionExtraData userScoreData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                chatSessionId, ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        if (userScoreData == null) {
+            saveScoreInfo(chatSessionId, scoreDetail);
+            return;
+        }
+        userScoreData.setDataType(DataType.JSON_OBJECT);
+        userScoreData.setDataValue(JSONObject.toJSONString(scoreDetail));
+        chatSessionExtraDataSharedService.updateById(userScoreData);
+    }
+
+    /** 建会话第 2-3 步：填报数量与填报模式（recommend 流水线依赖 volunteerCount/volunteerModel）。 */
+    private void enrichVolunteerCountAndModel(CreateSessionReq req) {
+        RecommendNumReq numReq = new RecommendNumReq();
+        numReq.setBatch(req.getBatch().getCode());
+        numReq.setAreaId(req.getProvince().getCode());
+        numReq.setSubjectType(req.getSubjectType().getCode());
+        RecommendNumResponse recommendNumResponse = gaotuService.getRecommendProgramNum(numReq);
+        CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
+        volunteerCount.setMajorCount(recommendNumResponse.getMajorNum());
+        volunteerCount.setSchoolCount(recommendNumResponse.getSchoolNum());
+        req.setVolunteerCount(volunteerCount);
+
+        String volunteerStrategy = volunteerStrategyManager.getVolunteerStrategyByProvinceCode(
+                req.getProvince().getCode(), req.getBatch().getLevel());
+        req.setVolunteerDetailModel(volunteerStrategy);
+        req.setVolunteerModel(ApplyTypeUtil.isMajorSchoolType(volunteerStrategy) ? VolunteerModel.major : VolunteerModel.majorGroup);
+    }
+
+    private boolean hasProfileIntent(CreateSessionReq req) {
+        return !CollectionUtil.isEmpty(req.getPreferredMajors())
+                || !CollectionUtil.isEmpty(req.getUnacceptableMajors())
+                || !CollectionUtil.isEmpty(req.getPreferredRegions())
+                || !CollectionUtil.isEmpty(req.getStrengthSubjectList());
+    }
+
+    /**
+     * 把补录自带的意向/优势学科合并进 userprofile 与 userInitProfile：
+     * 与 {@code PlanningStateService.syncProfileStateFromLegacy} 的 fillIfEmpty 语义一致——
+     * 既有非空值保留，空位才用新值填。
+     */
+    private UserProfileData syncUserProfileForScoreUpdate(Long chatSessionId, CreateSessionReq scoreDetail) {
+        UserProfileData built = buildUserInitProfileData(scoreDetail);
+        UserProfileData existing = volunteerDataProvider.getUserProfileData(chatSessionId);
+        UserProfileData mergedProfile = existing == null ? built : mergeProfileKeepExisting(existing, built);
+        upsertSessionExtraData(chatSessionId, ChatSessionExtraDataConstants.USER_INIT_PROFILE_KEY, mergedProfile);
+        upsertSessionExtraData(chatSessionId, ChatSessionExtraDataConstants.USER_PROFILE_KEY, mergedProfile);
+        return mergedProfile;
+    }
+
+    private UserProfileData mergeProfileKeepExisting(UserProfileData existing, UserProfileData incoming) {
+        JSONObject target = (JSONObject) JSON.toJSON(existing);
+        JSONObject source = (JSONObject) JSON.toJSON(incoming);
+        fillEmptyJsonFields(target, source);
+        return JSONObject.parseObject(target.toJSONString(), UserProfileData.class);
+    }
+
+    /** 只补空位：目标为空（null / 空数组）且来源非空时才写入。 */
+    private void fillEmptyJsonFields(JSONObject target, JSONObject source) {
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            Object sourceValue = entry.getValue();
+            if (sourceValue == null) {
+                continue;
+            }
+            Object targetValue = target.get(entry.getKey());
+            if (sourceValue instanceof JSONObject) {
+                if (targetValue instanceof JSONObject) {
+                    fillEmptyJsonFields((JSONObject) targetValue, (JSONObject) sourceValue);
+                } else if (targetValue == null) {
+                    target.put(entry.getKey(), sourceValue);
+                }
+                continue;
+            }
+            boolean targetEmpty = targetValue == null
+                    || (targetValue instanceof java.util.Collection && ((java.util.Collection<?>) targetValue).isEmpty());
+            boolean sourceEmpty = sourceValue instanceof java.util.Collection && ((java.util.Collection<?>) sourceValue).isEmpty();
+            if (targetEmpty && !sourceEmpty) {
+                target.put(entry.getKey(), sourceValue);
+            }
+        }
+    }
+
+    private void upsertSessionExtraData(Long chatSessionId, String dataKey, Object value) {
+        String dataValue = JSONObject.toJSONString(value);
+        ChatSessionExtraData existing = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(chatSessionId, dataKey);
+        if (existing == null) {
+            ChatSessionExtraData extraData = new ChatSessionExtraData();
+            extraData.setChatSessionId(chatSessionId);
+            extraData.setDataKey(dataKey);
+            extraData.setDataType(DataType.JSON_OBJECT);
+            extraData.setDataValue(dataValue);
+            chatSessionExtraDataSharedService.save(extraData);
+            return;
+        }
+        existing.setDataType(DataType.JSON_OBJECT);
+        existing.setDataValue(dataValue);
+        chatSessionExtraDataSharedService.updateById(existing);
     }
 
     /**
@@ -336,16 +582,7 @@ public class ChatSessionBizService {
         //特殊处理一些省份-比如新疆
         this.specialDeal(createSessionReq);
         //特殊处理，如果前端没有传递subjectList，后端补一下。
-        if (CollectionUtil.isEmpty(createSessionReq.getSubjectList())) {
-            log.warn("前端没有传递subjectList，后端补一下");
-            //查找用户基本信息里的选科补全一下
-            UserVO userVO = userBizService.getUserVoById(userBaseData.getUserId());
-            if (userVO != null && userVO.getIsCustomer()
-                    && userVO.getUserScoreOb() != null
-                    && userVO.getUserScoreOb().getSubjectList() != null) {
-                createSessionReq.setSubjectList(userVO.getUserScoreOb().getSubjectList());
-            }
-        }
+        fillSubjectListFromUserProfileIfNeeded(userBaseData.getUserId(), createSessionReq);
         // 1.创建保存会话
         long saveSessionStart = System.currentTimeMillis();
         ChatSession chatSession = saveSession(tenantId, userBaseData, createSessionReq);
@@ -595,6 +832,21 @@ public class ChatSessionBizService {
         }
     }
 
+
+    /** 前端没传 subjectList 时，用用户基本信息里的选科补全（建会话与空会话补录共用）。 */
+    private void fillSubjectListFromUserProfileIfNeeded(Long userId, CreateSessionReq createSessionReq) {
+        if (!CollectionUtil.isEmpty(createSessionReq.getSubjectList())) {
+            return;
+        }
+        log.warn("前端没有传递subjectList，后端补一下");
+        //查找用户基本信息里的选科补全一下
+        UserVO userVO = userBizService.getUserVoById(userId);
+        if (userVO != null && userVO.getIsCustomer()
+                && userVO.getUserScoreOb() != null
+                && userVO.getUserScoreOb().getSubjectList() != null) {
+            createSessionReq.setSubjectList(userVO.getUserScoreOb().getSubjectList());
+        }
+    }
 
     private void specialDeal(CreateSessionReq createSessionReq) {
         //新疆特殊处理
@@ -959,6 +1211,22 @@ public class ChatSessionBizService {
      */
     private UserProfileData saveUserInitProfile2ExtraData(Long chatSessionId,
                                                           CreateSessionReq createSessionReq) {
+        UserProfileData userProfileData = buildUserInitProfileData(createSessionReq);
+
+        //存储初始化画像
+        upsertSessionExtraData(chatSessionId, ChatSessionExtraDataConstants.USER_INIT_PROFILE_KEY, userProfileData);
+        log.info("用户画像数据保存成功，会话ID: {}, 推荐专业数量: {}", chatSessionId);
+
+        //存储到对话中画像里当初始化。
+        upsertSessionExtraData(chatSessionId, ChatSessionExtraDataConstants.USER_PROFILE_KEY, userProfileData);
+
+        planningStateService.initializeProfileState(chatSessionId, createSessionReq, userProfileData);
+
+        return userProfileData;
+    }
+
+    /** 由 CreateSessionReq 构造初始化画像（纯构造，不落库）；建会话与空会话补录共用。 */
+    private UserProfileData buildUserInitProfileData(CreateSessionReq createSessionReq) {
         //本科还是专科
         String batchLevel = createSessionReq.getBatch().getLevel();
 
@@ -1073,25 +1341,6 @@ public class ChatSessionBizService {
         cityInfo.setCity_code(Lists.newArrayList());
         cityInfo.setCity_emotion(Lists.newArrayList());
         userProfileData.setCity_info(cityInfo);
-
-        //存储初始化画像
-        ChatSessionExtraData extraDataInit = new ChatSessionExtraData();
-        extraDataInit.setChatSessionId(chatSessionId);
-        extraDataInit.setDataKey(ChatSessionExtraDataConstants.USER_INIT_PROFILE_KEY);
-        extraDataInit.setDataType(DataType.JSON_OBJECT);
-        extraDataInit.setDataValue(JSONObject.toJSONString(userProfileData));
-        chatSessionExtraDataSharedService.save(extraDataInit);
-        log.info("用户画像数据保存成功，会话ID: {}, 推荐专业数量: {}", chatSessionId);
-
-        //存储到对话中画像里当初始化。
-        ChatSessionExtraData extraData = new ChatSessionExtraData();
-        extraData.setChatSessionId(chatSessionId);
-        extraData.setDataKey(ChatSessionExtraDataConstants.USER_PROFILE_KEY);
-        extraData.setDataType(DataType.JSON_OBJECT);
-        extraData.setDataValue(JSONObject.toJSONString(userProfileData));
-        chatSessionExtraDataSharedService.save(extraData);
-
-        planningStateService.initializeProfileState(chatSessionId, createSessionReq, userProfileData);
 
         return userProfileData;
     }

@@ -6,6 +6,7 @@ import com.ytell.zhiyuan.common.base.BaseResponse;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.ProfileKVDto;
 import com.ytell.zhiyuan.model.dto.RecommendSubMajorResponse;
+import com.ytell.zhiyuan.model.dto.UpdateScoreDetailRes;
 import com.ytell.zhiyuan.model.dto.UserBasicProfileResponse;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerRecommendListResponse;
 import com.ytell.zhiyuan.model.req.ChatMessagePageReq;
@@ -69,6 +70,23 @@ public class ChatController {
                                                     @RequestBody UpdateTuitionRangeReq req) {
         log.info("updateTuitionRange: tenantId={}, chatSessionId={}, req={}", tenantId, chatSessionId, JSONObject.toJSONString(req));
         return BaseResponse.success(chatSessionBizService.updateTuitionRange(tenantId, chatSessionId, req.getMin(), req.getMax()));
+    }
+
+    /**
+     * 空会话（draft）**同会话补录成绩**：省份/批次/选科/各科成绩/总分为必填，
+     * 可另带位次/意向/优势学科。成功后会话即可走完整的候选池/推荐链路。
+     *
+     * <p>响应契约见 {@link UpdateScoreDetailRes}：`success` + 刷新后的 `planningVersion`
+     * + `requiresWorkspaceReload`（恒 true，前端应重拉 workspace-state）。</p>
+     */
+    @PostMapping("/session/update-score-detail")
+    @ApiOperation("空会话补录成绩")
+    public BaseResponse<UpdateScoreDetailRes> updateScoreDetail(@PathVariable("tenantId") Long tenantId,
+                                                                @RequestParam("chatSessionId") Long chatSessionId,
+                                                                @RequestBody CreateSessionReq req) {
+        log.info("updateScoreDetail: tenantId={}, chatSessionId={}, req={}",
+                tenantId, chatSessionId, JSONObject.toJSONString(req));
+        return BaseResponse.success(chatSessionBizService.updateScoreDetail(tenantId, chatSessionId, req));
     }
 
     @PostMapping("/session/page")
