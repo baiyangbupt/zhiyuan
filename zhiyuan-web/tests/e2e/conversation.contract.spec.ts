@@ -905,3 +905,45 @@ test('F02 歧义：原生卡给出选项与自由输入，回答后仍在同一�
     timeout: 20_000,
   });
 });
+
+// **流式增量（assistant.delta）** ✓（任务书："delta 出现 → 终态替换为全文 → 不双画" ✓）。
+//
+// 为什么可断 ✓：替身把终态正文切成**多条**增量 ✓（`browser_app_server.py` 的
+// `_DELTA_FRAGMENTS` ✓，有单测钉住"拼接=终态正文" ✓），闸门扣着时它们**已经全到了** ✓；
+// 放行后终态才到 ✓——所以"先有流式文本、后有终态、终态替换流式文本"三件事都测得到 ✓。
+// 文本是**模型原样增量**（尚未闭合的 TurnOutput JSON 片段 ✓）——断言只认其中一段
+// 稳定子串 ✓，不假设 JSON 会被前端解析 ✗（它只是可丢弃的提示 ✓）。
+//
+// 放在文件**末尾** ✓：会话按用例标题哈希分配（`fixtures.ts` 的 `sessionIdFor` ✓），
+// 新用例排在末尾时，既有用例的分配序号不变 ✓（不搅动上一轮绿过的会话 ✓）。
+test('流式增量：先显示 delta 流文本，终态到达后整段替换且不双画', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime; // 自动 fixture ✓：跑之前已校验 runtimeKind=fake ✓
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  const input = page.getByTestId('chat-input');
+  await expect(input).toBeVisible({ timeout: 10_000 });
+  await input.fill('查询测试学校近三年录取位次');
+  await page.getByTestId('chat-send').click();
+
+  const turn = page.locator('[data-turn-id]').last();
+  await expect(turn).toBeVisible({ timeout: 20_000 });
+
+  // ① 增量先到：放行**之前**流式文本就可见（替身发完增量就等闸门，不再发终态）。
+  await expect(turn.getByTestId('assistant-stream')).toContainText('闸门放行后的答案', {
+    timeout: 20_000,
+  });
+  // ② 终态**还没来**：答案元素不存在（这条之所以可信，是因为替身没放行就真的不发）。
+  await expect(turn.getByTestId('assistant-final')).toHaveCount(0);
+
+  // ③ 放行后终态整段替换：解析后的答案出现，流式文本退场（同一回合不双画）。
+  await runtimeGate.releasePendingGate();
+  await expect(turn.getByTestId('assistant-final')).toHaveText('闸门放行后的答案', {
+    timeout: 20_000,
+  });
+  await expect(turn.getByTestId('assistant-stream')).toHaveCount(0);
+});

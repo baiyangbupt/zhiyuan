@@ -9,12 +9,17 @@
 
 所以这些用例盯的是"**有人发**"与"**发的是 V1 形状**"两件事 ✓，而不是 UI 长相 ✓。
 """
+import json
 from types import SimpleNamespace
 
 import pytest
 from fastapi import WebSocketDisconnect
 
-from app.gateway.service import _progress_emitter
+from app.gateway.service import (
+    DELTA_FLUSH_CHARS,
+    DELTA_MAX_CHUNK_CHARS,
+    _progress_emitter,
+)
 from app.gateway.session_runtime import ACCEPTED
 from app.server import _handle_control_message, _native_gateway_loop
 
@@ -154,6 +159,148 @@ def _clarification_raw() -> dict:
         "turnId": "ui-turn-1",
         "clarificationAnswer": {"requestId": "ui-question-1", "inputKind": "choice"},
     }
+
+
+def _delta_notification(chunk: str, item_id: str | None = None) -> dict:
+    """原生增量通知（形状取真实录制：`item/agentMessage/delta` + `params.delta`）。"""
+    params: dict = {"threadId": "t", "turnId": "c", "delta": chunk}
+    if item_id is not None:
+        params["itemId"] = item_id
+    return {"method": "item/agentMessage/delta", "params": params}
+
+
+class _Clock:
+    """可注入时钟：节流是"按时间/字数"的行为，用真 sleep 去测就是碰运气。"""
+
+    def __init__(self, value: float = 0.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+
+@pytest.mark.asyncio
+async def test_deltas_are_merged_and_throttled_by_time_and_size() -> None:
+    """逐字增量必须**合并/节流**后才入流：≥64 字符或 ≥80ms 一条，**首条立即发**
+    （首字延迟不被节流吃掉）。判据用注入时钟断——真 sleep 是碰运气。
+    """
+    events: list[dict] = []
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+
+    clock = _Clock(0.0)
+    callback = _progress_emitter(emit, "ui-turn-1", now=clock)
+
+    await callback(_delta_notification("a" * 10))  # 首条：立即发
+    await callback(_delta_notification("b" * 10))  # 缓冲
+    await callback(_delta_notification("c" * 10))  # 缓冲（距上次 <80ms、累计 <64）
+    clock.value = 0.04
+    await callback(_delta_notification("d" * 10))  # 仍不够阈值
+    clock.value = 0.09
+    await callback({"method": "item/reasoning/textDelta", "params": {"delta": "…"}})  # 打点：够 80ms → 发
+
+    deltas = [event for event in events if event["type"] == "assistant.delta"]
+    assert len(deltas) == 2, f"5 条逐字增量应合并成 2 条事件（实际 {len(deltas)}）"
+    assert "".join(event["payload"]["chunk"] for event in deltas) == "a" * 10 + "b" * 10 + "c" * 10 + "d" * 10
+    assert deltas[0]["payload"]["chunk"] == "a" * 10, "首条不等待阈值"
+    assert deltas[1]["payload"]["chunk"] == "b" * 10 + "c" * 10 + "d" * 10, "够 80ms 后合并发出"
+    assert all(event["type"] != "assistant.completed" for event in events), "终态不在这里发"
+
+
+@pytest.mark.asyncio
+async def test_deltas_flush_at_the_char_threshold_without_waiting_for_time() -> None:
+    events: list[dict] = []
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+
+    clock = _Clock(0.0)
+    callback = _progress_emitter(emit, "ui-turn-1", now=clock)
+
+    await callback(_delta_notification("a" * 10))  # 首条：立即发
+    await callback(_delta_notification("#" * (DELTA_FLUSH_CHARS - 1)))  # 差 1 字符
+    assert len([event for event in events if event["type"] == "assistant.delta"]) == 1
+
+    await callback(_delta_notification("#"))  # 到阈值：不等时间，立即发
+    deltas = [event for event in events if event["type"] == "assistant.delta"]
+    assert len(deltas) == 2
+    assert deltas[1]["payload"]["chunk"] == "#" * DELTA_FLUSH_CHARS
+
+
+@pytest.mark.asyncio
+async def test_a_single_oversized_chunk_is_clamped_far_below_the_event_cap() -> None:
+    """事件存储单条上限 16KB：任何一条 `assistant.delta` 都不许逼近它——
+    单条原生增量先截断到 2048 字符，合并后的上界 ≈63+2048 字符。
+    """
+    events: list[dict] = []
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+
+    callback = _progress_emitter(emit, "ui-turn-1", now=_Clock(0.0))
+
+    await callback(_delta_notification("x" * 100_000))
+
+    deltas = [event for event in events if event["type"] == "assistant.delta"]
+    assert len(deltas) == 1
+    assert len(deltas[0]["payload"]["chunk"]) == DELTA_MAX_CHUNK_CHARS
+    assert len(json.dumps(deltas[0], ensure_ascii=False).encode("utf-8")) < 16 * 1024
+
+
+@pytest.mark.asyncio
+async def test_pending_text_is_flushed_before_the_next_event_and_at_the_terminal() -> None:
+    """顺序与收尾：别的 UI 事件发出前先把已积累的答案文本按序放出来（工具进度不会
+    插到先到的答案前面）；原生终态到达时把尾部发完——此后不会再有增量。
+    """
+    events: list[dict] = []
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+
+    clock = _Clock(0.0)
+    callback = _progress_emitter(emit, "ui-turn-1", now=clock)
+
+    await callback(_delta_notification("第一段"))  # 首条：立即发
+    await callback(_delta_notification("第二段"))  # 缓冲（<64 字符、<80ms）
+    await callback(_tool_notification("i1", "admission.get_history"))
+    await callback(_delta_notification("第三段"))  # 缓冲
+    await callback({"method": "turn/completed", "params": {"threadId": "t", "turn": {"id": "c"}}})
+
+    assert [event["type"] for event in events] == [
+        "assistant.delta",
+        "assistant.delta",  # 工具进度之前先放出已积累文本
+        "turn.phase",
+        "tool.progress",
+        "assistant.delta",  # 终态到达：尾部提示放完
+    ]
+    assert [event["payload"]["chunk"] for event in events if event["type"] == "assistant.delta"] == [
+        "第一段",
+        "第二段",
+        "第三段",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_new_item_id_never_mixes_two_items_into_one_event() -> None:
+    """前端按 itemId 归并增量：一条事件只描述一个 item——换 item 先 flush。"""
+    events: list[dict] = []
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+
+    clock = _Clock(0.0)
+    callback = _progress_emitter(emit, "ui-turn-1", now=clock)
+
+    await callback(_delta_notification("甲", item_id="msg_1"))  # 首条：立即发
+    await callback(_delta_notification("乙", item_id="msg_1"))  # 缓冲
+    await callback(_delta_notification("丙", item_id="msg_2"))  # 换 item：先发甲组
+    clock.value = 0.5
+    await callback({"method": "thread/tokenUsage/updated", "params": {}})  # 打点发出乙组的尾
+
+    deltas = [event for event in events if event["type"] == "assistant.delta"]
+    assert [event["payload"]["itemId"] for event in deltas] == ["msg_1", "msg_1", "msg_2"]
+    assert [event["payload"]["chunk"] for event in deltas] == ["甲", "乙", "丙"]
 
 
 @pytest.mark.asyncio

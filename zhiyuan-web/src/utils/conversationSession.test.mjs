@@ -133,6 +133,56 @@ test('工具进度按 itemId 归并而不是堆成一串', () => {
   assert.equal(completed.turns.t.steps.i1.status, 'completed');
 });
 
+test('增量文本按序累加进回合，终态到达时整段替换', () => {
+  const first = reduceConversation(
+    baseline(),
+    event({ sequence: 1, type: 'assistant.delta', payload: { chunk: '{"message": "你' } }),
+  );
+  const second = reduceConversation(
+    first,
+    event({ sequence: 2, type: 'assistant.delta', payload: { chunk: '好"}' } }),
+  );
+  assert.equal(second.turns.t.answerStream, '{"message": "你好"}');
+
+  const terminal = reduceConversation(
+    second,
+    event({ sequence: 3, type: 'assistant.completed', payload: { message: '你好' } }),
+  );
+  // 流式文本只是"可丢弃的提示"：终态是权威——整段替换，不叠加成两份。
+  assert.equal(terminal.turns.t.answerStream, '');
+  assert.equal(terminal.turns.t.answer.message, '你好');
+});
+
+test('已终态的回合不再接受迟到的增量，且 run 结束也作废流式文本', () => {
+  const streaming = reduceConversation(
+    baseline(),
+    event({ sequence: 1, type: 'assistant.delta', payload: { chunk: '半截' } }),
+  );
+  const done = reduceConversation(
+    streaming,
+    event({ sequence: 2, type: 'turn.completed', payload: { executionStatus: 'partial' } }),
+  );
+  // 中止/失败的一轮不该把半截流文本留在回合里（终态一到就清）。
+  assert.equal(done.turns.t.answerStream, '');
+
+  const stray = reduceConversation(
+    done,
+    event({ sequence: 3, type: 'assistant.delta', payload: { chunk: '晚到的增量' } }),
+  );
+  assert.equal(stray.turns.t.answerStream, '', '终态之后迟到的增量不许把答案刷回流式样子');
+  assert.equal(stray.lastSequence, 3, '它本身是合法序号的合法事件，序号照常推进');
+});
+
+test('空 chunk 不建回合（免得页面上多一条什么都没画的气泡）', () => {
+  const state = reduceConversation(
+    baseline(),
+    event({ sequence: 1, type: 'assistant.delta', payload: { chunk: '' } }),
+  );
+
+  assert.equal(state.turns.t, undefined);
+  assert.equal(state.lastSequence, 1);
+});
+
 test('运行结束与诉求完成是两个字段，互不推导', () => {
   const state = reduceConversation(
     baseline(),

@@ -22,9 +22,16 @@ def adapt_notification(notification: Mapping[str, Any], ui_turn_id: str) -> list
     """把一条原生通知翻译成**未编号**的展示事件。
 
     这是一个白名单过滤器，不是转换器：只有明确列举的形状会出去，其余一律丢弃。
-    被丢弃的里面有两类值得点名——
-    `item/agentMessage/delta` 是**尚未闭合的 TurnOutput JSON**，原样流给用户
-    就是泄漏契约；reasoning 是模型的内部推理。首期都不发送。
+    被丢弃的里面有一类值得点名——reasoning（`item/reasoning/textDelta`）是模型的
+    内部推理，永不外发。
+
+    `item/agentMessage/delta` 自 2026-10-06 起**开始流式发送** ✓（此前被整类丢弃 ✗，
+    理由是"它是尚未闭合的 TurnOutput JSON" ✓）。裁决（任务书）是：
+    · 它是**可丢弃的提示事件** ✓——丢一条不影响正确性 ✓，终态才是权威 ✓；
+    · 因此原样流出的 JSON 片段（如 `{"message": "…`）只用于降低首字延迟感知 ✓，
+      前端在 `assistant.completed` 到达时**整段替换**为解析后的答案 ✓；
+    · 合流/节流由 `_progress_emitter` 负责 ✓（≥64 字符或 ≥80ms 一次 ✓，见 `service.py` ✓）。
+    载荷形状 `{chunk, itemId?}` ✓（最小形状 ✓；`itemId` 缺省不填 ✓——替身就不带它 ✓）。
     （`ui_turn_id` 不入 payload：编号与 turn 归属是调用方 envelope 的职责，
     不在这里从原生 turnId 覆盖。）
     """
@@ -34,6 +41,16 @@ def adapt_notification(notification: Mapping[str, Any], ui_turn_id: str) -> list
     params = notification.get("params")
     if not isinstance(params, Mapping):
         params = {}
+
+    if method in {"item/agentMessage/delta", "agentMessage/delta"}:
+        chunk = _text(params, "delta", "text", "content")
+        if not chunk:
+            return []
+        payload: dict[str, Any] = {"chunk": chunk}
+        item_id = _text(params, "itemId", "item_id")
+        if item_id:
+            payload["itemId"] = item_id
+        return [{"type": "assistant.delta", "payload": payload}]
 
     if method in {"item/started", "item/completed"}:
         item = params.get("item")
@@ -71,7 +88,18 @@ def adapt_codex_item(item: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     item_type = str(item.get("type") or "")
     if item_type in {"item/agentMessage/delta", "agentMessage/delta", "assistant.delta"}:
-        return {"type": "assistant.delta", "content": _text(item, "delta", "text", "content")}
+        # 形状与 live 那条路**同一份** ✓（`adapt_notification` 的 delta 分支 ✓）：
+        # `{chunk, itemId?}` ✓。此前这里是老形状 `content` ✗（V1 白名单模型没有这个
+        # 字段 ✓，到前端会被整条丢掉 ✓）——统一成 payload 形状后，两条路的产物一致 ✓，
+        # 前端只需要认一种 ✓。
+        chunk = _text(item, "delta", "text", "content")
+        if not chunk:
+            return None
+        payload: dict[str, Any] = {"chunk": chunk}
+        item_id = _text(item, "itemId", "item_id")
+        if item_id:
+            payload["itemId"] = item_id
+        return {"type": "assistant.delta", "payload": payload}
     if item_type in {"turn/completed", "item/agentMessage/completed", "assistant.completed"}:
         # **形状按 V1 白名单来** ✓✓（那是契约本身 ✓）：前端 `assistant.completed` 的载荷键是
         # `message/responseType/executionStatus/limitations` ✓（`conversationEvents.mjs:35` ✓）。

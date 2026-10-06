@@ -921,10 +921,41 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
         return;
       }
 
-      // 其他消息才需要重新拉取消息列表和更新加载状态
+      // 老信封兜底帧（V1 那条路已经接走了大多数）。
+      //
+      // **收敛**（2026-10-06）：原来这里**每条**帧都"追加 + 整页重拉 + 结束转圈"✗——
+      // 而正确的判据与 V1 那条路完全一样（`:886-904`）：只有**终态**才需要对账。
+      // 所以：终态帧（`reply`/`text`/`error`/`recoverable.error`，或带 `end: true`）
+      // 才重拉一次并收尾 loading；其余（进度类、未知类型）只折叠内容。
+      //
+      // 另加一道去重：native 路由把终态**两条都发**（V1 事件给新 UI、老信封帧给老 UI）——
+      // V1 终态已经把同一段答案画进回合块时，这条老帧再走 `appendAgentWsMessage`
+      // 会多出一条瞬态消息（视觉上双画），随后的重拉只是把这条瞬态删掉。
+      // 既然内容已经渲染过，两条都省掉（`turn.completed` 那条路已经对齐过列表）。
+      const legacyFrame = (
+        typeof data === 'object' && data !== null ? data : {}
+      ) as { type?: unknown; content?: unknown; end?: unknown };
+      const legacyType = typeof legacyFrame.type === 'string' ? legacyFrame.type : '';
+      const legacyContent = typeof legacyFrame.content === 'string' ? legacyFrame.content : '';
+      const isLegacyTerminal = legacyFrame.end === true
+        || ['reply', 'text', 'error', 'recoverable.error'].includes(legacyType);
+      const renderedByV1Terminal = Boolean(
+        legacyContent
+        && Object.values(conversationStateRef.current.turns || {}).some(
+          (turn: any) => turn?.terminal
+            && ((turn.answer?.message && turn.answer.message === legacyContent)
+              || (turn.error?.message && turn.error.message === legacyContent)),
+        ),
+      );
+      if (isLegacyTerminal && renderedByV1Terminal) {
+        resetAnswerLoading();
+        return;
+      }
       appendAgentWsMessage(data);
-      fetchLatestMessageList();
-      resetAnswerLoading();
+      if (isLegacyTerminal) {
+        fetchLatestMessageList();
+        resetAnswerLoading();
+      }
     },
     onClose(event) {
       // 连接断开时重置回答加载状态
@@ -2023,10 +2054,13 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
             // 整块不画 ✓✗，答案就只剩 REST 历史那一份 ✓：事件流那一份**永远不出现** ✓。
             // 补进三个渲染条件即可 ✓；**一个回合仍然只画一份** ✓（三者各自渲染一次 ✓，
             // 不去重、不改历史那条路 ✓）。
+            // 流式文本也算"有内容" ✓：没有它，只有增量的回合（模型还在流、工具没动）
+            // 会被这条 gate 挡掉 ✓——首字延迟的改善就正好被挡在这一步 ✗✓。
             if (
               steps.length === 0 &&
               pending.length === 0 &&
               !turn.answer &&
+              !turn.answerStream &&
               !turn.proposal &&
               !turn.error
             ) return null;
@@ -2069,6 +2103,17 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                   而这个回合块只画了进度/停止/卡片 ✗ —— **答案没人渲染** ✓，所以界面上看不到 ✓。
                   数据在、形状对、就是差这一处渲染 ✓。
                 */}
+                {/*
+                  **流式增量**：与答案**同一个呈现位**（终态一到就整段替换）——
+                  reducer 里 `assistant.completed` / `turn.completed` 会把
+                  `answerStream` 清空，这里只在**未终态**时渲染，所以同一回合
+                  不会同时画出"流式文本"和"终态答案"两份。
+                  文本是模型原样增量（真实运行时是尚未闭合的 TurnOutput JSON 片段）：
+                  它只是可丢弃的提示，不解析、不猜测；解析后的答案由终态给出。
+                */}
+                {!turn.terminal && turn.answerStream ? (
+                  <div data-testid="assistant-stream">{turn.answerStream}</div>
+                ) : null}
                 {turn.terminal && turn.answer && turn.answer.message ? (
                   <div data-testid="assistant-final">{turn.answer.message}</div>
                 ) : null}

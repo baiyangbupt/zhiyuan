@@ -8,7 +8,8 @@ delta 用 `item/agentMessage/delta` ✓），但**它是独立实现** ✓——
 
 它只做流式用例需要的那点事 ✓：
 
-1. `turn/start` → 回 result ✓ → 发一条 delta ✓ → 发一条 MCP 工具进度 ✓ → **就停住不发终态** ✗✓；
+1. `turn/start` → 回 result ✓ → 发**一组**（4 条）delta ✓（"分多条"场景，见 `_DELTA_FRAGMENTS` ✓）
+   → 发一条 MCP 工具进度 ✓ → **就停住不发终态** ✗✓；
 2. 之后**轮询控制服务** `GET /gates/{turnId}` ✓，`released` 为真才发 `agentMessage` + `turn/completed` ✓；
 3. `turn/interrupt` → 发**真中断**的终态 ✓（`status: interrupted` ✓，绝不发假的 completed ✗）；
 4. 回合号优先用客户端给的 ✓（任务书："客户端测试注入固定下一次 turnId（仅测试构建）" ✓）——
@@ -176,6 +177,27 @@ def _take_answer(request_id: int, timeout: float = 30.0) -> Any:
                 return _answers.pop(request_id)
         time.sleep(0.05)
     return None
+
+
+# **"分多条 delta"场景**（2026-10-06 起）✓✓：真实 codex 的增量是**逐字**切的 ✓
+#（实测：239 条共 378 字符 ✓），拼接后正好等于终态正文（TurnOutput JSON ✓）。
+# 替身按同一口径把**默认终态正文**切成 4 段发 ✓——于是 e2e 能断言：
+# ① 闸门放行**前**流式文本已可见 ✓；② 放行后终态**整段替换**、流式文本退场 ✓（不双画 ✓）。
+# 网关侧会按 ≥64 字符或 ≥80ms **合并/节流** ✓（`service.py` 的 `_DeltaStreamer` ✓）：
+# 首条立即发 ✓，其余在下一个通知（紧随其后的工具进度 / 终态）到达时按序放出 ✓。
+_DELTA_FRAGMENTS = (
+    '{"responseType": "text", ',
+    '"message": "闸门放行后',
+    '的答案", ',
+    '"executionStatus": "completed"}',
+)
+
+
+def _emit_deltas(thread_id: str, turn_id: str) -> None:
+    for fragment in _DELTA_FRAGMENTS:
+        send({"jsonrpc": "2.0", "method": "item/agentMessage/delta",
+              "params": {"threadId": thread_id, "turnId": turn_id,
+                         "itemId": f"msg-{turn_id}", "delta": fragment}})
 
 
 def _emit_progress(thread_id: str, turn_id: str) -> None:
@@ -360,8 +382,9 @@ def handle(message: dict) -> None:
                clientTurnId=params.get("turnId") or params.get("clientTurnId"))
         send({"jsonrpc": "2.0", "id": request_id,
               "result": {"turn": {"id": turn_id, "status": "inProgress"}, "received": params}})
-        send({"jsonrpc": "2.0", "method": "item/agentMessage/delta",
-              "params": {"threadId": thread_id, "turnId": turn_id, "delta": "已收到"}})
+        # **分多条**增量（拼接后 = 默认终态正文 ✓）——紧跟其后的工具进度会让网关把
+        # 缓冲里的尾部按序放出来 ✓（见 `_DELTA_FRAGMENTS` 的注释 ✓）。
+        _emit_deltas(thread_id, turn_id)
         _emit_progress(thread_id, turn_id)
         # **等待必须在后台** ✓：主循环还要继续读 stdin ✓——否则 `turn/interrupt` 永远到不了 ✗
         #（这是测试当场抓出来的真缺陷 ✓，不是测试挑剔 ✓）。

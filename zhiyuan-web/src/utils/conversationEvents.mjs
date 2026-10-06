@@ -10,6 +10,9 @@ export const CONVERSATION_V1_TYPES = new Set([
   'clarification.resolved',
   'proposal.preview',
   'conversationAction.result',
+  // 助手增量文本：**可丢弃的提示**（首字延迟感知）。丢一条不影响正确性——
+  // 权威文本始终是终态 `assistant.completed`（到达时整段替换，重连不补播）。
+  'assistant.delta',
   'assistant.completed',
   'turn.completed',
   'recoverable.error',
@@ -35,6 +38,7 @@ const V1_PAYLOAD_WHITELIST = {
   'clarification.resolved': ['requestId', 'status'],
   'proposal.preview': ['proposalRef', 'diff', 'sourceVersion', 'expiresAt'],
   'conversationAction.result': ['proposalRef', 'actionStatus', 'newStateVersion', 'workspaceVersion'],
+  'assistant.delta': ['chunk', 'itemId'],
   'assistant.completed': ['message', 'responseType', 'executionStatus', 'limitations'],
   'turn.completed': ['executionStatus', 'toolStatus', 'runtimeStatus'],
   'recoverable.error': ['code', 'message'],

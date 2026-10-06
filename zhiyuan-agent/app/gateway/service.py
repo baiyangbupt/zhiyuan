@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
@@ -429,13 +430,108 @@ def _collect_records(payload: Any, *record_keys: str) -> list[dict[str, Any]]:
     return records
 
 
+# **增量文本的合流/节流参数**（任务书口径：≥80ms 或 ≥64 字符 flush 一次）。
+# 选值理由：
+# · 64 字符：真实 codex 的 delta 是**逐字**切的（实测 239 条共 378 字符，均长 ≈1.6）——
+#   不合并的话，一次长回答会往事件存储灌上千条 1–2 字符的事件（每条都要走一遍
+#   Redis Lua 原子追加 + WS 帧 + 前端 reducer）。64 字符把"可读的一段"当最小单位；
+#   首条仍然**立即**发出（见 `push`），首字延迟不受节流影响。
+# · 80ms：≈12.5 条/秒的上限，打字机观感不变，却把逐字事件摊平成 ~12 倍少的条数。
+# · 2048 字符单条截断：事件存储单条上限 16KB（`event_store.max_event_bytes`，含 64B 信封余量）。
+#   合并后的缓冲上界 = 63（未达阈值）+ 2048（被截断后的单条最大入账）≈ 2111 字符；
+#   按中文 UTF-8 3 字节/字算 ≈6.3KB，离 16KB 仍有一个数量级的余量。
+#   （delta 是**可丢弃的提示**：真出现超长原生增量被截断，丢的也只是提示，终态兜底。）
+DELTA_FLUSH_SECONDS = 0.08
+DELTA_FLUSH_CHARS = 64
+DELTA_MAX_CHUNK_CHARS = 2048
+# 原生终态方法名（`app/harness/codex.py` 的 `_TERMINAL_TYPE_MAP` 同一组）。
+_TURN_TERMINAL_METHODS = frozenset({"turn/completed", "turn/failed", "turn/interrupted"})
+
+
+class _DeltaStreamer:
+    """`assistant.delta` 的合并/节流器（时钟**可注入**，单测据此确定性断言）。
+
+    规则（全部在**通知到达**时判定，不引入后台定时器——回调跑在模型 reader 的关键
+    路径上，定时器会把"事件顺序"变成两条时间线）：
+
+    · `push`：累积增量；够 64 字符、或距上次 flush 够 80ms、或**首条**（`_last_flush_at`
+      为空）就发一条。首条立即发，首字延迟不被节流吃掉。
+    · `maybe_flush`：旁路通知（推理增量、token 用量…）打点用——够阈值才发。
+    · `flush_now`：无条件发（换 `itemId` 前、发别的 UI 事件前、终态通知到达时）——
+      保证**后到的工具进度/终态不会插到先到的答案文本前面**。
+    · 一条事件只描述一个 `itemId`（前端按 itemId 归并）：换 item 先 flush。
+
+    终态**不在这里发**：`assistant.completed` 由回合 worker 发一次，并且是**权威**——
+    这里发出去的每条增量都只是可丢弃的提示（重连不补播，终态整段替换）。
+    """
+
+    def __init__(
+        self,
+        emit: Callable[[dict[str, Any]], Awaitable[None]],
+        *,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._emit = emit
+        self._now = now
+        self._pending: list[str] = []
+        self._chars = 0
+        self._item_id = ""
+        self._last_flush_at: float | None = None
+
+    def _should_flush(self) -> bool:
+        if not self._pending:
+            return False
+        if self._last_flush_at is None or self._chars >= DELTA_FLUSH_CHARS:
+            return True
+        return (self._now() - self._last_flush_at) >= DELTA_FLUSH_SECONDS
+
+    async def push(self, payload: Mapping[str, Any]) -> None:
+        chunk = str(payload.get("chunk") or "")
+        if not chunk:
+            return
+        if len(chunk) > DELTA_MAX_CHUNK_CHARS:
+            chunk = chunk[:DELTA_MAX_CHUNK_CHARS]
+        item_id = str(payload.get("itemId") or "")
+        if item_id and self._pending and item_id != self._item_id:
+            await self.flush_now()
+        if item_id:
+            self._item_id = item_id
+        self._pending.append(chunk)
+        self._chars += len(chunk)
+        if self._should_flush():
+            await self.flush_now()
+
+    async def maybe_flush(self) -> None:
+        if self._should_flush():
+            await self.flush_now()
+
+    async def flush_now(self) -> None:
+        if not self._pending:
+            return
+        chunk = "".join(self._pending)
+        self._pending.clear()
+        self._chars = 0
+        self._last_flush_at = self._now()
+        payload: dict[str, Any] = {"chunk": chunk}
+        if self._item_id:
+            payload["itemId"] = self._item_id
+        await self._emit({"type": "assistant.delta", "payload": payload})
+
+
 def _progress_emitter(
-    emit: Callable[[dict[str, Any]], Awaitable[None]] | None, ui_turn_id: str
+    emit: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ui_turn_id: str,
+    *,
+    now: Callable[[], float] = time.monotonic,
 ) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
     """把原生通知适配成展示事件后交给 `emit`。
 
     这个回调跑在**模型 reader 的关键路径**上：它不 await 浏览器。调用方拿到事件后
     应当写进队列/事件存储就返回，慢消费者由发送侧自己处理（超限断连并让它 resume）。
+
+    `assistant.delta` 在这里**合流/节流**（`_DeltaStreamer`）：逐字增量先攒进缓冲，
+    够 64 字符或 80ms 才入一条事件；任何别的 UI 事件（工具进度等）发出前先把缓冲
+    按序放出来。它只是"可丢弃的提示"——终态 `assistant.completed` 才是权威文本。
     """
     if emit is None:
         return None
@@ -445,10 +541,23 @@ def _progress_emitter(
     # 第一个工具自己的标签 ✓——`TOOL_LABELS` 是"只解释正在发生的操作" ✓）。
     # 只发一次：重查轮复用同一个 emitter ✓（`collect_kwargs` ✓），阶段不会被重复播报 ✓。
     phase_sent = False
+    streamer = _DeltaStreamer(emit, now=now)
 
     async def callback(notification: dict[str, Any]) -> None:
         nonlocal phase_sent
+        method = str(notification.get("method") or "") if isinstance(notification, Mapping) else ""
         events = adapt_notification(notification, ui_turn_id)
+        if events and events[0].get("type") == "assistant.delta":
+            await streamer.push(events[0].get("payload") or {})
+            return
+        if events or method in _TURN_TERMINAL_METHODS:
+            # 要发别的 UI 事件 / 已到原生终态：先把已积累的答案文本按序放出来
+            #（终态之后再不会有增量，尾部提示别烂在缓冲里；它仍会被权威终态整段替换）。
+            await streamer.flush_now()
+        else:
+            # 旁路通知（推理增量、用量更新…）：只做阈值打点——推理 token 很密，
+            # 拿它当"无条件 flush"的话节流就形同虚设。
+            await streamer.maybe_flush()
         if not phase_sent:
             first_tool = next(
                 (event for event in events if event.get("type") == "tool.progress"), None

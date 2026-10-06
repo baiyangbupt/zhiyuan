@@ -104,15 +104,35 @@ const applyToTurn = (state, event) => {
       return mergeTurn(state, turnId, { actionResult: next });
     }
 
+    case 'assistant.delta': {
+      // 增量是**可丢弃的提示**（首字延迟感知）：只往回合里攒，不单独建渲染面
+      // （没有内容的空回合会被页面 gate 挡住，这条守卫在页面那侧）。
+      // **终态是权威**：已终态的回合不再接受增量——迟到的增量不许把已经落定的
+      // 答案刷回"流式中的样子"（终态事件照旧只落一次）。
+      if (prior.terminal) return state;
+      const chunk = typeof payload.chunk === 'string' ? payload.chunk : '';
+      if (!chunk) return state;
+      return mergeTurn(state, turnId, { answerStream: (prior.answerStream || '') + chunk });
+    }
+
     case 'assistant.completed':
-      return mergeTurn(state, turnId, { answer: { ...payload }, terminal: true });
+      // 权威答案到达：**整段替换**流式文本（`answerStream` 作废）——
+      // 流文本与终态文本不叠加，页面因此不会画出两份答案。
+      return mergeTurn(state, turnId, {
+        answer: { ...payload },
+        answerStream: '',
+        terminal: true,
+      });
 
     case 'turn.completed':
       // 运行结束 ≠ 用户诉求完成：executionStatus 与 toolStatus 是两个字段，
       // 都原样保留，不在这里互相推导。
+      // 流式文本同样作废：这一轮结束了，没等到 `assistant.completed` 的
+      // （失败/中断）也不该把半截流文本留在回合里。
       return mergeTurn(state, turnId, {
         ...payload,
         executionStatus: payload.executionStatus || prior.executionStatus || 'completed',
+        answerStream: '',
         terminal: true,
       });
 

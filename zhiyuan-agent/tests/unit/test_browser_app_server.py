@@ -133,6 +133,36 @@ def test_progress_arrives_but_the_terminal_waits_for_the_gate(stack) -> None:
                for m in after), "终态要带合法的结构化输出 ✓（否则测的是输出修复路径 ✗）"
 
 
+def test_the_fixture_streams_multiple_deltas_that_rebuild_the_final_text(stack) -> None:
+    """**"分多条 delta"场景** ✓✓：替身发的增量必须**不止一条**、且拼接后 = 默认终态正文 ✓——
+    只发一条的替身会让网关的合并/节流与"终态整段替换"都测不到 ✓
+    （真实 codex 的口径同此：逐字切、拼接 = 终态正文 ✓）。
+    """
+    session, base, _ = stack
+    session.send({"jsonrpc": "2.0", "id": 1, "method": "turn/start",
+                  "params": {"threadId": "thr_1", "turnId": "turn-stream-1"}})
+
+    before = session.drain(0.8)
+    deltas = [m for m in before if m.get("method") == "item/agentMessage/delta"]
+    assert len(deltas) >= 2, f"要发多条增量 ✓（收到 {len(deltas)} 条）"
+    assert all((m.get("params") or {}).get("itemId") for m in deltas), "增量要带 itemId ✓（真实形状 ✓）"
+    streamed = "".join(str((m.get("params") or {}).get("delta") or "") for m in deltas)
+    assert streamed == (
+        '{"responseType": "text", "message": "闸门放行后的答案", "executionStatus": "completed"}'
+    )
+
+    _release(base, "turn-stream-1")
+    after = session.drain(1.5)
+    completed = [
+        m for m in after
+        if m.get("method") == "item/completed" and m["params"]["item"]["type"] == "agentMessage"
+    ]
+    assert completed, "放行后要有终态正文 ✓"
+    assert completed[-1]["params"]["item"]["text"] == streamed, (
+        "增量拼接后必须与终态正文一致 ✓（真实运行时的实测口径同此 ✓）"
+    )
+
+
 def test_interrupt_produces_a_real_interrupted_terminal(stack) -> None:
     """F12 的地基 ✓：中断要发**真中断** ✓，绝不能补一个假的 completed ✗。"""
     session, _, _ = stack

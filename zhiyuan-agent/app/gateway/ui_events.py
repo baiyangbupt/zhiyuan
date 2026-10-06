@@ -25,6 +25,10 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "clarification.resolved",
         "proposal.preview",
         "conversationAction.result",
+        # **助手增量文本是"可丢弃的提示"** ✓✓：它只负责降低"首字延迟感知" ✓，
+        # 丢一条不影响正确性 ✓——答案的**权威来源**始终是终态 `assistant.completed` ✓
+        #（重连不补播增量 ✓，端子文本胜出 ✓）。载荷 `{chunk, itemId?}` ✓。
+        "assistant.delta",
         "assistant.completed",
         "turn.completed",
         "recoverable.error",

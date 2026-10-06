@@ -228,6 +228,38 @@ test('旧信封里认不出类型的帧被丢弃，而不是画成默认气泡',
   assert.equal(toConversationEvent(frame, { sessionId: '42', streamEpoch: 'e1', sequence: 1 }), null);
 });
 
+test('助手增量事件直通，且只保留 chunk/itemId', () => {
+  const normalized = normalizeConversationEvent({
+    protocolVersion: 1,
+    type: 'assistant.delta',
+    sessionId: '42',
+    turnId: 't1',
+    streamEpoch: 'e1',
+    sequence: 4,
+    payload: { chunk: '{"message": "你', itemId: 'msg_1', privateField: 'do-not-display' },
+  });
+
+  assert.equal(normalized.type, 'assistant.delta');
+  assert.equal(normalized.payload.chunk, '{"message": "你');
+  assert.equal(normalized.payload.itemId, 'msg_1');
+  assert.equal(normalized.payload.privateField, undefined, '白名单外的字段不该进渲染面');
+});
+
+test('助手增量事件是合法的 v1 类型（服务端发了不会被整条丢掉）', () => {
+  assert.equal(
+    isConversationV1Event({
+      protocolVersion: 1,
+      type: 'assistant.delta',
+      sessionId: '42',
+      turnId: 't1',
+      streamEpoch: 'e1',
+      sequence: 1,
+      payload: { chunk: 'x' },
+    }),
+    true,
+  );
+});
+
 test('回合开始事件保留墙钟时间戳，白名单外的字段不过去', () => {
   // 时间戳只是诊断信息（排序仍按 sequence）——但白名单里没有位置的话它会被
   // 静默过滤掉：服务端发了也白发，这是"两边一起改"那条约定的一部分。
