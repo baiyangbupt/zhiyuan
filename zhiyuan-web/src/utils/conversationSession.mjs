@@ -116,8 +116,18 @@ const applyToTurn = (state, event) => {
         terminal: true,
       });
 
-    case 'recoverable.error':
-      return mergeTurn(state, turnId, { error: { ...payload } });
+    case 'recoverable.error': {
+      // **空文案不许覆盖已有文案** ✓✓：同一条失败会走两条路到前端 ✓（V1 事件先到、
+      // 带服务端的具体文案 ✓；老信封兜底帧后到 ✓——失败结果里没有 `reply` 时它的
+      // `message` 是空串 ✗，见 `server.py` 的 `_native_reply_frame` ✓）。直接整体覆盖
+      // 会把刚带到的文案擦掉 ✗，用户只剩渲染层那句通用兜底 ✓（`MessageList` 的注释
+      // 记着实测 ✓）。拦的**只有空值** ✓：真有新文案时照旧"后到者胜" ✓。
+      const next = { ...payload };
+      if (!next.message && prior.error?.message) {
+        next.message = prior.error.message;
+      }
+      return mergeTurn(state, turnId, { error: next });
+    }
 
     default:
       return state;

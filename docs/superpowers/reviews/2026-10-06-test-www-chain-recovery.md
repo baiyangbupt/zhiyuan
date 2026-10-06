@@ -72,6 +72,13 @@ turn.started → turn.phase → tool.progress×2
 （candidatePool/推荐/方案/review）→ `requiresWorkspaceReload=true`。
 Java 847 测试全绿；网关侧补 3 条快照刷新用例。前端入口 UI 待做（另一条线）。
 
+**部署级验证（共享栈实测，11:18）**：端点已上 18090。逐层行为正确——参数错误时
+逐项报 110（批次/选科编码，且后端自动补 subjectList）；进入上游查询后在
+`GaotuService.queryAllProgramData` 被上游回 `84009 当前策略已失效`。**该条件与
+create-session 第 4 步是同一个调用**（同一方法、同参数面），即本环境对合成 member
+（900001）/合成会话并无有效上游策略——**不是补录独有缺陷**，验证止步于上游边界；
+要端到端成功需先让上游为该 member 产出有效策略（真实 /hl-wish 流程或换有效 member）。
+
 ### 核心对话四修复（隔离栈 contract 12 + write 4 全绿）
 
 1. 终态帧真实状态（`server.py` 从 result 取 executionStatus/limitations；失败支不再假 completed）；

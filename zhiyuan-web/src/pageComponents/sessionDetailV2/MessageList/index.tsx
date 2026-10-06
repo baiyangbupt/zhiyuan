@@ -2083,8 +2083,9 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                   <div data-testid="turn-error">
                     {/* 两种键都要认 ✓✓：V1 事件带 `message` ✓，而**同一条失败**在老信封那条路上
                         带的是 `content` ✓——两条都会到（网关有意两条都发 ✓：老 UI 靠 reply ✓、
-                        新 UI 靠 V1 ✓），谁后到谁覆盖 ✓（实测：后到的老信封把文案覆盖成空 ✗，
-                        于是只剩兜底那句 ✓）。 */}
+                        新 UI 靠 V1 ✓）。后到的老信封帧 `message` 可能是空串 ✗（失败结果里没有
+                        `reply` ✓），**reducer 已拦**：空文案不覆盖已有文案 ✓
+                        （`conversationSession.mjs` 的 `recoverable.error` 分支 ✓）。 */}
                     {turn.error.message || turn.error.content || '本轮没有完成，请稍后重试'}
                   </div>
                 ) : null}

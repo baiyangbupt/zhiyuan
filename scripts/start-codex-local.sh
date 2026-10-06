@@ -270,7 +270,6 @@ start_service "agent" "$ROOT_DIR/zhiyuan-agent" \
     "INTERNAL_SERVICE_URL=$BACKEND_URL" \
     "RANK_SERVICE_URL=$RANK_URL" \
     "MCP_MODE=readonly" \
-    "MCP_WRITE_TOOLS_ENABLED=false" \
     "LOGFIRE_ENABLED=false" \
     env "CODEX_WS_ALLOWED_ORIGINS=$ACCESS_ALLOWED_ORIGINS" \
     "$ROOT_DIR/zhiyuan-agent/.venv/bin/uvicorn" app.server:app --host 127.0.0.1 --port "$AGENT_PORT"

@@ -694,6 +694,25 @@ class GatewayService:
         self._working_sets[key] = ConversationWorkingSet.from_snapshot(snapshot)
         return snapshot
 
+    async def get_authoritative_snapshot(
+        self, *, tenant_id: str, session_id: str
+    ) -> ConversationTurnSnapshot | None:
+        """**强制重读**权威快照——确认/取消这类"按最新状态执行"的路径专用 ✓✓。
+
+        与 `get_current_snapshot` 的差别只有一个：**不吃缓存优先** ✗✓。缓存优先是为
+        "同一回合内多处读取"设计的 ✓，但动作路径恰好是"用户刚在别处改了状态、马上就点确认" ✓
+        （空会话补录成绩、另一条线写工作区 ✓）——缓存里那份可能已经比 Java 权威状态旧 ✗：
+        拿旧快照执行动作，`expectedSourceVersion` 会对不上 ✗ → 一张本该能点的卡被误判
+        `stale_state` ✓✗。所以先重读 ✓（复用 `_refresh_snapshot_cache` 的 **authoritative 语义** ✓：
+        刚重读回来的这份**就是事实** ✓，版本合法回退也照收 ✓）；读失败时退回缓存里那份 ✓
+        （退化但不比以前差 ✓），缓存也没有才返回 None ✓（调用方照旧 fail closed ✓）。
+        """
+        key = _session_key(tenant_id, session_id)
+        await self._refresh_snapshot_cache(
+            key, tenant_id=tenant_id, session_id=str(session_id)
+        )
+        return self._snapshots.get(key)
+
     def _store_snapshot(
         self, key: SessionKey, snapshot: ConversationTurnSnapshot, *, authoritative: bool = False
     ) -> bool:

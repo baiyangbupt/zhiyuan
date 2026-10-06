@@ -277,3 +277,48 @@ test('真代际在手时，老信封的本地帧既不顶替也不判缺口', ()
   assert.equal(after.lastSequence, 60, '序号不许回退');
   assert.equal(after.turns.t.error.message, '当前对话引擎暂时不可用，请稍后重试。', '内容照常折叠');
 });
+
+test('后到的老信封空文案不许把已有错误文案覆盖成空', () => {
+  // F15 探针里的顺序：V1 的 `recoverable.error` 先到（带服务端的具体文案 ✓），
+  // 老信封兜底帧后到（失败结果里没有 `reply` → `message` 是空串 ✗，见 server.py 的
+  // `_native_reply_frame`）。整体覆盖会把文案擦成空，用户只剩渲染层那句兜底——
+  // 空值必须被拦住。
+  const withMessage = reduceConversation(
+    baseline(),
+    event({
+      sequence: 1,
+      type: 'recoverable.error',
+      payload: { code: 'output_schema_invalid: responseType', message: '当前对话引擎暂时不可用，请稍后重试。' },
+    }),
+  );
+
+  const afterLegacy = reduceConversation(
+    withMessage,
+    event({
+      streamEpoch: 'local',
+      sequence: 2,
+      type: 'recoverable.error',
+      payload: { message: '' },
+    }),
+  );
+
+  assert.equal(afterLegacy.needsResync, false);
+  assert.equal(
+    afterLegacy.turns.t.error.message,
+    '当前对话引擎暂时不可用，请稍后重试。',
+    '空文案不许覆盖非空文案',
+  );
+});
+
+test('后到的非空错误文案照旧覆盖（只拦空值）', () => {
+  const first = reduceConversation(
+    baseline(),
+    event({ sequence: 1, type: 'recoverable.error', payload: { message: '旧文案' } }),
+  );
+  const second = reduceConversation(
+    first,
+    event({ sequence: 2, type: 'recoverable.error', payload: { message: '新文案' } }),
+  );
+
+  assert.equal(second.turns.t.error.message, '新文案');
+});

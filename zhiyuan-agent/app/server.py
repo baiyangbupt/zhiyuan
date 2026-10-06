@@ -996,7 +996,11 @@ async def _run_action_work(gateway, msg, tenant_id: str, turn_id: str, emit, cha
 async def _run_native_turn(gateway, msg, tenant_id: str, turn_id: str, emit) -> dict:
     try:
         if msg.conversation_action is not None:
-            snapshot = await gateway.get_current_snapshot(
+            # **动作按权威快照执行** ✓✓——不能走缓存优先的 `get_current_snapshot` ✗：
+            # 用户可能刚补录成绩、或在别处改了状态 ✓，那份缓存快照已经旧了 ✓✗；
+            # 拿旧快照执行会让 `expectedSourceVersion` 对不上 ✓ → 一张有效的卡被误判
+            # `stale_state` ✗（见 `get_authoritative_snapshot` 的注释 ✓）。
+            snapshot = await gateway.get_authoritative_snapshot(
                 tenant_id=tenant_id, session_id=str(msg.session_id)
             )
             if snapshot is None:
@@ -1444,7 +1448,9 @@ async def _run_compat_turn(
     gateway, action, tenant_id, session_id, user_id, turn_id, content, channel=None
 ):
     if action is not None:
-        snapshot = await gateway.get_current_snapshot(
+        # compat 路由与 native 同一个病 ✓：确认/取消必须按**权威**快照执行 ✓
+        # （缓存优先会把"刚补录完就点确认"判成 `stale_state` ✗）。
+        snapshot = await gateway.get_authoritative_snapshot(
             tenant_id=str(tenant_id), session_id=session_id
         )
         if snapshot is None:

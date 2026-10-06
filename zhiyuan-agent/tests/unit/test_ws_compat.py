@@ -332,7 +332,9 @@ def test_gateway_mode_compat_text_routes_to_gateway(client):
 
 def test_gateway_mode_compat_confirmation_maps_to_conversation_action(client):
     gateway = MagicMock()
-    gateway.get_current_snapshot = AsyncMock(return_value=object())
+    # 确认/取消走**权威**快照（缓存优先的 `get_current_snapshot` 会把"刚补录完
+    # 就点确认"判成 stale_state ✗——见 `get_authoritative_snapshot` 的注释）。
+    gateway.get_authoritative_snapshot = AsyncMock(return_value=object())
     gateway.execute_action_and_refresh = AsyncMock(
         return_value={
             "actionResult": {"actionStatus": "applied"},
@@ -357,7 +359,7 @@ def test_gateway_mode_compat_confirmation_maps_to_conversation_action(client):
     payload = json.loads(response["content"])
     assert payload["type"] == "conversationAction.result"
     gateway.execute_action_and_refresh.assert_awaited_once()
-    gateway.get_current_snapshot.assert_awaited_once_with(
+    gateway.get_authoritative_snapshot.assert_awaited_once_with(
         tenant_id="test-tenant", session_id="gateway-session"
     )
     action = gateway.execute_action_and_refresh.await_args.kwargs["action"]
@@ -371,7 +373,7 @@ def test_gateway_mode_compat_confirmation_maps_to_conversation_action(client):
 
 def test_gateway_mode_compat_without_snapshot_fails_closed(client):
     gateway = MagicMock()
-    gateway.get_current_snapshot = AsyncMock(return_value=None)
+    gateway.get_authoritative_snapshot = AsyncMock(return_value=None)
     gateway.execute_action_and_refresh = AsyncMock()
     client.app.state.gateway_service = gateway
 

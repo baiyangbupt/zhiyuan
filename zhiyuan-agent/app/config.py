@@ -181,13 +181,6 @@ class McpConfig(BaseSettings):
     }
 
     mode: str = "readonly"
-    # `MCP_WRITE_TOOLS_ENABLED`：**没有任何读者** ✗✓（启动脚本还在传 `=false` ✓）。
-    # 留着它是因为"写模式"曾经被理解成"给模型开写工具" ✗；P2 重构后那条口径改了 ✓：
-    # 新链路的写路径由"模型出 proposalRequest → Java 编译出待确认 → 用户确认 → 网关执行"承担 ✓，
-    # **本来就没有模型可调的写工具** ✓；`codex_write` 与 `codex_readonly` 的差别在**确认链是否活着** ✓
-    # （见 `app/gateway/service.py:468` 与 `composition.py` 的一致性检查 ✓）。
-    # 也就是说这个开关**开与不开行为一样** ✗——真要动它，先把上面的结论推翻 ✓。
-    write_tools_enabled: bool = False
 
 
 class ConversationEventStoreConfig(BaseSettings):

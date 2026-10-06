@@ -1,9 +1,12 @@
-import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app.gateway.conversation_actions import execute_conversation_action
 from app.gateway.service import GatewayService
 from app.gateway.ui_events import SessionKey
+from app.server import _run_native_turn
 
 
 def snapshot():
@@ -162,6 +165,62 @@ async def test_execute_action_and_refresh_replaces_cached_snapshot():
     assert result["snapshotVersion"] == 8
     assert gateway._snapshots[SessionKey(tenant_id="t1", session_id="s1")].snapshot_version == 8
     assert resolver.await_args.kwargs["tenant_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_action_path_executes_on_the_authoritative_snapshot_not_the_stale_cache():
+    """缓存 stale、Java 已更新时，确认必须按**权威**快照执行 ✓✓。
+
+    缓存优先的 `get_current_snapshot` 在这条路上会拿到旧快照 ✗（用户刚补录成绩、
+    或在另一条线写了工作区 ✓）→ `expectedSourceVersion` 对不上 → 一张本该能点的卡
+    被误判 `stale_state` ✓✗。本用例模拟该时序：先用旧快照把缓存养起来，再让 Java
+    侧推进版本，最后走真实 `_run_native_turn`——修前它红在 `stale_state` 上（执行器
+    根本不会被调用）。
+    """
+    stale = snapshot()  # sourceVersion 7：上一轮缓存里的那份
+    fresh = {
+        **snapshot(),
+        "snapshotVersion": 8,
+        "activeProposal": {**snapshot()["activeProposal"], "sourceVersion": 8},
+    }
+
+    class _Loader:
+        def __init__(self):
+            self.current = stale
+
+        async def __call__(self, **kwargs):
+            return self.current
+
+    loader = _Loader()
+    gateway = GatewayService(
+        mode="codex_write",
+        codex=None,
+        legacy=None,
+        message_store=None,
+        binding_loader=lambda **kwargs: None,
+        snapshot_loader=loader,
+    )
+    cached = await gateway.get_current_snapshot(tenant_id="t1", session_id="s1")
+    assert cached.snapshot_version == 7  # 缓存里钉着旧的那份 ✓
+    loader.current = fresh  # —— Java 侧状态已推进（补录/写工作区）
+
+    resolver = AsyncMock(return_value={"code": 0, "data": {"status": "applied", "stateVersion": 9}})
+    msg = SimpleNamespace(
+        session_id="s1",
+        conversation_action={
+            "actionType": "confirm_proposal",
+            "proposalRef": "pending-1",
+            # 用户手里那张卡是新版本：拿旧快照比对就会被误判 stale_state ✗
+            "expectedSourceVersion": 8,
+        },
+    )
+    with patch("app.gateway.conversation_actions.resolve_pending_confirmation", new=resolver):
+        result = await _run_native_turn(gateway, msg, "t1", "turn-1", None)
+
+    assert result["actionResult"]["actionStatus"] == "applied", result
+    resolver.assert_awaited_once()
+    # 重读回来的权威快照要写进缓存 ✓（authoritative 语义：版本合法回退也照收 ✓）
+    assert gateway._snapshots[SessionKey(tenant_id="t1", session_id="s1")].snapshot_version == 8
 
 
 @pytest.mark.asyncio
