@@ -221,3 +221,45 @@ def test_write_rules_require_looking_up_codes_before_the_card() -> None:
     assert "先查编码" in rules and "没有编码就没有卡" in rules
     # 拒绝原因（非标准选科编码）也要写在规则里：模型知道自己会被什么挡下。
     assert "非标准选科编码" in rules
+
+
+def test_base_rules_forbid_internal_vocabulary_in_user_visible_text() -> None:
+    """第 10 条：给用户的文本不得出现内部枚举/字段名（2026-10-06 真事故）。
+
+    用户实测回复里出现「规划阶段也从「ordered」推进到「profile_ready」」——
+    注入上下文里全是机器码（快照/state_patch/执行计划/工具契约），模型把内部
+    状态原样讲给了用户听。规则是**最前面那道闸**（网关侧的内部分隔标签 +
+    "只能用业务语言转述"是同时加的另一道，见
+    `test_gateway_internal_state_tags.py` / `test_shadow_gateway.py`）。
+
+    这里钉四件事：第 10 条真的在 9 条之后存在、禁用词有清单、正反例都有
+    （只写禁令不写"该怎么说"，模型只能自己造句）、写实例规则同步了一段。
+    """
+    base = (
+        Path(__file__).parents[2] / "skills" / "codex" / "base_instructions.md"
+    ).read_text(encoding="utf-8")
+    assert "\n10. " in base, "现有 9 条之后没有新增第 10 条"
+    for banned in (
+        "`ordered`",
+        "`profile_ready`",
+        "`snapshotVersion`",
+        "`workspaceVersion`",
+        "`planningStage`",
+        "`actionStatus`",
+        "`responseType`",
+        "`artifactRef`",
+        "`proposalRef`",
+        "`staleFlags`",
+    ):
+        assert banned in base, f"第 10 条的禁用词清单缺 {banned}"
+    # 正反例都要在（反例=用户实测那句原文，正例=业务语言的说法）。
+    assert "Bad (never do this)" in base
+    assert "Good:" in base
+    assert "资料已补齐" in base
+    assert "plain business language" in base.lower()
+
+    write_rules = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.write.md"
+    ).read_text(encoding="utf-8")
+    assert "业务语言" in write_rules, "写实例规则没有同步「给用户的话用业务语言」"
+    assert "profile_ready" in write_rules

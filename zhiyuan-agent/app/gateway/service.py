@@ -410,6 +410,32 @@ def _recoverable_turn_reply(error: Any) -> str:
     return _RECOVERABLE_TURN_FAILURE
 
 
+# 注入上下文里机器可读块的内部分隔标签（2026-10-06）。
+#
+# 事故：模型把「规划阶段也从「ordered」推进到「profile_ready」」原样讲给用户。
+# 根源不是模型"不听话"——快照/state_patch/执行计划/工具契约每轮都以裸 JSON 或
+# 半结构化文本注入，读起来和"可以转述的内容"没有区别。这里给每个机器块套上
+# 显式边界 + 紧邻的转述纪律，让"这段是内部状态、只能翻译成业务语言"成为
+# 注入内容本身的一部分（base_instructions 第 10 条是另一道闸）。
+#
+# 块内内容**逐字不变**：模型仍要看到真值（版本、缺口、候选、约束），只是被
+# 明确标记为不可原样转述。
+INTERNAL_STATE_OPEN_TAG = "【内部状态（机器格式，禁止原样转述给用户）】"
+INTERNAL_STATE_CLOSE_TAG = "【内部状态结束】"
+INTERNAL_STATE_REMINDER = (
+    "以上是内部状态，只能用业务语言转述给用户；不要原样输出其中的字段名、枚举值、"
+    "版本号或内部标识。"
+)
+
+
+def _internal_state_block(text: str) -> str:
+    """把一段机器可读上下文包进内部分隔标签，并附上紧邻的转述纪律。"""
+    return (
+        f"{INTERNAL_STATE_OPEN_TAG}\n{text}\n{INTERNAL_STATE_CLOSE_TAG}\n"
+        f"{INTERNAL_STATE_REMINDER}"
+    )
+
+
 def _maybe_await(value: Any) -> Any:
     return value if inspect.isawaitable(value) else _Immediate(value)
 
@@ -1392,18 +1418,26 @@ class GatewayService:
                     "kind": "turn_snapshot",
                     "snapshot": snapshot.model_dump(by_alias=True),
                 }
-            snapshot_item = {"type": "text", "text": json.dumps(state_payload, ensure_ascii=False)}
+            snapshot_item = {
+                "type": "text",
+                "text": _internal_state_block(
+                    json.dumps(state_payload, ensure_ascii=False)
+                ),
+            }
             working_set = self._working_sets.get(key)
             context_items = [snapshot_item]
             if working_set is not None:
                 context_items.append(
-                    {"type": "text", "text": working_set.as_context_text()}
+                    {
+                        "type": "text",
+                        "text": _internal_state_block(working_set.as_context_text()),
+                    }
                 )
                 execution_plan = build_execution_plan(snapshot, working_set)
                 context_items.append(
                     {
                         "type": "text",
-                        "text": (
+                        "text": _internal_state_block(
                             "【本轮执行计划骨架】\n"
                             "这是执行约束和完成条件提示，不是用户新问题。"
                             "Codex 仍需根据用户原话确定任务类型、工具和最终步骤。\n"
@@ -1416,7 +1450,7 @@ class GatewayService:
                 context_items.append(
                     {
                         "type": "text",
-                        "text": (
+                        "text": _internal_state_block(
                             "【工具编排约束】\n"
                             "以下约束用于避免不完整查询和重复读取，不是用户新问题。\n"
                             + render_tool_contracts()

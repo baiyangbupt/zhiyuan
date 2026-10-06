@@ -5,7 +5,12 @@ import json
 import pytest
 
 from app.config import GatewayConfig
-from app.gateway.service import GatewayService
+from app.gateway.service import (
+    INTERNAL_STATE_CLOSE_TAG,
+    INTERNAL_STATE_OPEN_TAG,
+    INTERNAL_STATE_REMINDER,
+    GatewayService,
+)
 from app.harness.binding import ThreadBinding
 from app.harness.turn_result import CodexTurnResult
 from app.engine.semantic_eval import SemanticExpectation, evaluate_trace
@@ -59,8 +64,22 @@ class FakeCodexHarness:
         }
 
 
+def _unwrap_internal_state(text: str) -> str:
+    """取网关注入的【内部状态】块里的原始内容。
+
+    网关给每个机器可读块加了分隔标签 + 紧邻的转述纪律（2026-10-06，见
+    `_internal_state_block`）：这里既解包，也顺手把标签本身钉住。
+    """
+    assert text.startswith(INTERNAL_STATE_OPEN_TAG + "\n"), text[:80]
+    body = text.split(INTERNAL_STATE_OPEN_TAG + "\n", 1)[1]
+    body, separator, reminder = body.partition("\n" + INTERNAL_STATE_CLOSE_TAG + "\n")
+    assert separator, "机器块没有【内部状态结束】标签"
+    assert reminder.startswith(INTERNAL_STATE_REMINDER)
+    return body
+
+
 def _working_set_payload(text: str) -> dict:
-    return json.loads(text.split("结构化状态：", 1)[1])
+    return json.loads(_unwrap_internal_state(text).split("结构化状态：", 1)[1])
 
 
 def _snapshot() -> dict:
@@ -189,7 +208,7 @@ async def test_gateway_injects_adjacent_snapshot_as_state_patch() -> None:
     assert second["statePatch"]["baseVersion"] == 42
     assert second["statePatch"]["targetVersion"] == 43
     assert codex.injected == []
-    assert json.loads(codex.turns[-1]["input"][0]["text"])["kind"] == "state_patch"
+    assert json.loads(_unwrap_internal_state(codex.turns[-1]["input"][0]["text"]))["kind"] == "state_patch"
     working_set = _working_set_payload(codex.turns[-1]["input"][1]["text"])
     assert working_set["kind"] == "conversation_working_set"
     assert working_set["snapshotVersion"] == 43

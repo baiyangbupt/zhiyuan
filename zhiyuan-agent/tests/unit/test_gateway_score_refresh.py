@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 
 from app.gateway.contracts import ConversationTurnSnapshot
-from app.gateway.service import GatewayService, _session_key
+from app.gateway.service import INTERNAL_STATE_OPEN_TAG, GatewayService, _session_key
 from app.harness.binding import ThreadBinding
 
 
@@ -140,9 +140,17 @@ async def _turn(gateway: GatewayService, *, turn_id: str) -> dict[str, Any]:
 
 
 def _item_text(codex: CodexHarness, index: int, marker: str) -> str:
-    """取第 index 轮喂给模型的某条文本（按开头 marker 找，避免多重转义）。"""
+    """取第 index 轮喂给模型的某条机器块文本（按开头 marker 找，避免多重转义）。
+
+    机器块现在被【内部状态】标签包着（2026-10-06），marker 位于标签行之后，
+    所以按「标签 + 换行 + marker」找；不能按"包含"找——working set 的
+    `结构化状态：{"kind": "conversation_working_set"…}` 也含 `{"kind"`，
+    会把断言带到错块上。
+    """
     for item in codex.turns[index]:
-        if isinstance(item, dict) and str(item.get("text", "")).startswith(marker):
+        if isinstance(item, dict) and str(item.get("text", "")).startswith(
+            INTERNAL_STATE_OPEN_TAG + "\n" + marker
+        ):
             return item["text"]
     raise AssertionError(f"turn {index}: no context item starting with {marker!r}")
 
