@@ -209,3 +209,50 @@ async def test_pending_planning_command_sends_idempotency_and_version_guards(mon
     assert payload["expectedPlanVersion"] == 12
     assert payload["unitIds"] == ["u-old"]
     assert payload["volunteerIds"] == ["v-new"]
+
+
+@pytest.mark.asyncio
+async def test_score_update_preview_and_prepare_hit_their_own_endpoints(monkeypatch):
+    """补录两条端点各就各位 ✓：preview 只读（不带 requestId）、prepare 带 requestId
+    （Java 按它做幂等重放 ✓——同一回合重试必须落回同一个 pending ✓）。"""
+    post_mock = AsyncMock(return_value={"code": 0})
+    monkeypatch.setattr(internal_client.http_client, "post", post_mock)
+
+    await internal_client.preview_score_update(1, "101", {"totalScore": 641})
+    preview_call = post_mock.await_args
+    assert "session/score-update/preview?chatSessionId=101" in preview_call.kwargs["endpoint"]
+    assert preview_call.kwargs["json_data"] == {"totalScore": 641}
+
+    await internal_client.prepare_score_update(
+        1, "101", request_id="1:101:turn-9", payload={"totalScore": 641}
+    )
+    prepare_call = post_mock.await_args
+    assert (
+        "session/score-update/prepare?chatSessionId=101&requestId=1:101:turn-9"
+        in prepare_call.kwargs["endpoint"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_planning_command_carries_the_score_update_draft(monkeypatch):
+    """`update_score_detail` 的执行输入是 pending 里的草稿 ✓（Java 执行体按它合并/校验/落库）：
+    透传键名 `scoreUpdate` 与 Java 的 `PendingPlanningCommandReq` 逐字一致 ✓。"""
+    post_mock = AsyncMock(return_value={"code": 0})
+    monkeypatch.setattr(internal_client.http_client, "post", post_mock)
+
+    draft = {"totalScore": 641, "subjectScoreList": [{"subject": "chinese", "score": 118}]}
+    await internal_client.execute_pending_planning_command(
+        1,
+        "101",
+        operation_id="op-score-1",
+        pending_id="p-1",
+        claim_token="claim-owner",
+        expected_plan_version=12,
+        command_type="update_score_detail",
+        score_update=draft,
+    )
+
+    payload = post_mock.await_args.kwargs["json_data"]
+    assert payload["commandType"] == "update_score_detail"
+    assert payload["scoreUpdate"] == draft
+    assert "proposalApply" not in payload

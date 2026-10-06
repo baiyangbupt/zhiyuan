@@ -11,7 +11,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.gateway.contracts import ConversationTurnSnapshot, ProposalRequest, TurnOutput
+from app.gateway.contracts import (
+    ConversationTurnSnapshot,
+    ProposalRequest,
+    ScoreUpdateRequest,
+    TurnOutput,
+)
 from app.gateway.event_adapter import adapt_codex_item, adapt_notification
 from app.gateway.output_validation import (
     OutputContractError,
@@ -248,6 +253,17 @@ TURN_OUTPUT_SCHEMA["properties"]["proposalRequest"] = {
     "anyOf": [_proposal_schema, {"type": "null"}]
 }
 
+# 补录成绩草稿（score_update 动作族）：与提案同一条纪律——模型侧 schema 必须**先声明**
+# 它，`additionalProperties: false` 的严格 schema 不会因为契约新增字段就放行 ✗
+#（不声明的话模型一输出 `scoreUpdateRequest` 就被自己的 schema 拒，现象是"模型从不
+# 产出补录草稿"，看不出是 schema 漏字段）。
+_score_update_subject_schema, _score_update_definitions = _strict_model_schema(ScoreUpdateRequest)
+TURN_OUTPUT_SCHEMA["$defs"].update(_score_update_definitions)
+TURN_OUTPUT_SCHEMA["required"].append("scoreUpdateRequest")
+TURN_OUTPUT_SCHEMA["properties"]["scoreUpdateRequest"] = {
+    "anyOf": [_score_update_subject_schema, {"type": "null"}]
+}
+
 
 def _normalize_nullable_for_upstream(schema: dict[str, Any]) -> dict[str, Any]:
     """把 ``anyOf: [X, {"type": "null"}]`` 改写成 DeepSeek ``/responses`` 接受的等价写法。
@@ -299,6 +315,77 @@ def _normalize_nullable_for_upstream(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 _normalize_nullable_for_upstream(TURN_OUTPUT_SCHEMA)
+
+
+def _active_proposal_preview_override(
+    preview: Mapping[str, Any], active: Any
+) -> dict[str, Any]:
+    """把预览的**身份与版本**换成"待确认那一条"的值（提案/补录两族共用同一口径）。
+
+    为什么必须换 ✗：Java 编译返回的预览带的是**编译前**的 `sourceVersion` ✗，而确认/放弃
+    时服务端拿快照里 `activeProposal.sourceVersion` 与动作里的 `expectedSourceVersion`
+    相减 ✓，不等就 `proposal_version_mismatch` ✗；身份同理——卡片必须带 `pendingId` ✗，
+    不是编译器的 `ugp_…` ✗，否则确认第一步就 `proposal_reference_mismatch` ✗。
+    `active_proposal` 是**模型不是 dict** ✗（实测按字典读一次都没命中 ✓），所以字典键与
+    属性两条路都走 ✓，别名（驼峰/snake）也各试一次 ✓。
+    """
+
+    def _field(*names: str) -> Any:
+        if isinstance(active, Mapping):
+            for name in names:
+                if active.get(name) is not None:
+                    return active[name]
+            return None
+        for name in names:
+            value = getattr(active, name, None)
+            if value is not None:
+                return value
+        return None
+
+    override = dict(preview)
+    source_version = _field("sourceVersion", "source_version")
+    if source_version is None:
+        active_data = active.get("data") if isinstance(active, Mapping) else None
+        if isinstance(active_data, Mapping):
+            source_version = (
+                active_data.get("sourceVersion")
+                or active_data.get("source_version")
+                or active_data.get("sourceBackendVersion")
+                or active_data.get("source_backend_version")
+            )
+    if source_version is not None:
+        override["sourceVersion"] = source_version
+    active_ref = _field("proposalRef", "proposal_ref", "pendingId", "pending_id")
+    if active_ref:
+        override["proposalRef"] = str(active_ref)
+    return override
+
+
+def _score_update_summary_text(summary: Mapping[str, Any]) -> str:
+    """补录卡的一句话摘要（给人看的那份，全部来自 Java 按**合并后**成绩算的 summary）。"""
+    parts: list[str] = []
+    if summary.get("provinceName"):
+        parts.append(str(summary["provinceName"]))
+    if summary.get("subjectType"):
+        parts.append(str(summary["subjectType"]))
+    if summary.get("batchName"):
+        parts.append(str(summary["batchName"]))
+    if summary.get("examYear") is not None:
+        parts.append(f"{summary['examYear']} 年")
+    if summary.get("totalScore") is not None:
+        parts.append(f"总分 {summary['totalScore']}")
+    if summary.get("totalScorePos") is not None:
+        parts.append(f"位次 {summary['totalScorePos']}")
+    subjects = summary.get("subjects")
+    if isinstance(subjects, list):
+        rendered = "、".join(
+            f"{item.get('subjectName') or item.get('subject') or '科目'} {item.get('score')}"
+            for item in subjects
+            if isinstance(item, Mapping) and item.get("score") is not None
+        )
+        if rendered:
+            parts.append(rendered)
+    return " · ".join(parts)
 
 
 def _maybe_await(value: Any) -> Any:
@@ -754,6 +841,90 @@ class GatewayService:
         # ——哪怕它的版本比缓存里那张小（reset / supersede 之后本来就该小 ✓）。
         self._store_snapshot(key, fresh, authoritative=True)
         self._working_sets[key] = ConversationWorkingSet.from_snapshot(fresh)
+
+    async def _prepare_score_update_preview(
+        self,
+        key: SessionKey,
+        *,
+        tenant_id: str,
+        session_id: str,
+        turn_id: str,
+        request: ScoreUpdateRequest,
+        snapshot: ConversationTurnSnapshot,
+    ) -> dict[str, Any]:
+        """补录成绩（score_update 动作族）的 prepare/preview —— 与提案分支同构的一段。
+
+        - 写模式走 `prepare`：Java 把预览物化成 pending（`kind=score_update`），
+          `dataValue` 里落下 Java 产出的 `operationId`（确认时 fail-closed 的幂等键）；
+        - 只读模式走 `preview`：只出只读预览，**不做成可确认的卡**（写路径不在这台实例上活着）。
+        返回的是前端合同形状（`_proposal_preview_payload` 消费它），身份与版本在
+        `_refresh_snapshot_cache` 之后换成"待确认那一条"的值（与提案同一处口径）。
+        """
+        if request.source_version_guard != snapshot.snapshot_version:
+            raise OutputContractError(
+                "stale_state",
+                "score update source version does not match the current snapshot",
+            )
+        payload = request.model_dump(by_alias=True, exclude_none=True)
+        # **空数组 ≠ "把各科清空" ✗✓**：契约里 `subject_score_list` 的默认值是空列表 ✓，
+        # `model_dump` 会把"模型没提各科"渲染成 `"subjectScoreList": []` ✗——而 Java 的合并是
+        # "数组整体替换" ✓（表单补录要靠这条清空负面意向 ✓，改不得 ✓），于是空数组会把
+        # **服务端既有的各科**整个抹掉 ✗ → 合并校验 110「请填写各科成绩后再创建会话」✓
+        #（2026-10-06 实测 ✓：带 `[]` 必红 ✓、省掉该字段必绿 ✓）。按设计口径还原成"没带" ✓：
+        # 没说过的字段根本不该出现在增量草稿里 ✓——真模型漏输出各科时同样会踩这里 ✓，
+        # 这行是它的护栏 ✓；用户**真说了**各科时（非空列表）原样透传 ✓（替换语义在那里才是对的 ✓）。
+        if not payload.get("subjectScoreList"):
+            payload.pop("subjectScoreList", None)
+        if self.mode == "codex_write":
+            response = await internal_client.prepare_score_update(
+                tenant_id,
+                session_id,
+                request_id=f"{tenant_id}:{session_id}:{turn_id}",
+                payload=payload,
+            )
+        else:
+            response = await internal_client.preview_score_update(tenant_id, session_id, payload)
+        if (response or {}).get("code") not in (None, 0):
+            raise OutputContractError(
+                "score_update_unavailable",
+                "Java score update preview rejected the request",
+            )
+        data = (response or {}).get("data") or {}
+        # prepare 的返回是 PrepareResultDTO（预览在 `result` 里，外面是 pendingId 等）；
+        # preview 的返回直接就是预览 DTO。两种形状都认（与提案侧同一条容错）。
+        nested = data.get("result") if isinstance(data, Mapping) else None
+        preview_data = nested if isinstance(nested, Mapping) else data
+        summary = preview_data.get("summary") if isinstance(preview_data, Mapping) else None
+        if not isinstance(summary, Mapping):
+            raise OutputContractError(
+                "score_update_unavailable",
+                "Java score update preview returned no summary",
+            )
+        # **扁平形状** ✓：`_proposal_preview_payload`（server.py ✓）从**顶层**读
+        # title/summary/status（Java 提案预览本来就是平铺的 ✓）——这里必须与它同一个口径，
+        # 包一层 `diff` 的话翻译出来的 `diff` 会是空对象 ✗（卡成一张没有内容的壳 ✓）。
+        preview: dict[str, Any] = {
+            "status": "pending",
+            "title": "更新成绩",
+            "summary": _score_update_summary_text(summary),
+            # 只读模式下**不给确认按钮**：按钮背后没有可确认的 pending，
+            # 点了只会得到一个看不懂的失败（写路径不在这台实例上活着）。
+            "requiresConfirmation": self.mode == "codex_write",
+            "sourceVersion": preview_data.get("sourceVersion"),
+            # 待确认身份只认 pendingId（preview 只读模式下没有它 → 卡片不带确认按钮）。
+            "proposalRef": data.get("pendingId") if isinstance(data, Mapping) else None,
+            # 给人看的结构化那份（省份/科类/批次/各科/总分/位次 ✓）：全部来自
+            # Java 按**合并后**成绩算的 summary，模型文本里的复述不作数。
+            "scoreUpdate": dict(summary),
+        }
+        # 提案**改变了服务端状态**（写模式下 pending 已落库）：把快照缓存刷掉
+        # （理由与提案分支逐字相同：不刷的话下一轮确认会被自己的旧缓存挡掉）。
+        await self._refresh_snapshot_cache(key, tenant_id=tenant_id, session_id=session_id)
+        fresh = self._snapshots.get(key)
+        active = getattr(fresh, "active_proposal", None) if fresh is not None else None
+        if active is not None:
+            preview = _active_proposal_preview_override(preview, active)
+        return preview
 
     async def _restart_runtime(self) -> None:
         """重拉原生 runtime。调用点只有恢复路径：ThreadRecovery 的进程退出分支、
@@ -1326,6 +1497,13 @@ class GatewayService:
                 if event is not None:
                     events.append(event)
             proposal_preview = None
+            if output.proposal_request is not None and output.score_update_request is not None:
+                # 两个待确认草稿 = 两张卡，而一次确认只能落一个动作：**按契约错误拒** ✗，
+                # 不许"先提案后补录"这种静默取舍（用户根本不知道自己确认的是哪一件事）。
+                raise OutputContractError(
+                    "conflicting_proposals",
+                    "a single turn must not carry both proposalRequest and scoreUpdateRequest",
+                )
             if output.proposal_request is not None:
                 if output.proposal_request.source_version_guard != snapshot.snapshot_version:
                     raise OutputContractError(
@@ -1403,46 +1581,25 @@ class GatewayService:
                     if not isinstance(active, Mapping) and active is not None
                     else sorted(active.keys())[:12] if isinstance(active, Mapping) else [],
                 )
+                # **要覆盖的是 `sourceVersion`，不是 `revision`** ✗✓（实测判据原文 ✓）：
+                # `conversation_actions.py:139-152` 拿 `activeProposal.sourceVersion`（或
+                # `data.sourceVersion` / `data.sourceBackendVersion` ✓）与动作里的
+                # `expectedSourceVersion` 相减 ✓，不等就 `proposal_version_mismatch` ✓。
+                # 覆盖语义见 `_active_proposal_preview_override`（提案/补录共用同一份 ✓）。
                 if active is not None and isinstance(proposal_preview, Mapping):
-                    override = dict(proposal_preview)
-                    # **`active_proposal` 是模型，不是 dict** ✗✓（实测：按字典读**一次都没命中** ✓，
-                    # 而版本看起来"对"是因为 Java 在 pending 存在后自己就返回 1 ✓——差点被这个巧合骗过去 ✓）。
-                    # 所以字典键与属性两条路都走 ✓，别名（驼峰/snake）也各试一次 ✓。
-                    def _field(*names: str) -> Any:
-                        if isinstance(active, Mapping):
-                            for name in names:
-                                if active.get(name) is not None:
-                                    return active[name]
-                            return None
-                        for name in names:
-                            value = getattr(active, name, None)
-                            if value is not None:
-                                return value
-                        return None
-
-                    # **要覆盖的是快照的 `sourceVersion`，不是 `revision`** ✗✓（实测判据原文 ✓）：
-                    # `conversation_actions.py:139-152` 拿 `activeProposal.sourceVersion`（或
-                    # `data.sourceVersion` / `data.sourceBackendVersion` ✓）与动作里的
-                    # `expectedSourceVersion` 相减 ✓，不等就 `proposal_version_mismatch` ✓。
-                    # `revision` 是**另一个字段** ✓（同文件 156 行起另有用处 ✓）——
-                    # 上一轮我把 `sourceVersion` 覆盖成了 `revision` ✓，于是"身份对了、版本错了" ✓✗。
-                    source_version = _field("sourceVersion", "source_version")
-                    if source_version is None:
-                        # 判据里的第二、三个来源在 `active.data` 上 ✓（`conversation_actions.py:142-143` ✓）。
-                        active_data = active.get("data") if isinstance(active, Mapping) else None
-                        if isinstance(active_data, Mapping):
-                            source_version = (
-                                active_data.get("sourceVersion")
-                                or active_data.get("source_version")
-                                or active_data.get("sourceBackendVersion")
-                                or active_data.get("source_backend_version")
-                            )
-                    if source_version is not None:
-                        override["sourceVersion"] = source_version
-                    active_ref = _field("proposalRef", "proposal_ref", "pendingId", "pending_id")
-                    if active_ref:
-                        override["proposalRef"] = str(active_ref)
-                    proposal_preview = override
+                    proposal_preview = _active_proposal_preview_override(proposal_preview, active)
+            elif output.score_update_request is not None:
+                # **补录成绩草稿**（写闭环第二族：score_update ✓）——与提案同一张卡、
+                # 同一条确认链（`proposal.preview` → `conversationAction` ✓）：
+                # 模型只说"要补哪些字段" ✓，预览/校验/摘要/待确认由 Java 生产 ✓。
+                proposal_preview = await self._prepare_score_update_preview(
+                    key,
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request=output.score_update_request,
+                    snapshot=snapshot,
+                )
             working_set = self._working_sets.get(key)
             if working_set is not None:
                 working_set.ingest_payload(turn, turn_id=turn_id)

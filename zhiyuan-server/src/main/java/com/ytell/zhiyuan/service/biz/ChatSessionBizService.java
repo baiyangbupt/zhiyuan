@@ -11,6 +11,7 @@ import com.google.common.collect.Maps;
 import com.ytell.zhiyuan.common.base.BasePage;
 import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.common.exception.ConversationAccessException;
 import com.ytell.zhiyuan.common.util.ApplyTypeUtil;
 import com.ytell.zhiyuan.common.util.ChatSessionExtraDataConverter;
 import com.ytell.zhiyuan.common.util.JsonDataCleanUtil;
@@ -29,9 +30,12 @@ import com.ytell.zhiyuan.model.dto.gaotu.req.ProgramPageReq;
 import com.ytell.zhiyuan.model.dto.gaotu.req.RecommendNumReq;
 import com.ytell.zhiyuan.model.dto.inner.ChatSessionExtraDataReq;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
+import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerSourceDataSnapshot;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateVersionDTO;
+import com.ytell.zhiyuan.model.dto.planning.PrepareResultDTO;
+import com.ytell.zhiyuan.model.dto.planning.ScoreUpdatePreviewDTO;
 import com.ytell.zhiyuan.model.dto.planning.StudentPlanningSummaryDTO;
 import com.ytell.zhiyuan.model.dto.volunteer.VolunteerSchoolGroup;
 import com.ytell.zhiyuan.model.entity.biz.ChatSession;
@@ -57,10 +61,12 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -115,6 +121,9 @@ public class ChatSessionBizService {
     private VolunteerSourceDataSyncService volunteerSourceDataSyncService;
     @Autowired
     private ConversationAccessService conversationAccessService;
+    /** score_update 动作族的 prepare 幂等/取代语义（与用户目标提案同一条状态机）。 */
+    @Autowired
+    private ConversationProposalRequestService conversationProposalRequestService;
 
     /**
      * 分页获取用户会话列表
@@ -203,13 +212,40 @@ public class ChatSessionBizService {
      */
     @Transactional(rollbackFor = Exception.class)
     public UpdateScoreDetailRes updateScoreDetail(Long tenantId, Long chatSessionId, CreateSessionReq req) {
+        UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
+        if (userBaseData == null || userBaseData.getUserId() == null) {
+            // 没有登录身份就不做写：与"不是你的会话"同一个回包。
+            throw new ConversationAccessException(403, "session_forbidden");
+        }
+        return doUpdateScoreDetail(tenantId, chatSessionId, req, userBaseData.getUserId());
+    }
+
+    /**
+     * 补录成绩的**无登录态**入口：`userId` 由调用方从**会话行**解析（见
+     * {@link ConversationAccessService#requireSessionUserId}），给待确认命令的执行路径用
+     * （`/**​/inner/**` 不走登录拦截器，线程里没有 `UserBaseData`）。
+     *
+     * <p>两条入口共用同一条核心：合并 → 归一 → 校验（110）→ 权益 → 落库 → 志愿数据 →
+     * 规划状态版本 +1 置 stale。执行路径与 REST 补录**行为必须完全一致**，
+     * 否则"确认生效的"与"表单补录的"会在不同分支上分叉。</p>
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public UpdateScoreDetailRes updateScoreDetailForUser(Long tenantId, Long chatSessionId,
+                                                         CreateSessionReq req, Long userId) {
+        if (userId == null) {
+            throw new ConversationAccessException(403, "session_forbidden");
+        }
+        return doUpdateScoreDetail(tenantId, chatSessionId, req, userId);
+    }
+
+    private UpdateScoreDetailRes doUpdateScoreDetail(Long tenantId, Long chatSessionId,
+                                                     CreateSessionReq req, Long userId) {
         long requestStart = System.currentTimeMillis();
         if (req == null) {
             throw new BusinessException(110, "补录成绩参数不能为空");
         }
-        UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
         // 1. 归属：不一致与"不存在"同回 403，不泄露会话是否存在。
-        conversationAccessService.requireOwnedSession(tenantId, chatSessionId, userBaseData.getUserId());
+        conversationAccessService.requireOwnedSession(tenantId, chatSessionId, userId);
 
         // 2. 以既有成绩为底合并增量（保留原有 prepareType/意愿等字段）。
         CreateSessionReq merged = mergeScoreDetail(loadSessionScoreDetail(chatSessionId), req);
@@ -219,12 +255,12 @@ public class ChatSessionBizService {
         normalizeCreateSessionDefaults(merged);
         validateCreateSessionReq(merged);
         CheckRightsResVo checkRightsResVo = userBizService.checkRights(
-                userBaseData.getUserId(), OperateCheckPoint.CreateSession, merged.getPrepareType());
+                userId, OperateCheckPoint.CreateSession, merged.getPrepareType());
         if (!Boolean.TRUE.equals(checkRightsResVo.getCanOperate())) {
             throw new BusinessException(110, checkRightsResVo.getReason());
         }
         specialDeal(merged);
-        fillSubjectListFromUserProfileIfNeeded(userBaseData.getUserId(), merged);
+        fillSubjectListFromUserProfileIfNeeded(userId, merged);
 
         // 4. 补齐 recommend 流水线依赖的填报数量/模式（建会话第 2-3 步）。
         long enrichStart = System.currentTimeMillis();
@@ -260,6 +296,151 @@ public class ChatSessionBizService {
         log.info("updateScoreDetail step=finish tenantId={} chatSessionId={} preferenceChanged={} planningVersion={} totalCostMs={}",
                 tenantId, chatSessionId, preferenceChanged, res.getPlanningVersion(), System.currentTimeMillis() - requestStart);
         return res;
+    }
+
+    // ── 补录成绩的"提案-确认"动作族（score_update）──────────────────────────────
+    // 模型在对话里只表达"要补什么"（结构化草稿），Java 侧先做一次**只读校验 + 摘要**
+    // （以下 preview），把预览物化成 pending（prepare），用户确认后由
+    // `PendingPlanningCommandBizService` 的 `update_score_detail` 命令执行——
+    // 执行体就是上面那条 `doUpdateScoreDetail`，与表单补录同一条核心。
+
+    /**
+     * 补录前的**只读**校验与结构化摘要（preview 与 prepare 共用）。
+     *
+     * <p>校验顺序与 {@link #doUpdateScoreDetail} 的 2-3 步一致（合并 → 归一 → 校验 →
+     * 权益），失败抛与执行时**同一个** 110/403——预览阶段就把"确认了也注定失败"的草案挡掉，
+     * 而不是等用户点了确认才回一句"未生效"。这里不写任何东西（不落 userScoreDetail、
+     * 不拉志愿数据、不动规划状态）。</p>
+     */
+    public ScoreUpdatePreviewDTO previewScoreUpdate(Long tenantId, Long chatSessionId, CreateSessionReq req) {
+        Long userId = conversationAccessService.requireSessionUserId(tenantId, chatSessionId);
+        return buildScoreUpdatePreview(tenantId, chatSessionId, req, userId);
+    }
+
+    private ScoreUpdatePreviewDTO buildScoreUpdatePreview(Long tenantId, Long chatSessionId,
+                                                          CreateSessionReq req, Long userId) {
+        if (req == null || isEmptyScoreUpdateRequest(req)) {
+            throw new BusinessException(110, "补录成绩参数不能为空");
+        }
+        conversationAccessService.requireOwnedSession(tenantId, chatSessionId, userId);
+        CreateSessionReq merged = mergeScoreDetail(loadSessionScoreDetail(chatSessionId), req);
+        normalizeScoreUpdateDefaults(merged);
+        normalizeCreateSessionDefaults(merged);
+        validateCreateSessionReq(merged);
+        CheckRightsResVo checkRightsResVo = userBizService.checkRights(
+                userId, OperateCheckPoint.CreateSession, merged.getPrepareType());
+        if (!Boolean.TRUE.equals(checkRightsResVo.getCanOperate())) {
+            throw new BusinessException(110, checkRightsResVo.getReason());
+        }
+
+        ScoreUpdatePreviewDTO preview = new ScoreUpdatePreviewDTO();
+        preview.setStatus("ready");
+        preview.setRequiresConfirmation(Boolean.TRUE);
+        preview.setSourceVersion(currentPlanningVersion(chatSessionId));
+        preview.setSummary(buildScoreUpdateSummary(merged));
+        return preview;
+    }
+
+    /** "什么都没带"的草稿没有可确认的内容；带任一字段才允许进入预览。 */
+    private boolean isEmptyScoreUpdateRequest(CreateSessionReq req) {
+        return req.getProvince() == null
+                && req.getSubjectType() == null
+                && req.getBatch() == null
+                && req.getTotalScore() == null
+                && req.getTotalScorePos() == null
+                && req.getExamYear() == null
+                && CollectionUtil.isEmpty(req.getSubjectScoreList())
+                && CollectionUtil.isEmpty(req.getSubjectList());
+    }
+
+    private Integer currentPlanningVersion(Long chatSessionId) {
+        return planningStateService.getPlanningState(chatSessionId).getVersion();
+    }
+
+    /** 卡片上"给人看的那一份"：全部取自**合并后**的成绩，模型文本里的复述不作数。 */
+    private Map<String, Object> buildScoreUpdateSummary(CreateSessionReq merged) {
+        Map<String, Object> summary = new LinkedHashMap<String, Object>();
+        if (merged.getProvince() != null) {
+            putIfPresentSummary(summary, "provinceName", merged.getProvince().getName());
+            putIfPresentSummary(summary, "provinceCode", merged.getProvince().getCode());
+        }
+        if (merged.getSubjectType() != null) {
+            putIfPresentSummary(summary, "subjectType", merged.getSubjectType().getDesc());
+            putIfPresentSummary(summary, "subjectTypeCode", merged.getSubjectType().getCode());
+        }
+        putIfPresentSummary(summary, "examYear", merged.getExamYear());
+        if (merged.getBatch() != null) {
+            putIfPresentSummary(summary, "batchName", merged.getBatch().getName());
+            putIfPresentSummary(summary, "batchLevel", merged.getBatch().getLevel());
+            if (merged.getBatch().getScore() != null) {
+                putIfPresentSummary(summary, "batchScore", Math.round(merged.getBatch().getScore()));
+            }
+        }
+        putIfPresentSummary(summary, "totalScore", merged.getTotalScore());
+        putIfPresentSummary(summary, "totalScorePos", merged.getTotalScorePos());
+        List<Map<String, Object>> subjects = Lists.newArrayList();
+        if (merged.getSubjectScoreList() != null) {
+            for (CreateSessionReq.SubjectScore item : merged.getSubjectScoreList()) {
+                if (item == null || item.getScore() == null) {
+                    continue;
+                }
+                Map<String, Object> row = new LinkedHashMap<String, Object>();
+                putIfPresentSummary(row, "subject", item.getSubject());
+                putIfPresentSummary(row, "subjectName", item.getSubjectName());
+                row.put("score", item.getScore());
+                subjects.add(row);
+            }
+        }
+        summary.put("subjects", subjects);
+        return summary;
+    }
+
+    private void putIfPresentSummary(Map<String, Object> target, String key, Object value) {
+        if (value != null && !(value instanceof String && Strings.isNullOrEmpty((String) value))) {
+            target.put(key, value);
+        }
+    }
+
+    /**
+     * 写闭环第一段（score_update）：把一次补录预览物化成**待确认**。
+     *
+     * <p>落进 pending 的 dataValue：`operationId`（Java 产出的幂等键，执行时必须原样复用）、
+     * `proposalSource=score_update`、`sourceVersion`（确认时的计划版本守门值）、
+     * `scoreUpdateRequest`（增量草稿原样——执行时由 Java 从服务端既有成绩再合并一次）、
+     * `scoreSummary`（卡片展示用）。</p>
+     *
+     * <p>已有 pending 行时按 CAS 修订号**替换**（不是像用户目标提案那样把
+     * `expectedRevision` 留在 0）：每会话一行，新的预览天然取代旧的一条；留在 0 会让
+     * 第二次补录直接 40901 冲突（"pending revision conflict: current=1 expected=0"）。</p>
+     */
+    public PrepareResultDTO prepareScoreUpdateProposal(Long tenantId, Long chatSessionId, String requestId,
+                                                       String requestDigest, CreateSessionReq req) {
+        PendingConfirmationRes active = pendingConfirmationBizService.getCurrent(tenantId, chatSessionId);
+        String activePendingStatus = active == null ? null : active.getStatus();
+        Long expectedRevision = active == null || active.getRevision() == null ? 0L : active.getRevision();
+        Long userId = conversationAccessService.requireSessionUserId(tenantId, chatSessionId);
+        return conversationProposalRequestService.prepareOnce(
+                tenantId, chatSessionId, requestId, requestDigest, activePendingStatus,
+                () -> {
+                    ScoreUpdatePreviewDTO preview = buildScoreUpdatePreview(tenantId, chatSessionId, req, userId);
+                    String operationId = UUID.randomUUID().toString().replace("-", "");
+                    Map<String, Object> dataValue = new LinkedHashMap<String, Object>();
+                    dataValue.put("operationId", operationId);
+                    dataValue.put("proposalSource", "score_update");
+                    dataValue.put("sourceVersion", preview.getSourceVersion());
+                    dataValue.put("scoreUpdateRequest", JSONObject.parseObject(JSONObject.toJSONString(req)));
+                    dataValue.put("scoreSummary", preview.getSummary());
+                    PendingConfirmationUpsertReq upsert = new PendingConfirmationUpsertReq();
+                    upsert.setChatSessionId(chatSessionId);
+                    upsert.setPendingId(UUID.randomUUID().toString());
+                    upsert.setKind("score_update");
+                    upsert.setActionFamily("update_score_detail");
+                    upsert.setExpectedRevision(expectedRevision);
+                    upsert.setDataValue(dataValue);
+                    PendingConfirmationRes pending = pendingConfirmationBizService.upsert(tenantId, upsert);
+                    return new ConversationProposalRequestService.PrepareOutcome(
+                            pending == null ? null : pending.getPendingId(), operationId, preview);
+                });
     }
 
     /** 空会话的 userScoreDetail 行不存在；读取失败按"没有"处理，交给补录去写。 */

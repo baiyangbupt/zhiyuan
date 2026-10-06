@@ -1,9 +1,11 @@
 package com.ytell.zhiyuan.web.controller.inner;
 
 import com.ytell.zhiyuan.common.base.BaseResponse;
+import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.planning.*;
 import com.ytell.zhiyuan.service.biz.CandidateComparisonService;
 import com.ytell.zhiyuan.service.biz.CandidatePreviewService;
+import com.ytell.zhiyuan.service.biz.ChatSessionBizService;
 import com.ytell.zhiyuan.service.biz.ConversationSnapshotService;
 import com.ytell.zhiyuan.service.biz.PendingPlanningCommandBizService;
 import com.ytell.zhiyuan.service.biz.PlanningStateService;
@@ -42,6 +44,8 @@ public class PlanningStateController {
     private ConversationSnapshotService conversationSnapshotService;
     @Autowired
     private CandidateComparisonService candidateComparisonService;
+    @Autowired
+    private ChatSessionBizService chatSessionBizService;
 
     /**
      * 同口径并列 2–5 个实体。
@@ -535,6 +539,29 @@ public class PlanningStateController {
                 tenantId, chatSessionId, requestId);
         return BaseResponse.success(
                 planningStateService.prepareUserGoalProposal(tenantId, chatSessionId, requestId, digest, safeReq));
+    }
+
+    @PostMapping("/session/score-update/preview")
+    @ApiOperation("校验补录成绩草稿并返回结构化摘要（只读，不落任何状态）")
+    public BaseResponse<ScoreUpdatePreviewDTO> previewScoreUpdate(@PathVariable("tenantId") Long tenantId,
+                                                                  @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                                  @RequestBody CreateSessionReq req) {
+        log.info("previewScoreUpdate: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(chatSessionBizService.previewScoreUpdate(tenantId, chatSessionId, req));
+    }
+
+    @PostMapping("/session/score-update/prepare")
+    @ApiOperation("校验补录成绩草稿并物化为待确认（写闭环第一段，score_update 动作族）")
+    public BaseResponse<PrepareResultDTO> prepareScoreUpdate(@PathVariable("tenantId") Long tenantId,
+                                                             @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                             @ApiParam("幂等键：同一 requestId 重放返回同一次结果（同一个 operationId）")
+                                                             @RequestParam("requestId") String requestId,
+                                                             @RequestBody CreateSessionReq req) {
+        CreateSessionReq safeReq = req == null ? new CreateSessionReq() : req;
+        String digest = DigestUtils.md5DigestAsHex(JSON.toJSONString(safeReq).getBytes(StandardCharsets.UTF_8));
+        log.info("prepareScoreUpdate: tenantId={}, chatSessionId={}, requestId={}", tenantId, chatSessionId, requestId);
+        return BaseResponse.success(
+                chatSessionBizService.prepareScoreUpdateProposal(tenantId, chatSessionId, requestId, digest, safeReq));
     }
 
     @PostMapping("/session/fix-proposals/apply")

@@ -72,3 +72,4 @@ data/tmp/
 
 # 私有运行时目录（含 DB 密码的配置/隔离栈 runtime-home）——2026-10-06 加固
 .local/
+zhiyuan-web/.next-dev-e2e/

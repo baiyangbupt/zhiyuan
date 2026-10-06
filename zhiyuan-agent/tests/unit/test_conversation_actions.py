@@ -881,3 +881,174 @@ async def test_include_scope_with_same_name_candidates_still_proceeds_by_name() 
 
     assert calls[0]["constraint_update"]["majorPreferences"] == {
         "positive": ["临床医学"], "negative": []}
+
+
+# ── 补录成绩（score_update 动作族）：确认 → update_score_detail ─────────────────────
+#
+# 这一族的执行输入是 **Java prepare 落进 pending 的 `scoreUpdateRequest` 草稿** ✓：
+# 网关只**透传** ✓（合并 → 校验（110）→ 落 userScoreDetail → 规划状态 +1 置 stale 全在
+# Java 执行体里，与表单补录同一条核心 ✓）。本节钉三条纪律：
+#   ① 路由：生产者的三个标记（kind / actionFamily / proposalSource）任一命中都走
+#      `update_score_detail` ✓，**不**走提案那条（apply_plan_change_proposal ✗）；
+#   ② fail-closed："是补录但草稿丢了"必须**拒绝执行** ✗——自造草稿等于在用户看不见的
+#      地方写成绩 ✓；同理 operationId 丢了不许自铸幂等键 ✓；
+#   ③ 结果版本：补录的响应**没有 `stateVersion`** ✗，结论在 `resultPlanVersion` /
+#      `planningState.version` 上 ✓（不回退的话 applied 会带着 None 回来 ✓）。
+
+
+def score_update_snapshot() -> dict:
+    """带 score_update pending 的快照（Java `fillActiveProposal` 的扁平暴露形状 ✓）。"""
+    current = snapshot()
+    current["activeProposal"].update({
+        "kind": "score_update",
+        "actionFamily": "update_score_detail",
+    })
+    current["activeProposal"]["data"] = {
+        "operationId": "op-score-1",
+        "proposalSource": "score_update",
+        "sourceVersion": 7,
+        "scoreUpdateRequest": {
+            "sourceVersionGuard": 7,
+            "province": {"code": "330000", "name": "浙江省"},
+            "totalScore": 641,
+            "totalScorePos": 3100,
+            "subjectScoreList": [{"subject": "语文", "score": 118}],
+        },
+    }
+    return current
+
+
+async def _confirm_score_update(snapshot_payload: dict, *, execute_response: dict):
+    """跑一遍 score_update 的 confirm→claim→execute，返回 (结果, execute 收到的 kwargs)。"""
+    execute_calls = []
+    claim_tokens = []
+
+    async def resolver(session_id=None, *args, **kwargs):
+        if kwargs.get("action") in {"complete", "fail"}:
+            return {"code": 0, "data": {"status": "applied"}}
+        claim_tokens.append(kwargs.get("claim_token"))
+        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        execute_calls.append(kwargs)
+        return execute_response
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1", "expectedSourceVersion": 7},
+        snapshot=snapshot_payload, resolver=resolver, executor=executor,
+    )
+    return result, execute_calls, claim_tokens
+
+
+@pytest.mark.asyncio
+async def test_score_update_confirm_routes_to_the_update_score_detail_command():
+    """补录确认走 `update_score_detail`，草稿**原样**进 execute，claim token 复用 ✓。"""
+    result, calls, claim_tokens = await _confirm_score_update(
+        score_update_snapshot(),
+        execute_response={
+            "code": 0,
+            "data": {
+                "status": "applied",
+                "resultPlanVersion": 8,
+                "planningState": {"version": 8},
+            },
+        },
+    )
+
+    assert result.action_status == "applied"
+    # 补录响应没有 `stateVersion`：版本结论在 `resultPlanVersion` 上 ✓
+    assert result.new_state_version == 8
+    call = calls[0]
+    assert call["command_type"] == "update_score_detail"
+    assert call["score_update"]["totalScore"] == 641, "草稿原样透传（网关不合并、不改写）"
+    assert call["score_update"]["subjectScoreList"] == [{"subject": "语文", "score": 118}]
+    # 计划版本取 prepare 时的 planning version（Java 先拿它与 planning state.version 比对）
+    assert call["expected_plan_version"] == 7
+    assert call["claim_token"] == claim_tokens[0], "claim token 必须复用"
+    assert "proposal_apply" not in call, "补录不吃提案载荷"
+    assert "constraint_update" not in call
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", ["kind", "actionFamily", "proposalSource"])
+async def test_score_update_detection_accepts_each_producer_marker(marker: str) -> None:
+    """三个生产者标记**任一**命中即识别 ✓（Java `fillActiveProposal` 三个都扁平暴露 ✓）。"""
+    current = score_update_snapshot()
+    if marker == "kind":
+        current["activeProposal"].pop("actionFamily")
+        current["activeProposal"]["data"].pop("proposalSource")
+    elif marker == "actionFamily":
+        current["activeProposal"].pop("kind")
+        current["activeProposal"]["data"].pop("proposalSource")
+    else:
+        current["activeProposal"].pop("kind")
+        current["activeProposal"].pop("actionFamily")
+
+    _, calls, _ = await _confirm_score_update(
+        current, execute_response={"code": 0, "data": {"status": "applied", "resultPlanVersion": 8}}
+    )
+    assert calls[0]["command_type"] == "update_score_detail"
+
+
+@pytest.mark.asyncio
+async def test_score_update_version_falls_back_to_planning_state_version():
+    """`resultPlanVersion` 缺失时退到 `planningState.version` ✓（别把 applied 带着 None 交出去）。"""
+    result, _, _ = await _confirm_score_update(
+        score_update_snapshot(),
+        execute_response={"code": 0, "data": {"status": "applied", "planningState": {"version": 9}}},
+    )
+    assert result.action_status == "applied"
+    assert result.new_state_version == 9
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("removed_key", "expected_code"), [
+    ("operationId", "operation_id_missing"),
+    ("scoreUpdateRequest", "score_update_payload_missing"),
+])
+async def test_score_update_refuses_to_execute_when_the_pending_is_incomplete(
+    removed_key: str, expected_code: str
+):
+    """pending 不完整就**拒绝执行、一步都不走** ✓✗：
+    - operationId 丢了：自铸一个 → Java 的幂等键认不出同一操作（"重复确认不双写"的依据没了 ✗）；
+    - 草稿丢了：网关自造成绩 → 在用户看不见的地方写库 ✗（"是补录但缺件" ≠ "不是补录"）。
+    """
+    current = score_update_snapshot()
+    current["activeProposal"]["data"].pop(removed_key)
+
+    async def resolver(session_id=None, *args, **kwargs):
+        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        raise AssertionError("pending 不完整时执行器一次都不该被调")
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=current, resolver=resolver, executor=executor,
+    )
+    assert result.action_status == "failed"
+    assert result.code == expected_code
+    assert "拒绝执行" in (result.message or ""), "失败理由要能转述给用户"
+
+
+@pytest.mark.asyncio
+async def test_score_update_failure_carries_the_business_code_and_message():
+    """失败可视化的一半：Java 的业务码（84009 / 110 / 40904 …）与消息要**带出**卡面 ✓✗
+    （只有"未生效"三个字的话，用户只能反复点同一个确认 ✗）。"""
+    result, _, _ = await _confirm_score_update(
+        score_update_snapshot(),
+        execute_response={"code": 84009, "msg": "上游策略校验未通过"},
+    )
+    assert result.action_status == "failed"
+    assert result.code == "84009"
+    assert result.message == "上游策略校验未通过"
+
+
+@pytest.mark.asyncio
+async def test_a_plain_proposal_pending_still_routes_to_the_plan_change_command():
+    """对照 ✓：普通提案待确认里**没有** score_update 标记时照旧走提案路 ✓
+    （补录分支是 else 的另一半，别把整族都吞了 ✗）。"""
+    _, calls = await _claim_then_execute(None, {"goalType": "fill_to_count", "targetCount": 80})
+    assert calls[0]["command_type"] == "apply_plan_change_proposal"

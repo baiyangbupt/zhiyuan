@@ -217,6 +217,50 @@ class ProposalRequest(_ContractModel):
     context: ProposalContext = Field(default_factory=ProposalContext)
 
 
+class ScoreUpdateProvince(_ContractModel):
+    code: str | None = None
+    name: str | None = None
+
+
+class ScoreUpdateSubjectType(_ContractModel):
+    code: str | None = None
+    desc: str | None = None
+
+
+class ScoreUpdateBatch(_ContractModel):
+    code: str | None = None
+    name: str | None = None
+    level: str | None = None
+    score: float | None = None
+
+
+class ScoreUpdateSubjectScore(_ContractModel):
+    subject: str | None = None
+    subject_name: str | None = None
+    score: int | None = None
+
+
+class ScoreUpdateRequest(_ContractModel):
+    """模型产出的**补录成绩草稿**（写闭环第二族：score_update）。
+
+    与 `ProposalRequest` 同一个角色定位：模型只表达**结构化草稿**（"用户说了哪些
+    字段就带哪些"——合并、校验、摘要都由 Java 在生产端完成），网关不解析自然语言、
+    也不自己算成绩。`source_version_guard` 与提案同一条纪律：模型看到的会话版本
+    必须与当前快照一致，不一致就 `stale_state`（拿旧版本确认一个已经变化的会话，
+    比让用户失败一次糟得多）。
+    """
+
+    source_version_guard: int = Field(ge=0)
+    user_original_text: str = ""
+    province: ScoreUpdateProvince | None = None
+    subject_type: ScoreUpdateSubjectType | None = None
+    batch: ScoreUpdateBatch | None = None
+    total_score: int | None = None
+    total_score_pos: int | None = None
+    exam_year: int | None = None
+    subject_score_list: list[ScoreUpdateSubjectScore] = Field(default_factory=list)
+
+
 class TurnOutput(_ContractModel):
     response_type: Literal["text", "fact", "recommendation", "review", "clarification"]
     message: str
@@ -230,6 +274,9 @@ class TurnOutput(_ContractModel):
     execution_status: Literal["completed", "partial", "blocked", "failed"] = "completed"
     proposal_ref: str | None = None
     proposal_request: ProposalRequest | None = None
+    # 与 `proposal_request` 互斥（同一次输出不许携带两个待确认草稿——卡片只能是
+    # 一个"要用户确认的东西"；网关对"两个都带"按契约错误拒）。
+    score_update_request: ScoreUpdateRequest | None = None
     conversation_action: ConversationAction = Field(default_factory=ConversationAction)
 
     @field_validator("response_type", mode="before")

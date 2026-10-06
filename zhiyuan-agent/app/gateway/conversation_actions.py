@@ -27,6 +27,11 @@ APPLY_PLAN_CHANGE_PROPOSAL = "apply_plan_change_proposal"
 # `constraintUpdate` 做这件事 ✓（`app/zhiyuan_agent/tools.py` 的参照调用 ✓），
 # 第十一轮把同一个映射补进新链 ✓。
 APPLY_CONSTRAINT_AND_REGENERATE = "apply_constraint_and_regenerate"
+# 补录成绩（score_update 动作族的执行命令）：与 Java `PendingPlanningCommandBizService`
+# 的同名常量逐字一致。它的输入是 pending 里由 Java prepare 落下的 `scoreUpdateRequest`，
+# 执行体是 `ChatSessionBizService.updateScoreDetailForUser`（与表单补录同一条核心）。
+UPDATE_SCORE_DETAIL = "update_score_detail"
+SCORE_UPDATE_KIND = "score_update"
 PLAN_CHANGE_GOALS = frozenset({"fill_to_count", "prioritize_within_tier"})
 SCOPE_GOALS = frozenset({"only_keep_scope", "must_include_scope", "exclude_scope", "tuition_budget_scope"})
 # 目标里的范围种类 → `constraintUpdate` 的三个偏好束（与 legacy 的分组一致 ✓）。
@@ -543,6 +548,27 @@ async def _resolve_major_scope_ids(
     return resolved
 
 
+def _score_update_payload(
+    active: Mapping[str, Any], active_data: Mapping[str, Any]
+) -> tuple[bool, dict[str, Any] | None]:
+    """识别"这一条待确认是不是补录成绩"，并取回执行草稿。
+
+    判据取**生产者落下的三种标记**（kind / actionFamily / dataValue.proposalSource ✓，
+    Java `fillActiveProposal` 三个都扁平暴露 ✓）——任一命中即认定；草稿取
+    `scoreUpdateRequest`（只在 score_update 的 pending 里存在 ✓）。
+    "是补录、但草稿丢了"与"不是补录"必须分开 ✗✓：前者是生产者缺陷，**拒绝执行**
+    （自造草稿会在用户看不见的地方写成绩）；后者正常走提案路。
+    """
+    kind = str(active.get("kind") or "").strip().lower()
+    family = str(active.get("actionFamily") or active.get("action_family") or "").strip().lower()
+    source = str(
+        active_data.get("proposalSource") or active_data.get("proposal_source") or ""
+    ).strip().lower()
+    is_score_update = kind == SCORE_UPDATE_KIND or family == UPDATE_SCORE_DETAIL or source == SCORE_UPDATE_KIND
+    payload = active_data.get("scoreUpdateRequest", active_data.get("score_update_request"))
+    return is_score_update, dict(payload) if isinstance(payload, Mapping) else None
+
+
 def _command_for_goal(
     active_data: Mapping[str, Any], *, proposal_apply: dict[str, Any],
     region_ids: Mapping[str, str] | None = None,
@@ -637,59 +663,86 @@ async def _execute_claimed_command(
         snapshot_version,
         source_version,
     )
-    proposal_apply = _proposal_apply_payload(
-        active, active_data, proposal_ref=str(proposal_ref or pending_id), source_version=plan_version
-    )
-    # 三件套**手上没有**时才去问生产者 ✓（只读 ✓）：不取就是照旧 409 ✓（卡显示"未生效" ✓），
-    # 取到了才可能走到"已生效" ✓。只在 user_goal 那条路上做 ✓（新链路只编译这一种 ✓）。
-    if str(proposal_apply.get("proposalSource") or "") == "user_goal" and not any(
-        camel in proposal_apply for camel, _ in CANONICAL_METADATA_FIELDS
-    ):
-        proposal_apply.update(
-            await _canonical_metadata_from_producer(
-                tenant_id,
-                session_id,
-                proposal_id=str(proposal_apply.get("proposalId") or ""),
-                user_goal_request=proposal_apply.get("userGoalRequest"),
-            )
-        )
-    # pending 里存了 `proposalApply` 就是**生产者的守门值** ✓——expected 跟着它走 ✓，
-    # 这样万一 Java 回 `40904`，报出来的就是"守门值本身过期了" ✓（生产侧的事 ✓），
-    # 而不是"网关送错了值" ✗。
-    expected_plan_version = _first_int(
-        proposal_apply.get("sourceVersionGuard"), proposal_apply.get("sourceVersion"), plan_version
-    )
-    logger.info(
-        "execute stage plan version: expected=%s guard=%s snapshot=%s activeSourceVersion=%s sourceBackendVersion=%s",
-        expected_plan_version,
-        _first_int(proposal_apply.get("sourceVersionGuard"), proposal_apply.get("sourceVersion")),
-        snapshot_version,
-        active.get("sourceVersion"),
-        active_data.get("sourceBackendVersion", active_data.get("source_backend_version")),
-    )
-    try:
-        # 区域先解析出权威 ID ✓（解析失败就不给 ✓，匹配按名字兜底 ✓）。
-        region_ids = await _resolve_region_scope_ids(
-            active_data.get("userGoalRequest") or active_data.get("user_goal_request") or {}
-        )
-        # 专业同理 ✓（学历层次来自会话批次 ✓，只用于目录去歧义 ✓）。
-        major_ids = await _resolve_major_scope_ids(
-            active_data.get("userGoalRequest") or active_data.get("user_goal_request") or {},
-            education_level=education_level,
-        )
-        command_type, extra_kwargs = _command_for_goal(
-            active_data,
-            region_ids=region_ids,
-            major_ids=major_ids,
-            proposal_apply=proposal_apply,
-        )
-    except ValueError as exc:
-        # 范围种类不认识、或范围目标里什么都没有：**拒绝执行** ✓
-        # （静默丢掉一条排除，用户看不见地在方案里留着一所他要去掉的学校——那更糟 ✓）。
-        code, _, detail = str(exc).partition(":")
+    is_score_update, score_update = _score_update_payload(active, active_data)
+    if is_score_update and score_update is None:
         return ConversationActionResult(
-            "failed", proposal_ref, code=code.strip(), message=detail.strip() or None
+            "failed", proposal_ref, code="score_update_payload_missing",
+            message="待确认内容里没有补录成绩草稿，拒绝执行（不自造要写入的成绩）。",
         )
+    if score_update is not None:
+        # **补录成绩（score_update 动作族）**：执行输入是 Java prepare 落进 pending 的
+        # `scoreUpdateRequest` 草稿 —— 网关只透传（**不合并、不校验、不摘要**）：合并 →
+        # 校验（110）→ 落 userScoreDetail → 拉志愿数据 → 规划状态 +1 置 stale，全在 Java
+        # 执行体里，与表单补录**同一条核心**。
+        # 计划版本取 `activeProposal.sourceVersion`（prepare 时的 planning version）：
+        # Java 的 `execute` 先拿它与 planning state 的 `version` 比
+        # （`PendingPlanningCommandBizService:80-86` ✓）——期间版本变了就 40904 → 卡显示
+        # "未生效"、一个字都不写 ✓（这正是 `expectedPlanVersion` 在这里存在的意义 ✓）。
+        command_type = UPDATE_SCORE_DETAIL
+        extra_kwargs = {"score_update": score_update}
+        expected_plan_version = _first_int(
+            active.get("sourceVersion"), active_data.get("sourceVersion"), plan_version
+        )
+        logger.info(
+            "execute stage score update: expectedPlanVersion=%s dataKeys=%s sourceVersion=%s",
+            expected_plan_version,
+            sorted(active_data.keys())[:12],
+            source_version,
+        )
+    else:
+        proposal_apply = _proposal_apply_payload(
+            active, active_data, proposal_ref=str(proposal_ref or pending_id), source_version=plan_version
+        )
+        # 三件套**手上没有**时才去问生产者 ✓（只读 ✓）：不取就是照旧 409 ✓（卡显示"未生效" ✓），
+        # 取到了才可能走到"已生效" ✓。只在 user_goal 那条路上做 ✓（新链路只编译这一种 ✓）。
+        if str(proposal_apply.get("proposalSource") or "") == "user_goal" and not any(
+            camel in proposal_apply for camel, _ in CANONICAL_METADATA_FIELDS
+        ):
+            proposal_apply.update(
+                await _canonical_metadata_from_producer(
+                    tenant_id,
+                    session_id,
+                    proposal_id=str(proposal_apply.get("proposalId") or ""),
+                    user_goal_request=proposal_apply.get("userGoalRequest"),
+                )
+            )
+        # pending 里存了 `proposalApply` 就是**生产者的守门值** ✓——expected 跟着它走 ✓，
+        # 这样万一 Java 回 `40904`，报出来的就是"守门值本身过期了" ✓（生产侧的事 ✓），
+        # 而不是"网关送错了值" ✗。
+        expected_plan_version = _first_int(
+            proposal_apply.get("sourceVersionGuard"), proposal_apply.get("sourceVersion"), plan_version
+        )
+        logger.info(
+            "execute stage plan version: expected=%s guard=%s snapshot=%s activeSourceVersion=%s sourceBackendVersion=%s",
+            expected_plan_version,
+            _first_int(proposal_apply.get("sourceVersionGuard"), proposal_apply.get("sourceVersion")),
+            snapshot_version,
+            active.get("sourceVersion"),
+            active_data.get("sourceBackendVersion", active_data.get("source_backend_version")),
+        )
+        try:
+            # 区域先解析出权威 ID ✓（解析失败就不给 ✓，匹配按名字兜底 ✓）。
+            region_ids = await _resolve_region_scope_ids(
+                active_data.get("userGoalRequest") or active_data.get("user_goal_request") or {}
+            )
+            # 专业同理 ✓（学历层次来自会话批次 ✓，只用于目录去歧义 ✓）。
+            major_ids = await _resolve_major_scope_ids(
+                active_data.get("userGoalRequest") or active_data.get("user_goal_request") or {},
+                education_level=education_level,
+            )
+            command_type, extra_kwargs = _command_for_goal(
+                active_data,
+                region_ids=region_ids,
+                major_ids=major_ids,
+                proposal_apply=proposal_apply,
+            )
+        except ValueError as exc:
+            # 范围种类不认识、或范围目标里什么都没有：**拒绝执行** ✓
+            # （静默丢掉一条排除，用户看不见地在方案里留着一所他要去掉的学校——那更糟 ✓）。
+            code, _, detail = str(exc).partition(":")
+            return ConversationActionResult(
+                "failed", proposal_ref, code=code.strip(), message=detail.strip() or None
+            )
     response = await (executor or execute_pending_planning_command)(
         tenant_id,
         session_id,
@@ -739,8 +792,19 @@ async def _execute_claimed_command(
             pending_id,
         )
     changes = data.get("actualChanges", data.get("changes", []))
+    planning_state = data.get("planningState")
     return ConversationActionResult(
-        status, proposal_ref, _first_int(data.get("stateVersion")),
+        status,
+        proposal_ref,
+        # 补录成绩那条**没有 `stateVersion` 字段** ✗：结论在 `resultPlanVersion` /
+        # `planningState.version` 上（Java `PendingPlanningCommandRes` 的形状 ✓）——
+        # 不回退到这两个位置的话，`applied` 会带着 `newStateVersion: None` 回来 ✓，
+        # 对"工作区刷新到哪个版本"就少了一个可核对的数 ✓。
+        _first_int(
+            data.get("stateVersion"),
+            data.get("resultPlanVersion"),
+            planning_state.get("version") if isinstance(planning_state, Mapping) else None,
+        ),
         list(changes) if isinstance(changes, list) else [],
         str(response.get("code")) if response.get("code") is not None else None,
         str(response.get("msg") or response.get("message")) if response.get("msg") or response.get("message") else None,

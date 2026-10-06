@@ -851,6 +851,10 @@ def _proposal_preview_payload(preview: Mapping[str, Any]) -> dict[str, Any]:
             "requiresConfirmation",
             "affectedUnitIds",
             "candidateShortages",
+            # 补录成绩卡的结构化那份（省份/科类/批次/各科/总分/位次 ✓）：来源是 Java
+            # 按**合并后**成绩算的 `scoreSummary` ✓（`ChatSessionBizService.buildScoreUpdateSummary`）——
+            # 模型文本里的复述不作数 ✗。白名单放到这里 ✓：卡片按它渲染明细行 ✓。
+            "scoreUpdate",
         )
         if preview.get(key) is not None
     }
@@ -947,6 +951,13 @@ async def _emit_turn_terminal(*, emit, channel, result: dict, session_id: str) -
             }
             if result.get("snapshotVersion") is not None:
                 action_payload["workspaceVersion"] = result["snapshotVersion"]
+            # **失败原因不许静默** ✓✓（110 / 40904 / 84009 / -1 …）：卡要能说出"未生效 +
+            # 为什么" ✓——Java 的业务码与消息在 `actionResult.code/message` 上（网关
+            # `_execute_claimed_command` 从响应体里翻出来 ✓），这里原样带给前端 ✓
+            #（前端白名单 `conversationEvents.mjs` 同款扩了 `code`/`message` ✓）。
+            for key in ("code", "message"):
+                if action_result.get(key) is not None:
+                    action_payload[key] = action_result[key]
             await emit({"type": "conversationAction.result", "payload": action_payload})
         proposal_preview = result.get("proposalPreview")
         if isinstance(proposal_preview, Mapping) and proposal_preview:

@@ -277,3 +277,63 @@ test('回合开始事件保留墙钟时间戳，白名单外的字段不过去',
   assert.equal(normalized.payload.startedAt, 1728000000000);
   assert.equal(normalized.payload.internal, undefined, '白名单外的字段不该进渲染面');
 });
+
+test('补录成绩卡的结构化摘要随 diff 一起通过白名单', () => {
+  // 卡片按 `diff.scoreUpdate` 渲染明细行（省份/科类/各科/总分/位次）——
+  // 它在 `diff` 里面，跟着 diff 整份通过；白名单外的顶层字段照旧被滤掉。
+  const normalized = normalizeConversationEvent({
+    protocolVersion: 1,
+    type: 'proposal.preview',
+    sessionId: '42',
+    turnId: 't1',
+    streamEpoch: 'e1',
+    sequence: 5,
+    payload: {
+      proposalRef: 'pending-score-1',
+      sourceVersion: 8,
+      diff: {
+        title: '更新成绩',
+        summary: '浙江省 · 总分 641',
+        status: 'pending',
+        requiresConfirmation: true,
+        scoreUpdate: {
+          provinceName: '浙江省',
+          totalScore: 641,
+          subjects: [{ subjectName: '语文', score: 118 }],
+        },
+      },
+      internal: 'do-not-display',
+    },
+  });
+
+  assert.equal(normalized.payload.proposalRef, 'pending-score-1');
+  assert.equal(normalized.payload.diff.title, '更新成绩');
+  assert.equal(normalized.payload.diff.scoreUpdate.totalScore, 641);
+  assert.equal(normalized.payload.diff.scoreUpdate.subjects[0].score, 118);
+  assert.equal(normalized.payload.internal, undefined, '白名单外的字段不该进渲染面');
+});
+
+test('失败原因（code/message）随动作结果通过白名单', () => {
+  // "未生效"之外还要说得出**为什么**（110 / 40904 / 84009 / -1 …）——
+  // 服务端发了 code/message，白名单不放行的话卡上只剩一句"未生效"。
+  const normalized = normalizeConversationEvent({
+    protocolVersion: 1,
+    type: 'conversationAction.result',
+    sessionId: '42',
+    turnId: 't1',
+    streamEpoch: 'e1',
+    sequence: 6,
+    payload: {
+      proposalRef: 'pending-score-1',
+      actionStatus: 'failed',
+      code: '84009',
+      message: '上游策略校验未通过',
+      actualChanges: { secret: 'do-not-display' },
+    },
+  });
+
+  assert.equal(normalized.payload.actionStatus, 'failed');
+  assert.equal(normalized.payload.code, '84009');
+  assert.equal(normalized.payload.message, '上游策略校验未通过');
+  assert.equal(normalized.payload.actualChanges, undefined);
+});

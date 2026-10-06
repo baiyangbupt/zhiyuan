@@ -1,6 +1,7 @@
 package com.ytell.zhiyuan.model.dto.planning;
 
 import com.google.common.collect.Lists;
+import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import lombok.Data;
 
 import java.util.List;
@@ -19,4 +20,6 @@ public class PendingPlanningCommandReq {
     private List<String> unitIds = Lists.newArrayList();
     private List<String> volunteerIds = Lists.newArrayList();
     private FixProposalApplyReq proposalApply;
+    /** `update_score_detail` 的执行输入：模型草稿原样（执行侧会与服务端既有成绩再合并一次）。 */
+    private CreateSessionReq scoreUpdate;
 }

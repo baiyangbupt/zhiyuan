@@ -185,6 +185,64 @@ def test_the_mapped_ref_wins_over_the_compiler_id() -> None:
     assert payload["proposalRef"] == "00f9bf22-pending"
 
 
+def test_the_score_update_summary_rides_inside_the_diff() -> None:
+    """补录卡的结构化那份（`scoreUpdate`）要进 `diff` ✓✓：它是**卡片渲染明细行**的输入
+    （省份/科类/批次/各科/总分/位次 ✓），来源是 Java 按合并后成绩算的 `scoreSummary` ✓。
+    白名单漏了它 → 卡片只剩一句话摘要 ✓（用户核对不了"系统到底要写哪些字段" ✗）。
+    """
+    summary = {"provinceName": "浙江省", "totalScore": 641, "totalScorePos": 3100}
+
+    payload = _proposal_preview_payload(
+        {
+            "proposalRef": "pending-score-1",
+            "sourceVersion": 1,
+            "title": "更新成绩",
+            "summary": "浙江省 · 总分 641",
+            "status": "pending",
+            "requiresConfirmation": True,
+            "scoreUpdate": summary,
+        }
+    )
+
+    assert payload["proposalRef"] == "pending-score-1"
+    assert payload["diff"]["scoreUpdate"] == summary
+    assert payload["diff"]["requiresConfirmation"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_failed_action_result_carries_the_reason_to_the_card() -> None:
+    """**失败不许静默** ✓✓（110 / 40904 / 84009 / -1 …）：`code`/`message` 原样带给前端 ✓
+    ——白名单两者都放行 ✓（`conversationEvents.mjs` ✓）。只说"未生效"的话，
+    用户只能反复点同一个确认 ✗，排障也没有锚点 ✗。
+    """
+    channel = _Channel(uses_v1=True)
+    events, emit = _collector()
+
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=channel,
+        result={
+            "reply": "这次确认没有生效。",
+            "actionResult": {
+                "actionStatus": "failed",
+                "proposalRef": "pending-score-1",
+                "code": "84009",
+                "message": "上游策略校验未通过",
+                "actualChanges": {},
+            },
+            "snapshotVersion": 3,
+        },
+        session_id="900047",
+    )
+
+    payload = events[0]["payload"]
+    assert events[0]["type"] == "conversationAction.result"
+    assert payload["actionStatus"] == "failed"
+    assert payload["code"] == "84009"
+    assert payload["message"] == "上游策略校验未通过"
+    assert payload["workspaceVersion"] == 3
+
+
 def test_the_preview_is_translated_into_the_frontend_contract_shape() -> None:
     """**翻译归网关** ✓✓：Java 的预览字段名与前端白名单**对不上** ✗
     （实测 Java 给 `proposalId`/`title`/`summary`/`status`/`blockingReason` ✓，

@@ -37,7 +37,10 @@ const V1_PAYLOAD_WHITELIST = {
   'clarification.requested': ['requestId', 'inputKind', 'questions', 'requestedSchema', 'expiresIn'],
   'clarification.resolved': ['requestId', 'status'],
   'proposal.preview': ['proposalRef', 'diff', 'sourceVersion', 'expiresAt'],
-  'conversationAction.result': ['proposalRef', 'actionStatus', 'newStateVersion', 'workspaceVersion'],
+  // `code`/`message`：动作失败时**必须**能说出原因（110 / 40904 / 84009 …）——
+  // 只有 actionStatus 的话，卡上只剩一句"未生效"，用户与排障都无从判断 ✗
+  //（服务端 `server.py` 的 action_payload 已把这两个键带上 ✓，这里同步放行 ✓）。
+  'conversationAction.result': ['proposalRef', 'actionStatus', 'newStateVersion', 'workspaceVersion', 'code', 'message'],
   'assistant.delta': ['chunk', 'itemId'],
   'assistant.completed': ['message', 'responseType', 'executionStatus', 'limitations'],
   'turn.completed': ['executionStatus', 'toolStatus', 'runtimeStatus'],

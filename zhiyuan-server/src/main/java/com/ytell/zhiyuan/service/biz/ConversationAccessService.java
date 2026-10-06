@@ -53,6 +53,27 @@ public class ConversationAccessService {
     }
 
     /**
+     * 从**会话行**解析归属用户（给没有登录态的内部执行路径用）。
+     *
+     * <p>为什么不能从请求里带 userId ✗：`/**​/inner/**` 不走登录拦截器，调用方（网关）
+     * 手上的 userId 不是本服务认证过的身份。归属只能以会话行为准——解析出来的 userId
+     * 恰好就是当初建会话的那个人，`requireOwnedSession` 的三元比对因此恒成立，
+     * 但这不削弱任何东西：能被解析出来的前提是租户已经对上。</p>
+     */
+    public Long requireSessionUserId(Long tenantId, Long sessionId) {
+        if (tenantId == null || sessionId == null) {
+            throw new ConversationAccessException(403, "session_forbidden");
+        }
+        ChatSession session = chatSessionSharedService.getById(sessionId);
+        if (session == null
+                || !Objects.equals(session.getTenantId(), tenantId)
+                || session.getUserId() == null) {
+            throw new ConversationAccessException(403, "session_forbidden");
+        }
+        return session.getUserId();
+    }
+
+    /**
      * 为一次握手签发票据。来源由**服务端**认定，取自请求的 Origin 且必须在白名单里。
      */
     public String issueTicket(Long tenantId, Long sessionId, Long botId, Long principalUserId, String requestOrigin) {

@@ -4,6 +4,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.google.common.base.Strings;
 import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.model.dto.UpdateScoreDetailRes;
 import com.ytell.zhiyuan.model.dto.planning.DraftSelectReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyRes;
@@ -41,6 +42,8 @@ public class PendingPlanningCommandBizService {
     public static final String ADD_UNITS = "add_units";
     public static final String REPLACE_UNITS = "replace_units";
     public static final String APPLY_PLAN_CHANGE_PROPOSAL = "apply_plan_change_proposal";
+    /** 补录成绩（score_update 动作族）：执行体与表单补录同一条核心（`ChatSessionBizService`）。 */
+    public static final String UPDATE_SCORE_DETAIL = "update_score_detail";
 
     @Autowired
     private PlanningPendingCommandSharedService commandSharedService;
@@ -52,6 +55,8 @@ public class PendingPlanningCommandBizService {
     private PlanningStateService planningStateService;
     @Autowired
     private ChatSessionBizService chatSessionBizService;
+    @Autowired
+    private ConversationAccessService conversationAccessService;
     @Autowired
     private UnifiedPlanPostconditionValidator postconditionValidator;
 
@@ -128,6 +133,10 @@ public class PendingPlanningCommandBizService {
         List<String> steps = new ArrayList<String>();
         PlanningStateDTO state;
         FixProposalApplyRes proposalApplyRes = null;
+        // 有些命令的成功信号不是"计划结构变了"（补录成绩改的是成绩，方案原样不动），
+        // 它们显式给出状态；其余命令保持原状（由满足度报告/业务码判）。
+        String explicitStatus = null;
+        Integer resultPlanVersionOverride = null;
         if (APPLY_CONSTRAINT_AND_REGENERATE.equals(req.getCommandType())) {
             if (req.getConstraintUpdate() != null) {
                 planningStateService.updateConstraintState(chatSessionId, req.getConstraintUpdate());
@@ -182,6 +191,22 @@ public class PendingPlanningCommandBizService {
             steps.add("proposal_applied");
             steps.add("ordered_plan_regenerated");
             steps.add("review_rerun");
+        } else if (UPDATE_SCORE_DETAIL.equals(req.getCommandType())) {
+            // 执行体与 REST 补录完全同一条核心：合并 → 校验（失败回 110 并整体回滚）→
+            // 落 userScoreDetail → 拉志愿数据 → 规划状态版本 +1 置 stale。
+            // 归属用户从**会话行**解析：inner 端点没有登录态，见
+            // `ConversationAccessService.requireSessionUserId`。
+            Long ownerUserId = conversationAccessService.requireSessionUserId(tenantId, chatSessionId);
+            if (ownerUserId == null) {
+                throw new BusinessException(PendingConfirmationBizService.PENDING_MISMATCH_CODE,
+                        "session owner is required for score update");
+            }
+            UpdateScoreDetailRes scoreUpdateRes = chatSessionBizService.updateScoreDetailForUser(
+                    tenantId, chatSessionId, req.getScoreUpdate(), ownerUserId);
+            state = planningStateService.getPlanningState(chatSessionId);
+            steps.add("score_detail_updated");
+            explicitStatus = "applied";
+            resultPlanVersionOverride = scoreUpdateRes == null ? null : scoreUpdateRes.getPlanningVersion();
         } else {
             throw new BusinessException(40001, "unsupported commandType: " + req.getCommandType());
         }
@@ -191,7 +216,10 @@ public class PendingPlanningCommandBizService {
         result.setPendingId(req.getPendingId());
         result.setCommandType(req.getCommandType());
         result.setSourcePlanVersion(sourceVersion);
-        result.setResultPlanVersion(state.getVersion() == null ? 0 : state.getVersion());
+        result.setResultPlanVersion(resultPlanVersionOverride != null
+                ? resultPlanVersionOverride
+                : (state.getVersion() == null ? 0 : state.getVersion()));
+        result.setStatus(explicitStatus);
         result.setCompletedSteps(steps);
         if (APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())) {
             result.setPostconditionReport(postconditionValidator.validate(req, state, proposalApplyRes));
@@ -270,6 +298,7 @@ public class PendingPlanningCommandBizService {
         compact.setCommandType(source.getCommandType());
         compact.setSourcePlanVersion(source.getSourcePlanVersion());
         compact.setResultPlanVersion(source.getResultPlanVersion());
+        compact.setStatus(source.getStatus());
         compact.setCompletedSteps(new ArrayList<String>(source.getCompletedSteps()));
         compact.setPostconditionReport(source.getPostconditionReport());
         compact.setReplayed(false);
@@ -313,6 +342,7 @@ public class PendingPlanningCommandBizService {
             stable.setUnitIds(req.getUnitIds());
             stable.setVolunteerIds(req.getVolunteerIds());
             stable.setProposalApply(req.getProposalApply());
+            stable.setScoreUpdate(req.getScoreUpdate());
             byte[] value = digest.digest(JSONObject.toJSONString(stable).getBytes(StandardCharsets.UTF_8));
             StringBuilder result = new StringBuilder(value.length * 2);
             for (byte item : value) {
@@ -341,8 +371,12 @@ public class PendingPlanningCommandBizService {
         if (!APPLY_CONSTRAINT_AND_REGENERATE.equals(req.getCommandType())
                 && !ADD_UNITS.equals(req.getCommandType())
                 && !REPLACE_UNITS.equals(req.getCommandType())
-                && !APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())) {
+                && !APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())
+                && !UPDATE_SCORE_DETAIL.equals(req.getCommandType())) {
             throw new BusinessException(40001, "unsupported commandType: " + req.getCommandType());
+        }
+        if (UPDATE_SCORE_DETAIL.equals(req.getCommandType()) && req.getScoreUpdate() == null) {
+            throw new BusinessException(40001, "update_score_detail requires scoreUpdate");
         }
         if (ADD_UNITS.equals(req.getCommandType())
                 && (req.getVolunteerIds() == null || req.getVolunteerIds().isEmpty())) {

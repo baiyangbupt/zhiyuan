@@ -14,6 +14,11 @@ from loguru import logger
 
 from app.config import InternalServiceConfig
 
+# 同步等慢命令跑完的调用（规划命令 execute ✓）单独放宽的总超时 ✓：
+# 默认 10s 实测会把**已提交**的补录成绩 execute（23.8s ✓）误报成"未生效" ✗
+# （静默反向分叉 ✓——见 `HttpClient._resolve_timeout` ✓，2026-10-06 实测 ✓）。
+EXECUTE_WAIT_TIMEOUT_SECONDS = 60.0
+
 
 class HttpClient:
     """HTTP 客户端，封装了 aiohttp 请求操作。"""
@@ -27,6 +32,20 @@ class HttpClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+
+    def _resolve_timeout(
+        self, timeout_seconds: Optional[float] = None
+    ) -> aiohttp.ClientTimeout:
+        """每次调用可用 `timeout_seconds` **单独放宽**总超时 ✓。
+
+        默认值（10s ✓）是常规内部调用的护栏 ✓；但**同步等一条慢命令跑完**的调用
+        （规划命令 execute ✓）必须能放宽 ✓——超时先返回**不等于服务端没执行** ✗：
+        2026-10-06 实测补录成绩 execute 端到端 **23.8s** ✓（同步重拉全量志愿数据 ✓），
+        客户端 10s 超时会制造"**写已提交、卡却显示未生效**"的静默反向分叉 ✗✓。
+        """
+        if timeout_seconds is None:
+            return self.timeout
+        return aiohttp.ClientTimeout(total=max(0.1, float(timeout_seconds)))
 
     def _get_random_base_url(self) -> str:
         """随机选择一个基础 URL。"""
@@ -76,6 +95,7 @@ class HttpClient:
         params: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         error_msg: str = "请求失败",
+        timeout_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
         """发送 POST 请求。
 
@@ -85,6 +105,8 @@ class HttpClient:
             params: 查询串参数（如果提供，将挂在 URL 上）
             headers: 请求头（如果提供，将与默认请求头合并）
             error_msg: 错误信息前缀
+            timeout_seconds: **单独放宽**该次调用的总超时 ✓（默认走构造时的配置值 ✓；
+                见 `_resolve_timeout` ✓——同步等慢命令（execute）的那条必须放宽 ✓）。
 
         Returns:
             服务器返回的 JSON 响应。
@@ -96,7 +118,7 @@ class HttpClient:
             merged_headers.update(headers)
 
         try:
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            async with aiohttp.ClientSession(timeout=self._resolve_timeout(timeout_seconds)) as session:
                 async with session.post(
                     url, json=json_data, params=params, headers=merged_headers
                 ) as response:
@@ -942,6 +964,50 @@ async def prepare_user_goal_planning_fix_proposals(
     )
 
 
+async def preview_score_update(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """补录成绩草稿的**只读**预览（校验 + 结构化摘要，不落任何状态）。
+
+    与 prepare 的区别只有"要不要物化成待确认"这一点（同 `user-goal` 的 generate/prepare ✓）。
+    只读模式（`codex_readonly`）走这条：写路径不在这台实例上活着。
+    """
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/score-update/preview"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data=payload or {},
+        error_msg="生成补录成绩预览失败",
+    )
+
+
+async def prepare_score_update(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    *,
+    request_id: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """补录成绩草稿的 prepare：Java 校验后**物化成待确认**（写闭环第一段）。
+
+    与 `prepare_user_goal_planning_fix_proposals` 同一条状态机（同 requestId 重放
+    → 同一个 operationId；配不同内容 → 409 ✓）：pending 的 `dataValue` 里落下 Java
+    产出的 `operationId`、`sourceVersion`、`scoreUpdateRequest`（执行输入）与
+    `scoreSummary`（卡片展示）。
+    """
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/score-update/prepare"
+            f"?chatSessionId={chat_session_id}&requestId={request_id}"
+        ),
+        json_data=payload or {},
+        error_msg="生成补录成绩待确认失败",
+    )
+
+
 async def apply_planning_fix_proposal(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],
@@ -1500,6 +1566,7 @@ async def execute_pending_planning_command(
     unit_ids: Optional[List[str]] = None,
     volunteer_ids: Optional[List[str]] = None,
     proposal_apply: Optional[Dict[str, Any]] = None,
+    score_update: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "operationId": operation_id,
@@ -1519,6 +1586,11 @@ async def execute_pending_planning_command(
         payload["maxTuitionPerYear"] = max_tuition_per_year
     if proposal_apply:
         payload["proposalApply"] = proposal_apply
+    if score_update:
+        payload["scoreUpdate"] = score_update
+    # **execute 是"同步等命令跑完"** ✓（Java `PendingPlanningCommandBizService.execute` 单事务
+    # 同步返回 ✓）：补录成绩这条会同步重拉全量志愿数据再落盘 ✓——2026-10-06 实测整段 **23.8s** ✓，
+    # 默认 10s 会在**写已提交**之后超时 ✗（卡上误显"未生效" ✗——成功被显示成失败的静默反向分叉 ✗）。
     return await http_client.post(
         endpoint=(
             f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/pending-command/execute"
@@ -1526,6 +1598,7 @@ async def execute_pending_planning_command(
         ),
         json_data=payload,
         error_msg="执行幂等待确认规划命令失败",
+        timeout_seconds=EXECUTE_WAIT_TIMEOUT_SECONDS,
     )
 
 

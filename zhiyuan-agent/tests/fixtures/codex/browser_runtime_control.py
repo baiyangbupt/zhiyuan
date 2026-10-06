@@ -145,13 +145,21 @@ class GateRegistry:
 
         temp_dir = TEMP_DATA_PATH
         candidates = sorted(temp_dir.glob("session_volunteer_*.json"), key=lambda p: p.stat().st_size)
+        # **"挑最大"必须排掉自己** ✗✓（2026-10-06 踩到 ✓）：补录确认（execute）第 7 步会把
+        # **全量志愿数据**落回**本会话自己的**文件 ✓（`persistSourceData` ✓，实测它比基准源
+        # 900036（17MB）还大 ✓）→ 再跑同一会话时"挑最大"就挑到自己 ✓；而 reset 刚删掉本会话
+        # 的成绩 ✓ → 拷贝成绩那步 `源会话没有可用的 userScoreDetail` ✗ → 基线铺不上、
+        # 用例在打点处就红 ✓（实测一轮 ✓）。源只能来自**别的**会话 ✓。
+        own_file_name = f"session_volunteer_{session_id}.json"
         if source_session:
             source = temp_dir / f"session_volunteer_{source_session}.json"
-        elif candidates:
-            # 默认挑**最大**的那份 ✓：village 数据越大，候选池越足 ✓（实测 17MB → 6236 候选 ✓）。
-            source = candidates[-1]
         else:
-            raise FileNotFoundError(f"没有可用的志愿数据源：{temp_dir}")
+            candidates = [path for path in candidates if path.name != own_file_name]
+            if candidates:
+                # 默认挑**最大**的那份 ✓：village 数据越大，候选池越足 ✓（实测 17MB → 6236 候选 ✓）。
+                source = candidates[-1]
+            else:
+                raise FileNotFoundError(f"没有可用的志愿数据源：{temp_dir}")
         if not source.exists():
             raise FileNotFoundError(f"源文件不存在：{source}")
         target = temp_dir / f"session_volunteer_{session_id}.json"

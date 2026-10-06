@@ -857,6 +857,188 @@ test('F13 applying 时断线：事务不被取消，重连后读得到最终结�
   ).toContainText(/已生效|已采纳/, { timeout: 30_000 });
 });
 
+// **补录成绩（score_update 动作族）** ✓——写闭环的**第二族** ✗✓，与提案共用同一条确认链
+// （`proposal.preview` → `conversationAction(confirm)` → claim → execute → `conversationAction.result` ✓）：
+//   模型侧只出**结构化草稿** ✓（`scoreUpdateRequest`：用户这轮说了哪些字段 ✓），
+//   预览/合并/校验（110）/摘要全在 Java ✓，执行体与表单补录**同一条核心** ✓
+//  （`ChatSessionBizService.doUpdateScoreDetail` ✓：写 `userScoreDetail` → 拉志愿数据 →
+//   规划状态 **版本 +1** + 置 stale（`reasonCode=score_detail_updated` ✓）。
+//
+// **这条要在 `codex_write` 栈上跑** ✗✓（只读模式下确认链不活着 ✓——与 F07 后半同因 ✓）。
+//
+// 断什么（都落在**用户看得见的东西**上 ✓）：
+//   ① 卡出现 ✓，且是**补录卡**（`proposal-score-summary` ✓：明细来自 Java 按**合并后**成绩
+//      算的摘要 ✓——模型文本里的复述不作数 ✗）；
+//   ② 确认 → 卡进"已生效" ✓，`conversationAction.result` 帧带 `actionStatus=applied` ✓；
+//   ③ applied 之后读 workspace ✓✓：**成绩真的写进去了** ✓、**版本 +1** ✓、**置 stale** ✓
+//      （任务书原话："工作区刷新、成绩出现、推荐链解锁"——前两件的硬证据就是这三条 ✓）。
+//
+// **会话选择与既有写路径四条同规矩** ✓：`chatSessionId` 由用例标题哈希派生 ✓，
+// 每次跑前 `resetSessionState + seedVolunteerData` ✓（基准 900047 那套见 e2e 记忆 ✓）。
+test('补录成绩：确认后成绩生效、版本 +1 且置 stale', async ({
+  page,
+  sessionUrl,
+  runtimeGate,
+  verifyFakeRuntime,
+}) => {
+  void verifyFakeRuntime;
+  // **本条的预算要放宽** ✓✓（默认每条 30s ✗）：确认（execute）那一步 Java 是**同步等命令
+  // 跑完** ✓（PendingPlanningCommandBizService.execute 单事务 ✓）——补录成绩会**同步重拉
+  // 全量志愿数据**（上游 + 落盘 ✓）：2026-10-06 实测整段 **23.8s** ✓
+  //（`pending-command/execute` 后端日志耗时 23801ms ✓）。30s 连"确认都等不完" ✗：
+  // 之前那一轮正是死在总超时上 ✓（不是断言失败 ✓）。给足 150s ✓——它买的是"等到结果" ✓，
+  // 不是把断言放水 ✓（断言口径一个字没动 ✓）。
+  test.setTimeout(150_000);
+  await runtimeGate.setScenario('score_update');
+
+  const sessionId =
+    new URL(sessionUrl, 'http://placeholder').searchParams.get('chatSessionId') || '';
+  const backend = process.env.ZHIYUAN_E2E_BACKEND_ORIGIN || 'http://127.0.0.1:18290';
+  const readState = async () => {
+    const response = await page.request.get(
+      `${backend}/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=${sessionId}`,
+    );
+    const body = (await response.json().catch(() => null)) as { data?: Record<string, unknown> } | null;
+    return body?.data || {};
+  };
+
+  // **探针** ✓：`conversationAction.result` 的原始帧要留档 ✓——"结果帧到没到"光看卡面
+  // 分不清是"帧没来" ✗ 还是"前端没画" ✗（F07 一行注释记过同一个病 ✓）。
+  const socketFrames: string[] = [];
+  page.on('websocket', (socket) => {
+    socket.on('framereceived', (frame) => socketFrames.push(String(frame.payload)));
+  });
+
+  await runtimeGate.resetSessionState(sessionId);
+  await runtimeGate.seedVolunteerData(sessionId);
+
+  // **基线成绩必须换成"浙江"这份** ✓✓（2026-10-06 真栈实测定的 ✓）：确认（execute）那一步里
+  // Java 会拿**合并后**成绩的 省份/批次/选科 连调两个**上游**接口——
+  // `enrichVolunteerCountAndModel → getRecommendProgramNum`（ChatSessionBizService:267/515-524 ✓）
+  // 与 `fetchLatestSourceData → queryAllProgramData`（:280 ✓）：本环境上游**只配了浙江** ✓
+  //（330000：批次 17/18 ✓，`batch/info` 有批次线 ✓、full-list 回 11483 条 ✓），
+  // 源会话的江西 ✗ `batch/info` 是**空列表** ✗、recommend-num 一律 `-9 未查询到批次信息` ✗
+  //（内网探针实测 ✓）→ 不换的话预览卡照常出 ✓、点确认才以 110 收场 ✗（卡上正确显示"未生效" ✓，
+  // 但那不是本用例要走的 happy path ✗）。换成浙江**不是**假造分支 ✓：这是上游认的真组合 ✓
+  //（真实浙江用户的补录走的正是这条路 ✓），候选/自举也已用同一份基线实测过 ✓
+  //（铺江西志愿文件 + 浙江成绩 → phase=ordered ✓、候选照常成形 ✓）。
+  // 各科一并补 ✓：`seedVolunteerData` 拷来的源数据**没有各科** ✗（实测 subjectScoreList=[] ✓），
+  // 而补录的**合并校验**（Java `buildScoreUpdatePreview → validateCreateSessionReq:946` ✓）要求
+  // **合并后**各科非空 ✓：基线缺各科时这一轮会以 code=110「请填写各科成绩后再创建会话」结束 ✓
+  //（实测 ✓——那是**正确**的失败分支 ✓，但不是本用例要走的 happy path ✓）。
+  // 这里补的**只是服务端基线** ✓✗：下面的草稿照旧只带总分/位次 ✓（见 `setScenarioParams` ✓）——
+  // 卡上的"各科"仍然只能来自 Java 的**合并结果** ✓，断言的意义不变 ✓（而且更强：78/82/77
+  // 这几个数只存在于基线里 ✓，卡上出现就证明合并真的发生了 ✓）。
+  const extraApi = `${backend}/gaotu-assistant-bot/inner/chat/1/session`;
+  const scoreResp = await page.request.get(
+    `${extraApi}/get-extra-data?chatSessionId=${sessionId}&keyList=userScoreDetail&version=0`,
+  );
+  const scoreRaw = ((await scoreResp.json()) as { data?: Record<string, unknown> }).data?.userScoreDetail;
+  const scoreDetail = (typeof scoreRaw === 'string' ? JSON.parse(scoreRaw) : scoreRaw) as Record<string, unknown>;
+  scoreDetail.province = { code: '330000', name: '浙江省' };
+  scoreDetail.batch = { code: '17', level: '本科', score: 500, name: '第一段' };
+  scoreDetail.subjectScoreList = [
+    { subject: '01', subjectName: '物理', score: 78 },
+    { subject: '05', subjectName: '化学', score: 82 },
+    { subject: '06', subjectName: '生物', score: 77 },
+  ];
+  const patchResp = await page.request.post(`${extraApi}/add-extra-data`, {
+    data: {
+      chatSessionId: Number(sessionId),
+      dataKey: 'userScoreDetail',
+      dataType: 'JSON_OBJECT',
+      dataValue: scoreDetail,
+      version: 0,
+    },
+  });
+  expect(patchResp.ok(), '基线各科铺不上后面全红 ✓，先在这里失败 ✓').toBeTruthy();
+
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 10_000 });
+  // 基线在页面自举落定之后取 ✓（理由与 F07/F08 逐字相同 ✓）。
+  await settleWorkspaceBootstrap(readState, runtimeGate);
+  const before = await readState();
+  const beforeScore = Number((before as any).studentSummary?.score ?? 0);
+  const beforeRank = Number((before as any).studentSummary?.rank ?? 0);
+  // 与既有成绩**不同**才能断言"真的写进去了" ✓（同值的话 0→0 也会绿 ✗）。
+  const newScore = Number.isFinite(beforeScore) && beforeScore > 0 ? beforeScore + 1 : 641;
+  const newRank = Number.isFinite(beforeRank) && beforeRank > 0 ? beforeRank - 1 : 3100;
+
+  // 场景参数：守门值取**当前**工作区版本 ✓（口径同 `settleWorkspaceBootstrap` ✓），
+  // 补录的数字由测试喂 ✓（替身读不到会话成绩 ✗——夹具的输入，不是断言 ✓）。
+  // **不喂 `subjectScoreList`** ✗✓：合并语义下照搬既有各科 ✓（一次只改总分的补录 ✓）——
+  // 卡上的"各科"一行正因为**没**喂才更能证明是 Java 按合并后成绩算的 ✓✓。
+  await runtimeGate.setScenarioParams({
+    sourceVersionGuard: typeof before.version === 'number' ? before.version : 0,
+    totalScore: newScore,
+    totalScorePos: newRank,
+    userOriginalText: `总分改成 ${newScore}，位次 ${newRank}`,
+  });
+
+  await page.getByTestId('chat-input').fill(`我这次总分 ${newScore}，位次 ${newRank}`);
+  await page.getByTestId('chat-send').click();
+  await expect(
+    page.locator('[data-turn-id]').last().getByTestId('turn-progress'),
+  ).toContainText('历年录取', { timeout: 20_000 });
+  await runtimeGate.releaseAllPending();
+
+  const card = page.getByTestId('proposal-card');
+  await expect(card, '补录草稿编译成功就必须有卡 ✓').toBeVisible({ timeout: 20_000 });
+  await expect(card.getByTestId('proposal-status')).toContainText('待确认');
+
+  // ① **补录卡的结构化明细** ✓✓：总分必须是**这次要补的那个数** ✓；各科来自合并后的成绩 ✓
+  //   （夹具没喂各科 ✓——它出现本身就证明摘要来自 Java 的合并结果 ✓）。
+  await expect(card.getByTestId('proposal-score-summary')).toBeVisible();
+  await expect(card.getByTestId('proposal-score-total')).toContainText(`总分 ${newScore}`);
+  await expect(card.getByTestId('proposal-score-subjects')).not.toBeEmpty();
+  // 数值级证据 ✓：78/82/77 只存在于**基线**里（草稿没带各科 ✓）——卡上出现即合并 ✓。
+  await expect(card.getByTestId('proposal-score-subjects')).toContainText('物理 78');
+  await expect(card.getByTestId('proposal-score-subjects')).toContainText('化学 82');
+  const beforeProvince = String((before as any).studentSummary?.provinceName ?? '');
+  if (beforeProvince) {
+    await expect(card.getByTestId('proposal-score-summary')).toContainText(beforeProvince);
+  }
+
+  // ② **确认更新** ✓（按钮文案与提案卡不同 ✓，testid 相同 ✓）。
+  await card.getByTestId('proposal-confirm').click();
+  // 等待窗口 60s ✓：execute 同步重拉全量志愿数据实测 ~24s ✓（见本用例开头 test.setTimeout 的帐 ✓），
+  // 默认 30s 会卡在"待确认→未生效"的中间态上 ✗（实测一轮 ✓）；仍**等到**才算数 ✓，不放水 ✓。
+  await expect(
+    card.getByTestId('proposal-status'),
+    '确认之后卡要进"已生效" ✓（这一条同时证明确认链在这台实例上活着 ✓——' +
+      '只读模式栈上走不到 claim/execute ✓，红了先看 GATEWAY_MODE ✓）',
+  ).toContainText(/已生效|已更新/, { timeout: 60_000 });
+  await expect(card.getByTestId('proposal-confirm')).toHaveCount(0);
+
+  // 结果帧留档 ✓（终态在卡上能重建 ✓，但"帧到没到"是另一件事 ✓）。
+  const resultFrames = socketFrames.filter((frame) => /conversationAction\.result/.test(frame));
+  expect(
+    resultFrames.some((frame) => /"actionStatus"\s*:\s*"applied"/.test(frame)),
+    '要有 applied 的 conversationAction.result 帧 ✓（帧没到而卡绿 = 前端自说自话 ✗）',
+  ).toBeTruthy();
+
+  // ③ **applied 之后读 workspace** ✓✓（与 F08 同款"不只看卡面" ✓）：
+  const after = await readState();
+  console.log(
+    `[score_update] before: version=${String(before.version)} score=${String(beforeScore)}；` +
+      `after: version=${String(after.version)} score=${String((after as any).studentSummary?.score)}` +
+      ` stale=${JSON.stringify((after as any).staleFlags ?? null)}`,
+  );
+  expect(
+    Number((after as any).studentSummary?.score),
+    '确认后新成绩必须出现在工作区 ✓（不是只翻了个状态 ✗）',
+  ).toBe(newScore);
+  expect(
+    Number(after.version),
+    '补录成功的证据之一就是版本 +1 ✓（工作区按新版本重拉 ✓）',
+  ).toBe(Number(before.version) + 1);
+  expect((after as any).staleFlags?.candidatePool, '候选池必须被置 stale ✓（推荐链随后重算 ✓）').toBe(true);
+  expect(
+    String((after as any).staleFlags?.reasonCode),
+    '置 stale 的原因码要指名是补录 ✓（排查时区分"补录"与"志愿数据变化" ✓）',
+  ).toBe('score_detail_updated');
+});
+
 // **F02：歧义 → 原生卡** ✓（任务书原文："选项+自由输入；**原 request 回答继续同 Turn**" ✓）。
 //
 // 靠**场景表**驱动 ✓✓：先把本 run 的场景设成 `clarification` ✓ → 替身这一轮会先发一次

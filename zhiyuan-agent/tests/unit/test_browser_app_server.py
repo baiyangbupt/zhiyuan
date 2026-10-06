@@ -265,3 +265,41 @@ def test_clarification_scenario_asks_then_resumes_after_the_answer(stack) -> Non
     _release(base, "turn-clarify-1")
     final = session.drain(1.5)
     assert "turn/completed" in _methods(final), "放行后照常收尾 ✓"
+
+
+def test_score_update_scenario_emits_a_confirmable_draft_with_the_gate_params(stack) -> None:
+    """补录场景（`score_update`）的夹具契约 ✓✓：终态正文必须带**能过契约**的草稿 ✓。
+
+    与 `proposal` 同一套纪律：版本守门值这类"会话里才读得到"的字段由测试经
+    `scenario-params` 喂 ✓（夹具自己拿不到 ✗）。形状断言放在这里做 ✓——
+    否则 e2e 里"卡片没出现"分不清是夹具没发 ✗ 还是链路坏了 ✗。
+    """
+    session, base, registry = stack
+    registry.set_scenario("run-1", "score_update")
+    registry.set_scenario_params("run-1", {
+        "sourceVersionGuard": 7,
+        "totalScore": 641,
+        "totalScorePos": 3100,
+        "subjectScoreList": [{"subject": "语文", "score": 118}],
+    })
+
+    session.send({"jsonrpc": "2.0", "id": 1, "method": "turn/start",
+                  "params": {"threadId": "thr_1", "turnId": "turn-score-1"}})
+    session.drain(0.6)  # delta/进度先到；放行前没有终态
+    _release(base, "turn-score-1")
+    final = session.drain(1.5)
+
+    completed = next(
+        (m for m in final
+         if m.get("method") == "item/completed"
+         and ((m.get("params") or {}).get("item") or {}).get("type") == "agentMessage"),
+        None,
+    )
+    assert completed is not None, f"要有终态正文 ✓（收到：{_methods(final)}）"
+    payload = json.loads(completed["params"]["item"]["text"])
+    assert payload["responseType"] == "text"
+    assert "proposalRequest" not in payload, "补录轮不许同时带提案草稿（契约互斥 ✗）"
+    draft = payload["scoreUpdateRequest"]
+    assert draft["sourceVersionGuard"] == 7, "版本守门值必须来自测试喂的 scenario-params ✓"
+    assert draft["totalScore"] == 641
+    assert draft["subjectScoreList"] == [{"subject": "语文", "score": 118}]

@@ -2,6 +2,8 @@ package com.ytell.zhiyuan.service.biz;
 
 import com.alibaba.fastjson.JSONObject;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.model.dto.CreateSessionReq;
+import com.ytell.zhiyuan.model.dto.UpdateScoreDetailRes;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftPlanStateDTO;
@@ -59,6 +61,7 @@ public class PendingPlanningCommandBizServiceTest {
     private ChatSessionExtraDataSharedService extraDataSharedService;
     private PlanningStateService planningStateService;
     private ChatSessionBizService chatSessionBizService;
+    private ConversationAccessService conversationAccessService;
 
     @BeforeEach
     void setUp() {
@@ -68,11 +71,13 @@ public class PendingPlanningCommandBizServiceTest {
         extraDataSharedService = mock(ChatSessionExtraDataSharedService.class);
         planningStateService = mock(PlanningStateService.class);
         chatSessionBizService = mock(ChatSessionBizService.class);
+        conversationAccessService = mock(ConversationAccessService.class);
         ReflectionTestUtils.setField(service, "commandSharedService", commandSharedService);
         ReflectionTestUtils.setField(service, "pendingSharedService", pendingSharedService);
         ReflectionTestUtils.setField(service, "extraDataSharedService", extraDataSharedService);
         ReflectionTestUtils.setField(service, "planningStateService", planningStateService);
         ReflectionTestUtils.setField(service, "chatSessionBizService", chatSessionBizService);
+        ReflectionTestUtils.setField(service, "conversationAccessService", conversationAccessService);
         ReflectionTestUtils.setField(service, "postconditionValidator",
                 new UnifiedPlanPostconditionValidator());
     }
@@ -1294,6 +1299,75 @@ public class PendingPlanningCommandBizServiceTest {
         requirement.setKey(key);
         requirement.setValues(Arrays.asList(value));
         return requirement;
+    }
+
+    /**
+     * 补录成绩（score_update 动作族）的执行：**归属用户从会话行解析**（inner 端点没有
+     * 登录态）、执行体与表单补录同一条核心、结果显式报 `applied`（网关据此把卡置为
+     * "已生效"——这条路上没有 postconditionReport 可读）。
+     */
+    @Test
+    void shouldExecuteScoreUpdateAndReportApplied() {
+        PendingPlanningCommandReq req = scoreUpdateReq();
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(state(12), state(13));
+        when(conversationAccessService.requireSessionUserId(1L, 101L)).thenReturn(7L);
+        UpdateScoreDetailRes scoreRes = new UpdateScoreDetailRes();
+        scoreRes.setSuccess(Boolean.TRUE);
+        scoreRes.setChatSessionId(101L);
+        scoreRes.setPlanningVersion(13);
+        when(chatSessionBizService.updateScoreDetailForUser(1L, 101L, req.getScoreUpdate(), 7L))
+                .thenReturn(scoreRes);
+
+        PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+        assertEquals("applied", response.getStatus(), "网关只认这个显式状态");
+        assertEquals(Integer.valueOf(13), response.getResultPlanVersion());
+        assertTrue(response.getCompletedSteps().contains("score_detail_updated"));
+        verify(chatSessionBizService).updateScoreDetailForUser(1L, 101L, req.getScoreUpdate(), 7L);
+    }
+
+    /**
+     * 校验失败（110）**必须原样抛出**：它是"卡上显示未生效 + 原因"的唯一来源，
+     * 吞掉就变成静默失败 ✗。同时命令行不许被标成 succeeded。
+     */
+    @Test
+    void shouldPropagateScoreUpdateFailureInsteadOfSilentlySucceeding() {
+        PendingPlanningCommandReq req = scoreUpdateReq();
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
+        when(conversationAccessService.requireSessionUserId(1L, 101L)).thenReturn(7L);
+        when(chatSessionBizService.updateScoreDetailForUser(any(), any(), any(), any()))
+                .thenThrow(new BusinessException(110, "请填写各科成绩后再创建会话"));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(110, error.getStatus());
+        verify(commandSharedService, never()).updateById(any());
+    }
+
+    /** 缺 `scoreUpdate` 的请求在**执行前**就被拒（40001），不会走到写核心。 */
+    @Test
+    void shouldRejectScoreUpdateCommandWithoutPayload() {
+        PendingPlanningCommandReq req = scoreUpdateReq();
+        req.setScoreUpdate(null);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(40001, error.getStatus());
+        verify(chatSessionBizService, never()).updateScoreDetailForUser(any(), any(), any(), any());
+    }
+
+    private PendingPlanningCommandReq scoreUpdateReq() {
+        PendingPlanningCommandReq req = baseReq();
+        req.setOperationId("pending:p-1:update_score_detail");
+        req.setCommandType(PendingPlanningCommandBizService.UPDATE_SCORE_DETAIL);
+        CreateSessionReq scoreUpdate = new CreateSessionReq();
+        scoreUpdate.setTotalScore(621);
+        req.setScoreUpdate(scoreUpdate);
+        return req;
     }
 
     private PendingPlanningCommandReq baseReq() {

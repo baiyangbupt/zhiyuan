@@ -372,3 +372,53 @@ test('后到的非空错误文案照旧覆盖（只拦空值）', () => {
 
   assert.equal(second.turns.t.error.message, '新文案');
 });
+
+test('补录卡的 scoreUpdate 摘要原样进回合', () => {
+  // 卡片按 `proposal.diff.scoreUpdate` 渲染明细行（省份/科类/各科/总分/位次）——
+  // reducer 不做二次加工（它拿到的已是白名单过滤后的合同形状）。
+  const reduced = reduceConversation(
+    baseline(),
+    event({
+      type: 'proposal.preview',
+      payload: {
+        proposalRef: 'pending-score-1',
+        sourceVersion: 8,
+        diff: {
+          title: '更新成绩',
+          status: 'pending',
+          requiresConfirmation: true,
+          scoreUpdate: {
+            provinceName: '浙江省',
+            totalScore: 641,
+            subjects: [{ subjectName: '语文', score: 118 }],
+          },
+        },
+      },
+    }),
+  );
+
+  assert.equal(reduced.turns.t.proposal.diff.scoreUpdate.totalScore, 641);
+  assert.equal(reduced.turns.t.proposal.diff.scoreUpdate.subjects[0].score, 118);
+  assert.equal(reduced.turns.t.proposal.diff.requiresConfirmation, true);
+});
+
+test('失败结果的 code/message 与终态一起留在回合里', () => {
+  // 卡面失败原因（`proposal-failure-reason`）读的就是这两个字段——
+  // reducer 把它们与 actionStatus 一起保留，不许只留状态丢原因。
+  const reduced = reduceConversation(
+    baseline(),
+    event({
+      type: 'conversationAction.result',
+      payload: {
+        actionStatus: 'failed',
+        proposalRef: 'pending-score-1',
+        code: '110',
+        message: '成绩校验未通过：缺少数学',
+      },
+    }),
+  );
+
+  assert.equal(reduced.turns.t.actionResult.actionStatus, 'failed');
+  assert.equal(reduced.turns.t.actionResult.code, '110');
+  assert.equal(reduced.turns.t.actionResult.message, '成绩校验未通过：缺少数学');
+});

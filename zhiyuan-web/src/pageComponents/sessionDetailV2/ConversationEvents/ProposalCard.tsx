@@ -18,6 +18,25 @@ import { Alert, Button, Space, Tag, Typography } from 'antd';
  *   · 要确认 —— 给"确认/取消" ✓；
  *   · 其余（如 `ready` 但不需要确认）—— 只展示 ✓。
  */
+/**
+ * 补录成绩卡的结构化摘要（`diff.scoreUpdate` ✓）：来源是 **Java 按合并后成绩算的**
+ * `scoreSummary`（`ChatSessionBizService.buildScoreUpdateSummary` ✓），经网关
+ * `_proposal_preview_payload` 白名单带过来 ✓（`server.py` ✓）——不是模型文本的复述 ✓。
+ */
+export type ScoreUpdateSummary = {
+  provinceName?: string;
+  provinceCode?: string;
+  subjectType?: string;
+  subjectTypeCode?: string;
+  examYear?: number;
+  batchName?: string;
+  batchLevel?: string;
+  batchScore?: number;
+  totalScore?: number;
+  totalScorePos?: number;
+  subjects?: { subject?: string; subjectName?: string; score?: number }[];
+};
+
 export type ProposalPayload = {
   proposalRef?: string;
   sourceVersion?: number;
@@ -30,6 +49,8 @@ export type ProposalPayload = {
     requiresConfirmation?: boolean;
     blockingReason?: string;
     blockingReasonCodes?: string[];
+    /** 补录成绩（score_update 动作族）✓：有它这张卡就画成绩明细 ✓、按钮文案换一组 ✓。 */
+    scoreUpdate?: ScoreUpdateSummary;
   };
 };
 
@@ -38,8 +59,10 @@ type Props = {
   /** 采纳/放弃：**帧由调用方发** ✓（它才知道 sessionId 与连接 ✓）。 */
   onDecide: (action: 'confirm' | 'cancel') => void | Promise<void>;
   /** 服务端回来的**结果**（`conversationAction.result` ✓）：到了就说明这一格已经走过一轮 ✓，
-   *  按钮要收起来 ✓，并把状态说出来 ✓（"确认中" ≠ "已生效" ✗——设计里那条分得很清 ✓）。 */
-  actionResult?: { actionStatus?: string; proposalRef?: string };
+   *  按钮要收起来 ✓，并把状态说出来 ✓（"确认中" ≠ "已生效" ✗——设计里那条分得很清 ✓）。
+   *  `code`/`message` 是**失败原因**（110 / 40904 / 84009 / -1 …）✓——失败不许静默 ✓，
+   *  卡上要说得出"未生效 + 为什么" ✓。 */
+  actionResult?: { actionStatus?: string; proposalRef?: string; code?: string; message?: string };
   disabled?: boolean;
 };
 
@@ -64,6 +87,13 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
   const settled = SETTLED_STATUSES.includes(action);
   const needsConfirm = !blocked && !settled && diff.requiresConfirmation !== false && status !== '';
   const locked = Boolean(disabled) || submitting;
+  const scoreUpdate = diff.scoreUpdate;
+  const failureReason =
+    action === 'failed'
+      ? [actionResult?.code ? `[${actionResult.code}]` : '', actionResult?.message || '']
+          .filter(Boolean)
+          .join(' ')
+      : '';
 
   const decide = async (action: 'confirm' | 'cancel') => {
     setSubmitting(true);
@@ -97,12 +127,63 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
           <Typography.Text type="secondary">{diff.summary}</Typography.Text>
         </div>
       ) : null}
+      {/*
+        补录成绩的**结构化明细** ✓（省份/科类/批次/各科/总分/位次 ✓）——数据来源是
+        Java 按"服务端既有成绩 + 本次草稿"合并后的那份 ✓（模型说的数字不作数 ✗）：
+        用户在这一格里核对的正是"系统到底打算把哪些字段写成什么" ✓。
+      */}
+      {scoreUpdate ? (
+        <div data-testid="proposal-score-summary">
+          <Typography.Text type="secondary">
+            {[scoreUpdate.provinceName, scoreUpdate.subjectType, scoreUpdate.batchName]
+              .filter(Boolean)
+              .join(' · ')}
+          </Typography.Text>
+          {scoreUpdate.subjects && scoreUpdate.subjects.length > 0 ? (
+            <div data-testid="proposal-score-subjects">
+              <Typography.Text type="secondary">
+                {scoreUpdate.subjects
+                  .filter((item) => item && item.score !== undefined && item.score !== null)
+                  .map((item) => `${item.subjectName || item.subject || '科目'} ${item.score}`)
+                  .join(' · ')}
+              </Typography.Text>
+            </div>
+          ) : null}
+          <div data-testid="proposal-score-total">
+            <Typography.Text>
+              {[
+                scoreUpdate.totalScore !== undefined && scoreUpdate.totalScore !== null
+                  ? `总分 ${scoreUpdate.totalScore}`
+                  : '',
+                scoreUpdate.totalScorePos !== undefined && scoreUpdate.totalScorePos !== null
+                  ? `位次 ${scoreUpdate.totalScorePos}`
+                  : '',
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </Typography.Text>
+          </div>
+        </div>
+      ) : null}
       {blocked ? (
         <Alert
           type="warning"
           showIcon
           data-testid="proposal-blocked"
           message={diff.blockingReason || '这一版方案暂时无法执行。'}
+        />
+      ) : null}
+      {/*
+        **失败原因不许静默** ✓✓（110 / 40904 / 84009 / -1 …）：只把状态翻成"未生效"
+        是不够的 ✓——用户需要知道**为什么**（缺哪一科、版本怎么冲突了 ✓），
+        否则只能反复点同一个确认 ✗。`code` 一并给出 ✓：它是排障与对账的锚点 ✓。
+      */}
+      {action === 'failed' ? (
+        <Alert
+          type="error"
+          showIcon
+          data-testid="proposal-failure-reason"
+          message={failureReason || '这次确认没有生效，请重试或换一种说法。'}
         />
       ) : null}
       {needsConfirm ? (
@@ -114,14 +195,14 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
             data-testid="proposal-confirm"
             onClick={() => void decide('confirm')}
           >
-            采纳
+            {scoreUpdate ? '确认更新' : '采纳'}
           </Button>
           <Button
             disabled={locked}
             data-testid="proposal-cancel"
             onClick={() => void decide('cancel')}
           >
-            放弃
+            {scoreUpdate ? '取消' : '放弃'}
           </Button>
         </Space>
       ) : null}

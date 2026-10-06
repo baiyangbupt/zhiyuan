@@ -268,6 +268,38 @@ def _emit_final(thread_id: str, turn_id: str, *, interrupted: bool) -> None:
         send({"jsonrpc": "2.0", "method": "turn/completed",
               "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}})
         return
+    # 场景 `score_update`（补录成绩写闭环的靶子 ✓）：终态正文里带一个**补录草稿** ✓——
+    # 形状照 `contracts.py` 的 `ScoreUpdateRequest` ✓（"模型产出的语义草稿" ✓：
+    # 省份/科类/批次这些**不进草稿** ✓，由 Java 按会话既有成绩合并 ✓；草稿只说用户
+    # 这一轮讲了什么 ✓）。与 `proposal` 同一套纪律：正文必须真的能过契约 ✓，
+    # 之后由网关 prepare → Java 物化成待确认 ✓——卡片、确认、落库都在那之后 ✓。
+    if _scenario() == "score_update":
+        params = _scenario_params()
+        draft: dict[str, Any] = {
+            # 版本守门值由测试喂 ✓（同提案 ✓）：模型看的会话版本必须与快照一致 ✓。
+            "sourceVersionGuard": int(params.get("sourceVersionGuard") or 0),
+            "userOriginalText": str(params.get("userOriginalText") or "语文118，数学131，英语126，总分641，位次3100"),
+        }
+        for key in ("totalScore", "totalScorePos", "examYear"):
+            if params.get(key) is not None:
+                draft[key] = int(params[key])
+        if isinstance(params.get("subjectScoreList"), list):
+            draft["subjectScoreList"] = params["subjectScoreList"]
+        text = json.dumps(
+            {
+                "responseType": "text",
+                "message": "我把这次补录整理好了，确认后写入成绩。",
+                "executionStatus": "completed",
+                "scoreUpdateRequest": draft,
+            },
+            ensure_ascii=False,
+        )
+        send({"jsonrpc": "2.0", "method": "item/completed",
+              "params": {"threadId": thread_id, "turnId": turn_id,
+                         "item": {"id": f"msg-{turn_id}", "type": "agentMessage", "text": text}}})
+        send({"jsonrpc": "2.0", "method": "turn/completed",
+              "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}})
+        return
     if _scenario() == "broken_output":
         text = json.dumps(
             {
