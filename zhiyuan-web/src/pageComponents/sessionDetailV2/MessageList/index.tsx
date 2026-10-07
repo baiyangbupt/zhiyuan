@@ -20,6 +20,7 @@ import {
 } from '@/service/apis/sessionDetail';
 import { socketBase } from '@/utils/conversationSocket.mjs';
 import { cursorFromState } from '@/utils/conversationCursor.mjs';
+import { extractStreamMessage } from '@/utils/streamText.mjs';
 import style from './style.module.scss';
 import { TextSegment } from '@/interface/api/sessionDetail';
 import useAuthParams from '@/hooks/useAuthParams';
@@ -2044,6 +2045,11 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
           {Object.values(conversationState.turns).map((turn: any) => {
             const steps = Object.values(turn.steps || {}) as any[];
             const pending = pendingClarifications(turn);
+            // 流式文本**只取 message 字段里的人话** ✓✓（2026-10-07 用户实测：
+            // 原始 TurnOutput JSON 碎片直接铺在闪烁卡下面是观感事故 ✗）——
+            // `extractStreamMessage` 对未闭合 JSON 做容错抽取，抽不出来返回空串 ✓，
+            // 下面 gate 与渲染都按"有没有人话"判断 ✓：抽不出就只留闪烁卡，不铺原文 ✗。
+            const streamText = extractStreamMessage(turn.answerStream);
             // **老信封转出来的"空回合"不画** ✓✓：native 路由把终态**两条都发** ✓
             //（V1 事件给新 UI ✓、老信封帧给老 UI ✓）——而旧帧没有 `turnId` ✗
             //（`WSResponse` 没这个字段 ✓），前端把它转成 V1 事件时回合号只能是空串 ✓
@@ -2067,7 +2073,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
               steps.length === 0 &&
               pending.length === 0 &&
               !turn.answer &&
-              !turn.answerStream &&
+              !streamText &&
               !turn.proposal &&
               !turn.error
             ) return null;
@@ -2115,11 +2121,13 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                   reducer 里 `assistant.completed` / `turn.completed` 会把
                   `answerStream` 清空，这里只在**未终态**时渲染，所以同一回合
                   不会同时画出"流式文本"和"终态答案"两份。
-                  文本是模型原样增量（真实运行时是尚未闭合的 TurnOutput JSON 片段）：
-                  它只是可丢弃的提示，不解析、不猜测；解析后的答案由终态给出。
+                  文本经 `extractStreamMessage` 过滤（2026-10-07 起）：只显示
+                  `message` 字段里**已可读的人话前缀** ✓；解析不出就不渲染 ✓
+                  ——原始 JSON 碎片**不再**铺给用户看 ✗（观感事故的修法）。
+                  终态权威不变：完整答案仍由 `assistant.completed` 整段给出 ✓。
                 */}
-                {!turn.terminal && turn.answerStream ? (
-                  <div data-testid="assistant-stream">{turn.answerStream}</div>
+                {!turn.terminal && streamText ? (
+                  <div data-testid="assistant-stream">{streamText}</div>
                 ) : null}
                 {turn.terminal && turn.answer && turn.answer.message ? (
                   <div data-testid="assistant-final">{turn.answer.message}</div>
