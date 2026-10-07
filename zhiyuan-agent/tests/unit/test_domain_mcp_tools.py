@@ -885,6 +885,149 @@ async def test_preview_candidates_uses_trusted_identity_and_declares_sample(monk
     assert "filter_unsupported:schoolTags" in result["limitations"]
 
 
+@pytest.mark.asyncio
+async def test_preview_majors_uses_trusted_identity_caps_top_n_and_maps_rank_dimensions(
+    monkeypatch,
+) -> None:
+    """专业方向推荐只读纵切的三条合同：**受信身份、topN 硬上限 8、rank 维度原样映射**。
+
+    - 模型塞进来的 chatSessionId/sessionId/userId 必须被丢掉——会话身份只能来自
+      受信 binding（否则它能把任何会话的画像装进自己的回合）；
+    - 一次最多 8 条（切片边界：拿到的只是按综合分排的 topN，不能概括全部方向）；
+    - 四个维度分照 Java 实体字段名（gender_index/satisfy_index/salary_avg/hot_index）
+      原样带出，`state_mutation=False`：预览不改任何状态。
+    """
+    from app.util import internal_client
+
+    calls: list[dict] = []
+
+    async def preview_majors(chat_session_id, *, top_n=8):
+        calls.append({"chat_session_id": chat_session_id, "top_n": top_n})
+        return {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "chatSessionId": 900047,
+                "topN": 8,
+                "items": [
+                    {
+                        "major_id": f"m-{index}",
+                        "major": f"专业方向{index}",
+                        "score": 100.0 - index,
+                        "gender_index": 70.0,
+                        "satisfy_index": 80.0,
+                        "salary_avg": 72.5,
+                        "hot_index": 91.0,
+                    }
+                    for index in range(1, 9)
+                ],
+                "limitations": [],
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "preview_majors", preview_majors)
+
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id = "1"
+    backend.chat_session_id = "900047"
+    backend.thread_id = "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call(
+        "recommendation.preview_majors",
+        {
+            "topN": 100,
+            # 冒充身份：必须被丢掉（backend 只认受信 binding 的会话）。
+            "chatSessionId": "888",
+            "sessionId": "888",
+            "userId": "999",
+        },
+    )
+
+    # 上游只按受信会话调一次；topN 100 截断成硬上限 8。
+    assert calls == [{"chat_session_id": "900047", "top_n": 8}]
+    assert result["kind"] == "candidate"
+    assert result["status"] == "ok"
+    item = result["data"]["items"][0]
+    assert item["name"] == "专业方向1"
+    assert item["major_id"] == "m-1"
+    assert item["score"] == 99.0
+    assert item["dimensions"] == {
+        "gender_index": 70.0,
+        "satisfy_index": 80.0,
+        "salary_avg": 72.5,
+        "hot_index": 91.0,
+    }
+    assert result["data"]["topN"] == 8
+    # 条数触顶 = 可能还有更多：这是给模型的边界声明，不是"只有这 8 个方向"。
+    assert result["data"]["returned_items_are_sample"] is True
+    assert result["data"]["state_mutation"] is False
+
+
+@pytest.mark.asyncio
+async def test_preview_majors_surfaces_unavailable_reason_instead_of_faking_items(
+    monkeypatch,
+) -> None:
+    """画像缺分数：Java 如实回 `data:null + msg=session_score_missing`（业务码 0）。
+
+    工具要把它转成 `unavailable=true` + 原因 + limitation——**不许拿热度榜顶替、
+    不许编一个空推荐列表**。`_preserve_envelope` 会丢掉 `msg`，所以原因码必须从
+    **原始响应**取：不然"为什么不可用"就只剩一句空话。
+    """
+    from app.util import internal_client
+
+    async def preview_majors(chat_session_id, *, top_n=8):
+        return {"code": 0, "msg": "session_score_missing", "data": None}
+
+    monkeypatch.setattr(internal_client, "preview_majors", preview_majors)
+
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id = "1"
+    backend.chat_session_id = "900047"
+    backend.thread_id = "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("recommendation.preview_majors", {})
+
+    # "没有这份画像"不是查询失败（Java 业务码 0），但必须如实标注不可用。
+    assert result["status"] == "ok"
+    assert result["data"]["unavailable"] is True
+    assert result["data"]["reason"] == "session_score_missing"
+    assert result["data"]["items"] == []
+    assert result["data"]["returned_items_are_sample"] is False
+    assert result["data"]["state_mutation"] is False
+    assert "major_recommend_unavailable:session_score_missing" in result["limitations"]
+
+
+@pytest.mark.asyncio
+async def test_preview_majors_transport_error_is_backend_unavailable_not_an_empty_list(
+    monkeypatch,
+) -> None:
+    """传输层失败（HttpClient 的 `{"error": …, "success": False}` 形状）必须是
+    `backend_unavailable`——**不是**一个空推荐列表：'查不到'与'没有'是两件事，
+    把前者包成后者会让模型对用户说"没有适合你的方向"。"""
+    from app.util import internal_client
+
+    async def preview_majors(chat_session_id, *, top_n=8):
+        return {"error": "connection refused", "success": False, "data": {}}
+
+    monkeypatch.setattr(internal_client, "preview_majors", preview_majors)
+
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id = "1"
+    backend.chat_session_id = "900047"
+    backend.thread_id = "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("recommendation.preview_majors", {"topN": 3})
+
+    assert result["status"] == "backend_unavailable"
+    assert "connection refused" in result["data"]["message"]
+
+
 def test_gateway_collects_evidence_from_the_mcp_text_result() -> None:
     """工具证据藏在 MCP 结果的 **JSON 字符串**里。
 
@@ -1567,13 +1710,19 @@ def test_score_position_tool_description_states_the_interval_rule() -> None:
         "测算",
         "不得估算",
         "禁估算",
+        # 科类编码按省份口径：3+1+2 省份 WL/LS，传 N 会回空——"查不到"是参数错。
+        "WL",
+        "LS",
+        "3+1+2",
+        "不得跨省外推",
     ):
         assert phrase in description, f"工具描述缺少口径：{phrase}"
 
     listed = {entry["name"]: entry for entry in tool_listing()}
     assert listed["catalog.get_score_position"]["description"] == description
-    # 其余工具保持默认描述：这次不连带改动它们的描述面。
-    assert listed["catalog.get_batch_options"]["description"] == (
+    # 没写描述的其余工具保持默认：这条守的是"描述面改动要显式"的机制
+    # （换过见证工具：get_batch_options 这轮进了描述面）。
+    assert listed["catalog.get_subject_options"]["description"] == (
         "Zhiyuan authoritative read-only domain query"
     )
     schema = listed["catalog.get_score_position"]["inputSchema"]
@@ -1581,3 +1730,55 @@ def test_score_position_tool_description_states_the_interval_rule() -> None:
     assert schema["additionalProperties"] is False
     # 批次 level 是这条工具的参数（01 本科 / 02 专科），与批次码是两套编码。
     assert "batchLevel" in schema["properties"]
+
+
+def test_preview_majors_tool_description_states_layering_and_caliber() -> None:
+    """专业方向的工具描述要写死两件模型读不到就会猜的事：**层级**（专业方向 vs
+    具体志愿单元，别和 preview_candidates 混用）与**口径/边界**（只读、画像缺分数
+    时不可用、维度分按 rank 口径不得改口径转述）。"""
+    from app.mcp_server.server import TOOL_DESCRIPTIONS, tool_listing
+
+    description = TOOL_DESCRIPTIONS["recommendation.preview_majors"]
+    for phrase in (
+        "基于会话画像的专业方向打分推荐（只读）",
+        "画像缺分数时不可用",
+        "分数维度按 rank 服务口径",
+        "专业方向",
+        "具体志愿单元",
+        "preview_candidates",
+        "上限 8",
+    ):
+        assert phrase in description, f"工具描述缺少口径：{phrase}"
+
+    listed = {entry["name"]: entry for entry in tool_listing()}
+    assert listed["recommendation.preview_majors"]["description"] == description
+    schema = listed["recommendation.preview_majors"]["inputSchema"]
+    # 入参只有 topN：身份字段不在 schema 里（由受信 binding 注入）。
+    assert set(schema["properties"]) == {"topN"}
+    assert schema["required"] == []
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["topN"]["maximum"] == 8
+
+
+def test_batch_options_description_states_subject_translation_and_default_batch_rule() -> None:
+    """批次编码表的描述要写死两件产品/实测规则：科类编码**按省份口径**（多科类
+    省份可给 WL/LS，也可给选考科目码/名由 Java 翻译；实测安徽传 N 回空）与
+    **过本科线默认本科批、不再追问**。"""
+    from app.mcp_server.server import TOOL_DESCRIPTIONS, tool_listing
+
+    description = TOOL_DESCRIPTIONS["catalog.get_batch_options"]
+    for phrase in (
+        "level",
+        "本科批",
+        "不再追问",
+        "WL",
+        "LS",
+        "翻译",
+        "按省份口径",
+    ):
+        assert phrase in description, f"工具描述缺少口径：{phrase}"
+
+    listed = {entry["name"]: entry for entry in tool_listing()}
+    assert listed["catalog.get_batch_options"]["description"] == description
+    # 科类字段本身也要在 schema 里说清省份口径（模型按参数学的次数不比按描述少）。
+    assert "按省份口径" in listed["catalog.get_batch_options"]["inputSchema"]["properties"]["subjectType"]["description"]

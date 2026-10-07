@@ -60,6 +60,9 @@ TOOL_LABELS: dict[str, str] = {
     "catalog.list_admission_units": "正在读取招生单元",
     "admission.get_charter": "正在读取招生章程",
     "recommendation.preview_candidates": "正在预览候选",
+    # 专业方向那条链的进度文案：与候选预览分开（"方向"与"志愿单元"是两层，
+    # 用户看到的词也该是两层）。
+    "recommendation.preview_majors": "正在推荐专业方向",
 }
 
 

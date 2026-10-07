@@ -33,6 +33,9 @@ public class GaotuClientDebugController {
     @Autowired
     private com.ytell.zhiyuan.service.GaotuService gaotuService;
 
+    @Autowired
+    private com.ytell.zhiyuan.service.biz.MajorRecommendPreviewService majorRecommendPreviewService;
+
     @GetMapping("/member/id")
     @ApiOperation("根据sid获取用户ID")
     public Long getMemberId(@ApiParam("用户SID") @RequestParam String customerId) {
@@ -111,6 +114,24 @@ public class GaotuClientDebugController {
         result.setMsg("ok");
         result.setData(data);
         return result;
+    }
+
+    /**
+     * 专业方向推荐预览（**只读**）：按会话画像调 rank 服务做专业级打分，回 topN 条。
+     *
+     * <p>入参 {@code {chatSessionId, topN?}}（topN 默认 8、硬上限 8，超了截断不报错）。
+     * 与 {@code /recommend/majors}（{@code RecommendController}，同一推荐内核但无 topN、
+     * 也不交代缺画像）的分工：这条是 Agent 只读工具 {@code recommendation.preview_majors}
+     * 的入口，**无档案/无分数/画像缺 rank 必读字段时如实回 {@code data: null} + 原因码（msg）**，
+     * 绝不估算、不造数。</p>
+     *
+     * <p>只读边界：不落库、不 bump 版本、不签发证据（推荐分是算法产物，不是观测事实）。</p>
+     */
+    @PostMapping("/catalog/major-recommend")
+    @ApiOperation("专业方向推荐预览（按会话画像，只读）")
+    public ResponseDTO<com.ytell.zhiyuan.model.dto.inner.MajorRecommendPreviewRes> previewMajorRecommend(
+            @RequestBody com.ytell.zhiyuan.model.dto.inner.MajorRecommendPreviewReq req) {
+        return majorRecommendPreviewService.preview(req);
     }
 
     @PostMapping("/report/info")

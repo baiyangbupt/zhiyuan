@@ -62,7 +62,14 @@ _COMMON_INPUT_PROPERTIES: dict[str, Any] = {
     # 一分一段表按 level 取；取值来自 `catalog.get_batch_options` 的 `level`。
     "batchLevel": {"type": "string", "description": "批次 level 编码（01 本科 / 02 专科）；可从 catalog.get_batch_options 的 level 取"},
     "year": {"type": "integer"},
-    "subjectType": {"type": "string"},
+    # 科类编码**按省份口径**，全国不是一套：3+3 省份（浙江…）是 N；
+    # 3+1+2 省份（安徽/江苏/广东/河北…）是 WL（物理类）/ LS（历史类）。
+    # 实测：安徽 600 分传 WL 有位次、传 N 回空——"查不到"常常是科类给错，
+    # 不是没有数据（2026-10-07 实测）。
+    "subjectType": {
+        "type": "string",
+        "description": "科类编码，按省份口径：3+3 省份（如浙江）用 N；3+1+2 省份（如安徽/江苏）用 WL（物理类）/ LS（历史类）；不得跨省外推",
+    },
     "stateVersion": {"type": "integer"},
     # 同口径并列用：2–5 个**已确认**的实体（歧义要在进入对比之前解决掉）。
     "entities": {
@@ -102,7 +109,32 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "highest_rank/lowest_rank 是区间（same_score_count 为同分人数），"
         "区间用于展示，只能报区间，不能报单一名次；"
         "测算用 default_rank（= lowest_rank，最保守口径，同分最后一名）；"
-        "上游无数据省份回不可用，不得估算（禁估算）。"
+        "subjectType 是**各省口径**的科类编码：3+3 省份（浙江）用 N；"
+        "3+1+2 省份（安徽/江苏）用 WL（物理类）/ LS（历史类）——这些省份传 N 会回空，"
+        "看起来像\"该省没有数据\"其实是科类不适用；先问清/确认用户科类再查，"
+        "不得跨省外推编码；上游无数据省份回不可用，不得估算（禁估算）。"
+    ),
+    "recommendation.preview_majors": (
+        "基于会话画像的专业方向打分推荐（只读）：把当前会话的分数/选科/性别画像"
+        "交给 rank 服务做专业级打分，按综合分取 topN（上限 8 条切片）。"
+        "答的是「适合什么**专业方向**」（专业类/大类层），**不落到具体志愿单元**；"
+        "要具体院校/专业组的候选，用 recommendation.preview_candidates"
+        "（专业方向 vs 具体志愿单元，两层别混用）。"
+        "分数维度按 rank 服务口径：综合分是各维度的熵权合成，跨专业只比排序、"
+        "不比绝对值，四个维度分（性别适配/满意度/薪酬/热度）不得改口径转述。"
+        "画像缺分数时不可用：返回 unavailable=true 与原因码，如实说明不可用，"
+        "不得用热度榜等无个性化数据顶替（禁估算、禁冒充）。"
+    ),
+    # 批次编码表：补录草稿的 batch 码（按省不同：浙江第一段=17）与 level
+    # （01 本科 / 02 专科）都取自这条；`subjectType` 按省份口径，多科类省份必给
+    # ——可以给科类码（WL/LS），也可以给选考科目码/名（01/物理，Java 侧翻译）。
+    "catalog.get_batch_options": (
+        "批次编码表（补录成绩用）：[{code, name, level, score, pos}]——batch 码与"
+        "level（01 本科 / 02 专科）只能从这里取，\"本科批\"这种名字不是编码。"
+        "subjectType 按省份口径（3+1+2 省份 WL 物理类 / LS 历史类；3+3 省份 N）；"
+        "可以给科类码，也可以给选考科目码/名（01/物理），Java 会翻译成该省科类。"
+        "产品规则：用户总分 ≥ 本科批线（level=01 那条的 score）时，批次直接按"
+        "本科批处理、不再追问；低于本科线才问/取专科批。"
     ),
 }
 
@@ -178,6 +210,22 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             # 一次最多 20 条（硬上限，超了截断不报错）；total 给的是全量条数。
             "page": {"type": "integer", "minimum": 1},
             "pageSize": {"type": "integer", "minimum": 1},
+        },
+        "required": [],
+        "additionalProperties": False,
+    },
+    # 专业方向推荐：入参只有切片大小 `topN`。**身份字段不在这里**——会话身份由
+    # 受信 binding 注入（与 preview_candidates 同一口径）；模型塞进来的会被
+    # `_trusted_arguments` 丢掉。topN 上限 8（硬上限，超了截断不报错）。
+    "recommendation.preview_majors": {
+        "type": "object",
+        "properties": {
+            "topN": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8,
+                "description": "最多返回多少条专业方向（上限 8）",
+            },
         },
         "required": [],
         "additionalProperties": False,

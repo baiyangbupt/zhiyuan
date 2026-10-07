@@ -452,8 +452,15 @@ public class ChatSessionBizService {
                 });
     }
 
-    /** 空会话的 userScoreDetail 行不存在；读取失败按"没有"处理，交给补录去写。 */
-    private CreateSessionReq loadSessionScoreDetail(Long chatSessionId) {
+    /**
+     * 空会话的 userScoreDetail 行不存在；读取失败按"没有"处理——**返回 null、不抛 404**，
+     * 交给补录去写。
+     *
+     * <p>public 是给只读预览用的（{@code MajorRecommendPreviewService}）：
+     * 它们和写路径必须按**同一口径**读这份画像（同一张表、同一个 key、同一套解析），
+     * 缺行时如实说"没有档案"而不是各自发明一种"没有"的表示。</p>
+     */
+    public CreateSessionReq loadSessionScoreDetail(Long chatSessionId) {
         if (chatSessionId == null) {
             return null;
         }

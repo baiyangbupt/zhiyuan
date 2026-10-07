@@ -60,6 +60,12 @@ CAPABILITIES = {
     # 工具注册了却谁也调不到，比不注册更坏。候选属于"志愿/录取"域，
     # admission_read 是它的现役归属。
     "recommendation.preview_candidates": "admission_read",
+    # 专业方向推荐：只读的"专业方向"层（rank 专业级打分），把会话画像变成
+    # 可讨论的方向清单。挂在既有 `admission_read` 上的理由与候选预览相同
+    #（见上一条注释）：新造能力名在真实回合里会被 Java 的能力签发全部拒绝。
+    # 与 `preview_candidates` 的分工是**层级**：这条是"专业方向"（专业类层，
+    # 不落到具体志愿单元），那条是"具体志愿单元"候选。
+    "recommendation.preview_majors": "admission_read",
 }
 WRITE_TOOL_NAMES = frozenset(
     {
@@ -95,6 +101,10 @@ TOOL_KINDS = {
     "admission.get_enrollment_plan": "enrollment",
     "admission.get_charter": "policy",
     "recommendation.preview_candidates": "candidate",
+    # 专业方向推荐同样是"候选"形状（列表 + 样例边界 + state_mutation），
+    # 复用 kind 而不新造：新 kind 要在 `TOOL_OUTPUT_SCHEMA` 与下游消费两端同时放行，
+    # 而"专业方向"与"志愿候选"在这两处本就同一形状。
+    "recommendation.preview_majors": "candidate",
 }
 
 
@@ -377,6 +387,9 @@ class ReadonlyDomainTools:
             # 只收过滤与分页；tenant/session 由受信 binding 注入——
             # `_trusted_arguments` 会把模型塞的 tenantId/sessionId 全部丢掉。
             return await self.backend.preview_candidates(**self._trusted_arguments(arguments))
+        if name == "recommendation.preview_majors":
+            # 只收 topN；**会话身份从受信 binding 取**（模型塞 chatSessionId/sessionId 一律丢掉）。
+            return await self.backend.preview_majors(**self._trusted_arguments(arguments))
         method = {
             "entity.resolve": "resolve",
             "catalog.get_school": "get_school",
@@ -1243,6 +1256,94 @@ class InternalClientBackend:
             "evidence": list(payload.get("evidence") or []),
             "limitations": limitations,
         }
+
+    # 专业方向推荐一次带回的条数上限。与 Java 侧硬上限一致（topN 上限 8）：
+    # 全量打分留在服务端，模型拿到的是按综合分排序的 topN 切片。
+    MAJOR_PREVIEW_TOP_N_CAP = 8
+
+    @staticmethod
+    def _major_preview_item(item: dict[str, Any]) -> dict[str, Any]:
+        """专业方向一条：名称 + 综合分 + rank 的四个熵权维度分。
+
+        `score` 是熵权法加权后的**综合推荐分**（跨专业可比的是排序，不是绝对值）；
+        `dimensions` 是它的构成——性别分布适配 / 满意度 / 薪酬 / 热度。
+        字段名跟 Java 实体（`RecommendSubMajorResponse.MajorRecommendItem`）保持一一对应，
+        免得"同一份数字两个叫法"。
+        """
+        return {
+            "name": item.get("major") or item.get("majorName") or item.get("name"),
+            "major_id": item.get("major_id") or item.get("majorId"),
+            "score": item.get("score"),
+            "dimensions": {
+                "gender_index": item.get("gender_index"),
+                "satisfy_index": item.get("satisfy_index"),
+                "salary_avg": item.get("salary_avg"),
+                "hot_index": item.get("hot_index"),
+            },
+        }
+
+    async def preview_majors(self, **arguments: Any) -> Any:
+        """专业方向推荐（只读）：基于会话画像在 rank 服务做**专业级打分**，取 topN。
+
+        与 `preview_candidates` 的层级不同：这条回答"适合什么**专业方向**"
+        （专业类/大类层），**不落到具体志愿单元**；要具体院校/专业组用候选预览。
+
+        画像缺分数/尚未建档时 Java 如实回 `data:null + 原因码`：这里转成
+        `unavailable=true` + limitation，**不估算、不拿热度榜冒充个性化推荐**。
+        """
+        top_n = _as_int(arguments.get("topN", arguments.get("top_n"))) or self.MAJOR_PREVIEW_TOP_N_CAP
+        top_n = max(1, min(top_n, self.MAJOR_PREVIEW_TOP_N_CAP))
+
+        response = await internal_client.preview_majors(self.chat_session_id, top_n=top_n)
+        if not isinstance(response, dict):
+            raise RuntimeError(f"preview_majors returned non-dict: {response!r}")
+        if response.get("success") is False:
+            # 传输层失败（HttpClient 的 `{"error": …, "success": False}` 形状）：
+            # 抛出去让外层统一降级成 backend_unavailable——**不能**在这里编一个空列表，
+            # "查不到"与"没有"是两件事。
+            raise RuntimeError(f"preview_majors transport error: {response.get('error')}")
+
+        payload = self._preserve_envelope(response)
+        if not isinstance(payload, dict):
+            return payload
+        limitations = list(payload.get("limitations") or [])
+        raw = payload.get("data")
+        if not isinstance(raw, dict):
+            # 无档案 / 无分数 / 画像缺 rank 必读字段：Java 回 `data:null`，
+            # 原因码在 `msg`（`_preserve_envelope` 会把它丢掉，所以从这里取）。
+            reason = str(response.get("msg") or "").strip() or "major_recommend_unavailable"
+            limitations.append(f"major_recommend_unavailable:{reason}")
+            payload["data"] = {
+                "items": [],
+                "topN": top_n,
+                "unavailable": True,
+                "reason": reason,
+                "returned_items_are_sample": False,
+                # 只读：不写库、不 bump 版本（Java 侧实证）。
+                "state_mutation": False,
+            }
+            payload["limitations"] = limitations
+            return payload
+
+        items = [
+            self._major_preview_item(item)
+            for item in (raw.get("items") or [])
+            if isinstance(item, dict)
+        ]
+        effective_top_n = _as_int(raw.get("topN")) or top_n
+        for limitation in raw.get("limitations") or []:
+            if limitation not in limitations:
+                limitations.append(limitation)
+        payload["data"] = {
+            "items": items,
+            "topN": effective_top_n,
+            # 切片边界：这是**按综合分排序的 topN**（上限 8）。条数触顶时
+            # 服务端可能还有更多——不能拿这几条概括全部专业方向。
+            "returned_items_are_sample": len(items) >= effective_top_n,
+            "state_mutation": False,
+        }
+        payload["limitations"] = limitations
+        return payload
 
     async def search_majors(self, **arguments: Any) -> Any:
         return self._data(await internal_client.catalog_search_major(

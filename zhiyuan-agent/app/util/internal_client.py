@@ -1759,6 +1759,33 @@ async def preview_candidates(
     )
 
 
+async def preview_majors(
+    chat_session_id: Union[str, int],
+    *,
+    top_n: int = 8,
+) -> Dict[str, Any]:
+    """专业方向推荐预览（**只读**）：按会话画像在 rank 服务做专业级打分，取 topN。
+
+    与 `preview_candidates` 的分工是**层级**：这条回答"适合什么**专业方向**"
+    （专业类/大类层，不落到具体志愿单元），那条给的是院校/专业组的**具体志愿单元**候选。
+
+    返回 `{code, msg, data}`：可用时 `data={chatSessionId, topN, items[], limitations[]}`
+    （items 字段照 Java 实体：`major_id/major/score/gender_index/satisfy_index/salary_avg/hot_index`）；
+    无档案/无分数/画像缺 rank 必读字段时 Java 如实回 **`data=null` + 原因码在 `msg`**
+    （`session_profile_missing` / `session_score_missing` / `session_profile_incomplete:…`），
+    由工具层转成"不可用 + 原因"，不猜、不造数。
+    """
+    payload: Dict[str, Any] = {
+        "chatSessionId": chat_session_id,
+        "topN": top_n,
+    }
+    return await http_client.post(
+        endpoint="/gaotu-assistant-bot/inner/gaotu/catalog/major-recommend",
+        json_data=payload,
+        error_msg="专业方向推荐失败",
+    )
+
+
 async def select_working_plan_items(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],
