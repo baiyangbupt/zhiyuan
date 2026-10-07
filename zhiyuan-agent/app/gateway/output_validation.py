@@ -196,6 +196,34 @@ def validate_turn_output(
     return output
 
 
+# 根身份三件套：租户 / 会话 / 来源系统。它们决定这条证据**属于谁、属于哪条链**，
+# 任何一条对不上都意味着"这根本是另一条证据顶着同一个 ID"，必须 fail closed。
+# 而 `paramsDigest` / `dataVersion` 是**内容标识**——模型转述证据时恰恰抄不到
+# `paramsDigest`（见 `merge_evidence` 的 docstring），拿内容标识判身份冲突，
+# 等于把"转述不完整"升级成"整轮对话失败"（2026-10-07 线上事故的形态）。
+_ROOT_IDENTITY_FIELDS = ("tenantId", "sessionId", "sourceSystem")
+
+
+def _root_identity_conflict(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """同 ID 的两份记录，**根身份**是否真的冲突。
+
+    判据是「**双方都非空且不同**」：一侧缺这个字段只说明这一侧没有这个信息
+    （模型转述抄丢了、或该来源本来就不带），**无信息 ≠ 冲突**。把"缺"当冲突，
+    就是 2026-10-07 那次事故：补录成绩确认之后的下一轮，模型引用了批次线证据
+    （转述里没有 `sourceSystem`），整轮以 `evidence_identity_conflict` 失败
+    （`recoverable=False`，用户只看到"当前对话引擎暂时不可用"），
+    而两边指的其实是**同一条**证据。
+    """
+    for name in _ROOT_IDENTITY_FIELDS:
+        left_value = left.get(name)
+        right_value = right.get(name)
+        if left_value in (None, "") or right_value in (None, ""):
+            continue
+        if str(left_value) != str(right_value):
+            return True
+    return False
+
+
 def merge_evidence(snapshot_records: list, turn_records: list) -> dict:
     """把快照证据与本回合证据并成一个账本。
 
@@ -203,25 +231,59 @@ def merge_evidence(snapshot_records: list, turn_records: list) -> dict:
     摆到了模型面前（fillEvidence），模型一引用却立刻 `evidence_not_found`——
     断链 4 就是这个形状：证据看得见、够不着。
 
-    冲突规则是**不与**：同 ID 的记录必须"稳定身份"一致（租户/会话/来源系统/
-    参数摘要/数据版本），否则报错而不是"最后一个覆盖"。`observedAt` 不在稳定
-    身份里——观测时间不同不等于证据内容不同，把它算进去会让正常的重复观测变成冲突。
+    **同 ID 的合并语义：信快照，不信转述**（2026-10-07 修）。
+
+    为什么以前会抛、现在不抛 ✓✗：以前同 ID 只要"稳定身份五元组"不一致就报错，
+    但本回合那一份**不是**另一条证据——它是模型在自己终态正文里**转述**的证据，
+    被 `_collect_records` 从 AgentMessage 里挖出来当成"本回合证据"（实测转述形状：
+    只抄 `evidenceId`/`sourceLevel`/`dataVersion` 与一个查询参数 `scope`，
+    `sourceSystem`/`paramsDigest` 全丢）。"转述不完整"被判成"身份冲突"，
+    后果是**整轮硬失败**：用户补录成绩确认之后，只要模型引用一条快照里的证据，
+    下一轮就变成"当前对话引擎暂时不可用"（日志：`codex turn failed …
+    error=evidence_identity_conflict recoverable=False`）。那不是冲突，是残缺。
+
+    所以现在的规则是：
+    · 快照记录**先入账本、且不被本回合记录覆盖**——快照是 Java 台账的逐字投影，
+      权威；让残缺的转述覆盖原件，等于把账本降级成模型自述（P1b-3："证据以
+      snapshot 为准"）。校验与核验随后拿**快照那份**去对，模型引用的内容对不上
+      快照（如 dataVersion 被改写）依旧会 `evidence_mismatch` fail closed——
+      放宽的只是"**残缺**"，不是"**说错**"。
+    · 只有**根身份**（租户/会话/来源系统）双方都非空且不同才报
+      `evidence_identity_conflict`：那不是转述，是另一条证据顶着同一个 ID。
+    · `paramsDigest`/`dataVersion` 的出入不再算冲突：同一 ID 在同一条台账里
+      不会换内容（Java 每次签发都是新 ID），有出入只可能是转述残缺 → 取快照那份。
+    · `observedAt` 从来不在身份里——观测时间不同不等于证据内容不同，把它算进去
+      会让正常的重复观测变成冲突。
     """
-    stable_fields = ("tenantId", "sessionId", "sourceSystem", "paramsDigest", "dataVersion")
     merged: dict = {}
-    for record in [*(snapshot_records or []), *(turn_records or [])]:
+    for record in snapshot_records or []:
         if not isinstance(record, dict):
             continue
         key = record.get("evidenceId") or record.get("evidence_id")
         if not key:
             continue
-        stable = tuple(record.get(name) for name in stable_fields)
         previous = merged.get(key)
-        if previous is not None:
-            previous_stable = tuple(previous.get(name) for name in stable_fields)
-            if previous_stable != stable:
-                raise ValueError("evidence_identity_conflict")
+        if previous is not None and _root_identity_conflict(previous, record):
+            raise ValueError("evidence_identity_conflict")
         merged[key] = record
+    for record in turn_records or []:
+        if not isinstance(record, dict):
+            continue
+        key = record.get("evidenceId") or record.get("evidence_id")
+        if not key:
+            continue
+        previous = merged.get(key)
+        if previous is None:
+            # 本回合**新签发**的证据：账本里原本没有，照收（不能只认快照——
+            # 那样本回合工具签发的证据模型一引用就是 `evidence_not_found`）。
+            merged[key] = record
+            continue
+        if _root_identity_conflict(previous, record):
+            # 真冲突：转述最多是**残缺**，不会变成另一条链上的证据。到这一步
+            # 只能整轮拒收（fail closed），不给"最后一个覆盖"留下可乘之机。
+            raise ValueError("evidence_identity_conflict")
+        # 同 ID、根身份不冲突 = 对快照记录的转述：快照留着，转述不覆盖、不报错。
+        # （"为什么不再抛"的完整理由见上面 docstring。）
     return merged
 
 

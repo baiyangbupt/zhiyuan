@@ -145,6 +145,29 @@ def _snapshot() -> dict:
     }
 
 
+def _snapshot_with_evidence(record: dict) -> dict:
+    """补录确认后的快照：Java 台账里的权威证据已经进了 `evidence`（逐字投影）。"""
+    snapshot = _snapshot()
+    snapshot["evidence"] = [record]
+    return snapshot
+
+
+def _model_citation(evidence_id: str) -> dict:
+    """模型**转述**证据的形状（逐字抄自 2026-10-07 线上事故的终态正文）。
+
+    只有 `evidenceId`/`sourceLevel`/`dataVersion` 与一个**查询参数** scope；
+    `sourceSystem`/`paramsDigest` 抄不到——那正是与快照记录"看上去撞身份"的来源。
+    """
+    return {
+        "evidenceId": evidence_id,
+        "sourceLevel": "authoritative",
+        "dataVersion": "2026.09.07",
+        "scope": {"kind": "catalog_batch_options", "areaId": "330000", "batch": "第一段"},
+        "observedAt": "2026-10-07T08:44:47+08:00",
+        "limitations": ["仅覆盖该省批次设置与批次线，不含院校专业录取数据"],
+    }
+
+
 def _binding() -> ThreadBinding:
     return ThreadBinding(
         thread_id="thr-p1c2",
@@ -155,14 +178,16 @@ def _binding() -> ThreadBinding:
     )
 
 
-def _gateway(codex: CodexHarness, verifier: Verifier | None) -> GatewayService:
+def _gateway(
+    codex: CodexHarness, verifier: Verifier | None, snapshot: dict | None = None
+) -> GatewayService:
     return GatewayService(
         mode="codex_readonly",
         codex=codex,
         legacy=None,
         message_store=FakeMessageStore(),
         binding_loader=lambda **kwargs: _binding(),
-        snapshot_loader=lambda **kwargs: _snapshot(),
+        snapshot_loader=lambda **kwargs: snapshot or _snapshot(),
         evidence_verifier=verifier,
     )
 
@@ -277,6 +302,63 @@ async def test_without_a_verifier_the_turn_is_unchanged() -> None:
     result = await _turn(gateway)
 
     assert result.get("output") is not None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_evidence_cited_by_the_model_does_not_fail_the_turn() -> None:
+    """2026-10-07 事故回归：**补录确认之后的下一轮**，模型引用快照里的证据。
+
+    线上形态（会话 10041955）：补录成绩确认后，下一轮模型在终态正文里引用了
+    快照中的批次线证据（转述里没有 `sourceSystem`/`paramsDigest`），本回合事件里
+    **没有**对应的工具结果——`merge_evidence` 拿"转述"去比"原件"的稳定身份五元组，
+    判成 `evidence_identity_conflict` → 整轮失败（`recoverable=False`，
+    用户只看到"当前对话引擎暂时不可用"）。
+
+    这条把形状钉死：`evidence` 在快照里、引用在 AgentMessage 正文里（`_collect_records`
+    从那里挖），核验器说 valid——回合必须正常走完，且账本里留给校验的是**快照那份**。
+    """
+    evidence_id = "ev-batch-1"
+    snapshot_record = {
+        "evidenceId": evidence_id,
+        "sourceLevel": "authoritative",
+        "sourceSystem": "gaotu.batchList",
+        "paramsDigest": "digest-batch",
+        "dataVersion": "2026.09.07",
+        "scope": {"tenantId": "tenant-1", "chatSessionId": "session-1"},
+        "observedAt": "2026-10-07T08:44:47+08:00",
+        "limitations": [],
+    }
+    output = {
+        "responseType": "text",
+        "message": "补录已生效，批次线按已核验证据回答。",
+        "evidenceRefs": [_model_citation(evidence_id)],
+    }
+    payload = {
+        "output": output,
+        # **只有模型自己的转述**——没有工具结果给这条证据背书（线上失败那一轮正是如此）。
+        # 正文是原始 TurnOutput JSON（与真 codex 的 AgentMessage 一致），`_collect_records`
+        # 会把它解析出来、把 `evidenceRefs` 当成"本回合证据"。
+        "events": [
+            {
+                "type": "item_completed",
+                "item": {
+                    "type": "AgentMessage",
+                    "id": "msg-1",
+                    "text": json.dumps(output, ensure_ascii=False),
+                },
+            }
+        ],
+    }
+    verifier = Verifier({evidence_id: "valid"})
+    gateway = _gateway(
+        CodexHarness([payload]), verifier, snapshot=_snapshot_with_evidence(snapshot_record)
+    )
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result.get("error")
+    assert result.get("output") is not None
+    assert verifier.calls == [[evidence_id]]
 
 
 @pytest.mark.asyncio

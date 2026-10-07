@@ -300,6 +300,52 @@ def _emit_final(thread_id: str, turn_id: str, *, interrupted: bool) -> None:
         send({"jsonrpc": "2.0", "method": "turn/completed",
               "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}})
         return
+    # 场景 `evidence_echo`（"补录确认后的下一轮"靶子 ✓）：终态正文**引用一条证据** ✓，
+    # 形状照 2026-10-07 线上事故里模型**实际发出的**那份引用逐字段抄 ✓✓——
+    # 只带 `evidenceId`/`sourceLevel`/`dataVersion` 与一个**查询参数** scope ✓，
+    # **不带** `sourceSystem`/`paramsDigest` ✓（那是 Java 签发时才有、模型转述时丢掉的 ✓）。
+    # 快照里同 ID 的权威记录**带**这两个字段 ✓ → 正是"快照记录 × 模型引用"那一对 ✓。
+    # 参数由测试喂（`scenario-params`：evidenceId/dataVersion/message ✓）——替身读不到台账 ✗。
+    if _scenario() == "evidence_echo":
+        params = _scenario_params()
+        ref = {
+            "evidenceId": str(params.get("evidenceId") or ""),
+            "sourceLevel": "authoritative",
+            "dataVersion": str(params.get("dataVersion") or ""),
+            "admissionMode": None,
+            "admissionUnitId": None,
+            "groupCode": None,
+            "algorithmVersion": None,
+            "stateVersion": None,
+            "scope": params.get("scope")
+            or {
+                "kind": "catalog_batch_options",
+                "areaId": "330000",
+                "province": "浙江",
+                "subjectType": None,
+                "batch": "第一段",
+                "year": None,
+                "majorId": None,
+                "schoolId": None,
+            },
+            "observedAt": params.get("observedAt"),
+            "limitations": [],
+        }
+        text = json.dumps(
+            {
+                "responseType": "text",
+                "message": str(params.get("message") or "补录已经生效，我按已核验过的批次线回答。"),
+                "executionStatus": "completed",
+                "evidenceRefs": [ref],
+            },
+            ensure_ascii=False,
+        )
+        send({"jsonrpc": "2.0", "method": "item/completed",
+              "params": {"threadId": thread_id, "turnId": turn_id,
+                         "item": {"id": f"msg-{turn_id}", "type": "agentMessage", "text": text}}})
+        send({"jsonrpc": "2.0", "method": "turn/completed",
+              "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}})
+        return
     if _scenario() == "broken_output":
         text = json.dumps(
             {

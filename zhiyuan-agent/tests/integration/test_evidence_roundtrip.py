@@ -196,13 +196,73 @@ async def test_no_evidence_means_no_evidence_not_a_self_minted_one(monkeypatch) 
     assert result["evidenceRefs"] == []
 
 
-def test_same_evidence_id_with_different_content_is_rejected() -> None:
-    """同 ID 不同内容：报错，而不是"最后一个覆盖"。"""
+def test_same_id_with_a_different_data_version_keeps_the_snapshot_record() -> None:
+    """同 ID、内容标识（dataVersion）有出入：**信快照，不报错**（2026-10-07 修）。
+
+    本回合那份不是"另一条证据"，是对快照的**转述**——以前按"稳定身份全等"判，
+    转述一转就冲突 → 整轮硬失败（线上形态：补录确认后下一轮
+    `evidence_identity_conflict`，用户只看到"当前对话引擎暂时不可用"）。
+    现在的语义：快照是权威，转述不覆盖它；说错内容由下游 `evidence_mismatch` 拦。
+    """
     snapshot_record = dict(JAVA_EVIDENCE)
     turn_record = dict(JAVA_EVIDENCE, dataVersion="sha256:other")
 
-    with pytest.raises(ValueError, match="evidence_identity_conflict"):
-        merge_evidence([snapshot_record], [turn_record])
+    merged = merge_evidence([snapshot_record], [turn_record])
+
+    assert merged[JAVA_EVIDENCE["evidenceId"]] == snapshot_record
+
+
+def test_model_citation_of_a_snapshot_evidence_does_not_conflict() -> None:
+    """线上事故逐字段复刻：Java 签发件（快照）× 模型转述件（本回合）。
+
+    两边来自 2026-10-07 的实证：
+    · 快照那份是 Java 台账投影（带 `sourceSystem`/`paramsDigest`/scope 三参）；
+    · 本回合那份是模型终态正文里抄回来的引用——只抄 `evidenceId`/`sourceLevel`/
+      `dataVersion` 与一个**查询参数** scope，`sourceSystem`/`paramsDigest` 全丢。
+    这一对曾经直接把整轮打成 `evidence_identity_conflict`；现在必须并得出、
+    且账本里留下的是**快照那份**（原件），不是残缺的转述。
+    """
+    snapshot_record = {
+        "evidenceId": "ev_01M49X3TS1EVA6PXXC2BMG73SP",
+        "sourceLevel": "authoritative",
+        "sourceSystem": "gaotu.batchList",
+        "paramsDigest": "5c0e803deaefc0e3ee3be13497f84de9",
+        "dataVersion": "fc7bd2c8d3cd6dad653afc03d4c7b40a",
+        "scope": {"tenantId": 1, "chatSessionId": 10041955, "threadId": "01a113d0"},
+        "observedAt": "2026-10-07T08:44:47+08:00",
+        "limitations": [],
+    }
+    turn_record = {
+        # 模型转述：没有 sourceSystem / paramsDigest，scope 被换成了查询参数。
+        "evidenceId": "ev_01M49X3TS1EVA6PXXC2BMG73SP",
+        "sourceLevel": "authoritative",
+        "dataVersion": "fc7bd2c8d3cd6dad653afc03d4c7b40a",
+        "scope": {"kind": "catalog_batch_options", "areaId": "330000", "batch": "第一段"},
+        "observedAt": "2026-10-07T08:44:47+08:00",
+        "limitations": ["仅覆盖浙江省批次设置与批次线，不含院校专业录取数据"],
+    }
+
+    merged = merge_evidence([snapshot_record], [turn_record])
+
+    kept = merged["ev_01M49X3TS1EVA6PXXC2BMG73SP"]
+    assert kept is snapshot_record
+    assert kept["sourceSystem"] == "gaotu.batchList"
+    assert kept["paramsDigest"] == "5c0e803deaefc0e3ee3be13497f84de9"
+
+
+def test_root_identity_divergence_is_still_rejected() -> None:
+    """根身份（租户/会话/来源系统）都非空且不同 = **另一条**证据顶着同一个 ID。
+
+    这不是"转述残缺"（残缺是缺字段，不是字段不同），只能 fail closed——
+    放宽的不是冲突，是"缺"。
+    """
+    for field, value in (
+        ("tenantId", "tenant-2"),
+        ("sessionId", "999"),
+        ("sourceSystem", "gaotu.otherSource"),
+    ):
+        with pytest.raises(ValueError, match="evidence_identity_conflict"):
+            merge_evidence([dict(JAVA_EVIDENCE)], [dict(JAVA_EVIDENCE, **{field: value})])
 
 
 def test_observed_at_difference_is_not_a_conflict() -> None:
