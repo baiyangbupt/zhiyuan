@@ -15,6 +15,26 @@
 
 export const HEARTBEAT_TIMEOUT_MS = 30000;
 
+/**
+ * **后台标签页的节流**（2026-10-07 独立审查 M4 ✓）：浏览器会把隐藏标签的定时器
+ * 节流（`setInterval(…, 5s)` 实测可拉成分钟级 ✓）甚至整页冻结 ✓——隐藏期里
+ * ping 与 pong **都没有机会跑** ✗，而"距上次 pong 的时长"照走 ✓ → 回到前台/解冻后的
+ * 第一个 tick 就会拿一整段"没人有机会回 pong"的时长去判死 ✗ → 一条**好好**的连接
+ * 被误杀重连 ✓（在飞的确认回合还被本地收尾 ✗）。两条纪律：
+ *   ① **隐藏期跳过判死** ✓——那时的静默不是连接死亡的证据 ✓；
+ *   ② **回到前台复位窗口** ✓——否则隐藏期的时长会在下一个 tick 直接超时 ✓。
+ * 判据是纯函数（node:test 直接测 ✓，见 heartbeatWatchdog.test.mjs ✓）；
+ * 参数默认给"前台" ✓（拿不到 `document` 的老环境/SSR 退回原行为 ✓，不凭空停掉判死 ✗）。
+ */
+export function shouldSkipSilenceCheck(visibilityState) {
+  return visibilityState === 'hidden';
+}
+
+/** 回到前台要复位静默窗口（见上）；隐藏/未知状态不动。 */
+export function shouldRearmWatchdog(visibilityState) {
+  return visibilityState === 'visible';
+}
+
 export function createHeartbeatWatchdog({ timeoutMs = HEARTBEAT_TIMEOUT_MS } = {}) {
   let armed = false;
   let lastPongAt = 0;

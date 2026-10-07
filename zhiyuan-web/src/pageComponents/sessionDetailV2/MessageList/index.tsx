@@ -48,7 +48,12 @@ import TypingAnimation from '@/components/generating/TypingAnimation';
 import SendPng from '@/images/icons/send.png';
 import { marked } from 'marked';
 import { createFetchQueue } from './fetchQueue.mjs';
-import { createHeartbeatWatchdog, HEARTBEAT_TIMEOUT_MS } from '@/utils/heartbeatWatchdog.mjs';
+import {
+  createHeartbeatWatchdog,
+  HEARTBEAT_TIMEOUT_MS,
+  shouldRearmWatchdog,
+  shouldSkipSilenceCheck,
+} from '@/utils/heartbeatWatchdog.mjs';
 import { applyPendingActionResult, parseConversationActionResult } from '@/utils/conversationEvents.mjs';
 
 marked.use({ gfm: true, breaks: true });
@@ -988,7 +993,15 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       // 1. 检测连接假死（每次执行都检查）
       //    判据 = "距最近一次 pong 已静默 ≥ 30s"（见 heartbeatWatchdog 注释）；
       //    半开连接不会有 onclose/onerror，这里是唯一能发现问题的地方。
-      if (isConnectedRef.current && heartbeatWatchdogRef.current?.isSilent(now)) {
+      //    **后台标签页除外** ✓（M4）：隐藏期定时器被节流/冻结 ✓，ping 与 pong 都没机会跑 ✓——
+      //    那时的静默不是连接死的证据 ✗（拿它判死就是误杀重连 ✓）；回前台由
+      //    `visibilitychange` 复位窗口 ✓（见下面那个 effect ✓）。
+      const visibilityState = typeof document === 'undefined' ? 'visible' : document.visibilityState;
+      if (
+        isConnectedRef.current
+        && !shouldSkipSilenceCheck(visibilityState)
+        && heartbeatWatchdogRef.current?.isSilent(now)
+      ) {
         console.warn('⚠️ 心跳超时（30s 未收到 pong），判定连接假死，主动重建连接');
         // 清理定时器
         if (heartbeatTimerRef.current) {
@@ -1047,6 +1060,21 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       }
     };
   }, [isConnected, routerParams.chatSessionId, routerParams.userId]);
+
+  // **回到前台要复位静默窗口** ✓✓（M4 的后半 ✓）：
+  // 隐藏期的节奏由浏览器节流决定 ✓（上面那个 tick 直接跳过判死 ✓），但锚点还停在
+  // 隐藏前的最后一口 pong 上 ✗——不复位的话，回前台后**第一个** tick 就会拿整段
+  // 隐藏时长去比 30s ✗ → 一条好好的连接被误杀 ✓（重连会打断用户正在看的回合 ✓）。
+  // 复位之后再按正常节奏攒窗口 ✓：真有半开，仍会在 30s 后的 tick 上被抓 ✓。
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (shouldRearmWatchdog(document.visibilityState) && isConnectedRef.current) {
+        heartbeatWatchdogRef.current?.reset();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
 
   // 更新 ref 值，确保心跳定时器能访问到最新的状态
   useEffect(() => {
