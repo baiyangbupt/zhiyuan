@@ -115,6 +115,7 @@ docker run --rm --network host \
     -e "ZHIYUAN_E2E_RUN_ID=${ZHIYUAN_E2E_RUN_ID:-browser-run}" \
     -e "ZHIYUAN_E2E_SESSION_SALT=${ZHIYUAN_E2E_SESSION_SALT:-}" \
     -e "ZHIYUAN_E2E_EXPECT_PROXY=${ZHIYUAN_E2E_EXPECT_PROXY:-}" \
+    -e "ZHIYUAN_E2E_CONTROL_URL=${ZHIYUAN_E2E_CONTROL_URL:-}" \
     -w /opt/e2e "$IMAGE_TAG" bash -lc '
         set -e
         cd /opt/e2e
