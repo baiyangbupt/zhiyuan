@@ -41,7 +41,9 @@ stop_service() {
     local name="$1"
     local process_hint="$2"
     local pidfile="$RUN_DIR/pids/$name.pid"
-    [[ -f "$pidfile" ]] || return
+    # 无 pid 文件 = 该服务不在本 run 内，跳过；**必须 return 0**——set -e 下裸 `return`
+    # 会带上 `[[ ]]` 的 1，web 是首个调用点，整个停链就地中断（2026-10-07 H2 实测）。
+    [[ -f "$pidfile" ]] || return 0
 
     local pid command_line
     pid="$(<"$pidfile")"
