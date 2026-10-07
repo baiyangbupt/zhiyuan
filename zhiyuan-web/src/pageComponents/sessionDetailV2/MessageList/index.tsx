@@ -2079,13 +2079,28 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
             ) return null;
             return (
               <div key={turn.id} data-turn-id={turn.id} style={{ padding: '4px 12px' }}>
-                {steps.length > 0 ? (
-                  <div data-testid="turn-progress">
-                    {steps.map(step => (
-                      <div key={step.itemId} data-testid="turn-progress-step" data-status={step.status}>
-                        {step.label || step.tool}
+                {/*
+                  **回合进行中的"现场卡"** ✓✓（2026-10-07 用户实测：进度提示与流式文字
+                  原来是**裸 div** ✗——一行行摞在气泡下面"铺开" ✓，看着像一堆散装文字 ✗）。
+                  修法：与"正在分析"卡同款视觉的白卡把两者**合装** ✓——进度提示在上（灰字），
+                  流式文字在下（正文色）✓；终态后本卡只留进度部分，答案由终态/历史渲染 ✓。
+                  testid 全部保留（`turn-progress` / `turn-progress-step` / `assistant-stream` ✓，
+                  e2e 探针不动 ✓）。
+                */}
+                {steps.length > 0 || (!turn.terminal && streamText) ? (
+                  <div className={style.turnLiveCard}>
+                    {steps.length > 0 ? (
+                      <div className={style.turnLiveHints} data-testid="turn-progress">
+                        {steps.map(step => (
+                          <div key={step.itemId} data-testid="turn-progress-step" data-status={step.status}>
+                            {step.label || step.tool}
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    ) : null}
+                    {!turn.terminal && streamText ? (
+                      <div className={style.turnLiveText} data-testid="assistant-stream">{streamText}</div>
+                    ) : null}
                   </div>
                 ) : null}
                 <UnderstandingCard
@@ -2126,11 +2141,12 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                   ——原始 JSON 碎片**不再**铺给用户看 ✗（观感事故的修法）。
                   终态权威不变：完整答案仍由 `assistant.completed` 整段给出 ✓。
                 */}
-                {!turn.terminal && streamText ? (
-                  <div data-testid="assistant-stream">{streamText}</div>
-                ) : null}
                 {turn.terminal && turn.answer && turn.answer.message ? (
-                  <div data-testid="assistant-final">{turn.answer.message}</div>
+                  // 终态答案也进卡（2026-10-07 用户实测：裸 div 直接铺在气泡下面 ✗，
+                  // 看起来像"卡片没收到文字" ✓）——与"现场卡"同款视觉 ✓；testid 保留（e2e 不动）。
+                  <div data-testid="assistant-final" className={style.turnLiveCard}>
+                    <div className={style.turnLiveText}>{turn.answer.message}</div>
+                  </div>
                 ) : null}
                 {/*
                   **可恢复错误也要画出来** ✓✓——与上面那条一模一样的病 ✗：
