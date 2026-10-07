@@ -15,7 +15,13 @@ export const getPositionRangeApi = (data: IPosRangeParams) =>
     url: `/gaotu-assistant-bot/base-data/score/position-range`,
     method: 'post',
     data,
-  });
+    // **「数据缺失」不是故障** ✓✓（2026-10-07 用户实测：刷新/改分时弹"系统错误"）：
+    // 84001 = 未查询到一分一段数据（该省/该口径无表），-1 = 上游系统错误——
+    // 两者调用方都按"算不出位次"处理 ✓（`ScoreSupplement` 的 `.then(code===0&&data)`
+    // 与 `.catch` 兜底 ✓、`PersonalInfoCollect` 同理 ✓），
+    // 只有全局 toast 不该弹 ✓——位次是**可选项**，缺数据留给用户手填 ✓。
+    special: [84001, -1],
+  } as any);
 // 获取民族列表
 export const getEthnicityListApi = () =>
   request<ICollectflowParams, any>({
