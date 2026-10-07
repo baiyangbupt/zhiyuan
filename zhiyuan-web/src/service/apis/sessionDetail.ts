@@ -357,7 +357,11 @@ export const generatePlanningInitialPlanApi = (
   chatSessionId: string,
   forceRegenerate: boolean = false,
   regroupByTier: boolean = true,
-  overwriteExistingDraft: boolean = false
+  overwriteExistingDraft: boolean = false,
+  // 可选：把指定业务码从**全局 toast** 里豁免（2026-10-07）——工作台的"自举初始方案"
+  // 是后台尽力而为的动作 ✓：失败时方案区本来就显示"还没有方案"占位 ✓，
+  // 再弹一个全局"系统错误"只会吓用户（实测：自举与懒导入竞态时偶发 -1）✗。
+  special?: number[]
 ) =>
   request<
     { forceRegenerate: boolean; regroupByTier: boolean; overwriteExistingDraft: boolean },
@@ -370,7 +374,8 @@ export const generatePlanningInitialPlanApi = (
       regroupByTier,
       overwriteExistingDraft,
     },
-  });
+    ...(special ? { special } : {}),
+  } as any);
 
 export const exportPlanningOrderedPlanApi = (tenantId: string, chatSessionId: string) =>
   request<{}, any>({

@@ -1734,7 +1734,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         routerParams.chatSessionId,
         false,
         true,
-        false
+        false,
+        // 自举是**尽力而为** ✓：失败静默（-1 是竞态偶发，方案区自有"还没有方案"占位 ✓）；
+        // 用户主动触发的生成走别的调用点，仍保留全局提示 ✓。
+        [-1]
       );
       if (code === 0 && data) {
         applyPlanningState(data);
