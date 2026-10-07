@@ -1,9 +1,10 @@
 # H2 专线：写路径 CAS 化的**实施计划**（附 D1 真库读数）
 
 > 来源：`docs/superpowers/reviews/2026-10-07-dialogue-engine-iteration-and-review.md` §二 H2/D1。
-> 状态（2026-10-07 晚）：**D1 已交付并全绿；H2 代码未动**——评估后判定"统一 CAS"是
-> 每站点有独立冲突语义的**结构化重构**（不是机械替换），按任务授权改为"先交真库用例 +
-> 精确实施计划"。基线 `92fbf90`（H3/M2/M3 已在 `ab4a292`/`90cacec`/`92fbf90` 落地）。
+> 状态（2026-10-07 深夜）：**H2 已按本计划落地并全绿**——commit `167d4a8`（实现）/
+> `8489844`（单测）/ `c4d23cd`（D1 ⑧ 翻转），读数与遗留见 §6。上半程"先交真库用例 +
+> 精确实施计划"的判定保持不变（统一 CAS 是每站点独立冲突语义的结构化重构）。基线 `92fbf90`
+> （H3/M2/M3 已在 `ab4a292`/`90cacec`/`92fbf90` 落地）。
 
 ## 0. 为什么没在这一波直接改代码（判定依据）
 
@@ -87,14 +88,17 @@
    savePlanningStateIfUnchanged(5479)/persistRecommendationOverlay(8332)`）；不动 DTO 的
    JSON 形状（baseline 字段不序列化）。
 
-## 4. 开放决策（需裁决，H2 开工前定）
+## 4. 开放决策（需裁决，H2 开工前定）——均已裁决
 
 1. **`data_value` 列 collation**：维持 `utf8mb4_0900_ai_ci`（D1 ⑤：只差大小写的并发写
    检测不到）还是迁 `utf8mb4_bin`（比较改逐字节）？迁移代价：一次 DDL（大表锁评估）+
    读路径 CAS 从"赢"变"输"的边角会更多（方向安全，但补写会更常放弃）。
+   → **裁决：维持 `utf8mb4_0900_ai_ci` 不动**；迁移评估记入 §6 遗留。
 2. **冲突的对外语义**：`FAIL_CONFLICT` 抛什么码、前端/网关拿它做什么（重试提示 or 409 卡）。
+   → **裁决：沿用 `40901`/`40906` 语义面，不新增错误码；前端/网关本波不动**。
 3. **version 递增口径**：重读/合并后以最新为基 +1（允许跳号）——现状本就允许跳号，
    建议写进不变量。
+   → **裁决：以最新为基 +1（允许跳号），写成不变量，测试钉住**。
 
 ## 5. 验收（H2 落地时的 DoD）
 
@@ -103,3 +107,53 @@
 - e2e：写路径 6 条（F07 后半/F08/F09/F13/补录/F14）照常全绿 + 复刻 d098da8 的并发压测
   （写路径版：页面自举 × 补录 × 候选池刷新交叉）。
 - 观测：CAS 输/放弃落盘的日志计数（现在读路径有 `planningStateCasSave skipped`，写路径要有同类锚点）。
+
+## 6. 交付记录（2026-10-07 深夜，分支 `wip/2026-09-28-p2-write-loop-green`）
+
+实现 `167d4a8` / 单测 `8489844` / D1 翻转 `c4d23cd`（均已推 origin）。
+
+**三段策略落点**（file:line 为交付时点）：
+
+- 收敛点：`savePlanningState`（~7888）+ `handleInsertRace`（~7944）+
+  `logWriteCasSkipped`（~7973，reason=`row_changed_under_us`，观测锚点 ✓）+
+  `WRITE_CAS_ATTEMPTS=3` / `saveWithReplay`（~7982/~7994）/ `writeCasConflict`（~8009）。
+- `RETRY_REPLAY`：draft 四连 select/remove/lock/ban（~2151-2264）、`generateOrderedPlan`（~2290）、
+  `applyScoreDetailUpdate`（~560）、`updateCandidateViewState`（~648）、
+  `touchAndSavePreference/Constraint`（~2795/~2819）、profile 懒同步、
+  `markUnsupportedDataFreshnessCurrent`（~6461，A 类：只记日志不抛）。
+- `MERGE_LATEST`（只合并本方法域字段）：`generateCandidatePool`（~1565）、
+  `runReview`（~2723）、`analyzePlanAdjustment`、`checkDataFreshness`（~6273-6397，
+  `data_freshness_check`/`…_merge` 循环）、`generateInitialRecommendation`（B+C）、
+  `exportOrderedPlan`（~768，副作用先行，CAS 输记账后仍出 Excel）、
+  `persistRecommendationOverlay`（~8896，写后刷新基线，防同调用内二次 CAS 拿旧基线）。
+- `FAIL_CONFLICT`（`40901` 家族，无新码）：`generateOrderedPlan` 耗尽、draft 四连耗尽、
+  偏好/约束耗尽、`applyFixProposal`；E 类 `reorderWorkingPlanInternal`（~2427-2456）以
+  **内层 `generateOrderedPlan` 返回态**为基线，attempt>0 才 reload。
+- 读入口只补缺：`getCandidateViewState`（~627）。基线载体：`PlanningStateDTO.baselineDataValue`
+  （不序列化；lombok 1.16.16 → `@EqualsAndHashCode(exclude = {...})`）。
+
+**DoD 读数**：
+
+- 单测：§2 每落点 ≥1 条"并发写者先落盘"钉子，15 条新测（`PlanningStateServiceTest` ~9082-9466）；
+  类套 216 绿 0F/0E/3skip，模块全量 959 绿 0F/0E/5skip。
+- 真库（13306）：⑧ 翻转前 = 后写者整文档覆盖、先写者全丢；翻转后
+  `casWritePathBlocksSecondWriterAndMergeKeepsBoth` = CAS 挡住第二个写者、重读合并后两者都在；8/8 绿。
+- e2e（自建沙箱 3203/18297/18295/18296/18298，runId `p2-20261007-r8`）：写路径 6 条两轮全绿
+  （r8-1 6/6 1.9m；r8-2 6/6 1.8m）：F07 后半 / F08 / F09 / F13 / 补录成绩 / F14 假死。
+- 写路径并发压测（d098da8 写版）：32 并发调用 → 8 次响亮 `40901`（HTTP 200）/24 成功/0 5xx；
+  跨域风暴后候选池/初始推荐/overlay 三域都在（无整文档覆盖）；同域 4 写者 ×4 轮后最终视图 =
+  某一个提交者的整份（无混合），version 随成功写精确增长。
+
+**遗留**：
+
+1. `data_value` collation 维持 `utf8mb4_0900_ai_ci`：迁 `utf8mb4_bin` = 一次大表 DDL +
+   读路径 CAS 更多"方向安全"的输；D1 ⑤ 大小写边角仍在（只差大小写的并发写检测不到），
+   未做迁移。
+2. 修复应用链 `applySupportedFixProposalStrategy`（~1098-1102）的 FAIL_CONFLICT 是有意偏离
+   计划策略：变换依赖同一份快照上刚算出的冻结排序结果，重放风险高，用户动作输不起 →
+   不覆盖并发写、响亮冲突（代码内有注释说明）。
+3. `checkDataFreshness` 的域合并为保守实现（整体重放本方法的域写），后续可收敛为严格的
+   "只合并 dataFreshness 域"。
+4. 测试侧：`PlanningStateServiceTest.DEFAULT_CAS_ANSWER` 现会在一命中的 CAS 里同步行对象
+   新值（真库行为：命中即落盘）；`PlanningInitialPlanGenerationTest` /
+   `PlanningStateSuggestionMappingTest` 的 store 桩补齐 CAS 双写与 id 回填。
