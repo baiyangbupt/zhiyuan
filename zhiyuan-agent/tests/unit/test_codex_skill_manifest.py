@@ -223,6 +223,56 @@ def test_write_rules_require_looking_up_codes_before_the_card() -> None:
     assert "非标准选科编码" in rules
 
 
+def test_write_rules_lookup_the_rank_before_uttering_one() -> None:
+    """用户只给分数没给位次时的规则必须写死（2026-10-07 一分一段工具上线）：
+
+    - 先查 `catalog.get_score_position`（不能自己按分数猜）；
+    - 口径是**区间**：同分不可分辨，只能按「位次（一分一段区间，同分不可分辨）」呈现；
+    - **测算/默认位次用 `default_rank`**（= lowest_rank，同分最后一名、最保守口径，
+      与 hl-wish `scoreToPos` 同口径）：位次缺失时以它作默认位次带上卡
+      （`totalScorePos`），并标注是保守推算值；
+    - 用户明确给了位次时以用户值为准（**用户 > 表**）；
+    - 上游没有该省数据时如实说不可用，**不得估算**。
+    """
+    rules = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.write.md"
+    ).read_text(encoding="utf-8")
+
+    assert "catalog.get_score_position" in rules, "位次工具没有出现在补录规则里"
+    assert "一分一段" in rules
+    assert "同分不可分辨" in rules, "区间口径没有写进规则"
+    assert "default_rank" in rules, "单一默认位次字段没有写进规则"
+    assert "最保守" in rules, "default_rank 的口径（最保守/同分最后一名）没有写进规则"
+    assert "totalScorePos" in rules, "默认位次与卡片字段的衔接没有写进规则"
+    assert "保守值" in rules, "保守推算值的标注要求没有写进规则"
+    assert "用户 > 表" in rules, "用户位次优先于表值这条没有写进规则"
+    assert "不得估算" in rules
+    # 空档案出卡的 110 前置条件也要写死（2026-10-07 真栈实测：只给总分/位次就出卡，
+    # 后端 110「请填写各科成绩后再创建会话」直接拒，回合以失败收场）。
+    # 协调方口径（2026-10-07）：**空档案首次补录五项集齐才出卡**
+    # （省份/科类/批次/各科成绩（完整）/总分），缺任何一项先澄清（一次把缺的都问上）；
+    # **已有档案的修改**才允许只带用户说过的字段（增量合并）。
+    assert "请填写各科成绩后再创建会话" in rules, "110 拒卡那条没有写进规则"
+    assert "五项集齐才出卡" in rules, "空档案五项齐套的要求没有写进规则"
+    assert "一次把缺的都问上" in rules, "缺项时一次问全的动作没有写进规则"
+    assert "增量合并" in rules, "已有档案增量合并的例外没有写进规则"
+
+
+def test_write_rules_reuse_code_table_lookups() -> None:
+    """编码表查询结果要复用（2026-10-07 真栈实测：同一轮里批次/科目编码反复查）。
+
+    用户侧表现是"正在读取批次编码"刷屏，token 也白烧。规则把复用写死：
+    同一轮里批次/科目编码**查一次就够**，拿到结果后不要重复调用。
+    """
+    rules = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.write.md"
+    ).read_text(encoding="utf-8")
+
+    assert "查一次就够" in rules, "编码表复用（查一次就够）没有写进规则"
+    assert "不要重复调用" in rules, "禁止重复调用的措辞没有写进规则"
+    assert "正在读取批次编码" in rules
+
+
 def test_base_rules_forbid_internal_vocabulary_in_user_visible_text() -> None:
     """第 10 条：给用户的文本不得出现内部枚举/字段名（2026-10-06 真事故）。
 

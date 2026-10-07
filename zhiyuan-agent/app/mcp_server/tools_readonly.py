@@ -5,6 +5,7 @@ import hashlib
 import html
 import json
 import re
+from datetime import datetime
 from typing import Any
 
 from app.admission.facts import (
@@ -43,6 +44,9 @@ CAPABILITIES = {
     # 模型补录前先查这两张表，用返回的 code 出草稿。
     "catalog.get_batch_options": "catalog_read",
     "catalog.get_subject_options": "catalog_read",
+    # 一分一段（分数 → 位次）：用户报"我 610 分"但没报位次时的唯一合法来源。
+    # 位次是区间（同分不可分辨），"大概多少名"以前只能靠模型自己算或干脆不答。
+    "catalog.get_score_position": "catalog_read",
     # 招生单元树：专业级那条链的入口，**免分数**。没有它，招生计划与专业级录取都无门可入。
     "catalog.list_admission_units": "catalog_read",
     "admission.get_enrollment_plan": "admission_read",
@@ -85,6 +89,8 @@ TOOL_KINDS = {
     # 补录编码表：字典/枚举，形状是 catalog（不是观测事实，批次线证据挂在批次查询上）。
     "catalog.get_batch_options": "catalog",
     "catalog.get_subject_options": "catalog",
+    # 一分一段：一份**按省的统计表**（不是某个考生的名次），形状同样是 catalog。
+    "catalog.get_score_position": "catalog",
     "catalog.list_admission_units": "catalog",
     "admission.get_enrollment_plan": "enrollment",
     "admission.get_charter": "policy",
@@ -173,6 +179,21 @@ def _flatten_unit_tree(tree: Any) -> list[dict[str, Any]]:
 
     walk(tree, [])
     return rows
+
+
+def _clean_score(raw: Any, fallback: str) -> str:
+    """上游一分一段的分数是四位小数字符串（"610.0000"）；给人看的形状是 610
+    ——与 Java 侧 `ScoreCatalogService.parseScore` 同一口径。取不到就回落调用方给的分数。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return fallback
+    try:
+        value = float(text)
+    except ValueError:
+        return text
+    cleaned = f"{value:.4f}".rstrip("0").rstrip(".")
+    return cleaned or fallback
 
 
 def _pick_comparison_row(rows: list[Any], year: int) -> dict[str, Any] | None:
@@ -346,6 +367,8 @@ class ReadonlyDomainTools:
             return await self.backend.get_batch_options(**self._trusted_arguments(arguments))
         if name == "catalog.get_subject_options":
             return await self.backend.get_subject_options(**self._trusted_arguments(arguments))
+        if name == "catalog.get_score_position":
+            return await self.backend.get_score_position(**self._trusted_arguments(arguments))
         if name == "admission.compare":
             # 不在这里 resolve：对比的实体是**已确认**的院校/专业（调用方给 ID），
             # 歧义应当在进入对比之前就解决掉，否则表格里会出现"同一个名字的两个东西"。
@@ -896,6 +919,67 @@ class InternalClientBackend:
         return self._preserve_envelope(
             await internal_client.get_subject_options(area_id)
         )
+
+    async def get_score_position(self, **arguments: Any) -> Any:
+        """一分一段：分数 → 位次**区间**（展示）+ **单一默认位次**（测算）。
+
+        **同分考生不可分辨**：`highest_rank`~`lowest_rank` 是区间
+        （`same_score_count` 人同分），只能报区间，不能报单一名次。
+        `default_rank` = `lowest_rank`（同分最后一名 / 累计人数口径 / 最保守）：
+        与 hl-wish `ScoreAlgorithmImpl.scoreToPos` 取 `positionTotal` 的**同一口径**，
+        供下一轮出方案/冲稳保测算做默认位次用（区间用于展示，测算用它）。
+        上游没有该省数据时（如安徽）Java 如实回 `data: null`：这里转成
+        `unavailable=true` + limitation，**不估算、不替上游编一个名次**。
+        """
+        area_id = str(arguments.get("provinceCode") or arguments.get("areaId") or "").strip()
+        score = str(arguments.get("score") or "").strip()
+        missing = [
+            name
+            for name, value in (("provinceCode", area_id), ("score", score))
+            if not value
+        ]
+        if missing:
+            result = _err(
+                "catalog.get_score_position",
+                "needs_clarification",
+                f"missing: {', '.join(missing)}",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = missing
+            return result
+        payload = self._preserve_envelope(
+            await internal_client.get_score_position(
+                area_id,
+                score,
+                subject=str(arguments.get("subjectType") or "").strip() or "N",
+                data_level=str(arguments.get("batchLevel") or "").strip() or "01",
+                # 年份缺省**当前年**（会话里给了年份以会话为准）：上游按年份取表，
+                # 不带年份会先失败一次再靠 Java 侧回退，白多一跳。
+                year=str(arguments.get("year") or "").strip() or str(datetime.now().year),
+            )
+        )
+        if not isinstance(payload, dict):
+            return payload
+        limitations = list(payload.get("limitations") or [])
+        raw = payload.get("data")
+        if isinstance(raw, dict):
+            payload["data"] = {
+                "score": _clean_score(raw.get("score"), score),
+                "same_score_count": raw.get("students"),
+                "highest_rank": raw.get("highestRank"),
+                "lowest_rank": raw.get("lowestRank"),
+                # 单一默认位次：`lowest_rank`（同分最后一名 / 累计人数 / 最保守）。
+                # 口径与 hl-wish `scoreToPos` 的 `positionTotal` 一致（产品裁决，
+                # 2026-10-07）——区间只用于展示，测算用这个值。
+                "default_rank": raw.get("lowestRank"),
+                "data_level": raw.get("dataLevel"),
+            }
+        elif payload.get("status") == "ok":
+            # 上游没有该省的一分一段数据：如实说**不可用**，不给数字。
+            payload["data"] = {"score": score, "unavailable": True}
+            limitations.append("score_position_unavailable")
+        payload["limitations"] = limitations
+        return payload
 
     async def search_schools(self, **arguments: Any) -> Any:
         # `query` 曾经在这里被**静默丢掉**：工具声明了它，模型也按声明传了，

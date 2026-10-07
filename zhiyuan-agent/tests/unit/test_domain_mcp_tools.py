@@ -1418,3 +1418,166 @@ async def test_subject_options_keep_java_rejection_text(monkeypatch) -> None:
     assert result["status"] == "upstream_error"
     assert "upstream_code:110" in result["limitations"]
     assert any("未查询到该省份的选科策略" in item for item in result["limitations"])
+
+
+@pytest.mark.asyncio
+async def test_score_position_returns_the_rank_interval_not_a_single_rank(monkeypatch) -> None:
+    """一分一段：同分考生不可分辨，返回的是**区间**（highest~lowest）+ 同分人数。
+
+    2026-10-07 实测读数（浙江 610）：students=1051、42829~43879。模型要能直接引
+    这条区间；把它读成"42829 名"就是把区间当单点，用户会以为精确到个位。
+    """
+    from app.util import internal_client
+
+    calls: list[dict] = []
+
+    async def score_position(area_id, score, subject="N", data_level="01", year=None):
+        calls.append(
+            {
+                "area_id": area_id,
+                "score": score,
+                "subject": subject,
+                "data_level": data_level,
+                "year": year,
+            }
+        )
+        return {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                # 上游形状：四位小数字符串（真栈读数就是 "610.0000"）。
+                "score": "610.0000",
+                "students": 1051,
+                "highestRank": 42829,
+                "lowestRank": 43879,
+                "dataLevel": "01",
+                "groupTag": None,
+            },
+            "evidence": [{"evidenceId": "ev_pos_1", "sourceSystem": "gaotu.scorePosition"}],
+        }
+
+    monkeypatch.setattr(internal_client, "get_score_position", score_position)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call(
+        "catalog.get_score_position",
+        {
+            "provinceCode": "330000",
+            "score": 610,
+            "subjectType": "N",
+            "batchLevel": "01",
+            "year": 2026,
+            # 冒充身份：必须被 `_trusted_arguments` 丢掉。
+            "tenantId": "999",
+        },
+    )
+
+    assert result["status"] == "ok"
+    assert result["kind"] == "catalog"
+    assert result["data"] == {
+        # 四位小数被收敛成给人看的形状（610.0000 → 610）。
+        "score": "610",
+        "same_score_count": 1051,
+        "highest_rank": 42829,
+        "lowest_rank": 43879,
+        # 单一默认位次 = lowest_rank（最保守口径，hl-wish scoreToPos 同口径）。
+        "default_rank": 43879,
+        "data_level": "01",
+    }
+    # 参数按上游口径到达；受信身份由服务端注入。
+    assert calls[0] == {
+        "area_id": "330000",
+        "score": "610",
+        "subject": "N",
+        "data_level": "01",
+        "year": "2026",
+    }
+    assert [item["evidenceId"] for item in result["evidenceRefs"]] == ["ev_pos_1"]
+
+
+@pytest.mark.asyncio
+async def test_score_position_says_unavailable_when_the_province_has_no_data(monkeypatch) -> None:
+    """上游没有该省的**一分一段**数据（如安徽）时如实回不可用。
+
+    这里防的是最坏的一类"帮忙"：拿邻省的表、拿往年的表、或者按分数线性估算一个名次。
+    工具要么给区间，要么说查不到——**不得估算**（口径写死在工具描述里）。
+    """
+    from app.util import internal_client
+
+    calls: list[dict] = []
+
+    async def score_position(area_id, score, subject="N", data_level="01", year=None):
+        calls.append({"area_id": area_id, "score": score, "year": year})
+        return {"code": 0, "msg": "ok", "data": None}
+
+    monkeypatch.setattr(internal_client, "get_score_position", score_position)
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call(
+        "catalog.get_score_position", {"provinceCode": "340000", "score": 610}
+    )
+
+    assert result["status"] == "ok"
+    assert result["data"] == {"score": "610", "unavailable": True}
+    assert "score_position_unavailable" in result["limitations"]
+    # 年份缺省**当前年**（会话里给了年份时以会话为准）。
+    from datetime import datetime
+
+    assert calls[0]["year"] == str(datetime.now().year)
+
+
+@pytest.mark.asyncio
+async def test_score_position_requires_the_province_and_the_score() -> None:
+    """省份与分数都必填：省份决定查哪张表，分数是表里的行——缺哪一项都查不了。
+
+    缺参要在工具入口说清（`missingFields`），别让模型拿一个空区间回去编。
+    """
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id, backend.chat_session_id, backend.thread_id = "1", "1", "thr"
+    backend.current_state_version = 0
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+
+    result = await tools.call("catalog.get_score_position", {})
+
+    assert result["status"] == "needs_clarification"
+    assert result["data"]["missingFields"] == ["provinceCode", "score"]
+
+
+def test_score_position_tool_description_states_the_interval_rule() -> None:
+    """工具描述是**模型实际读到的那句话**：同分不可分辨/区间只用于展示/
+    default_rank 才是测算口径/无数据不得估算——都必须写死在那里，
+    否则模型只能自己猜，而猜出来的是一个精确名次。"""
+    from app.mcp_server.server import TOOL_DESCRIPTIONS, tool_listing
+
+    description = TOOL_DESCRIPTIONS["catalog.get_score_position"]
+    for phrase in (
+        "一分一段",
+        "同分",
+        "区间",
+        "不可分辨",
+        "区间用于展示",
+        "default_rank",
+        "最保守",
+        "测算",
+        "不得估算",
+        "禁估算",
+    ):
+        assert phrase in description, f"工具描述缺少口径：{phrase}"
+
+    listed = {entry["name"]: entry for entry in tool_listing()}
+    assert listed["catalog.get_score_position"]["description"] == description
+    # 其余工具保持默认描述：这次不连带改动它们的描述面。
+    assert listed["catalog.get_batch_options"]["description"] == (
+        "Zhiyuan authoritative read-only domain query"
+    )
+    schema = listed["catalog.get_score_position"]["inputSchema"]
+    assert schema["required"] == ["provinceCode", "score"]
+    assert schema["additionalProperties"] is False
+    # 批次 level 是这条工具的参数（01 本科 / 02 专科），与批次码是两套编码。
+    assert "batchLevel" in schema["properties"]

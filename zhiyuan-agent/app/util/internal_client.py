@@ -569,6 +569,36 @@ async def get_subject_options(area_id: Union[str, int]) -> Any:
     )
 
 
+async def get_score_position(
+    area_id: Union[str, int],
+    score: Union[str, int],
+    subject: str = "N",
+    data_level: str = "01",
+    year: Union[str, int, None] = None,
+) -> Any:
+    """一分一段：分数 → **位次区间**（`{score, students, highestRank, lowestRank, dataLevel}`）。
+
+    口径：同分考生**不可分辨**——`highestRank`~`lowestRank` 是区间（`students` 人同分），
+    只能报区间，不能报单一名次。`subject` 是选科类型码（浙江 N、江苏 WL/LS），
+    `data_level` 是批次 level（01 本科 / 02 专科，浙江第一段=01，可由
+    `get_batch_options` 的 `level` 得到）；`year` 缺省由调用方补当前年。
+    上游没有该省数据时（如安徽）Java 回 `data: null`——如实不可用，不估算。
+    """
+    payload: Dict[str, Any] = {
+        "areaId": str(area_id),
+        "subject": subject or "N",
+        "dataLevel": data_level or "01",
+        "score": str(score),
+    }
+    if year not in (None, ""):
+        payload["year"] = str(year)
+    return await http_client.post(
+        endpoint="/gaotu-assistant-bot/inner/gaotu/catalog/score-position",
+        json_data=payload,
+        error_msg="catalog 查询分数位次失败",
+    )
+
+
 async def get_plan_major_filter_list(
     school_id: Union[str, int], area_id: Union[str, int]
 ) -> Any:

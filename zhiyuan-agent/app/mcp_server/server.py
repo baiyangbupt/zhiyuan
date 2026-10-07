@@ -58,6 +58,9 @@ _COMMON_INPUT_PROPERTIES: dict[str, Any] = {
     # 省份编码（补录编码表用的名字；与 areaId 同义，兼容两种叫法）。
     "provinceCode": {"type": "string", "description": "省份编码（6 位，如 330000 浙江）"},
     "batch": {"type": "string"},
+    # 批次 **level** 编码（01 本科 / 02 专科）——不是批次码（浙江第一段=17）。
+    # 一分一段表按 level 取；取值来自 `catalog.get_batch_options` 的 `level`。
+    "batchLevel": {"type": "string", "description": "批次 level 编码（01 本科 / 02 专科）；可从 catalog.get_batch_options 的 level 取"},
     "year": {"type": "integer"},
     "subjectType": {"type": "string"},
     "stateVersion": {"type": "integer"},
@@ -85,6 +88,23 @@ def _input_schema(*required: str) -> dict[str, Any]:
         "required": list(required),
         "additionalProperties": False,
     }
+
+
+# 默认描述：对所有工具都成立的那一句只读声明。
+_DEFAULT_TOOL_DESCRIPTION = "Zhiyuan authoritative read-only domain query"
+
+# 逐工具描述：**模型实际读到的那句话**。默认那句太粗，"口径"它读不到——
+# 位次这种"同分不可分辨"的边界必须在描述里写死，否则模型只能猜，
+# 而猜出来的是一个**精确名次**，正是这条工具要防的事。
+TOOL_DESCRIPTIONS: dict[str, str] = {
+    "catalog.get_score_position": (
+        "一分一段表查询：按省份+分数查位次。同分考生不可分辨——"
+        "highest_rank/lowest_rank 是区间（same_score_count 为同分人数），"
+        "区间用于展示，只能报区间，不能报单一名次；"
+        "测算用 default_rank（= lowest_rank，最保守口径，同分最后一名）；"
+        "上游无数据省份回不可用，不得估算（禁估算）。"
+    ),
+}
 
 
 TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -117,6 +137,9 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
     },
     "catalog.get_subject_options": _input_schema("provinceCode"),
+    # 一分一段：省份 + 分数必填；科类 `subjectType` 默认 N，`batchLevel` 默认 01
+    # （本科段，可由 `catalog.get_batch_options` 的 `level` 得到），`year` 默认当前年。
+    "catalog.get_score_position": _input_schema("provinceCode", "score"),
     # 招生单元树：专业级那条链的入口，两个参数都是必需。
     "catalog.list_admission_units": _input_schema("schoolId", "areaId"),
     # schoolId 是 Java 侧的必填（`admission_source_school_required`）——上游那套
@@ -219,7 +242,7 @@ def tool_listing() -> list[dict[str, Any]]:
     return [
         {
             "name": name,
-            "description": "Zhiyuan authoritative read-only domain query",
+            "description": TOOL_DESCRIPTIONS.get(name, _DEFAULT_TOOL_DESCRIPTION),
             "inputSchema": TOOL_INPUT_SCHEMAS[name],
             "annotations": dict(annotations),
         }
