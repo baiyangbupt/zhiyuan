@@ -120,7 +120,14 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
           （已提交，等结果 ✓）
         </Typography.Text>
       ) : null}
-      {diff.summary ? (
+      {/*
+        **补录卡不再铺"一句话摘要"**（2026-10-08 用户实测"确认卡从没正常显示过"✗）：
+        `scoreUpdate` 结构化块（下方 `proposal-score-summary` ✓）与这行摘要是**同一份
+        合并后数据**产出的 ✓、信息九成重复——两遍铺出来就是"杂乱、不像正常卡"的观感来源 ✗。
+        结构化块在场时只留结构化块（信息不丢：省份/科类/批次/年份/各科/总分/位次全在 ✓）；
+        方案调整卡（无 `scoreUpdate`）不受影响 ✓，`proposal-summary` testid 保留 ✓。
+      */}
+      {diff.summary && !scoreUpdate ? (
         <div data-testid="proposal-summary">
           <Typography.Text type="secondary">{diff.summary}</Typography.Text>
         </div>
@@ -133,7 +140,12 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
       {scoreUpdate ? (
         <div data-testid="proposal-score-summary">
           <Typography.Text type="secondary">
-            {[scoreUpdate.provinceName, scoreUpdate.subjectType, scoreUpdate.batchName]
+            {[
+              scoreUpdate.provinceName,
+              scoreUpdate.subjectType,
+              scoreUpdate.batchName,
+              scoreUpdate.examYear ? `${scoreUpdate.examYear} 年` : '',
+            ]
               .filter(Boolean)
               .join(' · ')}
           </Typography.Text>
