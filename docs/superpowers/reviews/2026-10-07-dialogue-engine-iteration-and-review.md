@@ -89,6 +89,16 @@ pong 契约完好（ping 不刷新自己）；时间线合并不变量成立；t
 - 演示入口：`http://10.218.4.10:3201/login`（13000000002，任意码）→ `…/sessionDetailV2?chatSessionId=…&userId=900002&page=1&pageSize=10`。
 - F10 沙箱重建：`/tmp/restart-18294-r4.sh`（现停机）。
 
+## 六、模式/年份/data-fresh 口径核查（2026-10-08，双仓只读专线）
+
+**① 模式判定**：无"日历切阶段"——模式 = 上游按省签发策略（`/hl-wish/ci/selectSubjectPolicy/noToken/subjectPolicy` → `prepareType`）→ 持久化（前端 `customerDetailSession.ts:43-70` 策略优先；后端 `ScoreCatalogService.java:279/304`）。今日实测 = **PREDICT**；"高考期间才 VOLUNTEER"无代码依据（VOLUNTEER 开关=策略已发布+权益；本环境 VOLUNTEER 会 84009）。⚠️ **术语三义冲突**：代码 PREDICT=模拟填报 / VOLUNTEER=智能填报（与口语"智能模式=PREDICT"相反）；desc 自身混用（PREDICT/智能填报 170 次、PREDICT/模拟填报 28 次、VOLUNTEER/智能填报 18 次）→ 口径须先统一。
+
+**② 数据年份**：主路径 **2026**（examYear 缺省=当年；demo 日志 573×2026 / 0×2025）。**PREDICT(模拟填报) 按 3.1.0 设计用 2025 志愿数据**；release-4.0.0 文档已自认冲突并定方向"按 prepareType+实际 examYear 统一" → **口径待用户裁决**。硬编码残留：`PlanningStateService.java:6516`；web `index.tsx:139/176/589/601`、`WorkspacePanel:242-251`；agent `score_query_tool.py:285` / `internal_client.py:2061` / `batch_subject_mapping.py:126/163`。实测反例：会话 10041940（examYear=2025 由调用方带入）。
+
+**③ hl-wish 对照**：口径源头——模式 = |已发布策略行| 的 prepareType（`VolunteerPolicyServiceImpl.java:256-279`）；年份 = 策略行 year/baseYear/convertYear（非硬编码）。zhiyuan 已对齐"策略优先"、未对齐"年份读字段"；对齐建议：年份字段化 + 删硬编码 + 术语统一。
+
+**④ data-freshness**：定位 = **VOLUNTEER-only**（`DataFreshnessSchedulePolicy.java:18-29`：VOLUNTEER + GOING/WAIT；120/180/300 分档）；PREDICT 静默宽容；后台总闸默认关（本地栈关）。"高考期间"仅行业习惯，非代码判据。**已修**：前端模式判定顺序 bug（先判 `智能填报` 字样 → PREDICT 误判 VOLUNTEER → 误弹"2026年招生计划数据已更新"/planYear 2026，与后端"2025"摘要同页矛盾；两文件两份拷贝）→ `8661756`（`utils/prepareTypeText.mjs` code 优先 + 5 条回归单测）。
+
 ## 四、pending（更新）
 - **F10 已修复并推送 ✅**：`072ff5c`（broker 边界原生→业务号翻译 + 回放过滤防御放行 + 2 条新单测；全量 unit 2012 passed，唯一红为既有 dialog_quality_gate 夹具问题）。沙箱 r4 契约 **13/13 全绿（F10 回绿）**，日志 `/tmp/e2e-verify-c4-verify-20261007-r4-contract.log`；Redis db9 数据佐证澄清事件已同盖业务 UUID。✅ **已部署演示栈 18291**（19:50 重启，pid 32605，health 200；env 先抓活进程快照再搬运、与 demo 姿势逐项比对；启动日志 `codex_write vs MCP_MODE=readonly` 警告经查为历史常态、非本次引入）。备注：沙箱事件流 24h TTL 跨轮残留，若遇"卡串轮"先换盐/epoch。
 - **Java 专线交付 ✅**：H3 `ab4a292` / M2 `90cacec` / M3 `92fbf90` 实现+单测绿；H2 按授权止步，交 D1 真库 SQL 用例 8/8（`2c5a96e`；写共享库的既有表、仅自建随机 session id/随机 key，复核残留 0）与 `H2-WRITE-CAS-PLAN.md`（17 调用点分类+三策略+DoD）。全量单测 931/0/7skip。写路径沙箱 e2e 5/6，唯一红 F09 已移交前端波（嫌疑=WIP 用例/夹具 turnId 覆盖，非本波后端改动）。
