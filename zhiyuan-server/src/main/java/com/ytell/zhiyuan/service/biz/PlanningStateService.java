@@ -51,6 +51,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -510,16 +511,29 @@ public class PlanningStateService {
                                                               UserProfileData userProfileData,
                                                               boolean markStale) {
         PlanningStateDTO state = markStale ? loadPlanningState(chatSessionId) : loadPlanningState(chatSessionId, false);
+        applyLegacyProfileHydration(state, scoreDetail, userProfileData);
+        if (markStale) {
+            return touchAndSavePreference(chatSessionId, state,
+                    latest -> applyLegacyProfileHydration(latest, scoreDetail, userProfileData));
+        }
+        // A 类站点（纯内存、hydrate 只补空 ⇒ 重放安全）：输了重读重放 ≤3 次；
+        // 这是会话初始化/画像补全的幂等补缺，耗尽后放弃落盘（下一次读/调用会重放），不响亮失败。
+        boolean saved = saveWithReplay(chatSessionId, state, "sync_profile_legacy",
+                latest -> applyLegacyProfileHydration(latest, scoreDetail, userProfileData));
+        if (!saved) {
+            logWriteCasSkipped(chatSessionId, "sync_profile_legacy", "attempts_exhausted");
+        }
+        return null;
+    }
+
+    /** syncProfileStateFromLegacy 的纯内存变换：hydrate 只补空 + 缺省候选视图（重放幂等）。 */
+    private void applyLegacyProfileHydration(PlanningStateDTO state,
+                                             CreateSessionReq scoreDetail,
+                                             UserProfileData userProfileData) {
         hydrateProfileState(state.getProfileState(), scoreDetail, userProfileData);
         if (state.getCandidateViewState() == null) {
             state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
         }
-        if (markStale) {
-            return touchAndSavePreference(chatSessionId, state);
-        }
-        state.setSessionId(chatSessionId);
-        savePlanningState(chatSessionId, state);
-        return null;
     }
 
     /**
@@ -548,6 +562,26 @@ public class PlanningStateService {
                                                           UserProfileData userProfileData,
                                                           boolean preferenceChanged) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        // A 类站点（用户动作）：纯内存变换可重放（hydrate 只补空、置 stale 幂等），
+        // 输了重读重放 ≤3；重试耗尽**响亮失败**——补录结果绝不静默丢。
+        boolean saved = saveWithReplay(chatSessionId, state, "score_detail_update",
+                latest -> applyScoreDetailUpdateMutation(latest, chatSessionId, scoreDetail, userProfileData, preferenceChanged));
+        if (!saved) {
+            throw writeCasConflict("成绩补录");
+        }
+
+        PlanningStateVersionDTO versionDTO = new PlanningStateVersionDTO();
+        versionDTO.setVersion(state.getVersion());
+        versionDTO.setStaleFlags(state.getStaleFlags());
+        return versionDTO;
+    }
+
+    /** 补录的成绩/画像域字段 + 失效面（重放幂等：fillIfEmpty 与布尔置位）。 */
+    private void applyScoreDetailUpdateMutation(PlanningStateDTO state,
+                                                Long chatSessionId,
+                                                CreateSessionReq scoreDetail,
+                                                UserProfileData userProfileData,
+                                                boolean preferenceChanged) {
         hydrateProfileState(state.getProfileState(), scoreDetail, userProfileData);
         if (state.getCandidateViewState() == null) {
             state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
@@ -567,12 +601,6 @@ public class PlanningStateService {
         state.getStaleFlags().setMessage(preferenceChanged
                 ? "成绩与报考意向已补录，候选池、专家推荐与当前方案需要重新计算。"
                 : "成绩信息已补录，候选池、专家推荐与当前方案需要重新计算。");
-        savePlanningState(chatSessionId, state);
-
-        PlanningStateVersionDTO versionDTO = new PlanningStateVersionDTO();
-        versionDTO.setVersion(state.getVersion());
-        versionDTO.setStaleFlags(state.getStaleFlags());
-        return versionDTO;
     }
 
     /**
@@ -599,15 +627,38 @@ public class PlanningStateService {
     public CandidateViewStateDTO getCandidateViewState(Long chatSessionId) {
         PlanningStateDTO state = getPlanningState(chatSessionId);
         if (state.getCandidateViewState() == null) {
-            state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
-            state.setSessionId(chatSessionId);
-            savePlanningState(chatSessionId, state);
+            // 读入口懒写：**只补缺**。CAS 输了（有并发写）先重读——别人已经补上就以库里的为准，不再写；
+            // 还是缺就再试（≤3），耗尽也只是带着内存里补的默认视图返回（不覆盖任何并发写）。
+            for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+                state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
+                state.setSessionId(chatSessionId);
+                if (savePlanningState(chatSessionId, state, "candidate_view_backfill")) {
+                    return state.getCandidateViewState();
+                }
+                reloadPlanningState(chatSessionId, state);
+                if (state.getCandidateViewState() != null) {
+                    return state.getCandidateViewState();
+                }
+            }
+            logWriteCasSkipped(chatSessionId, "candidate_view_backfill", "attempts_exhausted");
         }
         return state.getCandidateViewState();
     }
 
     public PlanningStateDTO updateCandidateViewState(Long chatSessionId, CandidateViewStateDTO req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        // A 类站点（用户动作）：把 req 的视图原样套到最新态（纯内存），输了重读重放 ≤3；
+        // 重试耗尽**响亮失败**（40901 语义面）——用户的筛选视图变更绝不静默丢。
+        boolean saved = saveWithReplay(chatSessionId, state, "candidate_view_update",
+                latest -> applyCandidateViewStateUpdate(latest, req));
+        if (!saved) {
+            throw writeCasConflict("候选视图更新");
+        }
+        return state;
+    }
+
+    /** 候选视图变更（重放幂等：整字段赋值 + 幂等的失效面切换）。 */
+    private void applyCandidateViewStateUpdate(PlanningStateDTO state, CandidateViewStateDTO req) {
         CandidateViewStateDTO previous = normalizeCandidateViewState(state.getCandidateViewState());
         CandidateViewStateDTO next = normalizeCandidateViewState(req);
         state.setCandidateViewState(next);
@@ -617,10 +668,7 @@ public class PlanningStateService {
         } else {
             ReviewInvalidationPolicy.markCandidateViewStale(state);
         }
-        state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
-        savePlanningState(chatSessionId, state);
-        return state;
     }
 
     public InitialRecommendationStateDTO getInitialRecommendationState(Long chatSessionId) {
@@ -633,14 +681,33 @@ public class PlanningStateService {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         normalizeCandidatePoolForPlanning(state);
         if (shouldRefreshRecommendationOverlay(state)) {
+            // overlay 刷新自带 CAS 与重读合并，且会把 state 刷成落盘后的最新态
             refreshRecommendationOverlay(tenantId, chatSessionId, state);
         }
+        // B+C 站点（overlay 刷新是外部拉取，不可重放整方法）：冲突时重读最新 → 以最新态**只重算**
+        // 初始推荐域字段与 phase/version，不重拉上游。
+        boolean saved = false;
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            applyInitialRecommendationState(state, chatSessionId);
+            if (savePlanningState(chatSessionId, state, "initial_recommendation")) {
+                saved = true;
+                break;
+            }
+            reloadPlanningState(chatSessionId, state);
+            normalizeCandidatePoolForPlanning(state);
+        }
+        if (!saved) {
+            throw writeCasConflict("初始推荐生成");
+        }
+        return state;
+    }
+
+    /** 初始推荐的域字段（纯派生，重放幂等；version 以最新为基 +1，允许跳号）。 */
+    private void applyInitialRecommendationState(PlanningStateDTO state, Long chatSessionId) {
         state.setInitialRecommendationState(buildInitialRecommendationState(state));
         state.getStaleFlags().setInitialRecommendation(false);
         state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
-        savePlanningState(chatSessionId, state);
-        return state;
     }
 
     public PlanAdjustmentStateDTO getPlanAdjustmentState(Long chatSessionId) {
@@ -654,12 +721,21 @@ public class PlanningStateService {
         if (shouldRefreshRecommendationOverlay(state)) {
             refreshRecommendationOverlay(tenantId, chatSessionId, state);
         }
+        // B+C 站点：调整建议是纯内存分析，冲突时以**最新态**重算（重放幂等）再 CAS ≤3
+        boolean saved = saveWithReplay(chatSessionId, state, "plan_adjustment_analyze",
+                latest -> applyPlanAdjustmentAnalysis(latest, chatSessionId, req));
+        if (!saved) {
+            throw writeCasConflict("方案调整分析");
+        }
+        return state.getPlanAdjustmentState();
+    }
+
+    /** 方案调整分析的域字段（纯内存重算，重放幂等）。 */
+    private void applyPlanAdjustmentAnalysis(PlanningStateDTO state, Long chatSessionId, PlanAdjustmentAnalyzeReq req) {
         state.setPlanAdjustmentState(buildPlanAdjustmentState(state, req));
         state.getStaleFlags().setPlanAdjustment(false);
         state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
-        savePlanningState(chatSessionId, state);
-        return state.getPlanAdjustmentState();
     }
 
     public PlanningStateDTO applyPlanAdjustment(Long tenantId,
@@ -710,7 +786,11 @@ public class PlanningStateService {
                 collectOrderedVolunteerIds(state),
                 true);
         recordBehaviorEvent(state, exportEvent);
-        savePlanningState(chatSessionId, state);
+        // B 类站点（副作用=行为事件落库 + 生成 Excel，不可重放）：事件已单独落库，state 侧没有新改动
+        // 需要合并；落盘改走 CAS——库里那行被并发改过就**不写**（旧快照不覆盖新行），导出照常返回。
+        if (!savePlanningState(chatSessionId, state, "export_ordered_plan")) {
+            logWriteCasSkipped(chatSessionId, "export_ordered_plan", "row_changed_under_us");
+        }
         return new ExcelExportResult(excelBytes, generateExcelFileName(userScoreDetail));
     }
 
@@ -1015,7 +1095,11 @@ public class PlanningStateService {
                 CanonicalPlanningRuntime.verifyFrozenState(state, proposal.getSolverResult());
             }
             recalculateOrderedSummary(state.getOrderedPlanState(), state.getCandidatePoolState());
-            state = saveOrderedState(chatSessionId, state);
+            // 修复应用链（FAIL_CONFLICT）：变换依赖同一份快照上刚算出的冻结排序结果，重放风险高；
+            // 用户动作输不起 -> 不覆盖并发写，响亮冲突
+            if (!saveOrderedState(chatSessionId, state, "fix_apply_prioritize")) {
+                throw writeCasConflict("修复建议应用");
+            }
             return rerunReviewAfterFixApplyIfRequested(tenantId, chatSessionId, req, state);
         }
         if (RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(strategy)) {
@@ -1121,7 +1205,10 @@ public class PlanningStateService {
                                                          FixProposalApplyReq req,
                                                          PlanningStateDTO state,
                                                          PlanSolverResultDTO frozenResult) {
-        state = saveWorkingPlanState(chatSessionId, state);
+        // 修复应用链（FAIL_CONFLICT）：见 applySupportedFixProposalStrategy 同名注释
+        if (!saveWorkingPlanState(chatSessionId, state, "fix_apply")) {
+            throw writeCasConflict("修复建议应用");
+        }
 
         if (Boolean.TRUE.equals(req.getRegenerateOrderedPlan())) {
             OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
@@ -1201,6 +1288,12 @@ public class PlanningStateService {
 
     public PlanningStateVersionDTO updateExplicitProfile(Long chatSessionId, UpdateExplicitProfileReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        applyExplicitProfileUpdate(state, req);
+        return touchAndSavePreference(chatSessionId, state, latest -> applyExplicitProfileUpdate(latest, req));
+    }
+
+    /** 明确画像的整字段赋值（重放幂等）。 */
+    private void applyExplicitProfileUpdate(PlanningStateDTO state, UpdateExplicitProfileReq req) {
         ExplicitProfileDTO explicitProfile = state.getProfileState().getExplicitProfile();
         if (req.getMajorPreferences() != null) {
             explicitProfile.setPositiveMajors(defaultList(req.getMajorPreferences().getPositive()));
@@ -1217,11 +1310,22 @@ public class PlanningStateService {
         if (req.getStrengthSubjects() != null) {
             explicitProfile.setStrengthSubjects(defaultList(req.getStrengthSubjects()));
         }
-        return touchAndSavePreference(chatSessionId, state);
     }
 
     public PlanningStateVersionDTO updateConstraintState(Long chatSessionId, UpdateConstraintStateReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        boolean hardMode = applyConstraintStateUpdate(state, req);
+        Consumer<PlanningStateDTO> reapply = latest -> applyConstraintStateUpdate(latest, req);
+        return hardMode
+                ? touchAndSaveConstraint(chatSessionId, state, reapply)
+                : touchAndSavePreference(chatSessionId, state, reapply);
+    }
+
+    /**
+     * 约束/意向合并的纯内存变换（add-unique/remove/mutex ⇒ 重放幂等），返回是否硬约束模式
+     * （决定失效面与候选视图同步）。H2：{@link #updateConstraintState} 在冲突重读后重放它。
+     */
+    private boolean applyConstraintStateUpdate(PlanningStateDTO state, UpdateConstraintStateReq req) {
         if (state.getConstraintState() == null) {
             state.setConstraintState(new ConstraintStateDTO());
         }
@@ -1295,8 +1399,7 @@ public class PlanningStateService {
         if (hardMode) {
             syncCandidateViewStateWithHardRegionRequirements(state);
         }
-
-        return hardMode ? touchAndSaveConstraint(chatSessionId, state) : touchAndSavePreference(chatSessionId, state);
+        return hardMode;
     }
 
     private void normalizeConstraintStateLists(HardConstraintsDTO hard, SoftPreferencesDTO soft) {
@@ -1392,6 +1495,12 @@ public class PlanningStateService {
 
     public PlanningStateVersionDTO updateLatentProfile(Long chatSessionId, UpdateLatentProfileReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        applyLatentProfileUpdate(state, req);
+        return touchAndSavePreference(chatSessionId, state, latest -> applyLatentProfileUpdate(latest, req));
+    }
+
+    /** 潜在画像的整字段赋值（重放幂等）。 */
+    private void applyLatentProfileUpdate(PlanningStateDTO state, UpdateLatentProfileReq req) {
         LatentProfileDTO latentProfile = state.getProfileState().getLatentProfile();
         if (req.getFutureDevelopment() != null) {
             latentProfile.setFutureDevelopment(req.getFutureDevelopment());
@@ -1402,11 +1511,16 @@ public class PlanningStateService {
         if (req.getFamilyContext() != null) {
             latentProfile.setFamilyContext(req.getFamilyContext());
         }
-        return touchAndSavePreference(chatSessionId, state);
     }
 
     public PlanningStateVersionDTO updatePhysicalConstraints(Long chatSessionId, UpdatePhysicalConstraintsReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        applyPhysicalConstraintsUpdate(state, req);
+        return touchAndSaveConstraint(chatSessionId, state, latest -> applyPhysicalConstraintsUpdate(latest, req));
+    }
+
+    /** 体检约束的整字段赋值（重放幂等）。 */
+    private void applyPhysicalConstraintsUpdate(PlanningStateDTO state, UpdatePhysicalConstraintsReq req) {
         PhysicalConstraintsDTO physicalConstraints = state.getProfileState().getPhysicalConstraints();
         if (req.getVision() != null) {
             physicalConstraints.setVision(req.getVision());
@@ -1420,31 +1534,39 @@ public class PlanningStateService {
         if (req.getSpecialLimits() != null) {
             physicalConstraints.setSpecialLimits(defaultList(req.getSpecialLimits()));
         }
-        return touchAndSaveConstraint(chatSessionId, state);
     }
 
     public PlanningStateVersionDTO markIntentChangeStale(Long chatSessionId, MarkPlanningIntentStaleReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         String intentMode = req == null ? null : req.getIntentMode();
         if ("constraint".equalsIgnoreCase(intentMode)) {
-            return touchAndSaveConstraint(chatSessionId, state);
+            return touchAndSaveConstraint(chatSessionId, state, null);
         }
-        return touchAndSavePreference(chatSessionId, state);
+        return touchAndSavePreference(chatSessionId, state, null);
     }
 
     public ConstraintDeriveRes deriveConstraints(Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
-        DerivedPreferencesDTO derived = buildDerivedPreferences(state.getProfileState());
-        ConstraintStateDTO constraintState = state.getConstraintState();
-        constraintState.setDerivedPreferences(derived);
-        state.setConstraintState(constraintState);
-        PlanningStateVersionDTO versionDTO = touchAndSaveConstraint(chatSessionId, state);
+        DerivedPreferencesDTO derived = applyDerivedPreferences(state);
+        PlanningStateVersionDTO versionDTO = touchAndSaveConstraint(chatSessionId, state,
+                latest -> applyDerivedPreferences(latest));
+        // 重试耗尽会抛冲突；拿到的 versionDTO 一定对应成功落盘的那份（derived 是纯派生，重算一致）
+        derived = state.getConstraintState().getDerivedPreferences();
 
         ConstraintDeriveRes res = new ConstraintDeriveRes();
         res.setVersion(versionDTO.getVersion());
         res.setDerivedPreferences(derived);
         res.setStaleFlags(versionDTO.getStaleFlags());
         return res;
+    }
+
+    /** 派生偏好的重算（纯函数，重放幂等）。 */
+    private DerivedPreferencesDTO applyDerivedPreferences(PlanningStateDTO state) {
+        DerivedPreferencesDTO derived = buildDerivedPreferences(state.getProfileState());
+        ConstraintStateDTO constraintState = state.getConstraintState();
+        constraintState.setDerivedPreferences(derived);
+        state.setConstraintState(constraintState);
+        return derived;
     }
 
     public PlanningStateDTO generateCandidatePool(Long tenantId, Long chatSessionId, CandidatePoolGenerateReq req) {
@@ -1481,6 +1603,37 @@ public class PlanningStateService {
             volunteerSourceDataSyncService.persistFetchedSourceData(tenantId, chatSessionId, sourceSnapshot);
         }
 
+        // B+C 站点（上游拉取几百 ms，不可重放整方法）：冲突时**重读最新 → 只把候选池域字段
+        // 合并上去**（以最新 version 为基 +1），上游结果与源数据快照不重拉、副作用只做一次。
+        boolean saved = false;
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            applyCandidatePoolRefresh(chatSessionId, state,
+                    buildCandidatePoolStateFromResponse(chatSessionId, state, response), sourceSnapshot);
+            if (savePlanningState(chatSessionId, state, "candidate_pool_generate")) {
+                saved = true;
+                break;
+            }
+            reloadPlanningState(chatSessionId, state);
+        }
+        if (!saved) {
+            throw writeCasConflict("候选池刷新");
+        }
+        state.setSessionId(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, Boolean.TRUE.equals(req.getRefreshSourceData()));
+        return state;
+    }
+
+    /**
+     * 候选池刷新的**域字段合并**（H2 C 类）：只写候选池/新鲜度/overlay/phase/stale/version，
+     * 其余字段（草案、排序、审查…）以传入的 state（重读后的最新）为准。
+     *
+     * <p>重放幂等：值全部来自上游响应/快照（candidatePoolState 每次以最新 state 重建），
+     * version 以最新为基 +1（允许跳号）。</p>
+     */
+    private void applyCandidatePoolRefresh(Long chatSessionId,
+                                           PlanningStateDTO state,
+                                           CandidatePoolStateDTO candidatePoolState,
+                                           VolunteerSourceDataSnapshot sourceSnapshot) {
         state.setCandidatePoolState(candidatePoolState);
         refreshDataFreshnessSnapshot(chatSessionId, state, candidatePoolState);
         if (sourceSnapshot != null && !Strings.isNullOrEmpty(sourceSnapshot.getSourceDataHash())) {
@@ -1493,10 +1646,6 @@ public class PlanningStateService {
         state.getStaleFlags().setCandidatePool(false);
         state.getStaleFlags().setRecommendationOverlay(false);
         ReviewInvalidationPolicy.markCandidatePoolDependentsStale(state);
-        savePlanningState(chatSessionId, state);
-        state.setSessionId(chatSessionId);
-        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, Boolean.TRUE.equals(req.getRefreshSourceData()));
-        return state;
     }
 
     /**
@@ -2008,6 +2157,20 @@ public class PlanningStateService {
     @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO selectDraftItems(Long chatSessionId, DraftSelectReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        List<String> selectedVolunteerIds = applyDraftSelection(state, chatSessionId, req);
+        if (selectedVolunteerIds.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        // 行为事件是副作用：只记一次（重放时不再补记）
+        List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
+        appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_add", selectedVolunteerIds, false, candidates);
+        return saveWorkingPlanStateWithReplay(chatSessionId, state, "draft_select",
+                latest -> applyDraftSelection(latest, chatSessionId, req));
+    }
+
+    /** 选中志愿（纯内存、add-if-allowed 幂等）；返回本次新增的志愿 id（空=无变化，不必落盘）。 */
+    private List<String> applyDraftSelection(PlanningStateDTO state, Long chatSessionId, DraftSelectReq req) {
         DraftPlanStateDTO draft = state.getDraftPlanState();
         List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
         List<String> selectedVolunteerIds = Lists.newArrayList();
@@ -2019,13 +2182,11 @@ public class PlanningStateService {
             selectedVolunteerIds.add(candidate.getVolunteerId());
         }
         if (selectedVolunteerIds.isEmpty()) {
-            state.setSessionId(chatSessionId);
-            return state;
+            return selectedVolunteerIds;
         }
         syncWorkingPlanUnitsWithItems(draft, candidates, state.getCandidatePoolState());
         recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
-        appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_add", selectedVolunteerIds, false, candidates);
-        return saveWorkingPlanState(chatSessionId, state);
+        return selectedVolunteerIds;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -2040,6 +2201,19 @@ public class PlanningStateService {
     @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO removeDraftItems(Long chatSessionId, DraftRemoveReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        List<String> removedVolunteerIds = applyDraftRemoval(state, chatSessionId, req);
+        if (removedVolunteerIds.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
+        appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_remove", removedVolunteerIds, false, candidates);
+        return saveWorkingPlanStateWithReplay(chatSessionId, state, "draft_remove",
+                latest -> applyDraftRemoval(latest, chatSessionId, req));
+    }
+
+    /** 移除志愿（幂等：按 id 过滤）；返回本次实际移除的志愿 id。 */
+    private List<String> applyDraftRemoval(PlanningStateDTO state, Long chatSessionId, DraftRemoveReq req) {
         DraftPlanStateDTO draft = state.getDraftPlanState();
         List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
         List<String> requestedVolunteerIds = defaultList(req == null ? null : req.getVolunteerIds());
@@ -2049,16 +2223,14 @@ public class PlanningStateService {
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toList());
         if (removedVolunteerIds.isEmpty()) {
-            state.setSessionId(chatSessionId);
-            return state;
+            return removedVolunteerIds;
         }
         draft.setItems(draft.getItems().stream()
                 .filter(item -> !containsVolunteerId(requestedVolunteerIds, item.getVolunteerId()))
                 .collect(Collectors.toList()));
         syncWorkingPlanUnitsWithItems(draft, candidates, state.getCandidatePoolState());
         recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
-        appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_remove", removedVolunteerIds, false, candidates);
-        return saveWorkingPlanState(chatSessionId, state);
+        return removedVolunteerIds;
     }
 
     public PlanningStateDTO lockWorkingPlanItems(Long chatSessionId, DraftLockReq req) {
@@ -2071,6 +2243,13 @@ public class PlanningStateService {
     @Deprecated
     public PlanningStateDTO lockDraftItems(Long chatSessionId, DraftLockReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        applyDraftLock(state, chatSessionId, req);
+        return saveWorkingPlanStateWithReplay(chatSessionId, state, "draft_lock",
+                latest -> applyDraftLock(latest, chatSessionId, req));
+    }
+
+    /** 锁定/解锁志愿（整字段赋值，幂等）。 */
+    private void applyDraftLock(PlanningStateDTO state, Long chatSessionId, DraftLockReq req) {
         DraftPlanStateDTO draft = state.getDraftPlanState();
         for (DraftItemDTO item : draft.getItems()) {
             if (defaultList(req.getVolunteerIds()).contains(item.getVolunteerId())) {
@@ -2079,7 +2258,6 @@ public class PlanningStateService {
         }
         syncWorkingPlanUnitsWithItems(draft, resolveEffectiveCandidates(null, chatSessionId, state, false), state.getCandidatePoolState());
         recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
-        return saveWorkingPlanState(chatSessionId, state);
     }
 
     public PlanningStateDTO banWorkingPlanItems(Long chatSessionId, DraftBanReq req) {
@@ -2092,6 +2270,13 @@ public class PlanningStateService {
     @Deprecated
     public PlanningStateDTO banDraftItems(Long chatSessionId, DraftBanReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        applyDraftBan(state, chatSessionId, req);
+        return saveWorkingPlanStateWithReplay(chatSessionId, state, "draft_ban",
+                latest -> applyDraftBan(latest, chatSessionId, req));
+    }
+
+    /** 屏蔽志愿（add-unique + 同步剔除，幂等）。 */
+    private void applyDraftBan(PlanningStateDTO state, Long chatSessionId, DraftBanReq req) {
         DraftPlanStateDTO draft = state.getDraftPlanState();
         for (String volunteerId : defaultList(req.getVolunteerIds())) {
             if (!containsVolunteerId(draft.getBannedVolunteerIds(), volunteerId)) {
@@ -2103,7 +2288,6 @@ public class PlanningStateService {
                 .collect(Collectors.toList()));
         syncWorkingPlanUnitsWithItems(draft, resolveEffectiveCandidates(null, chatSessionId, state, false), state.getCandidatePoolState());
         recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
-        return saveWorkingPlanState(chatSessionId, state);
     }
 
     public PlanningStateDTO generateOrderedPlan(Long tenantId, Long chatSessionId, OrderedPlanGenerateReq req) {
@@ -2127,6 +2311,38 @@ public class PlanningStateService {
 
         Map<String, OrderedItemDTO> existing = orderedPlanState.getItems().stream()
                 .collect(Collectors.toMap(OrderedItemDTO::getVolunteerId, item -> item, (left, right) -> left, LinkedHashMap::new));
+        // RETRY_REPLAY（B+C：唯一不可重放的输入是 frozenResult，它由调用方持有；其余重算都在内存）
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            if (attempt > 0) {
+                reloadPlanningState(chatSessionId, state);
+                normalizeCandidatePoolForPlanning(state);
+                // 并发写者可能已经生成了排序：非强制重生时尊重对方成果，不覆盖
+                OrderedPlanStateDTO latestOrdered = state.getOrderedPlanState();
+                if (!Boolean.TRUE.equals(safeReq.getForceRegenerate())
+                        && !Boolean.TRUE.equals(state.getStaleFlags().getOrderedPlan())
+                        && latestOrdered != null && latestOrdered.getItems() != null
+                        && !latestOrdered.getItems().isEmpty()) {
+                    state.setSessionId(chatSessionId);
+                    return state;
+                }
+            }
+            applyOrderedPlanGeneration(tenantId, chatSessionId, state, safeReq, existing, frozenResult);
+            if (saveOrderedState(chatSessionId, state, "ordered_plan_generate")) {
+                state.setSessionId(chatSessionId);
+                return state;
+            }
+        }
+        throw writeCasConflict("方案排序生成");
+    }
+
+    /** 排序生成变换（纯内存，重放安全）：选择确认 → 建序列 → 单位同步 → 冻结/常规排序 → 汇总。 */
+    private void applyOrderedPlanGeneration(Long tenantId,
+                                            Long chatSessionId,
+                                            PlanningStateDTO state,
+                                            OrderedPlanGenerateReq safeReq,
+                                            Map<String, OrderedItemDTO> existing,
+                                            PlanSolverResultDTO frozenResult) {
+        OrderedPlanStateDTO orderedPlanState = state.getOrderedPlanState();
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
         syncWorkingPlanWithEffectiveCandidatesForConfirmedRequirements(state, effectiveCandidates);
         if (frozenResult == null) {
@@ -2149,7 +2365,6 @@ public class PlanningStateService {
         }
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
-        return saveOrderedState(chatSessionId, state);
     }
 
     public PlanningStateDTO generateInitialPlan(Long tenantId, Long chatSessionId, InitialPlanGenerateReq req) {
@@ -2179,6 +2394,18 @@ public class PlanningStateService {
             return state;
         }
 
+        // RETRY_REPLAY：初荐重建 + 工作台替换都是纯内存派生（候选池若被并发刷新，重读后重算即可）
+        applyInitialPlanGeneration(tenantId, chatSessionId, state, safeReq);
+        saveWorkingPlanStateWithReplay(chatSessionId, state, "initial_plan_generate",
+                latest -> applyInitialPlanGeneration(tenantId, chatSessionId, latest, safeReq));
+        return reorderWorkingPlanInternal(tenantId, chatSessionId, buildDraftPlanReorderReq(safeReq), "initial_auto");
+    }
+
+    /** 初始方案生成变换（纯内存、幂等重放）：必要时重建初荐 → 用初荐替换工作台 → 重算摘要。 */
+    private void applyInitialPlanGeneration(Long tenantId,
+                                            Long chatSessionId,
+                                            PlanningStateDTO state,
+                                            InitialPlanGenerateReq safeReq) {
         if (Boolean.TRUE.equals(safeReq.getForceRegenerate())
                 || Boolean.TRUE.equals(state.getStaleFlags().getInitialRecommendation())
                 || state.getInitialRecommendationState() == null
@@ -2187,12 +2414,9 @@ public class PlanningStateService {
             state.setInitialRecommendationState(buildInitialRecommendationState(state));
             state.getStaleFlags().setInitialRecommendation(false);
         }
-
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
         replaceWorkingPlanWithInitialRecommendation(state, effectiveCandidates);
         recalculateWorkingPlanSummary(state.getDraftPlanState(), state.getCandidatePoolState());
-        state = saveWorkingPlanState(chatSessionId, state);
-        return reorderWorkingPlanInternal(tenantId, chatSessionId, buildDraftPlanReorderReq(safeReq), "initial_auto");
     }
 
     public PlanningStateDTO reorderWorkingPlan(Long tenantId, Long chatSessionId, DraftPlanReorderReq req) {
@@ -2220,7 +2444,26 @@ public class PlanningStateService {
         OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
         generateReq.setForceRegenerate(Boolean.TRUE.equals(safeReq.getForceRegenerate()));
         generateReq.setRegroupByTier(Boolean.TRUE.equals(safeReq.getRegroupByTier()));
+        // E 类嵌套写：内层 generateOrderedPlan 自己 CAS 落盘，返回态即"内层写进库里的那份"
+        // （基线随之刷新），外层**不再**拿更早的快照当基线。
         state = generateOrderedPlan(tenantId, chatSessionId, generateReq);
+        // 内层落盘之后仍可能有并发写者插入：输的一方重读最新，只把本方法的重排元数据域
+        // 重新合到最新态上（重放幂等），再 CAS；耗尽才响亮冲突。
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            if (attempt > 0) {
+                reloadPlanningState(chatSessionId, state);
+            }
+            applyReorderOutcome(state, mode, safeReq);
+            if (savePlanningState(chatSessionId, state, "reorder_working_plan")) {
+                state.setSessionId(chatSessionId);
+                return state;
+            }
+        }
+        throw writeCasConflict("方案重排");
+    }
+
+    /** 重排元数据（纯内存、幂等重放）：生成方式/自动补全/人工项计数，有排序则翻 ordered。 */
+    private void applyReorderOutcome(PlanningStateDTO state, String mode, DraftPlanReorderReq safeReq) {
         applyPlanGenerationMetadata(state,
                 mode,
                 Boolean.TRUE.equals(safeReq.getAllowAutoComplete()),
@@ -2232,26 +2475,44 @@ public class PlanningStateService {
             state.setPhase("ordered");
             state.getStaleFlags().setOrderedPlan(false);
         }
-        savePlanningState(chatSessionId, state);
-        state.setSessionId(chatSessionId);
-        return state;
     }
 
     @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO moveOrderedItem(Long chatSessionId, OrderedMoveReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        // RETRY_REPLAY：移动是纯内存变换（按位置重算，重放幂等），行为事件只记一次
+        OrderedMovePositions positions = applyOrderedItemMove(state, req);
+        if (!positions.applied) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_item_move",
+                Lists.newArrayList(req.getVolunteerId()), false, resolveEffectiveCandidates(null, chatSessionId, state, false),
+                positions.beforePositions, positions.afterPositions);
+        return saveOrderedStateWithReplay(chatSessionId, state, "ordered_item_move",
+                latest -> applyOrderedItemMove(latest, req));
+    }
+
+    /** 单条移动的结果位置（供行为事件；重放时忽略）。 */
+    private static final class OrderedMovePositions {
+        private final Map<String, Integer> beforePositions = new HashMap<String, Integer>();
+        private final Map<String, Integer> afterPositions = new HashMap<String, Integer>();
+        private boolean applied;
+    }
+
+    /** 移动单条志愿（纯内存、重放安全）；返回是否实际发生移动与前后位置。 */
+    private OrderedMovePositions applyOrderedItemMove(PlanningStateDTO state, OrderedMoveReq req) {
+        OrderedMovePositions positions = new OrderedMovePositions();
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
         List<OrderedItemDTO> current = new ArrayList<OrderedItemDTO>(orderedPlanState.getItems());
         OrderedItemDTO target = findOrderedItem(current, req.getVolunteerId());
         if (target == null) {
-            state.setSessionId(chatSessionId);
-            return state;
+            return positions;
         }
         int currentIndex = current.indexOf(target);
         int targetIndex = OrderedPlanPositioningSupport.resolveMovableTargetIndex(current, currentIndex, req.getTargetPosition());
         if (targetIndex == currentIndex) {
-            state.setSessionId(chatSessionId);
-            return state;
+            return positions;
         }
         current = OrderedPlanPositioningSupport.moveWithinUnlockedSlots(current, currentIndex, targetIndex);
         target.setOrderedBy("user");
@@ -2260,39 +2521,59 @@ public class PlanningStateService {
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
         ReviewInvalidationPolicy.markPlanStructureStale(state);
-        Map<String, Integer> beforePositions = new HashMap<String, Integer>();
-        beforePositions.put(req.getVolunteerId(), currentIndex + 1);
-        Map<String, Integer> afterPositions = new HashMap<String, Integer>();
-        afterPositions.put(req.getVolunteerId(), targetIndex + 1);
-        appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_item_move",
-                Lists.newArrayList(req.getVolunteerId()), false, resolveEffectiveCandidates(null, chatSessionId, state, false),
-                beforePositions, afterPositions);
-        return saveOrderedState(chatSessionId, state);
+        positions.beforePositions.put(req.getVolunteerId(), currentIndex + 1);
+        positions.afterPositions.put(req.getVolunteerId(), targetIndex + 1);
+        positions.applied = true;
+        return positions;
     }
 
     @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO moveOrderedUnit(Long chatSessionId, OrderedUnitMoveReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        // RETRY_REPLAY：整组移动是纯内存变换（按当前分组重算，重放幂等），行为事件只记一次
+        OrderedUnitMoveOutcome outcome = applyOrderedUnitMove(state, chatSessionId, req);
+        if (!outcome.applied) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_move", outcome.unitId, outcome.unitItems,
+                outcome.candidates, outcome.beforePositions, outcome.afterPositions);
+        return saveOrderedStateWithReplay(chatSessionId, state, "ordered_unit_move",
+                latest -> applyOrderedUnitMove(latest, chatSessionId, req));
+    }
+
+    /** 整组移动的结果（供行为事件；重放时忽略）。 */
+    private static final class OrderedUnitMoveOutcome {
+        private final Map<String, Integer> beforePositions = new HashMap<String, Integer>();
+        private final Map<String, Integer> afterPositions = new HashMap<String, Integer>();
+        private String unitId;
+        private List<OrderedItemDTO> unitItems = Lists.newArrayList();
+        private List<CandidateItemDTO> candidates = Lists.newArrayList();
+        private boolean applied;
+    }
+
+    /** 移动整组（纯内存、重放安全）；返回是否实际发生移动与事件载荷。 */
+    private OrderedUnitMoveOutcome applyOrderedUnitMove(PlanningStateDTO state,
+                                                        Long chatSessionId,
+                                                        OrderedUnitMoveReq req) {
+        OrderedUnitMoveOutcome outcome = new OrderedUnitMoveOutcome();
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
         List<OrderedItemDTO> current = defaultOrderedItems(orderedPlanState.getItems());
         String unitId = req == null ? null : req.getUnitId();
         if (Strings.isNullOrEmpty(unitId) || current.isEmpty()) {
-            state.setSessionId(chatSessionId);
-            return state;
+            return outcome;
         }
         List<OrderedItemDTO> unitItems = current.stream()
                 .filter(item -> unitId.equals(resolveDraftOrOrderedUnitId(item)))
                 .collect(Collectors.toList());
         if (unitItems.isEmpty()) {
-            state.setSessionId(chatSessionId);
-            return state;
+            return outcome;
         }
         List<String> orderedUnitIds = buildOrderedUnitIds(current);
         int currentUnitIndex = orderedUnitIds.indexOf(unitId);
         int targetUnitIndex = OrderedPlanPositioningSupport.normalizeIndex(req.getTargetPosition(), orderedUnitIds.size());
         if (currentUnitIndex < 0 || targetUnitIndex == currentUnitIndex) {
-            state.setSessionId(chatSessionId);
-            return state;
+            return outcome;
         }
         List<String> nextUnitIds = new ArrayList<String>(orderedUnitIds);
         nextUnitIds.remove(currentUnitIndex);
@@ -2316,29 +2597,52 @@ public class PlanningStateService {
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
         ReviewInvalidationPolicy.markPlanStructureStale(state);
-        Map<String, Integer> beforePositions = new HashMap<String, Integer>();
-        beforePositions.put(unitId, currentUnitIndex + 1);
-        Map<String, Integer> afterPositions = new HashMap<String, Integer>();
-        afterPositions.put(unitId, targetUnitIndex + 1);
-        appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_move", unitId, unitItems, candidates, beforePositions, afterPositions);
-        return saveOrderedState(chatSessionId, state);
+        outcome.unitId = unitId;
+        outcome.unitItems = unitItems;
+        outcome.candidates = candidates;
+        outcome.beforePositions.put(unitId, currentUnitIndex + 1);
+        outcome.afterPositions.put(unitId, targetUnitIndex + 1);
+        outcome.applied = true;
+        return outcome;
     }
 
     @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO removeOrderedUnits(Long chatSessionId, OrderedUnitRemoveReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        // RETRY_REPLAY：整组移除是纯内存变换（按当前分组过滤，重放幂等），行为事件只记一次
+        List<OrderedItemDTO> removedItems = applyOrderedUnitRemoval(state, chatSessionId, req);
+        if (removedItems.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        Set<String> unitIds = new LinkedHashSet<String>(defaultList(req == null ? null : req.getUnitIds()));
+        List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
+        for (String unitId : unitIds) {
+            List<OrderedItemDTO> removedUnitItems = removedItems.stream()
+                    .filter(item -> unitId.equals(resolveDraftOrOrderedUnitId(item)))
+                    .collect(Collectors.toList());
+            if (!removedUnitItems.isEmpty()) {
+                appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_remove", unitId, removedUnitItems, candidates, null, null);
+            }
+        }
+        return saveOrderedStateWithReplay(chatSessionId, state, "ordered_unit_remove",
+                latest -> applyOrderedUnitRemoval(latest, chatSessionId, req));
+    }
+
+    /** 移除整组（纯内存、重放安全）；返回本次实际移除的排序项（空=无变化）。 */
+    private List<OrderedItemDTO> applyOrderedUnitRemoval(PlanningStateDTO state,
+                                                         Long chatSessionId,
+                                                         OrderedUnitRemoveReq req) {
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
         Set<String> unitIds = new LinkedHashSet<String>(defaultList(req == null ? null : req.getUnitIds()));
         if (unitIds.isEmpty()) {
-            state.setSessionId(chatSessionId);
-            return state;
+            return Lists.newArrayList();
         }
         List<OrderedItemDTO> removedItems = defaultOrderedItems(orderedPlanState.getItems()).stream()
                 .filter(item -> unitIds.contains(resolveDraftOrOrderedUnitId(item)))
                 .collect(Collectors.toList());
         if (removedItems.isEmpty()) {
-            state.setSessionId(chatSessionId);
-            return state;
+            return removedItems;
         }
         orderedPlanState.setItems(OrderedPlanPositioningSupport.rebuildItems(defaultOrderedItems(orderedPlanState.getItems()).stream()
                 .filter(item -> !unitIds.contains(resolveDraftOrOrderedUnitId(item)))
@@ -2355,25 +2659,42 @@ public class PlanningStateService {
         state.setWorkingPlanState(draft);
         state.setOrderedPlanState(orderedPlanState);
         ReviewInvalidationPolicy.markPlanStructureStale(state);
-        for (String unitId : unitIds) {
-            List<OrderedItemDTO> removedUnitItems = removedItems.stream()
-                    .filter(item -> unitId.equals(resolveDraftOrOrderedUnitId(item)))
-                    .collect(Collectors.toList());
-            if (!removedUnitItems.isEmpty()) {
-                appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_remove", unitId, removedUnitItems, candidates, null, null);
-            }
-        }
-        return saveOrderedState(chatSessionId, state);
+        return removedItems;
     }
 
     @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO sortOrderedPlan(Long chatSessionId, OrderedPlanSortReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        // RETRY_REPLAY：排序是纯内存变换（按当前态重排，重放幂等），行为事件只记一次
+        OrderedPlanSortOutcome outcome = applyOrderedPlanSort(state, chatSessionId, req);
+        if (!outcome.applied) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        appendPlanSortApplyEvent(state, chatSessionId, outcome.sortField, outcome.beforePositions,
+                outcome.orderedPlanState, outcome.candidates);
+        return saveOrderedStateWithReplay(chatSessionId, state, "ordered_sort",
+                latest -> applyOrderedPlanSort(latest, chatSessionId, req));
+    }
+
+    /** 排序的结果载荷（供行为事件；重放时忽略）。 */
+    private static final class OrderedPlanSortOutcome {
+        private Map<String, Integer> beforePositions = new HashMap<String, Integer>();
+        private String sortField;
+        private OrderedPlanStateDTO orderedPlanState;
+        private List<CandidateItemDTO> candidates = Lists.newArrayList();
+        private boolean applied;
+    }
+
+    /** 排序变换（纯内存、重放安全）；返回是否实际发生排序与事件载荷。 */
+    private OrderedPlanSortOutcome applyOrderedPlanSort(PlanningStateDTO state,
+                                                        Long chatSessionId,
+                                                        OrderedPlanSortReq req) {
+        OrderedPlanSortOutcome outcome = new OrderedPlanSortOutcome();
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
         List<OrderedItemDTO> current = defaultOrderedItems(orderedPlanState.getItems());
         if (current.isEmpty()) {
-            state.setSessionId(chatSessionId);
-            return state;
+            return outcome;
         }
         String sortField = normalizeOrderedSortField(req == null ? null : req.getSortField());
         Map<String, Integer> beforePositions = buildOrderedPositionMap(current);
@@ -2387,8 +2708,12 @@ public class PlanningStateService {
         state.setOrderedPlanState(orderedPlanState);
         markOrderedItemsSortedByUser(orderedPlanState, sortField);
         ReviewInvalidationPolicy.markPlanStructureStale(state);
-        appendPlanSortApplyEvent(state, chatSessionId, sortField, beforePositions, orderedPlanState, candidates);
-        return saveOrderedState(chatSessionId, state);
+        outcome.sortField = sortField;
+        outcome.beforePositions = beforePositions;
+        outcome.orderedPlanState = orderedPlanState;
+        outcome.candidates = candidates;
+        outcome.applied = true;
+        return outcome;
     }
 
     public OrderedPlanActionRes buildOrderedPlanActionRes(PlanningStateDTO state) {
@@ -2404,6 +2729,23 @@ public class PlanningStateService {
 
     public ReviewStateDTO runReview(Long tenantId, Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        ReviewStateDTO reviewState = runReviewInternal(tenantId, chatSessionId, state);
+        // B+C：审查结论以**最新态**重算（resolveEffectiveCandidates 读外部/缓存，不重放旧快照结论）；
+        // 用户动作 -> 重试耗尽响亮冲突
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            if (attempt > 0) {
+                reloadPlanningState(chatSessionId, state);
+                reviewState = runReviewInternal(tenantId, chatSessionId, state);
+            }
+            if (savePlanningState(chatSessionId, state, "review_run")) {
+                return reviewState;
+            }
+        }
+        throw writeCasConflict("方案审查");
+    }
+
+    /** 审查计算（纯内存；以传入 state 为事实来源），并把结论与版本/阶段写回 state。 */
+    private ReviewStateDTO runReviewInternal(Long tenantId, Long chatSessionId, PlanningStateDTO state) {
         normalizeCandidatePoolForPlanning(state);
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
         ReviewStateDTO reviewState = new ReviewStateDTO();
@@ -2446,34 +2788,63 @@ public class PlanningStateService {
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         state.setPhase("reviewed");
         state.getStaleFlags().setReview(false);
-        savePlanningState(chatSessionId, state);
         return reviewState;
     }
 
-    private PlanningStateVersionDTO touchAndSavePreference(Long chatSessionId, PlanningStateDTO state) {
-        state.setSessionId(chatSessionId);
-        state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
-        state.setPhase("profile_ready");
-        ReviewInvalidationPolicy.markPreferenceIntentStale(state);
-        savePlanningState(chatSessionId, state);
-
-        PlanningStateVersionDTO versionDTO = new PlanningStateVersionDTO();
-        versionDTO.setVersion(state.getVersion());
-        versionDTO.setStaleFlags(state.getStaleFlags());
-        return versionDTO;
+    /**
+     * 偏好变更落盘（H2 A 类站点：纯内存变换，可重放）。
+     *
+     * <p>调用方先把本次变更施加到 {@code state} 上（首次尝试），冲突时本方法重读最新行、
+     * 由 {@code reapply} 把同一变换重新施加到最新态上再 CAS（≤{@value #WRITE_CAS_ATTEMPTS} 次；
+     * 重复施加幂等：hydrate 只补空、偏好合并按 add-unique）。重试耗尽**响亮冲突**（40901 语义面）：
+     * 用户的偏好变更绝不静默丢。</p>
+     */
+    private PlanningStateVersionDTO touchAndSavePreference(Long chatSessionId,
+                                                           PlanningStateDTO state,
+                                                           Consumer<PlanningStateDTO> reapply) {
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            if (attempt > 0) {
+                reloadPlanningState(chatSessionId, state);
+                if (reapply != null) {
+                    reapply.accept(state);
+                }
+            }
+            state.setSessionId(chatSessionId);
+            state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+            state.setPhase("profile_ready");
+            ReviewInvalidationPolicy.markPreferenceIntentStale(state);
+            if (savePlanningState(chatSessionId, state, "touch_preference")) {
+                PlanningStateVersionDTO versionDTO = new PlanningStateVersionDTO();
+                versionDTO.setVersion(state.getVersion());
+                versionDTO.setStaleFlags(state.getStaleFlags());
+                return versionDTO;
+            }
+        }
+        throw writeCasConflict("偏好变更");
     }
 
-    private PlanningStateVersionDTO touchAndSaveConstraint(Long chatSessionId, PlanningStateDTO state) {
-        state.setSessionId(chatSessionId);
-        state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
-        state.setPhase("profile_ready");
-        ReviewInvalidationPolicy.markConstraintIntentStale(state);
-        savePlanningState(chatSessionId, state);
-
-        PlanningStateVersionDTO versionDTO = new PlanningStateVersionDTO();
-        versionDTO.setVersion(state.getVersion());
-        versionDTO.setStaleFlags(state.getStaleFlags());
-        return versionDTO;
+    private PlanningStateVersionDTO touchAndSaveConstraint(Long chatSessionId,
+                                                           PlanningStateDTO state,
+                                                           Consumer<PlanningStateDTO> reapply) {
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            if (attempt > 0) {
+                reloadPlanningState(chatSessionId, state);
+                if (reapply != null) {
+                    reapply.accept(state);
+                }
+            }
+            state.setSessionId(chatSessionId);
+            state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+            state.setPhase("profile_ready");
+            ReviewInvalidationPolicy.markConstraintIntentStale(state);
+            if (savePlanningState(chatSessionId, state, "touch_constraint")) {
+                PlanningStateVersionDTO versionDTO = new PlanningStateVersionDTO();
+                versionDTO.setVersion(state.getVersion());
+                versionDTO.setStaleFlags(state.getStaleFlags());
+                return versionDTO;
+            }
+        }
+        throw writeCasConflict("约束变更");
     }
 
     private RecommendationOverlayStateDTO buildRecommendationOverlayState(CandidatePoolStateDTO candidatePoolState,
@@ -5374,6 +5745,8 @@ public class PlanningStateService {
                 ? new PlanningStateDTO()
                 : JSONObject.parseObject(extraData.getDataValue(), PlanningStateDTO.class);
         normalizePlanningStateDefaults(chatSessionId, state);
+        // 写路径 CAS 的基线：手里这份就是"读到的那串"（只读入口没有懒导入/补写，不刷新）
+        state.setBaselineDataValue(extraData == null ? null : extraData.getDataValue());
         return state;
     }
 
@@ -5381,6 +5754,7 @@ public class PlanningStateService {
         ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
                 chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         ChatSessionExtraData rowRef = extraData;
+        String baselineDataValue = extraData == null ? null : extraData.getDataValue();
         PlanningStateDTO state;
         if (extraData == null || extraData.getDataValue() == null) {
             state = allowLegacyImport ? tryImportLegacyPlanningState(chatSessionId) : null;
@@ -5389,6 +5763,9 @@ public class PlanningStateService {
                 // 以库里那份为准继续，读接口不再把别人的新状态盖回去（评审 §六）。
                 PlanningStateImportPersist persistResult = persistImportedPlanningState(chatSessionId, extraData, state);
                 rowRef = persistResult.row;
+                // 懒导入之后基线以"实际落在库里的那串"为准（自己赢=导入串；并发赢家=赢家那份；
+                // 行没了=null → 按首建处理）——否则写者一上手拿到的基线就是过期的。
+                baselineDataValue = persistResult.row == null ? null : persistResult.row.getDataValue();
                 if (persistResult.winnerState != null) {
                     state = persistResult.winnerState;
                 }
@@ -5399,6 +5776,7 @@ public class PlanningStateService {
         } else {
             state = JSONObject.parseObject(extraData.getDataValue(), PlanningStateDTO.class);
         }
+        state.setBaselineDataValue(baselineDataValue);
         normalizePlanningStateDefaults(chatSessionId, state);
         backfillLegacyProfileState(chatSessionId, state);
         boolean planEditCacheNoticeAdded = appendPlanEditCacheNotice(chatSessionId, state);
@@ -5406,8 +5784,22 @@ public class PlanningStateService {
         backfillLegacySummaryFields(state);
         if (planEditCacheNoticeAdded || dataFreshnessBackfilled) {
             // 读路径的补写同样做"读到的那份还在才写"：输了就不落盘（补写幂等，下次读会重放）。
+            // 赢了则由 savePlanningStateIfUnchanged 把基线刷成"实际写进库里的那串"。
             savePlanningStateIfUnchanged(chatSessionId, rowRef, state, "read_backfill");
         }
+        return state;
+    }
+
+    /**
+     * 写路径 CAS 的重读：把**最新**那份规划态拷回调用方手里的对象（对象身份不变，
+     * baselineDataValue 随之刷新为最新行值），供各站点"重读重放 / 重读合并"用。
+     *
+     * <p>用 {@link BeanUtils#copyProperties} 而不是换引用：调用方方法体后续还引用着这个
+     * state（返回值、version、staleFlags 都从它取），换引用会写出"旧对象"。</p>
+     */
+    private PlanningStateDTO reloadPlanningState(Long chatSessionId, PlanningStateDTO state) {
+        PlanningStateDTO latest = loadPlanningState(chatSessionId);
+        BeanUtils.copyProperties(latest, state);
         return state;
     }
 
@@ -5498,6 +5890,9 @@ public class PlanningStateService {
         if (!updated) {
             log.info("planningStateCasSave skipped chatSessionId={} scene={} reason=row_changed_under_us",
                     chatSessionId, scene);
+        } else {
+            // 写成功了：手里这份的基线就是刚写进库里的那串（后续写路径 CAS 以它为期望值）
+            state.setBaselineDataValue(dataValue);
         }
         return updated;
     }
@@ -5928,6 +6323,11 @@ public class PlanningStateService {
         boolean hashChanged = hasExternalSnapshot && !incomingHash.equals(currentHash);
         boolean applyLatestSnapshotToWorkspace = shouldApplyLatestDataFreshnessSnapshotToWorkspace(
                 chatSessionId, state, latestCandidatePool, safeReq);
+        // 合并重放要用到的"本次做过哪些派生动作"（MERGE_LATEST 只重放这些，不重放跨域的工作区同步）
+        boolean clearFreshnessStale = false;
+        boolean markFreshnessStale = false;
+        boolean logFreshnessChange = false;
+        boolean freshnessVersionBumped = false;
         if (!hasExternalSnapshot) {
             if (!"changed".equals(freshness.getStatusCode())) {
                 markDataFreshnessCurrent(freshness, currentHash, safeReq);
@@ -5939,30 +6339,59 @@ public class PlanningStateService {
             if (applyLatestSnapshotToWorkspace
                     && syncLatestDataFreshnessSnapshotToWorkspace(chatSessionId, state, freshness, latestCandidatePool, safeReq, incomingHash)) {
                 state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+                freshnessVersionBumped = true;
             }
             clearDataFreshnessStaleFlags(state);
+            clearFreshnessStale = true;
             changed = true;
         } else if (isSamePendingDataFreshnessChange(freshness, safeReq, incomingHash)) {
             preservePendingDataFreshnessCheckResult(freshness, safeReq, now);
             if (applyLatestSnapshotToWorkspace
                     && syncLatestDataFreshnessSnapshotToWorkspace(chatSessionId, state, freshness, latestCandidatePool, safeReq, incomingHash)) {
                 state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+                freshnessVersionBumped = true;
             }
             changed = true;
         } else {
             applyDataFreshnessChange(state, freshness, safeReq, incomingHash, now);
             if (Boolean.TRUE.equals(safeReq.getMarkStale())) {
                 markDataFreshnessStale(state, freshness);
+                markFreshnessStale = true;
             }
             if (applyLatestSnapshotToWorkspace) {
                 syncLatestDataFreshnessSnapshotToWorkspace(chatSessionId, state, freshness, latestCandidatePool, safeReq, incomingHash);
             }
             appendDataFreshnessOperationLog(state, freshness);
+            logFreshnessChange = true;
             state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+            freshnessVersionBumped = true;
             changed = true;
         }
         if (changed) {
-            savePlanningState(chatSessionId, state);
+            boolean saved = savePlanningState(chatSessionId, state, "data_freshness_check");
+            for (int attempt = 1; !saved && attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+                // MERGE_LATEST：重读最新后**只把数据新鲜度这一域**合上去（freshness 快照 + 由它派生的
+                // stale 清理/标记、操作日志、版本 +1）；工作区快照同步依赖本次上游拉数、且属跨域，
+                // 不重放（不动并发写者的工作区），下次检查会基于最新态重算。
+                reloadPlanningState(chatSessionId, state);
+                state.setDataFreshnessState(freshness);
+                if (clearFreshnessStale) {
+                    clearDataFreshnessStaleFlags(state);
+                }
+                if (markFreshnessStale) {
+                    markDataFreshnessStale(state, freshness);
+                }
+                if (logFreshnessChange) {
+                    appendDataFreshnessOperationLog(state, freshness);
+                }
+                if (freshnessVersionBumped) {
+                    state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+                }
+                saved = savePlanningState(chatSessionId, state, "data_freshness_check_merge");
+            }
+            if (!saved) {
+                logWriteCasSkipped(chatSessionId, "data_freshness_check", "row_written_by_other");
+            }
         }
         state.setSessionId(chatSessionId);
         touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, true);
@@ -6042,6 +6471,40 @@ public class PlanningStateService {
                                                                        DataFreshnessStateDTO freshness,
                                                                        DataFreshnessCheckReq req,
                                                                        String prepareType) {
+        // A 类（纯内存、重放幂等）：CAS 输 -> 重读最新 -> 重放同一变换 -> 再 CAS ≤3 次；
+        // 派生状态回报，最终输也不吵用户（记日志，下次检查重算），但绝不覆盖并发写。
+        boolean saved = false;
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS && !saved; attempt++) {
+            DataFreshnessStateDTO target = freshness;
+            if (attempt > 0) {
+                reloadPlanningState(chatSessionId, state);
+                target = state.getDataFreshnessState();
+                if (target == null) {
+                    target = new DataFreshnessStateDTO();
+                    state.setDataFreshnessState(target);
+                }
+            }
+            applyUnsupportedFreshnessCurrent(state, target, req, prepareType);
+            saved = savePlanningState(chatSessionId, state, "data_freshness_unsupported");
+        }
+        if (!saved) {
+            logWriteCasSkipped(chatSessionId, "data_freshness_unsupported", "row_written_by_other");
+        }
+        state.setSessionId(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, true);
+        DataFreshnessCheckRes res = new DataFreshnessCheckRes();
+        res.setVersion(state.getVersion());
+        res.setStaleFlags(state.getStaleFlags());
+        res.setDataFreshnessState(state.getDataFreshnessState());
+        res.setWorkspaceState(buildPlanningWorkspaceStateRes(tenantId, state));
+        return res;
+    }
+
+    /** "当前会话不参与自动同步"的新鲜度变换（纯内存、重放幂等）。 */
+    private void applyUnsupportedFreshnessCurrent(PlanningStateDTO state,
+                                                  DataFreshnessStateDTO freshness,
+                                                  DataFreshnessCheckReq req,
+                                                  String prepareType) {
         String now = OffsetDateTime.now().toString();
         String currentHash = normalizeCurrentCandidateDataHash(state, freshness);
         markDataFreshnessCurrent(freshness, currentHash, req);
@@ -6053,15 +6516,6 @@ public class PlanningStateService {
                 ? "模拟填报使用2025年的志愿数据，不参与招生计划自动同步。"
                 : "当前会话暂不参与招生计划自动同步。");
         clearDataFreshnessStaleFlags(state);
-        savePlanningState(chatSessionId, state);
-        state.setSessionId(chatSessionId);
-        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, true);
-        DataFreshnessCheckRes res = new DataFreshnessCheckRes();
-        res.setVersion(state.getVersion());
-        res.setStaleFlags(state.getStaleFlags());
-        res.setDataFreshnessState(state.getDataFreshnessState());
-        res.setWorkspaceState(buildPlanningWorkspaceStateRes(tenantId, state));
-        return res;
     }
 
     private CandidatePoolStateDTO populateLatestDataFreshnessRequest(Long tenantId,
@@ -7420,41 +7874,148 @@ public class PlanningStateService {
         return OffsetDateTime.ofInstant(date.toInstant(), ZoneId.systemDefault()).toString();
     }
 
-    private void savePlanningState(Long chatSessionId, PlanningStateDTO state) {
+    /**
+     * 写路径落盘**统一入口**（H2）：带基线就 CAS，输的一方**不覆盖**（返回 false 由站点策略处置）。
+     *
+     * <p>语义（与 {@code H2-WRITE-CAS-PLAN.md} §3 一一对应）：</p>
+     * <ul>
+     *   <li>行不存在 → INSERT（首建；撞唯一键按 {@link #handleInsertRace} 处理，不再整文档覆盖赢家）；</li>
+     *   <li>行是空壳（data_value IS NULL）且手里没有基线 → CAS 期望 null 补值（"只补缺"）；</li>
+     *   <li>手里有基线 → {@code updateDataValueIfUnchanged(row, baseline, newValue)}：库里那行仍是
+     *       手里这份快照才写，否则不写（输的一方由调用方决定 重读重放 / 重读合并 / 响亮冲突）；</li>
+     *   <li>行里有别人的值、手里却没基线（不是这行的快照）→ 不写。</li>
+     * </ul>
+     *
+     * <p>任何情况下都不再"拿内存整文档无条件 updateById 最新行"——那正是 D1⑧ 钉住的丢失并发写
+     * 的形状。赢的一方把 {@code baselineDataValue} 刷成刚写进去的那串，后续写接着 CAS。</p>
+     *
+     * @return true=这次落盘成功（我们赢）；false=没落盘（基线过期/无基线且行里有别人的值），
+     *         调用方必须按站点策略处置——绝不静默当成功
+     */
+    private boolean savePlanningState(Long chatSessionId, PlanningStateDTO state, String scene) {
         String dataValue = JSONObject.toJSONString(state);
         ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
                 chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         if (extraData == null) {
-            extraData = new ChatSessionExtraData();
-            extraData.setChatSessionId(chatSessionId);
-            extraData.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
-            extraData.setDataType(DataType.JSON_OBJECT);
-            extraData.setDataVersion(0);
-            extraData.setDataValue(dataValue);
+            ChatSessionExtraData entity = new ChatSessionExtraData();
+            entity.setChatSessionId(chatSessionId);
+            entity.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+            entity.setDataType(DataType.JSON_OBJECT);
+            entity.setDataVersion(0);
+            entity.setDataValue(dataValue);
             try {
-                chatSessionExtraDataSharedService.save(extraData);
+                chatSessionExtraDataSharedService.save(entity);
+                state.setBaselineDataValue(dataValue);
+                return true;
             } catch (DuplicateKeyException duplicate) {
                 // 唯一键 `uk_chat_session_id_data_key_data_version` 是并发防线：空会话的**首次**读
                 // 会先懒导入（legacy import）再落这一行，而同一时刻可能有多个首次读在跑
                 // （页面自己的 workspace-state / candidate-pool/filter-options，以及测试的 inner 读）——
                 // 它们都看到"没有行"，于是只有一个 INSERT 成功，其余拿 DuplicateKeyException，
                 // 并让整个**读**接口回 `{"code":-1,"msg":"系统错误"}`（前端面板直接拿不到状态）。
-                // 处理：读回赢家那行、把本次计算结果更新上去（同源数据的最后一次写获胜，
-                // 与"两个 update 并发"的既有语义一致；不灵的话（行又没了）原样抛出）。
-                ChatSessionExtraData raced = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
-                        chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
-                if (raced == null) {
-                    throw duplicate;
-                }
-                raced.setDataType(DataType.JSON_OBJECT);
-                raced.setDataValue(dataValue);
-                chatSessionExtraDataSharedService.updateById(raced);
+                return handleInsertRace(chatSessionId, state, dataValue, scene, duplicate);
             }
-            return;
         }
-        extraData.setDataType(DataType.JSON_OBJECT);
-        extraData.setDataValue(dataValue);
-        chatSessionExtraDataSharedService.updateById(extraData);
+        String baselineDataValue = state.getBaselineDataValue();
+        if (extraData.getDataValue() == null && baselineDataValue == null) {
+            // 空壳行补值（历史行 data_value 为 NULL）：期望值 null → IS NULL 分支，同样是 CAS
+            boolean filled = chatSessionExtraDataSharedService.updateDataValueIfUnchanged(extraData, null, dataValue);
+            if (filled) {
+                state.setBaselineDataValue(dataValue);
+            } else {
+                logWriteCasSkipped(chatSessionId, scene, "row_changed_under_us");
+            }
+            return filled;
+        }
+        if (baselineDataValue == null) {
+            // 手里不是这行的快照（没 load 过/被 JSON 往返洗掉）：没有可比对的期望值 → 不写
+            logWriteCasSkipped(chatSessionId, scene, "baseline_missing");
+            return false;
+        }
+        boolean updated = chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                extraData, baselineDataValue, dataValue);
+        if (updated) {
+            state.setBaselineDataValue(dataValue);
+        } else {
+            logWriteCasSkipped(chatSessionId, scene, "row_changed_under_us");
+        }
+        return updated;
+    }
+
+    /**
+     * INSERT 撞唯一键（并发首建）的收口：读回赢家，**只补空壳**，绝不整文档覆盖有内容的赢家。
+     *
+     * <p>与读路径 {@code persistImportedPlanningState} 的撞键分支同口径。输的一方返回 false，
+     * 由站点策略重读重放/重读合并。</p>
+     */
+    private boolean handleInsertRace(Long chatSessionId,
+                                     PlanningStateDTO state,
+                                     String dataValue,
+                                     String scene,
+                                     DuplicateKeyException duplicate) {
+        ChatSessionExtraData raced = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        if (raced == null) {
+            // 赢家写进去又没了：这种情况没有可写目标，原样抛出（原来是直接抛）。
+            throw duplicate;
+        }
+        if (raced.getDataValue() == null) {
+            boolean filled = chatSessionExtraDataSharedService.updateDataValueIfUnchanged(raced, null, dataValue);
+            if (filled) {
+                state.setBaselineDataValue(dataValue);
+                return true;
+            }
+            logWriteCasSkipped(chatSessionId, scene, "row_changed_under_us");
+            return false;
+        }
+        // 赢家已经有内容：另一条链路先落盘了。它的文档里有本轮没有的改动，整文档盖上去就是丢写。
+        logWriteCasSkipped(chatSessionId, scene, "row_written_by_other");
+        return false;
+    }
+
+    /**
+     * 写路径 CAS 输/放弃的统一日志锚点——与读路径 {@code planningStateCasSave skipped} 同名前缀，
+     * 便于按 anchor 计数（H2 观测 DoD）。
+     */
+    private void logWriteCasSkipped(Long chatSessionId, String scene, String reason) {
+        if ("baseline_missing".equals(reason) || "row_written_by_other".equals(reason)) {
+            log.warn("planningStateCasSave skipped chatSessionId={} scene={} reason={}", chatSessionId, scene, reason);
+        } else {
+            log.info("planningStateCasSave skipped chatSessionId={} scene={} reason={}", chatSessionId, scene, reason);
+        }
+    }
+
+    /** 站点策略写死冲突重试上限（与读路径 overlay 的 3 次同口径）：够覆盖短暂竞争，又不无限重试。 */
+    private static final int WRITE_CAS_ATTEMPTS = 3;
+
+    /**
+     * RETRY_REPLAY 站点的统一循环（H2 §3 策略一）：把纯内存变换施加到当前态 → CAS 落盘；
+     * 输了重读最新行、把**同一变换**重新施加到最新态上再试（≤{@value #WRITE_CAS_ATTEMPTS} 次）。
+     *
+     * <p>约束：{@code mutation} 必须是纯内存且**幂等**的（只补空/按集合合并/整字段赋值）；带外部
+     * 副作用（行为事件、Excel、上游拉取）的部分必须在循环外只做一次。变换在**每次尝试**都施加一遍，
+     * 所以调用方不要预先施加（需要变换结果做副作用的例外，见各站点注释）。</p>
+     *
+     * @return true=落盘成功；false=重试耗尽仍未落盘（调用方决定 响亮冲突 or 放弃/降级）
+     */
+    private boolean saveWithReplay(Long chatSessionId,
+                                   PlanningStateDTO state,
+                                   String scene,
+                                   Consumer<PlanningStateDTO> mutation) {
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            mutation.accept(state);
+            if (savePlanningState(chatSessionId, state, scene)) {
+                return true;
+            }
+            reloadPlanningState(chatSessionId, state);
+        }
+        return false;
+    }
+
+    /** 写路径重试耗尽的响亮失败：沿用 CAS 冲突码 40901 的语义面（不新造错误码）。 */
+    private BusinessException writeCasConflict(String scene) {
+        return new BusinessException(PendingConfirmationBizService.CAS_CONFLICT_CODE,
+                "规划状态已被其他操作更新，本次" + scene + "未生效，请重试");
     }
 
     private List<String> defaultList(List<String> values) {
@@ -8343,18 +8904,23 @@ public class PlanningStateService {
             ChatSessionExtraData row = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
                     chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
             if (row == null || row.getDataValue() == null) {
-                // 行不存在（与"首建"竞态）：按内存态整文档落盘
+                // 行不存在（与"首建"竞态）：按内存态整文档落盘（savePlanningState 的首建 INSERT 语义，
+                // 撞键时读回赢家、只在空壳行上补值 —— 见 handleInsertRace）
                 applyRecommendationOverlay(state, overlayCandidatePoolState, state.getVersion());
-                savePlanningState(chatSessionId, state);
+                savePlanningState(chatSessionId, state, "recommendation_overlay_first_write");
                 return;
             }
             PlanningStateDTO latest = JSONObject.parseObject(row.getDataValue(), PlanningStateDTO.class);
             normalizePlanningStateDefaults(chatSessionId, latest);
             applyRecommendationOverlay(latest, overlayCandidatePoolState, latest.getVersion());
+            String newDataValue = JSONObject.toJSONString(latest);
             if (chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
-                    row, row.getDataValue(), JSONObject.toJSONString(latest))) {
-                // 调用方继续用最新内容（后续 saveWorkingPlanState 等才会带上并发写进来的草案/排序）
+                    row, row.getDataValue(), newDataValue)) {
+                // 调用方继续用最新内容（后续 saveWorkingPlanState 等才会带上并发写进来的草案/排序），
+                // 基线也要刷成"实际写进库里的那串"：latest 是 JSON 反解的，baseline 字段是 null，
+                // copyProperties 会把它带过来 —— 不补这一手，调用方随后落盘会因"基线缺失"静默跳过。
                 BeanUtils.copyProperties(latest, state);
+                state.setBaselineDataValue(newDataValue);
                 return;
             }
         }
@@ -11277,13 +11843,23 @@ public class PlanningStateService {
             state.setSessionId(chatSessionId);
             return state;
         }
+        // RETRY_REPLAY：补足是纯内存变换（只追加、幂等），CAS 输 -> 重读最新后重放；耗尽响亮冲突
+        applyTierTargetRefill(state, tenantId, chatSessionId);
+        return saveWorkingPlanStateWithReplay(chatSessionId, state, "refill_by_tier",
+                latest -> applyTierTargetRefill(latest, tenantId, chatSessionId));
+    }
+
+    /** 档位目标补足变换（纯内存、只追加；重放安全）。 */
+    private void applyTierTargetRefill(PlanningStateDTO state, Long tenantId, Long chatSessionId) {
+        DraftPlanStateDTO draft = state.getDraftPlanState();
+        CandidatePoolStateDTO pool = state.getCandidatePoolState();
+        if (draft == null || pool == null || pool.getItems() == null || pool.getItems().isEmpty()) {
+            return;
+        }
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
         refillWorkingPlanByTier(draft, effectiveCandidates, pool.getRequiredTierCounts());
         syncWorkingPlanUnitsWithItems(draft, effectiveCandidates, pool);
         recalculateWorkingPlanSummary(draft, pool);
-        saveWorkingPlanState(chatSessionId, state);
-        state.setSessionId(chatSessionId);
-        return state;
     }
 
     /**
@@ -12248,25 +12824,70 @@ public class PlanningStateService {
         return schoolName;
     }
 
-    private PlanningStateDTO saveWorkingPlanState(Long chatSessionId, PlanningStateDTO state) {
+    /**
+     * 工作台写入口的**收敛落盘点**（H2：单次 CAS，期望值是 {@code state} 携带的基线；
+     * 输赢由返回值交给调用方裁决——用户动作输=响亮冲突，纯内存变换输=重读重放）。
+     */
+    private boolean saveWorkingPlanState(Long chatSessionId, PlanningStateDTO state, String scene) {
         state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         state.setPhase("drafting");
         boolean orderedSynced = syncOrderedPlanWithDraft(state);
         state.getStaleFlags().setOrderedPlan(!orderedSynced);
         ReviewInvalidationPolicy.markPlanStructureStale(state);
-        savePlanningState(chatSessionId, state);
-        return state;
+        return savePlanningState(chatSessionId, state, scene);
     }
 
-    private PlanningStateDTO saveOrderedState(Long chatSessionId, PlanningStateDTO state) {
+    /** 排序态落盘的收敛点（同上）。 */
+    private boolean saveOrderedState(Long chatSessionId, PlanningStateDTO state, String scene) {
         state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         state.setPhase("ordered");
         state.getStaleFlags().setOrderedPlan(false);
         ReviewInvalidationPolicy.markPlanStructureStale(state);
-        savePlanningState(chatSessionId, state);
-        return state;
+        return savePlanningState(chatSessionId, state, scene);
+    }
+
+    /**
+     * RETRY_REPLAY：CAS 输 → 重读最新 → {@code reapply} 把同一变换重新施加到最新态 → 再 CAS
+     * （≤{@value #WRITE_CAS_ATTEMPTS} 次）；重试耗尽**响亮冲突**（40901 语义面），绝不静默丢。
+     * 首次尝试由调用方先施加变换并计算副作用（行为事件只记一次）。
+     */
+    private PlanningStateDTO saveWorkingPlanStateWithReplay(Long chatSessionId,
+                                                            PlanningStateDTO state,
+                                                            String scene,
+                                                            Consumer<PlanningStateDTO> reapply) {
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            if (attempt > 0) {
+                reloadPlanningState(chatSessionId, state);
+                if (reapply != null) {
+                    reapply.accept(state);
+                }
+            }
+            if (saveWorkingPlanState(chatSessionId, state, scene)) {
+                return state;
+            }
+        }
+        throw writeCasConflict(scene);
+    }
+
+    /** RETRY_REPLAY（排序态收敛点版本）。 */
+    private PlanningStateDTO saveOrderedStateWithReplay(Long chatSessionId,
+                                                        PlanningStateDTO state,
+                                                        String scene,
+                                                        Consumer<PlanningStateDTO> reapply) {
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            if (attempt > 0) {
+                reloadPlanningState(chatSessionId, state);
+                if (reapply != null) {
+                    reapply.accept(state);
+                }
+            }
+            if (saveOrderedState(chatSessionId, state, scene)) {
+                return state;
+            }
+        }
+        throw writeCasConflict(scene);
     }
 
     private void applyPlanGenerationMetadata(PlanningStateDTO state,
