@@ -37,7 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * mock / 假表只能证明"我们拼了这个 where"，证明不了 MySQL 真按这个口径比对；
  * 而 d098da8 把整个读路径的"不覆盖并发写"押在这条 SQL 上，错了就是静默丢写。</p>
  *
- * <p>最后两条是**写路径现状的钉子**：H2 落地后应翻转断言（而不是删除），
+ * <p>最后两条是**写路径的钉子**：⑧ 原先是"无条件 updateById 会让后写者整文档覆盖"的现状钉，
+ * H2 落地后已**翻转**为"CAS 挡住第二个写者 / 重读合并后两者都在"（不删，保留翻转痕迹），
  * 让"修复确实改变了 SQL 级行为"有据可查。</p>
  *
  * <p>运行方式（隔离库 {@code zhiyuan_codex_local} @ 127.0.0.1:13306，不碰演示库）：
@@ -228,28 +229,37 @@ class ChatSessionExtraDataCasSqlBehaviorIntegrationTest {
         };
     }
 
-    // ⑧ 写路径现状的钉子（H2 的证据）：两个"整文档读-改-写"写者各自持快照、无条件 updateById 落盘，
-    //    后写者把先写者的改动**整体**冲掉——这正是 savePlanningState 现在的语义。
-    //    H2 落地后本条应翻转断言（改成断言 CAS 挡住第二个写者 / 重读合并后两者都在），不要删。
+    // ⑧ 写路径的钉子（**H2 已落地，本条的断言已从"无条件 updateById 让后写者整文档覆盖"
+    //    翻转为"H2 之后 CAS 挡住第二个写者 / 重读合并后两者都在"——不删，保留翻转痕迹）：
+    //    savePlanningState 现在走 updateDataValueIfUnchanged；输的一方由站点策略
+    //    重读重放/重读合并，绝不整文档覆盖最新行。
     @Test
-    void characterizationUnconditionalWriteByIdLosesAConcurrentWrite() throws Exception {
+    void casWritePathBlocksSecondWriterAndMergeKeepsBoth() throws Exception {
         insertRow(sessionId, dataKey, "{\"phase\":\"candidate_generated\",\"draftCount\":0}");
 
         ChatSessionExtraData snapshotA = readRow(sessionId, dataKey);
         ChatSessionExtraData snapshotB = readRow(sessionId, dataKey);
 
-        // A 先落盘：它把这行推到 ordered（在真实链路里是"页面自举生成方案"）。
-        snapshotA.setDataValue("{\"phase\":\"ordered\",\"draftCount\":132,\"by\":\"A\"}");
-        sharedService.updateById(snapshotA);
+        // A 先落盘：它把这行推到 ordered（真实链路里是"页面自举生成方案"）——基线仍是最新，CAS 赢。
+        String valueA = "{\"phase\":\"ordered\",\"draftCount\":132,\"by\":\"A\"}";
+        assertTrue(sharedService.updateDataValueIfUnchanged(snapshotA, snapshotA.getDataValue(), valueA));
 
-        // B 后落盘：它手里的还是 candidate_generated 那份旧快照（真实链路里是延迟到达的 overlay/补写）。
-        snapshotB.setDataValue("{\"phase\":\"candidate_generated\",\"draftCount\":0,\"by\":\"B\"}");
-        sharedService.updateById(snapshotB);
+        // B 后落盘：它手里还是 candidate_generated 那份旧快照（真实链路里是延迟到达的补录/overlay/补写），
+        // CAS 必须输——H2 之前这里是无条件 updateById，会把 A 的 ordered/132 整体冲掉。
+        String valueB = "{\"phase\":\"candidate_generated\",\"draftCount\":0,\"by\":\"B\"}";
+        assertFalse(sharedService.updateDataValueIfUnchanged(snapshotB, snapshotB.getDataValue(), valueB),
+                "B 的基线已经过期，CAS 必须挡住第二个写者");
+        assertEquals(valueA, readValue(sessionId, dataKey), "A 的成果原样在库里，B 一个字都没写进去");
+        assertFalse(readValue(sessionId, dataKey).contains("\"by\":\"B\""));
 
+        // B 按站点策略重读最新、只把自己的域合并上去（MERGE_LATEST / RETRY_REPLAY 的形状）：
+        // 重读后的期望值 = A 刚写的那份 → CAS 赢，两者都在（不再有"丢一份"的必然）。
+        ChatSessionExtraData liveB = readRow(sessionId, dataKey);
+        String mergedValue = "{\"phase\":\"ordered\",\"draftCount\":132,\"by\":\"A\",\"mergedBy\":\"B\"}";
+        assertTrue(sharedService.updateDataValueIfUnchanged(liveB, liveB.getDataValue(), mergedValue));
         String finalValue = readValue(sessionId, dataKey);
-        assertEquals("{\"phase\":\"candidate_generated\",\"draftCount\":0,\"by\":\"B\"}", finalValue,
-                "现状：后写者整文档覆盖，A 的 ordered/132 全部丢失（H2 要改的就是这条）");
-        assertFalse(finalValue.contains("\"by\":\"A\""), "A 的改动没有任何载体幸存 —— 无 CAS 的写-写并发必然丢一份");
+        assertTrue(finalValue.contains("\"by\":\"A\""), "A 的字段在重读合并后仍幸存");
+        assertTrue(finalValue.contains("\"mergedBy\":\"B\""), "B 的合并也落盘了——两个写者都不丢");
     }
 
     // ── 夹具：真表写入/读取都绕过服务层，用独立连接看清库里到底存了什么 ──────────
