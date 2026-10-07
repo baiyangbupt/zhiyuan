@@ -28,6 +28,8 @@ import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.gaotu.RecommendNumResponse;
 import com.ytell.zhiyuan.model.dto.gaotu.req.ProgramPageReq;
 import com.ytell.zhiyuan.model.dto.gaotu.req.RecommendNumReq;
+import com.ytell.zhiyuan.model.dto.gaotu.req.ScorePositionRangeReq;
+import com.ytell.zhiyuan.model.dto.gaotu.res.ScorePositionRangeRes;
 import com.ytell.zhiyuan.model.dto.inner.ChatSessionExtraDataReq;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
@@ -253,6 +255,8 @@ public class ChatSessionBizService {
         // 2. 以既有成绩为底合并增量（保留原有 prepareType/意愿等字段）。
         CreateSessionReq merged = mergeScoreDetail(loadSessionScoreDetail(chatSessionId), req);
         normalizeScoreUpdateDefaults(merged);
+        // 2-1. 位次缺失时按一分一段补最保守位次（lowestRank）——与省缺省同一带，只补空位。
+        fillTotalScorePosIfMissing(merged);
 
         // 3. 与建会话完全同一套校验与权益判据。
         normalizeCreateSessionDefaults(merged);
@@ -542,6 +546,92 @@ public class ChatSessionBizService {
         }
     }
 
+    /**
+     * 位次缺失时的**保守补齐**：向一分一段要分数所在区间，取**最保守位次 = lowestRank**
+     * （同分不可分辨，区间 {highestRank~lowestRank} 里取最大名次）。口径与前端补录表单
+     * 同源（`ScoreSupplement`/`PersonalInfoCollect` 同样取 `data.lowestRank` 填
+     * `totalScorePos`），与 hl-wish `ScoreAlgorithmImpl.scoreToPos` 的 positionTotal
+     * 约定一致、与上游 `getScorePositionRange` 的 lowestRank 数学一致。
+     *
+     * <p>只补**空位**：已有位次（用户填的、表单算的）永不覆盖——用户 &gt; 表。补齐需要
+     * 分数/高考年份/省份/科类/批次 level 齐备，请求形状与前端一致
+     * （areaId=省 code、subject=科类 code、dataLevel=批次 level、year、score）。</p>
+     *
+     * <p>前置不齐、上游没有该省/年份的一分一段（`data:null`）或上游查询异常：都**保持为空**，
+     * 只记一条 warn——位次只是补充信息，不造数、不抛、不阻塞建档/补录主流程。</p>
+     */
+    private void fillTotalScorePosIfMissing(CreateSessionReq req) {
+        if (req == null || req.getTotalScorePos() != null) {
+            // 用户/表单已经给了位次：一个字都不动，也不查上游。
+            return;
+        }
+        String missingInput = missingPositionLookupInput(req);
+        if (missingInput != null) {
+            log.warn("scorePosition: 位次缺失但输入不齐，保持为空 reason={} province={} subjectType={} batchLevel={} year={} totalScore={}",
+                    missingInput, provinceCodeOf(req), subjectTypeCodeOf(req), batchLevelOf(req),
+                    req.getExamYear(), req.getTotalScore());
+            return;
+        }
+        ScorePositionRangeReq rangeReq = new ScorePositionRangeReq();
+        rangeReq.setAreaId(req.getProvince().getCode());
+        rangeReq.setSubject(req.getSubjectType().getCode());
+        rangeReq.setDataLevel(req.getBatch().getLevel());
+        rangeReq.setYear(String.valueOf(req.getExamYear()));
+        rangeReq.setScore(String.valueOf(req.getTotalScore()));
+        ScorePositionRangeRes range;
+        try {
+            range = gaotuService.getScorePositionRange(rangeReq);
+        } catch (Exception ex) {
+            log.warn("scorePosition: 上游查询异常，位次保持为空 areaId={} subject={} dataLevel={} year={} score={}",
+                    rangeReq.getAreaId(), rangeReq.getSubject(), rangeReq.getDataLevel(),
+                    rangeReq.getYear(), rangeReq.getScore(), ex);
+            return;
+        }
+        if (range == null || range.getLowestRank() == null) {
+            log.warn("scorePosition: 上游没有该省/年份的一分一段（data:null，不造数），位次保持为空 areaId={} subject={} dataLevel={} year={} score={}",
+                    rangeReq.getAreaId(), rangeReq.getSubject(), rangeReq.getDataLevel(),
+                    rangeReq.getYear(), rangeReq.getScore());
+            return;
+        }
+        req.setTotalScorePos(range.getLowestRank());
+        log.info("scorePosition: 位次缺失，按一分一段保守口径补齐 score={} 区间={}~{} 同分人数={} 采用lowestRank={} areaId={} subject={} dataLevel={} year={}",
+                req.getTotalScore(), range.getHighestRank(), range.getLowestRank(), range.getStudents(),
+                range.getLowestRank(), rangeReq.getAreaId(), rangeReq.getSubject(),
+                rangeReq.getDataLevel(), rangeReq.getYear());
+    }
+
+    /** 位次推导的前置检查：返回第一条缺失项（写日志用），齐备返回 null。 */
+    private String missingPositionLookupInput(CreateSessionReq req) {
+        if (req.getTotalScore() == null) {
+            return "totalScore";
+        }
+        if (req.getExamYear() == null) {
+            return "examYear";
+        }
+        if (req.getProvince() == null || Strings.isNullOrEmpty(req.getProvince().getCode())) {
+            return "province.code";
+        }
+        if (req.getSubjectType() == null || Strings.isNullOrEmpty(req.getSubjectType().getCode())) {
+            return "subjectType.code";
+        }
+        if (req.getBatch() == null || Strings.isNullOrEmpty(req.getBatch().getLevel())) {
+            return "batch.level";
+        }
+        return null;
+    }
+
+    private String provinceCodeOf(CreateSessionReq req) {
+        return req.getProvince() == null ? null : req.getProvince().getCode();
+    }
+
+    private String subjectTypeCodeOf(CreateSessionReq req) {
+        return req.getSubjectType() == null ? null : req.getSubjectType().getCode();
+    }
+
+    private String batchLevelOf(CreateSessionReq req) {
+        return req.getBatch() == null ? null : req.getBatch().getLevel();
+    }
+
     /** 写 userScoreDetail：行不存在则 insert（空会话），存在则整行 update。 */
     private void upsertScoreInfo(Long chatSessionId, CreateSessionReq scoreDetail) {
         ChatSessionExtraData userScoreData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
@@ -796,6 +886,8 @@ public class ChatSessionBizService {
             return createEmptyChatSession(tenantId, createSessionReq, requestStart);
         }
         validateCreateSessionReq(createSessionReq);
+        // 归一之后：位次缺失时按一分一段补最保守位次（lowestRank）；已有位次/前置不齐则原样。
+        fillTotalScorePosIfMissing(createSessionReq);
 
         UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
         //校验权益

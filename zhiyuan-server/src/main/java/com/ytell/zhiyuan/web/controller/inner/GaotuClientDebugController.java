@@ -30,6 +30,9 @@ public class GaotuClientDebugController {
     @Autowired
     private com.ytell.zhiyuan.service.biz.ScoreCatalogService scoreCatalogService;
 
+    @Autowired
+    private com.ytell.zhiyuan.service.GaotuService gaotuService;
+
     @GetMapping("/member/id")
     @ApiOperation("根据sid获取用户ID")
     public Long getMemberId(@ApiParam("用户SID") @RequestParam String customerId) {
@@ -84,6 +87,30 @@ public class GaotuClientDebugController {
     public ResponseDTO<java.util.List<java.util.Map<String, Object>>> getSubjectOptions(
             @ApiParam("地区ID（省份编码）") @RequestParam Long areaId) {
         return scoreCatalogService.listSubjectOptions(areaId);
+    }
+
+    /**
+     * 分数 → 位次**区间**（一分一段表）：`{score, students, highestRank, lowestRank, dataLevel}`。
+     *
+     * <p>与 {@code /score/position-range}（上游 DTO 原样透传，走 {@code GaotuClient}）的分工：
+     * 这条走 {@code GaotuService#getScorePositionRange}——上游按请求年份查不到时它会用
+     * **当前年份**再试一次，仍没有就回 {@code null}，这里**如实回空**（{@code data: null}），
+     * 不估算、不造数：安徽等省份上游就没有一分一段数据，编一个数字比查不到更坏。</p>
+     *
+     * <p>口径：**同分考生不可分辨**——{@code highestRank}~{@code lowestRank} 是一个区间
+     * （{@code students} 人同分），只能报区间，不能报单一名次。</p>
+     */
+    @PostMapping("/catalog/score-position")
+    @ApiOperation("分数位次区间（一分一段表）")
+    public ResponseDTO<ScorePositionRangeRes> getScorePositionRangeByCatalog(@RequestBody ScorePositionRangeReq req) {
+        ScorePositionRangeRes data = gaotuService.getScorePositionRange(req);
+        ResponseDTO<ScorePositionRangeRes> result = new ResponseDTO<ScorePositionRangeRes>();
+        // 业务码口径：查询本身成功即 0；"该省没有这份数据"是 data=null，不是错误码——
+        // 调用方（Agent 工具）据此如实说"不可用"，而不是把空数据当 0 位次用。
+        result.setCode(0);
+        result.setMsg("ok");
+        result.setData(data);
+        return result;
     }
 
     @PostMapping("/report/info")
