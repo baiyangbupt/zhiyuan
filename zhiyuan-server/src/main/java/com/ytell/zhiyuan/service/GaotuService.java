@@ -626,23 +626,45 @@ public class GaotuService {
      * 根据分数获取位次范围
      * 输入: 地区ID、科目类型、数据级别、年份、分数
      * 输出: 对应的位次范围信息
+     *
+     * <p><b>年份回退口径（2026-10-07 独立审查 M2）</b>：上游按请求年份查不到（code≠0 或
+     * {@code data:null}，后者是"该省/该年份没有一分一段"的正常形状）时，**只有调用方根本没指定
+     * 年份**才允许退回"当年"再试一次。以前是无条件把请求里的年份改成当年再查——指定了
+     * 2025 却被静默换成 2026 的数据，还会被补录链路当成 2025 的位次落库（跨年串数据）。
+     * 指定了年份就**不换**：查不到如实回 {@code null}，调用方保持位次为空（不造数）。</p>
      */
     public ScorePositionRangeRes getScorePositionRange(ScorePositionRangeReq req) {
         log.info("开始查询分数位次范围, 请求参数: {}", JSON.toJSONString(req));
         ResponseDTO<ScorePositionRangeRes> response = gaotuClient.getScorePositionRange(req);
         log.debug("查询分数位次范围完成, 响应结果: {}", JSON.toJSONString(response));
 
-        if (response.getCode() != 0 || response.getData() == null) {
-            log.error("查询分数位次范围失败:code:{},msg:{}", response.getCode(), response.getMsg());
-            req.setYear(DateUtil.year(new Date()) + "");
-            response = gaotuClient.getScorePositionRange(req);
+        if (isScorePositionFailure(response)) {
+            log.error("查询分数位次范围失败:code:{},msg:{}",
+                    response == null ? null : response.getCode(),
+                    response == null ? null : response.getMsg());
+            if (Strings.isNullOrEmpty(req.getYear())) {
+                String fallbackYear = DateUtil.year(new Date()) + "";
+                log.warn("getScorePositionRange retry with current year {} reason=year_not_specified req={}",
+                        fallbackYear, JSON.toJSONString(req));
+                req.setYear(fallbackYear);
+                response = gaotuClient.getScorePositionRange(req);
+            } else {
+                log.warn("getScorePositionRange no retry reason=year_pinned year={}（不把别的年份的数据当请求年份）",
+                        req.getYear());
+            }
         }
 
-        if (response.getData() == null) {
+        if (response == null || response.getData() == null) {
             return null;
         }
 
         return response.getData();
+    }
+
+    /** 位次查询失败判定：空响应/非 0 码/无数据都算失败（code=0 且 data:null 是"没有这份数据"）。 */
+    private boolean isScorePositionFailure(ResponseDTO<ScorePositionRangeRes> response) {
+        return response == null || response.getCode() == null || response.getCode() != 0
+                || response.getData() == null;
     }
 
     public UserInfoByTokenRes getUserInfoByToken(String token) {

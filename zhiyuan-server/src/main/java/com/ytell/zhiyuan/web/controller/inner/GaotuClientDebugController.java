@@ -96,9 +96,10 @@ public class GaotuClientDebugController {
      * 分数 → 位次**区间**（一分一段表）：`{score, students, highestRank, lowestRank, dataLevel}`。
      *
      * <p>与 {@code /score/position-range}（上游 DTO 原样透传，走 {@code GaotuClient}）的分工：
-     * 这条走 {@code GaotuService#getScorePositionRange}——上游按请求年份查不到时它会用
-     * **当前年份**再试一次，仍没有就回 {@code null}，这里**如实回空**（{@code data: null}），
-     * 不估算、不造数：安徽等省份上游就没有一分一段数据，编一个数字比查不到更坏。</p>
+     * 这条走 {@code GaotuService#getScorePositionRange}——查不到就回 {@code null}，这里
+     * **如实回空**（{@code data: null}），不估算、不造数：安徽等省份上游就没有一分一段数据，
+     * 编一个数字比查不到更坏。年份回退只发生在**调用方没指定年份**时（退回当年再试一次）；
+     * 指定了年份就按该年份如实查，查不到不回退（2026-10-07 审查 M2）。</p>
      *
      * <p>口径：**同分考生不可分辨**——{@code highestRank}~{@code lowestRank} 是一个区间
      * （{@code students} 人同分），只能报区间，不能报单一名次。</p>
