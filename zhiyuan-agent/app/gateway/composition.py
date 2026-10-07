@@ -139,7 +139,13 @@ async def build_gateway_runtime(
     await codex.start()
     # 没有这一步，原生提问会被 client 的默认分支回成 `{"result": null}`——
     # 模型的问题被静默当成"用户回答了空"，而且链路上不留任何痕迹。
-    broker = UserInputBroker(runtime_generation=secrets.token_hex(8))
+    # `turn_resolver`：原生请求带的是 codex 原生回合号，事件流要的是业务号——
+    # 翻译边界放在**桥**里（见 `UserInputBroker._business_turn_id`），
+    # 解析器要等运行时装配，所以这里先注入一个惰性查表。
+    broker = UserInputBroker(
+        runtime_generation=secrets.token_hex(8),
+        turn_resolver=_ui_turn_for_codex,
+    )
     codex.set_server_request_handler(broker.handle_server_request)
     gateway = GatewayService(
         mode=mode,
@@ -171,6 +177,20 @@ async def _publish_to_session(key: Any, event: dict) -> bool:
     if runtime is None:
         return False
     return await runtime.publish(key, event)
+
+
+def _ui_turn_for_codex(key: Any, codex_turn_id: str) -> str | None:
+    """原生回合号 → 业务回合号（澄清桥给事件盖章用）。
+
+    与 `_publish_to_session` 同一手法：运行时晚于 broker 创建（server.py 的
+    lifespan 才建），所以做一次间接查表。查不到返回 None——broker 会保持原样，
+    卡片照旧发出（只是盖原生号），不会因为这一层没装配好就消失。
+    """
+    runtime = _SESSION_RUNTIME.get("instance")
+    lookup = getattr(runtime, "ui_turn_for_codex", None)
+    if lookup is None:
+        return None
+    return lookup(key, codex_turn_id)
 
 
 # 由 server.py 在 lifespan 里填入；放模块级是为了让 composition 不必知道 server。

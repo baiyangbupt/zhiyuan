@@ -11,10 +11,13 @@
 4. **先登记连接、再读存储**——反了会丢这中间的实时事件（丢=缺口，只允许 resync）；
 5. 回合的事件走**会话当前连接**（走错连接 = 刷新后终态永远收不到）。
 """
+import asyncio
+
 import pytest
 
-from app.gateway.session_runtime import ActiveTurn
+from app.gateway.session_runtime import ACCEPTED, ActiveTurn, SessionRuntime
 from app.gateway.ui_events import SessionKey, UiEvent
+from app.gateway.user_input import UserInputBroker
 from app.server import _replay_on_connect, _session_emitter
 
 
@@ -26,6 +29,17 @@ def _event(sequence: int, turn_id: str) -> UiEvent:
         streamEpoch="epoch-a",
         sequence=sequence,
         payload={"itemId": f"i{sequence}", "tool": "domain", "status": "started", "label": "正在查询"},
+    )
+
+
+def _clarification_event(sequence: int, turn_id: str) -> UiEvent:
+    return UiEvent(
+        type="clarification.requested",
+        sessionId="900047",
+        turnId=turn_id,
+        streamEpoch="epoch-a",
+        sequence=sequence,
+        payload={"requestId": "q1", "inputKind": "choice", "questions": []},
     )
 
 
@@ -115,6 +129,103 @@ async def test_replays_only_the_active_turn_without_a_resync_frame() -> None:
     assert {frame["turnId"] for frame in channel.frames} == {"turn-live"}
     # 补得出来时一条 resync 都不许有：它会把基线设到水位线，把这些事件判成重复。
     assert all(frame["type"] != "session.resync" for frame in channel.frames)
+
+
+@pytest.mark.asyncio
+async def test_a_clarification_stamped_with_the_codex_turn_id_is_replayed_too() -> None:
+    """F10 真根 ✓：卡的事件可能被盖成**原生**回合号 ✓——补发不许把它滤掉 ✗✓。
+
+    链路（已定稿 ✓）：桥登记卡时直接把 `params.turnId`（原生号 ✓，如 `turn_22` ✓）
+    当业务号用 ✗ → `ConnectionChannel.emit` 的"事件自带 turnId 优先" ✓
+    （`session_runtime.py:127` ✓——那条语义是必要的 ✗，不许回退 ✓）把它原样写进流 ✗ →
+    刷新补发只认业务号 ✓ → 卡被滤掉、回不来 ✗（F10 自 10-06 红 ✓）。
+    真修在**桥边界翻译** ✓（`user_input._business_turn_id` ✓，另一条用例钉它 ✓）；
+    这条钉的是过滤这一层的**防御**：当前回合的原生号同样放行 ✓——
+    放行的代价是可能多补一条 ✓，滤掉的代价是用户在飞的卡永远看不到 ✗。
+    """
+    store = _ReplayStore(
+        epoch="epoch-a",
+        events=[
+            _event(1, "turn-old"),
+            _clarification_event(2, "turn_22"),
+            _event(3, "turn-live"),
+        ],
+    )
+    channel = _Channel()
+    turn = ActiveTurn(key=_key(), ui_turn_id="turn-live", codex_turn_id="turn_22")
+
+    await _replay_on_connect(_socket(store), _Runtime(store, turn), channel)
+
+    assert [frame["sequence"] for frame in channel.frames] == [2, 3]
+    assert [frame["type"] for frame in channel.frames] == [
+        "clarification.requested",
+        "tool.progress",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_broker_stamps_clarifications_with_the_business_turn_id() -> None:
+    """桥边界翻译 ✓（真修在哪，这条就钉在哪 ✓）：原生 `turn_22` 进，业务号出 ✓✓。
+
+    复用运行时**已有的**原生↔业务映射 ✓（`bind_codex_turn` 的反向查表 ✓）——
+    翻译不另起一套状态 ✗，否则两处映射迟早对不上 ✓。
+    **事件与快照（重连恢复的另一条路 ✓）都必须带业务号** ✓：只翻事件不翻快照的话，
+    刷新补出来的卡还是会挂到别的 `[data-turn-id]` 块上 ✗。
+    """
+    runtime = SessionRuntime()
+    key = _key()
+
+    async def work() -> None:
+        await asyncio.sleep(3600)
+
+    assert (
+        await runtime.submit(key, client_request_id="", ui_turn_id="turn-live", work=work)
+        == ACCEPTED
+    )
+    runtime.bind_codex_turn(key, "turn-live", "turn_22")
+
+    published: list[dict] = []
+
+    async def emitter(published_key: SessionKey, event: dict) -> None:
+        published.append(event)
+
+    broker = UserInputBroker(
+        runtime_generation="gen-1",
+        scope_resolver=lambda thread_id: key,
+        turn_resolver=runtime.ui_turn_for_codex,
+    )
+    broker.set_emitter(emitter)
+
+    task = asyncio.create_task(
+        broker.handle_server_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 9001,
+                "method": "item/tool/requestUserInput",
+                "params": {
+                    "threadId": "thr_1",
+                    "turnId": "turn_22",  # 原生号 ✓（真实形状：`turn_22` 这种 ✓）
+                    "questions": [
+                        {"id": "major", "header": "专业", "question": "想读什么？", "options": []}
+                    ],
+                },
+            }
+        )
+    )
+    try:
+        for _ in range(200):
+            if published:
+                break
+            await asyncio.sleep(0.01)
+        assert published, "卡片事件没有发出来"
+        assert published[0]["type"] == "clarification.requested"
+        # 事件上盖的是**业务**回合号 ✓——原生号直通的话它会等于 "turn_22" ✗。
+        assert published[0]["turnId"] == "turn-live"
+        assert broker.snapshot(key)[0]["turnId"] == "turn-live"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await runtime.cancel_all()
 
 
 @pytest.mark.asyncio

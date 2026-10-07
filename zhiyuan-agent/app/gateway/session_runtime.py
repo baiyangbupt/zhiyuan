@@ -269,6 +269,24 @@ class SessionRuntime:
         if turn is not None and turn.ui_turn_id == ui_turn_id:
             turn.codex_turn_id = codex_turn_id
 
+    def ui_turn_for_codex(self, key: SessionKey, codex_turn_id: str) -> str | None:
+        """`bind_codex_turn` 的**反向**查表：原生回合号 → 业务回合号 ✓✓。
+
+        澄清桥要用它 ✗✓：codex 的原生请求（`item/tool/requestUserInput` /
+        elicitation ✓）里只有**原生** `params.turnId` ✓（如 `turn_22` ✓），
+        而事件流按**业务**号索引 ✓——不翻的话原生号直通进流 ✗ → 刷新补发
+        只认业务号的事件 ✓ → 卡被滤掉、回不来 ✗（F10 自 10-06 红的真根 ✓）。
+
+        解析不出来（没绑上 / 号对不上 ✓）返回 None ✓：调用方保持原样 ✓，
+        不在这里猜——"唯一活动回合"不是"这条请求属于它"的证据 ✗。
+        """
+        if not codex_turn_id:
+            return None
+        turn = self.active_turn(key)
+        if turn is None or turn.codex_turn_id != codex_turn_id:
+            return None
+        return turn.ui_turn_id
+
     async def submit(
         self,
         key: SessionKey,

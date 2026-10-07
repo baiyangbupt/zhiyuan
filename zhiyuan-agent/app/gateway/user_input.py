@@ -73,6 +73,7 @@ class UserInputBroker:
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
         on_expired: Any | None = None,
         scope_resolver: Any | None = None,
+        turn_resolver: Any | None = None,
     ) -> None:
         self.runtime_generation = str(runtime_generation)
         self._ttl = float(ttl_seconds)
@@ -86,6 +87,9 @@ class UserInputBroker:
         # 请求参数里的 tenant/session 是运行时转述的，模型也可能参与其中，
         # 拿它当可信身份就是把隔离边界交给了被隔离的一方。
         self._scope_resolver = scope_resolver
+        # 回合号同样要**翻译**（见 `_business_turn_id`）：请求里带的是 codex
+        # 原生号，而事件流按业务号索引。解析器由装配侧注入（运行时晚于本桥创建）。
+        self._turn_resolver = turn_resolver
 
     def set_emitter(self, emitter: Any) -> None:
         """注入"把事件推给该会话当前连接"的函数。"""
@@ -120,7 +124,7 @@ class UserInputBroker:
                 raise UserInputError("secret_input_unsupported")
         record = await self._register(
             raw,
-            ui_turn_id=str(params.get("turnId") or ""),
+            native_turn_id=str(params.get("turnId") or ""),
             input_kind=INPUT_KIND_CHOICE,
             questions=[dict(question) for question in questions],
             question_ids=frozenset(
@@ -141,7 +145,7 @@ class UserInputBroker:
             raise UserInputError("missing_requested_schema")
         record = await self._register(
             raw,
-            ui_turn_id=str(params.get("turnId") or ""),
+            native_turn_id=str(params.get("turnId") or ""),
             input_kind=INPUT_KIND_FORM,
             questions=[],
             question_ids=frozenset(),
@@ -162,7 +166,7 @@ class UserInputBroker:
         self,
         raw: dict[str, Any],
         *,
-        ui_turn_id: str,
+        native_turn_id: str,
         input_kind: str,
         questions: list[dict[str, Any]],
         question_ids: frozenset[str],
@@ -172,6 +176,10 @@ class UserInputBroker:
         rpc_id = raw.get("id")
         if rpc_id is None:
             raise UserInputError("server_request_without_id")
+        # **原生回合号在**这里**翻译成业务回合号** ✓✓：这条事件从头到尾都该
+        # 以业务号出现（入流盖章 ✓、快照恢复 ✓、前端按 `[data-turn-id]` 归位 ✓）
+        # ——见 `_business_turn_id` 里那条实测根因 ✓。
+        ui_turn_id = self._business_turn_id(key, native_turn_id)
         # UI requestId 必须不可预测：它同时是浏览器唯一能引用的句柄，
         # 可预测的 id 等于让一个用户去猜另一个用户的卡片。
         ui_request_id = secrets.token_urlsafe(16)
@@ -342,6 +350,32 @@ class UserInputBroker:
             self._pending.pop(ui_request_id, None)
             if record.future is not None and not record.future.done():
                 record.future.set_exception(UserInputError("clarification_runtime_gone"))
+
+    def _business_turn_id(self, key: SessionKey, native_turn_id: str) -> str:
+        """codex **原生**回合号 → **业务**回合号 ✓✓（F10 的真根就在这一步 ✗✓）。
+
+        原生请求（`item/tool/requestUserInput` / elicitation ✓）的 `params.turnId`
+        是 `turn_22` 这种原生号 ✓，而事件流按业务号索引 ✓（`turn.started` 与进度
+        都用它盖章 ✓）。修前这里直接把它当业务号用 ✗，配上 `ConnectionChannel.emit`
+        的"事件自带 turnId 优先" ✓（`session_runtime.py:127` ✓，那个语义是必要的 ✗）
+        → 原生号直通进流 ✗：刷新补发 `_replay_active_turn` 只认业务号 ✓ →
+        **卡被滤掉、回不来** ✗（F10 实测 ✓），副产物是卡被画进另一个
+        `[data-turn-id]` 块（原生号 ✓）。
+
+        解析不出（没注入解析器 / 映射还没绑上 ✓）就**原样返回**：与修前一致 ✓，
+        不在这里猜"唯一活动回合就是它" ✗——猜错的归属比不翻更难查 ✓。
+        """
+        if self._turn_resolver is None or not native_turn_id:
+            return native_turn_id
+        try:
+            resolved = self._turn_resolver(key, native_turn_id)
+        except Exception:  # noqa: BLE001 - 解析失败不该让这轮提问整个消失
+            logger.warning(
+                "codex turn id resolution failed (%s); keeping it as-is", native_turn_id,
+                exc_info=True,
+            )
+            return native_turn_id
+        return str(resolved) if resolved else native_turn_id
 
     def _scope_from_params(self, params: dict[str, Any]) -> SessionKey:
         thread_id = str(params.get("threadId") or "")

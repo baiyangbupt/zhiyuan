@@ -673,8 +673,15 @@ async def _replay_active_turn(store, runtime, channel, key: SessionKey) -> None:
     # 补得出来就**只补事件、不发 resync**：reducer 的首帧无条件采纳代际与序号，
     # 后面的事件按 +1 连续接上；先发 resync 会把基线设到水位线，反而把补出来的
     # 事件整段判成重复而丢掉（`conversationSession.mjs` 的 resync 分支）。
+    # 过滤放行**当前回合的原生号** ✓（防御，非充分 ✗✓）：正常情况下澄清事件已在
+    # broker 边界翻成业务号 ✓（`user_input._business_turn_id` ✓，那才是真修 ✓）；
+    # 万一原生号漏进流里（旧事件/映射未绑 ✓），过滤也不该把在飞的卡丢掉 ✗——
+    # 宁可多补一条（卡回来 ✓），不可"服务端有、用户看不到" ✗。
+    allowed_turn_ids = {turn.ui_turn_id}
+    if turn.codex_turn_id:
+        allowed_turn_ids.add(turn.codex_turn_id)
     for event in events:
-        if event.turn_id == turn.ui_turn_id:
+        if event.turn_id in allowed_turn_ids:
             await channel.emit_frame(event.model_dump(by_alias=True))
 
 
