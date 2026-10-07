@@ -63,6 +63,9 @@ pong 契约完好（ping 不刷新自己）；时间线合并不变量成立；t
 - **F10 根因（独立只读排查定稿）**：`clarification.requested` 被以 **codex 原生回合号**（`turn_N`）写流——`fbb281c`（10-06 21:41"事件自带 turnId 优先"，`session_runtime.py:127`）让原生号直通；而刷新补发 `_replay_active_turn` 的过滤（`server.py:676-678`）只认业务 UUID → 回放时该事件被滤掉、卡不重现。窗口：最后全绿 `/tmp/contract-run-1.log`=10-06 12:03 → `fbb281c` 当晚落地 → 今日 r1/r2 为改动后首跑；**与今日前端改动无关**（逐条排除）。副产物：卡被画进原生号另块（F02 因 resolved 后空回合不渲染而侥幸仍绿）。修复方向：broker 边界翻译原生→业务号（勿回退通道盖章）+ 同回合 turnId 一致性不变量测试；补发过滤可加双号防御（非充分）。证据：`/tmp/stream-900022.txt`、r2 error-context、`git show fbb281c -- app/gateway/session_runtime.py`。
 
 ## 四、pending（更新）
-- **F10 已修复并推送 ✅**：`072ff5c`（broker 边界原生→业务号翻译 + 回放过滤防御放行 + 2 条新单测；全量 unit 2012 passed，唯一红为既有 dialog_quality_gate 夹具问题）。沙箱 r4 契约 **13/13 全绿（F10 回绿）**，日志 `/tmp/e2e-verify-c4-verify-20261007-r4-contract.log`；Redis db9 数据佐证澄清事件已同盖业务 UUID。**演示栈部署待用户点头**。备注：沙箱事件流 24h TTL 跨轮残留，若遇"卡串轮"先换盐/epoch。
-- **Java 专线已开工**（H3→M2→M3→H2）；前端 H1/M1/M4/M5 波随后。
+- **F10 已修复并推送 ✅**：`072ff5c`（broker 边界原生→业务号翻译 + 回放过滤防御放行 + 2 条新单测；全量 unit 2012 passed，唯一红为既有 dialog_quality_gate 夹具问题）。沙箱 r4 契约 **13/13 全绿（F10 回绿）**，日志 `/tmp/e2e-verify-c4-verify-20261007-r4-contract.log`；Redis db9 数据佐证澄清事件已同盖业务 UUID。✅ **已部署演示栈 18291**（19:50 重启，pid 32605，health 200；env 先抓活进程快照再搬运、与 demo 姿势逐项比对；启动日志 `codex_write vs MCP_MODE=readonly` 警告经查为历史常态、非本次引入）。备注：沙箱事件流 24h TTL 跨轮残留，若遇"卡串轮"先换盐/epoch。
+- **Java 专线交付 ✅**：H3 `ab4a292` / M2 `90cacec` / M3 `92fbf90` 实现+单测绿；H2 按授权止步，交 D1 真库 SQL 用例 8/8（`2c5a96e`；写共享库的既有表、仅自建随机 session id/随机 key，复核残留 0）与 `H2-WRITE-CAS-PLAN.md`（17 调用点分类+三策略+DoD）。全量单测 931/0/7skip。写路径沙箱 e2e 5/6，唯一红 F09 已移交前端波（嫌疑=WIP 用例/夹具 turnId 覆盖，非本波后端改动）。
+- **演示栈 18290（Java 后端）19:59 被内核 OOM 杀死**（今晚并行负载 + 无 swap；dmesg 实锤 19:59:33 杀 pid 31744、RSS 2.8G；20:10/20:18 同因连杀两只 Chromium）→ 已用 `/tmp/restart-18290.sh` 重启（pid 22119，health 200），**jar 含 H3/M2/M3（即三项已上线演示栈）**；`oom_score_adj=-500` 保护。同因降载：**F10 沙箱（18293/18294/3202）已停**（腾 ~1.6G）。
+- **前端波（H1/M1/M4/M5）进行中**（自建沙箱 18302-18305/3205）。
+- **runner 补丁**：`scripts/run-codex-e2e-in-container.sh` 补透传 `ZHIYUAN_E2E_CONTROL_URL`（此前 fixtures 闸门控制会默认打到 18293 沙箱，易串线）。
 - 磁盘救援：**已执行（用户批准"全批"）**——binlog.000001–000010 已 PURGE（~9.8G），过期 30d→2d 已 `SET PERSIST`（重启不丢）；Docker 四个旧镜像/容器已删（~4.1G）；/tmp 995 个旧文件（0.73G，清单存 `/tmp/cleanup-manifest-20261007.txt`）与 head-build（0.24G）已删。**剩余 15G / 62%**（清理前 752MB）。
