@@ -1617,7 +1617,25 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     console.log('消息反馈', feedback, newFeedback);
   };
 
+  // **V1 已画的答案，历史侧不再画第二份** ✓✓（2026-10-07 用户实测："回复都重复了一遍" ✗）：
+  // 终态回合的答案由 `assistant-final` 画 ✓；终态后 REST 历史刷新，同一条又被历史列表画成气泡 ✗
+  // → 这里按**同文归一比对**把历史那份滤掉 ✓（与上方 `hasMatchingRealUserMessage` 的内容比较同口径 ✓）。
+  // 冷加载没有 V1 回合 → 集合为空 → 历史照画 ✓；e2e 依赖的 testid 都在 V1 侧 ✓ 不受影响。
+  const normalizeMsgText = (text: unknown) => String(text || '').replace(/\s+/g, ' ').trim();
+  const v1AnsweredTexts = new Set(
+    Object.values(conversationState.turns || {})
+      .filter((turn: any) => turn?.terminal && turn?.answer?.message)
+      .map((turn: any) => normalizeMsgText(turn.answer.message))
+  );
   const displayMessageList = messageList.filter((record, index, records) => {
+    if (
+      record.messageFrom === '0' &&
+      record.contentType === 'TEXT' &&
+      v1AnsweredTexts.size > 0 &&
+      v1AnsweredTexts.has(normalizeMsgText(record.content))
+    ) {
+      return false;
+    }
     if (isLegacyAutoPlanPrompt(record, index, records)) {
       return false;
     }
