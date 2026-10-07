@@ -84,8 +84,11 @@ import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.mockito.Answers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.charset.StandardCharsets;
@@ -111,6 +114,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -132,10 +136,41 @@ public class PlanningStateServiceTest {
     private VolunteerSourceDataSyncService volunteerSourceDataSyncService;
     private PlanningDataFreshnessScheduleSharedService planningDataFreshnessScheduleSharedService;
 
+    /**
+     * 默认 answer（H2 写路径 CAS）：手工夹具测试（只 stub 读、不 bind 存储）里
+     * {@code updateDataValueIfUnchanged} 不再一律返回 Mockito 默认的 false，而是按**行对象上的值**
+     * 做 CAS 判定：期望值 == 行里的值 → 赢，并把**新值写回行对象**（真库那行本来就该变，
+     * 一次调用里连写两次 CAS——如 overlay 刷新后再存有序方案——第二次才不会对着一份
+     * "库没动过"的假行永远输），否则输（真并发夹具仍能触发冲突分支看 40901/重放）。
+     * 需要真落盘的测试用 {@link #bindPlanningStateStore()} / {@link #bindStateStoreWithRow}
+     * 的显式替身，会覆盖这里的默认值。
+     */
+    private static final Answer<Object> DEFAULT_CAS_ANSWER = new Answer<Object>() {
+        @Override
+        public Object answer(InvocationOnMock invocation) throws Throwable {
+            if ("updateDataValueIfUnchanged".equals(invocation.getMethod().getName())) {
+                ChatSessionExtraData row = invocation.getArgument(0);
+                String expected = invocation.getArgument(1);
+                if (row == null) {
+                    return false;
+                }
+                boolean match = expected == null ? row.getDataValue() == null : expected.equals(row.getDataValue());
+                if (match) {
+                    // 一次调用里可能连写两次（如 overlay 刷新后再存有序方案）：赢了就把行对象
+                    // 同步成新值——真库那行本来就该变，否则第二次 CAS 会对着一份"库没动过"的
+                    // 假行永远输。
+                    row.setDataValue(invocation.getArgument(2));
+                }
+                return match;
+            }
+            return Answers.RETURNS_DEFAULTS.answer(invocation);
+        }
+    };
+
     @BeforeEach
     void setUp() {
         planningStateService = new PlanningStateService();
-        chatSessionExtraDataSharedService = Mockito.mock(ChatSessionExtraDataSharedService.class);
+        chatSessionExtraDataSharedService = Mockito.mock(ChatSessionExtraDataSharedService.class, DEFAULT_CAS_ANSWER);
         chatSessionSharedService = Mockito.mock(ChatSessionSharedService.class);
         planningBehaviorEventSharedService = Mockito.mock(PlanningBehaviorEventSharedService.class);
         volunteerDataProvider = Mockito.mock(VolunteerDataProvider.class);
@@ -2485,6 +2520,7 @@ public class PlanningStateServiceTest {
         stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         stored.setDataValue(saveCaptor.getValue().getDataValue());
         reset(chatSessionExtraDataSharedService);
+        bindDefaultCasWrite();
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
 
@@ -2595,6 +2631,7 @@ public class PlanningStateServiceTest {
         saved.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         saved.setDataValue(saveCaptor.getValue().getDataValue());
         reset(chatSessionExtraDataSharedService);
+        bindDefaultCasWrite();
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(saved);
 
@@ -7280,6 +7317,7 @@ public class PlanningStateServiceTest {
         refreshedStateData.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         refreshedStateData.setDataValue(com.alibaba.fastjson.JSONObject.toJSONString(state));
         reset(chatSessionExtraDataSharedService);
+        bindDefaultCasWrite();
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(refreshedStateData);
         // overlay 刷新现在有前置条件：成绩行要有填报数量（volunteerCount），否则跳过
@@ -7344,6 +7382,7 @@ public class PlanningStateServiceTest {
         refreshedStateData.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         refreshedStateData.setDataValue(com.alibaba.fastjson.JSONObject.toJSONString(state));
         reset(chatSessionExtraDataSharedService);
+        bindDefaultCasWrite();
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(refreshedStateData);
         // overlay 刷新现在有前置条件：成绩行要有填报数量（volunteerCount），否则跳过
@@ -7360,8 +7399,9 @@ public class PlanningStateServiceTest {
 
     @Test
     void shouldSelectRemoveAndLockDraftItems() {
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
-                .thenReturn(null);
+        // H2：写路径统一 CAS 之后不再有 updateById 可截获；用存储替身（AtomicReference）
+        // 承接每一步的落盘，后一段直接读到前一段写进去的那份。
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
 
         VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
         VolunteerRecommendListResponse.VolunteerSchool school = new VolunteerRecommendListResponse.VolunteerSchool();
@@ -7382,15 +7422,9 @@ public class PlanningStateServiceTest {
         when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
 
         planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
-        ArgumentCaptor<ChatSessionExtraData> saveCaptor = ArgumentCaptor.forClass(ChatSessionExtraData.class);
-        verify(chatSessionExtraDataSharedService, times(1)).save(saveCaptor.capture());
-
-        ChatSessionExtraData stored = new ChatSessionExtraData();
-        stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
-        stored.setDataValue(saveCaptor.getValue().getDataValue());
-        reset(chatSessionExtraDataSharedService);
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
-                .thenReturn(stored);
+        // 首建仍走 INSERT（save），没有可比对的基线
+        verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
+        assertNotNull(store.get(), "候选池首建应落盘");
 
         DraftSelectReq selectReq = new DraftSelectReq();
         selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1"));
@@ -7408,24 +7442,13 @@ public class PlanningStateServiceTest {
         assertNotNull(behaviorEventCaptor.getValue().getSnapshotDigest());
         assertNotNull(behaviorEventCaptor.getValue().getEventPayloadJson());
 
-        ArgumentCaptor<ChatSessionExtraData> updateCaptor = ArgumentCaptor.forClass(ChatSessionExtraData.class);
-        verify(chatSessionExtraDataSharedService, times(1)).updateById(updateCaptor.capture());
-        stored.setDataValue(updateCaptor.getValue().getDataValue());
-        reset(chatSessionExtraDataSharedService);
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
-                .thenReturn(stored);
-
         DraftLockReq lockReq = new DraftLockReq();
         lockReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1"));
         lockReq.setLocked(true);
         PlanningStateDTO locked = planningStateService.lockDraftItems(1L, lockReq);
         assertTrue(locked.getDraftPlanState().getItems().get(0).getLocked());
-
-        verify(chatSessionExtraDataSharedService, times(1)).updateById(updateCaptor.capture());
-        stored.setDataValue(updateCaptor.getAllValues().get(updateCaptor.getAllValues().size() - 1).getDataValue());
-        reset(chatSessionExtraDataSharedService);
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
-                .thenReturn(stored);
+        assertTrue(stateFromRow(store.get()).getDraftPlanState().getItems().get(0).getLocked(),
+                "锁定要落盘（CAS 赢）");
 
         DraftRemoveReq removeReq = new DraftRemoveReq();
         removeReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1"));
@@ -9058,6 +9081,399 @@ public class PlanningStateServiceTest {
         assertEquals(Integer.valueOf(1), storedState.getRecommendationOverlayState().getSummary().getTotal());
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // H2 写路径统一 CAS：§2 落盘点逐站的"并发写者先落盘"证据（DoD §5 单测行）。
+    // 夹具语义见 bindConcurrentWinner / withConcurrentDraftItem：
+    // 并发写者在我们的读与写之间先落盘，观察本写 不覆盖对方字段 / 或响亮冲突。
+    // ══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    void writePathCasDraftSelectReplaysOntoConcurrentWinner() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        bindRecommendResponseForThreeSchools();
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        // 并发写者（另一个页面）先选走 ps2_m2 —— 它落盘的那行与我们的基线不是同一份
+        bindConcurrentWinner(store, row -> withConcurrentDraftItem(row, "ps2_m2"), -1);
+
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1"));
+        selectReq.setSource("manual_workspace_v2");
+        PlanningStateDTO result = planningStateService.selectDraftItems(1L, selectReq);
+
+        List<String> ids = result.getWorkingPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId).collect(Collectors.toList());
+        assertTrue(ids.contains("ps2_m2"), "并发写者先落盘的草案条目必须幸存（不允许整文档覆盖）");
+        assertTrue(ids.contains("ps1_m1"), "本次选择要重放到最新态上再落盘");
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertTrue(stored.getWorkingPlanState().getItems().stream()
+                        .map(DraftItemDTO::getVolunteerId).collect(Collectors.toList())
+                        .containsAll(java.util.Arrays.asList("ps1_m1", "ps2_m2")),
+                "库里最终文档要同时有并发写者与我们这次选择");
+    }
+
+    @Test
+    void writePathCasDraftSelectFailsLoudlyWhenAttemptsAreExhausted() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        bindRecommendResponseForThreeSchools();
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        String seededValue = store.get().getDataValue();
+        bindCasAlwaysLoses();
+
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1"));
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> planningStateService.selectDraftItems(1L, selectReq));
+
+        assertEquals(PendingConfirmationBizService.CAS_CONFLICT_CODE, ex.getStatus(),
+                "用户动作重试耗尽必须响亮冲突（40901 语义面），不许静默丢");
+        assertEquals(seededValue, store.get().getDataValue(), "重试耗尽也不许覆盖库里那行");
+    }
+
+    @Test
+    void writePathCasCandidateViewBackfillOnlyFillsGapsAndYieldsToConcurrentWriter() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        bindRecommendResponseForThreeSchools();
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+
+        final AtomicReference<String> winnerValue = new AtomicReference<String>();
+        bindConcurrentWinner(store, row -> {
+            PlanningStateDTO winner = stateFromRow(row);
+            CandidateViewStateDTO winnerView = new CandidateViewStateDTO();
+            winnerView.setExpertPreferredOnly(true);
+            winner.setCandidateViewState(winnerView);
+            winner.setVersion(winner.getVersion() == null ? 1 : winner.getVersion() + 1);
+            winnerValue.set(JSONObject.toJSONString(winner));
+            return copyStateRow(row, winnerValue.get());
+        }, -1);
+
+        CandidateViewStateDTO view = planningStateService.getCandidateViewState(1L);
+
+        assertTrue(Boolean.TRUE.equals(view.getExpertPreferredOnly()),
+                "读入口只补缺：并发写者补过视图就以库里的为准");
+        assertEquals(winnerValue.get(), store.get().getDataValue(),
+                "已有视图就不写：并发写者那份原样在库里");
+    }
+
+    @Test
+    void writePathCasCandidateViewUpdateReplaysOntoConcurrentWinner() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        bindRecommendResponseForThreeSchools();
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        bindConcurrentWinner(store, row -> withConcurrentDraftItem(row, "ps2_m2"), -1);
+
+        CandidateViewStateDTO req = new CandidateViewStateDTO();
+        req.setExpertPreferredOnly(true);
+        PlanningStateDTO result = planningStateService.updateCandidateViewState(1L, req);
+
+        assertTrue(Boolean.TRUE.equals(result.getCandidateViewState().getExpertPreferredOnly()),
+                "用户的视图变更必须落盘（重放到最新态上）");
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertTrue(Boolean.TRUE.equals(stored.getCandidateViewState().getExpertPreferredOnly()));
+        assertTrue(stored.getWorkingPlanState().getItems().stream()
+                        .anyMatch(item -> "ps2_m2".equals(item.getVolunteerId())),
+                "重放不许丢掉并发写者先落盘的草案条目");
+    }
+
+    @Test
+    void writePathCasScoreDetailUpdateReplaysOntoConcurrentWinner() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        bindRecommendResponseForThreeSchools();
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        bindConcurrentWinner(store, row -> withConcurrentDraftItem(row, "ps2_m2"), -1);
+
+        PlanningStateVersionDTO result = planningStateService.applyScoreDetailUpdate(
+                1L, buildScoreDetail(), buildUserProfileData(), false);
+
+        assertTrue(Boolean.TRUE.equals(result.getStaleFlags().getCandidatePool()));
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertTrue(stored.getWorkingPlanState().getItems().stream()
+                        .anyMatch(item -> "ps2_m2".equals(item.getVolunteerId())),
+                "补录（A 类重放）不许丢掉并发写者的草案");
+        assertEquals("score_detail_updated", stored.getStaleFlags().getReasonCode());
+    }
+
+    @Test
+    void writePathCasCandidatePoolRefreshMergesOntoConcurrentWinner() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        bindRecommendResponseForThreeSchools();
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        // 直接把库里的行改成"候选池已过期"（模拟旧状态）：加一个下游已不存在的旧候选 + 置 stale
+        ChatSessionExtraData snapshot = store.get();
+        PlanningStateDTO staleDoc = stateFromRow(snapshot);
+        staleDoc.getStaleFlags().setCandidatePool(true);
+        staleDoc.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps9_m9", "ps9", "s9", "旧学校", "稳", "旧专业", 62D, 70D, 62D, false));
+        store.set(copyStateRow(snapshot, JSONObject.toJSONString(staleDoc)));
+
+        bindConcurrentWinner(store, row -> withConcurrentDraftItem(row, "ps2_m2"), -1);
+
+        PlanningStateDTO refreshed = planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+
+        assertEquals(Integer.valueOf(3), refreshed.getCandidatePoolState().getSummary().getTotal(),
+                "上游结果整体替换候选池（本方法的域）");
+        assertFalse(Boolean.TRUE.equals(refreshed.getStaleFlags().getCandidatePool()));
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertTrue(stored.getWorkingPlanState().getItems().stream()
+                        .anyMatch(item -> "ps2_m2".equals(item.getVolunteerId())),
+                "候选池刷新（B+C 合并）不许覆盖并发写者的草案");
+    }
+
+    @Test
+    void writePathCasGenerateOrderedPlanRespectsConcurrentWinner() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        bindRecommendResponseForThreeSchools();
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1", "ps2_m2"));
+        planningStateService.selectDraftItems(1L, selectReq);
+        // 让排序落进"待生成"：不然 generateOrderedPlan 会因 ordered 已有内容直接早退（不写也不冲突）
+        ChatSessionExtraData pre = store.get();
+        PlanningStateDTO preDoc = stateFromRow(pre);
+        preDoc.getStaleFlags().setOrderedPlan(true);
+        store.set(copyStateRow(pre, JSONObject.toJSONString(preDoc)));
+
+        final AtomicReference<String> winnerValue = new AtomicReference<String>();
+        bindConcurrentWinner(store, row -> {
+            PlanningStateDTO winner = stateFromRow(row);
+            winner.getOrderedPlanState().setItems(java.util.Arrays.asList(
+                    buildOrderedItem("ps2_m2", "学校B", "专业B", "稳", 1),
+                    buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 2)));
+            winner.getStaleFlags().setOrderedPlan(false);
+            winner.setPhase("ordered");
+            winner.setVersion(winner.getVersion() == null ? 1 : winner.getVersion() + 1);
+            winnerValue.set(JSONObject.toJSONString(winner));
+            return copyStateRow(row, winnerValue.get());
+        }, -1);
+
+        PlanningStateDTO generated = planningStateService.generateOrderedPlan(1L, 1L, new OrderedPlanGenerateReq());
+
+        assertEquals("ps2_m2", generated.getOrderedPlanState().getItems().get(0).getVolunteerId(),
+                "并发写者已生成排序（非强制重生）→ 尊重对方成果，不覆盖");
+        assertEquals(winnerValue.get(), store.get().getDataValue(), "尊重 = 一个字都不写回库");
+    }
+
+    @Test
+    void writePathCasReorderKeepsConcurrentWriterInsertedAfterInnerWrite() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        bindRecommendResponseForThreeSchools();
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1", "ps2_m2"));
+        planningStateService.selectDraftItems(1L, selectReq);
+
+        // E 类嵌套写：内层 generateOrderedPlan 先落盘（第一次 CAS 赢），外层 save 前才被别人插队
+        bindConcurrentWinner(store, row -> withConcurrentDraftItem(row, "ps3_m3"), 1);
+
+        DraftPlanReorderReq reorderReq = new DraftPlanReorderReq();
+        reorderReq.setForceRegenerate(true);
+        PlanningStateDTO reordered = planningStateService.reorderWorkingPlan(1L, 1L, reorderReq);
+
+        assertEquals("draft_reorder", reordered.getPlanGenerationState().getMode());
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertTrue(stored.getWorkingPlanState().getItems().stream()
+                        .anyMatch(item -> "ps3_m3".equals(item.getVolunteerId())),
+                "内层落盘后插进来的并发写不许被外层旧快照覆盖（外层必须用内层返回态做基线）");
+        assertEquals("draft_reorder", stored.getPlanGenerationState().getMode(), "外层重排元数据要合到最新态上");
+        assertEquals("ordered", stored.getPhase());
+    }
+
+    @Test
+    void writePathCasRunReviewRecomputesOnConcurrentWinner() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        bindRecommendResponseForThreeSchools();
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1", "ps2_m2", "ps3_m3"));
+        planningStateService.selectDraftItems(1L, selectReq);
+        planningStateService.generateOrderedPlan(1L, 1L, new OrderedPlanGenerateReq());
+
+        bindConcurrentWinner(store, row -> {
+            PlanningStateDTO winner = stateFromRow(row);
+            winner.setVersion(winner.getVersion() == null ? 1 : winner.getVersion() + 1);
+            winner.getStaleFlags().setMessage("并发写入的标记");
+            return copyStateRow(row, JSONObject.toJSONString(winner));
+        }, -1);
+
+        ReviewStateDTO review = planningStateService.runReview(1L, 1L);
+
+        assertEquals("completed", review.getStatus());
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertEquals("completed", stored.getReviewState().getStatus(), "审查结论以最新态重算并落盘");
+        assertEquals("reviewed", stored.getPhase());
+        assertEquals("并发写入的标记", stored.getStaleFlags().getMessage(),
+                "审查重算只写自己的域，不许覆盖并发写的其他字段");
+    }
+
+    @Test
+    void writePathCasPlanAdjustmentAnalysisRecomputesOnConcurrentWinner() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        bindRecommendResponseForThreeSchools();
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1", "ps2_m2", "ps3_m3"));
+        planningStateService.selectDraftItems(1L, selectReq);
+
+        bindConcurrentWinner(store, row -> {
+            PlanningStateDTO winner = stateFromRow(row);
+            winner.setVersion(winner.getVersion() == null ? 1 : winner.getVersion() + 1);
+            winner.getStaleFlags().setMessage("并发写入的标记");
+            return copyStateRow(row, JSONObject.toJSONString(winner));
+        }, -1);
+
+        PlanAdjustmentAnalyzeReq analyzeReq = new PlanAdjustmentAnalyzeReq();
+        analyzeReq.setTarget("draft");
+        PlanAdjustmentStateDTO adjustment = planningStateService.analyzePlanAdjustment(1L, 1L, analyzeReq);
+
+        assertNotNull(adjustment);
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertEquals(adjustment.getAnalysis().getSummaryText(),
+                stored.getPlanAdjustmentState().getAnalysis().getSummaryText());
+        assertEquals("并发写入的标记", stored.getStaleFlags().getMessage(),
+                "调整分析重算不许覆盖并发写的其他字段");
+    }
+
+    @Test
+    void writePathCasExportLosesCasButStillReturnsAndKeepsConcurrentRow() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(1);
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.major.name());
+        candidatePoolState.getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "冲", "专业A", 42D, 91D, 42D, false));
+        state.setCandidatePoolState(candidatePoolState);
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1));
+        state.setOrderedPlanState(orderedPlanState);
+        saveStateToStore(1L, state);
+
+        final AtomicReference<String> winnerValue = new AtomicReference<String>();
+        bindConcurrentWinner(store, row -> {
+            PlanningStateDTO winner = stateFromRow(row);
+            winner.setVersion(9);
+            winner.getStaleFlags().setMessage("并发导出期间的写");
+            winnerValue.set(JSONObject.toJSONString(winner));
+            return copyStateRow(row, winnerValue.get());
+        }, -1);
+
+        when(volunteerDataProvider.getUserScoreDetail(1L)).thenReturn(buildScoreDetail());
+        when(planningBehaviorEventSharedService.saveBehaviorEvent(any(PlanningBehaviorEventDTO.class))).thenReturn(true);
+
+        PlanningStateService.ExcelExportResult exportResult = planningStateService.exportOrderedPlan(1L, 1L);
+
+        assertNotNull(exportResult.getExcelData());
+        assertTrue(exportResult.getExcelData().length > 0, "CAS 输了也照常导出（行为事件已单独落库）");
+        assertEquals(winnerValue.get(), store.get().getDataValue(), "导出不许把并发写覆盖回去");
+    }
+
+    @Test
+    void writePathCasDataFreshnessCheckMergesFreshnessDomainOntoConcurrentWinner() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        CandidateItemDTO item = new CandidateItemDTO();
+        item.setVolunteerId("v1");
+        item.setPlanSchoolDataId("u1");
+        item.setSchoolName("学校A");
+        item.setMajorName("专业A");
+        item.setTier("稳");
+        initial.getCandidatePoolState().getItems().add(item);
+        saveStateToStore(1L, initial);
+
+        bindConcurrentWinner(store, row -> withConcurrentDraftItem(row, "v1"), -1);
+
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, new DataFreshnessCheckReq());
+
+        assertEquals("current", res.getDataFreshnessState().getStatusCode());
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertEquals("current", stored.getDataFreshnessState().getStatusCode(),
+                "新鲜度域要合并落盘（重读最新 + 只覆盖 dataFreshness）");
+        assertTrue(stored.getWorkingPlanState().getItems().stream()
+                        .anyMatch(item2 -> "v1".equals(item2.getVolunteerId())),
+                "新鲜度检查不许覆盖并发写者的草案");
+    }
+
+    @Test
+    void writePathCasUnsupportedDataFreshnessYieldsToConcurrentWriter() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        CandidateItemDTO item = new CandidateItemDTO();
+        item.setVolunteerId("v1");
+        item.setPlanSchoolDataId("u1");
+        item.setSchoolName("学校A");
+        item.setMajorName("专业A");
+        item.setTier("稳");
+        initial.getCandidatePoolState().getItems().add(item);
+        initial.getDataFreshnessState().setPrepareType("PREDICT");
+        initial.getDataFreshnessState().setStatusCode("current");
+        saveStateToStore(1L, initial);
+
+        PlanningDataFreshnessScheduleEntity schedule = new PlanningDataFreshnessScheduleEntity();
+        schedule.setChatSessionId(1L);
+        schedule.setPrepareType("PREDICT");
+        schedule.setEnabled(false);
+        when(planningDataFreshnessScheduleSharedService.saveOrUpdateSchedule(any(PlanningDataFreshnessScheduleEntity.class)))
+                .thenReturn(schedule);
+        when(planningDataFreshnessScheduleSharedService.getByChatSessionId(1L)).thenReturn(schedule);
+
+        bindConcurrentWinner(store, row -> withConcurrentDraftItem(row, "v1"), -1);
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setFetchLatest(true);
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+
+        assertEquals("PREDICT", res.getDataFreshnessState().getPrepareType());
+        assertTrue(res.getDataFreshnessState().getSummary().contains("不参与招生计划自动同步"));
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertTrue(stored.getWorkingPlanState().getItems().stream()
+                        .anyMatch(item2 -> "v1".equals(item2.getVolunteerId())),
+                "unsupported 新鲜度的重放不许覆盖并发写");
+        verify(volunteerSourceDataSyncService, never()).fetchLatestSourceData(any(), any(), anyBoolean());
+    }
+
+    @Test
+    void writePathCasPreferenceUpdateReplaysOntoConcurrentWinner() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        initial.setVersion(3);
+        saveStateToStore(1L, initial);
+        bindConcurrentWinner(store, row -> withConcurrentDraftItem(row, "ps1_m1"), -1);
+
+        UpdateLatentProfileReq req = new UpdateLatentProfileReq();
+        req.setFutureDevelopment(new com.ytell.zhiyuan.model.dto.planning.FutureDevelopmentDTO());
+        req.getFutureDevelopment().setStabilityVsIncome("income_first");
+        PlanningStateVersionDTO result = planningStateService.updateLatentProfile(1L, req);
+
+        assertEquals(Integer.valueOf(5), result.getVersion(),
+                "重读后以最新为基 +1（版本 4 的并发写 → 5，允许跳号）");
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertTrue(stored.getWorkingPlanState().getItems().stream()
+                        .anyMatch(item -> "ps1_m1".equals(item.getVolunteerId())),
+                "偏好变更（A 类重放）不许覆盖并发写");
+        assertEquals("income_first",
+                stored.getProfileState().getLatentProfile().getFutureDevelopment().getStabilityVsIncome(),
+                "本次变更要重放到最新态上");
+    }
+
+    @Test
+    void writePathCasLegacyProfileSyncReplaysOntoConcurrentWinner() {
+        AtomicReference<ChatSessionExtraData> store = bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        initial.setVersion(2);
+        saveStateToStore(1L, initial);
+        bindConcurrentWinner(store, row -> withConcurrentDraftItem(row, "ps1_m1"), -1);
+
+        planningStateService.syncProfileStateFromLegacy(1L, buildScoreDetail(), buildUserProfileData(), false);
+
+        PlanningStateDTO stored = stateFromRow(store.get());
+        assertTrue(stored.getWorkingPlanState().getItems().stream()
+                        .anyMatch(item -> "ps1_m1".equals(item.getVolunteerId())),
+                "画像补全（A 类重放）不许覆盖并发写");
+        assertEquals(java.util.Arrays.asList("计算机", "电子信息"),
+                stored.getProfileState().getExplicitProfile().getPositiveMajors(),
+                "本次补全要重放到最新态上");
+    }
+
     private CreateSessionReq buildScoreDetailWithVolunteerCount() {
         CreateSessionReq scoreDetail = buildScoreDetail();
         CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
@@ -9083,16 +9499,116 @@ public class PlanningStateServiceTest {
         stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         stored.setDataValue(captor.getValue().getDataValue());
         reset(chatSessionExtraDataSharedService);
+        bindDefaultCasWrite();
         return stored;
     }
 
+    /** reset 之后把"行对象上比对"的 CAS 默认写替身重新绑上（reset 会清掉 stubbing）。 */
+    private void bindDefaultCasWrite() {
+        when(chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                any(ChatSessionExtraData.class), any(), any())).thenAnswer(DEFAULT_CAS_ANSWER);
+    }
+
+    /**
+     * H2 DoD 夹具：**并发写者先落盘**。把 {@code updateDataValueIfUnchanged} 换成
+     * "真语义（行 id + 期望值都对得上才写）+ 注入点"：
+     * {@code injectAfterWins} 表示"我们已经成功落盘几次之后，别人的写才插进来"
+     * （{@code -1} = 第一次 CAS 调用就插队；{@code 1} = 我们赢过一次之后——E 类嵌套写
+     * 用来模拟"内层 generateOrderedPlan 已落盘、外层 save 前被插队"）。
+     * 注入时把库里那行换成 {@code winnerFactory(当前行)}：此后我们手里快照的期望值必然对不上，
+     * 下一次 CAS 输；之后按真语义走，用来观察重读重放/合并是否真的不覆盖并发写。
+     */
+    private void bindConcurrentWinner(AtomicReference<ChatSessionExtraData> store,
+                                      java.util.function.UnaryOperator<ChatSessionExtraData> winnerFactory,
+                                      int injectAfterWins) {
+        final java.util.concurrent.atomic.AtomicInteger wins = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicBoolean injected = new java.util.concurrent.atomic.AtomicBoolean();
+        when(chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                any(ChatSessionExtraData.class), any(), any())).thenAnswer(invocation -> {
+            ChatSessionExtraData current = invocation.getArgument(0);
+            String expected = invocation.getArgument(1);
+            String newValue = invocation.getArgument(2);
+            if (!injected.get() && wins.get() >= injectAfterWins) {
+                store.set(winnerFactory.apply(store.get()));
+                injected.set(true);
+            }
+            ChatSessionExtraData stored = store.get();
+            if (current == null || stored == null || stored.getId() == null
+                    || !stored.getId().equals(current.getId())) {
+                return false;
+            }
+            boolean sameValue = expected == null ? stored.getDataValue() == null : expected.equals(stored.getDataValue());
+            if (!sameValue) {
+                return false;
+            }
+            store.set(copyStateRow(stored, newValue));
+            wins.incrementAndGet();
+            return true;
+        });
+    }
+
+    /** 同一行（同 id、同 key）的另一份文档值：模拟并发写者落盘后库里的那行。 */
+    private ChatSessionExtraData copyStateRow(ChatSessionExtraData template, String dataValue) {
+        ChatSessionExtraData row = new ChatSessionExtraData();
+        row.setId(template.getId());
+        row.setChatSessionId(template.getChatSessionId());
+        row.setDataKey(template.getDataKey());
+        row.setDataValue(dataValue);
+        return row;
+    }
+
+    private PlanningStateDTO stateFromRow(ChatSessionExtraData row) {
+        return JSONObject.parseObject(row.getDataValue(), PlanningStateDTO.class);
+    }
+
+    /** 并发写者那份文档：在给定行上多选一个草案志愿（如另一个页面/接口的动作），版本 +1。 */
+    private ChatSessionExtraData withConcurrentDraftItem(ChatSessionExtraData row, String volunteerId) {
+        PlanningStateDTO winner = stateFromRow(row);
+        DraftItemDTO item = new DraftItemDTO();
+        item.setVolunteerId(volunteerId);
+        item.setSource("concurrent_writer");
+        winner.getWorkingPlanState().getItems().add(item);
+        winner.setVersion(winner.getVersion() == null ? 1 : winner.getVersion() + 1);
+        return copyStateRow(row, JSONObject.toJSONString(winner));
+    }
+
+    /** CAS 永远输：站点"重试耗尽"分支（响亮冲突 / 放弃降级）用。 */
+    private void bindCasAlwaysLoses() {
+        when(chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                any(ChatSessionExtraData.class), any(), any())).thenReturn(false);
+    }
+
+    /** 标准三家候选（冲/稳/保各一）：写路径并发用例的公共上游夹具。 */
+    private void bindRecommendResponseForThreeSchools() {
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(3, 1, 1, 1));
+        response.setUserScoreDetail(buildScoreDetail());
+        response.setSprints(java.util.Arrays.asList(buildSchool("ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "18"))));
+        response.setSafes(java.util.Arrays.asList(buildSchool("ps2", "s2", "学校B", "北京", 2, buildMajorWithRatio("m2", "专业B", "52"))));
+        response.setProtects(java.util.Arrays.asList(buildSchool("ps3", "s3", "学校C", "河北", 3, buildMajorWithRatio("m3", "专业C", "81"))));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+    }
+
+    /**
+     * H2 后语义 = **CAS 落盘**（方法名保留，调用点约 40 处）：捕获最近一次
+     * {@code updateDataValueIfUnchanged(row, expected, newValue)} 写进去的新 data_value
+     * （读路径若也有补写 CAS，取最后一次 = 业务写那次）。
+     */
     private ChatSessionExtraData latestStoredStateFromUpdate() {
-        ArgumentCaptor<ChatSessionExtraData> captor = ArgumentCaptor.forClass(ChatSessionExtraData.class);
-        verify(chatSessionExtraDataSharedService, times(1)).updateById(captor.capture());
+        ArgumentCaptor<ChatSessionExtraData> rowCaptor = ArgumentCaptor.forClass(ChatSessionExtraData.class);
+        ArgumentCaptor<String> newValueCaptor = ArgumentCaptor.forClass(String.class);
+        verify(chatSessionExtraDataSharedService, atLeastOnce())
+                .updateDataValueIfUnchanged(rowCaptor.capture(), any(), newValueCaptor.capture());
+        List<String> newValues = newValueCaptor.getAllValues();
+        List<ChatSessionExtraData> rows = rowCaptor.getAllValues();
+        ChatSessionExtraData lastRow = rows.get(rows.size() - 1);
         ChatSessionExtraData stored = new ChatSessionExtraData();
         stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
-        stored.setDataValue(captor.getValue().getDataValue());
+        stored.setChatSessionId(lastRow.getChatSessionId());
+        stored.setId(lastRow.getId());
+        stored.setDataValue(newValues.get(newValues.size() - 1));
         reset(chatSessionExtraDataSharedService);
+        bindDefaultCasWrite();
         return stored;
     }
 

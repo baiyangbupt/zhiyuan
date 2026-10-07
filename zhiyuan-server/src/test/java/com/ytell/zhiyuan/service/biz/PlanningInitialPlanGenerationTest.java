@@ -818,24 +818,56 @@ public class PlanningInitialPlanGenerationTest {
 
     private AtomicReference<ChatSessionExtraData> bindPlanningStateStore() {
         AtomicReference<ChatSessionExtraData> planningStateRef = new AtomicReference<ChatSessionExtraData>();
+        java.util.concurrent.atomic.AtomicLong idGenerator = new java.util.concurrent.atomic.AtomicLong(1L);
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenAnswer(invocation -> planningStateRef.get());
         doAnswer(invocation -> {
             ChatSessionExtraData data = invocation.getArgument(0);
             ChatSessionExtraData stored = new ChatSessionExtraData();
+            stored.setId(data.getId() != null ? data.getId() : idGenerator.getAndIncrement());
             stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
             stored.setDataValue(data.getDataValue());
+            // 回填主键：生产路径（sharedService.save）会把自增 id 写回实体，CAS 落盘依赖它
+            data.setId(stored.getId());
             planningStateRef.set(stored);
             return true;
         }).when(chatSessionExtraDataSharedService).save(any(ChatSessionExtraData.class));
         doAnswer(invocation -> {
             ChatSessionExtraData data = invocation.getArgument(0);
             ChatSessionExtraData stored = new ChatSessionExtraData();
+            stored.setId(data.getId() != null ? data.getId() : idGenerator.getAndIncrement());
             stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
             stored.setDataValue(data.getDataValue());
+            data.setId(stored.getId());
             planningStateRef.set(stored);
             return true;
         }).when(chatSessionExtraDataSharedService).updateById(any(ChatSessionExtraData.class));
+        // CAS 语义替身（H2 写路径统一 CAS）：只有"库里那行仍是我们读到的那份"（id+data_value
+        // 都一致）才写入；赢了之后行对象替换成新值，下一次读/CAS 拿到的是更新后的那份。
+        when(chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                any(ChatSessionExtraData.class), any(), any()))
+                .thenAnswer(invocation -> {
+                    ChatSessionExtraData current = invocation.getArgument(0);
+                    String expectedDataValue = invocation.getArgument(1);
+                    String newDataValue = invocation.getArgument(2);
+                    ChatSessionExtraData stored = planningStateRef.get();
+                    if (current == null || stored == null || stored.getId() == null
+                            || !stored.getId().equals(current.getId())) {
+                        return false;
+                    }
+                    boolean sameValue = expectedDataValue == null
+                            ? stored.getDataValue() == null
+                            : expectedDataValue.equals(stored.getDataValue());
+                    if (!sameValue) {
+                        return false;
+                    }
+                    ChatSessionExtraData updated = new ChatSessionExtraData();
+                    updated.setId(stored.getId());
+                    updated.setDataKey(stored.getDataKey());
+                    updated.setDataValue(newDataValue);
+                    planningStateRef.set(updated);
+                    return true;
+                });
         return planningStateRef;
     }
 }
