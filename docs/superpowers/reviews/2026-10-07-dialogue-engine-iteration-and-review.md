@@ -99,6 +99,8 @@ pong 契约完好（ping 不刷新自己）；时间线合并不变量成立；t
 
 **④ data-freshness**：定位 = **VOLUNTEER-only**（`DataFreshnessSchedulePolicy.java:18-29`：VOLUNTEER + GOING/WAIT；120/180/300 分档）；PREDICT 静默宽容；后台总闸默认关（本地栈关）。"高考期间"仅行业习惯，非代码判据。**已修**：前端模式判定顺序 bug（先判 `智能填报` 字样 → PREDICT 误判 VOLUNTEER → 误弹"2026年招生计划数据已更新"/planYear 2026，与后端"2025"摘要同页矛盾；两文件两份拷贝）→ `8661756`（`utils/prepareTypeText.mjs` code 优先 + 5 条回归单测）。
 
+**⑤ 远端复核（2026-10-08，fetch 比对）**：`git fetch` 后克隆点→origin/master/release 窗口共 64 个提交（至 09-22）；**模式/年份链五个关键文件零改动**（PrepareType / `SelectSubjectPolicyServiceImpl` / `VolunteerPolicyServiceImpl` / `PreBatchPolicyTypeServiceImpl` / `PlanDataTypeEnum`）；唯一变动的 `MemberScoreServiceImpl` 为"成绩流水 + 填写次数配额（按期间配置、自然年重算）+ 批次线校验 + 换票对照最新流水"，其模式/年份用法（`convertYear` / `volunteerPolicy.getYear()` / `PrepareType`）与原一致 → **按用户裁决：维持当前口径**（PREDICT=模拟填报用 2025 志愿数据按 3.1.0 设计；zhiyuan 年份硬编码清理不启动）。动向记录：hl-wish 新增"成绩变更配额"机制——若 zhiyuan C 端（补录/换票）需与上游对齐再跟进。
+
 ## 四、pending（更新）
 - **F10 已修复并推送 ✅**：`072ff5c`（broker 边界原生→业务号翻译 + 回放过滤防御放行 + 2 条新单测；全量 unit 2012 passed，唯一红为既有 dialog_quality_gate 夹具问题）。沙箱 r4 契约 **13/13 全绿（F10 回绿）**，日志 `/tmp/e2e-verify-c4-verify-20261007-r4-contract.log`；Redis db9 数据佐证澄清事件已同盖业务 UUID。✅ **已部署演示栈 18291**（19:50 重启，pid 32605，health 200；env 先抓活进程快照再搬运、与 demo 姿势逐项比对；启动日志 `codex_write vs MCP_MODE=readonly` 警告经查为历史常态、非本次引入）。备注：沙箱事件流 24h TTL 跨轮残留，若遇"卡串轮"先换盐/epoch。
 - **Java 专线交付 ✅**：H3 `ab4a292` / M2 `90cacec` / M3 `92fbf90` 实现+单测绿；H2 按授权止步，交 D1 真库 SQL 用例 8/8（`2c5a96e`；写共享库的既有表、仅自建随机 session id/随机 key，复核残留 0）与 `H2-WRITE-CAS-PLAN.md`（17 调用点分类+三策略+DoD）。全量单测 931/0/7skip。写路径沙箱 e2e 5/6，唯一红 F09 已移交前端波（嫌疑=WIP 用例/夹具 turnId 覆盖，非本波后端改动）。
