@@ -723,6 +723,33 @@ public class VolunteerBizService {
      * 用的是 sprints_count/safes_count/protects_count，另一拨响应字段的口径，别混用）。
      * 0 配额 = 候选照出、不做区间截断，等成绩补齐后自愈，不再让推荐链路 NPE 成"系统错误"。</p>
      */
+    /**
+     * 最终产物入口（submit/export）的**硬前置**：成绩行必须能算出 &gt; 0 的填报数量。
+     *
+     * <p>背景（2026-10-07 独立审查 H3）：推荐（读）链路对缺 {@code volunteerCount} 是**刻意降级**
+     * 的——{@link #resolveThreeTargetCountMap} 退化成三个 0 配额、候选照出、不做区间截断，
+     * 等成绩补齐自愈（d098da8）。但 submit/export 会把这份"0 配额 + 最多 15 个候补"的降级读数
+     * 当成最终方案固化：FINAL 文件 + OSS，会话还会被置 {@code FINISHED}——用户看到的是一份
+     * "已提交"的空方案；export 则导出一份配额为 0 的 Excel。静默的坏产物比响亮失败更坏。</p>
+     *
+     * <p>所以这条链路在**生成之前**拒绝，且与推荐流水线同口径取数：
+     * {@link VolunteerDataProvider#calculateTargetSchoolCount} 按志愿数据里的填报类型
+     * 选 majorCount/schoolCount；缺值（null）或非正值（0）一律拒绝，错误信息指向补录成绩。
+     * 读链路（recommend/workspace）一行不动，仍按 0 配额降级自愈。</p>
+     */
+    private void requireFillableQuota(Long chatSessionId, String scene) {
+        CreateSessionReq scoreDetail = dataProvider.getUserScoreDetail(chatSessionId);
+        VolunteerDataDTO volunteerDataDTO = dataProvider.getVolunteerDataDTO(chatSessionId);
+        String applyType = volunteerDataDTO == null || volunteerDataDTO.getType() == null
+                ? null : volunteerDataDTO.getType().getCode();
+        Integer targetSchoolCount = dataProvider.calculateTargetSchoolCount(scoreDetail, applyType);
+        if (targetSchoolCount == null || targetSchoolCount <= 0) {
+            log.warn("{} rejected reason=volunteer_count_missing chatSessionId={} applyType={} targetSchoolCount={}",
+                    scene, chatSessionId, applyType, targetSchoolCount);
+            throw new BusinessException(110, "成绩信息缺少填报数量，无法生成最终志愿方案，请先补录成绩后再提交或导出");
+        }
+    }
+
     private Map<String, Integer> resolveThreeTargetCountMap(Integer targetSchoolCount, CreateSessionReq userScoreDetail) {
         if (targetSchoolCount == null) {
             log.warn("resolveThreeTargetCountMap fallback to zero quotas reason=target_school_count_missing");
@@ -890,6 +917,9 @@ public class VolunteerBizService {
     public Boolean submitVolunteerList(Long tenantId, Long chatSessionId) {
         log.info("submitVolunteerList: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
 
+        // 前置校验：最终产物入口不允许拿"0 配额降级读数"当方案提交（见方法 javadoc）。
+        requireFillableQuota(chatSessionId, "submit");
+
         VolunteerRecommendListResponse volunteerRecommendListResponse = this.doRecommendVolunteerList(tenantId, chatSessionId, true);
 
         //截断后的结果上传写入本地文件，然后上传oss
@@ -958,6 +988,9 @@ public class VolunteerBizService {
      */
     public ExcelExportResult exportVolunteerList(Long tenantId, Long chatSessionId) {
         log.info("exportVolunteerList: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        // 前置校验：与 submit 同一条硬前置，不允许导出"0 配额降级读数"（见 requireFillableQuota）。
+        requireFillableQuota(chatSessionId, "export");
+
         ChatSessionExtraData chatSessionExtraDataScore = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(chatSessionId, ChatSessionExtraDataConstants.USER_SCORE_KEY);
         if (chatSessionExtraDataScore == null) {
             throw new BusinessException(404, "用户分数信息不存在");
