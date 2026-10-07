@@ -1804,22 +1804,8 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
             turn.terminal ? undefined : () => handleSteerTurn(turn.id, '补充说明')
           }
         />
-        {/*
-          **提案卡** ✓✓（`proposal.preview` ✓）：事件早到了 ✓（网关算完预览 → 翻成合同形状 ✓），
-          缺的一直是"没人画它" ✗——与 `assistant-final` / `turn-error` 同一个病 ✓。
-          出站那一半**早就完整** ✓：确认/取消用的还是既有那条 `conversationAction` 帧 ✓
-          （`confirm_proposal` / `cancel_proposal` + `expectedSourceVersion` + `intent: 'explicit'` ✓）。
-        */}
-        {turn.proposal ? (
-          <ProposalCard
-            proposal={turn.proposal}
-            actionResult={findActionResultFor(
-              conversationStateRef.current,
-              turn.proposal.proposalRef,
-            )}
-            onDecide={(action) => handleProposalDecision(turn.proposal, action)}
-          />
-        ) : null}
+        {/* 提案卡移动到底部渲染（2026-10-08 用户实测顺序不对：卡片跑在引导文案之上 ✗）——
+            见下方终态答案 / 错误之后。 */}
         {/*
           **把 V1 终态的答案画出来** ✓✓（C4 真栈追出来的最后一格 ✓）：
           reducer 早把它存进 `turn.answer.message` 了 ✓（`conversationSession.mjs:101` ✓），
@@ -1859,6 +1845,22 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                 （`conversationSession.mjs` 的 `recoverable.error` 分支 ✓）。 */}
             {turn.error.message || turn.error.content || '本轮没有完成，请稍后重试'}
           </div>
+        ) : null}
+        {/*
+          **提案卡** ✓✓（`proposal.preview` ✓）：事件早到了 ✓（网关算完预览 → 翻成合同形状 ✓），
+          出站那一半**早就完整** ✓（确认/取消走既有 `conversationAction` 帧 ✓）。
+          **2026-10-08 移到底部** ✓：用户实测"卡片在上面、引导文案在下面"的展示顺序不对 ✗
+          ——现在与澄清卡同区：**文案在上、卡在下** ✓。
+        */}
+        {turn.proposal ? (
+          <ProposalCard
+            proposal={turn.proposal}
+            actionResult={findActionResultFor(
+              conversationStateRef.current,
+              turn.proposal.proposalRef,
+            )}
+            onDecide={(action) => handleProposalDecision(turn.proposal, action)}
+          />
         ) : null}
         {!turn.terminal ? (
           <button
