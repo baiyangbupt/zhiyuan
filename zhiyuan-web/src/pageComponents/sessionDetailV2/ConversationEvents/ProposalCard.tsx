@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
 import { Alert, Button, Space, Tag, Typography } from 'antd';
 
+import {
+  PROPOSAL_STALE_STATE_TEXT,
+  isSettledProposalStatus,
+  proposalFailureText,
+  proposalStatusLabel,
+} from './proposalCardText.mjs';
+
 /**
  * **提案卡**（`proposal.preview` ✓）——会话里第二类"要用户动作"的卡 ✓。
  *
@@ -66,17 +73,8 @@ type Props = {
   disabled?: boolean;
 };
 
-/** 终态：这几档之后就不该再给按钮了 ✓（`applying` 不是终态 ✓，它只是"确认中" ✓）。 */
-const SETTLED_STATUSES = ['applied', 'cancelled', 'expired', 'failed', 'conflict'];
-const STATUS_TEXT: Record<string, string> = {
-  applying: '确认中…',
-  applied: '已生效',
-  cancelled: '已放弃',
-  declined: '已放弃',
-  expired: '已过期',
-  failed: '未生效',
-  conflict: '版本冲突，请重新生成',
-};
+// 状态文案与"还有没有按钮"的判据在 `proposalCardText.mjs` ✓（纯逻辑 + 单测 ✓）——
+// H1 的教训：白名单漏一档（`stale_state`）就是"英文机器态直出 + 按钮复活" ✗。
 
 const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disabled }) => {
   const [submitting, setSubmitting] = useState(false);
@@ -84,16 +82,14 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
   const status = String(diff.status || '');
   const blocked = status === 'blocked';
   const action = String(actionResult?.actionStatus || '');
-  const settled = SETTLED_STATUSES.includes(action);
+  // 到了结果就收按钮（`applying` 除外 ✓）——排除法，见 `isSettledProposalStatus` ✓。
+  const settled = isSettledProposalStatus(action);
   const needsConfirm = !blocked && !settled && diff.requiresConfirmation !== false && status !== '';
   const locked = Boolean(disabled) || submitting;
   const scoreUpdate = diff.scoreUpdate;
-  const failureReason =
-    action === 'failed'
-      ? [actionResult?.code ? `[${actionResult.code}]` : '', actionResult?.message || '']
-          .filter(Boolean)
-          .join(' ')
-      : '';
+  // 失败原因**按 code 说中文** ✓（M1）：服务端 `message` 是 Java 的内部英文（含版本号 ✗），
+  // 直出给用户既看不懂又像报错 ✓；`code` 仍作排障锚点带出 ✓。
+  const failureReason = action === 'failed' ? proposalFailureText(actionResult || {}) : '';
 
   const decide = async (action: 'confirm' | 'cancel') => {
     setSubmitting(true);
@@ -109,12 +105,14 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
       data-testid="proposal-card"
       data-proposal-ref={proposal.proposalRef || ''}
       data-status={status}
+      // 结果状态（机器态本身）留一格给排障与 e2e ✓——**界面文案**一律中文 ✓（H1）。
+      data-action-status={action}
       style={{ padding: '4px 0' }}
     >
       <Typography.Text strong>{diff.title || '方案调整预览'}</Typography.Text>
       <Space size={4} style={{ marginLeft: 8 }}>
         <Tag data-testid="proposal-status">
-          {action ? STATUS_TEXT[action] || action : blocked ? '无法执行' : '待确认'}
+          {action ? proposalStatusLabel(action) : blocked ? '无法执行' : '待确认'}
         </Tag>
       </Space>
       {action && !settled ? (
@@ -174,9 +172,27 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
         />
       ) : null}
       {/*
+        **被取代的卡要说清下一步** ✓（H1 ✓，口径与 legacy 卡一致 ✓）：
+        `stale_state` 是"这张卡已经作废、要重新生成预览" ✓，不是"方案失败" ✗——
+        光把这个状态翻成中文还不够 ✗，得说出**用户该做什么** ✓（否则只能反复点同一个确认 ✗）。
+      */}
+      {action === 'stale_state' ? (
+        <Alert
+          type="warning"
+          showIcon
+          data-testid="proposal-stale-reason"
+          message={
+            actionResult?.code
+              ? `[${actionResult.code}] ${PROPOSAL_STALE_STATE_TEXT}`
+              : PROPOSAL_STALE_STATE_TEXT
+          }
+        />
+      ) : null}
+      {/*
         **失败原因不许静默** ✓✓（110 / 40904 / 84009 / -1 …）：只把状态翻成"未生效"
         是不够的 ✓——用户需要知道**为什么**（缺哪一科、版本怎么冲突了 ✓），
-        否则只能反复点同一个确认 ✗。`code` 一并给出 ✓：它是排障与对账的锚点 ✓。
+        否则只能反复点同一个确认 ✗。文案走 `proposalFailureText` ✓：**code 作锚点、
+        说中文** ✓（M1——Java 的内部英文消息不再直出 ✗）。
       */}
       {action === 'failed' ? (
         <Alert
