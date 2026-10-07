@@ -42,6 +42,7 @@ import {
 } from '@/utils/conversationProtocol.mjs';
 import ClarificationCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ClarificationCard';
 import ProposalCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ProposalCard';
+import { proposalFailureText } from '@/pageComponents/sessionDetailV2/ConversationEvents/proposalCardText.mjs';
 import UnderstandingCard from '@/pageComponents/sessionDetailV2/ConversationEvents/UnderstandingCard';
 import { WebSocketMessage } from '@/hooks/websocket';
 import TypingAnimation from '@/components/generating/TypingAnimation';
@@ -134,6 +135,8 @@ interface IMessageListProps {
     proposalRef?: string;
     proposalId?: string;
     actionStatus?: string;
+    /** 补录族的结构化明细（服务端 `LastProposalVo.scoreSummary`，2026-10-08 起）。 */
+    scoreSummary?: Record<string, any> | null;
   } | null;
 }
 export interface IMessageParams {
@@ -1842,8 +1845,18 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                 带的是 `content` ✓——两条都会到（网关有意两条都发 ✓：老 UI 靠 reply ✓、
                 新 UI 靠 V1 ✓）。后到的老信封帧 `message` 可能是空串 ✗（失败结果里没有
                 `reply` ✓），**reducer 已拦**：空文案不覆盖已有文案 ✓
-                （`conversationSession.mjs` 的 `recoverable.error` 分支 ✓）。 */}
-            {turn.error.message || turn.error.content || '本轮没有完成，请稍后重试'}
+                （`conversationSession.mjs` 的 `recoverable.error` 分支 ✓）。
+                **2026-10-08 起按 code 映射中文指引** ✓✓：用户打字"确认"去执行一张**已过期**
+                的卡时，网关回 `proposal_reference_mismatch` ✗，原实现落到通用
+                "当前对话引擎暂时不可用" ✗——用户完全不知道真正要做什么 ✓。走
+                `proposalFailureText`（code 作锚点 ✓，与失败卡同一张表 ✓）：
+                "这张确认已经失效（……），请用最新预览重新确认" ✓。 */}
+            {turn.error.code
+              ? proposalFailureText({
+                  code: turn.error.code,
+                  message: turn.error.message || turn.error.content,
+                })
+              : turn.error.message || turn.error.content || '本轮没有完成，请稍后重试'}
           </div>
         ) : null}
         {/*
@@ -2273,7 +2286,17 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
               String(turn?.proposal?.proposalRef || '') === String(lastProposal.proposalRef),
           ) ? (
             <ProposalCard
-              proposal={{ proposalRef: lastProposal.proposalRef }}
+              proposal={{
+                proposalRef: lastProposal.proposalRef,
+                // **带上能带的那部分身份**（2026-10-08）：只给 ref 时卡片落兜底标题
+                // "方案调整预览"、明细全丢 ✗——补录族有 `scoreSummary` 就补出"更新成绩"
+                // 标题与结构化明细；status 留空 → 终态只读卡本来就不出按钮 ✓。
+                diff: {
+                  title: lastProposal.scoreSummary ? '更新成绩' : '方案调整预览',
+                  scoreUpdate: lastProposal.scoreSummary || undefined,
+                  status: '',
+                },
+              }}
               actionResult={{
                 actionStatus: lastProposal.actionStatus,
                 proposalRef: lastProposal.proposalRef,
