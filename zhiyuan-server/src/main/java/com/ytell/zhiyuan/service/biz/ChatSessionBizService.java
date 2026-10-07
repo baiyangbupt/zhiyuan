@@ -802,6 +802,11 @@ public class ChatSessionBizService {
                 .actionStatus(pending.getStatus())
                 .sourceVersion(asInteger(sourceVersion))
                 .revision(pending.getRevision())
+                // 冷加载兜底卡要渲染成"像一张卡"（2026-10-08：只给 ref 时前端落兜底标题
+                // "方案调整预览"、明细全丢 ✗）：补录族把 scoreSummary 带上，前端可拼出
+                // "更新成绩"标题与结构化明细；其余（方案调整）保持原样。
+                .kind(pending.getKind())
+                .scoreSummary(dataValue == null ? null : dataValue.get("scoreSummary"))
                 .build();
     }
 

@@ -40,4 +40,14 @@ public class LastProposalVo {
 
     /** 待确认的修订号（CAS 计数器，不是计划版本）。 */
     private Long revision;
+
+    /** 待确认行的 kind（前端兜底卡用来选标题口径）。 */
+    private String kind;
+
+    /**
+     * 补录族的**结构化明细**（`dataValue.scoreSummary`：省份/科类/批次/各科/总分/位次）——
+     * 冷加载兜底卡靠它把"更新成绩"渲染成一张像样的卡（2026-10-08：此前只给 ref，
+     * 卡片落兜底标题"方案调整预览"、明细全丢 ✗）；方案调整族为 null。
+     */
+    private Object scoreSummary;
 }
