@@ -802,6 +802,13 @@ public class PlanningStateService {
                     upsert.setKind("plan_change_proposal");
                     upsert.setActionFamily("apply_plan_change_proposal");
                     upsert.setDataValue(dataValue);
+                    // **CAS 修订号**（2026-10-07 F09 实测）：已有 pending 行时按修订号**替换**
+                    // ——与补录成绩路径（`ChatSessionBizService#prepareScoreUpdateProposal`）同口径。
+                    // 不传时 `upsert` 默认 0：第二次预览必 `40901 pending revision conflict:
+                    // current=1 expected=0`，网关侧 `proposal_preview_unavailable`，新预览根本出不来
+                    // （老卡也就无从被"取代"——F09 第二张卡永远缺席）。
+                    upsert.setExpectedRevision(
+                            active == null || active.getRevision() == null ? 0L : active.getRevision());
                     PendingConfirmationRes pending = pendingConfirmationBizService.upsert(tenantId, upsert);
                     return new ConversationProposalRequestService.PrepareOutcome(
                             pending == null ? null : pending.getPendingId(), operationId, preview);
