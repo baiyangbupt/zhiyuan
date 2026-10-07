@@ -73,6 +73,13 @@ CAPABILITIES = {
     # 预览相同（见上）：新造能力名会被 Java 的能力签发全部拒绝。比较属"志愿/
     # 录取"域，同一归属。
     "recommendation.compare_candidates": "admission_read",
+    # 适配性解释：解释**某一个**候选为什么匹配/不匹配（只读纵切）。
+    # 与 compare 同一"值由 Java 真实载入"纪律：模型只给 entityId（来自
+    # preview_candidates），匹配点逐条带 source；`probability` 恒 unavailable
+    # （无权威概率源——**禁止输出录取概率**，适配与概率分开讲）。挂
+    # `admission_read` 的理由与预览/比较相同（见上）：新造能力名会被 Java
+    # 的能力签发全部拒绝。解释属"志愿/录取"域，同一归属。
+    "recommendation.explain_fit": "admission_read",
 }
 WRITE_TOOL_NAMES = frozenset(
     {
@@ -116,6 +123,10 @@ TOOL_KINDS = {
     # 复用 kind 而不新造——口径合同（SCOPE_KEYS 五个字段）两处本就同源
     # （`tools_recommendation` 的守约检查对两条链用的是同一份判据）。
     "recommendation.compare_candidates": "comparison",
+    # 适配性解释复用"候选"形状（单条候选的匹配点/风险/维度状态 + state_mutation），
+    # 不新造 kind：新 kind 要在 `TOOL_OUTPUT_SCHEMA` 与下游消费两端同时放行，
+    # 而这里的数据本就与候选同域。
+    "recommendation.explain_fit": "candidate",
 }
 
 
@@ -420,6 +431,10 @@ class ReadonlyDomainTools:
             # 只收 entityIds/dimensions；模型塞的 chatSessionId/tenantId/sessionId
             # 会被 `_trusted_arguments` 全部丢掉——不能让它去比别人的会话。
             return await self.backend.compare_candidates(**self._trusted_arguments(arguments))
+        if name == "recommendation.explain_fit":
+            # 只收 entityId；会话身份只能来自受信 binding（模型塞的
+            # chatSessionId/tenantId/sessionId 一律丢掉）——不能让它去解释别人的会话。
+            return await self.backend.explain_fit(**self._trusted_arguments(arguments))
         method = {
             "entity.resolve": "resolve",
             "catalog.get_school": "get_school",
@@ -1305,6 +1320,113 @@ class InternalClientBackend:
             "cells": cells,
             "unavailable_dimensions": unavailable,
             "limitations": limitations,
+            "state_mutation": False,
+        }
+        payload["limitations"] = limitations
+        return payload
+
+    async def explain_fit(self, **arguments: Any) -> Any:
+        """适配性解释（只读）：解释**某一个**候选为什么匹配/不匹配。
+
+        与 `preview_candidates`/`compare_candidates` 同一分工：`entityId`
+        （= volunteerId，来自 `preview_candidates`）只用于**定位候选行**，匹配点、
+        风险与维度状态由 Java 从会话候选池与会话状态真实载入——模型凭记忆复述
+        候选字段这条路在这里堵死。
+
+        两条如实纪律在本层再兜一次底（Java 之外的进口检查）：
+        - **只引用带 source 的条目**：没有 source 的匹配点被丢弃，并如实标注
+          `matched_without_source_dropped:<n>`（不静默）；
+        - **概率不可用一律如实说**：`probability` 恒归为 unavailable——就算上游
+          给了别的状态或数字，也不放行（禁估算、禁拿历史数据顶替）。
+        """
+        entity_id = str(arguments.get("entityId") or arguments.get("entity_id") or "").strip()
+        if not entity_id:
+            result = _err(
+                "recommendation.explain_fit",
+                "needs_clarification",
+                "entityId is required",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = ["entityId"]
+            return result
+
+        response = await internal_client.explain_candidate_fit(
+            self.tenant_id, self.chat_session_id, entity_id
+        )
+        if not isinstance(response, dict):
+            raise RuntimeError(f"explain_candidate_fit returned non-dict: {response!r}")
+        if response.get("success") is False:
+            # 传输层失败（`{"error": …, "success": False}`）：抛给外层统一降级成
+            # backend_unavailable——不能在这里编一份空解释，"查不到"与"没有"是两件事。
+            raise RuntimeError(f"explain_candidate_fit transport error: {response.get('error')}")
+
+        payload = self._preserve_envelope(response)
+        if not isinstance(payload, dict):
+            return payload
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        limitations = list(payload.get("limitations") or [])
+        _unique_append(limitations, data.get("limitations"))
+
+        matched: list[dict[str, Any]] = []
+        dropped_without_source = 0
+        for point in data.get("matched") or []:
+            if not isinstance(point, dict):
+                continue
+            source = str(point.get("source") or "").strip()
+            if not source:
+                # 没有来源的"匹配"就是没根据的话：不传给模型（如实计数丢了几条）。
+                dropped_without_source += 1
+                continue
+            matched.append(
+                {
+                    "dimension": point.get("dimension"),
+                    "statement": point.get("statement"),
+                    "source": source,
+                }
+            )
+        if dropped_without_source:
+            _unique_append(limitations, [f"matched_without_source_dropped:{dropped_without_source}"])
+
+        raw_risks = data.get("risks") if isinstance(data.get("risks"), dict) else {}
+        risks = {
+            # flags/reasonCodes 是候选行自带的原样标志，透传不翻译。
+            "flags": list(raw_risks.get("flags") or []),
+            "reasonCodes": list(raw_risks.get("reasonCodes") or []),
+            "facts": [fact for fact in (raw_risks.get("facts") or []) if isinstance(fact, dict)],
+        }
+
+        fit_dimensions = [
+            {
+                "dimension": item.get("dimension"),
+                "status": item.get("status"),
+                "detail": item.get("detail"),
+            }
+            for item in (data.get("fitDimensions") or [])
+            if isinstance(item, dict)
+        ]
+
+        raw_probability = data.get("probability") if isinstance(data.get("probability"), dict) else {}
+        reason = str(raw_probability.get("reason") or "").strip() or "no_authoritative_probability_source"
+        if str(raw_probability.get("status") or "") not in ("", "unavailable"):
+            # 上游给了"可用"的状态也照样归为不可用：本链路没有权威概率来源。
+            _unique_append(limitations, ["probability_withheld_no_authoritative_source"])
+        probability = {"status": "unavailable", "reason": reason}
+
+        payload["data"] = {
+            "entityId": data.get("entityId") or entity_id,
+            "found": bool(data.get("found")),
+            "schoolName": data.get("schoolName"),
+            "majorName": data.get("majorName"),
+            "tier": data.get("tier"),
+            "profileVersion": data.get("profileVersion"),
+            "matched": matched,
+            "risks": risks,
+            "fit_dimensions": fit_dimensions,
+            # 概率不可用是**如实结论**，不是缺数据：适配（matched/fit_dimensions）
+            # 与概率分开讲，绝不给录取概率数字。
+            "probability": probability,
+            "limitations": limitations,
+            # 只读：不写库、不 bump 版本（Java 侧实证）。
             "state_mutation": False,
         }
         payload["limitations"] = limitations

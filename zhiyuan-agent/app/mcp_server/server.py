@@ -133,6 +133,20 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "口径不齐的数值列整列进 unavailable_dimensions（值为 null 是「不可比/无数据」，"
         "不是 0，不得凭印象补齐）；结论只能引用 cells 里带 source 的值。"
     ),
+    "recommendation.explain_fit": (
+        "解释某个候选为什么匹配/不匹配（只读）；概率不可用一律如实说；"
+        "只引用带 source 的条目。"
+        "先调 recommendation.preview_candidates 定位候选拿 entityId（= volunteerId），"
+        "再对**单个**候选调这条（入参 entityId 单个）；"
+        "值由系统从会话候选池与会话状态**真实载入**，不要自己填。"
+        "matched 是逐条带 source 的匹配点（source 是来源字段对，如 "
+        "「candidate.mustSubjects vs userScoreDetail.subjectList」）——**没有 source 的"
+        "匹配点不存在、不许引用**；risks.flags/risks.reasonCodes 是候选行原样标志，"
+        "转述不得改写；fit_dimensions 是各维度状态（matched/conflict/no_match/unknown/"
+        "not_applicable），unknown 与 limitations 里列出的缺失字段如实说清，不得补值；"
+        "probability 恒为 unavailable（无权威概率源）：**适配与概率分开讲**，"
+        "不得估算或拿历年分数、院校热度顶替，绝不给出录取概率数字。"
+    ),
     # 批次编码表：补录草稿的 batch 码（按省不同：浙江第一段=17）与 level
     # （01 本科 / 02 专科）都取自这条；`subjectType` 按省份口径，多科类省份必给
     # ——可以给科类码（WL/LS），也可以给选考科目码/名（01/物理，Java 侧翻译）。
@@ -268,6 +282,21 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["entityIds"],
+        "additionalProperties": False,
+    },
+    # 适配性解释：**entityId 必填且只有一个**（解释的是"某一个"候选为什么匹配/
+    # 不匹配；要多实体并列用 compare_candidates）。entityId = preview_candidates
+    # 返回的 entityId（即 volunteerId）。**身份字段不在这里**——tenant/session
+    # 由受信 binding 注入，模型塞进来的会被 `_trusted_arguments` 丢掉。
+    "recommendation.explain_fit": {
+        "type": "object",
+        "properties": {
+            "entityId": {
+                "type": "string",
+                "description": "要解释的单个候选 entityId，取自 recommendation.preview_candidates 的返回",
+            },
+        },
+        "required": ["entityId"],
         "additionalProperties": False,
     },
 }

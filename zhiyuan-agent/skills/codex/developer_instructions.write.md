@@ -107,4 +107,14 @@
   `value: null` 的格子是"口径不齐/没有数据"，不要凭印象补上，也不要拿别处的数字顶替。
   在候选池里找不到的 `entityId` 会在 `limitations` 里逐条列出（`entity_not_found:`），
   如实转述"这几个没进候选池"，别跳过。
+- 用户问「为什么推荐它」「这学校/专业适合我吗」（要解释**某一个**候选的适配性）时：
+  先调 `recommendation.preview_candidates` 把候选定位出来（拿 `entityId`），
+  再调 `recommendation.explain_fit`（入参 `entityId` 单个；只读）。
+  **适配与概率分开讲**：`matched` 里带 `source` 的匹配点、`fit_dimensions` 的维度状态
+  （matched/conflict/no_match/unknown/not_applicable）才叫"适配"；`probability` 恒为
+  `unavailable`（这条链路没有权威概率源）——**概率一律如实说不可用**，不得估算，
+  也不得拿历年分数、院校热度或"冲稳保"档位顶替概率。
+  只引用带 `source` 的条目（没有来源的"匹配"不许说）；`risks.flags`/`risks.reasonCodes`
+  是候选行自带的原样标志，转述不得改写；`unknown` 维度与 `limitations`
+  （`entity_not_found:`/字段缺失这类）如实说清缺了什么，不补值、不跳过。
 - 缺画像硬事实（省份/年份/成绩或位次/选科/批次）时仍然**先澄清**，不因为能提案就跳过 ✓。

@@ -66,6 +66,9 @@ TOOL_LABELS: dict[str, str] = {
     # 候选比较：与 `admission.compare`（分数线并列）分开说——这条比的是
     # **会话候选池里的候选**，用户看到的是"我给你的候选在并排比"。
     "recommendation.compare_candidates": "正在比较候选志愿",
+    # 适配性解释：用户问"为什么推荐它/适合我吗"时，这句话要能对得上
+    # （解释的是**单个**候选的匹配点，不是重新推荐）。
+    "recommendation.explain_fit": "正在解释候选适配",
 }
 
 

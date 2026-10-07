@@ -705,6 +705,32 @@ async def compare_candidate_pool(
     )
 
 
+async def explain_candidate_fit(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    entity_id: Union[str, int],
+) -> Dict[str, Any]:
+    """适配性解释（**只读**）：解释**某一个**候选为什么匹配/不匹配。
+
+    与 `compare_candidate_pool` 同一分工：`entity_id`（= volunteerId，来自
+    `recommendation.preview_candidates`）只用于**定位候选行**，匹配点/风险的取值
+    全部由 Java 从会话候选池与会话状态真实载入——模型凭记忆复述这条路被堵死。
+
+    Java 侧走只读载入（`loadReadOnlyCandidatePool`：不 savePlanningState、不 bump 规划版本），
+    且 `probability` 恒为 `unavailable`（无权威概率源，不估算：适配与概率是两件事）。
+    找不到的 ID 会进 `limitations` 的 `entity_not_found:<id>`，**不静默丢**。
+    """
+    payload: Dict[str, Any] = {
+        "chatSessionId": chat_session_id,
+        "entityId": entity_id,
+    }
+    return await http_client.post(
+        endpoint=f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/explain-fit",
+        json_data=payload,
+        error_msg="适配性解释失败",
+    )
+
+
 async def catalog_tree_filter_tags() -> Dict[str, Any]:
     return await http_client.get(
         endpoint="/gaotu-assistant-bot/inner/catalog/tree/filter-tags",

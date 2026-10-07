@@ -1304,6 +1304,259 @@ async def test_compare_candidates_transport_error_is_backend_unavailable_not_an_
     assert "connection refused" in result["data"]["message"]
 
 
+def _fit_response(**overrides) -> dict:
+    """Java `explain-fit` 的可用形状：匹配点带 source、概率恒不可用。"""
+    data: dict = {
+        "entityId": "v1",
+        "found": True,
+        "schoolName": "浙江大学",
+        "majorName": "计算机科学与技术",
+        "tier": "冲",
+        "profileVersion": 7,
+        "matched": [
+            {
+                "dimension": "subject_requirement",
+                "statement": "选科要求「物理、化学」已满足",
+                "source": "candidate.mustSubjects vs userScoreDetail.subjectList",
+            },
+            {
+                "dimension": "tuition_range",
+                "statement": "学费 6000 元/年在区间（3000 元/年 – 9000 元/年）内",
+                "source": "candidate.tuitionPerYear vs userScoreDetail.tuitionRange",
+            },
+        ],
+        "risks": {
+            "flags": ["保研率一般"],
+            "reasonCodes": ["城市发展好"],
+            "facts": [{"field": "tier", "value": "冲"}, {"field": "rankInTier", "value": "3"}],
+        },
+        "fitDimensions": [
+            {"dimension": "subject_requirement", "status": "matched", "detail": "档案选科满足要求"},
+            {"dimension": "region_preference", "status": "not_applicable", "detail": "未配置地域偏好"},
+        ],
+        "probability": {
+            "status": "unavailable",
+            "reason": "no_authoritative_probability_source",
+        },
+        "limitations": [],
+    }
+    data.update(overrides)
+    return {"code": 0, "msg": "success", "data": data}
+
+
+@pytest.mark.asyncio
+async def test_explain_fit_uses_trusted_identity_and_declares_read_only(monkeypatch) -> None:
+    """适配性解释的四条合同：**受信身份、值原样带出、概率恒不可用、只读声明**。
+
+    - 模型塞进来的 tenantId/sessionId/chatSessionId 必须被丢掉——身份只能来自
+      受信 binding（否则它能解释别人会话里的候选）；
+    - matched/risks/fitDimensions 是 Java 从候选池与会话状态真实载入的，原样带出；
+    - `probability` 只带 status/reason：**适配与概率分开讲**，本链路不给概率数字；
+    - `state_mutation=False`：解释不改任何状态（Java 侧版本号实证在真栈 E2E）。
+    """
+    from app.util import internal_client
+
+    calls: list[dict] = []
+
+    async def explain_candidate_fit(tenant_id, chat_session_id, entity_id):
+        calls.append(
+            {
+                "tenant_id": tenant_id,
+                "chat_session_id": chat_session_id,
+                "entity_id": entity_id,
+            }
+        )
+        return _fit_response()
+
+    monkeypatch.setattr(internal_client, "explain_candidate_fit", explain_candidate_fit)
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+
+    result = await tools.call(
+        "recommendation.explain_fit",
+        {
+            "entityId": "v1",
+            # 冒充身份：必须被 `_trusted_arguments` 丢掉。
+            "tenantId": "999",
+            "sessionId": "888",
+            "chatSessionId": "777",
+        },
+    )
+
+    assert result["kind"] == "candidate"
+    assert result["status"] == "ok"
+    assert calls == [
+        {"tenant_id": "1", "chat_session_id": "900047", "entity_id": "v1"}
+    ]
+    data = result["data"]
+    assert data["entityId"] == "v1"
+    assert data["found"] is True
+    assert data["schoolName"] == "浙江大学"
+    assert data["tier"] == "冲"
+    assert [point["source"] for point in data["matched"]] == [
+        "candidate.mustSubjects vs userScoreDetail.subjectList",
+        "candidate.tuitionPerYear vs userScoreDetail.tuitionRange",
+    ]
+    # 候选行标志逐字透传（flags/reasonCodes 不改写）。
+    assert data["risks"]["flags"] == ["保研率一般"]
+    assert data["risks"]["reasonCodes"] == ["城市发展好"]
+    assert data["fit_dimensions"][0]["status"] == "matched"
+    assert data["probability"] == {
+        "status": "unavailable",
+        "reason": "no_authoritative_probability_source",
+    }
+    assert data["state_mutation"] is False
+    assert result["limitations"] == []
+
+
+@pytest.mark.asyncio
+async def test_explain_fit_requires_a_single_entity_id_without_calling_backend(
+    monkeypatch,
+) -> None:
+    """entityId 缺失/空白在工具入口挡住（先 preview 拿 entityId 再解释），**不打后端**。"""
+    from app.util import internal_client
+
+    calls: list = []
+
+    async def explain_candidate_fit(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _fit_response()
+
+    monkeypatch.setattr(internal_client, "explain_candidate_fit", explain_candidate_fit)
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+
+    missing = await tools.call("recommendation.explain_fit", {})
+    assert missing["status"] == "needs_clarification"
+    assert missing["data"]["missingFields"] == ["entityId"]
+
+    blank = await tools.call("recommendation.explain_fit", {"entityId": "  "})
+    assert blank["status"] == "needs_clarification"
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_explain_fit_forces_probability_unavailable_and_drops_sourceless_matches(
+    monkeypatch,
+) -> None:
+    """**概率不可用一律如实说、没有 source 的匹配点不许说**——上游给的别的形状也照样降级。
+
+    构造最危险的两种上游形状：probability 说"可用"还带数字、matched 里混了一条
+    没有 source 的"匹配"。数字不许透给模型（改成 unavailable + 如实标注），
+    无来源的匹配点被丢弃并计数（不静默）。
+    """
+    from app.util import internal_client
+
+    async def explain_candidate_fit(tenant_id, chat_session_id, entity_id):
+        return _fit_response(
+            matched=[
+                {
+                    "dimension": "subject_requirement",
+                    "statement": "选科要求已满足",
+                    "source": "candidate.mustSubjects vs userScoreDetail.subjectList",
+                },
+                {"dimension": "major_intent", "statement": "专业很合适", "source": ""},
+            ],
+            probability={"status": "available", "reason": "upstream_model", "value": 0.62},
+        )
+
+    monkeypatch.setattr(internal_client, "explain_candidate_fit", explain_candidate_fit)
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+
+    result = await tools.call("recommendation.explain_fit", {"entityId": "v1"})
+
+    data = result["data"]
+    assert data["probability"]["status"] == "unavailable"
+    assert "value" not in data["probability"], "概率数字不许透给模型"
+    assert "probability_withheld_no_authoritative_source" in result["limitations"]
+    assert len(data["matched"]) == 1, "没有 source 的匹配点不存在"
+    assert data["matched"][0]["source"]
+    assert "matched_without_source_dropped:1" in result["limitations"]
+    assert "matched_without_source_dropped:1" in data["limitations"]
+
+
+@pytest.mark.asyncio
+async def test_explain_fit_entity_not_found_is_a_honest_empty_result(monkeypatch) -> None:
+    """找不到的 entityId 是**如实空解释**（found=false + limitation），不是错误——"查不到"要能说出口。"""
+    from app.util import internal_client
+
+    async def explain_candidate_fit(tenant_id, chat_session_id, entity_id):
+        return _fit_response(
+            entityId="v9",
+            found=False,
+            schoolName=None,
+            majorName=None,
+            tier=None,
+            matched=[],
+            risks={},
+            fitDimensions=[],
+            limitations=["entity_not_found:v9"],
+        )
+
+    monkeypatch.setattr(internal_client, "explain_candidate_fit", explain_candidate_fit)
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+
+    result = await tools.call("recommendation.explain_fit", {"entityId": "v9"})
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert data["found"] is False
+    assert data["entityId"] == "v9"
+    assert data["matched"] == []
+    assert "entity_not_found:v9" in result["limitations"]
+    assert "entity_not_found:v9" in data["limitations"]
+    assert data["probability"]["status"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_explain_fit_transport_error_is_backend_unavailable_not_an_empty_explain(
+    monkeypatch,
+) -> None:
+    """传输层失败必须是 `backend_unavailable`——**不是**一份空解释。"""
+    from app.util import internal_client
+
+    async def explain_candidate_fit(*args, **kwargs):
+        return {"error": "connection refused", "success": False, "data": {}}
+
+    monkeypatch.setattr(internal_client, "explain_candidate_fit", explain_candidate_fit)
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+
+    result = await tools.call("recommendation.explain_fit", {"entityId": "v1"})
+
+    assert result["status"] == "backend_unavailable"
+    assert "connection refused" in result["data"]["message"]
+
+
+def test_explain_fit_description_states_readonly_probability_and_sources() -> None:
+    """工具描述是模型实际读到的那句话，三件读不到就会猜的事要写死：
+    **只读**、**概率不可用一律如实说**（适配与概率分开讲）、**只引用带 source 的条目**。"""
+    from app.mcp_server.server import TOOL_DESCRIPTIONS, tool_listing
+
+    description = TOOL_DESCRIPTIONS["recommendation.explain_fit"]
+    for phrase in (
+        "解释某个候选为什么匹配/不匹配（只读）",
+        "概率不可用一律如实说",
+        "只引用带 source 的条目",
+        "适配与概率分开讲",
+        "preview_candidates",
+        "unavailable",
+    ):
+        assert phrase in description, f"工具描述缺少口径：{phrase}"
+
+    listed = {entry["name"]: entry for entry in tool_listing()}
+    assert listed["recommendation.explain_fit"]["description"] == description
+    assert listed["recommendation.explain_fit"]["annotations"]["readOnlyHint"] is True
+    schema = listed["recommendation.explain_fit"]["inputSchema"]
+    # 入参只有单个 entityId：身份字段不在 schema 里（由受信 binding 注入）。
+    assert set(schema["properties"]) == {"entityId"}
+    assert schema["required"] == ["entityId"]
+    assert schema["additionalProperties"] is False
+
+
 def test_gateway_collects_evidence_from_the_mcp_text_result() -> None:
     """工具证据藏在 MCP 结果的 **JSON 字符串**里。
 

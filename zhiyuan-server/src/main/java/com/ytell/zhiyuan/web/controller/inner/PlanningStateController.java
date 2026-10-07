@@ -6,6 +6,7 @@ import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.planning.*;
 import com.ytell.zhiyuan.service.biz.CandidateCompareService;
 import com.ytell.zhiyuan.service.biz.CandidateComparisonService;
+import com.ytell.zhiyuan.service.biz.CandidateFitExplainService;
 import com.ytell.zhiyuan.service.biz.CandidatePreviewService;
 import com.ytell.zhiyuan.service.biz.ChatSessionBizService;
 import com.ytell.zhiyuan.service.biz.ConversationSnapshotService;
@@ -48,6 +49,8 @@ public class PlanningStateController {
     private CandidateComparisonService candidateComparisonService;
     @Autowired
     private CandidateCompareService candidateCompareService;
+    @Autowired
+    private CandidateFitExplainService candidateFitExplainService;
     @Autowired
     private ChatSessionBizService chatSessionBizService;
 
@@ -93,6 +96,32 @@ public class PlanningStateController {
         log.info("compareCandidates: tenantId={}, chatSessionId={}, entityIds={}, dimensions={}", tenantId,
                 chatSessionId, safeReq.getEntityIds(), safeReq.getDimensions());
         return BaseResponse.success(candidateCompareService.compare(tenantId, chatSessionId, safeReq));
+    }
+
+    /**
+     * 适配性解释（只读）：解释**某一个**候选为什么匹配/不匹配。
+     *
+     * <p>与 preview/compare 同一载入语义（{@code loadReadOnlyCandidatePool}：不
+     * savePlanningState、不 bump 版本）。匹配点逐条带 {@code source}（来源字段对），
+     * 风险为候选行 {@code riskFlags}/{@code reasonCodes} 的逐字透传；
+     * {@code probability} 恒 {@code unavailable}（无权威概率源，不估算）。</p>
+     */
+    @PostMapping("/session/explain-fit")
+    @ApiOperation("解释候选为什么匹配/不匹配（只读，不落规划状态；不产出概率）")
+    public BaseResponse<CandidateFitExplainRes> explainFit(
+            @PathVariable("tenantId") Long tenantId,
+            @ApiParam("会话ID（也可放在请求体里；两处都给时以请求体为准）")
+            @RequestParam(value = "chatSessionId", required = false) Long queryChatSessionId,
+            @RequestBody(required = false) CandidateFitExplainReq req) {
+        CandidateFitExplainReq safeReq = req == null ? new CandidateFitExplainReq() : req;
+        Long chatSessionId = safeReq.getChatSessionId() != null ? safeReq.getChatSessionId() : queryChatSessionId;
+        if (chatSessionId == null) {
+            throw new BusinessException(400, "chat_session_id_required");
+        }
+        safeReq.setChatSessionId(chatSessionId);
+        log.info("explainFit: tenantId={}, chatSessionId={}, entityId={}", tenantId,
+                chatSessionId, safeReq.getEntityId());
+        return BaseResponse.success(candidateFitExplainService.explain(tenantId, chatSessionId, safeReq));
     }
 
     @GetMapping("/session/state")
