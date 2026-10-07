@@ -21,6 +21,7 @@ import {
 import { socketBase } from '@/utils/conversationSocket.mjs';
 import { cursorFromState } from '@/utils/conversationCursor.mjs';
 import { extractStreamMessage } from '@/utils/streamText.mjs';
+import { buildConversationTimeline } from '@/utils/conversationTimeline.mjs';
 import style from './style.module.scss';
 import { TextSegment } from '@/interface/api/sessionDetail';
 import useAuthParams from '@/hooks/useAuthParams';
@@ -484,12 +485,13 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                 );
                 const merged = [...dealReverseList, ...prevWithoutMatchedOptimistic]
                   .reduce((acc: IMessage[], current: IMessage) => {
-                    if (!acc.some(item => item.id === current.id)) {
+                    // 去重键按字符串归一：REST(id 数字) 与乐观/瞬时消息(id 字符串) 混流时也不会漏并
+                    if (!acc.some(item => String(item.id) === String(current.id))) {
                       acc.push(current);
                     }
                     return acc;
                   }, [] as IMessage[])
-                  .sort((a: IMessage, b: IMessage) => a.id - b.id);
+                  .sort((a: IMessage, b: IMessage) => Number(a.id) - Number(b.id));
                 if (prevMessageListRef.current.length === 0) {
                   prevMessageListRef.current = merged;
                 }
@@ -1617,25 +1619,15 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     console.log('消息反馈', feedback, newFeedback);
   };
 
-  // **V1 已画的答案，历史侧不再画第二份** ✓✓（2026-10-07 用户实测："回复都重复了一遍" ✗）：
-  // 终态回合的答案由 `assistant-final` 画 ✓；终态后 REST 历史刷新，同一条又被历史列表画成气泡 ✗
-  // → 这里按**同文归一比对**把历史那份滤掉 ✓（与上方 `hasMatchingRealUserMessage` 的内容比较同口径 ✓）。
-  // 冷加载没有 V1 回合 → 集合为空 → 历史照画 ✓；e2e 依赖的 testid 都在 V1 侧 ✓ 不受影响。
-  const normalizeMsgText = (text: unknown) => String(text || '').replace(/\s+/g, ' ').trim();
-  const v1AnsweredTexts = new Set(
-    Object.values(conversationState.turns || {})
-      .filter((turn: any) => turn?.terminal && turn?.answer?.message)
-      .map((turn: any) => normalizeMsgText(turn.answer.message))
-  );
+  // **回合块与历史回到同一条时间线** ✓✓（2026-10-07 用户实测两连修）：
+  // ① 旧口径 `v1AnsweredTexts` 按**文本**把已答历史整体滤掉 ✗：两轮给出同一条答案时，
+  //    只要手里有一个回合，历史里两条同文记录**一起被滤掉** ✗（少画一条）；而且"答案一样"与
+  //    "就是同一条记录"本来是两回事 ✗。现在还历史以**一对一的落位**（见下方 `timelineItems`）✓：
+  //    历史侧只做"该不该画"的过滤 ✓，去重（历史那条 vs 回合块那份）交给**锚定** ✓。
+  // ② 旧布局把回合块**永远追加在整段历史之后** ✗——多轮对话里用户的新问题往上挤 ✓、
+  //    已答的回合全堆在底部 ✗（用户原话："自己发的消息被顶到上面了" ✓；实测三问三答：
+  //    三个问题在上、三个答案在下 ✓）。
   const displayMessageList = messageList.filter((record, index, records) => {
-    if (
-      record.messageFrom === '0' &&
-      record.contentType === 'TEXT' &&
-      v1AnsweredTexts.size > 0 &&
-      v1AnsweredTexts.has(normalizeMsgText(record.content))
-    ) {
-      return false;
-    }
     if (isLegacyAutoPlanPrompt(record, index, records)) {
       return false;
     }
@@ -1643,6 +1635,30 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       return !isWorkspaceActionCard(parseCardContent(record.content));
     }
     return true;
+  });
+  // **只有"真会渲染"的回合块才能去认领历史记录** ✓✓：认领 = 那条历史记录**不再画**
+  //（位置让给回合块）——所以这里先把渲染 gate 走一遍 ✓，被 gate 挡掉的回合（空回合/纯状态）
+  // 不许认领 ✗，否则历史那条会被它"占位成空" ✗（消息静默消失 ✓ 事故）。
+  const renderableTurns = (Object.values(conversationState.turns || {}) as any[]).filter(turn => {
+    if (!turn || !turn.id) return false; // 空回合（老信封双发）不渲染，状态照旧保留 ✓
+    const steps = Object.values(turn.steps || {}) as any[];
+    const pending = pendingClarifications(turn);
+    const streamText = extractStreamMessage(turn.answerStream);
+    return (
+      steps.length > 0 ||
+      pending.length > 0 ||
+      Boolean(turn.answer) ||
+      Boolean(streamText) ||
+      Boolean(turn.proposal) ||
+      Boolean(turn.error)
+    );
+  });
+  // 时间线：终态且答案已进历史的回合**锚到那条记录的位置** ✓✓（一对一、新账不吞旧账 ✓）；
+  // 认领不到的在飞回合/未落定回合照旧排末尾 ✓——那正是"最新一轮"该在的位置 ✓；
+  // 冷加载没有回合 → 顺序与历史完全一致 ✓。
+  const timelineItems = buildConversationTimeline({
+    messages: displayMessageList,
+    turns: renderableTurns,
   });
   const activePendingCardMessageId = displayMessageList.reduce<number | null>((latestId, record) => {
     if (record.messageFrom !== '0' || record.contentType !== 'CARD') {
@@ -1690,6 +1706,154 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     !answerLoading &&
     (alwaysShowQuickReplyActions || !hasUserStartedConversation);
 
+  // **回合块渲染器** ✓：整块从原 JSX map 原样搬出（含全部 testid ✓：`turn-progress` /
+  // `assistant-stream` / `assistant-final` / `turn-error` / `turn-stop` ✓）；现在由统一的
+  // `timelineItems` 在各自"位次"上调用 ✓——历史气泡与回合块同屏交替 ✓，回合内取值不受影响 ✓。
+  const renderTurnBlock = (turn: any) => {
+    const steps = Object.values(turn.steps || {}) as any[];
+    const pending = pendingClarifications(turn);
+    // 流式文本**只取 message 字段里的人话** ✓✓（2026-10-07 用户实测：
+    // 原始 TurnOutput JSON 碎片直接铺在闪烁卡下面是观感事故 ✗）——
+    // `extractStreamMessage` 对未闭合 JSON 做容错抽取，抽不出来返回空串 ✓，
+    // 下面 gate 与渲染都按"有没有人话"判断 ✓：抽不出就只留闪烁卡，不铺原文 ✗。
+    const streamText = extractStreamMessage(turn.answerStream);
+    // **老信封转出来的"空回合"不画** ✓✓：native 路由把终态**两条都发** ✓
+    //（V1 事件给新 UI ✓、老信封帧给老 UI ✓）——而旧帧没有 `turnId` ✗
+    //（`WSResponse` 没这个字段 ✓），前端把它转成 V1 事件时回合号只能是空串 ✓
+    //（`conversationEvents.mjs` 的 `toConversationEvent` ✓），于是 reducer 里
+    // 多出一个 `''` 回合 ✓，内容与真回合**完全重复** ✓（错误/提案/动作结果 ✓）。
+    // 修前它被下面那条 gate 挡住 ✓；补进 answer/proposal/error 之后它**冒出来了** ✗✓
+    //（实测：F15 的 `.last()` 落到空块上 → 看不到进度 ✓；F12 的停止按钮留在空块上 ✓；
+    // F07 的终态断言被空块顶掉 ✓）。
+    // 状态**照旧保留** ✓：`findActionResultFor` 按 proposalRef 全量找 ✓，
+    // 删状态会让提案卡读不到执行结果 ✗——只是不渲染 ✓。
+    if (!turn.id) return null;
+    // **纯文本回合也要画** ✓✓：答案/提案/错误都渲染在**这个块里** ✓
+    // （`assistant-final` / `ProposalCard` / `turn-error` ✓），而原来的 gate 只看
+    // 工具进度与待答卡 ✗——一个"没有工具调用、直接回答"的回合（如打招呼/常识问答）
+    // 整块不画 ✓✗，答案就只剩 REST 历史那一份 ✓：事件流那一份**永远不出现** ✓。
+    // 补进三个渲染条件即可 ✓；**一个回合仍然只画一份** ✓（三者各自渲染一次 ✓，
+    // 不去重、不改历史那条路 ✓）。
+    // 流式文本也算"有内容" ✓：没有它，只有增量的回合（模型还在流、工具没动）
+    // 会被这条 gate 挡掉 ✓——首字延迟的改善就正好被挡在这一步 ✗✓。
+    if (
+      steps.length === 0 &&
+      pending.length === 0 &&
+      !turn.answer &&
+      !streamText &&
+      !turn.proposal &&
+      !turn.error
+    ) return null;
+    return (
+      <div key={turn.id} data-turn-id={turn.id} style={{ padding: '4px 12px' }}>
+        {/*
+          **回合进行中的"现场卡"** ✓✓（2026-10-07 用户实测：进度提示与流式文字
+          原来是**裸 div** ✗——一行行摞在气泡下面"铺开" ✓，看着像一堆散装文字 ✗）。
+          修法：与"正在分析"卡同款视觉的白卡把两者**合装** ✓——进度提示在上（灰字），
+          流式文字在下（正文色）✓；终态后本卡只留进度部分，答案由终态/历史渲染 ✓。
+          testid 全部保留（`turn-progress` / `turn-progress-step` / `assistant-stream` ✓，
+          e2e 探针不动 ✓）。
+        */}
+        {steps.length > 0 || (!turn.terminal && streamText) ? (
+          <div className={style.turnLiveCard}>
+            {steps.length > 0 ? (
+              <div className={style.turnLiveHints} data-testid="turn-progress">
+                {steps.map(step => (
+                  <div key={step.itemId} data-testid="turn-progress-step" data-status={step.status}>
+                    {step.label || step.tool}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {!turn.terminal && streamText ? (
+              <div className={style.turnLiveText} data-testid="assistant-stream">{streamText}</div>
+            ) : null}
+          </div>
+        ) : null}
+        <UnderstandingCard
+          understanding={turn.understanding}
+          onRefine={
+            turn.terminal ? undefined : () => handleSteerTurn(turn.id, '补充说明')
+          }
+        />
+        {/*
+          **提案卡** ✓✓（`proposal.preview` ✓）：事件早到了 ✓（网关算完预览 → 翻成合同形状 ✓），
+          缺的一直是"没人画它" ✗——与 `assistant-final` / `turn-error` 同一个病 ✓。
+          出站那一半**早就完整** ✓：确认/取消用的还是既有那条 `conversationAction` 帧 ✓
+          （`confirm_proposal` / `cancel_proposal` + `expectedSourceVersion` + `intent: 'explicit'` ✓）。
+        */}
+        {turn.proposal ? (
+          <ProposalCard
+            proposal={turn.proposal}
+            actionResult={findActionResultFor(
+              conversationStateRef.current,
+              turn.proposal.proposalRef,
+            )}
+            onDecide={(action) => handleProposalDecision(turn.proposal, action)}
+          />
+        ) : null}
+        {/*
+          **把 V1 终态的答案画出来** ✓✓（C4 真栈追出来的最后一格 ✓）：
+          reducer 早把它存进 `turn.answer.message` 了 ✓（`conversationSession.mjs:101` ✓），
+          而这个回合块只画了进度/停止/卡片 ✗ —— **答案没人渲染** ✓，所以界面上看不到 ✓。
+          数据在、形状对、就是差这一处渲染 ✓。
+        */}
+        {/*
+          **流式增量**：与答案**同一个呈现位**（终态一到就整段替换）——
+          reducer 里 `assistant.completed` / `turn.completed` 会把
+          `answerStream` 清空，这里只在**未终态**时渲染，所以同一回合
+          不会同时画出"流式文本"和"终态答案"两份。
+          文本经 `extractStreamMessage` 过滤（2026-10-07 起）：只显示
+          `message` 字段里**已可读的人话前缀** ✓；解析不出就不渲染 ✓
+          ——原始 JSON 碎片**不再**铺给用户看 ✗（观感事故的修法）。
+          终态权威不变：完整答案仍由 `assistant.completed` 整段给出 ✓。
+        */}
+        {turn.terminal && turn.answer && turn.answer.message ? (
+          // 终态答案也进卡（2026-10-07 用户实测：裸 div 直接铺在气泡下面 ✗，
+          // 看起来像"卡片没收到文字" ✓）——与"现场卡"同款视觉 ✓；testid 保留（e2e 不动）。
+          <div data-testid="assistant-final" className={style.turnLiveCard}>
+            <div className={style.turnLiveText}>{turn.answer.message}</div>
+          </div>
+        ) : null}
+        {/*
+          **可恢复错误也要画出来** ✓✓——与上面那条一模一样的病 ✗：
+          reducer 早把 `recoverable.error` 存进 `turn.error` 了 ✓
+          （`conversationSession.mjs:113` ✓），而这里从来不渲染它 ✗ →
+          模型输出坏掉的那一轮，用户那边**什么都没发生** ✗（实测：F15 整轮静默 ✓）。
+          文案用服务端给的 `message` ✓；它缺了才退回一句通用话 ✓（**不许空着** ✗）。
+        */}
+        {turn.error ? (
+          <div data-testid="turn-error">
+            {/* 两种键都要认 ✓✓：V1 事件带 `message` ✓，而**同一条失败**在老信封那条路上
+                带的是 `content` ✓——两条都会到（网关有意两条都发 ✓：老 UI 靠 reply ✓、
+                新 UI 靠 V1 ✓）。后到的老信封帧 `message` 可能是空串 ✗（失败结果里没有
+                `reply` ✓），**reducer 已拦**：空文案不覆盖已有文案 ✓
+                （`conversationSession.mjs` 的 `recoverable.error` 分支 ✓）。 */}
+            {turn.error.message || turn.error.content || '本轮没有完成，请稍后重试'}
+          </div>
+        ) : null}
+        {!turn.terminal ? (
+          <button
+            type="button"
+            data-testid="turn-stop"
+            onClick={() => handleInterruptTurn(turn.id)}
+          >
+            停止
+          </button>
+        ) : null}
+        {pending.map((card: any) => (
+          <ClarificationCard
+            key={card.requestId}
+            clarification={card}
+            onSubmit={(answer, meta) =>
+              handleClarificationAnswer(card.requestId, answer, meta.clientRequestId)
+            }
+          />
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className={style.messagePanel}>
       <div
@@ -1714,19 +1878,26 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
               {isMore ? (isLoading ? '加载中...' : '下拉加载更多') : '已经没有更多消息了~'}
             </div>
           )}
-          {displayMessageList.length > 0 &&
-            displayMessageList.map((message, index) => (
+          {timelineItems.map(item => {
+            if (item.kind === 'turn') {
+              return renderTurnBlock(item.turn);
+            }
+            const message: IMessage = item.message;
+            return (
               <div
                 ref={el => {
                   itemRefs.current[message.id] = el;
                 }}
-                // eslint-disable-next-line react/no-array-index-key
                 key={message.id}
-                // e2e 钩子 ✓（Task C4）：**答案落定后**才带这个 testid ✓——
-                // 还在 `answerLoading` 时它不存在 ✓，所以"终态没到"那条断言才断得实 ✓。
-                // 前提：每个用例开**独立会话** ✓（任务书要求 ✓），否则历史里会有多条 ✓。
+                // testid 与 V1 回合块**分开** ✓✓（2026-10-07 清理）：
+                // 历史气泡叫 `history-assistant` ✓——原来两边都叫 `assistant-final` ✗，
+                // 新布局下历史气泡与回合块同屏交替出现 ✓，同名会让"取答案"的探针抓成两份 ★。
+                // e2e 侧已 grep 确认：`assistant-final` 的用法**全部**是回合内取值 ✓
+                //（`turn.getByTestId(...)` / `[data-turn-id]` 的 `.last()` ✓）——
+                // 都在 V1 回合块上 ✓，历史气泡改名不动任何断言 ✓。
+                // 语义保留：**答案落定后**才带这个 testid ✓（`answerLoading` 期间不出现 ✓）。
                 data-testid={
-                  message.messageFrom === '0' && !answerLoading ? 'assistant-final' : undefined
+                  message.messageFrom === '0' && !answerLoading ? 'history-assistant' : undefined
                 }
                 className={`${style.messageBubble} ${style.aiMessage}`}
               >
@@ -2034,7 +2205,8 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                   )}
                 </div>
               </div>
-            ))}
+            );
+          })}
           {answerLoading && (
             <div className={style.thinkingContainer}>
               <div className={style.thinkingContent}>
@@ -2060,150 +2232,6 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
               )}
             </div>
           )}
-          {Object.values(conversationState.turns).map((turn: any) => {
-            const steps = Object.values(turn.steps || {}) as any[];
-            const pending = pendingClarifications(turn);
-            // 流式文本**只取 message 字段里的人话** ✓✓（2026-10-07 用户实测：
-            // 原始 TurnOutput JSON 碎片直接铺在闪烁卡下面是观感事故 ✗）——
-            // `extractStreamMessage` 对未闭合 JSON 做容错抽取，抽不出来返回空串 ✓，
-            // 下面 gate 与渲染都按"有没有人话"判断 ✓：抽不出就只留闪烁卡，不铺原文 ✗。
-            const streamText = extractStreamMessage(turn.answerStream);
-            // **老信封转出来的"空回合"不画** ✓✓：native 路由把终态**两条都发** ✓
-            //（V1 事件给新 UI ✓、老信封帧给老 UI ✓）——而旧帧没有 `turnId` ✗
-            //（`WSResponse` 没这个字段 ✓），前端把它转成 V1 事件时回合号只能是空串 ✓
-            //（`conversationEvents.mjs` 的 `toConversationEvent` ✓），于是 reducer 里
-            // 多出一个 `''` 回合 ✓，内容与真回合**完全重复** ✓（错误/提案/动作结果 ✓）。
-            // 修前它被下面那条 gate 挡住 ✓；补进 answer/proposal/error 之后它**冒出来了** ✗✓
-            //（实测：F15 的 `.last()` 落到空块上 → 看不到进度 ✓；F12 的停止按钮留在空块上 ✓；
-            // F07 的终态断言被空块顶掉 ✓）。
-            // 状态**照旧保留** ✓：`findActionResultFor` 按 proposalRef 全量找 ✓，
-            // 删状态会让提案卡读不到执行结果 ✗——只是不渲染 ✓。
-            if (!turn.id) return null;
-            // **纯文本回合也要画** ✓✓：答案/提案/错误都渲染在**这个块里** ✓
-            // （`assistant-final` / `ProposalCard` / `turn-error` ✓），而原来的 gate 只看
-            // 工具进度与待答卡 ✗——一个"没有工具调用、直接回答"的回合（如打招呼/常识问答）
-            // 整块不画 ✓✗，答案就只剩 REST 历史那一份 ✓：事件流那一份**永远不出现** ✓。
-            // 补进三个渲染条件即可 ✓；**一个回合仍然只画一份** ✓（三者各自渲染一次 ✓，
-            // 不去重、不改历史那条路 ✓）。
-            // 流式文本也算"有内容" ✓：没有它，只有增量的回合（模型还在流、工具没动）
-            // 会被这条 gate 挡掉 ✓——首字延迟的改善就正好被挡在这一步 ✗✓。
-            if (
-              steps.length === 0 &&
-              pending.length === 0 &&
-              !turn.answer &&
-              !streamText &&
-              !turn.proposal &&
-              !turn.error
-            ) return null;
-            return (
-              <div key={turn.id} data-turn-id={turn.id} style={{ padding: '4px 12px' }}>
-                {/*
-                  **回合进行中的"现场卡"** ✓✓（2026-10-07 用户实测：进度提示与流式文字
-                  原来是**裸 div** ✗——一行行摞在气泡下面"铺开" ✓，看着像一堆散装文字 ✗）。
-                  修法：与"正在分析"卡同款视觉的白卡把两者**合装** ✓——进度提示在上（灰字），
-                  流式文字在下（正文色）✓；终态后本卡只留进度部分，答案由终态/历史渲染 ✓。
-                  testid 全部保留（`turn-progress` / `turn-progress-step` / `assistant-stream` ✓，
-                  e2e 探针不动 ✓）。
-                */}
-                {steps.length > 0 || (!turn.terminal && streamText) ? (
-                  <div className={style.turnLiveCard}>
-                    {steps.length > 0 ? (
-                      <div className={style.turnLiveHints} data-testid="turn-progress">
-                        {steps.map(step => (
-                          <div key={step.itemId} data-testid="turn-progress-step" data-status={step.status}>
-                            {step.label || step.tool}
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    {!turn.terminal && streamText ? (
-                      <div className={style.turnLiveText} data-testid="assistant-stream">{streamText}</div>
-                    ) : null}
-                  </div>
-                ) : null}
-                <UnderstandingCard
-                  understanding={turn.understanding}
-                  onRefine={
-                    turn.terminal ? undefined : () => handleSteerTurn(turn.id, '补充说明')
-                  }
-                />
-                {/*
-                  **提案卡** ✓✓（`proposal.preview` ✓）：事件早到了 ✓（网关算完预览 → 翻成合同形状 ✓），
-                  缺的一直是"没人画它" ✗——与 `assistant-final` / `turn-error` 同一个病 ✓。
-                  出站那一半**早就完整** ✓：确认/取消用的还是既有那条 `conversationAction` 帧 ✓
-                  （`confirm_proposal` / `cancel_proposal` + `expectedSourceVersion` + `intent: 'explicit'` ✓）。
-                */}
-                {turn.proposal ? (
-                  <ProposalCard
-                    proposal={turn.proposal}
-                    actionResult={findActionResultFor(
-                      conversationStateRef.current,
-                      turn.proposal.proposalRef,
-                    )}
-                    onDecide={(action) => handleProposalDecision(turn.proposal, action)}
-                  />
-                ) : null}
-                {/*
-                  **把 V1 终态的答案画出来** ✓✓（C4 真栈追出来的最后一格 ✓）：
-                  reducer 早把它存进 `turn.answer.message` 了 ✓（`conversationSession.mjs:101` ✓），
-                  而这个回合块只画了进度/停止/卡片 ✗ —— **答案没人渲染** ✓，所以界面上看不到 ✓。
-                  数据在、形状对、就是差这一处渲染 ✓。
-                */}
-                {/*
-                  **流式增量**：与答案**同一个呈现位**（终态一到就整段替换）——
-                  reducer 里 `assistant.completed` / `turn.completed` 会把
-                  `answerStream` 清空，这里只在**未终态**时渲染，所以同一回合
-                  不会同时画出"流式文本"和"终态答案"两份。
-                  文本经 `extractStreamMessage` 过滤（2026-10-07 起）：只显示
-                  `message` 字段里**已可读的人话前缀** ✓；解析不出就不渲染 ✓
-                  ——原始 JSON 碎片**不再**铺给用户看 ✗（观感事故的修法）。
-                  终态权威不变：完整答案仍由 `assistant.completed` 整段给出 ✓。
-                */}
-                {turn.terminal && turn.answer && turn.answer.message ? (
-                  // 终态答案也进卡（2026-10-07 用户实测：裸 div 直接铺在气泡下面 ✗，
-                  // 看起来像"卡片没收到文字" ✓）——与"现场卡"同款视觉 ✓；testid 保留（e2e 不动）。
-                  <div data-testid="assistant-final" className={style.turnLiveCard}>
-                    <div className={style.turnLiveText}>{turn.answer.message}</div>
-                  </div>
-                ) : null}
-                {/*
-                  **可恢复错误也要画出来** ✓✓——与上面那条一模一样的病 ✗：
-                  reducer 早把 `recoverable.error` 存进 `turn.error` 了 ✓
-                  （`conversationSession.mjs:113` ✓），而这里从来不渲染它 ✗ →
-                  模型输出坏掉的那一轮，用户那边**什么都没发生** ✗（实测：F15 整轮静默 ✓）。
-                  文案用服务端给的 `message` ✓；它缺了才退回一句通用话 ✓（**不许空着** ✗）。
-                */}
-                {turn.error ? (
-                  <div data-testid="turn-error">
-                    {/* 两种键都要认 ✓✓：V1 事件带 `message` ✓，而**同一条失败**在老信封那条路上
-                        带的是 `content` ✓——两条都会到（网关有意两条都发 ✓：老 UI 靠 reply ✓、
-                        新 UI 靠 V1 ✓）。后到的老信封帧 `message` 可能是空串 ✗（失败结果里没有
-                        `reply` ✓），**reducer 已拦**：空文案不覆盖已有文案 ✓
-                        （`conversationSession.mjs` 的 `recoverable.error` 分支 ✓）。 */}
-                    {turn.error.message || turn.error.content || '本轮没有完成，请稍后重试'}
-                  </div>
-                ) : null}
-                {!turn.terminal ? (
-                  <button
-                    type="button"
-                    data-testid="turn-stop"
-                    onClick={() => handleInterruptTurn(turn.id)}
-                  >
-                    停止
-                  </button>
-                ) : null}
-                {pending.map((card: any) => (
-                  <ClarificationCard
-                    key={card.requestId}
-                    clarification={card}
-                    onSubmit={(answer, meta) =>
-                      handleClarificationAnswer(card.requestId, answer, meta.clientRequestId)
-                    }
-                  />
-                ))}
-              </div>
-            );
-          })}
           {/*
             **冷加载补一张"最后一条提案"的卡** ✓✗（理由见 props 里 `lastProposal` 那段 ✓）：
             回合块只在**事件到达**时才长出来 ✗，刷新之后一个都没有 ✓——所以这里按
