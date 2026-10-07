@@ -3,6 +3,8 @@ package com.ytell.zhiyuan.service.biz;
 import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
+import com.ytell.zhiyuan.model.dto.gaotu.req.ScorePositionRangeReq;
+import com.ytell.zhiyuan.model.dto.gaotu.res.ScorePositionRangeRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
@@ -10,9 +12,12 @@ import com.ytell.zhiyuan.model.dto.planning.PrepareResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.ScoreUpdatePreviewDTO;
 import com.ytell.zhiyuan.model.enums.OperateCheckPoint;
 import com.ytell.zhiyuan.model.vo.CheckRightsResVo;
+import com.ytell.zhiyuan.service.GaotuService;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.ArrayList;
@@ -44,6 +49,8 @@ public class ChatSessionBizServiceScoreUpdatePrepareTest {
     private ChatSessionBizService service;
     private final List<PendingConfirmationUpsertReq> upserted = new ArrayList<>();
     private PendingConfirmationRes currentPending;
+    private ChatSessionExtraDataSharedService extraDataSharedService;
+    private GaotuService gaotuService;
 
     @BeforeEach
     void setUp() {
@@ -53,8 +60,11 @@ public class ChatSessionBizServiceScoreUpdatePrepareTest {
         ReflectionTestUtils.setField(service, "conversationAccessService", conversationAccessService);
 
         // 空会话：没有既有的 userScoreDetail 行（补录就是给这种会话写的）。
-        ChatSessionExtraDataSharedService extraDataSharedService = mock(ChatSessionExtraDataSharedService.class);
+        extraDataSharedService = mock(ChatSessionExtraDataSharedService.class);
         ReflectionTestUtils.setField(service, "chatSessionExtraDataSharedService", extraDataSharedService);
+        // 位次补齐（preview 也要走，见 2026-10-07 审查 M3）用替身上游。
+        gaotuService = mock(GaotuService.class);
+        ReflectionTestUtils.setField(service, "gaotuService", gaotuService);
 
         PlanningStateService planningStateService = mock(PlanningStateService.class);
         PlanningStateDTO state = new PlanningStateDTO();
@@ -179,13 +189,79 @@ public class ChatSessionBizServiceScoreUpdatePrepareTest {
     }
 
     @Test
-    void previewIsReadOnlyAndReturnsTheSameSummaryShape() {
+    void previewReturnsTheSameSummaryShapeWithoutPersistingPending() {
         ScoreUpdatePreviewDTO preview = service.previewScoreUpdate(1L, 2L, scoreRequest());
 
         assertEquals("ready", preview.getStatus());
         assertEquals(Integer.valueOf(5), preview.getSourceVersion());
         assertEquals(621, preview.getSummary().get("totalScore"));
+        assertEquals(8123, preview.getSummary().get("totalScorePos"), "用户/表单给过位次就照抄，不查上游");
         assertFalse(upserted.iterator().hasNext(), "preview 不许落 pending");
+        Mockito.verify(gaotuService, Mockito.never())
+                .getScorePositionRange(Mockito.any(ScorePositionRangeReq.class));
+        Mockito.verify(extraDataSharedService, Mockito.never()).save(Mockito.any());
+        Mockito.verify(extraDataSharedService, Mockito.never()).updateById(Mockito.any());
+    }
+
+    // 2026-10-07 审查 M3：preview 的字段集必须等于执行集——位次要不要补，两边得同一个答案。
+    // 修复前 preview 少走 fillTotalScorePosIfMissing：卡片上没有 totalScorePos，确认后落库却有了。
+    @Test
+    void previewFillsMissingPositionLikeExecutionDoes() {
+        ScorePositionRangeRes range = new ScorePositionRangeRes();
+        range.setHighestRank(43000);
+        range.setLowestRank(43879);
+        range.setStudents(880);
+        when(gaotuService.getScorePositionRange(Mockito.any(ScorePositionRangeReq.class))).thenReturn(range);
+
+        CreateSessionReq req = scoreRequest();
+        req.setTotalScorePos(null);
+        ScoreUpdatePreviewDTO preview = service.previewScoreUpdate(1L, 2L, req);
+
+        assertEquals(43879, preview.getSummary().get("totalScorePos"),
+                "预览缺位次也要向上游补齐（lowestRank 保守口径），与执行段同一字段集");
+
+        // 请求形状与执行段/前端一致：年份是钉住的 examYear，不是"查不到就换当年"（审查 M2）。
+        ArgumentCaptor<ScorePositionRangeReq> captor = ArgumentCaptor.forClass(ScorePositionRangeReq.class);
+        Mockito.verify(gaotuService).getScorePositionRange(captor.capture());
+        assertEquals("330000", captor.getValue().getAreaId());
+        assertEquals("WL", captor.getValue().getSubject());
+        assertEquals("BEN", captor.getValue().getDataLevel());
+        assertEquals("2026", captor.getValue().getYear());
+        assertEquals("621", captor.getValue().getScore());
+
+        // preview 仍然不落任何东西：pending / 成绩行都不许写。
+        assertFalse(upserted.iterator().hasNext(), "preview 不许落 pending");
+        Mockito.verify(extraDataSharedService, Mockito.never()).save(Mockito.any());
+        Mockito.verify(extraDataSharedService, Mockito.never()).updateById(Mockito.any());
+    }
+
+    @Test
+    void previewKeepsPositionEmptyWhenUpstreamHasNoData() {
+        when(gaotuService.getScorePositionRange(Mockito.any(ScorePositionRangeReq.class))).thenReturn(null);
+
+        CreateSessionReq req = scoreRequest();
+        req.setTotalScorePos(null);
+        ScoreUpdatePreviewDTO preview = service.previewScoreUpdate(1L, 2L, req);
+
+        assertFalse(preview.getSummary().containsKey("totalScorePos"),
+                "上游没有该省一分一段（data:null）就如实留空，不造数——与执行段同一口径");
+    }
+
+    // prepare 与 preview 共用同一条核心：prepare 落 pending 的摘要也含补出来的位次。
+    @Test
+    void prepareSummaryAlsoCarriesTheFilledPosition() {
+        ScorePositionRangeRes range = new ScorePositionRangeRes();
+        range.setLowestRank(43879);
+        when(gaotuService.getScorePositionRange(Mockito.any(ScorePositionRangeReq.class))).thenReturn(range);
+
+        CreateSessionReq req = scoreRequest();
+        req.setTotalScorePos(null);
+        service.prepareScoreUpdateProposal(1L, 2L, "req-4", "digest-4", req);
+
+        assertEquals(1, upserted.size());
+        Map<?, ?> summary = (Map<?, ?>) upserted.get(0).getDataValue().get("scoreSummary");
+        assertEquals(43879, summary.get("totalScorePos"),
+                "卡片摘要与执行集一致：补出来的位次要进摘要");
     }
 
     private CreateSessionReq scoreRequest() {

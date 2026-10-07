@@ -313,12 +313,20 @@ public class ChatSessionBizService {
     // 执行体就是上面那条 `doUpdateScoreDetail`，与表单补录同一条核心。
 
     /**
-     * 补录前的**只读**校验与结构化摘要（preview 与 prepare 共用）。
+     * 补录前的校验与结构化摘要（preview 与 prepare 共用）。
      *
-     * <p>校验顺序与 {@link #doUpdateScoreDetail} 的 2-3 步一致（合并 → 归一 → 校验 →
-     * 权益），失败抛与执行时**同一个** 110/403——预览阶段就把"确认了也注定失败"的草案挡掉，
-     * 而不是等用户点了确认才回一句"未生效"。这里不写任何东西（不落 userScoreDetail、
-     * 不拉志愿数据、不动规划状态）。</p>
+     * <p>校验顺序与 {@link #doUpdateScoreDetail} 的 2-3 步一致（合并 → 归一 → **补位次** →
+     * 校验 → 权益），失败抛与执行时**同一个** 110/403——预览阶段就把"确认了也注定失败"的草案挡掉，
+     * 而不是等用户点了确认才回一句"未生效"。**字段集同样对齐执行集**（2026-10-07 审查 M3）：
+     * 位次缺失时这里也走 {@link #fillTotalScorePosIfMissing} 向上游要一分一段（只补空位），
+     * 否则卡片上少一个 {@code totalScorePos}、确认落库后又有了——预览与执行说的不是同一件事。</p>
+     *
+     * <p><b>边界（勿再说"不写任何东西"）</b>：预览不落 userScoreDetail、不拉志愿数据、不 bump
+     * 规划版本、不置 stale——这是它相对执行段真正省掉的部分。但它并非零写：读取当前版本走
+     * {@code PlanningStateService#getPlanningState}，legacy 会话的**首次读**会只补缺地懒导入
+     * 规划状态行（CAS 落盘），读路径补写（edit-cache 提示 / 数据新鲜度回填）也可能落盘——都幂等、
+     * 都不动版本号；补位次还会发一次上游只读查询。原 javadoc 的"只读 / 不写任何东西"名不副实
+     * （2026-10-07 审查 M3），这里如实更正。</p>
      */
     public ScoreUpdatePreviewDTO previewScoreUpdate(Long tenantId, Long chatSessionId, CreateSessionReq req) {
         Long userId = conversationAccessService.requireSessionUserId(tenantId, chatSessionId);
@@ -333,6 +341,9 @@ public class ChatSessionBizService {
         conversationAccessService.requireOwnedSession(tenantId, chatSessionId, userId);
         CreateSessionReq merged = mergeScoreDetail(loadSessionScoreDetail(chatSessionId), req);
         normalizeScoreUpdateDefaults(merged);
+        // 2-1. 与执行段同一步、同一个位置：位次缺失时按一分一段补最保守位次，让预览的字段集
+        // 等于执行集（2026-10-07 审查 M3）。纯内存补齐 + 一次上游只读查询，不落盘。
+        fillTotalScorePosIfMissing(merged);
         normalizeCreateSessionDefaults(merged);
         validateCreateSessionReq(merged);
         validateScoreUpdateSubjectCodes(merged);
