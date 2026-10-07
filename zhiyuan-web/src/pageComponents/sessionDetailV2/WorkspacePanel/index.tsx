@@ -60,6 +60,7 @@ import {
   GatewayConversationEvent,
 } from '@/interface/api/conversation';
 import { resolveCandidateRefreshMode } from '@/utils/planningDataFreshness.mjs';
+import { normalizePrepareTypeCode, isVolunteerPrepareType } from '@/utils/prepareTypeText.mjs';
 import { formatSubjectShortText } from '@/utils/subjectText';
 import { normalizeConversationEvent, resolveArtifact } from '@/utils/conversationEvents.mjs';
 import ArtifactRenderer from '../ConversationEvents/ArtifactRenderer';
@@ -225,19 +226,8 @@ const getWorkspaceViewStorageKey = (chatSessionId?: string) =>
 
 const DATA_FRESHNESS_AUTO_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
-const normalizePrepareTypeCode = (code?: string | null, desc?: string) => {
-  const normalized = `${code || ''} ${desc || ''}`.toUpperCase();
-  if (normalized.includes('VOLUNTEER') || normalized.includes('智能填报')) {
-    return 'VOLUNTEER';
-  }
-  if (normalized.includes('PREDICT') || normalized.includes('模拟填报')) {
-    return 'PREDICT';
-  }
-  return '';
-};
-
-const isVolunteerPrepareType = (code?: string | null, desc?: string) =>
-  normalizePrepareTypeCode(code, desc) === 'VOLUNTEER';
+// 模式码归一已收敛到 '@/utils/prepareTypeText.mjs'（2026-10-08：code 优先，
+// 修"desc=智能填报 的 PREDICT 会话被误判 VOLUNTEER"的顺序 bug）。
 
 const resolvePlanYear = (prepareTypeCode?: string | null, prepareTypeDesc?: string, examYear?: number | string | null) => {
   const normalizedPrepareTypeCode = normalizePrepareTypeCode(prepareTypeCode, prepareTypeDesc);

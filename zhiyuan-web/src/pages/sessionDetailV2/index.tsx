@@ -27,6 +27,7 @@ import { getStorage, getValueFromUrlBykey } from '@/utils/tool';
 import { navigateTo } from '@/utils/router';
 import useAuthParams from '@/hooks/useAuthParams';
 import { hasDataFreshnessChangeSummary, shouldShowDataFreshnessNotice } from '@/utils/planningDataFreshness.mjs';
+import { isPredictPrepareType, isVolunteerPrepareType } from '@/utils/prepareTypeText.mjs';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useIsMinip } from '@/hooks/useIsMinip';
 import { formatSubjectShortText } from '@/utils/subjectText';
@@ -98,22 +99,8 @@ const resolveNextFreshnessCheckAt = (state: PlanningDataFreshnessState | null) =
   state?.nextCheckAt ||
   addMinutesToFreshnessTime(resolveFreshnessSyncedAt(state), state?.checkIntervalMinutes);
 
-const normalizePrepareTypeCode = (code?: string | null, desc?: string) => {
-  const normalized = `${code || ''} ${desc || ''}`.toUpperCase();
-  if (normalized.includes('VOLUNTEER') || normalized.includes('智能填报')) {
-    return 'VOLUNTEER';
-  }
-  if (normalized.includes('PREDICT') || normalized.includes('模拟填报')) {
-    return 'PREDICT';
-  }
-  return '';
-};
-
-const isPredictPrepareType = (code?: string | null, desc?: string) =>
-  normalizePrepareTypeCode(code, desc) === 'PREDICT';
-
-const isVolunteerPrepareType = (code?: string | null, desc?: string) =>
-  normalizePrepareTypeCode(code, desc) === 'VOLUNTEER';
+// 模式码归一已收敛到 '@/utils/prepareTypeText.mjs'（2026-10-08：code 优先，
+// 修"desc=智能填报 的 PREDICT 会话被误判 VOLUNTEER"的顺序 bug）。
 
 const buildDataFreshnessNoticeKey = (
   chatSessionId: string,
