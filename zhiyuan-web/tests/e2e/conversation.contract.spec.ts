@@ -654,10 +654,15 @@ test('F08 确认：双击不双写，且 applied 后读得到 workspace', async 
 // 标掉 ✓（Java 原话"请使用最新预览" ✓）。此时在**第一张卡**上点确认 ✓，服务端必须拒 ✓。
 //
 // 断什么（都落在用户看得见的东西上 ✓）：
-//   ① 没有任何卡进"已生效" ✓——旧卡不能被重用 ✓、新预览**更不能**被顺手自动确认 ✗（那是替用户做决定 ✓）；
-//   ② 正式内容不前进 ✓（被拒的确认不许写 ✓）。
-// 写法上**不依赖卡的张数** ✓：supersede 之后前端可能把旧卡收起来 ✗，所以断言"没有卡进已生效" ✓，
-// 而不是"第几张卡是什么" ✗。
+//   ① **旧卡被正面拒绝** ✓（`stale_state` → "需重新确认" + 一句"方案已变化，请重新生成预览" ✓，
+//      且按钮收起 ✓）——2026-10-07 M5 补强 ✓：原先只有下面 ② 那条反向断言 ✗，
+//      结果帧没回来也能绿 ✗（实测把点击那一轮的 execute 都放过去了 ✓）；
+//   ② 没有任何卡进"已生效" ✓——旧卡不能被重用 ✓、新预览**更不能**被顺手自动确认 ✗（那是替用户做决定 ✓）；
+//      新预览还得停在"待确认"、按钮仍在 ✓（正面断言 ✓，不再只靠"没有已生效" ✓）；
+//   ③ 正式内容不前进 ✓（被拒的确认不许写 ✓）。
+// 写法上**不依赖"卡的张数"以外的东西** ✓：两轮预览各画一张卡 ✓（旧卡是被取代的那条 ✓，
+// 它得在 DOM 里、按钮得点得着 ✓——真把它收起来的话，"旧卡确认"这件事就无从测起 ✓，
+// 那时这条用例要红得明白 ✗ 而不是被 ② 的空断言兜绿 ✓）。
 test('F09 版本冲突：旧卡确认被拒，且不自动确认新预览', async ({
   page,
   sessionUrl,
@@ -687,10 +692,25 @@ test('F09 版本冲突：旧卡确认被拒，且不自动确认新预览', asyn
   await settleWorkspaceBootstrap(readState, runtimeGate);
   const before = await readState();
 
-  // 一轮：发消息 → 等进度 → 放行（放行必须等进度出现 ✓，理由同 F07 ✓）。
+  // 一轮：发消息 → 等**本轮的**进度 → 放行（放行必须等进度出现 ✓，理由同 F07 ✓）。
+  //
+  // **M5 补强之二（2026-10-07 ✓）：等待的靶子必须钉在"本轮"上 ✗✓。** 红点真因实测：
+  // 终态后现场卡**不撤**（进度给留档，`93d054b` ✓）——`page.locator('[data-turn-id]').last()`
+  // 于是会先命中**上一轮那个已完成块**里还挂着的"历年录取" ✓，等待**秒过** ✗ →
+  // `releaseAllPending` 跑在新回合的闸门**登记之前** ✓（`GET /gates` 拿到 0 个未放行 ✓，
+  // 空转返回 ✓）→ 新回合一直扣着 ✗：替身侧读数 `turn_6` 谁都没放 ✓，要等下一轮的
+  // `cleanGates` 才被收走 ✓（r6/r7 两轮同形 ✓；错误码都是 `toHaveCount(2)` 得 1 ✓）。
+  // 修法：先等**回合块数量 +1** ✓✓——新块要等首条内容（增量/进度）才画 ✓，而那些内容
+  // 是替身在**闸门登记之后**才发的 ✓，所以"新块出现"≡"闸门已登记" ✓（比加 sleep 稳 ✓）；
+  // 再在**这个新块**里等进度 ✓。
   const sendAndSettle = async (text: string) => {
+    const priorTurnCount = await page.locator('[data-turn-id]').count();
     await page.getByTestId('chat-input').fill(text);
     await page.getByTestId('chat-send').click();
+    await expect(
+      page.locator('[data-turn-id]'),
+      '先等本轮的新回合块 ✓（否则第二轮会把上一轮的已完成块当成靶子 ✗）',
+    ).toHaveCount(priorTurnCount + 1, { timeout: 20_000 });
     await expect(
       page.locator('[data-turn-id]').last().getByTestId('turn-progress'),
     ).toContainText('历年录取', { timeout: 20_000 });
@@ -710,12 +730,51 @@ test('F09 版本冲突：旧卡确认被拒，且不自动确认新预览', asyn
     '第二轮也要出"待确认" ✓（新预览是"不能被自动确认"的那一个 ✓）',
   ).toContainText('待确认', { timeout: 20_000 });
 
-  // 在**第一张卡**上点确认 ✓：被取代的那条必须落回"未生效"这一档 ✓。
-  await page.getByTestId('proposal-confirm').first().click();
+  // 在**第一张卡**上点确认 ✓：被取代的那条必须**真的被拒** ✓✓。
+  //
+  // **M5 补强（2026-10-07 审查 ✓）**：原断言只有"没有任何卡进已生效" ✗——它是**反向**的 ✓，
+  // 而且 `toHaveCount(0)` 在结果帧还没回来时**立刻就成立** ✗（实测留档：r3 那一轮点完
+  // 用例就收尾了 ✓，点击起的那一轮甚至没走到 execute ✓，网眼把最要紧的"被拒"放过去了 ✓）。
+  // 补成**正面断言** ✓（断的东西都在用户看得见的那一档上 ✓）：
+  //   ① 被点的那张卡真的落进"被取代"终态 ✓（`data-action-status=stale_state` ✓——机器态
+  //      留在数据属性上作锚点 ✓，不是给人看的文案 ✗）；
+  //   ② 卡面说**中文**（"需重新确认" + 一句"方案已变化，请重新生成预览" ✓，H1）；
+  //   ③ 按钮**收起** ✓（H1 的"按钮复活"就是不敢收 ✓）；
+  //   ④ 新预览**不许**被顺手自动确认 ✗（它得停在"待确认"、按钮还在 ✓）。
+  const cards = page.getByTestId('proposal-card');
+  await expect(
+    cards,
+    '两轮各出一张卡 ✓（旧卡是被取代的那条 ✓——没有它就没有"旧卡确认"可点 ✓）',
+  ).toHaveCount(2, { timeout: 20_000 });
+  const staleCard = cards.first();
+  await staleCard.getByTestId('proposal-confirm').click();
+  await expect(
+    staleCard,
+    '被取代的旧卡必须被服务端拒 ✓（行动结果落在卡上：stale_state ✓）',
+  ).toHaveAttribute('data-action-status', 'stale_state', { timeout: 20_000 });
+  const staleStatus = staleCard.getByTestId('proposal-status');
+  await expect(staleStatus, '被拒的状态要说中文 ✓（legacy 卡同口径："需重新确认" ✓）').toContainText('需重新确认');
+  await expect(staleStatus, '英文机器态不许直出 ✗（H1）').not.toContainText('stale_state');
+  await expect(
+    staleCard.getByTestId('proposal-stale-reason'),
+    '得说出下一步做什么 ✓（"方案已变化，请重新生成预览后再确认" ✓）',
+  ).toContainText('方案已变化');
+  await expect(
+    staleCard.getByTestId('proposal-confirm'),
+    '被拒之后按钮必须收起 ✓（"按钮复活"是 H1 的原始症状 ✗）',
+  ).toHaveCount(0);
+  await expect(staleCard.getByTestId('proposal-cancel')).toHaveCount(0);
+
+  const freshCard = cards.last();
+  await expect(
+    freshCard.getByTestId('proposal-status'),
+    '新预览不许被顺手自动确认 ✗（停在"待确认"、等用户自己点 ✓）',
+  ).toContainText('待确认');
+  await expect(freshCard.getByTestId('proposal-confirm'), '新预览的按钮还在 ✓').toBeVisible();
   await expect(
     page.getByTestId('proposal-status').filter({ hasText: /已生效|已采纳/ }),
     '冲突被拒时**任何**卡都不许进"已生效" ✓✓（旧卡不能重用 ✓ + 新预览不许被自动确认 ✗）',
-  ).toHaveCount(0, { timeout: 20_000 });
+  ).toHaveCount(0);
 
   const after = await readState();
   console.log(
