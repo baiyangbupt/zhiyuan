@@ -52,12 +52,7 @@ public class CandidateComparisonService {
         if (entities == null || entities.size() < MIN_ENTITIES || entities.size() > MAX_ENTITIES) {
             throw new BusinessException(400, "comparison_entity_count_invalid");
         }
-        List<String> requested = dimensions == null || dimensions.isEmpty() ? DIMENSIONS : dimensions;
-        for (String dimension : requested) {
-            if (!DIMENSIONS.contains(dimension)) {
-                throw new BusinessException(400, "comparison_dimension_unsupported");
-            }
-        }
+        List<String> requested = resolveDimensions(dimensions);
 
         boolean scopeMatches = sameScope(entities);
 
@@ -90,6 +85,23 @@ public class CandidateComparisonService {
         }
         result.setLimitations(limitations);
         return result;
+    }
+
+    /**
+     * 维度白名单判定，返回本次生效的维度列表。**两条入口共用同一份判据**：
+     * 值由调用方传的 {@link #compare} 与被载入的候选行比较
+     * （{@link CandidateCompareService}）——维度名与白名单只能有一处定义，
+     * 否则"哪些列能比"会因入口不同而不同。
+     */
+    public static List<String> resolveDimensions(List<String> requested) {
+        List<String> dimensions = requested == null || requested.isEmpty()
+                ? new ArrayList<String>(DIMENSIONS) : new ArrayList<String>(requested);
+        for (String dimension : dimensions) {
+            if (!DIMENSIONS.contains(dimension)) {
+                throw new BusinessException(400, "comparison_dimension_unsupported");
+            }
+        }
+        return dimensions;
     }
 
     /**
@@ -141,10 +153,12 @@ public class CandidateComparisonService {
         ComparisonCellDTO cell = new ComparisonCellDTO();
         cell.setEntityId(entity.getEntityId());
         cell.setDimension(dimension);
+        // 来源前缀随实体走：值从候选池行载入时写 `candidatePool.*`，而不是继续自称 entity。
+        String source = sourcePrefix(entity);
         switch (dimension) {
             case "admissionRatio":
                 cell.setValue(entity.getAdmissionRatio());
-                cell.setSource("entity.admissionRatio");
+                cell.setSource(source + ".admissionRatio");
                 cell.setUnit(entity.getRateUnit());
                 if (entity.getAdmissionRatio() == null) {
                     cell.setUnavailableReason("admission_ratio_missing");
@@ -152,7 +166,7 @@ public class CandidateComparisonService {
                 break;
             case "schoolEnrollRatio":
                 cell.setValue(entity.getSchoolEnrollRatio());
-                cell.setSource("entity.schoolEnrollRatio");
+                cell.setSource(source + ".schoolEnrollRatio");
                 cell.setUnit(entity.getRateUnit());
                 // 学校率与单元率是两个口径，字段名不同、来源不同，不能互相顶替。
                 if (entity.getSchoolEnrollRatio() == null) {
@@ -161,7 +175,7 @@ public class CandidateComparisonService {
                 break;
             case "finalScore":
                 cell.setValue(entity.getFinalScore());
-                cell.setSource("entity.finalScore");
+                cell.setSource(source + ".finalScore");
                 cell.setUnit("score");
                 if (entity.getFinalScore() == null) {
                     cell.setUnavailableReason("final_score_missing");
@@ -169,7 +183,7 @@ public class CandidateComparisonService {
                 break;
             case "planNum":
                 cell.setValue(entity.getPlanNum());
-                cell.setSource("entity.planNum");
+                cell.setSource(source + ".planNum");
                 cell.setUnit("person");
                 if (entity.getPlanNum() == null) {
                     cell.setUnavailableReason("plan_num_missing");
@@ -177,7 +191,7 @@ public class CandidateComparisonService {
                 break;
             case "tuitionPerYear":
                 cell.setValue(entity.getTuitionPerYear());
-                cell.setSource("entity.tuitionPerYear");
+                cell.setSource(source + ".tuitionPerYear");
                 cell.setUnit("cny_per_year");
                 if (entity.getTuitionPerYear() == null) {
                     cell.setUnavailableReason("tuition_missing");
@@ -186,7 +200,7 @@ public class CandidateComparisonService {
             case "cityName":
                 // 名称类维度不受口径影响：城市名不随年份变化。
                 cell.setValue(entity.getCityName());
-                cell.setSource("entity.cityName");
+                cell.setSource(source + ".cityName");
                 if (blankToNull(entity.getCityName()) == null) {
                     cell.setUnavailableReason("city_missing");
                 }
@@ -196,6 +210,12 @@ public class CandidateComparisonService {
         }
         // 缺失就是缺失：值是 null，不能补零——补零之后"没有数据"看起来像"更低"。
         return cell;
+    }
+
+    /** 单元的 source 前缀。缺省 `entity`：调用方自带的值，不改历史口径。 */
+    private static String sourcePrefix(ComparisonEntityDTO entity) {
+        String source = blankToNull(entity.getValueSource());
+        return source == null ? "entity" : source;
     }
 
     private ComparisonCellDTO unavailableCell(ComparisonEntityDTO entity, String dimension, String reason) {

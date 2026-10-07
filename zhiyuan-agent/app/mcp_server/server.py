@@ -125,6 +125,14 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "画像缺分数时不可用：返回 unavailable=true 与原因码，如实说明不可用，"
         "不得用热度榜等无个性化数据顶替（禁估算、禁冒充）。"
     ),
+    "recommendation.compare_candidates": (
+        "对同伴会话内的候选志愿做矩阵比较（只读）；先 preview_candidates 拿 entityId "
+        "再比较；未接线维度如实标不可用。"
+        "入参 entityIds 2~5 个（= preview_candidates 返回的 entityId，即 volunteerId）；"
+        "值由系统从会话候选池**真实载入**，不要自己填数字；"
+        "口径不齐的数值列整列进 unavailable_dimensions（值为 null 是「不可比/无数据」，"
+        "不是 0，不得凭印象补齐）；结论只能引用 cells 里带 source 的值。"
+    ),
     # 批次编码表：补录草稿的 batch 码（按省不同：浙江第一段=17）与 level
     # （01 本科 / 02 专科）都取自这条；`subjectType` 按省份口径，多科类省份必给
     # ——可以给科类码（WL/LS），也可以给选考科目码/名（01/物理，Java 侧翻译）。
@@ -228,6 +236,38 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             },
         },
         "required": [],
+        "additionalProperties": False,
+    },
+    # 候选比较：**entityIds 必填且 2~5 个**（少于 2 不是比较，多于 5 表格读不过来；
+    # 与 Java `CandidateComparisonService.MIN/MAX_ENTITIES` 同一口径）。
+    # entityId = preview_candidates 返回的 entityId（即 volunteerId）。
+    # **身份字段不在这里**——tenant/session 由受信 binding 注入，模型塞进来的会被
+    # `_trusted_arguments` 丢掉。dimensions 可选：不在接线名单里的维度会如实进
+    # unavailable_dimensions（不静默丢）。
+    "recommendation.compare_candidates": {
+        "type": "object",
+        "properties": {
+            "entityIds": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 2,
+                "maxItems": 5,
+                "description": "要比较的候选（2~5 个）entityId，取自 recommendation.preview_candidates 的返回",
+            },
+            # 不设 enum：名单外的维度要**如实降级**（unavailable_dimensions +
+            # dimension_source_not_wired），而不是在 schema 层被拒——被拒的话
+            # 模型看不到"这个维度不够数据"，只会换个说法再试。
+            "dimensions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "要比的维度（可选；缺省为全部已接线维度）。"
+                    "已接线：admissionRatio/finalScore/planNum/tuitionPerYear/"
+                    "schoolEnrollRatio/cityName；名单外的维度会进 unavailable_dimensions"
+                ),
+            },
+        },
+        "required": ["entityIds"],
         "additionalProperties": False,
     },
 }

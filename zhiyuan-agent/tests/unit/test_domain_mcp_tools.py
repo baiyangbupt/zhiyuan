@@ -1028,6 +1028,282 @@ async def test_preview_majors_transport_error_is_backend_unavailable_not_an_empt
     assert "connection refused" in result["data"]["message"]
 
 
+def _compare_backend() -> InternalClientBackend:
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id = "1"
+    backend.chat_session_id = "900047"
+    backend.thread_id = "thr"
+    backend.current_state_version = 0
+    return backend
+
+
+def _comparable_entity(entity_id: str, batch: str = "17") -> dict:
+    """一份**口径齐全**的候选实体：五个口径字段全给，值来自候选池行。"""
+    return {
+        "entityId": entity_id,
+        "schoolId": f"s-{entity_id}",
+        "schoolName": f"学校{entity_id}",
+        "admissionYear": 2026,
+        "areaId": "330000",
+        "batch": batch,
+        "admissionMode": "major",
+        "rateUnit": "percent",
+    }
+
+
+@pytest.mark.asyncio
+async def test_compare_candidates_uses_trusted_identity_and_returns_read_only_envelope(
+    monkeypatch,
+) -> None:
+    """候选比较只读纵切的四条合同：**受信身份、真实载入、只读声明、信封形状**。
+
+    - 模型塞进来的 tenantId/sessionId/chatSessionId 必须被丢掉——否则它能把任何
+      会话的候选装进自己的回合（身份只能来自受信 binding）；
+    - 值由 Java 从会话候选池真实载入：工具只把 entityId 原样送去，cells 原样带出
+      （模型没有机会往矩阵里塞数字）；
+    - `state_mutation=False`：比较不改任何状态（Java 侧版本号实证在真栈 E2E）。
+    """
+    from app.util import internal_client
+
+    calls: list[dict] = []
+
+    async def compare_candidate_pool(tenant_id, chat_session_id, entity_ids, dimensions=None):
+        calls.append(
+            {
+                "tenant_id": tenant_id,
+                "chat_session_id": chat_session_id,
+                "entity_ids": entity_ids,
+                "dimensions": dimensions,
+            }
+        )
+        return {
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "entities": [
+                    _comparable_entity("v1"),
+                    _comparable_entity("v2"),
+                ],
+                "dimensions": ["finalScore", "cityName"],
+                "cells": [
+                    {"entityId": "v1", "dimension": "finalScore", "value": 88.5,
+                     "unit": "score", "source": "candidatePool.finalScore"},
+                    {"entityId": "v2", "dimension": "finalScore", "value": 90.0,
+                     "unit": "score", "source": "candidatePool.finalScore"},
+                    {"entityId": "v1", "dimension": "cityName", "value": "杭州",
+                     "source": "candidatePool.cityName"},
+                    {"entityId": "v2", "dimension": "cityName", "value": "上海",
+                     "source": "candidatePool.cityName"},
+                ],
+                "unavailableDimensions": [],
+                "limitations": [],
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "compare_candidate_pool", compare_candidate_pool)
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+
+    result = await tools.call(
+        "recommendation.compare_candidates",
+        {
+            "entityIds": ["v1", "v2"],
+            "dimensions": ["finalScore", "cityName"],
+            # 冒充身份：必须被 `_trusted_arguments` 丢掉。
+            "tenantId": "999",
+            "sessionId": "888",
+            "chatSessionId": "777",
+        },
+    )
+
+    assert result["kind"] == "comparison"
+    assert result["status"] == "ok"
+    assert calls == [
+        {
+            "tenant_id": "1",
+            "chat_session_id": "900047",
+            "entity_ids": ["v1", "v2"],
+            "dimensions": ["finalScore", "cityName"],
+        }
+    ]
+    data = result["data"]
+    assert [entity["entityId"] for entity in data["entities"]] == ["v1", "v2"]
+    assert data["dimensions"] == ["finalScore", "cityName"]
+    score_cell = next(
+        cell
+        for cell in data["cells"]
+        if cell["dimension"] == "finalScore" and cell["entityId"] == "v1"
+    )
+    assert score_cell["value"] == 88.5
+    assert score_cell["source"] == "candidatePool.finalScore"
+    assert data["unavailable_dimensions"] == []
+    assert data["state_mutation"] is False
+    assert result["limitations"] == []
+
+
+@pytest.mark.asyncio
+async def test_compare_candidates_requires_two_to_five_entity_ids(monkeypatch) -> None:
+    """少于 2 不是比较、多于 5 表格读不过来：非法入参在工具入口挡住，**不打后端**。"""
+    from app.util import internal_client
+
+    calls: list = []
+
+    async def compare_candidate_pool(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"code": 0, "msg": "ok", "data": {}}
+
+    monkeypatch.setattr(internal_client, "compare_candidate_pool", compare_candidate_pool)
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+
+    too_few = await tools.call("recommendation.compare_candidates", {"entityIds": ["v1"]})
+    assert too_few["status"] == "needs_clarification"
+    assert too_few["data"]["missingFields"] == ["entityIds"]
+
+    too_many = await tools.call(
+        "recommendation.compare_candidates",
+        {"entityIds": ["v1", "v2", "v3", "v4", "v5", "v6"]},
+    )
+    assert too_many["status"] == "needs_clarification"
+
+    none_given = await tools.call("recommendation.compare_candidates", {})
+    assert none_given["status"] == "needs_clarification"
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_compare_candidates_reports_unwired_dimensions_and_missing_ids(monkeypatch) -> None:
+    """未接线维度与找不到的 ID 都**如实标注**，不静默丢。
+
+    - 名单外的维度（`riskFlags`）进 `unavailable_dimensions` +
+      `dimension_source_not_wired:<dim>`，且**不送到 Java**（Java 会 400，
+      到了也只是一个错误码，模型看不到"这个维度不够数据"）；
+    - Java 侧 `entity_not_found:v9` 的 limitations 原样带出——丢一个 ID 而返回
+      N-1 列的矩阵，读者会以为表里就是他要比的那几个。
+    """
+    from app.util import internal_client
+
+    async def compare_candidate_pool(tenant_id, chat_session_id, entity_ids, dimensions=None):
+        assert entity_ids == ["v1", "v2", "v9"]
+        assert dimensions == ["finalScore"]
+        return {
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "entities": [_comparable_entity("v1"), _comparable_entity("v2")],
+                "dimensions": ["finalScore"],
+                "cells": [
+                    {"entityId": "v1", "dimension": "finalScore", "value": 88.5,
+                     "unit": "score", "source": "candidatePool.finalScore"},
+                    {"entityId": "v2", "dimension": "finalScore", "value": 90.0,
+                     "unit": "score", "source": "candidatePool.finalScore"},
+                ],
+                "unavailableDimensions": [],
+                "limitations": ["entity_not_found:v9"],
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "compare_candidate_pool", compare_candidate_pool)
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+
+    result = await tools.call(
+        "recommendation.compare_candidates",
+        {"entityIds": ["v1", "v2", "v9"], "dimensions": ["finalScore", "riskFlags"]},
+    )
+
+    assert result["status"] == "ok"
+    # 未接线的维度：data 与外层 limitations 都要有，不可用名单也要含它。
+    assert "dimension_source_not_wired:riskFlags" in result["limitations"]
+    assert "dimension_source_not_wired:riskFlags" in result["data"]["limitations"]
+    assert "riskFlags" in result["data"]["unavailable_dimensions"]
+    # 找不到的 ID 逐条转述，不许吞。
+    assert "entity_not_found:v9" in result["limitations"]
+    assert "entity_not_found:v9" in result["data"]["limitations"]
+
+
+@pytest.mark.asyncio
+async def test_compare_candidates_withholds_numbers_that_violate_the_scope_contract(
+    monkeypatch,
+) -> None:
+    """口径合同（与 Java 同一份判据）被违反时，**数字不许透给模型**——整列降级不可比。
+
+    构造的是最危险的形状：Java 返回的两行批次不同（口径不齐）却带着 finalScore
+    的值。守约检查必须把该列置空并标不可比，而不是把 88.5 与 90.0 交给模型
+    去说"A 比 B 低"——那是"把不可比的数放在一起比"。
+    """
+    from app.util import internal_client
+
+    async def compare_candidate_pool(tenant_id, chat_session_id, entity_ids, dimensions=None):
+        return {
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "entities": [
+                    _comparable_entity("v1", batch="17"),
+                    _comparable_entity("v2", batch="18"),
+                ],
+                "dimensions": ["finalScore", "cityName"],
+                "cells": [
+                    {"entityId": "v1", "dimension": "finalScore", "value": 88.5,
+                     "unit": "score", "source": "candidatePool.finalScore"},
+                    {"entityId": "v2", "dimension": "finalScore", "value": 90.0,
+                     "unit": "score", "source": "candidatePool.finalScore"},
+                    {"entityId": "v1", "dimension": "cityName", "value": "杭州",
+                     "source": "candidatePool.cityName"},
+                    {"entityId": "v2", "dimension": "cityName", "value": "上海",
+                     "source": "candidatePool.cityName"},
+                ],
+                "unavailableDimensions": [],
+                "limitations": [],
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "compare_candidate_pool", compare_candidate_pool)
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+
+    result = await tools.call(
+        "recommendation.compare_candidates",
+        {"entityIds": ["v1", "v2"], "dimensions": ["finalScore", "cityName"]},
+    )
+
+    assert result["status"] == "ok"
+    assert "comparison_incomparable_value:finalScore" in result["limitations"]
+    assert "comparison_values_withheld:finalScore" in result["limitations"]
+    assert "finalScore" in result["data"]["unavailable_dimensions"]
+    for cell in result["data"]["cells"]:
+        if cell["dimension"] == "finalScore":
+            assert cell["value"] is None
+            assert cell["unavailableReason"] == "scope_mismatch"
+    # 名称类维度不受口径影响，照常带出。
+    city_cell = next(cell for cell in result["data"]["cells"] if cell["dimension"] == "cityName")
+    assert city_cell["value"] == "杭州"
+
+
+@pytest.mark.asyncio
+async def test_compare_candidates_transport_error_is_backend_unavailable_not_an_empty_matrix(
+    monkeypatch,
+) -> None:
+    """传输层失败必须是 `backend_unavailable`——**不是**一张空矩阵："查不到"与"没有"是两件事。"""
+    from app.util import internal_client
+
+    async def compare_candidate_pool(*args, **kwargs):
+        return {"error": "connection refused", "success": False, "data": {}}
+
+    monkeypatch.setattr(internal_client, "compare_candidate_pool", compare_candidate_pool)
+
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+
+    result = await tools.call(
+        "recommendation.compare_candidates", {"entityIds": ["v1", "v2"]}
+    )
+
+    assert result["status"] == "backend_unavailable"
+    assert "connection refused" in result["data"]["message"]
+
+
 def test_gateway_collects_evidence_from_the_mcp_text_result() -> None:
     """工具证据藏在 MCP 结果的 **JSON 字符串**里。
 

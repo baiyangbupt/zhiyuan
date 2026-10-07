@@ -16,6 +16,7 @@ from app.admission.facts import (
 from app.admission.tool_results import KIND_HISTORY, normalize_history
 from app.harness.binding import BindingError, ThreadBinding
 from app.mcp_server.response import SCHEMA_VERSION, error, ok
+from app.mcp_server.tools_recommendation import comparison_problems
 from app.util import internal_client
 
 
@@ -66,6 +67,12 @@ CAPABILITIES = {
     # 与 `preview_candidates` 的分工是**层级**：这条是"专业方向"（专业类层，
     # 不落到具体志愿单元），那条是"具体志愿单元"候选。
     "recommendation.preview_majors": "admission_read",
+    # 候选比较：**值由 Java 从会话候选池真实载入**（B4"比较矩阵仅构造数据"的解药）。
+    # 模型只给 entityId（= volunteerId，来自 preview_candidates）**定位候选行**，
+    # 不给数字——凭记忆填数这条路在这里堵死。挂 `admission_read` 的理由与候选
+    # 预览相同（见上）：新造能力名会被 Java 的能力签发全部拒绝。比较属"志愿/
+    # 录取"域，同一归属。
+    "recommendation.compare_candidates": "admission_read",
 }
 WRITE_TOOL_NAMES = frozenset(
     {
@@ -105,6 +112,10 @@ TOOL_KINDS = {
     # 复用 kind 而不新造：新 kind 要在 `TOOL_OUTPUT_SCHEMA` 与下游消费两端同时放行，
     # 而"专业方向"与"志愿候选"在这两处本就同一形状。
     "recommendation.preview_majors": "candidate",
+    # 候选比较与 `admission.compare` 同为 comparison 形状（口径判定 + 单元格矩阵）：
+    # 复用 kind 而不新造——口径合同（SCOPE_KEYS 五个字段）两处本就同源
+    # （`tools_recommendation` 的守约检查对两条链用的是同一份判据）。
+    "recommendation.compare_candidates": "comparison",
 }
 
 
@@ -132,6 +143,21 @@ def _as_float(value: Any) -> float | None:
         return float(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _unique_append(values: list[str], additions: Any) -> list[str]:
+    """追加去重的 limitations。
+
+    同一条限制可能从两条链各来一遍（工具的降级标识 + Java 矩阵里的同一条），
+    出现两次会让"限制有几条"这个计数变假——按首次出现去重。
+    """
+    if not isinstance(additions, (list, tuple, set, frozenset)):
+        return values
+    for item in additions:
+        text = str(item)
+        if text and text not in values:
+            values.append(text)
+    return values
 
 
 def _html_to_text(value: str) -> str:
@@ -390,6 +416,10 @@ class ReadonlyDomainTools:
         if name == "recommendation.preview_majors":
             # 只收 topN；**会话身份从受信 binding 取**（模型塞 chatSessionId/sessionId 一律丢掉）。
             return await self.backend.preview_majors(**self._trusted_arguments(arguments))
+        if name == "recommendation.compare_candidates":
+            # 只收 entityIds/dimensions；模型塞的 chatSessionId/tenantId/sessionId
+            # 会被 `_trusted_arguments` 全部丢掉——不能让它去比别人的会话。
+            return await self.backend.compare_candidates(**self._trusted_arguments(arguments))
         method = {
             "entity.resolve": "resolve",
             "catalog.get_school": "get_school",
@@ -402,7 +432,10 @@ class ReadonlyDomainTools:
         return await getattr(self.backend, method)(**self._trusted_arguments(arguments))
 
     def _trusted_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in arguments.items() if key not in {"threadId", "tenantId", "sessionId", "userId", "handle", "stateVersion"}}
+        # `chatSessionId` 也在名单里：会话身份**只能**来自受信 binding。以前它不在
+        # 名单里，只是恰好没有后端方法读这个键——"恰好没读"不是安全边界，
+        # 给任一方法加一个透传就会变成"模型能指定去比/看哪个会话"。
+        return {key: value for key, value in arguments.items() if key not in {"threadId", "tenantId", "sessionId", "chatSessionId", "userId", "handle", "stateVersion"}}
 
     # 走"事实/证据配对"那条路的工具。按**名字前缀**判断是错的：
     # `planning.get_working_plan` 是 `admission.get_current_plan` 的新名，
@@ -1148,6 +1181,134 @@ class InternalClientBackend:
             "evidence": unique_evidence,
             "limitations": payload_data["limitations"],
         }
+
+    # 能接进候选比较矩阵的维度：与 Java `CandidateComparisonService.DIMENSIONS`
+    # 同一份名单（六个）。请求名单外的维度**不静默丢**：进
+    # `unavailable_dimensions` 并附 `dimension_source_not_wired:<dim>`——
+    # 与 `admission.compare` 对未接线维度的降级口径一致。
+    CANDIDATE_COMPARISON_WIRED_DIMENSIONS = (
+        "admissionRatio", "finalScore", "planNum", "tuitionPerYear",
+        "schoolEnrollRatio", "cityName",
+    )
+
+    # 与 Java `CandidateComparisonService.MIN/MAX_ENTITIES` 同一口径：
+    # 少于 2 不是比较，多于 5 表格读不过来。
+    CANDIDATE_COMPARISON_MIN_ENTITIES = 2
+    CANDIDATE_COMPARISON_MAX_ENTITIES = 5
+
+    async def compare_candidates(self, **arguments: Any) -> Any:
+        """候选比较（只读）：把会话候选池里的 2–5 个候选（按 entityId）放进同一张表。
+
+        值**不由调用方给**：entityId（= volunteerId，来自 `preview_candidates`）
+        只用于定位候选行，值由 Java 从会话候选池真实载入——模型凭记忆填数字这条
+        路在这里堵死（B4"比较矩阵仅构造数据"的解药）。Java 返回的矩阵再过一遍
+        `comparison_problems` 守约检查（与 Java `CandidateComparisonService`
+        同一份口径合同）：违反合同的列降级为不可比，而不是把数字透给模型。
+        """
+        raw_ids = arguments.get("entityIds", arguments.get("entity_ids"))
+        if isinstance(raw_ids, str):
+            raw_ids = [raw_ids]
+        entity_ids = [str(item).strip() for item in (raw_ids or []) if str(item).strip()]
+        if not (
+            self.CANDIDATE_COMPARISON_MIN_ENTITIES
+            <= len(entity_ids)
+            <= self.CANDIDATE_COMPARISON_MAX_ENTITIES
+        ):
+            result = _err(
+                "recommendation.compare_candidates",
+                "needs_clarification",
+                "comparison needs 2 to 5 entityIds",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = ["entityIds"]
+            return result
+
+        requested = [
+            str(item).strip()
+            for item in (arguments.get("dimensions") or [])
+            if str(item).strip()
+        ]
+        unwired = sorted(set(requested) - set(self.CANDIDATE_COMPARISON_WIRED_DIMENSIONS))
+        wired = [dimension for dimension in requested if dimension not in unwired]
+
+        response = await internal_client.compare_candidate_pool(
+            self.tenant_id, self.chat_session_id, entity_ids, wired
+        )
+        if not isinstance(response, dict):
+            raise RuntimeError(f"compare_candidate_pool returned non-dict: {response!r}")
+        if response.get("success") is False:
+            # 传输层失败（`{"error": …, "success": False}`）：抛给外层统一降级成
+            # backend_unavailable——不能在这里编一张空矩阵，"查不到"与"没有"是两件事。
+            raise RuntimeError(f"compare_candidate_pool transport error: {response.get('error')}")
+
+        payload = self._preserve_envelope(response)
+        if not isinstance(payload, dict):
+            return payload
+        limitations = list(payload.get("limitations") or [])
+        matrix = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        if payload.get("status") != "ok" or not matrix:
+            # Java 侧拒绝（维度名非法/实体数不合法/上游异常）：原文已在
+            # limitations（upstream_code/upstream_message），不在这里编矩阵。
+            if unwired:
+                _unique_append(limitations, ["dimension_source_not_wired:" + ",".join(unwired)])
+            payload["data"] = {
+                "entities": [],
+                "dimensions": wired,
+                "cells": [],
+                "unavailable_dimensions": sorted(set(unwired)),
+                "limitations": limitations,
+                # 只读：不写库、不 bump 版本（Java 侧实证）。
+                "state_mutation": False,
+            }
+            payload["limitations"] = limitations
+            return payload
+
+        entities = [entity for entity in (matrix.get("entities") or []) if isinstance(entity, dict)]
+        cells = [cell for cell in (matrix.get("cells") or []) if isinstance(cell, dict)]
+        dimensions = list(matrix.get("dimensions") or wired)
+        _unique_append(limitations, matrix.get("limitations"))
+        unavailable = list(matrix.get("unavailableDimensions") or [])
+
+        # 守约检查：与 Java 同一份口径合同（缺失算不可比、数值列必须有来源）。
+        # 违规的列**降级为不可比**——值不传给模型，而不是把违反合同的数字透出去。
+        problems = comparison_problems(
+            {"entities": entities, "dimensions": dimensions, "cells": cells}
+        )
+        if problems:
+            _unique_append(limitations, problems)
+            withheld = sorted(
+                {
+                    problem.split(":", 1)[1]
+                    for problem in problems
+                    if problem.startswith(
+                        ("comparison_incomparable_value:", "comparison_cell_without_source:")
+                    )
+                }
+            )
+            if withheld:
+                for cell in cells:
+                    if cell.get("dimension") in withheld:
+                        cell["value"] = None
+                        cell["source"] = None
+                        cell["unavailableReason"] = "scope_mismatch"
+                unavailable = sorted(set(unavailable) | set(withheld))
+                _unique_append(limitations, ["comparison_values_withheld:" + ",".join(withheld)])
+
+        if unwired:
+            # 未接线的维度整列不可比：如实标，不拿别处的数顶替。
+            _unique_append(limitations, ["dimension_source_not_wired:" + ",".join(unwired)])
+            unavailable = sorted(set(unavailable) | set(unwired))
+
+        payload["data"] = {
+            "entities": entities,
+            "dimensions": dimensions,
+            "cells": cells,
+            "unavailable_dimensions": unavailable,
+            "limitations": limitations,
+            "state_mutation": False,
+        }
+        payload["limitations"] = limitations
+        return payload
 
     # 候选预览一次带回的条数上限。与 Java 侧硬上限一致：**全量候选留在服务器**，
     # 模型拿到的是"一页样例 + 全量计数"，整池候选吃不掉一轮上下文。

@@ -37,4 +37,12 @@ public class ComparisonEntityDTO {
     private Integer tuitionPerYear;
     private List<String> mustSubjects;
     private List<String> riskFlags;
+
+    /**
+     * 这批值来自哪条链路（用于单元的 `source` 前缀，如 `candidatePool`）。
+     *
+     * <p>为空时按 `entity` 记——那是"调用方自带的实体值"的中性说法。值既然是从
+     * 候选池行载入的，来源就该写候选池：来源写错了，矩阵里每个数字的核对方式也就错了。</p>
+     */
+    private String valueSource;
 }

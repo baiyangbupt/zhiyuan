@@ -99,4 +99,12 @@
   它与 `recommendation.preview_candidates` 是**两层**：前者答"专业方向"（专业类
   层），后者答"具体志愿单元"（院校/专业组候选），**别混用**；这条工具画像缺分数时
   不可用（如实说明），不得拿热度榜顶替。
+- 用户要**比较具体学校/专业**（「帮我比较 A 和 B」「这两个哪个更稳」）时：
+  先调 `recommendation.preview_candidates` 把候选**定位出来**（拿 `entityId`），
+  再调 `recommendation.compare_candidates`（入参 `entityIds` 2~5 个，可带 `dimensions`）。
+  比较的值由系统从会话候选池**真实载入**，你不要自己填数字；结论**只能引用
+  `cells` 里带 `source` 的格子**里的值——`unavailable_dimensions` 里的列和
+  `value: null` 的格子是"口径不齐/没有数据"，不要凭印象补上，也不要拿别处的数字顶替。
+  在候选池里找不到的 `entityId` 会在 `limitations` 里逐条列出（`entity_not_found:`），
+  如实转述"这几个没进候选池"，别跳过。
 - 缺画像硬事实（省份/年份/成绩或位次/选科/批次）时仍然**先澄清**，不因为能提案就跳过 ✓。

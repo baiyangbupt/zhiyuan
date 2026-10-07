@@ -678,6 +678,33 @@ async def compare_candidates(
     )
 
 
+async def compare_candidate_pool(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    entity_ids: List[str],
+    dimensions: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """按候选池 entityId 的并列（**只读**）：值由 Java 从会话候选池真实载入。
+
+    与 `compare_candidates` 的分工：那条的值由调用方（模型链路）自己取好再传；
+    这条**只给 ID**（`recommendation.preview_candidates` 返回的 `entityId` = volunteerId），
+    值由 Java 从候选池的候选行里载入——模型凭记忆填数字这条路在这里被堵死。
+
+    Java 侧走只读载入（`loadReadOnlyCandidatePool`：不 savePlanningState、不 bump 规划版本）。
+    找不到的 ID 会进 `limitations` 的 `entity_not_found:<id>`，**不静默丢**。
+    """
+    payload: Dict[str, Any] = {
+        "chatSessionId": chat_session_id,
+        "entityIds": list(entity_ids),
+        "dimensions": list(dimensions or []),
+    }
+    return await http_client.post(
+        endpoint=f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/compare-candidates",
+        json_data=payload,
+        error_msg="候选比较失败",
+    )
+
+
 async def catalog_tree_filter_tags() -> Dict[str, Any]:
     return await http_client.get(
         endpoint="/gaotu-assistant-bot/inner/catalog/tree/filter-tags",

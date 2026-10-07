@@ -59,28 +59,40 @@ public class CandidatePreviewService {
     @Autowired
     private VolunteerDataProvider volunteerDataProvider;
 
-    public CandidatePreviewRes preview(Long tenantId, Long chatSessionId, CandidatePreviewReq req) {
-        CandidatePreviewReq safeReq = req == null ? new CandidatePreviewReq() : req;
-        CandidatePreviewRes res = new CandidatePreviewRes();
-        res.setPage(resolvePage(safeReq.getPage()));
-        res.setPageSize(resolvePageSize(safeReq.getPageSize()));
+    /**
+     * 只读候选池载入结果。{@code items} 为 **null** 表示来源不可用（原因已进
+     * {@code limitations}）；非 null 时可能是空列表（流水线跑通但一条候选都没有）。
+     */
+    static class ReadOnlyCandidatePool {
+        PlanningStateDTO state;
+        VolunteerRecommendListResponse response;
+        List<CandidateItemDTO> items;
+        final List<String> limitations = Lists.newArrayList();
+    }
 
+    /**
+     * 只读载入会话候选池的行（推荐 → 成形），**不落盘**：不 savePlanningState、不 bump version。
+     *
+     * <p>从 {@link #preview} 抽出的可复用包内方法（逻辑一字未改）：按 ID 载入候选行做比较
+     * （{@link CandidateCompareService}）需要同一份载入语义——不共用的话，两条链路迟早
+     * 一条在写、一条在读，而"比较看到了什么"就不再等于"预览看到了什么"。</p>
+     */
+    ReadOnlyCandidatePool loadReadOnlyCandidatePool(Long tenantId, Long chatSessionId) {
+        ReadOnlyCandidatePool loaded = new ReadOnlyCandidatePool();
         // 只读加载：不能用 loadPlanningState（它会为 legacy 会话懒导入并 savePlanningState），
         // 也不能用 getPlanningState/queryCandidatePool（后者会刷新 overlay 落盘）。
-        PlanningStateDTO state = planningStateService.loadPlanningStateReadOnly(chatSessionId);
-        res.setProfileVersion(state.getVersion());
-        res.setDataVersion(resolveDataVersion(state));
+        loaded.state = planningStateService.loadPlanningStateReadOnly(chatSessionId);
 
         ChatSession session = null;
         try {
             session = volunteerDataProvider.getChatSession(chatSessionId);
         } catch (Exception ex) {
-            log.warn("candidatePreview session load failed tenantId={} chatSessionId={}", tenantId, chatSessionId, ex);
+            log.warn("candidatePool session load failed tenantId={} chatSessionId={}", tenantId, chatSessionId, ex);
         }
         if (session != null && SessionStatus.FINISHED.equals(session.getSessionStatus())) {
-            // 已提交会话不再重算：它的候选来源是"当时提交的那份"，预览面不把旧提交当现行候选。
-            res.getLimitations().add(LIMITATION_SOURCE_UNAVAILABLE);
-            return res;
+            // 已提交会话不再重算：它的候选来源是"当时提交的那份"，预览/比较面不把旧提交当现行候选。
+            loaded.limitations.add(LIMITATION_SOURCE_UNAVAILABLE);
+            return loaded;
         }
 
         VolunteerRecommendListResponse response;
@@ -88,27 +100,44 @@ public class CandidatePreviewService {
             response = volunteerBizService.recommendVolunteerList(tenantId, chatSessionId, false, false);
         } catch (Exception ex) {
             // 无志愿文件就是这样落地的（本地缺失 → OSS 下载失败 → 业务异常）：如实报来源不可用，不 500。
-            log.warn("candidatePreview recommend unavailable tenantId={} chatSessionId={}: {}",
+            log.warn("candidatePool recommend unavailable tenantId={} chatSessionId={}: {}",
                     tenantId, chatSessionId, ex.getMessage());
-            res.getLimitations().add(LIMITATION_SOURCE_UNAVAILABLE);
-            return res;
+            loaded.limitations.add(LIMITATION_SOURCE_UNAVAILABLE);
+            return loaded;
         }
         if (response == null) {
-            res.getLimitations().add(LIMITATION_SOURCE_UNAVAILABLE);
-            return res;
+            loaded.limitations.add(LIMITATION_SOURCE_UNAVAILABLE);
+            return loaded;
         }
+        loaded.response = response;
 
-        List<CandidateItemDTO> all;
         try {
             CandidatePoolStateDTO poolState = planningStateService.buildCandidatePoolStateFromResponse(
-                    chatSessionId, state, response);
-            all = poolState == null || poolState.getItems() == null
+                    chatSessionId, loaded.state, response);
+            loaded.items = poolState == null || poolState.getItems() == null
                     ? Lists.newArrayList() : poolState.getItems();
         } catch (Exception ex) {
-            log.warn("candidatePreview shaping failed tenantId={} chatSessionId={}", tenantId, chatSessionId, ex);
-            res.getLimitations().add(LIMITATION_SOURCE_UNAVAILABLE);
+            log.warn("candidatePool shaping failed tenantId={} chatSessionId={}", tenantId, chatSessionId, ex);
+            loaded.limitations.add(LIMITATION_SOURCE_UNAVAILABLE);
+            return loaded;
+        }
+        return loaded;
+    }
+
+    public CandidatePreviewRes preview(Long tenantId, Long chatSessionId, CandidatePreviewReq req) {
+        CandidatePreviewReq safeReq = req == null ? new CandidatePreviewReq() : req;
+        CandidatePreviewRes res = new CandidatePreviewRes();
+        res.setPage(resolvePage(safeReq.getPage()));
+        res.setPageSize(resolvePageSize(safeReq.getPageSize()));
+
+        ReadOnlyCandidatePool loaded = loadReadOnlyCandidatePool(tenantId, chatSessionId);
+        res.setProfileVersion(loaded.state == null ? null : loaded.state.getVersion());
+        res.setDataVersion(resolveDataVersion(loaded.state));
+        res.getLimitations().addAll(loaded.limitations);
+        if (loaded.items == null) {
             return res;
         }
+        List<CandidateItemDTO> all = loaded.items;
 
         List<CandidateItemDTO> filtered = applyFilters(all, safeReq.getFilters(), res.getLimitations());
         res.setTotal(filtered.size());

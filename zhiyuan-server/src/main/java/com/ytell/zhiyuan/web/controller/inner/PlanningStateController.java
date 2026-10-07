@@ -1,8 +1,10 @@
 package com.ytell.zhiyuan.web.controller.inner;
 
 import com.ytell.zhiyuan.common.base.BaseResponse;
+import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.planning.*;
+import com.ytell.zhiyuan.service.biz.CandidateCompareService;
 import com.ytell.zhiyuan.service.biz.CandidateComparisonService;
 import com.ytell.zhiyuan.service.biz.CandidatePreviewService;
 import com.ytell.zhiyuan.service.biz.ChatSessionBizService;
@@ -45,6 +47,8 @@ public class PlanningStateController {
     @Autowired
     private CandidateComparisonService candidateComparisonService;
     @Autowired
+    private CandidateCompareService candidateCompareService;
+    @Autowired
     private ChatSessionBizService chatSessionBizService;
 
     /**
@@ -64,6 +68,31 @@ public class PlanningStateController {
                 req == null || req.getEntities() == null ? 0 : req.getEntities().size(),
                 req == null ? null : req.getDimensions());
         return BaseResponse.success(candidateComparisonService.compare(req.getEntities(), req.getDimensions()));
+    }
+
+    /**
+     * 按候选池 entityId 的并列（只读）。
+     *
+     * <p>与 {@code /session/compare} 的分工：那条的值由调用方传入（这里只判口径）；
+     * 这条**由服务端从会话候选池真实载入**候选行——模型给出 2–5 个
+     * entityId（= volunteerId，来自 candidate-preview），值不许模型自己填。
+     * 只读：不 savePlanningState、不 bump 规划版本。</p>
+     */
+    @PostMapping("/session/compare-candidates")
+    @ApiOperation("按候选池 entityId 载入真实候选行并做同口径并列（只读，不落规划状态）")
+    public BaseResponse<CandidateComparisonDTO> compareCandidates(
+            @PathVariable("tenantId") Long tenantId,
+            @ApiParam("会话ID（也可放在请求体里；两处都给时以请求体为准）")
+            @RequestParam(value = "chatSessionId", required = false) Long queryChatSessionId,
+            @RequestBody(required = false) CandidateCompareReq req) {
+        CandidateCompareReq safeReq = req == null ? new CandidateCompareReq() : req;
+        Long chatSessionId = safeReq.getChatSessionId() != null ? safeReq.getChatSessionId() : queryChatSessionId;
+        if (chatSessionId == null) {
+            throw new BusinessException(400, "chat_session_id_required");
+        }
+        log.info("compareCandidates: tenantId={}, chatSessionId={}, entityIds={}, dimensions={}", tenantId,
+                chatSessionId, safeReq.getEntityIds(), safeReq.getDimensions());
+        return BaseResponse.success(candidateCompareService.compare(tenantId, chatSessionId, safeReq));
     }
 
     @GetMapping("/session/state")

@@ -63,6 +63,9 @@ TOOL_LABELS: dict[str, str] = {
     # 专业方向那条链的进度文案：与候选预览分开（"方向"与"志愿单元"是两层，
     # 用户看到的词也该是两层）。
     "recommendation.preview_majors": "正在推荐专业方向",
+    # 候选比较：与 `admission.compare`（分数线并列）分开说——这条比的是
+    # **会话候选池里的候选**，用户看到的是"我给你的候选在并排比"。
+    "recommendation.compare_candidates": "正在比较候选志愿",
 }
 
 
