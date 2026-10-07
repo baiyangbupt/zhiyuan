@@ -27,6 +27,14 @@
    `ProgramPageReq(memberId=900002, prepareType=VOLUNTEER, score=507, areaId=340000, ...)`
    → 上游 `code:84009, msg:当前策略已失效，请刷新页面`。
 
+4. **A/B 排除"年份不对"假设**（2026-10-08 07:46 实测）：以 `prepareType=VOLUNTEER` +
+   **策略年 `examYear=2027`** 调外部初始化（创建时即触发全量拉数）——
+   `ProgramPageReq(year=2027, memberId=900002, prepareType=VOLUNTEER, score=641, areaId=330000, ...)`
+   → **仍 84009**，会话事务整体回滚（连会话都建不出来）。
+   即：**900002 在 2026 与 2027 两个年份都没有 VOLUNTEER 取数策略**——断因是**账号策略缺失**，
+   不是年份口径或"没有跟随上游策略"的问题（本地已按省策略实时推导 prepareType，属策略优先口径）。
+   对照：同账号 **PREDICT 全量取数正常**（真拉取，同参数面）。
+
 ## 三、结论
 
 演示用**合成会员（900002 等）目前只有 PREDICT（模拟填报）取数策略**；上游切 VOLUNTEER 后，
