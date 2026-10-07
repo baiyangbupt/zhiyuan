@@ -187,15 +187,29 @@ public class VolunteerResponseBuilder {
             baseData.setSprints_count(sprintTotal);
             baseData.setSafes_count(safeTotal);
             baseData.setProtects_count(protectTotal);
-            baseData.setNeed_count(userScoreDetail.getVolunteerCount().getMajorCount());
+            baseData.setNeed_count(resolveNeedCount(userScoreDetail, true));
         } else {
             baseData.setSprints_count(sprints.size());
             baseData.setSafes_count(safes.size());
             baseData.setProtects_count(protects.size());
-            baseData.setNeed_count(userScoreDetail.getVolunteerCount().getSchoolCount());
+            baseData.setNeed_count(resolveNeedCount(userScoreDetail, false));
         }
 
         baseData.setTotal_count(baseData.getSprints_count() + baseData.getProtects_count() + baseData.getSafes_count());
+    }
+
+    /**
+     * 应填数量：成绩行缺 {@code volunteerCount}（老会话/legacy 草稿未补录）时返回 {@code null}，
+     * 响应照常构建（need_count 缺省），不再让"专业+院校/院校专业组"任一分支 NPE 成 code -1。
+     */
+    private Integer resolveNeedCount(CreateSessionReq userScoreDetail, boolean majorMode) {
+        if (userScoreDetail == null || userScoreDetail.getVolunteerCount() == null) {
+            log.warn("resolveNeedCount skipped reason=volunteer_count_missing majorMode={}", majorMode);
+            return null;
+        }
+        return majorMode
+                ? userScoreDetail.getVolunteerCount().getMajorCount()
+                : userScoreDetail.getVolunteerCount().getSchoolCount();
     }
 
     /**

@@ -176,7 +176,7 @@ public class VolunteerBizService {
 
         // 4. 计算目标数量
         Integer targetSchoolCount = dataProvider.calculateTargetSchoolCount(userScoreDetail, applyType);
-        Map<String, Integer> threeTargetCountMap = volunteerIntervalService.calculateTargetCounts(targetSchoolCount, false, userScoreDetail.getStrategyType());
+        Map<String, Integer> threeTargetCountMap = resolveThreeTargetCountMap(targetSchoolCount, userScoreDetail);
 
         // 5. 构建筛选条件
         UserIntentQueryReq userIntentQueryReq = filterChain.buildQueryCondition(userScoreDetail, userFinalProfileData);
@@ -240,7 +240,7 @@ public class VolunteerBizService {
         String applyType = dataProvider.getApplyTypeCode(volunteerDataDTO);
 
         Integer targetSchoolCount = dataProvider.calculateTargetSchoolCount(userScoreDetail, applyType);
-        Map<String, Integer> threeTargetCountMap = volunteerIntervalService.calculateTargetCounts(targetSchoolCount, false, userScoreDetail.getStrategyType());
+        Map<String, Integer> threeTargetCountMap = resolveThreeTargetCountMap(targetSchoolCount, userScoreDetail);
 
         UserIntentQueryReq userIntentQueryReq = filterChain.buildQueryCondition(userScoreDetail, userFinalProfileData);
         List<VolunteerSchoolGroup> volunteerAfterFilterData = filterChain.filterVolunteerData(userIntentQueryReq, volunteerFullData);
@@ -712,6 +712,28 @@ public class VolunteerBizService {
             return scoreDetail.getVolunteerCount().getSchoolCount();
         }
         return null;
+    }
+
+    /**
+     * 目标数量 → 冲/稳/保 配额（推荐流水线消费）。
+     *
+     * <p>成绩行缺填报数量时 targetSchoolCount 为 null（见计算处），这里退化成三个 0 配额——
+     * 注意键必须是 冲/稳/保（{@code VolunteerSorterAndMerger#mergeIntervalSubGroups} 直接
+     * {@code map.get("冲")} 后与 size 比较，null 仍会 NPE；而 {@code buildThreeTargetCountMap}
+     * 用的是 sprints_count/safes_count/protects_count，另一拨响应字段的口径，别混用）。
+     * 0 配额 = 候选照出、不做区间截断，等成绩补齐后自愈，不再让推荐链路 NPE 成"系统错误"。</p>
+     */
+    private Map<String, Integer> resolveThreeTargetCountMap(Integer targetSchoolCount, CreateSessionReq userScoreDetail) {
+        if (targetSchoolCount == null) {
+            log.warn("resolveThreeTargetCountMap fallback to zero quotas reason=target_school_count_missing");
+            Map<String, Integer> zeroQuotas = new HashMap<>();
+            zeroQuotas.put("冲", 0);
+            zeroQuotas.put("稳", 0);
+            zeroQuotas.put("保", 0);
+            return zeroQuotas;
+        }
+        CreateSessionReq.StrategyType strategyType = userScoreDetail == null ? null : userScoreDetail.getStrategyType();
+        return volunteerIntervalService.calculateTargetCounts(targetSchoolCount, false, strategyType);
     }
 
     private Map<String, Integer> buildThreeTargetCountMap(Integer targetCount,

@@ -7,6 +7,8 @@ import com.ytell.zhiyuan.mapper.PlanningDataFreshnessScheduleMapper;
 import com.ytell.zhiyuan.model.dto.planning.DataFreshnessScheduleDTO;
 import com.ytell.zhiyuan.model.entity.biz.PlanningDataFreshnessScheduleEntity;
 import com.ytell.zhiyuan.service.biz.DataFreshnessSchedulePolicy;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.time.OffsetDateTime;
@@ -14,6 +16,7 @@ import java.time.ZoneId;
 import java.util.Date;
 import java.util.List;
 
+@Slf4j
 @Service
 public class PlanningDataFreshnessScheduleSharedService extends ServiceImpl<PlanningDataFreshnessScheduleMapper, PlanningDataFreshnessScheduleEntity> {
 
@@ -35,8 +38,24 @@ public class PlanningDataFreshnessScheduleSharedService extends ServiceImpl<Plan
         PlanningDataFreshnessScheduleEntity existing = getByChatSessionId(incoming.getChatSessionId());
         if (existing == null) {
             fillDefaults(incoming, now);
-            this.save(incoming);
-            return incoming;
+            try {
+                this.save(incoming);
+                return incoming;
+            } catch (DuplicateKeyException e) {
+                // 并发首读（workspace-state 懒触达）会同时走到这里，唯一键
+                // uk_planning_data_freshness_schedule_session 让其中一个 insert 失败；
+                // 退回"读赢家 + 合并更新"，避免直接把 500/code -1 抛给前端。
+                PlanningDataFreshnessScheduleEntity winner = getByChatSessionId(incoming.getChatSessionId());
+                if (winner == null) {
+                    throw e;
+                }
+                log.info("saveOrUpdateSchedule lost insert race chatSessionId={} fallback=update",
+                        incoming.getChatSessionId());
+                merge(winner, incoming);
+                fillDefaults(winner, now);
+                this.updateById(winner);
+                return winner;
+            }
         }
         merge(existing, incoming);
         fillDefaults(existing, now);

@@ -151,6 +151,58 @@ public class RankRequestMappingTest {
         assertEquals(Collections.singletonList("双一流院校"), request.getProfileinfo().getNegative_tag_info().getValues());
     }
 
+    @Test
+    void shouldSkipMajorTruncationWhenVolunteerCountMissing() {
+        // 成绩行缺 volunteerCount（老会话/legacy 草稿未补录）时，专业截断的"目标专业数"拿不到；
+        // 修复前这里直接 getVolunteerCount().getMajorCount() → NPE 成 code -1，
+        // 修复后退化为"跳过专业截断（全量保留）"。
+        VolunteerMajor major1 = new VolunteerMajor();
+        major1.setMajorId("1001");
+        major1.setSubCategoryId("2001");
+        VolunteerMajor major2 = new VolunteerMajor();
+        major2.setMajorId("1002");
+        major2.setSubCategoryId("2002");
+        VolunteerSchoolGroup group = buildVolunteerSchoolGroup();
+        group.setMajorList(java.util.Arrays.asList(major1, major2));
+
+        Map<String, List<VolunteerSchoolGroup>> intervalMap = new LinkedHashMap<>();
+        intervalMap.put("冲1", Collections.singletonList(group));
+        intervalMap.put("冲2", Collections.emptyList());
+        intervalMap.put("冲3", Collections.emptyList());
+        intervalMap.put("稳1", Collections.emptyList());
+        intervalMap.put("稳2", Collections.emptyList());
+        intervalMap.put("稳3", Collections.emptyList());
+        intervalMap.put("保1", Collections.emptyList());
+        intervalMap.put("保2", Collections.emptyList());
+        intervalMap.put("保3", Collections.emptyList());
+
+        CreateSessionReq scoreDetail = buildScoreDetail();
+        scoreDetail.setVolunteerCount(null);
+        UserProfileData mergedProfile = buildUserProfile();
+
+        when(volunteerIntervalService.divideVolunteers(any(List.class), Mockito.eq(true))).thenReturn(intervalMap);
+        when(executorManager.getExecutor()).thenReturn(executorService);
+        when(volunteerRankClient.getRecommendVolunteer(any(RecommendVolunteerRequest.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0, RecommendVolunteerRequest.class).getVolunteerinfo());
+
+        Map<String, Integer> targetCountMap = new LinkedHashMap<>();
+        targetCountMap.put("冲", 1);
+        targetCountMap.put("稳", 0);
+        targetCountMap.put("保", 0);
+
+        Map<String, List<VolunteerSchoolGroup>> result = volunteerSorterAndMerger.sortAndSplitByInterval(
+                Collections.singletonList(group),
+                scoreDetail,
+                mergedProfile,
+                "OTON",
+                false,
+                targetCountMap
+        );
+
+        assertEquals(1, result.get("冲").size());
+        assertEquals(2, result.get("冲").get(0).getMajorList().size());
+    }
+
     private CreateSessionReq buildScoreDetail() {
         CreateSessionReq scoreDetail = new CreateSessionReq();
         scoreDetail.setFilterType("1");

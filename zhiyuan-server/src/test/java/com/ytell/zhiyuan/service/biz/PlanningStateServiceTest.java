@@ -112,6 +112,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
@@ -1213,7 +1214,9 @@ public class PlanningStateServiceTest {
         assertTrue(state.getOperationLogs().stream()
                 .anyMatch(log -> "legacy_plan_edit_cache_pending".equals(log.getType())));
         verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
-        verify(chatSessionExtraDataSharedService, times(1)).updateById(any(ChatSessionExtraData.class));
+        // 读路径的补写（计划编辑缓存提示）现在走 CAS：读到的那份还在才落盘，避免覆盖并发写
+        verify(chatSessionExtraDataSharedService, times(1))
+                .updateDataValueIfUnchanged(any(ChatSessionExtraData.class), any(), any());
     }
 
     @Test
@@ -7279,6 +7282,8 @@ public class PlanningStateServiceTest {
         reset(chatSessionExtraDataSharedService);
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(refreshedStateData);
+        // overlay 刷新现在有前置条件：成绩行要有填报数量（volunteerCount），否则跳过
+        bindUserScoreDetail(1L, buildScoreDetailWithVolunteerCount());
 
         CandidatePoolQueryReq queryReq = new CandidatePoolQueryReq();
         CandidatePoolQueryRes queryRes = planningStateService.queryCandidatePool(1L, 1L, queryReq);
@@ -7341,6 +7346,8 @@ public class PlanningStateServiceTest {
         reset(chatSessionExtraDataSharedService);
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(refreshedStateData);
+        // overlay 刷新现在有前置条件：成绩行要有填报数量（volunteerCount），否则跳过
+        bindUserScoreDetail(1L, buildScoreDetailWithVolunteerCount());
 
         OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
         generateReq.setForceRegenerate(true);
@@ -8880,6 +8887,195 @@ public class PlanningStateServiceTest {
         assertTrue(preview.getActions().isEmpty());
     }
 
+    @Test
+    void shouldNotOverwriteNewerPlanningStateRowWhenLegacyImportRaces() {
+        AtomicReference<ChatSessionExtraData> planningStateRef = bindPlanningStateStore();
+        // 并发赢家：页面自举先落盘的那份（phase=ordered + 1 条草案）
+        PlanningStateDTO winner = new PlanningStateDTO();
+        winner.setSessionId(1L);
+        winner.setVersion(1);
+        winner.setPhase("ordered");
+        DraftItemDTO winnerItem = new DraftItemDTO();
+        winnerItem.setVolunteerId("winner_m1");
+        winnerItem.setSchoolName("赢家学校");
+        winner.getDraftPlanState().getItems().add(winnerItem);
+        saveStateToStore(1L, winner);
+        ChatSessionExtraData winnerRow = planningStateRef.get();
+
+        // 首次读看到"没有行"；懒导入 INSERT 撞唯一键（别人抢先），第二次读回赢家那行
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenReturn(null, winnerRow);
+        doThrow(new org.springframework.dao.DuplicateKeyException("uk_chat_session_id_data_key_data_version"))
+                .when(chatSessionExtraDataSharedService).save(any(ChatSessionExtraData.class));
+
+        // legacy 源里有可导入的志愿；导入结果（version=0 / candidate_generated）与赢家不同
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(2, 1, 1, 0));
+        legacy.setSprints(java.util.Arrays.asList(buildSchool("legacy_ps1", "legacy_s1", "历史学校A", "北京", 1,
+                buildMajorWithRatio("legacy_m1", "历史专业A", "18"))));
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        // 读接口返回的是并发赢家那份，而不是"晚落盘的导入快照"
+        assertEquals("ordered", state.getPhase());
+        assertEquals(1, state.getDraftPlanState().getItems().size());
+        assertEquals("winner_m1", state.getDraftPlanState().getItems().get(0).getVolunteerId());
+        // 库里那行也没有被打回 candidate_generated / 0 条草案（读路径补写只会基于赢家内容）
+        PlanningStateDTO storedState = JSONObject.parseObject(planningStateRef.get().getDataValue(), PlanningStateDTO.class);
+        assertEquals("ordered", storedState.getPhase());
+        assertEquals(1, storedState.getDraftPlanState().getItems().size());
+    }
+
+    @Test
+    void shouldFallBackToScoreDetailWhenStrengthSubjectsArePlaceholder() {
+        bindPlanningStateStore();
+        PlanningStateDTO initialState = new PlanningStateDTO();
+        initialState.setSessionId(1L);
+        initialState.getProfileState().getExplicitProfile().setStrengthSubjects(java.util.Arrays.asList("??"));
+        saveStateToStore(1L, initialState);
+        bindUserScoreDetail(1L, buildScoreDetail());
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        // '??' 占位不是学科名：回落到当前成绩行里的 物理/化学
+        assertEquals(java.util.Arrays.asList("物理", "化学"),
+                state.getProfileState().getExplicitProfile().getStrengthSubjects());
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+        assertEquals(java.util.Arrays.asList("物理", "化学"), workspaceState.getStudentSummary().getStrengthSubjects());
+    }
+
+    @Test
+    void shouldResolveStrengthSubjectNamesByCodeWhenNamesArePlaceholder() {
+        bindPlanningStateStore();
+        PlanningStateDTO initialState = new PlanningStateDTO();
+        initialState.setSessionId(1L);
+        initialState.getProfileState().getExplicitProfile().setStrengthSubjects(java.util.Arrays.asList("??"));
+        saveStateToStore(1L, initialState);
+
+        // 3+1+2 省份口径：优势学科只带选科码（01/05），名字不可用 → 按码回查选科表
+        CreateSessionReq scoreDetail = buildScoreDetail();
+        scoreDetail.getStrengthSubjectList().get(0).setSubjectName("??");
+        scoreDetail.getStrengthSubjectList().get(0).setSubject("01");
+        scoreDetail.getStrengthSubjectList().get(1).setSubjectName("");
+        scoreDetail.getStrengthSubjectList().get(1).setSubject("05");
+        CreateSessionReq.SubjectItem physics = new CreateSessionReq.SubjectItem();
+        physics.setValue("01");
+        physics.setName("物理");
+        CreateSessionReq.SubjectItem chemistry = new CreateSessionReq.SubjectItem();
+        chemistry.setValue("05");
+        chemistry.setName("化学");
+        scoreDetail.setSubjectList(java.util.Arrays.asList(physics, chemistry));
+        bindUserScoreDetail(1L, scoreDetail);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals(java.util.Arrays.asList("物理", "化学"),
+                state.getProfileState().getExplicitProfile().getStrengthSubjects());
+    }
+
+    @Test
+    void shouldSkipRecommendationOverlayRefreshWhenVolunteerCountMissing() {
+        bindPlanningStateStore();
+        PlanningStateDTO initialState = new PlanningStateDTO();
+        initialState.setSessionId(1L);
+        initialState.getStaleFlags().setRecommendationOverlay(true);
+        initialState.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "医学院", "稳", "护理学", 55D, 80D, 55D, false));
+        saveStateToStore(1L, initialState);
+
+        // 74B stub 成绩行（只有 prepareType/examYear，没有 volunteerCount）——NPE 链的触发条件
+        CreateSessionReq scoreDetail = buildScoreDetail();
+        scoreDetail.setVolunteerCount(null);
+        bindUserScoreDetail(1L, scoreDetail);
+
+        PlanningStateDTO updated = planningStateService.generateInitialRecommendation(
+                1L, 1L, new InitialRecommendationGenerateReq());
+
+        // overlay 刷新被前置条件挡下：推荐流水线不再被调用，stale 标记留着等成绩补齐
+        verify(volunteerBizService, never()).recommendVolunteerList(any(), any(), anyBoolean(), anyBoolean());
+        assertTrue(Boolean.TRUE.equals(updated.getStaleFlags().getRecommendationOverlay()));
+    }
+
+    @Test
+    void shouldMergeRecommendationOverlayOntoLatestRowWhenRowChangedUnderUs() {
+        AtomicReference<ChatSessionExtraData> planningStateRef = bindPlanningStateStore();
+        PlanningStateDTO staleSnapshot = new PlanningStateDTO();
+        staleSnapshot.setSessionId(1L);
+        staleSnapshot.setVersion(2);
+        staleSnapshot.getStaleFlags().setRecommendationOverlay(true);
+        staleSnapshot.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "医学院", "稳", "护理学", 55D, 80D, 55D, false));
+        saveStateToStore(1L, staleSnapshot);
+        ChatSessionExtraData staleRow = planningStateRef.get();
+
+        // 并发写把这行改新（version=5 / phase=ordered / 草案里已有 1 条）；overlay 刷新必须合并到这份上
+        PlanningStateDTO newest = new PlanningStateDTO();
+        newest.setSessionId(1L);
+        newest.setVersion(5);
+        newest.setPhase("ordered");
+        newest.getStaleFlags().setRecommendationOverlay(true);
+        newest.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "医学院", "稳", "护理学", 55D, 80D, 55D, false));
+        DraftItemDTO newestItem = new DraftItemDTO();
+        newestItem.setVolunteerId("ps1_m1");
+        newest.getDraftPlanState().getItems().add(newestItem);
+        ChatSessionExtraData newestRow = new ChatSessionExtraData();
+        newestRow.setId(staleRow.getId());
+        newestRow.setChatSessionId(1L);
+        newestRow.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        newestRow.setDataValue(JSONObject.toJSONString(newest));
+        planningStateRef.set(newestRow);
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenReturn(staleRow, newestRow);
+
+        CreateSessionReq scoreDetail = buildScoreDetail();
+        CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
+        volunteerCount.setSchoolCount(6);
+        volunteerCount.setMajorCount(6);
+        scoreDetail.setVolunteerCount(volunteerCount);
+        bindUserScoreDetail(1L, scoreDetail);
+
+        VolunteerRecommendListResponse refreshed = new VolunteerRecommendListResponse();
+        refreshed.setSafes(java.util.Arrays.asList(buildSchool("ps1", "s1", "医学院", "北京", 1,
+                buildMajorWithRatio("m1", "护理学", "55"))));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(refreshed);
+
+        PlanningStateDTO updated = planningStateService.generateInitialRecommendation(
+                1L, 1L, new InitialRecommendationGenerateReq());
+
+        // 合并语义：overlay 落在最新那份上（version 5 → 调用方 +1 = 6，草案还在），而不是覆盖回旧快照
+        assertEquals(Integer.valueOf(6), updated.getVersion());
+        assertEquals(1, updated.getDraftPlanState().getItems().size());
+        assertEquals("ps1_m1", updated.getDraftPlanState().getItems().get(0).getVolunteerId());
+        assertFalse(Boolean.TRUE.equals(updated.getStaleFlags().getRecommendationOverlay()));
+        assertEquals(Integer.valueOf(1), updated.getRecommendationOverlayState().getSummary().getTotal());
+        PlanningStateDTO storedState = JSONObject.parseObject(planningStateRef.get().getDataValue(), PlanningStateDTO.class);
+        assertEquals(Integer.valueOf(6), storedState.getVersion());
+        assertEquals(1, storedState.getDraftPlanState().getItems().size());
+        assertEquals(Integer.valueOf(1), storedState.getRecommendationOverlayState().getSummary().getTotal());
+    }
+
+    private CreateSessionReq buildScoreDetailWithVolunteerCount() {
+        CreateSessionReq scoreDetail = buildScoreDetail();
+        CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
+        volunteerCount.setSchoolCount(6);
+        volunteerCount.setMajorCount(6);
+        scoreDetail.setVolunteerCount(volunteerCount);
+        return scoreDetail;
+    }
+
+    private void bindUserScoreDetail(Long chatSessionId, CreateSessionReq scoreDetail) {
+        ChatSessionExtraData scoreData = new ChatSessionExtraData();
+        scoreData.setChatSessionId(chatSessionId);
+        scoreData.setDataKey(ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        scoreData.setDataValue(JSONObject.toJSONString(scoreDetail));
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(chatSessionId), eq(ChatSessionExtraDataConstants.USER_SCORE_KEY)))
+                .thenReturn(scoreData);
+    }
+
     private ChatSessionExtraData latestStoredStateFromSave() {
         ArgumentCaptor<ChatSessionExtraData> captor = ArgumentCaptor.forClass(ChatSessionExtraData.class);
         verify(chatSessionExtraDataSharedService, times(1)).save(captor.capture());
@@ -9359,26 +9555,58 @@ public class PlanningStateServiceTest {
 
     private AtomicReference<ChatSessionExtraData> bindPlanningStateStore(Long chatSessionId) {
         AtomicReference<ChatSessionExtraData> planningStateRef = new AtomicReference<ChatSessionExtraData>();
+        java.util.concurrent.atomic.AtomicLong idGenerator = new java.util.concurrent.atomic.AtomicLong(1L);
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(chatSessionId), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenAnswer(invocation -> planningStateRef.get());
         doAnswer(invocation -> {
             ChatSessionExtraData data = invocation.getArgument(0);
             ChatSessionExtraData stored = new ChatSessionExtraData();
+            stored.setId(data.getId() != null ? data.getId() : idGenerator.getAndIncrement());
             stored.setChatSessionId(data.getChatSessionId());
             stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
             stored.setDataValue(data.getDataValue());
+            // 回填主键：生产路径（sharedService.save）会把自增 id 写回实体，读路径的 CAS 落盘依赖它
+            data.setId(stored.getId());
             planningStateRef.set(stored);
             return true;
         }).when(chatSessionExtraDataSharedService).save(any(ChatSessionExtraData.class));
         doAnswer(invocation -> {
             ChatSessionExtraData data = invocation.getArgument(0);
             ChatSessionExtraData stored = new ChatSessionExtraData();
+            stored.setId(data.getId() != null ? data.getId() : idGenerator.getAndIncrement());
             stored.setChatSessionId(data.getChatSessionId());
             stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
             stored.setDataValue(data.getDataValue());
+            data.setId(stored.getId());
             planningStateRef.set(stored);
             return true;
         }).when(chatSessionExtraDataSharedService).updateById(any(ChatSessionExtraData.class));
+        // CAS 语义替身：只有"库里那行仍是我们读到的那份"（id+data_value 都一致）才写入
+        when(chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                any(ChatSessionExtraData.class), any(), any()))
+                .thenAnswer(invocation -> {
+                    ChatSessionExtraData current = invocation.getArgument(0);
+                    String expectedDataValue = invocation.getArgument(1);
+                    String newDataValue = invocation.getArgument(2);
+                    ChatSessionExtraData stored = planningStateRef.get();
+                    if (current == null || stored == null || stored.getId() == null
+                            || !stored.getId().equals(current.getId())) {
+                        return false;
+                    }
+                    boolean sameValue = expectedDataValue == null
+                            ? stored.getDataValue() == null
+                            : expectedDataValue.equals(stored.getDataValue());
+                    if (!sameValue) {
+                        return false;
+                    }
+                    ChatSessionExtraData updated = new ChatSessionExtraData();
+                    updated.setId(stored.getId());
+                    updated.setChatSessionId(stored.getChatSessionId());
+                    updated.setDataKey(stored.getDataKey());
+                    updated.setDataValue(newDataValue);
+                    planningStateRef.set(updated);
+                    return true;
+                });
         return planningStateRef;
     }
 

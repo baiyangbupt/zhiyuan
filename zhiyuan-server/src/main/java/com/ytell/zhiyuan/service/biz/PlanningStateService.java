@@ -28,6 +28,7 @@ import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -58,6 +59,9 @@ public class PlanningStateService {
 
     private static final String OTHER_MAJOR_FILTER_LABEL = "其他专业";
     private static final int DEFAULT_INITIAL_PLAN_TARGET_COUNT = 45;
+
+    /** overlay 合并落盘的 CAS 重试次数（每次都是"重读最新行→合并→CAS"，全输就放弃，下次读再刷）。 */
+    private static final int RECOMMENDATION_OVERLAY_PERSIST_ATTEMPTS = 3;
 
     private static final String COOPERATIVE_SCHOOL_TAG = "\u4e2d\u5916\u5408\u4f5c";
     private static final String COOPERATIVE_MAJOR_TAG = "\u4e2d\u5916\u5408\u4f5c\u529e\u5b66";
@@ -314,24 +318,101 @@ public class PlanningStateService {
     }
 
     private List<String> resolveStrengthSubjects(PlanningStateDTO state, CreateSessionReq scoreDetail) {
-        List<String> subjects = Lists.newArrayList();
+        List<String> stateProvided = Lists.newArrayList();
         if (state != null
                 && state.getProfileState() != null
                 && state.getProfileState().getExplicitProfile() != null
                 && state.getProfileState().getExplicitProfile().getStrengthSubjects() != null) {
-            subjects.addAll(state.getProfileState().getExplicitProfile().getStrengthSubjects());
+            stateProvided.addAll(state.getProfileState().getExplicitProfile().getStrengthSubjects());
         }
-        if (subjects.isEmpty() && scoreDetail != null && scoreDetail.getStrengthSubjectList() != null) {
-            for (CreateSessionReq.SubjectScore subjectScore : scoreDetail.getStrengthSubjectList()) {
-                if (subjectScore != null && !Strings.isNullOrEmpty(subjectScore.getSubjectName())) {
-                    subjects.add(subjectScore.getSubjectName());
+        // 历史 legacy 导入曾把中文写坏成 '??' 占位（实测 10041972：状态里是 ["??"]，
+        // 而当前成绩行里是 物理/化学）。占位不是学科名——状态里出现过占位时，整组回落到
+        // 当前成绩行：先用 subjectName，名字不可用时按选科码（如安徽 3+1+2 的 01/05/06）回查。
+        boolean hasPlaceholder = stateProvided.stream().anyMatch(PlanningStateService::isPlaceholderOnly);
+        List<String> fromState = stateProvided.stream()
+                .filter(PlanningStateService::isUsableName)
+                .distinct()
+                .collect(Collectors.toList());
+        List<String> fromScoreDetail = scoreDetail == null
+                ? Lists.newArrayList()
+                : extractStrengthSubjectNames(scoreDetail.getStrengthSubjectList(), scoreDetail);
+        if (hasPlaceholder && !fromScoreDetail.isEmpty()) {
+            return fromScoreDetail;
+        }
+        return fromState.isEmpty() ? fromScoreDetail : fromState;
+    }
+
+    /**
+     * '??' 占位判定：legacy 源里的中文被写坏时留下的只由问号/空白组成的值
+     * （实测状态里的 "??"、"???"——字符数还等于原文汉字数）。不是真实名称，读路径按"缺"处理。
+     */
+    private static boolean isPlaceholderOnly(String value) {
+        if (Strings.isNullOrEmpty(value)) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c != '?' && c != '？' && !Character.isWhitespace(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isUsableName(String value) {
+        return !Strings.isNullOrEmpty(value) && !isPlaceholderOnly(value);
+    }
+
+    /**
+     * 从优势学科列表解析名称：subjectName 可用直接用；是 '??' 占位或缺名字时，
+     * 按选科码回查选科表 / 科目分数表里的名称（覆盖 3+1+2 省份只给代码 01/05/06 的口径）。
+     */
+    private List<String> extractStrengthSubjectNames(List<CreateSessionReq.SubjectScore> strengthSubjectList,
+                                                     CreateSessionReq scoreDetail) {
+        List<String> names = Lists.newArrayList();
+        if (strengthSubjectList == null) {
+            return names;
+        }
+        for (CreateSessionReq.SubjectScore strengthSubject : strengthSubjectList) {
+            if (strengthSubject == null) {
+                continue;
+            }
+            String name = strengthSubject.getSubjectName();
+            if (!isUsableName(name)) {
+                name = resolveSubjectNameByCode(scoreDetail, strengthSubject.getSubject());
+            }
+            if (isUsableName(name) && !names.contains(name)) {
+                names.add(name);
+            }
+        }
+        return names;
+    }
+
+    /**
+     * 选科码 → 名称：先查建会话时采集的选科表（subjectList.value=码，如 01 物理），
+     * 再查科目分数表（subjectScoreList.subject=码）。两处名称同样可能是 '??' 占位，跳过。
+     */
+    private String resolveSubjectNameByCode(CreateSessionReq scoreDetail, String subjectCode) {
+        if (scoreDetail == null || Strings.isNullOrEmpty(subjectCode)) {
+            return null;
+        }
+        if (scoreDetail.getSubjectList() != null) {
+            for (CreateSessionReq.SubjectItem subjectItem : scoreDetail.getSubjectList()) {
+                if (subjectItem != null && subjectCode.equals(subjectItem.getValue())
+                        && isUsableName(subjectItem.getName())) {
+                    return subjectItem.getName();
                 }
             }
         }
-        return subjects.stream()
-                .filter(name -> !Strings.isNullOrEmpty(name))
-                .distinct()
-                .collect(Collectors.toList());
+        if (scoreDetail.getSubjectScoreList() != null) {
+            for (CreateSessionReq.SubjectScore subjectScore : scoreDetail.getSubjectScoreList()) {
+                if (subjectScore != null && subjectCode.equals(subjectScore.getSubject())
+                        && isUsableName(subjectScore.getSubjectName())) {
+                    return subjectScore.getSubjectName();
+                }
+            }
+        }
+        return null;
     }
 
     private CandidatePoolStateDTO buildWorkspaceCandidatePoolState(PlanningStateDTO state) {
@@ -5292,11 +5373,18 @@ public class PlanningStateService {
     private PlanningStateDTO loadPlanningState(Long chatSessionId, boolean allowLegacyImport) {
         ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
                 chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        ChatSessionExtraData rowRef = extraData;
         PlanningStateDTO state;
         if (extraData == null || extraData.getDataValue() == null) {
             state = allowLegacyImport ? tryImportLegacyPlanningState(chatSessionId) : null;
             if (state != null) {
-                savePlanningState(chatSessionId, state);
+                // 读路径懒导入**只补缺**：并发写（页面自举 initial-plan/generate）先落盘时，
+                // 以库里那份为准继续，读接口不再把别人的新状态盖回去（评审 §六）。
+                PlanningStateImportPersist persistResult = persistImportedPlanningState(chatSessionId, extraData, state);
+                rowRef = persistResult.row;
+                if (persistResult.winnerState != null) {
+                    state = persistResult.winnerState;
+                }
             } else {
                 state = new PlanningStateDTO();
                 state.setSessionId(chatSessionId);
@@ -5310,9 +5398,112 @@ public class PlanningStateService {
         boolean dataFreshnessBackfilled = backfillDataFreshnessState(chatSessionId, state);
         backfillLegacySummaryFields(state);
         if (planEditCacheNoticeAdded || dataFreshnessBackfilled) {
-            savePlanningState(chatSessionId, state);
+            // 读路径的补写同样做"读到的那份还在才写"：输了就不落盘（补写幂等，下次读会重放）。
+            savePlanningStateIfUnchanged(chatSessionId, rowRef, state, "read_backfill");
         }
         return state;
+    }
+
+    /**
+     * legacy 懒导入落盘：**只补缺，不覆盖**。
+     *
+     * <p>老会话的首次读（workspace-state / state / filter-options，甚至同一秒 2-3 条）都会懒导入，
+     * 而页面自举 {@code initial-plan/generate} 也在写同一行——原来的"无条件整文档覆盖"会把自举
+     * 出来的草案/排序打回"只有候选池"（phase 卡 {@code candidate_generated}），
+     * 见 {@code docs/superpowers/reviews/2026-10-06-test-www-chain-recovery.md} §六。</p>
+     *
+     * <p>这里是：行不存在才 INSERT；撞唯一键说明别人先落盘了——内容一致（同一次导入）就沿用，
+     * 内容不同就以库里那份为准返回给调用方。任何情况下都不再把本次内存态 updateById 覆盖上去。</p>
+     */
+    private PlanningStateImportPersist persistImportedPlanningState(Long chatSessionId,
+                                                                    ChatSessionExtraData existingRow,
+                                                                    PlanningStateDTO imported) {
+        String dataValue = JSONObject.toJSONString(imported);
+        if (existingRow != null && existingRow.getId() != null) {
+            // 行在但 data_value 是空的（历史空壳行）：不能 INSERT（唯一键会撞自己），走 CAS 补值。
+            if (chatSessionExtraDataSharedService.updateDataValueIfUnchanged(existingRow, existingRow.getDataValue(), dataValue)) {
+                return new PlanningStateImportPersist(copyRow(existingRow, dataValue), null);
+            }
+            return new PlanningStateImportPersist(existingRow, null);
+        }
+        ChatSessionExtraData entity = new ChatSessionExtraData();
+        entity.setChatSessionId(chatSessionId);
+        entity.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        entity.setDataType(DataType.JSON_OBJECT);
+        entity.setDataVersion(0);
+        entity.setDataValue(dataValue);
+        try {
+            chatSessionExtraDataSharedService.save(entity);
+            return new PlanningStateImportPersist(entity, null);
+        } catch (DuplicateKeyException duplicate) {
+            // 唯一键 uk_chat_session_id_data_key_data_version 是并发防线：多个首次读各自导入时
+            // 只有一个 INSERT 成功（2026-10-06 已修"读接口撞键回 500"）。这里再进一步：
+            // 输的一方不再把导入结果覆盖上去（那是旧快照），以库里赢家为准。
+            ChatSessionExtraData winner = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                    chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+            if (winner == null) {
+                log.warn("planningStateImportPersist skipped chatSessionId={} reason=row_vanished_after_duplicate",
+                        chatSessionId);
+                return new PlanningStateImportPersist(null, null);
+            }
+            if (winner.getDataValue() == null) {
+                // 赢家是个空壳行（value 为空）：CAS 把本次导入补上去（期望值 null → isNull 条件）。
+                if (chatSessionExtraDataSharedService.updateDataValueIfUnchanged(winner, null, dataValue)) {
+                    return new PlanningStateImportPersist(copyRow(winner, dataValue), null);
+                }
+                return new PlanningStateImportPersist(winner, null);
+            }
+            if (dataValue.equals(winner.getDataValue())) {
+                return new PlanningStateImportPersist(winner, null);
+            }
+            log.info("planningStateImportPersist skipped stale write chatSessionId={} reason=row_written_by_other",
+                    chatSessionId);
+            return new PlanningStateImportPersist(winner,
+                    JSONObject.parseObject(winner.getDataValue(), PlanningStateDTO.class));
+        }
+    }
+
+    private ChatSessionExtraData copyRow(ChatSessionExtraData source, String dataValue) {
+        ChatSessionExtraData row = new ChatSessionExtraData();
+        row.setId(source.getId());
+        row.setChatSessionId(source.getChatSessionId());
+        row.setDataKey(source.getDataKey());
+        row.setDataVersion(source.getDataVersion());
+        row.setDataValue(dataValue);
+        return row;
+    }
+
+    /**
+     * 读路径补写的 CAS 落盘：库里那行仍是我们读到的快照才整文档写回，否则放弃（不覆盖并发写）。
+     */
+    private boolean savePlanningStateIfUnchanged(Long chatSessionId,
+                                                 ChatSessionExtraData rowRef,
+                                                 PlanningStateDTO state,
+                                                 String scene) {
+        if (rowRef == null || rowRef.getId() == null) {
+            log.warn("planningStateCasSave skipped chatSessionId={} scene={} reason=row_ref_missing",
+                    chatSessionId, scene);
+            return false;
+        }
+        String dataValue = JSONObject.toJSONString(state);
+        boolean updated = chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                rowRef, rowRef.getDataValue(), dataValue);
+        if (!updated) {
+            log.info("planningStateCasSave skipped chatSessionId={} scene={} reason=row_changed_under_us",
+                    chatSessionId, scene);
+        }
+        return updated;
+    }
+
+    /** 懒导入落盘结果：row=库里那行（后续 CAS 的基准）；winnerState=并发赢家那份（null=自己写的为准）。 */
+    private static class PlanningStateImportPersist {
+        private final ChatSessionExtraData row;
+        private final PlanningStateDTO winnerState;
+
+        private PlanningStateImportPersist(ChatSessionExtraData row, PlanningStateDTO winnerState) {
+            this.row = row;
+            this.winnerState = winnerState;
+        }
     }
 
     private void normalizePlanningStateDefaults(Long chatSessionId, PlanningStateDTO state) {
@@ -7665,12 +7856,44 @@ public class PlanningStateService {
     }
 
     private void backfillLegacyProfileState(Long chatSessionId, PlanningStateDTO state) {
-        if (state == null || state.getProfileState() == null || !isProfileStateEmpty(state.getProfileState())) {
+        if (state == null || state.getProfileState() == null) {
             return;
         }
-        CreateSessionReq scoreDetail = loadScoreDetail(chatSessionId);
-        UserProfileData userProfileData = loadUserProfileData(chatSessionId);
-        hydrateProfileState(state.getProfileState(), scoreDetail, userProfileData);
+        if (isProfileStateEmpty(state.getProfileState())) {
+            CreateSessionReq scoreDetail = loadScoreDetail(chatSessionId);
+            UserProfileData userProfileData = loadUserProfileData(chatSessionId);
+            hydrateProfileState(state.getProfileState(), scoreDetail, userProfileData);
+            return;
+        }
+        repairPlaceholderStrengthSubjects(chatSessionId, state);
+    }
+
+    /**
+     * 修复 explicitProfile.strengthSubjects 里的 '??' 占位（历史 legacy 导入把中文写坏）：
+     * 整个列表都是占位（或混有占位）时，用当前成绩行里的名称替换——实测 10041972 修复后
+     * workspace-state / 学生摘要读数从 ["??"] 变成 ["物理","化学"]。
+     *
+     * <p>只在内存态修复，不落盘：读路径不主动写（评审 §六 的方向），修复后的值会随下一次
+     * 明确写点自然持久化。</p>
+     */
+    private void repairPlaceholderStrengthSubjects(Long chatSessionId, PlanningStateDTO state) {
+        ExplicitProfileDTO explicitProfile = state.getProfileState().getExplicitProfile();
+        if (explicitProfile == null || explicitProfile.getStrengthSubjects() == null
+                || explicitProfile.getStrengthSubjects().isEmpty()) {
+            return;
+        }
+        boolean hasPlaceholder = explicitProfile.getStrengthSubjects().stream()
+                .anyMatch(PlanningStateService::isPlaceholderOnly);
+        if (!hasPlaceholder) {
+            return;
+        }
+        List<String> resolved = resolveStrengthSubjects(state, loadScoreDetail(chatSessionId));
+        if (resolved.isEmpty()) {
+            return;
+        }
+        log.info("repairPlaceholderStrengthSubjects chatSessionId={} before={} after={}",
+                chatSessionId, explicitProfile.getStrengthSubjects(), resolved);
+        explicitProfile.setStrengthSubjects(resolved);
     }
 
     private CreateSessionReq loadScoreDetail(Long chatSessionId) {
@@ -7824,17 +8047,17 @@ public class PlanningStateService {
 
     private List<String> extractStrengthSubjects(CreateSessionReq scoreDetail, UserProfileData userProfileData) {
         List<String> values = Lists.newArrayList();
-        if (scoreDetail != null && scoreDetail.getStrengthSubjectList() != null) {
-            for (CreateSessionReq.SubjectScore subjectScore : scoreDetail.getStrengthSubjectList()) {
-                if (subjectScore != null && !Strings.isNullOrEmpty(subjectScore.getSubjectName())) {
-                    values.add(subjectScore.getSubjectName());
-                }
-            }
+        if (scoreDetail != null) {
+            // 名字是 '??' 占位时不要原样入库（历史坏数据的来源），按选科码回查后只存可用名称。
+            values.addAll(extractStrengthSubjectNames(scoreDetail.getStrengthSubjectList(), scoreDetail));
         }
         if (values.isEmpty() && userProfileData != null && userProfileData.getStrength_subject_info() != null) {
             values.addAll(defaultList(userProfileData.getStrength_subject_info().getValues()));
         }
-        return distinct(values);
+        return values.stream()
+                .filter(PlanningStateService::isUsableName)
+                .distinct()
+                .collect(Collectors.toList());
     }
 
     private List<String> extractColorVision(CreateSessionReq scoreDetail) {
@@ -8049,12 +8272,15 @@ public class PlanningStateService {
     }
 
     private void refreshRecommendationOverlay(Long tenantId, Long chatSessionId, PlanningStateDTO state) {
+        if (!canRefreshRecommendationOverlay(chatSessionId)) {
+            return;
+        }
         VolunteerRecommendListResponse response = volunteerBizService.recommendVolunteerList(tenantId, chatSessionId, false, false);
         CandidatePoolStateDTO overlayCandidatePoolState = new CandidatePoolStateDTO();
         overlayCandidatePoolState.setVolunteerModel(response != null && response.getBaseData() != null
                 && response.getBaseData().getVolunteerModel() != null
                 ? response.getBaseData().getVolunteerModel().getCode()
-                : state.getCandidatePoolState().getVolunteerModel());
+                : (state.getCandidatePoolState() == null ? null : state.getCandidatePoolState().getVolunteerModel()));
         List<CandidateItemDTO> items = Lists.newArrayList();
         if (response != null) {
             items.addAll(flattenCandidates(response.getSprints(), "冲"));
@@ -8063,9 +8289,80 @@ public class PlanningStateService {
         }
         overlayCandidatePoolState.setItems(enrichCandidateMajorTaxonomyFields(
                 normalizeCandidateIdentities(overlayCandidatePoolState, items)));
-        state.setRecommendationOverlayState(buildRecommendationOverlayState(overlayCandidatePoolState, state.getVersion()));
-        state.getStaleFlags().setRecommendationOverlay(false);
-        savePlanningState(chatSessionId, state);
+        persistRecommendationOverlay(chatSessionId, state, overlayCandidatePoolState);
+    }
+
+    /**
+     * 推荐 overlay 刷新前的**前置条件**：建会话第 2-3 步写入的"填报数量"
+     * （{@code userScoreDetail.volunteerCount}，见 {@code ChatSessionBizService#enrichVolunteerCountAndModel}）。
+     *
+     * <p>推荐流水线里 {@code VolunteerDataProvider#calculateTargetSchoolCount} 会直接解引用它，
+     * 老会话/只做过 legacy 导入、还没补录成绩的草稿会话没有这个字段（实测 74B stub 成绩行），
+     * 以前这里必然 NPE → {@code GlobalExceptionHandler} 回 {@code code -1"系统错误"}
+     * （实测 10041966 的 14:05-14:13 七次调用全挂；NPE 栈：
+     * {@code generateInitialPlan:2087 → refreshRecommendationOverlay → recommendVolunteerList →
+     * prepareVolunteerData → calculateTargetSchoolCount}）。</p>
+     *
+     * <p>overlay 只是缓存：缺前置条件就跳过，stale 标记留着，等成绩补齐（补录）后下次读/自举再刷
+     * ——自愈，且不再把"系统错误"暴露给前端。</p>
+     */
+    private boolean canRefreshRecommendationOverlay(Long chatSessionId) {
+        CreateSessionReq scoreDetail = loadScoreDetail(chatSessionId);
+        if (scoreDetail == null || scoreDetail.getVolunteerCount() == null) {
+            log.warn("Skip recommendation overlay refresh chatSessionId={} reason=volunteer_count_missing",
+                    chatSessionId);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * overlay 落盘：**合并非覆盖 + CAS**。
+     *
+     * <p>流水线要跑几百毫秒（读志愿源数据、过滤、排序），期间页面自举/确认链可能已经把这行改新
+     * （草案、排序、version 都动了）。原来拿手里那份旧快照整文档 {@code savePlanningState} 回去，
+     * 就是"旧快照覆盖新行"——2026-10-07 并发压测实测抓到：{@code phase=ordered/draft=132} 的行被
+     * 打回 {@code candidate_generated/draft=0}（与评审 §六 同型的覆盖指纹）。</p>
+     *
+     * <p>这里改成：落盘前重读最新行，把 overlay 合并进**最新那份**再 CAS 写回——草案/排序/版本
+     * 以最新为准，只加 overlay、清 stale 标记；CAS 连输 {@value #RECOMMENDATION_OVERLAY_PERSIST_ATTEMPTS}
+     * 次就放弃落盘，但内存态仍然带上刚算出的 overlay（本请求看到的候选是新的，只是不持久化——
+     * 下一次读/自举会再刷）。</p>
+     */
+    private void persistRecommendationOverlay(Long chatSessionId,
+                                              PlanningStateDTO state,
+                                              CandidatePoolStateDTO overlayCandidatePoolState) {
+        for (int attempt = 0; attempt < RECOMMENDATION_OVERLAY_PERSIST_ATTEMPTS; attempt++) {
+            ChatSessionExtraData row = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                    chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+            if (row == null || row.getDataValue() == null) {
+                // 行不存在（与"首建"竞态）：按内存态整文档落盘
+                applyRecommendationOverlay(state, overlayCandidatePoolState, state.getVersion());
+                savePlanningState(chatSessionId, state);
+                return;
+            }
+            PlanningStateDTO latest = JSONObject.parseObject(row.getDataValue(), PlanningStateDTO.class);
+            normalizePlanningStateDefaults(chatSessionId, latest);
+            applyRecommendationOverlay(latest, overlayCandidatePoolState, latest.getVersion());
+            if (chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                    row, row.getDataValue(), JSONObject.toJSONString(latest))) {
+                // 调用方继续用最新内容（后续 saveWorkingPlanState 等才会带上并发写进来的草案/排序）
+                BeanUtils.copyProperties(latest, state);
+                return;
+            }
+        }
+        log.warn("recommendationOverlayPersist skipped chatSessionId={} reason=state_kept_changing", chatSessionId);
+        applyRecommendationOverlay(state, overlayCandidatePoolState, state.getVersion());
+    }
+
+    private void applyRecommendationOverlay(PlanningStateDTO target,
+                                            CandidatePoolStateDTO overlayCandidatePoolState,
+                                            Integer baseVersion) {
+        target.setRecommendationOverlayState(buildRecommendationOverlayState(overlayCandidatePoolState, baseVersion));
+        if (target.getStaleFlags() == null) {
+            target.setStaleFlags(new StaleFlagsDTO());
+        }
+        target.getStaleFlags().setRecommendationOverlay(false);
     }
 
     private void refreshRecommendationOverlayBestEffort(Long tenantId,

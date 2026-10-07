@@ -106,9 +106,19 @@ public class VolunteerDataProvider {
     }
 
     /**
-     * 计算目标学校数量
+     * 计算目标学校数量。
+     *
+     * <p>成绩行缺 {@code volunteerCount}（老会话/legacy 草稿，未补录填报数量）时返回
+     * {@code null}，由调用方退化成"0 配额"继续跑——以前这里直接解引用
+     * {@code getVolunteerCount().getMajorCount()}，会 NPE 成 {@code code -1"系统错误"}
+     * （实测 10041966：{@code generateInitialPlan → refreshRecommendationOverlay →
+     * recommendVolunteerList → prepareVolunteerData → calculateTargetSchoolCount}）。</p>
      */
     public Integer calculateTargetSchoolCount(CreateSessionReq userScoreDetail, String applyType) {
+        if (userScoreDetail == null || userScoreDetail.getVolunteerCount() == null) {
+            log.warn("calculateTargetSchoolCount skipped reason=volunteer_count_missing applyType={}", applyType);
+            return null;
+        }
         if (ApplyTypeUtil.isMajorSchoolType(applyType)) {
             return userScoreDetail.getVolunteerCount().getMajorCount();
         } else {

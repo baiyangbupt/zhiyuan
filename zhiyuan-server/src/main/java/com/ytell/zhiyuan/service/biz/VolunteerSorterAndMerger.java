@@ -69,16 +69,22 @@ public class VolunteerSorterAndMerger {
 
         // 4. 如果是专业组模式，还要对专业组里的专业进行截断
         if (!ApplyTypeUtil.isMajorSchoolType(applyType)) {
-            // 专业的目标数量
-            Integer targetMajorCount = userScoreDetail.getVolunteerCount().getMajorCount();
-            // 遍历进行专业列表截断
-            mergedIntervalData.entrySet().forEach(kv -> {
-                List<VolunteerSchoolGroup> sortedSchoolGroups = kv.getValue();
-                sortedSchoolGroups.forEach(group -> {
-                    // 对专业进行截断
-                    processTruncatedMajorList(group, targetMajorCount, split);
+            // 专业的目标数量；成绩行缺 volunteerCount（老会话/legacy 草稿未补录）时拿不到目标数，
+            // 跳过专业列表截断（全量保留），不再 NPE 成 code -1。
+            Integer targetMajorCount = userScoreDetail == null || userScoreDetail.getVolunteerCount() == null
+                    ? null : userScoreDetail.getVolunteerCount().getMajorCount();
+            if (targetMajorCount == null) {
+                log.warn("sortAndSplitByInterval skip major truncation reason=volunteer_count_missing");
+            } else {
+                // 遍历进行专业列表截断
+                mergedIntervalData.entrySet().forEach(kv -> {
+                    List<VolunteerSchoolGroup> sortedSchoolGroups = kv.getValue();
+                    sortedSchoolGroups.forEach(group -> {
+                        // 对专业进行截断
+                        processTruncatedMajorList(group, targetMajorCount, split);
+                    });
                 });
-            });
+            }
         }
 
         return mergedIntervalData;
