@@ -3,9 +3,14 @@ import assert from 'node:assert/strict';
 
 import {
   PROPOSAL_STALE_STATE_TEXT,
+  UNKNOWN_STATUS_TEXT,
   isSettledProposalStatus,
+  proposalBlockedText,
   proposalFailureText,
+  proposalShortageLine,
   proposalStatusLabel,
+  proposalStrategyLabel,
+  proposalSummaryDuplicatesReason,
 } from './proposalCardText.mjs';
 
 // ── 终态判据（H1 的"按钮复活"就是漏在 `stale_state` 上） ──────────────────────
@@ -108,4 +113,131 @@ test('没有 code、没有 message → 通用中文兜底（失败不许空着�
 
 test('没有 code、有中文 message → 原样转述（不凭空加锚点）', () => {
   assert.equal(proposalFailureText({ message: '版本不一致' }), '版本不一致');
+});
+
+// ── 冷加载兜底卡的状态（2026-10-08 用户实测：刷新后一张空卡写着"处理结果未知" ✗） ──
+// 待确认行的 status（`LastProposalVo.actionStatus` 四档：active / applying / applied /
+// cancelled / expired）里，'active' 是**活的**那一档 ✓——它是已知状态 ✓，不是未知 ✗。
+
+test("'active'（待确认行还活着）说'待处理'，不再落'处理结果未知'", () => {
+  assert.equal(proposalStatusLabel('active'), '待处理');
+  assert.notEqual(proposalStatusLabel('active'), UNKNOWN_STATUS_TEXT);
+});
+
+test("'blocked'（求解器没编译出方案）与卡上 Tag 同口径：'无法执行'", () => {
+  assert.equal(proposalStatusLabel('blocked'), '无法执行');
+});
+
+// ── `blocked` 卡说人话（用户实测"正文只有一行 Java 黑话 → 像一张坏卡" ✗） ──────
+
+test('priority_rule_invalid：正文是说人话的解释 + 建议动作，原文只作次要一行', () => {
+  const text = proposalBlockedText({
+    blockingReasonCodes: ['priority_rule_invalid'],
+    blockingReason: '暂不支持同档前置规则字段：location.region',
+    strategy: 'prioritize_within_tier',
+    attemptedRuleBrief: '地域：北方/北京/上海/广州/深圳',
+  });
+  // 解释：中文、说得出"为什么"，不许把 Java 原文或字段名铺在正文 ✗。
+  assert.match(text.explanation, /优先/);
+  assert.doesNotMatch(text.explanation, /location|region|[A-Za-z]{3,}/);
+  // 建议：一句可照做的动作（用户原话口径："换一种说法重试，例如……" ✓）。
+  assert.match(text.suggestion, /换一种说法/);
+  assert.match(text.suggestion, /优先北京的学校/);
+  // 明细：调整方向（strategy 的中文名 ✓）+ 想调整的规则（网关补的 brief ✓）。
+  assert.deepEqual(text.details, [
+    '调整方向：同档内优先',
+    '想调整的规则：地域：北方/北京/上海/广州/深圳',
+  ]);
+  // 原文降级成次要信息 ✓，带 code 锚点（排障对账要用 ✓）。
+  assert.equal(text.reason, '[priority_rule_invalid] 暂不支持同档前置规则字段：location.region');
+});
+
+test('网关还没补 attemptedRuleBrief 时优雅降级：少一行明细，不报错、不留空白行', () => {
+  const text = proposalBlockedText({
+    blockingReasonCodes: ['priority_rule_invalid'],
+  });
+  assert.deepEqual(text.details, []);
+  assert.match(text.explanation, /优先/);
+  assert.match(text.suggestion, /换一种说法/);
+  assert.equal(text.reason, '');
+});
+
+test('未知码 + 英文原文：正文只给通用中文，英文原文只留在次要的 reason 行', () => {
+  const text = proposalBlockedText({
+    blockingReasonCodes: ['some_future_code'],
+    blockingReason: 'internal english message with location.region',
+  });
+  assert.doesNotMatch(text.explanation, /[A-Za-z]/);
+  assert.doesNotMatch(text.suggestion, /[A-Za-z]/);
+  assert.equal(text.details.length, 0);
+  assert.equal(text.reason, '[some_future_code] internal english message with location.region');
+});
+
+test('未知 strategy 不铺机器码（明细行宁缺勿滥）', () => {
+  assert.equal(proposalStrategyLabel('some_future_strategy'), '');
+  assert.equal(proposalStrategyLabel(''), '');
+  const text = proposalBlockedText({
+    blockingReasonCodes: ['priority_rule_invalid'],
+    strategy: 'some_future_strategy',
+  });
+  assert.deepEqual(text.details, []);
+});
+
+test('candidateShortages 多条时择要展示（最多两行，中文、带数量）', () => {
+  const text = proposalBlockedText({
+    blockingReasonCodes: ['candidate_pool_insufficient'],
+    candidateShortages: [
+      { scope: 'candidate_pool', reasonCode: 'tier_candidate_insufficient', targetTier: '稳', requiredCount: 10, currentCount: 6, shortageCount: 4 },
+      { scope: 'current_plan', reasonCode: 'count_over_limit', currentCount: 80, requiredCount: 60 },
+      { scope: 'hard_constraints', reasonCode: 'insufficient_candidate' },
+    ],
+  });
+  assert.equal(text.details.length, 2, '多条只择要展示 ✓（不把三条全铺上 ✗）');
+  assert.match(text.details[0], /^候选情况：候选池，目标层级候选不足/);
+  assert.match(text.details[0], /需要 10/);
+  assert.match(text.details[0], /缺口 4/);
+  assert.match(text.details[1], /^候选情况：当前方案，方案数量超出要求/);
+  for (const line of text.details) {
+    assert.doesNotMatch(line, /[A-Za-z]{3,}/, '明细行不许带机器码 ✗');
+  }
+});
+
+test('candidateShortages 里取不到中文的部分略过；全取不到就不出行（不给空白行）', () => {
+  assert.equal(proposalShortageLine({ scope: 'some_future_scope', reasonCode: 'some_future_reason' }), '');
+  assert.match(proposalShortageLine({ scope: 'candidate_pool' }), /^候选情况：候选池$/);
+});
+
+test('diff 什么都没有：也给一句中文解释 + 一句建议（卡不许空着）', () => {
+  for (const input of [undefined, {}, null]) {
+    const text = proposalBlockedText(input);
+    assert.match(text.explanation, /[㐀-鿿]/);
+    assert.match(text.suggestion, /[㐀-鿿]/);
+    assert.equal(text.reason, '');
+  }
+});
+
+test('blockingReasonCodes 单个字符串也认（载荷形状容错）', () => {
+  const text = proposalBlockedText({
+    blockingReasonCodes: 'priority_rule_invalid',
+    blockingReason: '原文',
+  });
+  assert.match(text.explanation, /优先/);
+  assert.equal(text.reason, '[priority_rule_invalid] 原文');
+});
+
+test('blocked 卡的 summary 与 blockingReason 同句时判重（同一句黑话不许铺两遍）', () => {
+  // Java 的 `buildScopeBlockedProposal` 就是两者同句（summary = blockingReason ✓）。
+  assert.equal(
+    proposalSummaryDuplicatesReason({
+      summary: '暂不支持同档前置规则字段：location.region',
+      blockingReason: '暂不支持同档前置规则字段：location.region',
+    }),
+    true,
+  );
+  // 不同句 / 缺一边 / 空串 → 不判重（那行 summary 有自己的信息，要留住 ✓）。
+  assert.equal(proposalSummaryDuplicatesReason({ summary: 'A', blockingReason: 'B' }), false);
+  assert.equal(proposalSummaryDuplicatesReason({ summary: 'A' }), false);
+  assert.equal(proposalSummaryDuplicatesReason({ blockingReason: 'A' }), false);
+  assert.equal(proposalSummaryDuplicatesReason({ summary: '   ', blockingReason: '   ' }), false);
+  assert.equal(proposalSummaryDuplicatesReason(null), false);
 });

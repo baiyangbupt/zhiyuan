@@ -4,8 +4,10 @@ import { Alert, Button, Space, Tag, Typography } from 'antd';
 import {
   PROPOSAL_STALE_STATE_TEXT,
   isSettledProposalStatus,
+  proposalBlockedText,
   proposalFailureText,
   proposalStatusLabel,
+  proposalSummaryDuplicatesReason,
 } from './proposalCardText.mjs';
 
 /**
@@ -56,6 +58,23 @@ export type ProposalPayload = {
     requiresConfirmation?: boolean;
     blockingReason?: string;
     blockingReasonCodes?: string[];
+    /**
+     * `blocked` 卡的人话明细（网关侧从"实际发出去的规则"生成 ✓，形如
+     * "地域：北方/北京/上海/广州/深圳" ✓）：**可能没有** ✗✓——有就展示、没有就优雅降级 ✓，
+     * 前端不依赖它存在 ✓、也不去解析 Java 的内部字段名 ✗。
+     */
+    attemptedRuleBrief?: string;
+    /** `blocked` 卡的候选缺口（Java 侧 ✓）：多条时择要展示 ✓（见 `proposalBlockedText` ✓）。 */
+    candidateShortages?: Array<{
+      scope?: string;
+      reasonCode?: string;
+      targetTier?: string;
+      requiredCount?: number;
+      currentCount?: number;
+      shortageCount?: number;
+      availableCount?: number;
+      message?: string;
+    }>;
     /** 补录成绩（score_update 动作族）✓：有它这张卡就画成绩明细 ✓、按钮文案换一组 ✓。 */
     scoreUpdate?: ScoreUpdateSummary;
   };
@@ -90,6 +109,14 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
   // 失败原因**按 code 说中文** ✓（M1）：服务端 `message` 是 Java 的内部英文（含版本号 ✗），
   // 直出给用户既看不懂又像报错 ✓；`code` 仍作排障锚点带出 ✓。
   const failureReason = action === 'failed' ? proposalFailureText(actionResult || {}) : '';
+  // `blocked` 卡要说人话（2026-10-08 用户实测"像一张坏卡"✗）：解释 + 明细 + 建议动作，
+  // Java 原文降级成次要一行 ✓——纯逻辑在 `proposalCardText.mjs`（有单测 ✓）。
+  const blockedText = blocked ? proposalBlockedText(diff) : null;
+  // **原文别铺两遍** ✓✓：Java 的 blocked 提案把 `summary` 和 `blockingReason` 写成
+  // **同一句校验话**（`UserGoalProposalBuilder.buildScopeBlockedProposal` ✓）——
+  // 上面那行 summary 与 Alert 尾行的原文是同一份 ✓，一起铺就是"同一句黑话出现两次" ✗。
+  // 相等时只留 Alert 里那一份（它带了 code 锚点与上下文 ✓）；不相等则都保留 ✓（各有信息 ✓）。
+  const blockedSummaryDuplicatesReason = blocked && proposalSummaryDuplicatesReason(diff);
 
   const decide = async (action: 'confirm' | 'cancel') => {
     setSubmitting(true);
@@ -112,7 +139,10 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
       <Typography.Text strong>{diff.title || '方案调整预览'}</Typography.Text>
       <Space size={4} style={{ marginLeft: 8 }}>
         <Tag data-testid="proposal-status">
-          {action ? proposalStatusLabel(action) : blocked ? '无法执行' : '待确认'}
+          {/* `blocked` 优先于动作状态 ✓：这张卡本身没编译出可执行的方案 ✓，
+              标签就该是"无法执行" ✓（冷加载兜底卡若带 `actionStatus=active` ✓，
+              不许把它说成"待处理" ✗——那会让卡片自相矛盾 ✓）。 */}
+          {blocked ? '无法执行' : action ? proposalStatusLabel(action) : '待确认'}
         </Tag>
       </Space>
       {action && !settled ? (
@@ -127,7 +157,7 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
         结构化块在场时只留结构化块（信息不丢：省份/科类/批次/年份/各科/总分/位次全在 ✓）；
         方案调整卡（无 `scoreUpdate`）不受影响 ✓，`proposal-summary` testid 保留 ✓。
       */}
-      {diff.summary && !scoreUpdate ? (
+      {diff.summary && !scoreUpdate && !blockedSummaryDuplicatesReason ? (
         <div data-testid="proposal-summary">
           <Typography.Text type="secondary">{diff.summary}</Typography.Text>
         </div>
@@ -175,12 +205,41 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
           </div>
         </div>
       ) : null}
-      {blocked ? (
+      {/*
+        **"无法执行"卡要可读** ✓✓（2026-10-08 用户实测：正文只有一行 Java 校验黑话
+        ——"暂不支持同档前置规则字段：location.region" ✗，没有正文明细、没有下一步 ✓
+        →"看上去像坏卡" ✗）。现在正文按"解释 → 明细 → 建议"三段铺 ✓：
+          · 解释：`blockingReasonCodes[0]` 查中文表 ✓（如 `priority_rule_invalid` ✓）；
+          · 明细：调整方向（`strategy` 中文名 ✓）、想调整的规则（`attemptedRuleBrief` ✓，
+            网关**可能**还没补它 ✗✓ → 没有就少一行，不报错 ✓）、候选情况（`candidateShortages` ✓）；
+          · 建议动作：一句"换一种说法重试，例如……" ✓；
+          · Java 原文作**次要信息**留在最后一行 ✓（排障对账的锚点 ✓，不是正文 ✗）。
+        **不**给确认按钮 ✓（`requiresConfirmation=false` ✓，本来就没编出可执行方案 ✓）。
+      */}
+      {blocked && blockedText ? (
         <Alert
           type="warning"
           showIcon
           data-testid="proposal-blocked"
-          message={diff.blockingReason || '这一版方案暂时无法执行。'}
+          message={blockedText.explanation}
+          description={
+            <>
+              {blockedText.details.map((line, index) => (
+                <div key={`${index}-${line}`} data-testid="proposal-blocked-detail">
+                  {line}
+                </div>
+              ))}
+              <div data-testid="proposal-blocked-suggestion">建议：{blockedText.suggestion}</div>
+              {blockedText.reason ? (
+                <div
+                  data-testid="proposal-blocked-raw"
+                  style={{ color: 'rgba(0, 0, 0, 0.45)', marginTop: 4 }}
+                >
+                  系统提示：{blockedText.reason}
+                </div>
+              ) : null}
+            </>
+          }
         />
       ) : null}
       {/*

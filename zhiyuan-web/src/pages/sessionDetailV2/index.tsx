@@ -230,6 +230,14 @@ const SessionDetailV2 = () => {
     proposalRef?: string;
     proposalId?: string;
     actionStatus?: string;
+    /** 下面几格服务端**可能**会带上（`blocked` 那一档的卡要说得出"为什么" ✓）：
+     *  有就展示、没有就优雅降级 ✓——前端不依赖它们存在 ✗（口径见 `MessageList`）。 */
+    scoreSummary?: Record<string, any> | null;
+    title?: string;
+    strategy?: string;
+    blockingReason?: string;
+    blockingReasonCodes?: string[];
+    attemptedRuleBrief?: string;
   } | null>(null);
   const [entityCardList, setEntityCardList] = useState<IDialogueResData>({});
   const [sessionStatus, setSessionStatus] = useState<string>('');

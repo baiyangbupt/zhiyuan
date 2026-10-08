@@ -137,6 +137,16 @@ interface IMessageListProps {
     actionStatus?: string;
     /** 补录族的结构化明细（服务端 `LastProposalVo.scoreSummary`，2026-10-08 起）。 */
     scoreSummary?: Record<string, any> | null;
+    /**
+     * 下面几格是**可能还没有**的（服务端/网关补齐后直接生效 ✓✓）：
+     * `blocked` 那一档的卡要说得出"为什么无法执行 + 想调整什么" ✓——有就展示、
+     * 没有就退回老样子（标题"方案调整预览" + 状态标签 ✓），**不靠它们存在** ✗。
+     */
+    title?: string;
+    strategy?: string;
+    blockingReason?: string;
+    blockingReasonCodes?: string[];
+    attemptedRuleBrief?: string;
   } | null;
 }
 export interface IMessageParams {
@@ -391,6 +401,13 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   const itemRefs = useRef<any>([]);
 
   const { botId, tenantId } = useAuthParams();
+
+  // 冷加载兜底卡是不是一张"无法执行"卡 ✓：状态**或**阻断原因任一在场就算 ✓
+  //（服务端两路都可能先到：`actionStatus=blocked` ✓ 或带了 `blockingReason` ✓）——
+  // 只看 `actionStatus` 的话，服务端先补原因那一格时卡片仍会被画成空的 ✓✗。
+  const coldFallbackBlocked =
+    String(lastProposal?.actionStatus || '') === 'blocked' ||
+    String(lastProposal?.blockingReason || '').trim() !== '';
 
   const prevMessageListRef = useRef<IMessage[]>([]);
   const pageRef = useRef(1);
@@ -2311,9 +2328,17 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                   // "方案调整预览"、明细全丢 ✗——补录族有 `scoreSummary` 就补出"更新成绩"
                   // 标题与结构化明细；status 留空 → 终态只读卡本来就不出按钮 ✓。
                   diff: {
-                    title: lastProposal.scoreSummary ? '更新成绩' : '方案调整预览',
+                    title:
+                      lastProposal.title || (lastProposal.scoreSummary ? '更新成绩' : '方案调整预览'),
                     scoreUpdate: lastProposal.scoreSummary || undefined,
-                    status: '',
+                    // **`blocked` 那一档要还原**（2026-10-08 用户实测：刷新后一张空的
+                    // "方案调整预览"卡 ✗）：服务端把阻断原因带出来时照它画（"无法执行" Tag +
+                    // 解释/明细/建议 ✓）；带不出来就保持空 ✓（终态只读卡本来就不出按钮 ✓）。
+                    status: coldFallbackBlocked ? 'blocked' : '',
+                    strategy: lastProposal.strategy,
+                    blockingReason: lastProposal.blockingReason,
+                    blockingReasonCodes: lastProposal.blockingReasonCodes,
+                    attemptedRuleBrief: lastProposal.attemptedRuleBrief,
                   },
                 }}
                 actionResult={{
