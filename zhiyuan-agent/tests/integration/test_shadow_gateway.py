@@ -842,3 +842,121 @@ async def test_evidence_follows_the_snapshot_not_the_process_memory() -> None:
 
     assert "ev-stale" not in ids, "Java 判成 stale 的证据不许留在进程内存里"
     assert "ev-valid" in ids, "对照：snapshot 里还有的那条必须留下"
+
+
+async def test_a_blocked_proposal_preview_carries_the_attempted_rule_brief(monkeypatch) -> None:
+    """2026-10-08「location 死卡」的收尾：被拒的卡上要有一句**人话**。
+
+    `blockingReason` 是 Java 校验器的原文（"同档前置规则：暂不支持非排他覆盖要求字段：
+    location.xxx"），用户读不出"模型本来想调整什么"。`attemptedRuleBrief` 由网关从它
+    **自己发出去的** `userGoalRequest` 生成（不改 Java）。只在 `blocked` 卡上加：
+    正常路径的载荷一个字节都不变。
+    """
+    from app.util import internal_client
+
+    async def preview(tenant_id, session_id, payload):
+        assert payload["priorityRules"][0]["domain"] == "region"
+        return {
+            "code": 0,
+            "data": {
+                "proposals": [
+                    {
+                        "proposalId": "ugp_blocked",
+                        "status": "blocked",
+                        "requiresConfirmation": False,
+                        "summary": "同档前置规则：暂不支持非排他覆盖要求字段：location.xxx",
+                        "blockingReason": "同档前置规则：暂不支持非排他覆盖要求字段：location.xxx",
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "generate_user_goal_planning_fix_proposals", preview)
+
+    class ProposalHarness(FakeCodexHarness):
+        async def start_turn(self, thread_id: str, input_items: list[dict], output_schema=None):
+            return {
+                "turn": {"id": "turn-proposal"},
+                "output": {
+                    "responseType": "text",
+                    "message": "这个要求我整理成了提案。",
+                    "proposalRequest": {
+                        "goalType": "prioritize_within_tier",
+                        "userOriginalText": "北方优先，先放北京和上海",
+                        "confidence": "high",
+                        "sourceVersionGuard": 42,
+                        "priorityRules": [
+                            {"domain": "region", "key": "region_group", "values": ["北方"]},
+                            {"domain": "region", "key": "city", "values": ["北京", "上海"]},
+                        ],
+                    },
+                },
+            }
+
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=ProposalHarness(),
+        legacy=FakeLegacyService(),
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+    result = await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-blocked",
+        content="北方优先，先放北京和上海",
+    )
+
+    assert result["proposalPreview"]["status"] == "blocked"
+    assert (
+        result["proposalPreview"]["attemptedRuleBrief"] == "地域：北方；地域：北京/上海"
+    )
+
+
+async def test_a_ready_proposal_preview_gains_no_extra_brief(monkeypatch) -> None:
+    """正常路径不许长出新字段：`attemptedRuleBrief` **只在 blocked 卡上**出现。"""
+    from app.util import internal_client
+
+    async def preview(tenant_id, session_id, payload):
+        return {"code": 0, "data": {"proposals": [{"proposalId": "proposal-1", "status": "ready"}]}}
+
+    monkeypatch.setattr(internal_client, "generate_user_goal_planning_fix_proposals", preview)
+
+    class ProposalHarness(FakeCodexHarness):
+        async def start_turn(self, thread_id: str, input_items: list[dict], output_schema=None):
+            return {
+                "turn": {"id": "turn-proposal"},
+                "output": {
+                    "responseType": "text",
+                    "message": "我先生成方案预览",
+                    "proposalRequest": {
+                        "goalType": "prioritize_within_tier",
+                        "userOriginalText": "北方优先",
+                        "confidence": "high",
+                        "sourceVersionGuard": 42,
+                        "priorityRules": [
+                            {"domain": "region", "key": "region_group", "values": ["北方"]}
+                        ],
+                    },
+                },
+            }
+
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=ProposalHarness(),
+        legacy=FakeLegacyService(),
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=lambda **kwargs: _snapshot(),
+    )
+    result = await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id="turn-ready",
+        content="北方优先",
+    )
+
+    assert result["proposalPreview"] == {"proposalId": "proposal-1", "status": "ready"}

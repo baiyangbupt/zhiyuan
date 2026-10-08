@@ -457,3 +457,22 @@ async def test_an_action_result_is_emitted_even_when_the_turn_also_failed() -> N
     ]
     assert events[0]["payload"]["actionStatus"] == "applied"
     assert events[0]["payload"]["proposalRef"] == "pending-1"
+
+
+def test_the_attempted_rule_brief_rides_inside_the_diff() -> None:
+    """被拒（`blocked`）卡上的人话摘要（`attemptedRuleBrief` ✓）要进 `diff`：
+    它是"模型本来想调整什么"的唯一可读出处（`blockingReason` 是 Java 校验原文 ✗）。
+    白名单漏了它 → 卡片只剩一句读不懂的拒单原因 ✗；只加在 blocked 卡上（正常卡不长字段 ✓）。
+    """
+    payload = _proposal_preview_payload(
+        {
+            "proposalId": "ugp_blocked",
+            "sourceVersion": 3,
+            "status": "blocked",
+            "blockingReason": "同档前置规则：暂不支持非排他覆盖要求字段：location.xxx",
+            "attemptedRuleBrief": "地域：北方/北京/上海",
+        }
+    )
+
+    assert payload["diff"]["status"] == "blocked"
+    assert payload["diff"]["attemptedRuleBrief"] == "地域：北方/北京/上海"

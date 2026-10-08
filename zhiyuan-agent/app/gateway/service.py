@@ -361,6 +361,34 @@ def _active_proposal_preview_override(
     return override
 
 
+# 规则域 → 用户看得懂的中文（只给"被拒的死卡"用：`blocked` 卡上的 `blockingReason`
+# 是 Java 的校验原文 ✓，用户读不出"它本来想调整什么" ✗）。
+_RULE_DOMAIN_LABELS = {
+    "region": "地域",
+    "major": "专业",
+    "school": "院校",
+    "admission": "录取档位",
+}
+
+
+def _attempted_rule_brief(request: ProposalRequest) -> str | None:
+    """把模型**实际发出的**规则（requirements + priorityRules）翻成一句人话。
+
+    为什么在网关侧生成 ✓：`blocked` 预览里的 `blockingReason` 来自 Java 校验器 ✗
+    （"同档前置规则：暂不支持非排他覆盖要求字段：location.xxx" ✓），而"模型本来想
+    调整什么"只有**我们发出去的那份 `userGoalRequest`** 知道 ✓——Java 不背这个包袱 ✗
+    （改 Java 要动拒单文案的既有语义 ✗），前端也不该去解析内部字段名 ✗。
+    形状（示例）："地域：北方/北京/上海/广州/深圳；专业：临床医学"。
+    取不到规则就返回 None（**不造字段** ✓：空字符串只会让卡片多一行空白 ✗）。
+    """
+    briefs: list[str] = []
+    for rule in (*request.priority_rules, *request.requirements):
+        label = _RULE_DOMAIN_LABELS.get(rule.domain, rule.domain)
+        values = "/".join(value for value in rule.values if value)
+        briefs.append(f"{label}：{values}" if values else label)
+    return "；".join(briefs) if briefs else None
+
+
 def _score_update_summary_text(summary: Mapping[str, Any]) -> str:
     """补录卡的一句话摘要（给人看的那份，全部来自 Java 按**合并后**成绩算的 summary）。"""
     parts: list[str] = []
@@ -1732,6 +1760,19 @@ class GatewayService:
                 # 覆盖语义见 `_active_proposal_preview_override`（提案/补录共用同一份 ✓）。
                 if active is not None and isinstance(proposal_preview, Mapping):
                     proposal_preview = _active_proposal_preview_override(proposal_preview, active)
+                # **被拒的卡要说人话** ✓（2026-10-08 "location 死卡"事故）：`blocked`
+                # 预览只有 Java 的校验原文 ✓（用户读不懂它本来想调整什么 ✗）。补一句
+                # 从我们**发出去的规则**生成的人话摘要 ✓；只在 blocked 卡上加 ✓——
+                # 正常路径的载荷**一个字节都不变** ✓（前端白名单见到新键就当没有 ✓）。
+                if isinstance(proposal_preview, Mapping) and str(
+                    proposal_preview.get("status") or ""
+                ).lower() == "blocked":
+                    attempted_brief = _attempted_rule_brief(output.proposal_request)
+                    if attempted_brief:
+                        proposal_preview = {
+                            **proposal_preview,
+                            "attemptedRuleBrief": attempted_brief,
+                        }
             elif output.score_update_request is not None:
                 # **补录成绩草稿**（写闭环第二族：score_update ✓）——与提案同一张卡、
                 # 同一条确认链（`proposal.preview` → `conversationAction` ✓）：

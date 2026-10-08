@@ -889,6 +889,10 @@ def _proposal_preview_payload(preview: Mapping[str, Any]) -> dict[str, Any]:
             # 按**合并后**成绩算的 `scoreSummary` ✓（`ChatSessionBizService.buildScoreUpdateSummary`）——
             # 模型文本里的复述不作数 ✗。白名单放到这里 ✓：卡片按它渲染明细行 ✓。
             "scoreUpdate",
+            # 被拒（`blocked`）的卡上，模型**本来想调整的规则**翻成的人话（"地域：北方/北京…" ✓）：
+            # 由网关从它自己发出去的 `userGoalRequest` 生成 ✓（见 `_attempted_rule_brief` ✓），
+            # Java 的校验原文（`blockingReason`）用户读不懂它想说哪条规则 ✗。
+            "attemptedRuleBrief",
         )
         if preview.get(key) is not None
     }

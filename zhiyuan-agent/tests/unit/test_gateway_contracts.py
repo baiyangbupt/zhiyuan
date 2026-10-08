@@ -7,6 +7,8 @@ from app.gateway.contracts import (
     ArtifactRef,
     ConversationTurnSnapshot,
     EvidenceRef,
+    ProposalPriorityRule,
+    ProposalRequirement,
     StatePatch,
     TurnOutput,
 )
@@ -205,6 +207,9 @@ def test_the_model_facing_schema_exposes_every_contract_enum() -> None:
 
     `const` 与 `enum` 都算合格（前者更严）；递归整棵树，因为最容易漏的正是
     `artifactRefs.items` 这种嵌套字段。
+
+    名字是**全局按 snake→camel 匹配**的（契约字段名在 schema 里同名 ✓），所以撞上
+    手写段里同名但语义无关的自由字段时按**路径**排除（见 `free_form_paths` ✓）。
     """
     import re
 
@@ -224,24 +229,39 @@ def test_the_model_facing_schema_exposes_every_contract_enum() -> None:
         head, *rest = snake.split("_")
         return head + "".join(word.capitalize() for word in rest)
 
+    # 手写证据范围里的这两个名字与契约字面量**同名但无关**：契约侧 `EvidenceRef.scope`
+    # 本来就是 `dict[str, Any]`（`scope.kind` 是它的自由字符串字段）。它们是
+    # `ProposalPriorityRule.scope` / `ProposalRequirement.kind` 的同名巧合，
+    # 不是"漏了 enum"（按路径排除，不放松别处 ✓）。
+    free_form_paths = {
+        "$.properties.evidenceRefs.items.properties.scope",
+        "$.properties.evidenceRefs.items.properties.scope.properties.kind",
+    }
+
     missing: list[str] = []
 
-    def walk(node: object) -> None:
+    def walk(node: object, path: str = "$") -> None:
         if isinstance(node, dict):
             properties = node.get("properties")
             if isinstance(properties, dict):
                 for prop, spec in properties.items():
+                    child = f"{path}.properties.{prop}"
                     if isinstance(spec, dict):
-                        for snake, allowed in literals.items():
-                            if camel(snake) == prop and "enum" not in spec and "const" not in spec:
-                                missing.append(f"{prop}（契约允许 {sorted(allowed)}）")
-                        walk(spec)
+                        if child not in free_form_paths:
+                            for snake, allowed in literals.items():
+                                if (
+                                    camel(snake) == prop
+                                    and "enum" not in spec
+                                    and "const" not in spec
+                                ):
+                                    missing.append(f"{prop}（契约允许 {sorted(allowed)}）")
+                        walk(spec, child)
             for key, value in node.items():
                 if key != "properties":
-                    walk(value)
+                    walk(value, f"{path}.{key}")
         elif isinstance(node, list):
-            for item in node:
-                walk(item)
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]")
 
     walk(TURN_OUTPUT_SCHEMA)
 
@@ -325,3 +345,88 @@ def test_nullable_contract_literals_are_expressible_in_the_model_facing_schema()
     assert not mismatches, (
         "可空 Literal 与 schema 不一致（None 必须列进 enum）：" + "；".join(mismatches)
     )
+
+
+# ── 2026-10-08「location 死卡」回归：契约必须与 Java 白名单（唯一权威 =
+#    `CoverageRequirementSupport.targetList()`）一致 ──────────────────────────
+# 事故链：`domain` 曾是自由字符串 → 模型侧 schema 没有 enum → 模型只能猜（它猜了
+# `location`）→ Java 双重非法（域不在白名单、键也不在）→ prepare 拒单 → 用户拿到
+# 一张 `status=blocked` 的死卡（"暂不支持非排他覆盖要求字段：location.…"）。
+# 拒收**必须发生在投递前**：`TurnOutput.model_validate` 拦下 → 走既有的一次修复回合，
+# 而不是注定被 Java 拒的死卡。
+
+
+def test_proposal_priority_rule_rejects_an_unknown_domain() -> None:
+    with pytest.raises(ValidationError, match="domain"):
+        ProposalPriorityRule(domain="location", key="location", values=["北方", "北京"])
+
+
+def test_turn_output_rejects_a_proposal_with_an_unknown_rule_domain() -> None:
+    """模型输出的**完整形状**（不是裸规则）：非法域在解析层就被拒。
+
+    这一条是根因回归：只要这里拒了，`_extract_output` 就会走修复回合，
+    非法规则**没有机会**直通 `prepare`（那条路的终点是死卡）。
+    """
+    with pytest.raises(ValidationError, match="domain"):
+        TurnOutput.model_validate(
+            {
+                "responseType": "text",
+                "message": "我把这个要求整理成提案",
+                "proposalRequest": {
+                    "goalType": "prioritize_within_tier",
+                    "sourceVersionGuard": 7,
+                    "userOriginalText": "学校在北方的话，优先北京和上海",
+                    "priorityRules": [
+                        {"domain": "location", "key": "location", "values": ["北方", "北京", "上海"]}
+                    ],
+                },
+            }
+        )
+
+
+def test_proposal_priority_rule_rejects_a_key_from_another_domain() -> None:
+    """域与键必须配对（JSON Schema 表达不了合取，pydantic 侧补上）：
+
+    `region` 只认 province/city/area/region_group；`school_nature` 属于 `school` 域。
+    配错在 Java 里同样是"暂不支持…字段"的拒单死卡。
+    """
+    with pytest.raises(ValidationError, match="school_nature"):
+        ProposalPriorityRule(domain="region", key="school_nature", values=["985"])
+
+
+def test_proposal_priority_rule_rejects_an_unsupported_ordering_target() -> None:
+    """`orderingTarget`/`scope` 在 Java 里各自只有**一个**合法取值（其余 = 拒单）。"""
+    with pytest.raises(ValidationError, match="ordering_target"):
+        ProposalPriorityRule(
+            domain="region", key="city", values=["北京"], ordering_target="rank_after"
+        )
+    with pytest.raises(ValidationError, match="scope"):
+        ProposalPriorityRule(domain="region", key="city", values=["北京"], scope="across_tier")
+
+
+def test_proposal_priority_rule_accepts_region_city() -> None:
+    """正常路径不许被误伤：region+city 是 Java 白名单里的合法组合。"""
+    rule = ProposalPriorityRule(domain="region", key="city", values=["北京"])
+
+    assert rule.domain == "region"
+    assert rule.key == "city"
+    assert rule.ordering_target == "rank_before"
+    assert rule.scope == "within_tier"
+
+
+def test_proposal_requirement_kind_domain_key_follow_the_java_whitelist() -> None:
+    """`ProposalRequirement` 与 priority 规则同一个校验器家族（`ProjectedHardRequirementSupport.validate`）：
+
+    - kind 只认 include / exclude / only_keep（其余 = "当前只支持 exclude 和 only_keep 复合硬要求"✗）；
+    - domain/key 与覆盖要求同一份白名单；
+    - `admission.tier` 只对 `kind=include` 存在（`targetListName()` 不含 admission ✗）。
+    """
+    requirement = ProposalRequirement(kind="include", domain="admission", key="tier", values=["冲"])
+    assert requirement.key == "tier"
+
+    with pytest.raises(ValidationError, match="kind"):
+        ProposalRequirement(kind="within", domain="region", key="city", values=["北京"])
+    with pytest.raises(ValidationError, match="admission"):
+        ProposalRequirement(kind="exclude", domain="admission", key="tier", values=["冲"])
+    with pytest.raises(ValidationError, match="school_nature"):
+        ProposalRequirement(kind="include", domain="region", key="school_nature", values=["985"])

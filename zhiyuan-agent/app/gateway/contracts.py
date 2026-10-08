@@ -147,22 +147,96 @@ class ProposalScope(_ContractModel):
     raw_text: str | None = None
 
 
+# ── 方案调整规则的白名单（唯一权威 = Java `CoverageRequirementSupport.targetList()`）──
+# 2026-10-08 事故：`domain` 曾是自由字符串 ✗ → 模型侧 schema（`_strict_model_schema`
+# 直接从 pydantic 模型生成）里没有 enum ✗ → 模型**只能猜**，实测猜了 `location` ✗
+# （Java 双重非法：域不在白名单、键也不在）→ prepare 拒单 ✓ → 用户拿到一张
+# `status=blocked` 的死卡 ✓（"暂不支持非排他覆盖要求字段：location.…"，没有任何
+# 可执行的下一步 ✓）。修在契约上：枚举进 schema（模型**看得见**允许值 ✓）+ 配对校验
+# （JSON Schema 表达不了 domain×key 的合取 ✓，pydantic 侧补上 ✓；非法值在
+# `TurnOutput.model_validate` 就被拦下 → 走既有的一次修复回合，而不是直通 prepare ✗）。
+# `region`/`major`/`school`/`admission` 四域与各自键 = Java 白名单逐字抄录 ✓；
+# `admission.tier` 只对 `kind=include` 存在 ✓（`targetListName()` 不含 admission ✗）。
+_PRIORITY_RULE_KEYS_BY_DOMAIN: dict[str, tuple[str, ...]] = {
+    "region": ("province", "city", "area", "region_group"),
+    "major": ("major", "level1", "level2", "level3", "major_tag"),
+    "school": (
+        "school",
+        "schools",
+        "school_nature",
+        "program_type",
+        "school_category",
+        "school_level",
+        "school_tag",
+    ),
+    "admission": ("tier",),
+}
+
+ProposalRuleDomain = Literal["region", "major", "school", "admission"]
+ProposalRuleKey = Literal[
+    "province",
+    "city",
+    "area",
+    "region_group",
+    "major",
+    "level1",
+    "level2",
+    "level3",
+    "major_tag",
+    "school",
+    "schools",
+    "school_nature",
+    "program_type",
+    "school_category",
+    "school_level",
+    "school_tag",
+    "tier",
+]
+
+
+def _require_supported_rule_field(domain: str, key: str) -> None:
+    allowed = _PRIORITY_RULE_KEYS_BY_DOMAIN.get(domain, ())
+    if key not in allowed:
+        # 报错文本会进修复回合的提示词（`_repair_turn_output` 的 issue ✓），
+        # 所以把允许值一起写进去——只说"非法"的话模型还是会再猜一次。
+        raise ValueError(
+            f"unsupported rule field {domain}.{key}; {domain} supports: "
+            + (", ".join(allowed) if allowed else "none")
+        )
+
+
 class ProposalRequirement(_ContractModel):
-    kind: str
-    domain: str
-    key: str
+    # Java `ProjectedHardRequirementSupport.validate()` 只认这三个 kind：
+    # 其余值一律"当前只支持 exclude 和 only_keep 复合硬要求"（= 拒单死卡）。
+    kind: Literal["include", "exclude", "only_keep"]
+    domain: ProposalRuleDomain
+    key: ProposalRuleKey
     values: list[str]
     min_count: int = Field(default=1, ge=0)
     raw_text: str | None = None
 
+    @model_validator(mode="after")
+    def _validate_domain_key_pair(self) -> "ProposalRequirement":
+        _require_supported_rule_field(self.domain, self.key)
+        if self.domain == "admission" and self.kind != "include":
+            raise ValueError("admission.tier is only supported for kind=include")
+        return self
+
 
 class ProposalPriorityRule(_ContractModel):
-    domain: str
-    key: str
+    domain: ProposalRuleDomain
+    key: ProposalRuleKey
     values: list[str]
-    ordering_target: str = "rank_before"
-    scope: str = "within_tier"
+    # Java `PriorityRuleSupport.validate()` 只认这两对取值（其余 = 拒单死卡）：
+    # 它是把规则映射成 include 覆盖要求后复用同一份 CoverageRequirementSupport 白名单 ✓。
+    ordering_target: Literal["rank_before"] = "rank_before"
+    scope: Literal["within_tier"] = "within_tier"
     raw_text: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_domain_key_pair(self) -> "ProposalPriorityRule":
+        _require_supported_rule_field(self.domain, self.key)
+        return self
 
 
 class ProposalTierRange(_ContractModel):

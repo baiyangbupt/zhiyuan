@@ -137,3 +137,34 @@ def test_turn_output_schema_is_accepted_by_deepseek_responses() -> None:
         "default": None,
         "$ref": "#/$defs/ProposalTierRange",
     }
+
+
+def test_the_model_facing_schema_pins_the_proposal_rule_domains_and_keys() -> None:
+    """2026-10-08「location 死卡」的根因回归：**模型侧** schema 必须带 enum。
+
+    事故链：`ProposalPriorityRule.domain` 是自由字符串 → schema 只写 `type: string`
+    → 模型看不到允许值、只能猜（实测猜了 `location`）→ Java 白名单
+    （`CoverageRequirementSupport.targetList()`）双重非法 → prepare 拒单 → 死卡。
+    这一条钉住"允许值对模型可见"：域、键、kind、orderingTarget/scope **一个都不许**
+    退回自由字符串（退回 = 模型重新开始猜）。
+    """
+    definitions = TURN_OUTPUT_SCHEMA["$defs"]
+
+    rule = definitions["ProposalPriorityRule"]["properties"]
+    assert rule["domain"]["enum"] == ["region", "major", "school", "admission"]
+    keys = rule["key"]["enum"]
+    assert {"province", "city", "area", "region_group"} <= set(keys)
+    assert {"major", "level1", "level2", "level3", "major_tag"} <= set(keys)
+    assert {"school", "schools", "school_nature", "program_type", "school_category",
+            "school_level", "school_tag"} <= set(keys)
+    assert "tier" in keys
+    # Java 白名单之外的域/键**不在** enum 里（模型看不到 = 猜不出来）
+    assert "location" not in keys and "location" not in rule["domain"]["enum"]
+    # 单值 Literal 在 pydantic 里渲染成 `const`（比 enum 更严，合格）
+    assert rule["orderingTarget"]["const"] == "rank_before"
+    assert rule["scope"]["const"] == "within_tier"
+
+    requirement = definitions["ProposalRequirement"]["properties"]
+    assert requirement["kind"]["enum"] == ["include", "exclude", "only_keep"]
+    assert requirement["domain"]["enum"] == ["region", "major", "school", "admission"]
+    assert "city" in requirement["key"]["enum"]
