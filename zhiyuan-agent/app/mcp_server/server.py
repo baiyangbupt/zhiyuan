@@ -103,6 +103,17 @@ _DEFAULT_TOOL_DESCRIPTION = "Zhiyuan authoritative read-only domain query"
 # 逐工具描述：**模型实际读到的那句话**。默认那句太粗，"口径"它读不到——
 # 位次这种"同分不可分辨"的边界必须在描述里写死，否则模型只能猜，
 # 而猜出来的是一个**精确名次**，正是这条工具要防的事。
+#
+# 产物形状的工具（候选 / 比较）共用下面这句：结果里的 `artifacts` 是
+# `artifactRefs` 的**唯一合法来源**。不写这句的代价实测过（2026-10-08 事故）：
+# 契约要求 recommendation/review 输出必须带 artifactRefs，工具没给 id 时
+# 模型只能自己编，编出来的 id 没有会话章 → 整轮不可恢复地失败。
+_ARTIFACT_REF_HINT = (
+    "结果里的 artifacts 是本回合签发的产物引用；输出 responseType=recommendation/review 时，"
+    "artifactRefs 只能从这里原样抄 artifactId/artifactType/stateVersion **三个字段**"
+    "（不多抄、不改写、更不自行编造 id——自行编造的 id 缺会话章，会让整轮失败）。"
+)
+
 TOOL_DESCRIPTIONS: dict[str, str] = {
     "catalog.get_score_position": (
         "一分一段表查询：按省份+分数查位次。同分考生不可分辨——"
@@ -114,6 +125,15 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "看起来像\"该省没有数据\"其实是科类不适用；先问清/确认用户科类再查，"
         "不得跨省外推编码；上游无数据省份回不可用，不得估算（禁估算）。"
     ),
+    # 候选预览：只读的候选纵切（过滤 → 分页 → 一页样例）。
+    "recommendation.preview_candidates": (
+        "会话候选池预览（只读）：按过滤条件（冲/稳/保档位、省份/城市/院校/专业关键词，"
+        "含 negative* 排除项）分页取候选；`total` 是全量条数、`items` 只是这一页"
+        "（`returned_items_are_sample` 为真时不得拿这页概括分布）；"
+        "候选值由系统从会话候选池**真实载入**，不要自己填数字；预览不改任何状态。"
+        "compare_candidates / explain_fit 的 entityId 取自这里的返回。"
+        + _ARTIFACT_REF_HINT
+    ),
     "recommendation.preview_majors": (
         "基于会话画像的专业方向打分推荐（只读）：把当前会话的分数/选科/性别画像"
         "交给 rank 服务做专业级打分，按综合分取 topN（上限 8 条切片）。"
@@ -124,6 +144,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "不比绝对值，四个维度分（性别适配/满意度/薪酬/热度）不得改口径转述。"
         "画像缺分数时不可用：返回 unavailable=true 与原因码，如实说明不可用，"
         "不得用热度榜等无个性化数据顶替（禁估算、禁冒充）。"
+        + _ARTIFACT_REF_HINT
     ),
     "recommendation.compare_candidates": (
         "对同伴会话内的候选志愿做矩阵比较（只读）；先 preview_candidates 拿 entityId "
@@ -132,6 +153,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "值由系统从会话候选池**真实载入**，不要自己填数字；"
         "口径不齐的数值列整列进 unavailable_dimensions（值为 null 是「不可比/无数据」，"
         "不是 0，不得凭印象补齐）；结论只能引用 cells 里带 source 的值。"
+        + _ARTIFACT_REF_HINT
     ),
     "recommendation.explain_fit": (
         "解释某个候选为什么匹配/不匹配（只读）；概率不可用一律如实说；"
@@ -146,6 +168,16 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "not_applicable），unknown 与 limitations 里列出的缺失字段如实说清，不得补值；"
         "probability 恒为 unavailable（无权威概率源）：**适配与概率分开讲**，"
         "不得估算或拿历年分数、院校热度顶替，绝不给出录取概率数字。"
+        + _ARTIFACT_REF_HINT
+    ),
+    # 同口径并列（历史/率）：口径 = (年份, 省份, 批次, 科类)，四项必须给全——
+    # 跨年、跨批次的数字并排放进一张表，读者会默认它们可比，而那是这张表最危险的错误。
+    "admission.compare": (
+        "把 2~5 个院校/专业在**同一口径**下并列（只读）：口径四项"
+        "（entities/areaId/batch/year/subjectType）全部必填，缺一项就拒绝，"
+        "不用\"最近一年\"或默认省份凑；口径不齐的列如实标不可用，"
+        "值为 null 是「不可比/无数据」，不是 0，不得凭印象补齐。"
+        + _ARTIFACT_REF_HINT
     ),
     # 批次编码表：补录草稿的 batch 码（按省不同：浙江第一段=17）与 level
     # （01 本科 / 02 专科）都取自这条；`subjectType` 按省份口径，多科类省份必给
@@ -326,6 +358,10 @@ TOOL_OUTPUT_SCHEMA: dict[str, Any] = {
         "data": {},
         # 证据**本体**（Java 签发），不是指向证据的编号：下游账本要用它做跨回合核验。
         "evidenceRefs": {"type": "array", "items": {}},
+        # 本回合签发的产物引用（候选/比较形状的结果各一条）：带会话/线程章的胖记录。
+        # 模型输出 recommendation/review 时，`artifactRefs` 只能从这里抄——
+        # 没有它，模型就只能自己编 id，而编出来的必然缺章（2026-10-08 事故）。
+        "artifacts": {"type": "array", "items": {}},
         "resolvedEntities": {"type": "array", "items": {}},
         "limitations": {"type": "array", "items": {"type": "string"}},
         "nextCursor": {"type": ["string", "null"]},

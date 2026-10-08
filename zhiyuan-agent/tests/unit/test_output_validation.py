@@ -512,6 +512,81 @@ def test_artifact_from_a_previous_thread_is_still_refused() -> None:
         )
 
 
+def test_tool_issued_artifact_ref_with_turn_scope_passes() -> None:
+    """工具在签发点盖了章的产物引用必须通过——2026-10-08 事故的回归位。
+
+    事故的形态：契约要求 recommendation/review 输出必须带 `artifactRefs`，
+    而工具结果里没有一个可引用的产物 id，模型只能自己编一个
+    （`session:10041979:major_direction_ranking:v3`），那条记录没有会话/线程章
+    → `artifact_scope_violation` → 整轮不可恢复地失败。
+    修的方向是**签发点补章**（工具结果带 `artifacts`），不是把这两处校验放松：
+    下面这条记录的形状就是工具现在签发的形状（`mcp_art_<tool>_<digest>` + 会话身份）。
+    """
+    artifact_id = "mcp_art_preview_majors_a5af5a07bf98b144cc60"
+    output = validate_turn_output(
+        turn_output={
+            "responseType": "recommendation",
+            "message": "专业方向排序",
+            "artifactRefs": [
+                {"artifactId": artifact_id, "artifactType": "candidate", "stateVersion": 42}
+            ],
+            "evidenceRefs": [],
+        },
+        current_snapshot=ConversationTurnSnapshot(
+            snapshot_version=42, session_id="10041979", planning_stage="candidate_exploration"
+        ),
+        evidence_ledger={},
+        artifacts={
+            artifact_id: {
+                "artifactId": artifact_id,
+                "artifactType": "candidate",
+                "stateVersion": 42,
+                "tenantId": "1",
+                "sessionId": "10041979",
+                "threadId": "thr-current",
+            }
+        },
+        thread_id="thr-current",
+        tenant_id="1",
+        strict_scope=True,
+    )
+
+    assert output.artifact_refs[0].artifact_id == artifact_id
+
+
+def test_artifact_without_a_session_stamp_is_still_refused() -> None:
+    """模型自己编的产物 id（没有会话章）仍必须拒——补的是签发点，不是校验。
+
+    事故里那条 `session:10041979:major_direction_ranking:v3` 走的就是这个分支：
+    记录找得到（模型自己写的 JSON 被收集器当成了产物记录），
+    但记录上没有任何会话身份 → `artifact_scope_violation`。
+    放宽这里就等于"模型写什么就信什么"，那不是修复，是把检查作废。
+    """
+    fabricated = {
+        "artifactId": "session:10041979:major_direction_ranking:v3",
+        "artifactType": "candidate",
+        "stateVersion": 42,
+    }
+
+    with pytest.raises(OutputContractError, match="artifact_scope_violation"):
+        validate_turn_output(
+            turn_output={
+                "responseType": "recommendation",
+                "message": "专业方向排序",
+                "artifactRefs": [fabricated],
+                "evidenceRefs": [],
+            },
+            current_snapshot=ConversationTurnSnapshot(
+                snapshot_version=42, session_id="10041979", planning_stage="candidate_exploration"
+            ),
+            evidence_ledger={},
+            artifacts={fabricated["artifactId"]: dict(fabricated)},
+            thread_id="thr-current",
+            tenant_id="1",
+            strict_scope=True,
+        )
+
+
 def test_evidence_signed_before_a_workspace_write_is_still_accepted() -> None:
     """P1c-1 的验收原话：**第 3 回合产出的证据，在中间发生过一次工作区写入之后，
     第 7 回合引用它必须通过。**

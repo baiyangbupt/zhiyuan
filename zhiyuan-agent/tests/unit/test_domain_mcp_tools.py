@@ -190,6 +190,126 @@ def test_standard_envelope_keeps_state_version_and_evidence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_recommendation_tool_signs_its_product_with_a_scoped_artifact_ref(
+    monkeypatch,
+) -> None:
+    """推荐类工具的结果里要有**可引用的产物**，而且章（会话/线程）在签发点盖上。
+
+    2026-10-08 事故：契约要求 recommendation/review 输出必须带 `artifactRefs`
+    （`contracts.py`），而 `recommendation.preview_majors` 当时只回了一串专业方向、
+    没有任何可引用的产物 id；模型在补一轮里自己编了一个
+    `session:10041979:major_direction_ranking:v3`，收集器又把模型自己写的 JSON 当成了
+    产物记录（它带 artifactId），而那条记录没有会话章 → `artifact_scope_violation`
+    → 整轮**不可恢复**地失败（用户看到"引擎暂时不可用"）。
+    id 不签发模型就只能编，而会话身份只有受信 binding 有——所以签发与盖章必须同点。
+    """
+    from app.util import internal_client
+
+    async def preview_majors(chat_session_id, *, top_n=8):
+        return {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "topN": top_n,
+                "items": [{"major_id": "81", "major": "口腔医学类", "score": 72.8}],
+                "limitations": [],
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "preview_majors", preview_majors)
+
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id = "tenant-1"
+    backend.chat_session_id = "101"
+    backend.thread_id = "thr_test"
+    backend.current_state_version = 42
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend, current_state_version=42)
+
+    result = await tools.call(
+        "recommendation.preview_majors",
+        # 冒充身份：章上的会话只能来自受信 binding。
+        {"topN": 8, "chatSessionId": "888", "sessionId": "888", "userId": "999"},
+    )
+
+    record = result["artifacts"][0]
+    assert record["artifactType"] == "candidate"
+    assert record["stateVersion"] == 42
+    assert record["tenantId"] == "tenant-1"
+    assert record["sessionId"] == "101"
+    assert record["threadId"] == "thr_test"
+
+    # 确定性：同工具同入参 → 同一个 id。补一轮里模型抄的是**首轮**那个 id，
+    # 首轮事件里必须查得到同一个名字（随机 id 会让"一份产物两个名字"无声发生）。
+    same = await tools.call("recommendation.preview_majors", {"topN": 8})
+    other = await tools.call("recommendation.preview_majors", {"topN": 5})
+    assert same["artifacts"][0]["artifactId"] == record["artifactId"]
+    assert other["artifacts"][0]["artifactId"] != record["artifactId"]
+
+
+@pytest.mark.asyncio
+async def test_only_successful_product_shaped_results_carry_an_artifact_ref(monkeypatch) -> None:
+    """产物引用不是"每个结果都贴一张"：不可用、失败、查询类都不签发。
+
+    - `unavailable=true`（画像缺分数）时**没有产物**：发一条"指向空结果"的引用，
+      正是这些工具如实标不可用要防的事（把"查不到"包装成"这就是结果"）；
+    - 失败（`backend_unavailable`）没有产物：没有产物就是没有；
+    - 查询类（catalog）不签发：数据是从上游读来的，不是本回合**生产**的东西；
+    - 比较形状（comparison）同样签发，类型跟着 kind 走。
+    """
+    from app.util import internal_client
+
+    unavailable_backend = InternalClientBackend.__new__(InternalClientBackend)
+    unavailable_backend.tenant_id = "tenant-1"
+    unavailable_backend.chat_session_id = "101"
+    unavailable_backend.thread_id = "thr_test"
+    unavailable_backend.current_state_version = 42
+    tools = ReadonlyDomainTools(trusted_context(), backend=unavailable_backend)
+
+    async def preview_majors_unavailable(chat_session_id, *, top_n=8):
+        return {"code": 0, "msg": "session_score_missing", "data": None}
+
+    monkeypatch.setattr(internal_client, "preview_majors", preview_majors_unavailable)
+    unavailable = await tools.call("recommendation.preview_majors", {})
+    assert unavailable["data"]["unavailable"] is True
+    assert "artifacts" not in unavailable
+
+    async def preview_majors_broken(chat_session_id, *, top_n=8):
+        raise RuntimeError("rank unreachable")
+
+    monkeypatch.setattr(internal_client, "preview_majors", preview_majors_broken)
+    failed = await tools.call("recommendation.preview_majors", {"topN": 3})
+    assert failed["status"] == "backend_unavailable"
+    assert "artifacts" not in failed
+
+    async def get_batch_info(*args, **kwargs):
+        return {"code": 0, "msg": "ok", "data": {"batchList": [{"batch": "17", "name": "第一段"}]}}
+
+    monkeypatch.setattr(internal_client, "get_batch_info", get_batch_info)
+    catalog = await tools.call("catalog.list_batches", {"areaId": "340000"})
+    assert catalog["status"] == "ok"
+    assert "artifacts" not in catalog
+
+    async def compare_candidate_pool(tenant_id, chat_session_id, entity_ids, dimensions=None):
+        return {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "entities": [{"entityId": entity_ids[0]}, {"entityId": entity_ids[1]}],
+                "dimensions": [],
+                "cells": [],
+                "limitations": [],
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "compare_candidate_pool", compare_candidate_pool)
+    comparison = await tools.call(
+        "recommendation.compare_candidates", {"entityIds": ["v-1", "v-2"]}
+    )
+    assert comparison["status"] == "ok"
+    assert comparison["artifacts"][0]["artifactType"] == "comparison"
+
+
+@pytest.mark.asyncio
 async def test_catalog_tool_requires_entity_resolution_for_free_text(monkeypatch) -> None:
     calls = []
 

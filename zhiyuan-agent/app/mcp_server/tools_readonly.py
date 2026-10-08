@@ -5,6 +5,7 @@ import hashlib
 import html
 import json
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -378,6 +379,7 @@ class ReadonlyDomainTools:
             except Exception as retry_exc:
                 return _err(name, "backend_unavailable", str(retry_exc or exc), state_version=self.current_state_version)
         envelope = self._envelope(name, result)
+        self._attach_artifacts(name, arguments, envelope)
         self._cache[cache_key] = envelope
         return envelope
 
@@ -677,6 +679,71 @@ class ReadonlyDomainTools:
             "admissionMode": mode,
             "dataVersion": data_version,
         }
+
+    # 产物形状的结果（kind）→ 产物类型（`ArtifactRef.artifactType` 的取值）。
+    # 只有这两类结果算"本回合生产出来的东西"：`catalog`/`history`/`workingPlan`
+    # 是**查询**（数据从上游读一遍，没有"属于这一回合的产品"这回事）。
+    _ARTIFACT_TYPES = {"candidate": "candidate", "comparison": "comparison"}
+
+    def _attach_artifacts(
+        self, name: str, arguments: Mapping[str, Any], envelope: dict[str, Any]
+    ) -> None:
+        """在**签发点**给产物盖章：id、类型、工作区版本 + 会话身份。
+
+        2026-10-08 事故：`recommendation.preview_majors` 把专业方向排完序就返回了，
+        结果里**没有一个可引用的产物 id**；而契约要求 `responseType=recommendation`
+        的输出必须带 `artifactRefs`（`contracts.py`）——模型于是自己编了一个
+        `session:10041979:major_direction_ranking:v3`，收集器又把模型自己写的 JSON
+        当成了产物记录（它带 `artifactId`），那条记录没有会话章 →
+        `artifact_scope_violation`，整轮**不可恢复**地失败（用户看到"引擎暂时不可用"）。
+        id 不签发，模型只能编；编出来的东西必然过不了章检查——章只能在签发点盖，
+        因为会话身份只有受信 binding 有（模型手里没有，也不该有）。
+        """
+        artifact_type = self._ARTIFACT_TYPES.get(str(envelope.get("kind") or ""))
+        if artifact_type is None or envelope.get("status") != "ok":
+            return
+        data = envelope.get("data")
+        if isinstance(data, Mapping) and data.get("unavailable") is True:
+            # 不可用 = **没有产物**。这时候发一条"引用某个空结果"的产物，正是
+            # 这些工具如实标注 unavailable 要防的事：把"查不到"包装成"这就是结果"。
+            return
+        envelope["artifacts"] = [
+            {
+                "artifactId": self._artifact_id(name, arguments),
+                "artifactType": artifact_type,
+                "stateVersion": self.current_state_version,
+                # 章只盖受信 binding 的值：模型塞的 tenantId/sessionId 在
+                # `_trusted_arguments` 那一步就丢掉了，产物身份不可能来自模型。
+                "tenantId": str(self.binding.tenant_id),
+                "sessionId": str(self.binding.session_id),
+                "threadId": str(self.binding.thread_id),
+            }
+        ]
+
+    def _artifact_id(self, name: str, arguments: Mapping[str, Any]) -> str:
+        """**确定性** id：同会话、同工具、同入参、同工作区版本 → 同一个 id。
+
+        随机 id 也够用（当回合能引用即可），但确定性的价值在补一轮那条路上：
+        模型在补一轮里抄的是**首轮工具结果里那个 id**，同一个 id 在首轮事件里
+        必须查得到——随机 id 会让"同一份产物有两个名字"这件事无声无息地发生。
+        入参先过 `_trusted_arguments`：身份字段不参与，模型塞的值影响不了 id。
+        """
+        digest = hashlib.sha256(
+            json.dumps(
+                [
+                    str(self.binding.tenant_id),
+                    str(self.binding.session_id),
+                    name,
+                    self.current_state_version,
+                    self._trusted_arguments(dict(arguments)),
+                ],
+                sort_keys=True,
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()[:20]
+        # 前缀带 `mcp_art_`：与 Java 的 `art_<uuid>` 区分开——这一波产物是
+        # **工具在回合内签发**的，不是 Java 台账里那份（那份还没有写入口）。
+        return f"mcp_art_{name.rpartition('.')[2]}_{digest}"
 
 
 class InternalClientBackend:

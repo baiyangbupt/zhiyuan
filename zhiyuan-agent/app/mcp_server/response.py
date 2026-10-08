@@ -7,6 +7,12 @@
 `evidenceRefs` 放的是 Java 签发的证据**本体**（含 ID、来源系统、参数摘要、
 数据版本），不是"指向证据的某个编号"——下游账本要用它做跨回合核验，
 只给一个编号等于让核验无从做起。
+
+`artifacts` 同理，放的是**本回合签发的产物引用**（候选 / 比较这两类产物形状的
+结果各一条），并且**在签发点就把身份盖上**：`artifactId`/`artifactType`/
+`stateVersion` + `tenantId`/`sessionId`/`threadId`。产物身份只有工具侧拿得到
+（受信 binding），下游 `output_validation` 校验 `artifactRefs` 时要求会话/线程章
+——**不签发，模型就只能自己编，而编出来的必然缺章**（2026-10-08 事故）。
 """
 from __future__ import annotations
 
@@ -48,6 +54,7 @@ def ok(
     admission_mode: str | None = None,
     data_version: str | None = None,
     next_cursor: str | None = None,
+    artifacts: Iterable[Any] = (),
 ) -> dict[str, Any]:
     evidence_items = list(evidence)
     assert_authoritative_evidence_is_signed(evidence_items)
@@ -62,6 +69,11 @@ def ok(
         "nextCursor": next_cursor,
         "stateVersion": state_version,
     }
+    artifact_items = list(artifacts)
+    if artifact_items:
+        # 只在**真的签发了产物**时出现：恒在的空数组会让"这一回合有没有产物"
+        # 变成一个要靠约定回答的形状（同 `admissionMode`/`dataVersion` 的处置）。
+        result["artifacts"] = artifact_items
     if admission_mode is not None:
         result["admissionMode"] = admission_mode
     if data_version is not None:

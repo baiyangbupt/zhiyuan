@@ -362,6 +362,94 @@ async def test_snapshot_evidence_cited_by_the_model_does_not_fail_the_turn() -> 
 
 
 @pytest.mark.asyncio
+async def test_tool_issued_artifact_ref_survives_the_normal_chain(monkeypatch) -> None:
+    """2026-10-08 事故回归：推荐类输出引用的产物，必须是**工具签发**的那条。
+
+    线上形态（会话 10041979，13:25）：`recommendation.preview_majors` 只回了一串
+    专业方向，没有任何可引用的产物 id；契约又要求 recommendation 输出必须带
+    `artifactRefs`（`contracts.py`）→ 模型在补一轮里自己编了一个
+    `session:10041979:major_direction_ranking:v3` → 那条记录（模型自己的 JSON
+    被收集器当成了产物记录）没有会话/线程章 → `artifact_scope_violation` →
+    整轮不可恢复地失败（用户只看到"当前对话引擎暂时不可用"）。
+
+    这条从**真实工具**出发（不是手写的信封）：工具签发 → 事件形状 → 收集器 →
+    校验 → 整轮返回，全是生产那几段代码。修的是签发点：工具结果里带 `artifacts`
+    （带章），模型原样抄 → **首轮就过**，不必走"补一轮"——而补一轮正是编造 id 的地方。
+    """
+    from app.mcp_server.tools_readonly import InternalClientBackend, ReadonlyDomainTools
+    from app.util import internal_client
+
+    async def preview_majors(chat_session_id, *, top_n=8):
+        return {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "topN": top_n,
+                "items": [{"major_id": "81", "major": "口腔医学类", "score": 72.8}],
+                "limitations": [],
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "preview_majors", preview_majors)
+
+    backend = InternalClientBackend.__new__(InternalClientBackend)
+    backend.tenant_id = "tenant-1"
+    backend.chat_session_id = "session-1"
+    backend.thread_id = "thr-p1c2"
+    backend.current_state_version = 42
+    tools = ReadonlyDomainTools(_binding(), backend=backend, current_state_version=42)
+    envelope = await tools.call("recommendation.preview_majors", {"topN": 8})
+    artifact_id = envelope["artifacts"][0]["artifactId"]
+
+    output = {
+        "responseType": "recommendation",
+        "message": "专业方向排序",
+        # 模型原样抄工具签发的那三个字段。
+        "artifactRefs": [
+            {"artifactId": artifact_id, "artifactType": "candidate", "stateVersion": 42}
+        ],
+        "evidenceRefs": [],
+    }
+    payload = {
+        "output": output,
+        "events": [
+            # 工具结果的真实形状：信封 JSON 在 McpToolCall item 的 content 文本里。
+            {
+                "type": "tool.progress",
+                "item": {
+                    "type": "McpToolCall",
+                    "tool": "recommendation.preview_majors",
+                    "result": {
+                        "content": [
+                            {"type": "text", "text": json.dumps(envelope, ensure_ascii=False)}
+                        ]
+                    },
+                },
+            },
+            # 模型正文（与真 codex 的 AgentMessage 一致）：`_collect_records` 也会从
+            # 这里挖出模型写的 artifactRefs——工具那条先遇到，留下的是**签发的**那条。
+            {
+                "type": "item_completed",
+                "item": {
+                    "type": "AgentMessage",
+                    "id": "msg-1",
+                    "text": json.dumps(output, ensure_ascii=False),
+                },
+            },
+        ],
+    }
+    codex = CodexHarness([payload])
+    gateway = _gateway(codex, None)
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result.get("error")
+    assert result.get("output") is not None
+    assert result["output"]["artifactRefs"][0]["artifactId"] == artifact_id
+    assert len(codex.turns) == 1, "首轮就该过：不该出现补一轮"
+
+
+@pytest.mark.asyncio
 async def test_recheck_round_gets_the_same_progress_callbacks_as_the_first_round() -> None:
     """重查轮必须和首轮拿到**同一份**回调（2026-09-23 复核第 2 项）。
 
