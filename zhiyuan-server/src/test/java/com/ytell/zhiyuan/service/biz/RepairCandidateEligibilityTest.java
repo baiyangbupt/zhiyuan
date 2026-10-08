@@ -246,6 +246,75 @@ public class RepairCandidateEligibilityTest {
         assertTrue(RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(unit, state));
     }
 
+    /**
+     * 范围把**门类**说成“…类”时要按分类名命中（2026-10-08 真栈：只留“医学类”）。
+     *
+     * <p>真样（会话 10041979，安徽 486，132 条/45 专业组）：确认载荷里范围只有名字
+     * `"医学类"`——门类字段实样写的是 `"医学"` ✗，整段相等一条都不中 ✗ →
+     * 方案被排空 → `40906`「当前约束下方案里没有可保留的条目」✗。修点：**范围侧**去
+     * `类/门类/大类` 尾缀后再比 ✓；专业名一侧不动 ✓（`"口腔医学(5年)"` 不含 `"医学类"`
+     * 也不该按子串算中 ✗——它走的是 `discipline="医学"` 这一格 ✓）。
+     */
+    @Test
+    void shouldMatchCandidateTaxonomyWhenScopeCarriesTaxonomySuffix() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().setMustIncludeMajors(Lists.newArrayList("医学类"));
+
+        CandidateItemDTO stomatology = candidate("公办", "医药", "口腔医学(5年)");
+        stomatology.setMajorCategory("口腔医学类");
+        stomatology.setMajorDiscipline("医学");
+        CandidateItemDTO software = candidate("公办", "理工", "软件工程");
+        software.setMajorCategory("计算机类");
+        software.setMajorDiscipline("工学");
+
+        assertTrue(RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(stomatology, state));
+        assertFalse(RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(software, state));
+    }
+
+    /**
+     * 同一条判据在**单元侧**也要成立 ✓（组模式的筛选/满足度都判单元 ✓）。
+     *
+     * <p>单元专业若带不出分类名 ✗，`"医学类"` 在单元侧就只剩专业名可看 ✗——
+     * 筛选时放过的单元会在满足度校验里被算作违反 ✗（候选侧刚改对、单元侧又判死，
+     * 命令从 40906 变成 40905，用户看到的还是"没改成" ✗）。
+     */
+    @Test
+    void shouldMatchPlanningUnitTaxonomyWhenScopeCarriesTaxonomySuffix() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().setMustIncludeMajors(Lists.newArrayList("医学类"));
+
+        PlanningUnitDTO anesthesia = unit("公办", "医药", "麻醉学(5年)");
+        anesthesia.getSelectedMajors().get(0).setMajorCategory("临床医学类");
+        anesthesia.getSelectedMajors().get(0).setMajorDiscipline("医学");
+        PlanningUnitDTO software = unit("公办", "理工", "软件工程");
+        software.getSelectedMajors().get(0).setMajorCategory("计算机类");
+        software.getSelectedMajors().get(0).setMajorDiscipline("工学");
+
+        assertTrue(RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(anesthesia, state));
+        assertFalse(RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(software, state));
+    }
+
+    /**
+     * 尾缀容忍**只动范围侧** ✓：细粒度专业名仍不许被 `category="临床医学类"` 放大 ✓
+     * （2026-09-25 那条裁决，单元侧同判据 ✓）。
+     */
+    @Test
+    void shouldNotLetUnitTaxonomyAmplifyFineMajorName() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getConstraintState().getHardConstraints().setMustIncludeMajors(Lists.newArrayList("临床医学"));
+
+        PlanningUnitDTO anesthesia = unit("公办", "医药", "麻醉学(5年)");
+        anesthesia.getSelectedMajors().get(0).setMajorCategory("临床医学类");
+        anesthesia.getSelectedMajors().get(0).setMajorDiscipline("医学");
+        PlanningUnitDTO clinical = unit("公办", "医药", "临床医学(5年)");
+        clinical.getSelectedMajors().get(0).setMajorCategory("临床医学类");
+        clinical.getSelectedMajors().get(0).setMajorDiscipline("医学");
+
+        // "麻醉学" 属于 `临床医学类`，但不是 "临床医学" 这个专业本身 ✗（选了"只留临床医学"就该被移出 ✓）。
+        assertFalse(RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(anesthesia, state));
+        assertTrue(RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(clinical, state));
+    }
+
     private CandidateItemDTO candidate(String schoolNature, String schoolCategory, String majorName) {
         CandidateItemDTO candidate = new CandidateItemDTO();
         candidate.setSchoolName("测试大学");

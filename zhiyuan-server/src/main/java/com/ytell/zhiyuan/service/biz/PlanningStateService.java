@@ -4725,6 +4725,9 @@ public class PlanningStateService {
         major.setMajorCode(candidate.getMajorCode());
         major.setMajorCategoryId(candidate.getMajorCategoryId());
         major.setMajorSubCategoryId(candidate.getMajorSubCategoryId());
+        // 分类名随候选带上 ✓：单元侧的专业筛选（`RepairCandidateEligibility`）按这两个名字比对 ✓。
+        major.setMajorCategory(candidate.getMajorCategory());
+        major.setMajorDiscipline(candidate.getMajorDiscipline());
         major.setTier(candidate.getTier());
         major.setAdmissionRatio(candidate.getAdmissionRatio());
         major.setFinalScore(candidate.getFinalScore());
@@ -11986,6 +11989,9 @@ public class PlanningStateService {
                 major.setMajorCode(candidate.getMajorCode());
                 major.setMajorCategoryId(candidate.getMajorCategoryId());
                 major.setMajorSubCategoryId(candidate.getMajorSubCategoryId());
+                // 分类名随候选带上 ✓：单元侧的专业筛选（`RepairCandidateEligibility`）按这两个名字比对 ✓。
+                major.setMajorCategory(candidate.getMajorCategory());
+                major.setMajorDiscipline(candidate.getMajorDiscipline());
                 major.setAdmissionRatio(candidate.getAdmissionRatio());
                 major.setFinalScore(candidate.getFinalScore());
                 major.setIntentScore(candidate.getIntentScore());

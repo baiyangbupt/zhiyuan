@@ -673,8 +673,9 @@ public class CandidateFitExplainService {
      * 一组"名字范围"（专业名或院校名）求值：命中即返回原值。
      *
      * <p>专业名用**双向子串**（"临床医学"必须能命中"临床医学(五年)"），但
-     * {@code majorCategory}/{@code majorDiscipline} 只允许**整段相等**（与
-     * {@code RepairCandidateEligibility} 同口径：粗粒度分类用子串会放大成整个门类）。
+     * {@code majorCategory}/{@code majorDiscipline} 只允许**整段相等（含范围侧尾缀容忍）**
+     * （与 {@code RepairCandidateEligibility} 同口径：粗粒度分类用子串会放大成整个门类；
+     * 尾缀容忍让"医学类"当"医学"用 ✓）。
      * 带标签的范围（"性质:985"）本切片不求值——如实标 {@code scope_label_not_evaluated}，
      * 不假装核过。</p>
      */
@@ -724,10 +725,9 @@ public class CandidateFitExplainService {
     }
 
     private static boolean equalsTaxonomy(String field, String scope) {
-        if (Strings.isNullOrEmpty(field) || Strings.isNullOrEmpty(scope)) {
-            return false;
-        }
-        return field.trim().toLowerCase(Locale.ROOT).equals(scope.trim().toLowerCase(Locale.ROOT));
+        // 与筛选侧**同一个实现** ✓（含范围侧尾缀容忍 ✓）：口径分叉时解释会与筛选互相打架 ✗
+        //（"筛的时候留下、解释却说不在范围里"✓）。
+        return RepairCandidateEligibility.equalsTaxonomy(field, scope);
     }
 
     // ------------------------------------------------------------------

@@ -6928,6 +6928,55 @@ public class PlanningStateServiceTest {
                 .noneMatch(major -> "ps1_m1".equals(major.getVolunteerId())));
     }
 
+    /**
+     * 范围把门类说成“医学类”（确认载荷里只有名字、没有编码）时，组模式重生成不该把方案排空
+     * （2026-10-08 真栈：会话 10041979「只留医学的」→ 确认卡 → 40906
+     * 「当前约束下方案里没有可保留的条目」✗）。
+     *
+     * <p>真样：132 条/45 专业组里 `discipline="医学"` 的 17 条（6 组）正是用户要留的
+     * （口腔医学/临床医学/麻醉学…）✓——旧判据「整段相等」下 `"医学类"` ≠ `"医学"` ✗，
+     * 候选侧 0 命中 → 工作方案被同步成 0 行 → 40906 ✗。修后：候选侧留下医学门类的条目 ✓，
+     * 单元侧（组模式）也按同一分类名判 ✓，且分类名要随单元专业一路带出去 ✓。
+     */
+    @Test
+    void shouldRegenerateMajorGroupPlanWithTaxonomySuffixScopeWithoutEmptyingIt() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(3);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.majorGroup.name());
+        state.getCandidatePoolState().setRequiredCount(1);
+        state.getConstraintState().getHardConstraints().getMustIncludeMajors().add("医学类");
+        CandidateItemDTO nursingItem = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "医学院101组", "稳", "护理学", 55D, 80D, 55D, false);
+        nursingItem.setMajorCategory("护理学类");
+        nursingItem.setMajorDiscipline("医学");
+        CandidateItemDTO managementItem = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "管理学院102组", "稳", "工程管理", 56D, 79D, 56D, false);
+        managementItem.setMajorCategory("管理科学与工程类");
+        managementItem.setMajorDiscipline("管理学");
+        state.getCandidatePoolState().getItems().add(nursingItem);
+        state.getCandidatePoolState().getItems().add(managementItem);
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "医学院101组", "护理学", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps2_m2", "管理学院102组", "工程管理", "稳"));
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setForceRegenerate(true);
+        PlanningStateDTO ordered = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        assertEquals(1, ordered.getOrderedPlanState().getItems().size());
+        assertEquals("ps1_m1", ordered.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals(1, ordered.getOrderedPlanState().getUnits().size());
+        assertTrue(ordered.getOrderedPlanState().getUnits().get(0).getMajorItems().stream()
+                        .anyMatch(major -> "ps1_m1".equals(major.getVolunteerId())
+                                && "医学".equals(major.getMajorDiscipline())
+                                && "护理学类".equals(major.getMajorCategory())),
+                "单元专业要带出分类名 ✓（单元侧的专业筛选按它比对 ✓）："
+                        + ordered.getOrderedPlanState().getUnits().get(0).getMajorItems());
+    }
+
     @Test
     void shouldReturnCandidateFilterOptionsFromBackend() {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))

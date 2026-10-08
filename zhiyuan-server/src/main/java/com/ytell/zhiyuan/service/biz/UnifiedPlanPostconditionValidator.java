@@ -651,6 +651,9 @@ class UnifiedPlanPostconditionValidator {
         candidate.setMajorName(major == null ? null : major.getMajorName());
         candidate.setMajorCategoryId(major == null ? null : major.getMajorCategoryId());
         candidate.setMajorSubCategoryId(major == null ? null : major.getMajorSubCategoryId());
+        // 分类名一路带上 ✓：满足度判据与筛选同源（`RepairCandidateEligibility` 按分类名比对 ✓）。
+        candidate.setMajorCategory(major == null ? null : major.getMajorCategory());
+        candidate.setMajorDiscipline(major == null ? null : major.getMajorDiscipline());
         candidate.setMajorPlanTags(major == null ? new ArrayList<String>() : defaultList(major.getMajorPlanTags()));
         candidate.setReasonCodes(major == null ? new ArrayList<String>() : defaultList(major.getReasonCodes()));
         candidate.setTuitionPerYear(major == null ? null : major.getTuitionPerYear());

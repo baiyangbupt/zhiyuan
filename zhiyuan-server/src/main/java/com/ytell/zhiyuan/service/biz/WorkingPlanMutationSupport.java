@@ -120,6 +120,9 @@ final class WorkingPlanMutationSupport {
                 major.setMajorCode(candidate.getMajorCode());
                 major.setMajorCategoryId(candidate.getMajorCategoryId());
                 major.setMajorSubCategoryId(candidate.getMajorSubCategoryId());
+                // 分类名随候选带上 ✓：单元侧的专业筛选（`RepairCandidateEligibility`）要用 ✓。
+                major.setMajorCategory(candidate.getMajorCategory());
+                major.setMajorDiscipline(candidate.getMajorDiscipline());
                 major.setAdmissionRatio(candidate.getAdmissionRatio());
                 major.setFinalScore(candidate.getFinalScore());
                 major.setIntentScore(candidate.getIntentScore());

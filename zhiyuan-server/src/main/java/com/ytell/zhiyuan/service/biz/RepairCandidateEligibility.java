@@ -14,6 +14,9 @@ import java.util.Locale;
 
 final class RepairCandidateEligibility {
 
+    /** 范围侧可去的尾缀（专业目录层级词汇）✓：`"医学类"`→`"医学"`、`"工学门类"`→`"工学"` ✓。 */
+    private static final List<String> TAXONOMY_SUFFIXES = Lists.newArrayList("门类", "大类", "类");
+
     private RepairCandidateEligibility() {
     }
 
@@ -295,6 +298,10 @@ final class RepairCandidateEligibility {
         CandidateItemDTO item = planningUnitAsCandidate(unit);
         if (major != null) {
             item.setMajorName(major.getMajorName());
+            // 分类名一路带上来 ✓（不然单元侧只看得到专业名 ✗：`"医学类"` 命中不了
+            // `discipline="医学"` ——候选侧能留、单元侧判违反，就是 2026-10-08 那条 40905 ✗）。
+            item.setMajorCategory(major.getMajorCategory());
+            item.setMajorDiscipline(major.getMajorDiscipline());
             item.setTuitionPerYear(major.getTuitionPerYear());
             item.setReasonCodes(defaultList(major.getReasonCodes()));
             item.setMajorPlanTags(defaultList(major.getMajorPlanTags()));
@@ -459,18 +466,41 @@ final class RepairCandidateEligibility {
     }
 
     /**
-     * 粗粒度分类字段（`majorCategory` / `majorDiscipline`）只允许**整段相等**。
+     * 粗粒度分类字段（`majorCategory` / `majorDiscipline`）**整段相等**，
+     * 外加**范围侧尾缀容忍**（`"医学类"` 当 `"医学"` 用 ✓）。
      *
      * <p>与 {@link #textMatches} 的区别是刻意的：这两个字段是"类/门类"层级，
      * 用子串比会把细粒度专业名放大成整个门类——`"临床医学"` 会命中所有
      * `discipline=医学` 的行（实测放大约 8 倍），而 `"中西医临床医学"`
      * 会反过来把整个医学门类排干净（实测把方案排成 0 单元）。
+     *
+     * <p>尾缀容忍是"用户/模型把门类说成'医学类'"那条实测缺陷的修点（2026-10-08）：
+     * 确认载荷里范围只有名字（无编码）时值就是 `"医学类"` ——门类字段 `discipline`
+     * 写的是 `"医学"` ✗，整段相等比对**一条都不中** ✗ → 132 条方案被排空 → 40906 ✓。
+     * 只允许**范围侧**去 `<类|门类|大类>` 尾缀、字段侧原样比：把 `"临床医学"` 放大成
+     * `category=临床医学类` 的那个方向仍然被挡住 ✗（去尾缀后的 `"临床医学"` 不等于
+     * 字段 `"临床医学类"` ✓）。
+     *
+     * <p>字段侧不去尾缀是另一条边界：`discipline` 实样既有 `"医学"` 也有 `"工学类"` ✗，
+     * "用户说'工学'、字段写'工学类'"这条今天仍对不上 ✗——但放宽它就会打开
+     * `"临床医学"`↔`"临床医学类"` 那道闸 ✗，不在本次修点内。
      */
-    private static boolean equalsTaxonomy(String field, String scope) {
+    static boolean equalsTaxonomy(String field, String scope) {
         if (Strings.isNullOrEmpty(field) || Strings.isNullOrEmpty(scope)) {
             return false;
         }
-        return field.trim().toLowerCase(Locale.ROOT).equals(scope.trim().toLowerCase(Locale.ROOT));
+        String normalizedField = field.trim().toLowerCase(Locale.ROOT);
+        String normalizedScope = scope.trim().toLowerCase(Locale.ROOT);
+        if (normalizedField.equals(normalizedScope)) {
+            return true;
+        }
+        for (String suffix : TAXONOMY_SUFFIXES) {
+            if (normalizedScope.endsWith(suffix) && normalizedScope.length() > suffix.length()
+                    && normalizedField.equals(normalizedScope.substring(0, normalizedScope.length() - suffix.length()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean textMatches(String field, String pattern) {

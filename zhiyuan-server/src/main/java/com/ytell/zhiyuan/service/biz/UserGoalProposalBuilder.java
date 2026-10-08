@@ -770,6 +770,9 @@ final class UserGoalProposalBuilder {
             major.setMajorName(candidate.getMajorName());
             major.setMajorCategoryId(candidate.getMajorCategoryId());
             major.setMajorSubCategoryId(candidate.getMajorSubCategoryId());
+            // 分类名随候选带上 ✓（投影/单元侧的专业筛选与执行侧同一条判据要用 ✓）。
+            major.setMajorCategory(candidate.getMajorCategory());
+            major.setMajorDiscipline(candidate.getMajorDiscipline());
             major.setMajorPlanTags(defaultList(candidate.getMajorPlanTags()));
             unit.getMajorItems().add(major);
         }

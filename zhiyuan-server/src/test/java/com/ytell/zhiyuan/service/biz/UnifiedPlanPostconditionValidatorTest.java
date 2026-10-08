@@ -110,11 +110,45 @@ class UnifiedPlanPostconditionValidatorTest {
         unit.setProvinceName("广东");
         unit.setCityName("广州");
         PlanningUnitMajorDTO major = new PlanningUnitMajorDTO();
-        // 组内专业只带得出 `majorName`（`PlanningUnitMajorDTO` 没有 category/discipline ✗），
-        // 所以组级匹配本来就走名字 ✓——粗粒度字段的放大问题只发生在候选级 ✓。
+        // 组内专业带出 `majorName` + 分类**名** ✓（与真实工作台一致 ✓：
+        // `PlanningUnitMajorDTO` 现在带上 `majorCategory`/`majorDiscipline` ✓，
+        // 单元侧的专业筛选（`RepairCandidateEligibility`）按同一套字段比对 ✓）。
         major.setMajorName(majorName);
+        major.setMajorCategory(category);
+        major.setMajorDiscipline(discipline);
         unit.setMajorItems(Lists.newArrayList(major));
         return unit;
+    }
+
+    /**
+     * 范围把门类说成“医学类”时，单元侧也要判得过 ✓（2026-10-08 真栈：只留“医学类”）。
+     *
+     * <p>单元专业带不出分类名时 ✗，`"医学类"` 只剩专业名可看——候选侧筛过的单元
+     * （`discipline="医学"`）在这里被算作违反 ✗ → 40905 回滚（用户看到的还是"没改成" ✗）。
+     */
+    @Test
+    void shouldAcceptConstraintApplyWhenUnitMajorMatchesScopeWithTaxonomySuffix() {
+        PlanningStateDTO state = constraintState(Lists.newArrayList("医学类"));
+        state.getOrderedPlanState().getUnits().add(unit("口腔医学(5年)", "口腔医学类", "医学"));
+        state.getOrderedPlanState().getUnits().add(unit("麻醉学(5年)", "临床医学类", "医学"));
+
+        PlanChangePostconditionReportDTO report = validator.validateConstraintApply(
+                "apply_constraint_and_regenerate", state);
+
+        assertTrue(report.getSatisfied());
+        assertEquals(Integer.valueOf(2), report.getActualCount());
+    }
+
+    /** 对照 ✗：分类名对不上“医学类”的单元仍要判违反（40905 该响就响 ✓）。 */
+    @Test
+    void shouldFailConstraintApplyWhenUnitMajorTaxonomyMissesSuffixScope() {
+        PlanningStateDTO state = constraintState(Lists.newArrayList("医学类"));
+        state.getOrderedPlanState().getUnits().add(unit("软件工程", "计算机类", "工学"));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> validator.validateConstraintApply("apply_constraint_and_regenerate", state));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, error.getStatus());
     }
 
     @Test
