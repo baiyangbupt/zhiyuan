@@ -53,10 +53,16 @@ public class VolunteerFilterChain {
             }
         }
 
-        // 用户选科
-        List<String> subjects = memberScoreDetail.getSubjectList().stream()
-                .map(subject -> subject.getName())
-                .collect(java.util.stream.Collectors.toList());
+        // 用户选科（**空值兼容** 2026-10-08）：从零/空档案会话的 `subjectList` 可能**整个缺失**
+        // （null ✗，此前实测 NPE：candidate-pool/generate 直接炸"null"）；缺失按"没有选科信息"
+        // 处理——下游 `isSubjectFiltered` 对空列表天然放行（不过滤）✓。
+        List<CreateSessionReq.SubjectItem> subjectItems = memberScoreDetail.getSubjectList();
+        List<String> subjects = subjectItems == null
+                ? new ArrayList<>()
+                : subjectItems.stream()
+                        .filter(java.util.Objects::nonNull)
+                        .map(subject -> subject.getName())
+                        .collect(java.util.stream.Collectors.toList());
         filterReq.setSubjects(subjects);
 
         // 概率过滤（预留接口）
