@@ -1218,6 +1218,58 @@ public class ChatSessionBizService {
                 && userVO.getUserScoreOb().getSubjectList() != null) {
             createSessionReq.setSubjectList(userVO.getUserScoreOb().getSubjectList());
         }
+        // **画像之外的第二来源：单科成绩**（2026-10-08 空值兼容 ✓✓）：从零/空档案会话没有 C 端
+        // 画像 ✗，而"选考三科"明明就在 `subjectScoreList` 里（编码 01-07 为选考，08/10/11 为语数外）✓
+        //——用户口径："上面都给了，不该再问" ✓；优势科目同样按单科成绩推导（选考降序取前 2，
+        // 同分按编码升序；只补空位，已有不动 ✓）。
+        fillSubjectListFromScoresIfNeeded(createSessionReq);
+    }
+
+    /** 选考科目编码：01-07（01 物理 / 02 历史 / 03 政治 / 04 地理 / 05 化学 / 06 生物 / 07）；语数外 08/10/11。 */
+    private static final java.util.Set<String> ELECTIVE_SUBJECT_CODES =
+            new java.util.HashSet<String>(java.util.Arrays.asList("01", "02", "03", "04", "05", "06", "07"));
+
+    private void fillSubjectListFromScoresIfNeeded(CreateSessionReq req) {
+        List<CreateSessionReq.SubjectScore> scores = req.getSubjectScoreList();
+        if (CollectionUtil.isEmpty(scores)) {
+            return;
+        }
+        List<CreateSessionReq.SubjectScore> electives = Lists.newArrayList();
+        for (CreateSessionReq.SubjectScore score : scores) {
+            if (score == null || Strings.isNullOrEmpty(score.getSubject())) {
+                continue;
+            }
+            if (ELECTIVE_SUBJECT_CODES.contains(score.getSubject())) {
+                electives.add(score);
+            }
+        }
+        if (electives.isEmpty()) {
+            return;
+        }
+        if (CollectionUtil.isEmpty(req.getSubjectList())) {
+            List<CreateSessionReq.SubjectItem> subjectItems = Lists.newArrayList();
+            for (CreateSessionReq.SubjectScore score : electives) {
+                subjectItems.add(new CreateSessionReq.SubjectItem(0, "",
+                        score.getSubject(),
+                        Strings.isNullOrEmpty(score.getSubjectName()) ? score.getSubject() : score.getSubjectName()));
+            }
+            req.setSubjectList(subjectItems);
+            log.info("subjectList derived from subjectScoreList, size={}", subjectItems.size());
+        }
+        if (CollectionUtil.isEmpty(req.getStrengthSubjectList())) {
+            List<CreateSessionReq.SubjectScore> ranked = Lists.newArrayList(electives);
+            ranked.sort((a, b) -> {
+                int sa = a.getScore() == null ? Integer.MIN_VALUE : a.getScore();
+                int sb = b.getScore() == null ? Integer.MIN_VALUE : b.getScore();
+                if (sa != sb) {
+                    return Integer.compare(sb, sa);
+                }
+                return String.valueOf(a.getSubject()).compareTo(String.valueOf(b.getSubject()));
+            });
+            int take = Math.min(2, ranked.size());
+            req.setStrengthSubjectList(Lists.newArrayList(ranked.subList(0, take)));
+            log.info("strengthSubjectList derived from subjectScoreList, size={}", take);
+        }
     }
 
     private void specialDeal(CreateSessionReq createSessionReq) {
