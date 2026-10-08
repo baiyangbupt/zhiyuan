@@ -1865,15 +1865,22 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
           **2026-10-08 移到底部** ✓：用户实测"卡片在上面、引导文案在下面"的展示顺序不对 ✗
           ——现在与澄清卡同区：**文案在上、卡在下** ✓。
         */}
+        {/*
+          **卡片壳**（2026-10-08 用户实测"很裸、灰字不是卡片样式"✗）：ProposalCard 自身
+          只有排版、没有容器视觉 ✓——与 assistant-final 同款 `.turnLiveCard`（白底/圆角/
+          浅边/轻投影 ✓）包一层 ✓，两个渲染点（本处与冷加载兜底）保持一致 ✓。
+        */}
         {turn.proposal ? (
-          <ProposalCard
-            proposal={turn.proposal}
-            actionResult={findActionResultFor(
-              conversationStateRef.current,
-              turn.proposal.proposalRef,
-            )}
-            onDecide={(action) => handleProposalDecision(turn.proposal, action)}
-          />
+          <div className={style.turnLiveCard}>
+            <ProposalCard
+              proposal={turn.proposal}
+              actionResult={findActionResultFor(
+                conversationStateRef.current,
+                turn.proposal.proposalRef,
+              )}
+              onDecide={(action) => handleProposalDecision(turn.proposal, action)}
+            />
+          </div>
         ) : null}
         {!turn.terminal ? (
           <button
@@ -2285,25 +2292,27 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
             (turn: any) =>
               String(turn?.proposal?.proposalRef || '') === String(lastProposal.proposalRef),
           ) ? (
-            <ProposalCard
-              proposal={{
-                proposalRef: lastProposal.proposalRef,
-                // **带上能带的那部分身份**（2026-10-08）：只给 ref 时卡片落兜底标题
-                // "方案调整预览"、明细全丢 ✗——补录族有 `scoreSummary` 就补出"更新成绩"
-                // 标题与结构化明细；status 留空 → 终态只读卡本来就不出按钮 ✓。
-                diff: {
-                  title: lastProposal.scoreSummary ? '更新成绩' : '方案调整预览',
-                  scoreUpdate: lastProposal.scoreSummary || undefined,
-                  status: '',
-                },
-              }}
-              actionResult={{
-                actionStatus: lastProposal.actionStatus,
-                proposalRef: lastProposal.proposalRef,
-              }}
-              onDecide={() => undefined}
-              disabled
-            />
+            <div className={style.turnLiveCard}>
+              <ProposalCard
+                proposal={{
+                  proposalRef: lastProposal.proposalRef,
+                  // **带上能带的那部分身份**（2026-10-08）：只给 ref 时卡片落兜底标题
+                  // "方案调整预览"、明细全丢 ✗——补录族有 `scoreSummary` 就补出"更新成绩"
+                  // 标题与结构化明细；status 留空 → 终态只读卡本来就不出按钮 ✓。
+                  diff: {
+                    title: lastProposal.scoreSummary ? '更新成绩' : '方案调整预览',
+                    scoreUpdate: lastProposal.scoreSummary || undefined,
+                    status: '',
+                  },
+                }}
+                actionResult={{
+                  actionStatus: lastProposal.actionStatus,
+                  proposalRef: lastProposal.proposalRef,
+                }}
+                onDecide={() => undefined}
+                disabled
+              />
+            </div>
           ) : null}
           <div ref={bottomRef} />
         </Spin>
