@@ -128,16 +128,6 @@ public class EvidenceLedgerService {
     }
 
     /**
-     * 批量核验。一个回合一次调用——逐条调用会把 Java 往返次数放大到与事实条数同阶。
-     *
-     * <p>四态：{@code valid} 记录存在 + 未过期 + 上游当前版本一致；
-     * {@code stale} 版本不一致（当时正确，现已失效，必须重查）；
-     * {@code expired} 已过 expiresAt（新鲜度未知，必须重查）；
-     * {@code unknown} 查不到记录（从未成立）。</p>
-     *
-     * <p>范围不匹配（别的租户/会话/线程）一律返回 {@code unknown}，不向调用方透露其他会话的台账。</p>
-     */
-    /**
      * 列出某会话**当前仍然有效**的证据。
      *
      * <p>快照用它把权威证据摆到模型面前。少了这一步，模型看到的是"什么都不记得"
@@ -189,6 +179,17 @@ public class EvidenceLedgerService {
         return evidence;
     }
 
+    /**
+     * 批量核验。一个回合一次调用——逐条调用会把 Java 往返次数放大到与事实条数同阶。
+     *
+     * <p>四态：{@code valid} 记录存在 + 未过期 + 上游当前版本一致；
+     * {@code stale} 版本不一致（当时正确，现已失效，必须重查）；
+     * {@code expired} 已过 expiresAt（新鲜度未知，必须重查）；
+     * {@code unknown} 查不到记录（从未成立）。</p>
+     *
+     * <p>范围不匹配（别的租户/会话）一律返回 {@code unknown}，不向调用方透露其他会话的台账。
+     * {@code threadId} **不参与判定**，只随请求用于审计/日志——见 {@code verifyOne} 里的说明。</p>
+     */
     public EvidenceVerifyRes verify(EvidenceVerifyReq request) {
         EvidenceVerifyRes response = new EvidenceVerifyRes();
         if (request == null || request.getEvidenceIds() == null) {
@@ -221,10 +222,16 @@ public class EvidenceLedgerService {
                 || !entity.getChatSessionId().equals(request.getChatSessionId())) {
             return EvidenceVerifyItemDTO.of(STATUS_UNKNOWN);
         }
-        if (!isBlank(entity.getThreadId()) && !isBlank(request.getThreadId())
-                && !entity.getThreadId().equals(request.getThreadId())) {
-            return EvidenceVerifyItemDTO.of(STATUS_UNKNOWN);
-        }
+        // 线程**不参与准入判定**（2026-09-13 裁决：thread 不是证据的隔离边界）。
+        // thread_id 是进程易失的值：Gateway 一重启，同一会话的下一个回合就换新 thread。
+        // 曾经在这里做过线程等值比较、不等即判 unknown——而 P1c-2 的分流表对 unknown 是
+        // **硬失败、不重试**，于是重启前同会话签发的合法证据（快照还摆在模型面前请它引用）
+        // 被自己人判死：2026-10-08 会话 10041979 的实机事故（重启后新 thread 01a11a12
+        // 引用旧 thread 01a118ca 签发的批次线证据 ev_01M4CCN6MEV98MQNZGWFSG7ABP → 整轮作废）。
+        // 一个会随进程重启而改变的标识符不能承载安全语义；隔离由上面的
+        // (tenantId, chatSessionId) 等值检查承担，台账里的 thread_id 只作审计信息保留——
+        // 记录与判定分开，两者都保留。（对照：换租户/换会话仍 unknown，见单测。）
+
         EvidenceVerifyItemDTO item = new EvidenceVerifyItemDTO();
         item.setSourceSystem(entity.getSourceSystem());
         item.setParamsDigest(entity.getParamsDigest());

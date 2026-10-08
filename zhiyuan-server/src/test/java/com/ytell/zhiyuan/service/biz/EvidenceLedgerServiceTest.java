@@ -293,9 +293,30 @@ class EvidenceLedgerServiceTest {
         req.setChatSessionId(43L);
         assertEquals("unknown", service.verify(req).getResults().get("ev_other").getStatus());
 
-        EvidenceVerifyReq otherThread = verifyRequest("ev_other");
+        EvidenceVerifyReq otherTenant = verifyRequest("ev_other");
+        otherTenant.setTenantId(8L);
+        assertEquals("unknown", service.verify(otherTenant).getResults().get("ev_other").getStatus());
+    }
+
+    @Test
+    void shouldVerifyEvidenceSignedInAnotherThreadOfTheSameSession() {
+        // 2026-10-08 实机事故：Gateway 重启后同一会话换新 thread，模型引用了重启前签发的
+        // 证据（快照还把它摆在模型面前请它引用），却被线程等值检查判成 unknown，而
+        // P1c-2 分流表对 unknown 是硬失败——整轮作废（会话 10041979）。
+        // 2026-09-13 裁决：thread 不是证据的隔离边界（thread_id 进程易失），
+        // 不参与准入判定；这里把裁决钉住。
+        // 对照：换会话/换租户仍 unknown（上一条用例），台账无记录仍 unknown
+        // （shouldReturnUnknownWhenRecordDeleted）。
+        Date future = new Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(30));
+        when(evidenceLedgerMapper.selectById("ev_prev_thread"))
+                .thenReturn(stored("ev_prev_thread", "2026-06-v17", future));
+        when(evidenceSourceVersionMapper.selectBySourceAndParams(eq(SOURCE), anyString()))
+                .thenReturn(sourceVersion("2026-06-v17"));
+
+        EvidenceVerifyReq otherThread = verifyRequest("ev_prev_thread");
         otherThread.setThreadId("thread-2");
-        assertEquals("unknown", service.verify(otherThread).getResults().get("ev_other").getStatus());
+
+        assertEquals("valid", service.verify(otherThread).getResults().get("ev_prev_thread").getStatus());
     }
 
     @Test
