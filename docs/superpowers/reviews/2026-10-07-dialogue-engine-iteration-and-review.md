@@ -74,6 +74,7 @@ pong 契约完好（ping 不刷新自己）；时间线合并不变量成立；t
 | 前端波 H1/M1/M4/M5 | 3201（dev 直读工作树） | 单测 25/25 + 118/118；沙箱 13/13 + 6/6 |
 | H2 写路径 CAS | 18290（h2build jar，pid 11888） | 959 单测；D1 8/8；e2e 6/6×2；并发压测；**用户实测 applied → 80** |
 | 回滚镜像重建 | docker `zhiyuan-web:prod-3.1.1-hotfix-mobile` = `6637123e69a2` | 冒烟 login 200 |
+| 10-08 晚批：契约枚举 `906d5dd` / 前端卡 `f63378d` / 打字确认执行器 `ed471d3` | 18291 + 3201(dev 直读) | 单测 2142 绿（4 既有红已 pristine 复现）；18291 pid 27837 health 200；**用户真栈重试待验** |
 
 ### 修复队列（优先级）
 1. **代理叙述与预览矛盾**（助手说"从零补满" vs 预览卡"45→80"，后者对）——代理侧口径修。
@@ -82,6 +83,10 @@ pong 契约完好（ping 不刷新自己）；时间线合并不变量成立；t
 4. H2 遗留：collation 迁移评估（H2-WRITE-CAS-PLAN §6）；checkDataFreshness 保守合并收敛。
 5. F02 偶发观察（1 次 30s 超时未复现）；沙箱事件流 24h TTL 跨轮残留（遇"卡串轮"换盐/epoch）。
 6. `/tmp` 构建缓存清理（rebuild-311-web ~3G / h2build / **f09fix 先留**——它是 18290 回退件）。
+7. **pending 行残留旧字段 + blocked 提案物化成 active**（2026-10-08 晚定位，会话 10041979）：`PendingConfirmationSharedService.compareAndSet` 走 `update`+NOT_NULL → 显式置 null 不进 SET，医学卡 40906/claimToken 残留；`prepareUserGoalProposal`/`buildActiveEntity` 对 blocked 提案照样 upsert 成 requiresConfirmation=true（模型据此误报"已提交"）。**Java 批次（用户已拍板随下批）**：改显式 `set(col, null)`/IGNORED 策略 + blocked 不物化。
+8. **契约下一轮收紧**（`906d5dd` 只收域/键/kind/ordering/scope）：`values` 为空、include `min_count=0`、priority 规则多于 1 条、`ProposalScope.scopeType`——现仍属"Java 拒→blocked 卡"一族。
+9. `skills/codex/developer_instructions.md` 只在 thread/start 注入、resume 不重发 → 旧线程缺"未拿到 result 不得称已提交"护栏（`ed471d3` 新增）；考虑 resume 时补发。
+10. 前端既存不自洽（未动，一行可翻）：`isSettledProposalStatus('active')=true` 会把"待处理"恢复卡在新回合后收起——与 MessageList 注释相冲，待产品决策。
 
 ### 环境守卫与回退
 - `oom_score_adj`：18290/18090 = -500；18291/18091 = -400（内存再紧时优先牺牲测试进程）。
