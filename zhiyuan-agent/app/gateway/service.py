@@ -317,6 +317,31 @@ def _normalize_nullable_for_upstream(schema: dict[str, Any]) -> dict[str, Any]:
 _normalize_nullable_for_upstream(TURN_OUTPUT_SCHEMA)
 
 
+# 文本回合里模型**可以直接执行**的动作类型：只有确认/取消有执行器
+# （`conversation_actions.execute_conversation_action` ✓——与点卡路径用的是同一份 ✓）。
+# 其余类型没有执行语义：提案走 `proposalRequest` ✓、澄清走 `clarification` 字段 ✓、
+# `refresh_proposal` / `create_proposal` 只是模型的一句话（今天没有对应的执行器 ✓）——
+# 把它们送去执行只会得到一串 `not_executable` 的噪声结果 ✗。
+EXECUTABLE_CONVERSATION_ACTIONS: frozenset[str] = frozenset(
+    {"confirm_proposal", "cancel_proposal"}
+)
+
+
+def _turn_action_payload(action_result: Any, snapshot_version: Any) -> dict[str, Any]:
+    """把已产出的动作结果挂进**任何**返回路径（成功/失败/异常）✓。
+
+    执行一旦出站，结果就是"这次写入算不算数"的唯一凭据 ✓（与
+    `execute_action_and_refresh` 的 docstring 是同一条不变量 ✓）——之后任何一步
+    （working set、trace、合成的收尾）失败，都不许把它带走 ✗。
+    """
+    if not isinstance(action_result, Mapping) or not action_result:
+        return {}
+    payload: dict[str, Any] = {"actionResult": dict(action_result)}
+    if snapshot_version is not None:
+        payload["actionSnapshotVersion"] = snapshot_version
+    return payload
+
+
 def _active_proposal_preview_override(
     preview: Mapping[str, Any], active: Any
 ) -> dict[str, Any]:
@@ -1207,6 +1232,93 @@ class GatewayService:
         payload["snapshotVersion"] = refreshed.snapshot_version
         return payload
 
+    async def _execute_turn_action(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        action: Any,
+        snapshot: ConversationTurnSnapshot,
+    ) -> tuple[dict[str, Any], int | None]:
+        """文本回合里模型发出的确认/取消：**复用点卡路径的执行器** ✓✓。
+
+        与点卡路径（`server.py::_run_action_work` → `execute_action_and_refresh` ✓）
+        的对称关系，逐项对齐：
+        · 执行前都**重读权威快照** ✓——用户可能刚在别处改了状态（空会话补录成绩、
+          另一条线写工作区 ✓），拿旧快照执行会把一张有效的卡误判 `stale_state` ✗；
+          读不到时退回本回合开头那份 ✓（它就在手上，退化不比原来差 ✗✓；
+          点卡路径那里读不到是 fail closed，因为它手里没有备用的）；
+        · 执行都走 `execute_action_and_refresh` ✓：CAS/修订号、Java 校验、两段式
+          claim→execute、pending 结果回写全在同一处 ✓，这里**不自造锁、不复制判据** ✗；
+        · 终局（applied / cancelled / stale_state / failed…）都必须变成
+          `conversationAction.result` ✓：点卡路径由 `_run_action_work` →
+          `_emit_turn_terminal` 发 ✓；这里把结果挂进回合结果（`actionResult` 键 ✓），
+          由**同一个** `_emit_turn_terminal` 发 ✓——载荷合同因此完全一致 ✓。
+          发射走"会话当前连接 + 事件流"（`_session_emitter` ✓），**不依赖本连接存活** ✓
+          ——与 `detach_work` 要保的是同一件事 ✓：连接死没死，结果都要进流 ✓。
+          执行本身跑在回合任务里（`SessionRuntime.submit` 的后台任务 ✓，不绑连接 ✓）。
+
+        执行**绝不把异常抛给回合**（取消除外 ✓）：任何异常都翻成 `failed` 结果 ✓——
+        "静默丢弃"正是修前的老毛病 ✓，换成"整轮失败"同样把它藏起来 ✗。
+
+        返回 `(actionResult, 执行后的快照版本)`：版本只在 applied/cancelled 时是**新**值
+        （卡片据此对齐 workspaceVersion ✓），其余情况为 None（回合版本照旧 ✓）。
+        """
+        try:
+            fresh = await self.get_authoritative_snapshot(
+                tenant_id=tenant_id, session_id=str(session_id)
+            )
+        except Exception:  # noqa: BLE001 —— 刷新失败不否决执行：用手上这份（fail closed 在 CAS 里）
+            logger.warning(
+                "authoritative snapshot read failed before turn action (session=%s)",
+                session_id,
+                exc_info=True,
+            )
+            fresh = None
+        proposal_ref = getattr(action, "proposal_ref", None)
+        try:
+            payload = await self.execute_action_and_refresh(
+                tenant_id=tenant_id,
+                session_id=str(session_id),
+                action=action,
+                snapshot=fresh or snapshot,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 —— 异常也要有终局：结果事件不许缺
+            logger.exception(
+                "turn conversation action crashed (session=%s action=%s)",
+                session_id,
+                getattr(action, "action_type", None),
+            )
+            return (
+                ConversationActionResult(
+                    "failed",
+                    proposal_ref,
+                    code="action_execution_exception",
+                    message="执行确认时出现内部错误，本次操作未生效，请重试。",
+                ).as_dict(),
+                None,
+            )
+        result = payload.get("actionResult")
+        if not isinstance(result, Mapping) or not result:
+            # `execute_action_and_refresh` 必带 actionResult ✓；万一缺了也得有终局 ✗。
+            return (
+                ConversationActionResult(
+                    "failed",
+                    proposal_ref,
+                    code="action_result_missing",
+                    message="这次确认没有拿到执行结果，请重试或重新生成预览后再确认。",
+                ).as_dict(),
+                None,
+            )
+        snapshot_version = payload.get("snapshotVersion")
+        try:
+            snapshot_version = int(snapshot_version) if snapshot_version is not None else None
+        except (TypeError, ValueError):
+            snapshot_version = None
+        return dict(result), snapshot_version
+
     async def handle_turn(
         self,
         *,
@@ -1373,35 +1485,62 @@ class GatewayService:
                 codex_result.get("error"),
                 bool(codex_result.get("recoverable")),
             )
-            return {
-                "mode": self.mode,
-                # 失败回复：默认通用文案；**补录的业务拒绝**放行 Java 原文
-                # （"请选择批次后再创建会话"这种话才让用户知道下一步做什么）。
-                "reply": _recoverable_turn_reply(codex_result.get("error")),
-                "events": codex_result.get("events", []),
-                "snapshotVersion": snapshot.snapshot_version,
-                "statePatch": state_patch.model_dump(by_alias=True) if state_patch else None,
-                "writeAttempted": False,
-                "error": codex_result["error"],
-                # "这一回合失败了"和"这个会话坏了"要分得开：恢复失败属于前者，
-                # 下一回合重试即可，调用方（以及前端）不必把它当成终局。
-                "recoverable": bool(codex_result.get("recoverable")),
-            }
+            return self._with_turn_action(
+                {
+                    "mode": self.mode,
+                    # 失败回复：默认通用文案；**补录的业务拒绝**放行 Java 原文
+                    # （"请选择批次后再创建会话"这种话才让用户知道下一步做什么）。
+                    "reply": _recoverable_turn_reply(codex_result.get("error")),
+                    "events": codex_result.get("events", []),
+                    "snapshotVersion": snapshot.snapshot_version,
+                    "statePatch": state_patch.model_dump(by_alias=True) if state_patch else None,
+                    "writeAttempted": False,
+                    "error": codex_result["error"],
+                    # "这一回合失败了"和"这个会话坏了"要分得开：恢复失败属于前者，
+                    # 下一回合重试即可，调用方（以及前端）不必把它当成终局。
+                    "recoverable": bool(codex_result.get("recoverable")),
+                },
+                codex_result,
+            )
         output = codex_result["output"]
         await self._persist_agent(session_id, output.message)
-        return {
-            "mode": self.mode,
-            "reply": output.message,
-            "events": codex_result.get("events", []),
-            "trace": codex_result.get("trace", {}),
-            "recovery": codex_result.get("recovery", {"outputRepaired": False}),
-            "snapshotVersion": snapshot.snapshot_version,
-            "statePatch": state_patch.model_dump(by_alias=True) if state_patch else None,
-            "writeAttempted": bool(output.proposal_ref),
-            "output": output.model_dump(by_alias=True),
-            "workingSet": self._working_sets[key].as_payload(),
-            "proposalPreview": codex_result.get("proposalPreview"),
-        }
+        return self._with_turn_action(
+            {
+                "mode": self.mode,
+                "reply": output.message,
+                "events": codex_result.get("events", []),
+                "trace": codex_result.get("trace", {}),
+                "recovery": codex_result.get("recovery", {"outputRepaired": False}),
+                "snapshotVersion": snapshot.snapshot_version,
+                "statePatch": state_patch.model_dump(by_alias=True) if state_patch else None,
+                "writeAttempted": bool(output.proposal_ref),
+                "output": output.model_dump(by_alias=True),
+                "workingSet": self._working_sets[key].as_payload(),
+                "proposalPreview": codex_result.get("proposalPreview"),
+            },
+            codex_result,
+        )
+
+    @staticmethod
+    def _with_turn_action(result: dict[str, Any], codex_result: Mapping[str, Any]) -> dict[str, Any]:
+        """把模型发起的确认/取消结果挂进回合结果（成功与失败两支都要 ✓）。
+
+        挂上之后 `server.py::_emit_turn_terminal` 一见 `actionResult` 就发
+        `conversationAction.result` ✓（点卡路径用的是同一个键、同一个发射器 ✓）——
+        即"模型打字确认"与"用户点卡确认"在事件流里是同一种结果事件 ✓。
+
+        `snapshotVersion` 在执行成功时换成**执行后**的版本 ✓：卡片据此对齐
+        workspaceVersion ✓（与点卡路径 `execute_action_and_refresh` 的返回一致 ✓）；
+        失败/冲突时保持回合开头那份 ✓（并没有新版本 ✓）。
+        """
+        action_result = codex_result.get("actionResult")
+        if not isinstance(action_result, Mapping) or not action_result:
+            return result
+        result["actionResult"] = dict(action_result)
+        snapshot_version = codex_result.get("actionSnapshotVersion")
+        if snapshot_version is not None:
+            result["snapshotVersion"] = snapshot_version
+        return result
 
     async def _legacy_reply(self, session_id: str, user_id: str, content: str) -> str:
         if self.legacy is None:
@@ -1432,6 +1571,10 @@ class GatewayService:
     ) -> dict[str, Any]:
         if self.codex is None:
             return {"error": "codex_unavailable", "events": []}
+        # 模型在文本回合里发出的确认/取消（执行结果）。在 try **之外**初始化：
+        # 异常分支也要能把已经出站的结果原样带回去（见 `_turn_action_payload` ✓）。
+        action_result_payload: dict[str, Any] | None = None
+        action_snapshot_version: int | None = None
         try:
             key = _session_key(tenant_id, session_id)
             thread_id = self._threads.get(key)
@@ -1785,6 +1928,36 @@ class GatewayService:
                     request=output.score_update_request,
                     snapshot=snapshot,
                 )
+            elif output.conversation_action.action_type in EXECUTABLE_CONVERSATION_ACTIONS:
+                # **打字"确认"也要真的执行** ✓✓（2026-10-08 修：两处"吞事件"缺口之一）。
+                # 文本回合里模型用 `conversationAction` 表达确认/取消时，这一支以前
+                # **不存在** ✗：校验器放行（`output_validation.py` 只做 ref/版本核对 ✓），
+                # 之后没有任何执行分支 ✓ → 无 Java 调用 ✓、无结果事件 ✓、无报错 ✓，
+                # 而模型嘴上照说"已提交" ✓（会话 10041979 的谎报正是这个形状 ✓）。
+                # 现在复用点卡路径的执行器 ✓（见 `_execute_turn_action` 的对称关系 ✓），
+                # 结果经 `actionResult` 键由 `_emit_turn_terminal` 发成
+                # `conversationAction.result` ✓——与点卡路径同一个发射器 ✓。
+                action_result_payload, action_snapshot_version = await self._execute_turn_action(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    action=output.conversation_action,
+                    snapshot=snapshot,
+                )
+            elif output.conversation_action.action_type not in {
+                "none",
+                "continue_readonly",
+                "request_clarification",
+            }:
+                # 无执行器的动作类型（`create_proposal` / `refresh_proposal` ✓）：保持原行为 ✗，
+                # 但不再**无声**——提案要走 `proposalRequest` ✓，这两类动作今天没有对应执行器 ✓；
+                # 留一行日志，下一次有人追问"模型说要做却没发生"时查得到 ✓。
+                logger.info(
+                    "model conversationAction %r has no executor (turn=%s session=%s); "
+                    "proposal path is proposalRequest",
+                    output.conversation_action.action_type,
+                    turn_id,
+                    session_id,
+                )
             working_set = self._working_sets.get(key)
             if working_set is not None:
                 working_set.ingest_payload(turn, turn_id=turn_id)
@@ -1806,6 +1979,10 @@ class GatewayService:
                 "trace": trace.as_payload(),
                 "recovery": {"outputRepaired": output_repaired},
                 "proposalPreview": dict(proposal_preview) if proposal_preview is not None else None,
+                # 模型发起的确认/取消：结果与点卡路径同形 ✓（`_handle_uncached` 把它带进
+                # 回合结果 ✓，`server.py::_emit_turn_terminal` 一见它发
+                # `conversationAction.result` ✓——同一个发射器、同一份载荷合同 ✓）。
+                **_turn_action_payload(action_result_payload, action_snapshot_version),
             }
         except ThreadRecoveryError as exc:
             # 恢复失败是**可恢复错误**，不是"这个会话坏了"：既不许建一个新身份
@@ -1830,14 +2007,26 @@ class GatewayService:
                 logger.warning("runtime restart failed: %s", restart_exc)
             return {"error": "app_server_exited", "recoverable": True, "events": []}
         except (OutputContractError, ValueError, KeyError) as exc:
-            return {"error": str(exc), "events": []}
+            # 结果已经出站（模型发起的确认/取消执行成功而收尾失败）时必须**原样带回** ✓：
+            # 它由 `_emit_turn_terminal` 在失败分支**先于** `recoverable.error` 发出 ✓，
+            # 漏了它，库里已经落地的改动在页面上永远停在"待确认" ✗
+            # （与 `execute_action_and_refresh` docstring 同一条不变量 ✓）。
+            return {
+                "error": str(exc),
+                "events": [],
+                **_turn_action_payload(action_result_payload, action_snapshot_version),
+            }
         except Exception as exc:
             # **堆栈必须留下** ✗✓：原来只回一个类名（`RuntimeError` ✗）——
             # 用户看到的是"引擎暂时不可用" ✓，而日志里**没有任何可查的东西** ✗：
             # 实测就是这么卡住的（首轮一个 `RuntimeError` ✗，来回猜了几轮 ✓）。
             # 回给用户的那句仍然是通用的 ✓（不泄漏内部细节 ✓），但日志要能定位 ✓。
             logger.exception("codex turn crashed: %s", type(exc).__name__)
-            return {"error": type(exc).__name__, "events": []}
+            return {
+                "error": type(exc).__name__,
+                "events": [],
+                **_turn_action_payload(action_result_payload, action_snapshot_version),
+            }
 
     def _evidence_inputs(
         self, turn: Any, snapshot: ConversationTurnSnapshot

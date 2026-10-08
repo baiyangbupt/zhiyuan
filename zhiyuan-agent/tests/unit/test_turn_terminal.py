@@ -4,6 +4,8 @@
 `assistant.completed` ✗；而失败时 `result` 里没有 `reply` ✗ → `message` 变空串 ✗ →
 前端"有终态且有答案文本"的渲染条件不成立 ✓ → 用户那边**整轮静默** ✗（页面快照实证 ✓）。
 """
+from types import SimpleNamespace
+
 import pytest
 
 from app.server import _RECOVERABLE_TURN_FAILURE, _emit_turn_terminal, _proposal_preview_payload
@@ -476,3 +478,87 @@ def test_the_attempted_rule_brief_rides_inside_the_diff() -> None:
 
     assert payload["diff"]["status"] == "blocked"
     assert payload["diff"]["attemptedRuleBrief"] == "地域：北方/北京/上海"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 动作收尾的**异常**分支（F13 的异常变体）：结果事件与 `recoverable.error` 都不许缺 ✓✓
+#
+# 修前（`_run_action_work` 的 `except` 只有 `logger.exception` ✗）：执行侧出意外时
+# 用户那边**一条事件都没有** ✓——卡停在"待确认" ✓、重连也补不出来 ✓（结果事件与
+# 连接无关 ✗✓ 的不变量，在异常这条路上漏了 ✓）。下面两条把它钉住 ✓。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _ExplodingChannel:
+    """收尾发射中途炸掉的连接：`uses_v1` 一读就抛（终态发射的第一行就要它 ✓）。"""
+
+    @property
+    def uses_v1(self) -> bool:
+        raise RuntimeError("channel gone")
+
+
+def _action_msg(proposal_ref: str = "pending-1"):
+    return SimpleNamespace(
+        session_id="900047",
+        conversation_action={
+            "actionType": "confirm_proposal",
+            "proposalRef": proposal_ref,
+            "expectedSourceVersion": 0,
+            "intent": "explicit",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_exception_in_the_action_work_reports_a_failed_result(monkeypatch) -> None:
+    """异常分支必须发 `recoverable.error` + `conversationAction.result(failed)` ✓✓。
+
+    只发错误不给结果 ✗：卡会一直停在"待确认"（用户只能反复点 ✓✗）；
+    只给结果不给错误 ✗：这轮到底怎么了在时间线上没有锚点 ✓。
+    """
+    import app.server as server
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(server, "_run_native_turn", _boom)
+    events, emit = _collector()
+
+    await server._run_action_work(
+        SimpleNamespace(), _action_msg(), "1", "turn-confirm", emit, _Channel(uses_v1=True)
+    )
+
+    assert [event["type"] for event in events] == ["recoverable.error", "conversationAction.result"]
+    error = events[0]["payload"]
+    assert error["code"] == "action_execution_exception"
+    result = events[1]["payload"]
+    assert result["actionStatus"] == "failed"
+    assert result["code"] == "action_execution_exception"
+    # 卡是按 `proposalRef` 找自己的结果事件的 ✓——入站动作上的 ref 要原样带 ✓。
+    assert result["proposalRef"] == "pending-1"
+    # 措辞是"未能确认"而不是"一定没生效" ✓：异常可能发生在 Java 已受理之后 ✓。
+    assert "未能确认" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_the_failure_fallback_never_contradicts_a_result_that_already_went_out(monkeypatch) -> None:
+    """真结果已经出站时**只**补 `recoverable.error` ✗✓：再补一条 failed 会与"已生效"矛盾 ✓。"""
+    import app.server as server
+
+    async def _applied(*args, **kwargs):
+        return {
+            "reply": "操作已处理。",
+            "events": [],
+            "actionResult": {"actionStatus": "applied", "proposalRef": "pending-1", "code": "0"},
+            "snapshotVersion": 3,
+        }
+
+    monkeypatch.setattr(server, "_run_native_turn", _applied)
+    events, emit = _collector()
+
+    await server._run_action_work(
+        SimpleNamespace(), _action_msg(), "1", "turn-confirm", emit, _ExplodingChannel()
+    )
+
+    assert [event["type"] for event in events] == ["recoverable.error"], \
+        "已出站的结果才是权威终局：兜底不许把它反过来 ✗"

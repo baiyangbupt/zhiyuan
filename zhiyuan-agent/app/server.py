@@ -1056,7 +1056,16 @@ async def _run_action_work(
 
     兜底必须写在这里 ✗：整段被取消时 ✓，外面那层 `except` 根本轮不到 ✓；
     而"取消"要原样往上抛 ✓（`CancelledError` 不是业务失败 ✗，吞掉会掩盖真正的取消语义 ✓）。
+
+    **异常分支不再只写日志** ✓✓（2026-10-08 修：两处"吞事件"缺口之二）：
+    以前 `except` 里只有 `logger.exception` ✗——执行侧出意外时用户那边**一条事件都没有** ✓：
+    卡停在"待确认" ✓、重连也补不出来 ✓（F13 的不变量是"结果事件与连接无关" ✓，
+    这里补的是它的**异常变体** ✓）。现在发 `recoverable.error` +
+    `conversationAction.result(failed)` ✓：卡翻到"未生效"并带上原因码 ✓，用户知道下一步做什么 ✓。
+    真结果已经出站（`result` 里带了 `actionResult` ✓）时**只**发 `recoverable.error` ✗✓：
+    再补一条 failed 会与"已生效"互相矛盾 ✓（那份已出站的结果才是权威终局 ✓）。
     """
+    result: dict | None = None
     try:
         result = await _run_native_turn(gateway, msg, tenant_id, turn_id, emit)
         await _emit_turn_terminal(
@@ -1068,6 +1077,49 @@ async def _run_action_work(
     except Exception:
         logger.exception(
             "conversation action failed: session_id=%s turn_id=%s", msg.session_id, turn_id
+        )
+        await _emit_action_failure(emit, msg, result=result)
+
+
+async def _emit_action_failure(emit, msg, *, result: Mapping[str, Any] | None = None) -> None:
+    """`_run_action_work` 异常分支的兜底事件：可恢复错误 +（必要时）failed 结果 ✓。
+
+    状态取 `failed` ✓（前端合同里的终态之一 ✓：卡收起按钮、显示"未生效" ✓）；
+    `code` 取 `action_execution_exception` ✓（前端按 code 锚点给中文 ✓，另有中文 message 兜底 ✓）。
+    `proposalRef` 从入站动作上原样带 ✓——卡是按它找自己的结果事件的 ✓；
+    动作里没有就不带 ✗（`_action_result_payload` 不写空值 ✓）。
+
+    措辞是"未能确认"而不是"一定没生效" ✓：异常可能发生在 Java 已受理之后 ✓，
+    网关这一侧能诚实说的是"这次没拿到结果" ✓，处置（重试/刷新看卡）两句都给到 ✓。
+    """
+    message = "执行确认时出现异常，本次操作未能确认；请重试，或刷新后查看卡片状态。"
+    try:
+        await emit({
+            "type": "recoverable.error",
+            "payload": {"code": "action_execution_exception", "message": message},
+        })
+        produced = result.get("actionResult") if isinstance(result, Mapping) else None
+        if isinstance(produced, Mapping) and produced:
+            # 真结果已经出站：不许再补一条与之矛盾的 failed ✗。
+            return
+        action = getattr(msg, "conversation_action", None)
+        action = action if isinstance(action, Mapping) else {}
+        await emit({
+            "type": "conversationAction.result",
+            "payload": _action_result_payload(
+                {},
+                {
+                    "actionStatus": "failed",
+                    "proposalRef": action.get("proposalRef"),
+                    "code": "action_execution_exception",
+                    "message": message,
+                },
+            ),
+        })
+    except Exception:  # noqa: BLE001 —— 兜底事件自己失败也只能留痕，不能再往上抛
+        logger.exception(
+            "failed to emit action failure events: session_id=%s",
+            getattr(msg, "session_id", ""),
         )
 
 

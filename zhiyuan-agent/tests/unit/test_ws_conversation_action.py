@@ -429,3 +429,158 @@ async def test_the_action_result_keeps_its_own_turn_when_another_message_rebinds
         "turn-confirm",
         "turn-later",
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 打字"确认"（模型在**文本回合**里发 `confirm_proposal`）：走真实网关回合，
+# 事件流里必须出现 `conversationAction.result` ✓✓（2026-10-08 修）。
+#
+# 修前：校验器放行动作 → `_codex_turn` 里**没有执行分支** → 无 Java 调用、无结果、
+# 无报错，模型嘴上"已提交"（会话 10041979 的谎报）。这条用例从 WS 入帧一路盯到
+# 事件存储：同一份结果事件的形状与点卡路径完全一致（同一个 `_emit_turn_terminal`）。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _TurnActionCodex:
+    """输出一个带 `conversationAction` 的文本回合（打字"确认"时模型的真实形状 ✓）。"""
+
+    async def create_thread(self, **kwargs):
+        return {"thread": {"id": "thr-ws-action"}}
+
+    async def resume_thread(self, thread_id):
+        return {"thread": {"id": thread_id}}
+
+    async def inject_items(self, thread_id, items):
+        return {}
+
+    async def start_turn_and_collect(self, thread_id, input_items, output_schema=None, **kwargs):
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class Collected:
+            status: str
+            output: dict
+            events: list
+            turn_id: str = "turn-1"
+            payload: dict = field(default_factory=dict)
+
+        return Collected(
+            status="completed",
+            output={
+                "responseType": "text",
+                "message": "好的，我这就去确认。",
+                "conversationAction": {
+                    "actionType": "confirm_proposal",
+                    "proposalRef": "pending-1",
+                    "expectedSourceVersion": 5,
+                    "intent": "explicit",
+                },
+            },
+            events=[],
+        )
+
+
+class _ActionSnapshotLoader:
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, **kwargs):
+        self.calls += 1
+        return {
+            "sessionId": "900049",
+            "version": 5 + (1 if self.calls > 1 else 0),
+            "allowedCapabilities": ["catalog_read", "admission_read"],
+            "activeProposal": {
+                "proposalRef": "pending-1",
+                "pendingId": "pending-1",
+                "sourceVersion": 5,
+                "revision": 1,
+                "data": {
+                    "operationId": "op-1",
+                    "proposalApply": {
+                        "proposalId": "P1",
+                        "proposalSource": "system",
+                        "sourceVersionGuard": 5,
+                        "regenerateOrderedPlan": True,
+                        "rerunReview": True,
+                    },
+                },
+            },
+        }
+
+
+class _StoreForGateway:
+    async def save_user_message(self, chat_session_id: str, content: str) -> int:
+        return 1
+
+    async def save_agent_message(self, chat_session_id: str, content: str, ws_type: str = "reply") -> int:
+        return 2
+
+
+@pytest.mark.asyncio
+async def test_a_model_confirm_puts_a_result_event_on_the_stream(monkeypatch) -> None:
+    """打字"确认"→ 真实网关回合执行 → 事件流与连接上都出现 `conversationAction.result` ✓✓。"""
+    from app.gateway import conversation_actions
+    from app.gateway.service import GatewayService
+    from app.harness.binding import ThreadBinding
+
+    resolve = _JavaRecorder([
+        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "completed"},
+    ])
+    execute = _JavaRecorder([
+        {"code": 0, "status": "applied", "data": {"stateVersion": 7}},
+    ])
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolve)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", execute)
+
+    session_id = "900049"
+    store = _MemoryEventStore()
+    runtime = SessionRuntime()
+    gateway = GatewayService(
+        mode="codex_write",
+        codex=_TurnActionCodex(),
+        legacy=None,
+        message_store=_StoreForGateway(),
+        binding_loader=lambda **kwargs: ThreadBinding(
+            thread_id="thr-ws-action",
+            tenant_id="1",
+            session_id=session_id,
+            user_id="u1",
+            allowed_capabilities=frozenset({"catalog_read", "admission_read"}),
+        ),
+        snapshot_loader=_ActionSnapshotLoader(),
+    )
+    ws = _Socket(store, runtime, session_id)
+    ws.push({**_chat(session_id, turn_id="turn-type-confirm"), "content": "确认"})
+
+    task = asyncio.create_task(_handle_gateway_ws_loop(ws, gateway))
+    await _wait_for(
+        lambda: store.of_type("conversationAction.result"), what="动作结果入流"
+    )
+    await _wait_for(
+        lambda: ws.frames("conversationAction.result"), what="连接收到动作结果"
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    results = store.of_type("conversationAction.result")
+    assert len(results) == 1
+    assert results[0].payload["actionStatus"] == "applied"
+    assert results[0].turn_id == "turn-type-confirm"
+    frame = ws.frames("conversationAction.result")[0]
+    assert frame["payload"]["actionStatus"] == "applied"
+    assert frame["payload"]["proposalRef"] == "pending-1"
+    # Java 侧真的被调到了 ✓（修前这里是 0 次——动作被静默丢弃 ✗）。
+    assert len(resolve.calls) == 2 and len(execute.calls) == 1
+
+
+class _JavaRecorder:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls: list[tuple[tuple, dict]] = []
+
+    async def __call__(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return self.responses.pop(0) if self.responses else {}
