@@ -42,7 +42,7 @@ import {
 } from '@/utils/conversationProtocol.mjs';
 import ClarificationCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ClarificationCard';
 import ProposalCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ProposalCard';
-import { proposalFailureText } from '@/pageComponents/sessionDetailV2/ConversationEvents/proposalCardText.mjs';
+import { isSettledProposalStatus, proposalFailureText } from '@/pageComponents/sessionDetailV2/ConversationEvents/proposalCardText.mjs';
 import UnderstandingCard from '@/pageComponents/sessionDetailV2/ConversationEvents/UnderstandingCard';
 import { WebSocketMessage } from '@/hooks/websocket';
 import TypingAnimation from '@/components/generating/TypingAnimation';
@@ -2291,6 +2291,17 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
           !Object.values(conversationState.turns || {}).some(
             (turn: any) =>
               String(turn?.proposal?.proposalRef || '') === String(lastProposal.proposalRef),
+          ) &&
+          /*
+            **终态兜底卡让位新对话**（2026-10-08 用户实测："更新成绩的卡片一直在对话的底部"✗）：
+            冷加载恢复卡的本意是"刷新后把最近一条提案画出来" ✓，但它锚在列表末尾 ✗——
+            用户继续聊出新回合后，它被顶在最新消息下面，像是永远杵在底部 ✗。
+            规则（2026-10-08）：**已落定**（非 applying）的恢复卡，出现新回合后自动收起 ✓；
+            `active`/`applying` 保持显示 ✓（那是还等着用户动作的状态，不能被藏 ✗）。
+          */
+          !(
+            isSettledProposalStatus(lastProposal.actionStatus) &&
+            Object.values(conversationState.turns || {}).length > 0
           ) ? (
             <div className={style.turnLiveCard}>
               <ProposalCard
