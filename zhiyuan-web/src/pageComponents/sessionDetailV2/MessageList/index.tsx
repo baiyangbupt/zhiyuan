@@ -1708,6 +1708,17 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     messages: displayMessageList,
     turns: renderableTurns,
   });
+  // **冷加载兜底卡也要吃事件流里的动作结果** ✓✓（2026-10-09，打字确认那条通道）：
+  // `lastProposal` 是**会话详情那一刻**的快照 ✓（`fetchSessionDetail` 只在进页面时拉一次 ✗），
+  // 而"打字确认"（模型在回合里发 `confirm_proposal` ✓，冷加载后卡片无按钮、这是唯一的确认入口 ✓）
+  // 的结果只走**事件流** ✓——不接这条的话，卡会一直停在"待处理"直到 F5 ✗
+  //（用户刚确认成功，卡却说没处理过 ✓✗）。
+  // 结果事件**不区分来源** ✓：点卡与打字确认同形同 ref ✓（`server.py::_emit_turn_terminal`
+  // 同一个发射器 ✓），所以这一格同时覆盖两条通道 ✓——有事件流结果就用它 ✓，
+  // 没有才退回详情快照 ✓。
+  const coldFallbackLiveResult = lastProposal?.proposalRef
+    ? findActionResultFor(conversationState, lastProposal.proposalRef)
+    : undefined;
   const activePendingCardMessageId = displayMessageList.reduce<number | null>((latestId, record) => {
     if (record.messageFrom !== '0' || record.contentType !== 'CARD') {
       return latestId;
@@ -2317,7 +2328,12 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
             `active`/`applying` 保持显示 ✓（那是还等着用户动作的状态，不能被藏 ✗）。
           */
           !(
-            isSettledProposalStatus(lastProposal.actionStatus) &&
+            // 落定判据取**事件流里的结果优先** ✓（`coldFallbackLiveResult` ✓，同一条口径也管
+            // "打字确认"那条通道 ✓）：详情快照说 `active`、而事件流已经 `applied` 时，
+            // 该收起的卡就得收起 ✓（否则刚确认完的卡永远杵在底部说"待处理" ✗）。
+            isSettledProposalStatus(
+              coldFallbackLiveResult?.actionStatus || lastProposal.actionStatus,
+            ) &&
             Object.values(conversationState.turns || {}).length > 0
           ) ? (
             <div className={style.turnLiveCard}>
@@ -2341,10 +2357,14 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                     attemptedRuleBrief: lastProposal.attemptedRuleBrief,
                   },
                 }}
-                actionResult={{
-                  actionStatus: lastProposal.actionStatus,
-                  proposalRef: lastProposal.proposalRef,
-                }}
+                actionResult={
+                  // 事件流里的结果优先 ✓（打字确认那条通道的结果只从这里来 ✓，
+                  // 见 `coldFallbackLiveResult` 处的注释）；没有才退回详情快照 ✓。
+                  coldFallbackLiveResult || {
+                    actionStatus: lastProposal.actionStatus,
+                    proposalRef: lastProposal.proposalRef,
+                  }
+                }
                 onDecide={() => undefined}
                 disabled
               />

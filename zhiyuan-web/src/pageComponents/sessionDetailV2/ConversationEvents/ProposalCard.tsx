@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Space, Tag, Typography } from 'antd';
 
 import {
@@ -9,6 +9,15 @@ import {
   proposalStatusLabel,
   proposalSummaryDuplicatesReason,
 } from './proposalCardText.mjs';
+import {
+  PROPOSAL_DECISION_PENDING_TEXT,
+  PROPOSAL_DECISION_TIMEOUT_MS,
+  beginProposalDecision,
+  clearProposalDecision,
+  expireProposalDecision,
+  isProposalDecisionPending,
+  proposalDecisionButtonState,
+} from './proposalDecision.mjs';
 
 /**
  * **提案卡**（`proposal.preview` ✓）——会话里第二类"要用户动作"的卡 ✓。
@@ -96,7 +105,58 @@ type Props = {
 // H1 的教训：白名单漏一档（`stale_state`）就是"英文机器态直出 + 按钮复活" ✗。
 
 const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disabled }) => {
-  const [submitting, setSubmitting] = useState(false);
+  // ── 等待态：点击 → 结果回来之前的这段空白（2026-10-09 用户实测"没有过渡"✗）────────
+  // 判据全在 `proposalDecision.mjs`（纯逻辑 + 单测 ✓）；这里只做"挂表 + 定时器 + 渲染"。
+  // 旧实现在这放了个 `submitting`，但它只包住"发帧"那一个 await ✗——`sendMessage`
+  // 是即发即返回的 ✓，帧一出门 loading 就没了 ✓，而结果要等 claim/execute 才回来 ✓。
+  const [decision, setDecision] = useState<any>(null);
+  // ref 是同步的真相来源（同一帧里的重复点击靠它拦 ✓），state 只负责触发渲染 ✓。
+  const decisionRef = useRef<any>(null);
+  const decisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const applyDecision = useCallback((next: any) => {
+    if (next === decisionRef.current) return;
+    decisionRef.current = next;
+    setDecision(next);
+  }, []);
+
+  const clearDecisionTimer = useCallback(() => {
+    if (decisionTimerRef.current) {
+      clearTimeout(decisionTimerRef.current);
+      decisionTimerRef.current = null;
+    }
+  }, []);
+
+  // 超时兜底（~30s 无结果）：标记"可重试" ✓。自续定到点 ✓——真到点前不标记，
+  // 免得定时器早触发一次就把等待态永远卡在"锁着但没人再叫醒它" ✗。
+  const armDecisionTimeout = useCallback(
+    (startedAt: number) => {
+      clearDecisionTimer();
+      const schedule = () => {
+        const remaining = startedAt + PROPOSAL_DECISION_TIMEOUT_MS - Date.now();
+        if (remaining > 0) {
+          decisionTimerRef.current = setTimeout(schedule, remaining);
+          return;
+        }
+        decisionTimerRef.current = null;
+        applyDecision(expireProposalDecision(decisionRef.current));
+      };
+      schedule();
+    },
+    [applyDecision, clearDecisionTimer],
+  );
+
+  useEffect(() => () => clearDecisionTimer(), [clearDecisionTimer]);
+
+  // **结果到达（任何 status）就收等待态** ✓：收回后照旧走既有状态更新那条路
+  // （Tag / 说明 / 收按钮 ✓）。依赖是 `actionResult` 本身 ✓——它来自 reducer 里存的那份
+  // 对象 ✓，identity 只在**新结果事件**到达时变 ✓（同一条结果重复渲染不会反复触发 ✓）。
+  useEffect(() => {
+    if (!decisionRef.current) return;
+    applyDecision(clearProposalDecision(decisionRef.current, actionResult));
+    clearDecisionTimer();
+  }, [actionResult, applyDecision, clearDecisionTimer]);
+
   const diff = proposal.diff || {};
   const status = String(diff.status || '');
   const blocked = status === 'blocked';
@@ -104,8 +164,18 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
   // 到了结果就收按钮（`applying` 除外 ✓）——排除法，见 `isSettledProposalStatus` ✓。
   const settled = isSettledProposalStatus(action);
   const needsConfirm = !blocked && !settled && diff.requiresConfirmation !== false && status !== '';
-  const locked = Boolean(disabled) || submitting;
   const scoreUpdate = diff.scoreUpdate;
+  // 按钮要画的样子（锁 / 转圈 / "确认中…"）——判据在 `proposalDecision.mjs` ✓。
+  const buttons = proposalDecisionButtonState(decision, {
+    confirmText: scoreUpdate ? '确认更新' : '采纳',
+    cancelText: scoreUpdate ? '取消' : '放弃',
+  });
+  const locked = Boolean(disabled) || buttons.locked;
+  // 卡面那一档"处理中" ✓（与按钮级配套，不过度）：等结果时 Tag 就换成"确认中…/取消中…" ✓
+  // （与状态表里 `applying` 同一个词 ✓），而不是一直停在"待确认" ✓。
+  const pendingTagText = isProposalDecisionPending(decision)
+    ? PROPOSAL_DECISION_PENDING_TEXT[decision.action as 'confirm' | 'cancel'] || ''
+    : '';
   // 失败原因**按 code 说中文** ✓（M1）：服务端 `message` 是 Java 的内部英文（含版本号 ✗），
   // 直出给用户既看不懂又像报错 ✓；`code` 仍作排障锚点带出 ✓。
   const failureReason = action === 'failed' ? proposalFailureText(actionResult || {}) : '';
@@ -118,13 +188,25 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
   // 相等时只留 Alert 里那一份（它带了 code 锚点与上下文 ✓）；不相等则都保留 ✓（各有信息 ✓）。
   const blockedSummaryDuplicatesReason = blocked && proposalSummaryDuplicatesReason(diff);
 
-  const decide = async (action: 'confirm' | 'cancel') => {
-    setSubmitting(true);
-    try {
-      await onDecide(action);
-    } finally {
-      setSubmitting(false);
+  const decide = (action: 'confirm' | 'cancel') => {
+    // 没有句柄的卡**不进等待态** ✗：发帧那一侧对空 `proposalRef` 是静默返回 ✓，
+    // 进了等待就必然干等满 30s 超时 ✗——那是假的"没反应"，比不转圈更难查 ✓。
+    if (!proposal.proposalRef) {
+      void onDecide(action);
+      return;
     }
+    const next = beginProposalDecision(decisionRef.current, action, proposal.proposalRef);
+    // 等待中（或已超时未重试前）：`begin` 原样返回 → 这里直接退出 ✓——**重复点击被拦** ✓。
+    if (next === decisionRef.current) return;
+    applyDecision(next);
+    armDecisionTimeout(next.startedAt);
+    // 帧的发送仍是调用方的活 ✓（它才知道 sessionId 与连接 ✓）；发不出去就地恢复可点 ✓，
+    // 免得用户对着一个永远不会来的结果干等满超时 ✗。
+    void Promise.resolve(onDecide(action)).catch((error) => {
+      console.warn('提案动作发送失败', error);
+      applyDecision(expireProposalDecision(decisionRef.current));
+      clearDecisionTimer();
+    });
   };
 
   return (
@@ -141,8 +223,10 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
         <Tag data-testid="proposal-status">
           {/* `blocked` 优先于动作状态 ✓：这张卡本身没编译出可执行的方案 ✓，
               标签就该是"无法执行" ✓（冷加载兜底卡若带 `actionStatus=active` ✓，
-              不许把它说成"待处理" ✗——那会让卡片自相矛盾 ✓）。 */}
-          {blocked ? '无法执行' : action ? proposalStatusLabel(action) : '待确认'}
+              不许把它说成"待处理" ✗——那会让卡片自相矛盾 ✓）。
+              服务端结果还没到时，本地等待态先顶上"确认中…/取消中…" ✓（2026-10-09：
+              点了之后一直停在"待确认"、然后结果突然出现，就是观感割裂的来源 ✗）。 */}
+          {blocked ? '无法执行' : action ? proposalStatusLabel(action) : pendingTagText || '待确认'}
         </Tag>
       </Space>
       {action && !settled ? (
@@ -273,23 +357,37 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
           message={failureReason || '这次确认没有生效，请重试或换一种说法。'}
         />
       ) : null}
+      {/*
+        **超时兜底** ✓✓（2026-10-09）：等 ~30s 还没有该 `proposalRef` 的结果 →
+        按钮恢复可点 ✓、这里明说"可以重试" ✓——不给这句的话，用户只能对着一张
+        转完圈的卡干猜"到底生效没有" ✗。（迟到结果到了，等待态整条清掉，本行也随之收起 ✓。）
+      */}
+      {decision && decision.timedOut ? (
+        <Alert
+          type="warning"
+          showIcon
+          data-testid="proposal-decision-timeout"
+          message="长时间没有收到执行结果，可以重试；若已生效请刷新页面查看。"
+        />
+      ) : null}
       {needsConfirm ? (
         <Space>
           <Button
             type="primary"
             disabled={locked}
-            loading={submitting}
+            loading={buttons.confirmLoading}
             data-testid="proposal-confirm"
-            onClick={() => void decide('confirm')}
+            onClick={() => decide('confirm')}
           >
-            {scoreUpdate ? '确认更新' : '采纳'}
+            {buttons.confirmText}
           </Button>
           <Button
             disabled={locked}
+            loading={buttons.cancelLoading}
             data-testid="proposal-cancel"
-            onClick={() => void decide('cancel')}
+            onClick={() => decide('cancel')}
           >
-            {scoreUpdate ? '取消' : '放弃'}
+            {buttons.cancelText}
           </Button>
         </Space>
       ) : null}
