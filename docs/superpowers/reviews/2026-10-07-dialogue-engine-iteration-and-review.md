@@ -94,6 +94,7 @@ pong 契约完好（ping 不刷新自己）；时间线合并不变量成立；t
 12. **失败文案/事件码统一**（2026-10-09）：`proposal_reference_mismatch` 文案写死"已有更新的预览"，在"无新预览"场景不贴切（`9de0131` 只做了码归一）；网关事件 code 有两种形态（turn 级 `裸码: 明细` 复合串、actionResult 级裸码）——建议生产者统一（裸码+明细分置），前端归一保留作防御。
 13. **major-recommend 载荷级原始数值**（2026-10-09 标记，未改）：Java `ChatController.java:213-217` 的 `POST /chat/{tenantId}/major-recommend` 直接返回含原始 `score`/`dimensions` 的 `MajorRecommendItem`；**zhiyuan-web 当前无调用**——未来若接入前端展示，需先做"数值→人话"映射（对齐 10-09 口径，与 `ebd049f` 的指令层改造配套）。
 14. **admissionFacts.group_code 契约与数据源缺口**（2026-10-09 实测，会话 10041981 19:51 轮）：模型输出的 8 条 `admissionFacts` 均缺 `group_code`（专业组代码）→ 校验拒 → **修复回合救回但耗时 ~5 分钟**；助手自述"专业组代码这一层仍未随数据返回"。即**契约必填 vs 数据源不提供**的系统性错配——院校事实类输出每轮都可能先撞一次再修复。修法（二选一，倾向①）：①`group_code` 改可空/占位（保留"以省考试院公布为准"口径）；②数据侧补字段（数据批次跟进）。
+15. **无正式方案会话的"同档前置"预览必 blocked + 话术矛盾**（2026-10-09 实测，10041981 19:56）：模型对无方案新会话提议 `prioritize_within_tier` → Java blocked `user_goal_target_not_found`（"当前还没有正式方案，不能生成同档前置预览"），而模型同轮文字已说"我按这个把初稿排出来了"（模型在提议时不知会被拒，结构性缺口）。修法：①指令层——无正式方案时不得承诺/提议"同档前置"，先走出方案流程；②（可选）`user_goal_target_not_found` 走一次澄清/纠错回合。注：字段合法性已由 `906d5dd` 保证（rollout 实测 `region/city`，非 location.region）。
 
 ### 环境守卫与回退
 - `oom_score_adj`：18290/18090 = -500；18291/18091 = -400（内存再紧时优先牺牲测试进程）。
