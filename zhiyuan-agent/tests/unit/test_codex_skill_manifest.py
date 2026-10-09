@@ -313,3 +313,49 @@ def test_base_rules_forbid_internal_vocabulary_in_user_visible_text() -> None:
     ).read_text(encoding="utf-8")
     assert "业务语言" in write_rules, "写实例规则没有同步「给用户的话用业务语言」"
     assert "profile_ready" in write_rules
+
+
+def test_advancement_is_host_style_and_major_direction_is_recommended_first() -> None:
+    """2026-10-09 用户口径：推进靠主持（宣布下一步+直接开始），不用开放式反问；
+    专业方向**先推荐、再征询**；能推断的不问；面向用户不甩原始系数/打分。
+
+    这些规则不写进指令/技能文本，模型就会退回「你有什么想法 / 你想学什么」式反问，
+    或把 rank 侧打分（`score` 与各维度指数）直接念给用户——两件事在日志上都像"模型不会聊"。
+    """
+    dev = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.md"
+    ).read_text(encoding="utf-8")
+    assert "主持者" in dev, "主持者原则没有写进实例级指令"
+    assert "能推断的信息不问" in dev, "推断优先没有写进实例级指令"
+    assert "先主动推荐" in dev and "你想学哪个方向" in dev, "专业方向'先推荐再征询'没有写进实例级指令"
+    assert "不要直接甩原始数值" in dev, "原始数值禁用没有写进实例级指令"
+    assert "不要这样做" in dev and "抛回用户" in dev, "反例（清单+抛回用户）没有写进实例级指令"
+
+    base = (
+        Path(__file__).parents[2] / "skills" / "codex" / "base_instructions.md"
+    ).read_text(encoding="utf-8")
+    assert "\n11. " in base, "常驻规则里没有第 11 条（面向用户禁甩原始数值）"
+    assert "raw internal numbers" in base
+    assert "subject fit" in base
+
+    guide = (
+        _root() / "profile-discovery" / "references" / "planner-questioning-guide.md"
+    ).read_text(encoding="utf-8")
+    assert "Recommend before you ask" in guide, "提问指南没有'先推荐再征询'"
+    assert "subjectScoreList" in guide, "提问指南没有'能推断的不问'（优势科目）"
+    assert "closed-ended" in guide, "提问指南没有封闭式优先"
+
+    skill = (_root() / "profile-discovery" / "SKILL.md").read_text(encoding="utf-8")
+    assert "再询问专业方向" not in skill, "专业方向仍是反问式（旧口径残留）"
+    assert "专业方向先推荐、再征询" in skill
+
+    recommendation = (_root() / "candidate-recommendation" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "不直出原始数值" in recommendation, "候选推荐没有'不直出原始数值'"
+
+    write_rules = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.write.md"
+    ).read_text(encoding="utf-8")
+    assert "先推荐、再征询" in write_rules, "写实例规则没有'专业方向先推荐再征询'"
+    assert "内部依据" in write_rules, "写实例规则没有把打分标注为内部依据"
