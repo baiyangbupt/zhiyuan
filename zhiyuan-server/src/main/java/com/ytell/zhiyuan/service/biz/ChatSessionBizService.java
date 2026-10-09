@@ -55,6 +55,7 @@ import com.ytell.zhiyuan.web.interceptor.UserInfoThreadLocalUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FileUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -70,6 +71,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Collectors;
+
+import javax.annotation.PostConstruct;
 
 /**
  * 会话管理服务
@@ -129,6 +132,43 @@ public class ChatSessionBizService {
     /** 补录的编码表（科目/批次/单科类省份的科类推导）。 */
     @Autowired
     private ScoreCatalogService scoreCatalogService;
+
+    /**
+     * 演示环境的 prepareType 兜底（`demo.prepare-type-fallback`，**默认空=关**）：成绩更新/取数
+     * 请求缺 prepareType 时，用该值而不是按省策略实时推导。本地演示口径：上游已切 2027 填报季、
+     * 省策略推出来是 VOLUNTEER，而演示会员只有 PREDICT 取数策略（确认后 84009「当前策略已失效」），
+     * 配置 PREDICT 即走通。生产不配置 = 行为与今天完全一致；只把配置项加进**本地演示的启动参数**。
+     */
+    @Value("${demo.prepare-type-fallback:}")
+    private String prepareTypeFallback;
+
+    /** 兜底是否生效在启动时留痕：排障时不用猜配置有没有被 Spring 绑上（空/非法值明示为 off）。 */
+    @PostConstruct
+    void logPrepareTypeFallback() {
+        String effective = configuredFallbackPrepareType();
+        log.info("demo.prepare-type-fallback effective={} (empty/off=plain province-policy derivation)",
+                effective == null ? "off" : effective);
+    }
+
+    /** 生效的兜底值：空/非法一律 null（=关，走省策略推导）；只有 PREDICT/VOLUNTEER 两档进请求参数。 */
+    private String configuredFallbackPrepareType() {
+        if (Strings.isNullOrEmpty(prepareTypeFallback)) {
+            return null;
+        }
+        String code = prepareTypeFallback.trim().toUpperCase(Locale.ROOT);
+        if (!"PREDICT".equals(code) && !"VOLUNTEER".equals(code)) {
+            log.warn("demo.prepare-type-fallback ignored: unsupported value={}", prepareTypeFallback);
+            return null;
+        }
+        return code;
+    }
+
+    private CreateSessionReq.PrepareType prepareTypeOf(String code) {
+        CreateSessionReq.PrepareType prepareType = new CreateSessionReq.PrepareType();
+        prepareType.setCode(code);
+        prepareType.setDesc("PREDICT".equals(code) ? "模拟填报" : "智能填报");
+        return prepareType;
+    }
 
     /**
      * 分页获取用户会话列表
@@ -538,6 +578,11 @@ public class ChatSessionBizService {
      * 已失效」（确认后 execute 在拉全量志愿数据那一跳炸掉）。前端口径本来就是策略优先
      * （`ScoreSupplement`/`customerDetailSession` 都取 `policy.prepareType.code`），
      * 这里对齐：只在草稿/既有成绩都没带时才推导，带了的不覆盖。</p>
+     *
+     * <p>③优先级（2026-10-09 演示兜底）：请求显式带 &gt; 会话存量已有（两者合并后已非空，
+     * 一个字不动）&gt; 配置兜底 {@link #prepareTypeFallback} 有值 &gt; 省策略推导（现状）。
+     * 上游切 2027 填报季、省策略推出来是 VOLUNTEER 而演示会员只有 PREDICT 取数策略时，
+     * 本地把兜底配成 PREDICT 即可走通；**默认空=关**，生产还是省策略推导。</p>
      */
     private void fillProvinceDefaultsIfMissing(CreateSessionReq req) {
         if (req == null || req.getProvince() == null || Strings.isNullOrEmpty(req.getProvince().getCode())) {
@@ -547,6 +592,17 @@ public class ChatSessionBizService {
         boolean needPrepareType = req.getPrepareType() == null || Strings.isNullOrEmpty(req.getPrepareType().getCode());
         if (!needSubjectType && !needPrepareType) {
             return;
+        }
+        String fallbackPrepareType = configuredFallbackPrepareType();
+        if (needPrepareType && fallbackPrepareType != null) {
+            req.setPrepareType(prepareTypeOf(fallbackPrepareType));
+            log.info("scoreUpdate: prepareType missing, filled demo fallback prepareType={} province={}",
+                    fallbackPrepareType, req.getProvince().getCode());
+            needPrepareType = false;
+            if (!needSubjectType) {
+                // 唯一缺项已由兜底补齐：不再查省策略（少一跳只读查询）。
+                return;
+            }
         }
         ScoreCatalogService.ProvinceDefaults defaults = scoreCatalogService.provinceDefaultsOrNull(req.getProvince().getCode());
         if (defaults == null) {
