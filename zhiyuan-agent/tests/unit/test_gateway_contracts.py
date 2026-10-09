@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.gateway.contracts import (
+    AdmissionFact,
     ArtifactRef,
     ConversationTurnSnapshot,
     EvidenceRef,
@@ -178,6 +179,51 @@ def test_state_patch_mode_change_requires_invalidation() -> None:
     )
 
     assert patch.changes[0]["value"] == "major_group"
+
+
+def _major_group_fact(**overrides):
+    payload = {
+        "admissionUnitId": "unit-1",
+        "admissionMode": "major_group",
+        "schoolId": "school-1",
+        "unitAdmissionRate": 55,
+        "riskTier": "稳",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_major_group_fact_without_group_code_is_allowed() -> None:
+    """数据源不提供专业组代码：缺它不能再拒整轮输出（2026-10-09 修）。
+
+    事故形态（会话 10041981 19:51 轮）：`major_group` 下 `group_code` 必填，
+    而候选行/Java 侧都没有这一层 → 8 条事实全被 `group_code_required` 拒 →
+    修复回合 ~5 分钟，模型最后索性不再输出事实卡片。
+    """
+    fact = AdmissionFact.model_validate(_major_group_fact(groupCode=None))
+
+    assert fact.group_code is None
+
+
+def test_blank_group_code_reads_as_missing_not_as_a_value() -> None:
+    """空白不是值：strip 后按"未提供"处理，不插值、也不当合法组代码。"""
+
+    fact = AdmissionFact.model_validate(_major_group_fact(groupCode="   "))
+
+    assert fact.group_code is None
+
+
+def test_group_code_still_rejects_non_string_values() -> None:
+    """放宽的是"缺失"，不是"类型"：提供了就必须合法。"""
+
+    with pytest.raises(ValidationError):
+        AdmissionFact.model_validate(_major_group_fact(groupCode=101))
+
+
+def test_group_code_is_stripped_when_provided() -> None:
+    fact = AdmissionFact.model_validate(_major_group_fact(groupCode=" 101 "))
+
+    assert fact.group_code == "101"
 
 
 def test_group_evidence_contains_group_scope_and_state_version() -> None:

@@ -73,6 +73,9 @@ class AdmissionFact(_ContractModel):
     school_name: str | None = None
     major_id: str | None = None
     major_name: str | None = None
+    # `group_code`（专业组代码）是**可选**身份：数据源确实不提供这一层
+    # （2026-10-09 实测 + 源码复核，见 `_normalize_group_code` 的完整口径）。
+    # 这里保留 `str | None`，提供时必须是非空白字符串。
     group_code: str | None = None
     major_items: list[AdmissionMajorDetail] = Field(default_factory=list)
     unit_admission_rate: float
@@ -90,6 +93,37 @@ class AdmissionFact(_ContractModel):
         except AdmissionFactError as exc:
             raise ValueError(exc.code) from exc
 
+    @field_validator("group_code", mode="before")
+    @classmethod
+    def _normalize_group_code(cls, value: Any) -> Any:
+        """专业组代码：**缺就是缺**，不再当"必填"拦下整轮输出（2026-10-09 修）。
+
+        事故形态（会话 10041981 19:51 轮）：`major_group` 下契约强制
+        `group_code` 非空，而数据源这一层根本拿不到——候选行
+        （`recommendation.preview_candidates`）没有组代码列，Java 侧
+        `AdmissionFactDTO.groupCode`/证据台账 `groupCode` 从未被赋值
+        （`docs/contracts/admission-identity-and-filters.md` 第六节第 6 条
+        就记着它是"悬空字段"）。结果是**每一轮**院校事实输出都先撞一次
+        `group_code_required` → 吃一次修复回合（实测 8 条事实全拒，修复耗时
+        ~5 分钟，且模型最后索性不再输出事实卡片）。模型面前只剩两条路：
+        编一个组代码，或丢掉事实——都比"如实缺"差。
+
+        现在的口径（与 `docs/superpowers/reviews/2026-10-07-…` 队列 14 ① 一致）：
+        · 缺（`None`/空白）= **显式未知**，放行；对用户的"以省考试院公布为准"
+          由指令侧（`skills/codex/developer_instructions.md`）承担，不在这里编。
+        · **提供时仍必须合法**：非字符串由 pydantic 类型层拒绝（含数字/布尔/
+          数组）；纯空白 strip 后视为"未提供"（空白不是值），不做插值。
+        · 下游绑定不放松：`output_validation` 里事实**带了**组代码时，绑定证据
+          仍按逐字相等比对（`fact.group_code is None or reference.group_code ==
+          fact.group_code`）——"有则必须准"的路径原样保留。
+        """
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
+
     @field_validator("unit_admission_rate")
     @classmethod
     def _validate_unit_rate(cls, value: float) -> float:
@@ -103,8 +137,8 @@ class AdmissionFact(_ContractModel):
     def _validate_scope_and_tier(self) -> "AdmissionFact":
         if self.admission_mode == "major" and not self.major_id:
             raise ValueError("major_required")
-        if self.admission_mode == "major_group" and not self.group_code:
-            raise ValueError("group_code_required")
+        # `group_code_required` 已删除：数据源不提供专业组代码（见
+        # `_normalize_group_code`）。缺代码不再拒整轮，也不静默换别的值。
         try:
             expected = derive_risk_tier(self.unit_admission_rate)
         except AdmissionFactError as exc:

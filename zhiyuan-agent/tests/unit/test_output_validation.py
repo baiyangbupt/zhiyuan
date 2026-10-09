@@ -218,6 +218,100 @@ def test_validator_accepts_group_fact_using_group_rate_not_nested_major_rate() -
     assert output.admission_facts[0].major_items[0].major_admission_rate == 40
 
 
+def test_validator_accepts_group_fact_without_group_code() -> None:
+    """缺专业组代码的事实：真值来自候选数据（没有组代码列）——放行，不再修复回合。
+
+    证据绑定不因此变松：模式与招生单元仍须逐字相等，且证据必须在台账里、
+    会话/数据版本对得上；只有"事实**没带**组代码"时不做组代码比对。
+    """
+    output = validate_turn_output(
+        turn_output={
+            "responseType": "fact",
+            "message": "专业组招生事实",
+            "evidenceRefs": [
+                {
+                    "evidenceId": "ev-unit-1",
+                    "sourceLevel": "authoritative",
+                    "dataVersion": "v17",
+                    "admissionMode": "major_group",
+                    "admissionUnitId": "unit-1",
+                    "groupCode": None,
+                    "stateVersion": 42,
+                }
+            ],
+            "admissionFacts": [
+                {
+                    "admissionMode": "major_group",
+                    "admissionUnitId": "unit-1",
+                    "schoolId": "school-1",
+                    "groupCode": None,
+                    "unitAdmissionRate": 55,
+                    "riskTier": "稳",
+                    "majorItems": [{"majorId": "m-1", "majorAdmissionRate": 40}],
+                }
+            ],
+        },
+        current_snapshot=_group_snapshot(),
+        evidence_ledger={
+            "ev-unit-1": {
+                "evidenceId": "ev-unit-1",
+                "sessionId": "session-1",
+                "stateVersion": 42,
+                "dataVersion": "v17",
+                "admissionMode": "major_group",
+                "admissionUnitId": "unit-1",
+            }
+        },
+        artifacts={},
+    )
+
+    assert output.admission_facts[0].group_code is None
+
+
+def test_validator_still_requires_the_group_code_to_match_when_provided() -> None:
+    """有则必须准：事实带了组代码时，证据的组代码必须逐字相等。"""
+    with pytest.raises(OutputContractError, match="admission_evidence_missing"):
+        validate_turn_output(
+            turn_output={
+                "responseType": "fact",
+                "message": "专业组招生事实",
+                "evidenceRefs": [
+                    {
+                        "evidenceId": "ev-unit-1",
+                        "sourceLevel": "authoritative",
+                        "dataVersion": "v17",
+                        "admissionMode": "major_group",
+                        "admissionUnitId": "unit-1",
+                        "groupCode": "102",
+                        "stateVersion": 42,
+                    }
+                ],
+                "admissionFacts": [
+                    {
+                        "admissionMode": "major_group",
+                        "admissionUnitId": "unit-1",
+                        "schoolId": "school-1",
+                        "groupCode": "101",
+                        "unitAdmissionRate": 55,
+                        "riskTier": "稳",
+                    }
+                ],
+            },
+            current_snapshot=_group_snapshot(),
+            evidence_ledger={
+                "ev-unit-1": {
+                    "evidenceId": "ev-unit-1",
+                    "sessionId": "session-1",
+                    "stateVersion": 42,
+                    "dataVersion": "v17",
+                    "admissionMode": "major_group",
+                    "admissionUnitId": "unit-1",
+                }
+            },
+            artifacts={},
+        )
+
+
 def test_validator_rejects_admission_fact_without_matching_evidence() -> None:
     with pytest.raises(OutputContractError, match="admission_evidence_missing"):
         validate_turn_output(

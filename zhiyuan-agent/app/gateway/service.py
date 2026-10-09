@@ -160,6 +160,11 @@ TURN_OUTPUT_SCHEMA: dict[str, Any] = {
                     "schoolName": {"type": ["string", "null"]},
                     "majorId": {"type": ["string", "null"]},
                     "majorName": {"type": ["string", "null"]},
+                    # `groupCode` 允许 `null` 且**就该是 null**：数据源不返回
+                    # 专业组代码（候选行没有这一列、Java `groupCode` 从未被赋值）。
+                    # 契约侧 2026-10-09 已把"major_group 必须带组代码"拿掉，
+                    # schema 这里保持 null 合法即可；模型**不要**为了填满字段
+                    # 去编一个组代码（指令侧同口径）。
                     "groupCode": {"type": ["string", "null"]},
                     "majorItems": {
                         "type": "array",
