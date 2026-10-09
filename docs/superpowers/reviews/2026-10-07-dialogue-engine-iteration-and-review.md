@@ -75,6 +75,7 @@ pong 契约完好（ping 不刷新自己）；时间线合并不变量成立；t
 | H2 写路径 CAS | 18290（h2build jar，pid 11888） | 959 单测；D1 8/8；e2e 6/6×2；并发压测；**用户实测 applied → 80** |
 | 回滚镜像重建 | docker `zhiyuan-web:prod-3.1.1-hotfix-mobile` = `6637123e69a2` | 冒烟 login 200 |
 | 10-08 晚批：契约枚举 `906d5dd` / 前端卡 `f63378d` / 打字确认执行器 `ed471d3` | 18291 + 3201(dev 直读) | 单测 2142 绿（4 既有红已 pristine 复现）；18291 pid 27837 health 200；**用户真栈重试待验** |
+| 10-09：84009 演示口径兜底 `76c8662` | 18290（新 jar `/tmp/zyfallbackbuild`，pid 28482） | 新单测 4/4；6 既有红洁净树复现无关；health 200；**待用户实测** |
 
 ### 修复队列（优先级）
 1. **代理叙述与预览矛盾**（助手说"从零补满" vs 预览卡"45→80"，后者对）——代理侧口径修。
@@ -87,10 +88,11 @@ pong 契约完好（ping 不刷新自己）；时间线合并不变量成立；t
 8. **契约下一轮收紧**（`906d5dd` 只收域/键/kind/ordering/scope）：`values` 为空、include `min_count=0`、priority 规则多于 1 条、`ProposalScope.scopeType`——现仍属"Java 拒→blocked 卡"一族。
 9. `skills/codex/developer_instructions.md` 只在 thread/start 注入、resume 不重发 → 旧线程缺"未拿到 result 不得称已提交"护栏（`ed471d3` 新增）；考虑 resume 时补发。
 10. 前端既存不自洽（未动，一行可翻）：`isSettledProposalStatus('active')=true` 会把"待处理"恢复卡在新回合后收起——与 MessageList 注释相冲，待产品决策。
+11. **新会话「更新成绩」84009（VOLUNTEER 取数策略缺失，数据侧老账）**（2026-10-09 复现，会话 10041980）：成绩卡 `scoreUpdateRequest` 无 prepareType → `fillProvinceDefaultsIfMissing` 按省策略**实时推导** → 上游已切 2027 新季 = VOLUNTEER → 演示会员 900002 只有 PREDICT 取数策略 → 上游 84009。**已临时绕过**：`76c8662` 加 flag `demo.prepare-type-fallback`（**默认空=关**；仅 18290 本地启动参数 `--demo.prepare-type-fallback=PREDICT` 注入；兜底点仅 `fillProvinceDefaultsIfMissing`，顺序=显式/存量→兜底→省策略）。**边界**：建会话默认与两处 `toProgramQuery` null 默认未接；**存量已写死 VOLUNTEER 的会话仍 84009**。**真解（后续慢慢修）**：①数据侧给合成会员补 VOLUNTEER 取数策略（数据口）；②切季后的模式/年份口径统一（关联 §六② 用户裁决）。
 
 ### 环境守卫与回退
 - `oom_score_adj`：18290/18090 = -500；18291/18091 = -400（内存再紧时优先牺牲测试进程）。
-- 18290 回退：`bash /tmp/restart-18290-bc1e216.sh`（bc1e216 jar 在 /tmp/f09fix）。
+- 18290 回退：`bash /tmp/restart-18290-bc1e216.sh`（bc1e216 jar 在 /tmp/f09fix）；**回退"无兜底"行为**：`bash /tmp/restart-18290-6e7.sh`；10-09 起 18290 运行 jar 在 `/tmp/zyfallbackbuild`，后续重启用 `/tmp/restart-18290-fallback.sh`。
 - 演示入口：`http://10.218.4.10:3201/login`（13000000002，任意码）→ `…/sessionDetailV2?chatSessionId=…&userId=900002&page=1&pageSize=10`。
 - F10 沙箱重建：`/tmp/restart-18294-r4.sh`（现停机）。
 
