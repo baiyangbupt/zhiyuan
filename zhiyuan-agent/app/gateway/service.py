@@ -505,6 +505,28 @@ def _session_key(tenant_id: str | int, session_id: str | int) -> SessionKey:
 
 _REPAIR_OUTPUT_EXCERPT_LIMIT = 1500
 
+# 引用失效提案的动作被拒（`proposal_reference_mismatch`）时的修复提示。
+#
+# 2026-10-09 真事故（会话 10041980，18:46 与 19:05 连续两轮同族失败）：模型在文本
+# 回合里对一张**已失效的提案卡**反复发 confirm → 网关校验判
+# `proposal_reference_mismatch` → 整轮硬失败（`recoverable=False`）→ 模型**收不到
+# 任何纠错反馈** → 下一次用户消息它继续确认同一张死卡，用户被卡死。只丢一个错误码
+# 不够——要把"这张卡已经不是当前有效的了、该往哪走"讲给它，修复回合才有可执行的
+# 修改目标（与 schema 修复同一条道理）。
+_PROPOSAL_REFERENCE_REPAIR_HINT = (
+    "你引用的提案不是当前有效提案（可能已被替换或失效）。不要再对这个引用发起确认/取消，"
+    "也不要重复同一个动作。请三选一：①仍要确认，就改用本轮注入的内部状态里当前有效的提案"
+    "引用与版本；②重新发起提案（proposalRequest / create_proposal）；③直接向用户如实说明"
+    "这张提案已失效、需要重新发起，不要声称已提交。"
+)
+
+# 先给一次修复回合、修不好再维持硬失败的校验码——"模型对提案状态的声明与网关状态
+# 不符"这一族（引用对不上、版本过旧）。其余校验失败（证据/产物/模式/一致性…）保持
+# 原样：直接硬失败，不修（它们要么不可修复，要么不属于本回路的处置范围）。
+_REPAIRABLE_CONTRACT_CODES = frozenset(
+    {"proposal_reference_mismatch", "proposal_version_mismatch"}
+)
+
 
 def _agent_message_text(item: Any) -> str | None:
     """从一个事件 item 里取 agent 最终文本；不是 agentMessage 就返回 None。"""
@@ -1722,14 +1744,25 @@ class GatewayService:
                     )
                     return TurnOutput.model_validate(repaired["output"]), True
 
-            def _validate_round(
-                output_value: TurnOutput,
+            async def _validate_round(
+                output_value: TurnOutput | Mapping[str, Any],
                 evidence_ledger: list[dict[str, Any]],
                 artifacts: dict[str, Any],
-            ) -> None:
-                try:
-                    validate_turn_output(
-                        turn_output=output_value,
+                turn_payload: Any,
+            ) -> tuple[TurnOutput, bool]:
+                """校验本回合输出；"引用了失效提案"先给模型一次纠错回合再定生死。
+
+                2026-10-09 真事故（会话 10041980）：模型对一张早已失效的提案卡反复发
+                confirm → `proposal_reference_mismatch` → 整轮 `recoverable=False` 硬
+                失败 → 模型**收不到任何纠错反馈** → 下一轮继续确认同一张死卡，用户
+                被卡死。这类失败与 schema 失败一样是**可修复**的：把冲突讲给模型
+                （`_PROPOSAL_REFERENCE_REPAIR_HINT`），让它改用当前有效引用 / 重新提案
+                / 如实说明。修复回合再被拒（或压根拿不到结构化输出）时**维持现状硬
+                失败**，错误码不变（前端按码查兜底文案 ✓），也不许再修第二次。
+                """
+                def _check(value: TurnOutput | Mapping[str, Any]) -> TurnOutput:
+                    return validate_turn_output(
+                        turn_output=value,
                         current_snapshot=snapshot,
                         evidence_ledger=evidence_ledger,
                         artifacts=artifacts,
@@ -1738,6 +1771,9 @@ class GatewayService:
                         allow_proposal=True,
                         strict_scope=True,
                     )
+
+                try:
+                    return _check(output_value), False
                 except OutputContractError as exc:
                     # 拒收时把**账本里有什么**一起打出来：只报一个
                     # `evidence_not_found: ev_xxx` 的话，"模型引用了不存在的证据"
@@ -1750,11 +1786,42 @@ class GatewayService:
                         sorted(evidence_ledger.keys())[:8],
                         [ref.evidence_id for ref in getattr(output_value, "evidence_refs", [])],
                     )
-                    raise
+                    if exc.code not in _REPAIRABLE_CONTRACT_CODES:
+                        raise
+                    # 复用 schema 修复那条回路（`_repair_turn_output`）：一次、不循环。
+                    logger.warning(
+                        "turn output rejected (%s); attempting one repair turn for a stale proposal reference",
+                        exc,
+                    )
+                    fresh = await self._repair_turn_output(
+                        thread_id,
+                        f"{exc}\n{_PROPOSAL_REFERENCE_REPAIR_HINT}",
+                        raw_output=_last_agent_text(turn_payload),
+                    )
+                    if fresh is None:
+                        raise
+                    # 与 `_extract_output` 的修复支同形：修复回合的输出与事件替进本回合。
+                    turn_payload.update(
+                        {
+                            "output": fresh["output"],
+                            "events": [
+                                *(turn_payload.get("events") or []),
+                                *(fresh.get("events") or []),
+                            ],
+                        }
+                    )
+                    try:
+                        return _check(fresh["output"]), True
+                    except OutputContractError as second:
+                        # 修复无效：按**原错误码**硬失败（与修复前逐字一致；前端兜底
+                        # 文案按码查表，码不许换）。
+                        logger.warning("repair turn output rejected too: %s", second)
+                        raise exc
 
             output, output_repaired = await _extract_output(turn)
             evidence_ledger, artifacts = self._evidence_inputs(turn, snapshot)
-            _validate_round(output, evidence_ledger, artifacts)
+            output, round_repaired = await _validate_round(output, evidence_ledger, artifacts, turn)
+            output_repaired = output_repaired or round_repaired
             # P1c-2：核验在**事件展开之前**——整轮作废时用户侧不许留下任何东西
             #（连已经"发生过"的进度事件也不行，那会让人以为这一步跑通了）。
             decision = await self._settle_evidence(
@@ -1783,7 +1850,10 @@ class GatewayService:
                 # 账本要**重建**：模型第二轮引用的是新证据，拿首轮那份去校验
                 # 会把新证据判成 `evidence_not_found`。
                 evidence_ledger, artifacts = self._evidence_inputs(turn, snapshot)
-                _validate_round(output, evidence_ledger, artifacts)
+                output, round_repaired = await _validate_round(
+                    output, evidence_ledger, artifacts, turn
+                )
+                output_repaired = output_repaired or round_repaired
                 decision = await self._settle_evidence(
                     output,
                     tenant_id=tenant_id,
