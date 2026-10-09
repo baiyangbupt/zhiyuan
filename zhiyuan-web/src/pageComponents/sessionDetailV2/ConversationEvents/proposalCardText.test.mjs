@@ -106,6 +106,43 @@ test('码没有映射、message 是英文内部消息 → 只用通用中文兜�
   assert.doesNotMatch(text, /conflict|current/);
 });
 
+test('复合码（裸码: 英文明细）先取冒号前的裸码再查表——整轮失败不再掉兜底（会话 10041980）', () => {
+  // `recoverable.error`（整轮失败）的码是复合串（裸码 + 冒号 + 英文明细 ✗），
+  // 精确匹配落空 → 以前用户只看到通用兜底 ✗；锚点仍是完整原串（排障要用 ✓）。
+  const rawCode = 'proposal_reference_mismatch: proposal action does not match active proposal';
+  assert.equal(
+    proposalFailureText({ code: rawCode, message: '当前对话引擎暂时不可用，请稍后重试。' }),
+    `[${rawCode}] 这张确认已经失效（会话里已有更新的预览），请用最新预览重新确认。`,
+  );
+  // 边界：冒号带空白也认；裸码全大写走原有"另试全小写"查法 ✓。
+  assert.match(proposalFailureText({ code: 'proposal_version_mismatch : detail' }), /方案在你确认前发生了变化/);
+  assert.match(proposalFailureText({ code: 'Proposal_Reference_Mismatch: detail' }), /这张确认已经失效/);
+});
+
+test('裸码路径逐字不变：归一化只对精确匹配落空的原串生效', () => {
+  assert.equal(
+    proposalFailureText({ code: 'proposal_reference_mismatch', message: 'internal english message' }),
+    '[proposal_reference_mismatch] 这张确认已经失效（会话里已有更新的预览），请用最新预览重新确认。',
+  );
+  // 裸码查表落空时的老优先级不变：中文 message 转述 > 通用兜底 ✓。
+  assert.equal(
+    proposalFailureText({ code: '110', message: '请填写各科成绩后再创建会话' }),
+    '[110] 请填写各科成绩后再创建会话',
+  );
+});
+
+test('未知复合码仍然走 message / 通用兜底（不许把冒号后半截当码查）', () => {
+  const rawCode = '40904: planning version conflict: current=1 expected=0';
+  assert.equal(
+    proposalFailureText({ code: rawCode, message: 'planning version conflict: current=1 expected=0' }),
+    `[${rawCode}] 这次确认没有生效，请重试或重新生成预览后再确认。`,
+  );
+  assert.equal(
+    proposalFailureText({ code: rawCode, message: '版本不一致' }),
+    `[${rawCode}] 版本不一致`,
+  );
+});
+
 test('没有 code、没有 message → 通用中文兜底（失败不许空着）', () => {
   assert.equal(proposalFailureText({}), '这次确认没有生效，请重试或重新生成预览后再确认。');
   assert.equal(proposalFailureText(), '这次确认没有生效，请重试或重新生成预览后再确认。');

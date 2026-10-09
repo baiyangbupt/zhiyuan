@@ -73,6 +73,28 @@ const FAILURE_TEXT_BY_CODE = {
 
 const DEFAULT_FAILURE_TEXT = '这次确认没有生效，请重试或重新生成预览后再确认。';
 
+/**
+ * 失败码的查表（**带归一化** ✓✓，2026-10-09）：同一条失败，两种码形都会到前端 ✓——
+ * `conversationAction.result` 那条是**裸码** ✓（`proposal_reference_mismatch` ✓），
+ * 而 `recoverable.error`（整轮失败）那条是**复合串** ✗：裸码 + 冒号 + 英文明细 ✓
+ * （实测 `proposal_reference_mismatch: proposal action does not match active proposal` ✗，
+ * 会话 10041980 ✓）。复合串精确匹配落空 ✗ → 用户只拿到通用兜底 ✗（真正该说的
+ * "这张确认已经失效"被丢掉 ✓）。
+ *
+ * 查表顺序：原串（保持现状优先级 ✓）→ 原串小写 → **冒号前的裸码** → 裸码小写 ✓。
+ * 裸码本身没有冒号 ✓ → 前两条查法就是它的 ✓ → **裸码路径行为逐字不变** ✓。
+ */
+const failureTextByCode = (rawCode) => {
+  const bareCode = rawCode.split(':')[0].trim();
+  return (
+    FAILURE_TEXT_BY_CODE[rawCode] ||
+    FAILURE_TEXT_BY_CODE[rawCode.toLowerCase()] ||
+    FAILURE_TEXT_BY_CODE[bareCode] ||
+    FAILURE_TEXT_BY_CODE[bareCode.toLowerCase()] ||
+    ''
+  );
+};
+
 // 中文兜底判据：`message` 只有在**本身就是中文**（Java 许多校验文案是中文 ✓，
 // 如"请填写各科成绩后再创建会话" ✓）时才值得转述 ✓；英文内部消息（含版本号那种 ✗）
 // 一律不直出 ✓。
@@ -80,7 +102,8 @@ const CJK_CHARACTER = /[㐀-鿿]/;
 
 /**
  * 失败卡的一句话：
- *   ① 先按 `code` 查中文映射 ✓；
+ *   ① 先按 `code` 查中文映射 ✓（复合码 `裸码: 明细` 会先取裸码再查 ✓，见
+ *      `failureTextByCode` ✓）；
  *   ② 查不到、但服务端 `message` 本身是中文 ✓ → 用它（那是给用户看的话 ✓）；
  *   ③ 都不是 → 通用中文兜底 ✓（**绝不**把英文内部消息铺出来 ✗）。
  *
@@ -92,7 +115,7 @@ const CJK_CHARACTER = /[㐀-鿿]/;
 export function proposalFailureText({ code, message } = {}) {
   const rawCode = String(code ?? '').trim();
   const rawMessage = String(message ?? '').trim();
-  const mapped = FAILURE_TEXT_BY_CODE[rawCode] || FAILURE_TEXT_BY_CODE[rawCode.toLowerCase()] || '';
+  const mapped = failureTextByCode(rawCode);
   const text = mapped || (CJK_CHARACTER.test(rawMessage) ? rawMessage : DEFAULT_FAILURE_TEXT);
   return rawCode ? `[${rawCode}] ${text}` : text;
 }
