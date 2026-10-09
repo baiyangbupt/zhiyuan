@@ -93,6 +93,7 @@ pong 契约完好（ping 不刷新自己）；时间线合并不变量成立；t
 11. **新会话「更新成绩」84009（VOLUNTEER 取数策略缺失，数据侧老账）**（2026-10-09 复现，会话 10041980）：成绩卡 `scoreUpdateRequest` 无 prepareType → `fillProvinceDefaultsIfMissing` 按省策略**实时推导** → 上游已切 2027 新季 = VOLUNTEER → 演示会员 900002 只有 PREDICT 取数策略 → 上游 84009。**已临时绕过**：`76c8662` 加 flag `demo.prepare-type-fallback`（**默认空=关**；仅 18290 本地启动参数 `--demo.prepare-type-fallback=PREDICT` 注入；兜底点仅 `fillProvinceDefaultsIfMissing`，顺序=显式/存量→兜底→省策略）。**边界**：建会话默认与两处 `toProgramQuery` null 默认未接；**存量已写死 VOLUNTEER 的会话仍 84009**。**真解（后续慢慢修）**：①数据侧给合成会员补 VOLUNTEER 取数策略（数据口）；②切季后的模式/年份口径统一（关联 §六② 用户裁决）。
 12. **失败文案/事件码统一**（2026-10-09）：`proposal_reference_mismatch` 文案写死"已有更新的预览"，在"无新预览"场景不贴切（`9de0131` 只做了码归一）；网关事件 code 有两种形态（turn 级 `裸码: 明细` 复合串、actionResult 级裸码）——建议生产者统一（裸码+明细分置），前端归一保留作防御。
 13. **major-recommend 载荷级原始数值**（2026-10-09 标记，未改）：Java `ChatController.java:213-217` 的 `POST /chat/{tenantId}/major-recommend` 直接返回含原始 `score`/`dimensions` 的 `MajorRecommendItem`；**zhiyuan-web 当前无调用**——未来若接入前端展示，需先做"数值→人话"映射（对齐 10-09 口径，与 `ebd049f` 的指令层改造配套）。
+14. **admissionFacts.group_code 契约与数据源缺口**（2026-10-09 实测，会话 10041981 19:51 轮）：模型输出的 8 条 `admissionFacts` 均缺 `group_code`（专业组代码）→ 校验拒 → **修复回合救回但耗时 ~5 分钟**；助手自述"专业组代码这一层仍未随数据返回"。即**契约必填 vs 数据源不提供**的系统性错配——院校事实类输出每轮都可能先撞一次再修复。修法（二选一，倾向①）：①`group_code` 改可空/占位（保留"以省考试院公布为准"口径）；②数据侧补字段（数据批次跟进）。
 
 ### 环境守卫与回退
 - `oom_score_adj`：18290/18090 = -500；18291/18091 = -400（内存再紧时优先牺牲测试进程）。
