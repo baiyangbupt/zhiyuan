@@ -442,7 +442,16 @@ async def test_the_action_result_keeps_its_own_turn_when_another_message_rebinds
 
 
 class _TurnActionCodex:
-    """输出一个带 `conversationAction` 的文本回合（打字"确认"时模型的真实形状 ✓）。"""
+    """输出一个带 `conversationAction` 的文本回合（打字"确认"时模型的真实形状 ✓）。
+
+    **只第一轮带动作** ✓（2026-10-09 起，确认生效后还有一轮**续接回合** ✓，见
+    `server.py::_maybe_continue_after_action` ✓）：续接的输入已经明说"不要再确认
+    同一张" ✓，模型照做的形状就是一条普通文本回执 ✓——替身按真实形状分轮返回 ✓，
+    本用例盯的"执行恰好一次、Java 恰好被调 3 次"才不会被替身的惰性污染 ✓。
+    """
+
+    def __init__(self) -> None:
+        self.turns: list[list] = []
 
     async def create_thread(self, **kwargs):
         return {"thread": {"id": "thr-ws-action"}}
@@ -456,6 +465,8 @@ class _TurnActionCodex:
     async def start_turn_and_collect(self, thread_id, input_items, output_schema=None, **kwargs):
         from dataclasses import dataclass, field
 
+        self.turns.append(input_items)
+
         @dataclass
         class Collected:
             status: str
@@ -464,20 +475,19 @@ class _TurnActionCodex:
             turn_id: str = "turn-1"
             payload: dict = field(default_factory=dict)
 
-        return Collected(
-            status="completed",
-            output={
-                "responseType": "text",
-                "message": "好的，我这就去确认。",
-                "conversationAction": {
-                    "actionType": "confirm_proposal",
-                    "proposalRef": "pending-1",
-                    "expectedSourceVersion": 5,
-                    "intent": "explicit",
-                },
+        output = {
+            "responseType": "text",
+            "message": "好的，我这就去确认。",
+            "conversationAction": {
+                "actionType": "confirm_proposal",
+                "proposalRef": "pending-1",
+                "expectedSourceVersion": 5,
+                "intent": "explicit",
             },
-            events=[],
-        )
+        }
+        if len(self.turns) > 1:
+            output = {"responseType": "text", "message": "已生效，我接着往下做。"}
+        return Collected(status="completed", output=output, events=[])
 
 
 class _ActionSnapshotLoader:
@@ -561,6 +571,15 @@ async def test_a_model_confirm_puts_a_result_event_on_the_stream(monkeypatch) ->
     await _wait_for(
         lambda: ws.frames("conversationAction.result"), what="连接收到动作结果"
     )
+    # **打字确认同样续接** ✓✓（2026-10-09）：动作终局之后还有一轮 `cont-…` 新回合 ✓，
+    # 助手消息落在**新回合**名下 ✓（结果事件仍属于 `turn-type-confirm` ✓，见下面 ✓）。
+    await _wait_for(
+        lambda: any(
+            event.turn_id.startswith("cont-") and event.type == "turn.completed"
+            for event in store.events
+        ),
+        what="续接回合收尾",
+    )
     await asyncio.sleep(0.05)
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
@@ -572,8 +591,16 @@ async def test_a_model_confirm_puts_a_result_event_on_the_stream(monkeypatch) ->
     frame = ws.frames("conversationAction.result")[0]
     assert frame["payload"]["actionStatus"] == "applied"
     assert frame["payload"]["proposalRef"] == "pending-1"
-    # Java 侧真的被调到了 ✓（修前这里是 0 次——动作被静默丢弃 ✗）。
+    # Java 侧真的被调到了 ✓（修前这里是 0 次——动作被静默丢弃 ✗；续接那一轮是
+    # **模型**回合、不再碰 Java ✓，所以次数不变 ✓）。
     assert len(resolve.calls) == 2 and len(execute.calls) == 1
+    continuation = [event for event in store.events if event.turn_id.startswith("cont-")]
+    assert [event.type for event in continuation] == [
+        "turn.started",
+        "assistant.completed",
+        "turn.completed",
+    ]
+    assert continuation[1].payload["message"] == "已生效，我接着往下做。"
 
 
 class _JavaRecorder:
@@ -584,3 +611,307 @@ class _JavaRecorder:
     async def __call__(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         return self.responses.pop(0) if self.responses else {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 确认**生效之后**的自动续接（2026-10-09 用户实测：会话 10041981 ✓）
+#
+# 用户实测现场 ✓：助手上一条承诺了"确认成绩后我先按方向给你几个院校专业组参考…" ✓，
+# 用户点卡确认、卡翻"已生效" ✓，然后——只有一句写死的"操作已处理。" ✗，话头断了 ✓。
+# 这里盯的就是点卡路径的续接：applied 之后自动起一轮**新回合** ✓，把承诺的下一步接上 ✓。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _ContinuationCodex:
+    """点卡路径的替身：确认执行之后只该被叫**一次**——就是续接那一轮 ✓（普通文本 ✓）。"""
+
+    def __init__(self, message: str = "确认好了。我接着按方向给你几个院校专业组参考。") -> None:
+        self.message = message
+        self.turns: list[list] = []
+
+    async def create_thread(self, **kwargs):
+        return {"thread": {"id": "thr-continuation"}}
+
+    async def resume_thread(self, thread_id):
+        return {"thread": {"id": thread_id}}
+
+    async def inject_items(self, thread_id, items):
+        return {}
+
+    async def start_turn_and_collect(self, thread_id, input_items, output_schema=None, **kwargs):
+        from dataclasses import dataclass, field
+
+        self.turns.append(input_items)
+
+        @dataclass
+        class Collected:
+            status: str
+            output: dict
+            events: list
+            turn_id: str = "turn-1"
+            payload: dict = field(default_factory=dict)
+
+        return Collected(
+            status="completed",
+            output={"responseType": "text", "message": self.message},
+            events=[],
+        )
+
+
+class _RecordingStore:
+    """记下两个方向的消息（transcript 合同）：续接**不许**在用户那一侧落任何东西 ✓。"""
+
+    def __init__(self) -> None:
+        self.user_messages: list[str] = []
+        self.agent_messages: list[str] = []
+
+    async def save_user_message(self, chat_session_id: str, content: str) -> int:
+        self.user_messages.append(content)
+        return 1
+
+    async def save_agent_message(self, chat_session_id: str, content: str, ws_type: str = "reply") -> int:
+        self.agent_messages.append(content)
+        return 2
+
+
+@pytest.mark.asyncio
+async def test_a_clicked_confirm_continues_the_thread_on_a_fresh_turn(monkeypatch) -> None:
+    """点卡确认 applied → 自动续接**一轮新回合**（新 turnId）把话头接上 ✓✓。
+
+    修前：`_run_action_work` 收尾只发 `reply="操作已处理。"` ✗（server.py 写死两处之一 ✓）。
+    修后：终局之后 `_maybe_continue_after_action` 起一轮 `cont-…` 回合 ✓：
+    `turn.started` → `assistant.completed`（续接文本）→ `turn.completed` ✓，
+    而且：不伪造用户消息 ✓、助手消息落库的正是续接文本 ✓、续接恰好一轮 ✓、Java 恰好一趟 ✓。
+    """
+    from app.gateway import conversation_actions
+    from app.gateway.service import GatewayService
+    from app.harness.binding import ThreadBinding
+
+    resolve = _JavaRecorder([
+        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "completed"},
+    ])
+    execute = _JavaRecorder([
+        {"code": 0, "status": "applied", "data": {"stateVersion": 7}},
+    ])
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolve)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", execute)
+
+    session_id = "900049"
+    store = _MemoryEventStore()
+    runtime = SessionRuntime()
+    codex = _ContinuationCodex()
+    message_store = _RecordingStore()
+    gateway = GatewayService(
+        mode="codex_write",
+        codex=codex,
+        legacy=None,
+        message_store=message_store,
+        binding_loader=lambda **kwargs: ThreadBinding(
+            thread_id="thr-continuation",
+            tenant_id="1",
+            session_id=session_id,
+            user_id="u1",
+            allowed_capabilities=frozenset({"catalog_read", "admission_read"}),
+        ),
+        snapshot_loader=_ActionSnapshotLoader(),
+    )
+    ws = _Socket(store, runtime, session_id)
+    confirm = _confirm(session_id, "pending-1")
+    # 点卡帧照前端合同带**当前卡片版本** ✓（`_ActionSnapshotLoader` 里 sourceVersion=5 ✓）：
+    # 版本对不上会被 CAS 判 `stale_state` ✓——那是另一条用例的事，这里要的是 applied ✓。
+    confirm["conversationAction"]["expectedSourceVersion"] = 5
+    ws.push(confirm)
+
+    task = asyncio.create_task(_handle_gateway_ws_loop(ws, gateway))
+    await _wait_for(
+        lambda: any(
+            event.turn_id.startswith("cont-") and event.type == "turn.completed"
+            for event in store.events
+        ),
+        what="续接回合收尾",
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    # ① 动作结果这一格不许回退：applied 照旧进流、记在**确认那一轮**名下 ✓。
+    results = store.of_type("conversationAction.result")
+    assert len(results) == 1 and results[0].payload["actionStatus"] == "applied"
+    assert results[0].turn_id == "turn-confirm"
+
+    # ② 续接是一个**新回合**：started → assistant.completed（续接文本）→ completed ✓。
+    continuation = [event for event in store.events if event.turn_id.startswith("cont-")]
+    assert [event.type for event in continuation] == [
+        "turn.started",
+        "assistant.completed",
+        "turn.completed",
+    ]
+    assert continuation[1].payload["message"] == "确认好了。我接着按方向给你几个院校专业组参考。"
+    # 三条都要**到得了连接**（用户看到的就是它 ✓）——别只进流不上屏 ✓。
+    for frame_type in ("turn.started", "assistant.completed", "turn.completed"):
+        assert any(
+            str(frame.get("turnId") or "").startswith("cont-")
+            for frame in ws.frames(frame_type)
+        ), f"{frame_type} 没到连接上"
+    # 写死的"操作已处理。"仍属于确认那一轮 ✓（续接是**额外**一轮，不是替换 ✓）。
+    assert any(
+        frame.get("turnId") == "turn-confirm" for frame in ws.frames("assistant.completed")
+    )
+
+    # ③ **不伪造用户消息** ✓：用户那一侧一个字都没有；助手那一侧落的正是续接文本 ✓。
+    assert message_store.user_messages == []
+    assert message_store.agent_messages == ["确认好了。我接着按方向给你几个院校专业组参考。"]
+
+    # ④ 续接恰好一轮（替身只被叫一次 ✓，喂进去的确实是续接指令 ✓）、Java 恰好一趟 ✓。
+    assert len(codex.turns) == 1
+    assert "已经生效" in codex.turns[0][-1]["text"]
+    assert len(resolve.calls) == 2 and len(execute.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stale_confirm_neither_executes_nor_continues(monkeypatch) -> None:
+    """卡版本对不上（`stale_state`）→ **不续接** ✓✓：维持现状——用户要做的是刷新看卡 ✓，
+    不是被拉去下一步 ✗（续接的触发条件只有 `applied` 一档 ✓，见 `continue_after_action` ✓）。
+    """
+    from app.gateway import conversation_actions
+    from app.gateway.service import GatewayService
+    from app.harness.binding import ThreadBinding
+
+    resolve = _JavaRecorder([])
+    execute = _JavaRecorder([])
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolve)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", execute)
+
+    session_id = "900049"
+    store = _MemoryEventStore()
+    runtime = SessionRuntime()
+    codex = _ContinuationCodex()
+    message_store = _RecordingStore()
+    gateway = GatewayService(
+        mode="codex_write",
+        codex=codex,
+        legacy=None,
+        message_store=message_store,
+        binding_loader=lambda **kwargs: ThreadBinding(
+            thread_id="thr-continuation",
+            tenant_id="1",
+            session_id=session_id,
+            user_id="u1",
+            allowed_capabilities=frozenset({"catalog_read", "admission_read"}),
+        ),
+        snapshot_loader=_ActionSnapshotLoader(),
+    )
+    ws = _Socket(store, runtime, session_id)
+    confirm = _confirm(session_id, "pending-1")
+    # 前端合同里的版本是 0 ✓、卡片实际是 5 ✓——这正是"用户拿着旧页面点旧卡"的形状 ✓。
+    confirm["conversationAction"]["expectedSourceVersion"] = 0
+    ws.push(confirm)
+
+    task = asyncio.create_task(_handle_gateway_ws_loop(ws, gateway))
+    await _wait_for(
+        lambda: store.of_type("conversationAction.result"), what="动作结果入流"
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    results = store.of_type("conversationAction.result")
+    assert len(results) == 1
+    assert results[0].payload["actionStatus"] == "stale_state"
+    # 没有续接：没有新回合、没有模型回合、没有助手消息、也没有伪造的用户消息 ✓。
+    assert [event for event in store.events if event.turn_id.startswith("cont-")] == []
+    assert codex.turns == []
+    assert message_store.agent_messages == []
+    assert message_store.user_messages == []
+    assert execute.calls == []
+
+
+class _FailingContinuationCodex(_ContinuationCodex):
+    """续接那一轮就崩的替身（进程/模型侧故障的形状 ✓）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    async def start_turn_and_collect(self, thread_id, input_items, output_schema=None, **kwargs):
+        self.attempts += 1
+        self.turns.append(input_items)
+        raise RuntimeError("codex app server exited")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_continuation_is_told_once_and_never_loops(monkeypatch) -> None:
+    """续接回合自己失败 → **只有一轮续接**：一条不吓人的说明（确认**已经生效** ✓），
+    不重试、不循环 ✓✓。用户回一句"继续"就是一个普通用户回合 ✓（此处不需要它 ✓）。
+    """
+    from app.gateway import conversation_actions
+    from app.gateway.service import GatewayService
+    from app.harness.binding import ThreadBinding
+
+    resolve = _JavaRecorder([
+        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "completed"},
+    ])
+    execute = _JavaRecorder([
+        {"code": 0, "status": "applied", "data": {"stateVersion": 7}},
+    ])
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolve)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", execute)
+
+    session_id = "900049"
+    store = _MemoryEventStore()
+    runtime = SessionRuntime()
+    codex = _FailingContinuationCodex()
+    message_store = _RecordingStore()
+    gateway = GatewayService(
+        mode="codex_write",
+        codex=codex,
+        legacy=None,
+        message_store=message_store,
+        binding_loader=lambda **kwargs: ThreadBinding(
+            thread_id="thr-continuation",
+            tenant_id="1",
+            session_id=session_id,
+            user_id="u1",
+            allowed_capabilities=frozenset({"catalog_read", "admission_read"}),
+        ),
+        snapshot_loader=_ActionSnapshotLoader(),
+    )
+    ws = _Socket(store, runtime, session_id)
+    confirm = _confirm(session_id, "pending-1")
+    confirm["conversationAction"]["expectedSourceVersion"] = 5
+    ws.push(confirm)
+
+    task = asyncio.create_task(_handle_gateway_ws_loop(ws, gateway))
+    await _wait_for(
+        lambda: any(
+            event.turn_id.startswith("cont-") and event.type == "turn.completed"
+            for event in store.events
+        ),
+        what="续接回合收尾（失败也要收尾 ✓）",
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    # 动作结果照旧 applied ✓。
+    results = store.of_type("conversationAction.result")
+    assert len(results) == 1 and results[0].payload["actionStatus"] == "applied"
+
+    # 续接那一轮：started → recoverable.error（措辞说明"确认已生效、点继续就接着做" ✓）→ completed ✓。
+    continuation = [event for event in store.events if event.turn_id.startswith("cont-")]
+    assert [event.type for event in continuation] == [
+        "turn.started",
+        "recoverable.error",
+        "turn.completed",
+    ]
+    message = continuation[1].payload["message"]
+    assert "已经生效" in message and "继续" in message
+    # **不循环**：续接只起了一轮、模型只被叫了一次、没有助手消息落库 ✓。
+    assert sum(1 for event in continuation if event.type == "turn.started") == 1
+    assert codex.attempts == 1
+    assert message_store.agent_messages == []
+    assert message_store.user_messages == []
+    # Java 执行恰好一趟：失败的是"自动接上"，不是确认本身 ✓。
+    assert len(resolve.calls) == 2 and len(execute.calls) == 1

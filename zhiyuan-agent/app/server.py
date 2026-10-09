@@ -744,6 +744,14 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
         #（F10 的刷新 ✓），发到"当初那条连接"上就是永远收不到 ✗（见 `_session_emitter` ✓）。
         emit = _session_emitter(runtime, channel, key, turn_id=turn_id)
 
+        def _make_emit(new_turn_id: str):
+            """续接回合用**新的回合号**（见 `_maybe_continue_after_action` ✓）。
+
+            复用的仍是 `_session_emitter` ✓：续接的事件同样要发给"这个会话当前的连接" ✓、
+            入错断了连接照样进事件流 ✓（F13/F10 那两条不变量与普通回合一模一样 ✓）。
+            """
+            return _session_emitter(runtime, channel, key, turn_id=new_turn_id)
+
         def _current_channel():
             """**收尾那一刻**再问"这个会话现在挂在哪条连接上" ✓（判 V1/老信封用的就是它）✓。"""
             if runtime is None:
@@ -773,14 +781,31 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
                     lambda: _run_action_work(
                         gateway, msg, tenant_id, turn_id, emit, channel,
                         channel_resolver=_current_channel,
+                        make_emit=_make_emit,
                     ),
                     label="conversation_action",
                 )
                 return
             result = await _run_native_turn(gateway, msg, tenant_id, turn_id, emit)
+            # **水位在收尾前取** ✓（不是回合一开始取 ✗）：本回合自己就是一个用户回合 ✓，
+            # 它的 +1 在 `handle_turn` 里已经记过 ✓——此刻取到的值就是"连我在内"的基线 ✓。
+            watermark = _user_turn_watermark(gateway, tenant_id, msg.session_id)
             await _emit_turn_terminal(
                 emit=emit, channel=channel, result=result, session_id=msg.session_id,
                 channel_resolver=_current_channel,
+            )
+            # **打字确认也要续接** ✓✓（`_codex_turn` 里执行的 confirm/cancel 把结果挂在
+            # `actionResult` 上 ✓，与点卡路径同一个键 ✓）——同一个钩子，同一份判定 ✓。
+            await _maybe_continue_after_action(
+                gateway=gateway,
+                tenant_id=tenant_id,
+                session_id=str(msg.session_id),
+                user_id=msg.user_id,
+                result=result,
+                channel=channel,
+                make_emit=_make_emit,
+                channel_resolver=_current_channel,
+                watermark=watermark,
             )
 
         # 编号事件要写会话与回合号：它们是 envelope 的必填字段。
@@ -1049,8 +1074,102 @@ async def _emit_turn_terminal(
     await channel.emit_frame(_native_reply_frame(result, session_id))
 
 
+def _user_turn_watermark(gateway, tenant_id: str, session_id) -> int:
+    """取"这个会话已经开跑过几个用户回合"（续接的防打架基线 ✓）。
+
+    替身网关没有这条能力时返回 0 ✓——与它没有 `continue_after_action` 是同一件事 ✓
+    （那种网关根本不会续接 ✓，基线取多少都不影响 ✓）。
+    """
+    reader = getattr(gateway, "user_turn_watermark", None)
+    if not callable(reader):
+        return 0
+    return int(reader(tenant_id=tenant_id, session_id=str(session_id)))
+
+
+async def _maybe_continue_after_action(
+    *,
+    gateway,
+    tenant_id: str,
+    session_id: str,
+    user_id: str,
+    result: Mapping[str, Any] | None,
+    channel,
+    make_emit,
+    channel_resolver=None,
+    watermark: int,
+) -> None:
+    """确认**生效**之后触发一次续接回合（兑现助手上文的承诺 ✓）——用户实测的观感缺口 ✓。
+
+    缺口（2026-10-09，会话 10041981 ✓）：助手先说"确认成绩后我先按方向给你几个院校
+    专业组参考…" ✓，用户点确认 ✓，回执却只有写死的"操作已处理。" ✗——**话头断了** ✓。
+
+    判定只在这里（一处）✓：`actionResult.actionStatus == "applied"` ✓。
+    confirm/cancel 家族里只有 confirm 能落到这一档 ✗✓（cancel → cancelled、
+    其它动作 → not_executable ✓，见 `conversation_actions.py::_status` ✓）——
+    所以"applied"就是"confirm 家族 + 生效" ✓；failed/conflict/stale_state 一律不续接 ✓
+    （维持现状：失败时用户要处理失败，不该被拉去下一步 ✗）。
+
+    **续接是助手消息，不是用户消息** ✓✓：网关那条路（`continue_after_action` ✓）不落
+    user 消息、不进会话 transcript 的用户那一侧 ✓；事件与落库走普通回合同一条路径 ✓
+    （`assistant.completed` + `_persist_agent` ✓），只是**换一个新的回合号** ✓——
+    写死回执那一轮已经 `turn.completed` 是终态 ✓，续接必须自成一格 ✓，否则终态之后的
+    增量会被 reducer 丢掉 ✓✗（前端 `conversationSession.mjs` 的终态守卫 ✓）。
+
+    失败/替身网关的处置 ✗✓：`continue_after_action` 缺席（旧替身 ✓）或返回 None
+    （跳过 ✓：幂等命中 / 用户已动话头 / 会话忙 ✓）都**什么都不发** ✗——跳过不许留
+    半个回合 ✓（turn.started 由网关在**真跑**那一刻才发 ✓）；
+    真跑起来之后失败 ✓，返回体里带 `error` + 一句可行动的措辞 ✓，终态照常发 ✓
+    （`_emit_turn_terminal` 的失败分支 ✓）——不重试、不循环 ✓（最多一次 ✓）。
+    """
+    continue_after_action = getattr(gateway, "continue_after_action", None)
+    if not callable(continue_after_action) or make_emit is None:
+        return
+    action_result = result.get("actionResult") if isinstance(result, Mapping) else None
+    if not isinstance(action_result, Mapping) or not action_result:
+        return
+    if str(action_result.get("actionStatus") or "") != "applied":
+        return
+    # 续接回合号用**新的** ✓（前缀只为在日志/事件流里一眼认出来源 ✓，语义仍是普通回合号 ✓）。
+    continuation_turn_id = f"cont-{uuid.uuid4()}"
+    emit = make_emit(continuation_turn_id)
+    try:
+        continuation = await continue_after_action(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            user_id=user_id,
+            turn_id=continuation_turn_id,
+            action_result=action_result,
+            user_turn_watermark=watermark,
+            emit=emit,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "action continuation crashed: session_id=%s turn_id=%s", session_id, continuation_turn_id
+        )
+        return
+    if continuation is None:
+        return
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=channel,
+        result=continuation,
+        session_id=session_id,
+        channel_resolver=channel_resolver,
+    )
+
+
 async def _run_action_work(
-    gateway, msg, tenant_id: str, turn_id: str, emit, channel, *, channel_resolver=None
+    gateway,
+    msg,
+    tenant_id: str,
+    turn_id: str,
+    emit,
+    channel,
+    *,
+    channel_resolver=None,
+    make_emit=None,
 ) -> None:
     """确认/取消的收尾：执行 + 终态发射 ✓——**独立于回合** ✓（见 `SessionRuntime.detach_work` ✓）。
 
@@ -1066,11 +1185,26 @@ async def _run_action_work(
     再补一条 failed 会与"已生效"互相矛盾 ✓（那份已出站的结果才是权威终局 ✓）。
     """
     result: dict | None = None
+    # **水位在动手之前取** ✓✓（点卡路径与打字路径的差别就在这一行 ✓）：执行要打
+    # 好几趟 Java（十几秒），这中间用户完全可能又说话了 ✓——以"点击那一刻"为基线 ✓，
+    # 用户一动话头，续接就让路 ✓（见 `GatewayService.continue_after_action` ✓）。
+    watermark = _user_turn_watermark(gateway, tenant_id, msg.session_id)
     try:
         result = await _run_native_turn(gateway, msg, tenant_id, turn_id, emit)
         await _emit_turn_terminal(
             emit=emit, channel=channel, result=result, session_id=msg.session_id,
             channel_resolver=channel_resolver,
+        )
+        await _maybe_continue_after_action(
+            gateway=gateway,
+            tenant_id=tenant_id,
+            session_id=str(msg.session_id),
+            user_id=msg.user_id,
+            result=result,
+            channel=channel,
+            make_emit=make_emit,
+            channel_resolver=channel_resolver,
+            watermark=watermark,
         )
     except asyncio.CancelledError:
         raise

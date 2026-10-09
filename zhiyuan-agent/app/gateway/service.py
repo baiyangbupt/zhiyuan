@@ -489,6 +489,48 @@ def _internal_state_block(text: str) -> str:
     )
 
 
+# 确认生效后的**自动续接**（2026-10-09，用户实测：会话 10041981 里助手先承诺了
+# "确认成绩后我先按方向给你几个院校专业组参考…" ✓，用户点确认后只收到一句写死的
+# "操作已处理。" ✗——话头断了 ✓）。续接回合的输入是一条**内部指令**：它不是用户
+# 消息 ✓（所以不落 user 消息、不进会话 transcript 的用户那一侧 ✓），只是告诉模型
+# "刚才那个确认已经生效，按你上文的承诺接着做"。
+#
+# 与 `INTERNAL_STATE_*` 是**两套标签** ✗✓：那一套说的是"机器状态，转述成业务语言"；
+# 这一条是**给模型的行动指令**（继续干活），语义不同就不共用标签——
+# 混在一起会让"内部状态"这个标记失去它唯一的意思。
+CONTINUATION_OPEN_TAG = "【内部续接指令（系统自动生成，不是用户消息）】"
+CONTINUATION_CLOSE_TAG = "【内部续接指令结束】"
+
+
+def _continuation_nudge(action_result: Mapping[str, Any]) -> str:
+    """续接回合的内部提示：说明"确认已生效"，要求**主动走下一步**。"""
+    ref = str(action_result.get("proposalRef") or "").strip()
+    ref_clause = f"（本条对应 {ref}）" if ref else ""
+    return (
+        f"{CONTINUATION_OPEN_TAG}\n"
+        f"用户刚才的确认**已经生效**，改动已经写入{ref_clause}。"
+        "这一段不是用户发来的消息，是系统在确认生效后自动触发的续接指令。\n"
+        "请接着你上一条回复里对用户的承诺，主动把下一步**做出来**（该查的查、该给的给），"
+        "不要停在「已确认」「已生效」这句话上。\n"
+        "纪律：① 不要重复已经完成或已经说过的内容，也不要再让用户确认同一件事"
+        "（这张已经生效，对同一引用再发确认只会被拒）；"
+        "② 需要用户表态时用**封闭式**提问（给 2-4 个明确选项）；"
+        "③ 如果你上一条回复并没有承诺下一步，就用一两句话说明已生效，"
+        "并把明确的下一步选择摆给用户；"
+        "④ 这段是内部指令：不要原样转述它，也不要输出其中的字段名或内部标识。\n"
+        f"{CONTINUATION_CLOSE_TAG}"
+    )
+
+
+_CONTINUATION_FAILURE_REPLY = (
+    "刚才的确认已经生效。接下来这一步我没能自动接上——"
+    "你回一句「继续」，我就接着往下做。"
+)
+# 续接的幂等台账上限（同一个操作只续一次 ✓）：按到达顺序裁掉最旧的，
+# 台账只是"别重复触发"的短期记忆，不是审计账本。
+_CONTINUATION_LEDGER_MAX = 2048
+
+
 def _maybe_await(value: Any) -> Any:
     return value if inspect.isawaitable(value) else _Immediate(value)
 
@@ -886,6 +928,10 @@ class GatewayService:
         self._turn_cache: dict[tuple[SessionKey, str], dict[str, Any]] = {}
         self._turn_digests: dict[tuple[SessionKey, str], str] = {}
         self._session_locks: dict[SessionKey, asyncio.Lock] = {}
+        # 用户回合水位（`user_turn_watermark` ✓）与续接台账（`continue_after_action` ✓）——
+        # 两样都只为"确认生效后的自动续接"服务（见那里的 docstring ✓）。
+        self._user_turn_seq: dict[SessionKey, int] = {}
+        self._continued_actions: dict[str, None] = {}
         self.thread_recovery = ThreadRecovery(
             resume=self._resume_thread,
             create=self._create_thread,
@@ -1353,6 +1399,11 @@ class GatewayService:
     ) -> dict[str, Any]:
         cache_key = (_session_key(tenant_id, session_id), str(turn_id))
         input_digest = hashlib.sha256(str(content).encode("utf-8")).hexdigest()
+        # **用户回合水位**：在**拿锁之前** +1 ✓——一个已经在锁上排队的用户回合也算
+        # "用户已经动过话头" ✓，续接回合据此让路（见 `continue_after_action` ✓）。
+        # 记在拿锁之前而不是 turn 跑完：拿锁之后才记的话，"用户消息排着队、动作刚好
+        # 执行完"那一瞬就是盲区 ✓✗。
+        self._user_turn_seq[cache_key[0]] = self._user_turn_seq.get(cache_key[0], 0) + 1
         session_lock = self._session_locks.setdefault(cache_key[0], asyncio.Lock())
         async with session_lock:
             cached = self._turn_cache.get(cache_key)
@@ -1378,6 +1429,168 @@ class GatewayService:
             self._turn_cache[cache_key] = result
             self._turn_digests[cache_key] = input_digest
             return result
+
+    def user_turn_watermark(self, *, tenant_id: str | int, session_id: str | int) -> int:
+        """这个会话已经开跑过多少个**用户回合**（续接回合的"别打架"基线 ✓）。
+
+        调用方在"动作开始/本轮收尾"那一刻取一份 ✓，续接执行前再比一次 ✓：
+        对不上就说明用户已经说了新话 ✓——让路，不续接（用户的诉求优先 ✗✗）。
+        续接回合**自己不**计数 ✓（它不是用户回合 ✓，见 `continue_after_action` ✓）。
+        """
+        return self._user_turn_seq.get(_session_key(tenant_id, session_id), 0)
+
+    async def continue_after_action(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        user_id: str,
+        turn_id: str,
+        action_result: Mapping[str, Any],
+        user_turn_watermark: int,
+        emit: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> dict[str, Any] | None:
+        """确认**生效**之后，让助手自动接着走下一步（一个新的助手回合 ✓）。
+
+        为什么要有它 ✗✓（2026-10-09 用户实测，会话 10041981 ✓）：助手在上文承诺了
+        下一步（"确认成绩后我先按方向给你几个院校专业组参考…" ✓），用户点卡确认后
+        只收到一句写死的"操作已处理。" ✗——话头断了 ✓。写死的回执不可能是"下一步"，
+        而**只有模型知道它承诺过什么** ✓，所以续接必须真跑一个回合 ✓。
+
+        形状（每一条都是硬约束 ✓）：
+        · 只认 `applied` ✓（confirm/cancel 家族里只有 confirm 能落这一档 ✗✓：
+          cancel → `cancelled`、别的动作 → `not_executable` ✓，见
+          `conversation_actions.py::_status` ✓）；failed/conflict/cancelled 不续接 ✓
+          （维持现状 ✓——失败时用户要做的是处理失败，不是被拉去下一步 ✗）。
+        · **不伪造用户消息** ✓✓：续接回合不走 `handle_turn` → `_handle_uncached` ✓，
+          所以不落 user 消息、不进会话 transcript 的用户那一侧 ✓；喂给模型的是一条
+          带内部分隔标签的**续接指令** ✓（`_continuation_nudge` ✓，与每轮注入的内部
+          状态同一类 ✓——模型看得见、用户看不见 ✓），产出照旧是**助手消息** ✓
+          （回合事件 + `_persist_agent` 落库 ✓，与普通回合同一条路径 ✓）。
+        · 同一操作**只续一次** ✓：键取 `proposalRef`（没有才退到 turn_id ✓）——
+          applied 是终态、提案随之被消费 ✓，同一次写入不会产出第二个 applied ✓；
+          台账在**入口就记** ✓（跳过也算"处理过" ✓），并发重入因此不会双跑 ✓。
+        · **不打架** ✓：续接前先看两样——会话锁空不空 ✓、用户回合水位动没动 ✓；
+          任一不满足就**放弃** ✓（不排队、不等待 ✓——让路给用户 ✓）。真的跑起来之后
+          它就在锁里 ✓，后来的用户回合按既有串行语义排在它后面 ✓。
+        · **失败不重试不循环** ✓：模型回合只跑一次 ✓，失败翻成一条带措辞的
+          `continuation_turn_failed` ✓（由调用方发终态 ✓），不再触发第二次 ✓；
+          续接回合自己若又执行了动作 ✓，也**不会**再触发续接（触发点只有用户回合那两处 ✓）。
+
+        返回：跑了 → 回合结果（形状与 `_handle_uncached` 一致 ✓，调用方交
+        `_emit_turn_terminal` 发终态 ✓）；跳过 → None ✓（**什么事件都没发** ✓）。
+        """
+        status = str((action_result or {}).get("actionStatus") or "")
+        if status != "applied":
+            return None
+        if self.mode == "legacy" or self.codex is None:
+            return None
+        key = _session_key(tenant_id, session_id)
+        ref = str(action_result.get("proposalRef") or "").strip()
+        once_key = f"{key.tenant_id}:{key.session_id}:{ref or f'turn:{turn_id}'}"
+        if not self._claim_continuation(once_key):
+            logger.info(
+                "action continuation already handled: session=%s ref=%s", session_id, ref
+            )
+            return None
+        lock = self._session_locks.setdefault(key, asyncio.Lock())
+        # **锁被占着就不插队** ✓✗（含"自己在锁里"这种**将来**可能的误用 ✓：
+        # `asyncio.Lock` 不可重入 ✓，这里先判一下，宁可少续一次，也不许死锁 ✓）。
+        if lock.locked() or self._user_turn_seq.get(key, 0) != int(user_turn_watermark):
+            logger.info(
+                "action continuation skipped (session busy or user moved on): session=%s ref=%s",
+                session_id,
+                ref,
+            )
+            return None
+        async with lock:
+            # 排队等锁的这中间用户可能又说话了 ✓：进锁之后**再比一次** ✓。
+            if self._user_turn_seq.get(key, 0) != int(user_turn_watermark):
+                logger.info(
+                    "action continuation skipped (user turn started while waiting): session=%s",
+                    session_id,
+                )
+                return None
+            try:
+                snapshot = _snapshot_payload(
+                    await _maybe_await(
+                        self.snapshot_loader(
+                            tenant_id=tenant_id, session_id=str(session_id), skill=None
+                        )
+                    )
+                )
+            except Exception:
+                # 快照读不到就没有可注入的上下文 ✓：放弃（**不**发 turn.started ✓）。
+                logger.warning(
+                    "continuation snapshot unavailable (session=%s)", session_id, exc_info=True
+                )
+                return None
+            self._store_snapshot(key, snapshot, authoritative=True)
+            if emit is not None:
+                await emit({"type": "turn.started", "payload": {"startedAt": int(time.time() * 1000)}})
+            try:
+                codex_result = await self._codex_turn(
+                    snapshot,
+                    _continuation_nudge(action_result),
+                    str(session_id),
+                    user_id,
+                    str(tenant_id),
+                    str(turn_id),
+                    snapshot.allowed_capabilities,
+                    snapshot.admission_mode,
+                    state_patch=None,
+                    emit=emit,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("continuation turn crashed (session=%s)", session_id)
+                codex_result = {"error": "continuation_turn_failed", "events": []}
+            if not isinstance(codex_result, Mapping) or codex_result.get("error"):
+                error = (
+                    str(codex_result.get("error"))
+                    if isinstance(codex_result, Mapping)
+                    else "continuation_turn_failed"
+                )
+                logger.warning(
+                    "continuation turn failed: session=%s ref=%s error=%s", session_id, ref, error
+                )
+                # 措辞要点 ✗✓：**别让用户以为确认失败**——确认已经生效 ✓，
+                # 这里丢的是"自动接上"的那一步 ✓，所以要给出可行动的下一句 ✓
+                # （不重试、不循环 ✓；用户回一句"继续"就是一个普通的用户回合 ✓）。
+                return {
+                    "error": error,
+                    "reply": _CONTINUATION_FAILURE_REPLY,
+                    "events": list(codex_result.get("events", [])) if isinstance(codex_result, Mapping) else [],
+                    "snapshotVersion": snapshot.snapshot_version,
+                }
+            output = codex_result["output"]
+            await self._persist_agent(session_id, output.message)
+            working_set = self._working_sets.get(key)
+            return {
+                "mode": self.mode,
+                "reply": output.message,
+                "events": codex_result.get("events", []),
+                "trace": codex_result.get("trace", {}),
+                "snapshotVersion": snapshot.snapshot_version,
+                "writeAttempted": bool(output.proposal_ref),
+                "output": output.model_dump(by_alias=True),
+                "workingSet": working_set.as_payload() if working_set is not None else None,
+                "proposalPreview": codex_result.get("proposalPreview"),
+            }
+
+    def _claim_continuation(self, once_key: str) -> bool:
+        """续接台账：第一次见到这个操作就记账并放行 ✓，之后一律 False ✓。
+
+        有界（`_CONTINUATION_LEDGER_MAX` ✓）：它只是"同一操作别续两次"的短期记忆 ✓，
+        不是审计账本 ✗——满了按到达顺序裁掉最旧的 ✓（`dict` 保序 ✓）。
+        """
+        if once_key in self._continued_actions:
+            return False
+        self._continued_actions[once_key] = None
+        while len(self._continued_actions) > _CONTINUATION_LEDGER_MAX:
+            self._continued_actions.pop(next(iter(self._continued_actions)))
+        return True
 
     async def _handle_uncached(
         self,
