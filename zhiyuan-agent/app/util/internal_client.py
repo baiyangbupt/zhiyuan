@@ -19,6 +19,96 @@ from app.config import InternalServiceConfig
 # （静默反向分叉 ✓——见 `HttpClient._resolve_timeout` ✓，2026-10-06 实测 ✓）。
 EXECUTE_WAIT_TIMEOUT_SECONDS = 60.0
 
+# 直辖市（省级行政区）→ 下辖区县：出处 = GB/T 2260 行政区划代码里四个直辖市的
+# 市辖区/县（2016 年后名称；重庆含万州/涪陵等全部区县）。取值一律用**数据侧实际
+# 存储的短名**（不带"区/县"后缀；天津"滨海新区"是数据里的全名，单字+县名的
+# "忠县"保留全名以免与其他含"忠"的城市串味）。
+#
+# 为什么需要这层展开：候选池/院校目录里直辖市院校的 `cityName`（候选）与
+# `city`（院校目录）存的是**区级名**——实测 2026-10-09 会话 10041981 的候选池：
+# 上海院校 cityName∈{虹口,浦东,松江,金山,嘉定}、北京∈{海淀,延庆,大兴,顺义,通州}、
+# 天津∈{西青,宝坻,滨海新区,静海,武清}、重庆∈{合川,永川,渝北,巴南}（cityId 为
+# 3101xx/1101xx/1201xx/5001xx 区级码）。而过滤执行点是"filter 值 ⊆ 项字段"的
+# **包含匹配**（Java `PlanningStateService.matchesCity` / `CandidatePreviewService
+# .applyFilters`：`cityName.contains(city)`；院校目录 `SchoolManager.searchSchools`
+# 是 `city` **等值**匹配），于是按"上海"筛 → 全漏（只读实测：候选预览
+# cityNames=["上海"]+会计 total=0，而同池 provinceNames=["上海"]+会计 total=8、
+# 展开成 16 个区名后 total=8，与省份口径逐条一致）。
+#
+# 已知边界：区名与外省地级市重名时无法在 cityName 这一层区分（"朝阳"既可能指
+# 北京朝阳区、也可能指辽宁朝阳市），展开会一起命中——这是包含/等值过滤契约
+# 本身的限制，登记在此，不在本层猜测。
+_MUNICIPALITY_DISTRICTS: Dict[str, tuple] = {
+    "北京": (
+        "东城", "西城", "朝阳", "丰台", "石景山", "海淀",
+        "门头沟", "房山", "通州", "顺义", "昌平", "大兴",
+        "怀柔", "平谷", "密云", "延庆",
+    ),
+    "天津": (
+        "和平", "河东", "河西", "南开", "河北", "红桥",
+        "东丽", "西青", "津南", "北辰", "武清", "宝坻",
+        "滨海新区", "宁河", "静海", "蓟州",
+    ),
+    "上海": (
+        "黄浦", "徐汇", "长宁", "静安", "普陀", "虹口",
+        "杨浦", "闵行", "宝山", "嘉定", "浦东", "金山",
+        "松江", "青浦", "奉贤", "崇明",
+    ),
+    "重庆": (
+        "渝中", "大渡口", "江北", "沙坪坝", "九龙坡", "南岸",
+        "北碚", "渝北", "巴南", "万州", "涪陵", "黔江",
+        "长寿", "江津", "合川", "永川", "南川", "綦江",
+        "大足", "璧山", "铜梁", "潼南", "荣昌", "开州",
+        "梁平", "武隆", "城口", "丰都", "垫江", "忠县",
+        "云阳", "奉节", "巫山", "巫溪", "石柱", "秀山",
+        "酉阳", "彭水",
+    ),
+}
+
+
+def _strip_region_suffix(value: Any) -> str:
+    """去掉省市后缀做归一的比较键（"上海市" → "上海"）。"""
+    text = str(value or "").strip()
+    for suffix in ("市", "省"):
+        if text.endswith(suffix) and len(text) > len(suffix):
+            text = text[: -len(suffix)]
+    return text
+
+
+def _municipality_name(value: Any) -> Optional[str]:
+    """值是不是直辖市（"上海" / "上海市" → "上海"）；不是则 None。"""
+    normalized = _strip_region_suffix(value)
+    return normalized if normalized in _MUNICIPALITY_DISTRICTS else None
+
+
+def _expand_municipality_city_names(values: Any) -> List[str]:
+    """"上海" → ["上海", 16 个区名]；其余城市原样透传（保序去重）。
+
+    直辖市名本身保留在列表里（存量若有用"上海/上海市"存 cityName 的数据也能命中），
+    区名用短名，可同时覆盖"浦东"与"浦东新区"两种存量形态（包含匹配）。
+    """
+    if isinstance(values, str):
+        values = [values]
+    expanded: List[str] = []
+    for raw in values or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        expanded.append(text)
+        municipality = _municipality_name(text)
+        if municipality:
+            expanded.extend(_MUNICIPALITY_DISTRICTS[municipality])
+    return list(dict.fromkeys(expanded))
+
+
+def _expand_municipality_filter_city_names(filters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """过滤字典里的正/负向城市项做直辖市展开；别的键原样透传。"""
+    expanded = dict(filters or {})
+    for key in ("cityNames", "city_names", "negativeCityNames", "negative_city_names"):
+        if key in expanded:
+            expanded[key] = _expand_municipality_city_names(expanded[key])
+    return expanded
+
 
 class HttpClient:
     """HTTP 客户端，封装了 aiohttp 请求操作。"""
@@ -468,6 +558,15 @@ async def catalog_list_schools(
     ownership: Optional[str] = None,
     education_level: Optional[str] = None,
 ) -> Any:
+    # 院校目录的 `city` 是**等值**匹配（Java `SchoolManager.searchSchools`），而目录里
+    # 直辖市院校的 `city` 存区级名（实测 2026-10-09：city="浦东" 13 所、"上海" 0 所，
+    # 而 province="上海" 44 所）→ 直辖市的城市条件上提到 `province`（两者是同一地理
+    # 实体）。只在省份条件缺失或本来就是同一实体时做；相互矛盾的条件（如
+    # province=江苏 + city=上海）保持原样，不把"查不到"改写成"查到别的地方"。
+    municipality = _municipality_name(city)
+    if municipality and (not province or _municipality_name(province) == municipality):
+        province = municipality
+        city = None
     params = {
         key: value
         for key, value in {
@@ -1753,8 +1852,10 @@ async def query_planning_candidate_pool(
             "tiers": tiers or [],
             "provinceNames": province_names or [],
             "negativeProvinceNames": negative_province_names or [],
-            "cityNames": city_names or [],
-            "negativeCityNames": negative_city_names or [],
+            # 直辖市按区县展开（见 `_MUNICIPALITY_DISTRICTS`）：池里直辖市院校的
+            # `cityName` 是区级名，不做这层展开时按"上海"筛恒为 0（假否定）。
+            "cityNames": _expand_municipality_city_names(city_names),
+            "negativeCityNames": _expand_municipality_city_names(negative_city_names),
             "schoolKeywords": school_keywords or [],
             "negativeSchoolKeywords": negative_school_keywords or [],
             "majorKeywords": major_keywords or [],
@@ -1798,7 +1899,9 @@ async def preview_candidates(
     规划版本不变——预览不该改变被预览的东西。
     """
     payload: Dict[str, Any] = {
-        "filters": filters or {},
+        # 与 `query_planning_candidate_pool` 同一口径：直辖市城市项按区县展开
+        # （见 `_MUNICIPALITY_DISTRICTS`），否则按"上海"预览恒返回 0 条。
+        "filters": _expand_municipality_filter_city_names(filters),
         "page": page,
         "pageSize": page_size,
     }
