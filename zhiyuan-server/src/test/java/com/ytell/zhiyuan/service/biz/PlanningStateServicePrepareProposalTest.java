@@ -18,11 +18,14 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * P2 写闭环第一段：`prepareUserGoalProposal` 必须把 **Java 产出的 operationId** 落进
- * pending 的 dataValue（确认时由快照带出来、execute 段读它当幂等键）。
+ * pending 的 dataValue（确认时由快照带出来、execute 段读它当幂等键）；
+ * 而**没有可确认动作**（requiresConfirmation=false，如 blocked）的预览**不得物化**成 active pending
+ * （2026-10-07 review §五-7/11：物化后快照会把 blocked 卡报成"可确认"，用户确认必然失败）。
  *
  * <p>风格与 `ConversationProposalRequestServiceTest` 一致：**替换存储与编译**（那两条路各自有测试），
  * 让真实的服务逻辑跑起来——被 mock 掉的正是"状态怎么走"这件事本身。
@@ -34,61 +37,38 @@ public class PlanningStateServicePrepareProposalTest {
 
     private PlanningStateService service;
     private final List<Map<String, Object>> upsertedValues = new ArrayList<>();
+    private PendingConfirmationBizService recordingPendingService;
 
     @BeforeEach
     void setUp() {
-        // 编译那一步（读库、建预览）替换成罐头——它不参与本测试要验的东西。
-        service = new PlanningStateService() {
+        // 存储层：只记下 upsert 的 dataValue，并回一个带 pendingId 的响应。
+        recordingPendingService = new PendingConfirmationBizService() {
             @Override
-            public FixProposalStateDTO generateUserGoalFixProposals(Long chatSessionId,
-                                                                   UserGoalFixProposalReq req) {
-                FixProposalStateDTO preview = new FixProposalStateDTO();
-                preview.setSourceVersion(7);
-                FixProposalDTO ready = new FixProposalDTO();
-                ready.setProposalId("ugp_test_1");
-                ready.setStatus("ready");
-                FixProposalDTO draft = new FixProposalDTO();
-                draft.setProposalId("ugp_draft");
-                draft.setStatus("preview_only");
-                preview.setProposals(Lists.newArrayList(draft, ready));
-                return preview;
+            public PendingConfirmationRes getCurrent(Long tenantId, Long chatSessionId) {
+                return null;
+            }
+
+            @Override
+            public PendingConfirmationRes upsert(Long tenantId, PendingConfirmationUpsertReq req) {
+                upsertedValues.add(req.getDataValue());
+                PendingConfirmationRes res = new PendingConfirmationRes();
+                res.setPendingId(req.getPendingId());
+                res.setRevision(1L);
+                res.setStatus("active");
+                return res;
             }
         };
-        // 存储层：只记下 upsert 的 dataValue，并回一个带 pendingId 的响应。
-        ReflectionTestUtils.setField(service, "pendingConfirmationBizService",
-                new PendingConfirmationBizService() {
-                    @Override
-                    public PendingConfirmationRes getCurrent(Long tenantId, Long chatSessionId) {
-                        return null;
-                    }
-
-                    @Override
-                    public PendingConfirmationRes upsert(Long tenantId, PendingConfirmationUpsertReq req) {
-                        upsertedValues.add(req.getDataValue());
-                        PendingConfirmationRes res = new PendingConfirmationRes();
-                        res.setPendingId(req.getPendingId());
-                        res.setRevision(1L);
-                        res.setStatus("active");
-                        return res;
-                    }
-                });
-        // 幂等状态机替换成"直接跑 work"——它的状态机另有测试（见类注释）。
-        ReflectionTestUtils.setField(service, "conversationProposalRequestService",
-                new ConversationProposalRequestService() {
-                    @Override
-                    public PrepareResultDTO prepareOnce(Long tenantId, Long chatSessionId, String requestId,
-                                                        String requestDigest, String activePendingStatus,
-                                                        PrepareWork work) {
-                        ConversationProposalRequestService.PrepareOutcome outcome = work.run();
-                        PrepareResultDTO dto = new PrepareResultDTO();
-                        dto.setStatus("prepared");
-                        dto.setRequestId(requestId);
-                        dto.setPendingId(outcome.getPendingId());
-                        dto.setOperationId(outcome.getOperationId());
-                        dto.setResult(outcome.getResult());
-                        return dto;
-                    }
-                });
+        // 编译那一步（读库、建预览）替换成罐头——它不参与本测试要验的东西。
+        FixProposalStateDTO preview = new FixProposalStateDTO();
+        preview.setSourceVersion(7);
+        FixProposalDTO ready = new FixProposalDTO();
+        ready.setProposalId("ugp_test_1");
+        ready.setStatus("ready");
+        FixProposalDTO draft = new FixProposalDTO();
+        draft.setProposalId("ugp_draft");
+        draft.setStatus("preview_only");
+        preview.setProposals(Lists.newArrayList(draft, ready));
+        service = serviceWithPreview(preview);
     }
 
     @Test
@@ -115,5 +95,57 @@ public class PlanningStateServicePrepareProposalTest {
         // apply 那条路要求 user_goal 提案带原始目标（"user_goal proposal requires userGoalRequest"）。
         assertTrue(data.get("userGoalRequest") instanceof Map,
                 "userGoalRequest 必须落库：apply 时要用它，缺了会被 40001 拒");
+    }
+
+    @Test
+    void prepareDoesNotMaterializeBlockedProposalAsActivePending() {
+        FixProposalStateDTO blockedPreview = new FixProposalStateDTO();
+        blockedPreview.setSourceVersion(7);
+        FixProposalDTO blocked = new FixProposalDTO();
+        blocked.setProposalId("ugp_blocked_1");
+        blocked.setStatus("blocked");
+        blocked.setRequiresConfirmation(false);
+        blocked.setBlockingReason("priority_target_not_in_plan: 当前方案没有命中优先目标");
+        blockedPreview.setProposals(Lists.newArrayList(blocked));
+        PlanningStateService blockedService = serviceWithPreview(blockedPreview);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("prioritize_within_tier");
+        PrepareResultDTO dto = blockedService.prepareUserGoalProposal(1L, 2L, "req-blocked", "digest-blocked", req);
+
+        assertEquals(0, upsertedValues.size(),
+                "blocked 预览（requiresConfirmation=false）没有可确认动作，不得物化 active pending");
+        assertNull(dto.getPendingId(), "不物化就没有 pendingId");
+        assertNull(dto.getOperationId(), "不物化就没有 operationId");
+        assertNotNull(dto.getResult(), "预览本身照常返回，网关照常渲染 blocked 卡");
+    }
+
+    private PlanningStateService serviceWithPreview(final FixProposalStateDTO preview) {
+        PlanningStateService result = new PlanningStateService() {
+            @Override
+            public FixProposalStateDTO generateUserGoalFixProposals(Long chatSessionId,
+                                                                   UserGoalFixProposalReq req) {
+                return preview;
+            }
+        };
+        ReflectionTestUtils.setField(result, "pendingConfirmationBizService", recordingPendingService);
+        // 幂等状态机替换成"直接跑 work"——它的状态机另有测试（见类注释）。
+        ReflectionTestUtils.setField(result, "conversationProposalRequestService",
+                new ConversationProposalRequestService() {
+                    @Override
+                    public PrepareResultDTO prepareOnce(Long tenantId, Long chatSessionId, String requestId,
+                                                        String requestDigest, String activePendingStatus,
+                                                        PrepareWork work) {
+                        ConversationProposalRequestService.PrepareOutcome outcome = work.run();
+                        PrepareResultDTO dto = new PrepareResultDTO();
+                        dto.setStatus("prepared");
+                        dto.setRequestId(requestId);
+                        dto.setPendingId(outcome.getPendingId());
+                        dto.setOperationId(outcome.getOperationId());
+                        dto.setResult(outcome.getResult());
+                        return dto;
+                    }
+                });
+        return result;
     }
 }

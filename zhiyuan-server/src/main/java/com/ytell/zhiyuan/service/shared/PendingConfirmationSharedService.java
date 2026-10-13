@@ -42,6 +42,20 @@ public class PendingConfirmationSharedService
         if (expectedStatus != null) {
             update.lambda().eq(PendingConfirmationEntity::getStatus, expectedStatus);
         }
-        return this.update(next, update);
+        // 整行逐列显式赋值（含 null）：MyBatis-Plus 默认 NOT_NULL 更新策略会静默跳过 null 字段，
+        // 造成“已确认成功/取消的行仍带旧 claimToken、旧 resultCode（如 84009）”等残留；
+        // 这里对标整行覆写语义，null 也真正落库。两个调用方（upsert/resolve）都构造完整实体，安全。
+        update.lambda()
+                .set(PendingConfirmationEntity::getPendingId, next.getPendingId())
+                .set(PendingConfirmationEntity::getRevision, next.getRevision())
+                .set(PendingConfirmationEntity::getKind, next.getKind())
+                .set(PendingConfirmationEntity::getActionFamily, next.getActionFamily())
+                .set(PendingConfirmationEntity::getStatus, next.getStatus())
+                .set(PendingConfirmationEntity::getClaimToken, next.getClaimToken())
+                .set(PendingConfirmationEntity::getClaimExpiresAt, next.getClaimExpiresAt())
+                .set(PendingConfirmationEntity::getDataValue, next.getDataValue())
+                .set(PendingConfirmationEntity::getResultCode, next.getResultCode())
+                .set(PendingConfirmationEntity::getResolvedAction, next.getResolvedAction());
+        return this.update(null, update);
     }
 }

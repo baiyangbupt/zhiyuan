@@ -846,6 +846,16 @@ public class PlanningStateService {
                 tenantId, chatSessionId, requestId, requestDigest, activePendingStatus,
                 () -> {
                     FixProposalStateDTO preview = generateUserGoalFixProposals(chatSessionId, req);
+                    FixProposalDTO primary = primaryProposal(preview);
+                    // 只有**可确认**的主提案才物化成 active pending（2026-10-07 review §五-7/11）：
+                    // blocked/preview_only/info 提案 requiresConfirmation=false，没有任何可确认动作，
+                    // 物化后 `ConversationSnapshotService.fillActiveProposal` 会按 pending 状态把它
+                    // 报成"可确认"（requiresConfirmation 由 `active` 状态推断）——用户确认后 execute
+                    // 必然失败，留下脏 pending（claimToken/resultCode 残留，医学卡 40906 场景）。
+                    // 此时只回预览（网关照常渲染 blocked 卡），不落 pending。
+                    if (primary == null || !Boolean.TRUE.equals(primary.getRequiresConfirmation())) {
+                        return new ConversationProposalRequestService.PrepareOutcome(null, null, preview);
+                    }
                     String operationId = UUID.randomUUID().toString().replace("-", "");
                     Map<String, Object> dataValue = new LinkedHashMap<String, Object>();
                     dataValue.put("operationId", operationId);
@@ -858,20 +868,17 @@ public class PlanningStateService {
                     }
                     if (preview != null) {
                         dataValue.put("sourceVersion", preview.getSourceVersion());
-                        FixProposalDTO primary = primaryProposal(preview);
-                        if (primary != null) {
-                            dataValue.put("proposalId", primary.getProposalId());
-                            // **canonical 三件套一并落下** ✓✓：apply 那条路上
-                            // `RepairProposalApplyPolicy.validateCanonicalMetadata`（:95-100）
-                            // 要求请求里**必须带**它们之一（除非提案是 legacy 那种），
-                            // 而网关手上只有 dataValue（`activeProposal.data`）——
-                            // 不落的话确认那一刻必然 `409 canonical Proposal 元数据缺失`，
-                            // 卡上只显示"未生效"，看起来像写链坏了
-                            // （2026-09-27 真栈实测）。空值不落：网关按"非空才透传"读。
-                            putIfNotBlank(dataValue, "canonicalObjectiveDigest", primary.getCanonicalObjectiveDigest());
-                            putIfNotBlank(dataValue, "solverVersion", primary.getSolverVersion());
-                            putIfNotBlank(dataValue, "solverInputDigest", primary.getSolverInputDigest());
-                        }
+                        dataValue.put("proposalId", primary.getProposalId());
+                        // **canonical 三件套一并落下** ✓✓：apply 那条路上
+                        // `RepairProposalApplyPolicy.validateCanonicalMetadata`（:95-100）
+                        // 要求请求里**必须带**它们之一（除非提案是 legacy 那种），
+                        // 而网关手上只有 dataValue（`activeProposal.data`）——
+                        // 不落的话确认那一刻必然 `409 canonical Proposal 元数据缺失`，
+                        // 卡上只显示"未生效"，看起来像写链坏了
+                        // （2026-09-27 真栈实测）。空值不落：网关按"非空才透传"读。
+                        putIfNotBlank(dataValue, "canonicalObjectiveDigest", primary.getCanonicalObjectiveDigest());
+                        putIfNotBlank(dataValue, "solverVersion", primary.getSolverVersion());
+                        putIfNotBlank(dataValue, "solverInputDigest", primary.getSolverInputDigest());
                     }
                     PendingConfirmationUpsertReq upsert = new PendingConfirmationUpsertReq();
                     upsert.setChatSessionId(chatSessionId);
