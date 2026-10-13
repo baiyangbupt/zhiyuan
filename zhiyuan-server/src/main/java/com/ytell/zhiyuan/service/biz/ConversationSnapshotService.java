@@ -104,6 +104,13 @@ public class ConversationSnapshotService {
             if (soft != null) {
                 snapshot.getPreferences().put("soft", soft);
             }
+            // 已确认的规划目标（同档前置 priorityRules / 覆盖要求 / 冲稳保数量）必须对模型可见
+            // （2026-10-07 review §五-21-C）：缺了它们，模型读到的约束与真实生效的目标不一致，
+            // 会把"已确认的规则"当成用户从未说过。它属于硬性规划目标，落在 confirmedConstraints。
+            if (workspace.getConstraintState().getHardPlanningObjectives() != null) {
+                snapshot.getConfirmedConstraints().put("hardPlanningObjectives",
+                        workspace.getConstraintState().getHardPlanningObjectives());
+            }
         }
         if (workspace.getStaleFlags() != null) {
             snapshot.getConfirmedConstraints().put("staleFlags", workspace.getStaleFlags());

@@ -111,6 +111,41 @@ public class ConversationSnapshotServiceTest {
     }
 
     @Test
+    void shouldExposeConfirmedPlanningObjectivesInSnapshot() {
+        PlanningWorkspaceStateRes workspace = workspace(42, 101L);
+        com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO rule =
+                new com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO();
+        rule.setDomain("region");
+        rule.setKey("city");
+        rule.setValues(Arrays.asList("北京"));
+        rule.setOrderingTarget("rank_before");
+        rule.setScope("within_tier");
+        workspace.getConstraintState().getHardPlanningObjectives().getPriorityRules().add(rule);
+        com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO quota =
+                new com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO();
+        quota.setType("exact_counts");
+        quota.setSprintCount(16);
+        quota.setStableCount(24);
+        quota.setProtectCount(20);
+        workspace.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(quota);
+        doReturn(workspace).when(planningStateService).getPlanningWorkspaceState(eq(7L), eq(101L));
+        doReturn(null).when(pendingConfirmationBizService).getCurrent(7L, 101L);
+
+        ConversationTurnSnapshotDTO snapshot = service.getTurnSnapshot(7L, 101L, "plan-chat");
+
+        // 已确认的规划目标（同档前置规则/数量目标）必须对模型可见（review §五-21-C）：
+        // 缺了它们，模型读到的约束与真实生效的硬性目标不一致。
+        Object objectives = snapshot.getConfirmedConstraints().get("hardPlanningObjectives");
+        assertTrue(objectives instanceof com.ytell.zhiyuan.model.dto.planning.HardPlanningObjectivesDTO,
+                "hardPlanningObjectives 必须进 confirmedConstraints，实际: " + objectives);
+        com.ytell.zhiyuan.model.dto.planning.HardPlanningObjectivesDTO typed =
+                (com.ytell.zhiyuan.model.dto.planning.HardPlanningObjectivesDTO) objectives;
+        assertEquals(1, typed.getPriorityRules().size());
+        assertEquals("北京", typed.getPriorityRules().get(0).getValues().get(0));
+        assertEquals(Integer.valueOf(16), typed.getTierQuotaGoal().getSprintCount());
+    }
+
+    @Test
     void shouldRejectWorkspaceForAnotherSession() {
         PlanningWorkspaceStateRes workspace = workspace(42, 999L);
         doReturn(workspace).when(planningStateService).getPlanningWorkspaceState(eq(7L), eq(101L));
