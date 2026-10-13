@@ -466,8 +466,11 @@ final class UserGoalProposalBuilder {
             FixProposalActionDTO action = new FixProposalActionDTO();
             action.setActionType(RepairProposalTaxonomy.ActionType.REORDER_VOLUNTEERS);
             action.setLevel(majorGroupMode ? "unit" : "volunteer");
-            action.setSummary("在最终方案各档内前置目标项目");
-            action.setDetail(PriorityRuleSupport.summarize(priorityRule));
+            action.setSummary("把目标项目在各自档位内前移");
+            String reorderLabelsText = summarizeMatchedLabels(
+                    matchedPlanVolunteerLabels(current, priorityAnalysis, majorGroupMode));
+            action.setDetail(PriorityRuleSupport.summarize(priorityRule)
+                    + (reorderLabelsText.isEmpty() ? "" : "；涉及：" + reorderLabelsText));
             if (majorGroupMode) {
                 action.setUnitIds(priorityAnalysis.getMatchedIds());
             } else {
@@ -494,8 +497,9 @@ final class UserGoalProposalBuilder {
         String prioritySummary = priorityAnalysis == null ? ""
                 : priorityAnalysis.getInversionCount() == 0
                 ? "；同档前置目标当前已满足，确认后会保存并持续执行这条规则"
-                : "；同时将 " + priorityAnalysis.getMovedTargetCount() + " 个目标项目在各自档位内前移，消除 "
-                + priorityAnalysis.getInversionCount() + " 处同档逆序";
+                : "；同时会把 " + priorityAnalysis.getMovedTargetCount() + " 个"
+                + (priorityRule == null ? "" : String.join("、", defaultList(priorityRule.getValues())))
+                + (majorGroupMode ? "院校专业组" : "志愿") + "在所在档位内前移";
         if (!hasProjectedRequirements && !hasPriorityRule && !hasTierQuota) {
             proposal.setSummary("当前方案有 " + currentCount + (majorGroupMode ? " 个专业组" : " 个志愿")
                     + "；本次将从符合已确认要求的候选中补入 " + gap + " 个，达到 " + targetCount + " 个。");
@@ -617,21 +621,33 @@ final class UserGoalProposalBuilder {
         attachSolverMetadata(proposal, objectiveSet, solverResult);
         proposal.setStatus(RepairProposalTaxonomy.Status.READY);
         proposal.setRequiresConfirmation(true);
-        String domain = analysis.isUnitMode() ? "专业组" : "志愿";
+        // 卡面说人话（review §五-20）：不用"命中/同档逆序"这类引擎口径，直接讲"把几组谁在档位内前移"，
+        // 并带上具体院校/专业名；命中实体同时落到提案级 affectedUnitIds/affectedVolunteerIds。
+        String domain = analysis.isUnitMode() ? "院校专业组" : "志愿";
+        String ruleLabel = String.join("、", defaultList(rule.getValues()));
+        String matchedLabelsText = summarizeMatchedLabels(
+                matchedEntityLabels(state, poolCandidates, analysis));
+        if (analysis.isUnitMode()) {
+            proposal.setAffectedUnitIds(Lists.newArrayList(analysis.getMatchedIds()));
+        } else {
+            proposal.setAffectedVolunteerIds(Lists.newArrayList(analysis.getMatchedIds()));
+        }
         if (analysis.getInversionCount() == 0) {
-            proposal.setSummary("当前方案中的 " + analysis.getMatchedCount() + " 个目标" + domain
-                    + "已经在各自冲稳保档内优先靠前；确认后会保存并持续执行这条规则。");
+            proposal.setSummary("当前方案中的 " + analysis.getMatchedCount() + " 个" + ruleLabel + domain
+                    + (matchedLabelsText.isEmpty() ? "" : "（" + matchedLabelsText + "）")
+                    + "已经排在各自冲稳保档位内最前面；确认后会保存这条规则并持续生效。");
             proposal.setImpact("志愿集合、冲稳保档位和固定位置保持不变；后续重新生成方案仍会校验同档前置目标。");
         } else {
-            proposal.setSummary("当前方案命中 " + analysis.getMatchedCount() + " 个目标" + domain
-                    + "；确认后将其中 " + analysis.getMovedTargetCount()
-                    + " 个在各自冲稳保档内前移，消除 " + analysis.getInversionCount() + " 处同档逆序。");
-            proposal.setImpact("只在同一冲稳保档内稳定前置匹配项；志愿集合、档位和固定位置保持不变。");
+            proposal.setSummary("确认后会把 " + analysis.getMovedTargetCount() + " 个" + ruleLabel + domain
+                    + "在所在档位内前移" + (matchedLabelsText.isEmpty() ? "" : "：" + matchedLabelsText)
+                    + "，让它们排得更靠前。");
+            proposal.setImpact("只调整先后顺序；志愿集合、冲稳保档位和固定位置保持不变。");
             FixProposalActionDTO action = new FixProposalActionDTO();
             action.setActionType(RepairProposalTaxonomy.ActionType.REORDER_VOLUNTEERS);
             action.setLevel(analysis.isUnitMode() ? "unit" : "volunteer");
-            action.setSummary("按硬优先规则在同档内前置目标项目");
-            action.setDetail(PriorityRuleSupport.summarize(rule));
+            action.setSummary("把目标项目在各自档位内前移");
+            action.setDetail(PriorityRuleSupport.summarize(rule)
+                    + (matchedLabelsText.isEmpty() ? "" : "；涉及：" + matchedLabelsText));
             if (analysis.isUnitMode()) {
                 action.setUnitIds(analysis.getMatchedIds());
             } else {
@@ -640,7 +656,7 @@ final class UserGoalProposalBuilder {
             proposal.getActions().add(action);
         }
         proposal.getDryRunResult().setStatus(RepairProposalTaxonomy.Status.READY);
-        proposal.getDryRunResult().setMessage("确认后同档逆序数必须降为 0。");
+        proposal.getDryRunResult().setMessage("确认后这些目标项目会排在各自档位内更靠前的位置。");
         proposal.getDryRunResult().setBeforeUnitTotal(currentPlanUnitCount(state));
         proposal.getDryRunResult().setAfterUnitTotal(currentPlanUnitCount(state));
         proposal.getDryRunResult().setBeforeVolunteerTotal(currentPlanVolunteerCount(state));
@@ -1564,6 +1580,102 @@ final class UserGoalProposalBuilder {
             return school;
         }
         return school + "-" + major;
+    }
+
+    /**
+     * 把 {@link PriorityRuleSupport.Analysis} 命中的实体 ID 换成可读名字（review §五-20）：
+     * 组模式给院校名，志愿模式给“学校-专业”；拿不到名字时退回原 ID（绝不编造）。
+     * 卡面摘要与动作明细共用，模型和用户都能直接对上号。
+     */
+    private static List<String> matchedEntityLabels(PlanningStateDTO state,
+                                                    List<CandidateItemDTO> candidates,
+                                                    PriorityRuleSupport.Analysis analysis) {
+        Map<String, CandidateItemDTO> candidatesById = new LinkedHashMap<String, CandidateItemDTO>();
+        for (CandidateItemDTO candidate : defaultList(candidates)) {
+            if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
+                candidatesById.put(candidate.getVolunteerId(), candidate);
+            }
+        }
+        Map<String, OrderedUnitDTO> unitsById = new LinkedHashMap<String, OrderedUnitDTO>();
+        for (OrderedUnitDTO unit : defaultList(state == null || state.getOrderedPlanState() == null
+                ? null : state.getOrderedPlanState().getUnits())) {
+            if (unit != null && !Strings.isNullOrEmpty(unit.getUnitId())) {
+                unitsById.put(unit.getUnitId(), unit);
+            }
+        }
+        Map<String, OrderedItemDTO> itemsById = new LinkedHashMap<String, OrderedItemDTO>();
+        for (OrderedItemDTO item : defaultList(state == null || state.getOrderedPlanState() == null
+                ? null : state.getOrderedPlanState().getItems())) {
+            if (item != null && !Strings.isNullOrEmpty(item.getVolunteerId())) {
+                itemsById.put(item.getVolunteerId(), item);
+            }
+        }
+        List<String> labels = Lists.newArrayList();
+        for (String id : defaultList(analysis == null ? null : analysis.getMatchedIds())) {
+            String label = "";
+            if (analysis.isUnitMode()) {
+                OrderedUnitDTO unit = unitsById.get(id);
+                label = unit == null ? "" : Strings.nullToEmpty(unit.getSchoolName()).trim();
+            } else {
+                CandidateItemDTO candidate = candidatesById.get(id);
+                label = candidate == null ? ""
+                        : buildSchoolMajorLabel(candidate.getSchoolName(), candidate.getMajorName());
+                if (Strings.isNullOrEmpty(label)) {
+                    OrderedItemDTO item = itemsById.get(id);
+                    label = item == null ? ""
+                            : buildSchoolMajorLabel(item.getSchoolName(), item.getMajorName());
+                }
+            }
+            if (Strings.isNullOrEmpty(label)) {
+                label = Strings.nullToEmpty(id).trim();
+            }
+            if (!label.isEmpty() && !labels.contains(label)) {
+                labels.add(label);
+            }
+        }
+        return labels;
+    }
+
+    /** 填充预览路径（还没落成 ordered 方案）的命中实体 → 可读名字：从当前方案志愿上取学校/专业。 */
+    private static List<String> matchedPlanVolunteerLabels(List<PlanVolunteer> current,
+                                                           PriorityRuleSupport.Analysis analysis,
+                                                           boolean majorGroupMode) {
+        Map<String, PlanVolunteer> byVolunteerId = new LinkedHashMap<String, PlanVolunteer>();
+        Map<String, PlanVolunteer> byUnitId = new LinkedHashMap<String, PlanVolunteer>();
+        for (PlanVolunteer volunteer : defaultList(current)) {
+            if (volunteer == null) {
+                continue;
+            }
+            if (!Strings.isNullOrEmpty(volunteer.getVolunteerId())) {
+                byVolunteerId.put(volunteer.getVolunteerId(), volunteer);
+            }
+            if (!Strings.isNullOrEmpty(volunteer.getUnitId())) {
+                byUnitId.putIfAbsent(volunteer.getUnitId(), volunteer);
+            }
+        }
+        List<String> labels = Lists.newArrayList();
+        for (String id : defaultList(analysis == null ? null : analysis.getMatchedIds())) {
+            PlanVolunteer volunteer = majorGroupMode ? byUnitId.get(id) : byVolunteerId.get(id);
+            String label = volunteer == null ? ""
+                    : buildSchoolMajorLabel(volunteer.getSchoolName(), volunteer.getMajorName());
+            if (Strings.isNullOrEmpty(label)) {
+                label = Strings.nullToEmpty(id).trim();
+            }
+            if (!label.isEmpty() && !labels.contains(label)) {
+                labels.add(label);
+            }
+        }
+        return labels;
+    }
+
+    /** 摘要用的人名列表：最多展开 3 个，其余折叠成“等 N 个”。 */
+    private static String summarizeMatchedLabels(List<String> labels) {
+        if (defaultList(labels).isEmpty()) {
+            return "";
+        }
+        List<String> shown = labels.stream().limit(3).collect(Collectors.toList());
+        String text = String.join("、", shown);
+        return labels.size() > shown.size() ? text + " 等 " + labels.size() + " 个" : text;
     }
 
     private static String formatChangeSummary(CandidateItemDTO from, CandidateItemDTO to) {

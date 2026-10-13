@@ -725,9 +725,15 @@ public class UserGoalProposalBuilderTest {
         assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getPriorityMatchedCount());
         assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getPriorityBeforeInversionCount());
         assertEquals(Integer.valueOf(0), proposal.getDryRunResult().getPriorityAfterInversionCount());
-        assertTrue(proposal.getSummary().contains("同档逆序"));
+        // 卡面人话化（review §五-20）：不出现"同档逆序"这类引擎口径，直接讲"把几组谁前移"
+        assertFalse(proposal.getSummary().contains("同档逆序"), proposal.getSummary());
+        assertTrue(proposal.getSummary().contains("同时会把 1 个上海志愿在所在档位内前移"),
+                proposal.getSummary());
         assertTrue(proposal.getSummary().contains("排除民办（院校性质）"));
         assertTrue(proposal.getSummary().contains("上海（地域）"));
+        // 动作明细带具体项目名
+        assertTrue(proposal.getActions().get(1).getDetail().contains("上海学校-法学"),
+                proposal.getActions().get(1).getDetail());
     }
 
     @Test
@@ -1618,6 +1624,66 @@ public class UserGoalProposalBuilderTest {
         assertEquals(Integer.valueOf(4), proposal.getDryRunResult().getAfterVolunteerTotal());
         assertEquals(java.util.Arrays.asList("v2", "v4", "v1", "v3"),
                 proposal.getSolverResult().getOrderedEntityIds());
+        // 卡面人话化 + 具体项目名（review §五-20）：说"把 N 个谁前移"，不甩"命中/同档逆序"这类引擎口径
+        assertFalse(proposal.getSummary().contains("命中"), proposal.getSummary());
+        assertFalse(proposal.getSummary().contains("逆序"), proposal.getSummary());
+        assertTrue(proposal.getSummary().contains("确认后会把 2 个上海志愿在所在档位内前移"),
+                proposal.getSummary());
+        assertTrue(proposal.getSummary().contains("上海学校1-法学"), proposal.getSummary());
+        assertTrue(proposal.getSummary().contains("上海学校2-会计学"), proposal.getSummary());
+        assertTrue(proposal.getActions().get(0).getDetail().contains("上海学校1-法学"),
+                proposal.getActions().get(0).getDetail());
+        assertTrue(proposal.getActions().get(0).getDetail().contains("上海学校2-会计学"),
+                proposal.getActions().get(0).getDetail());
+        // 受影响实体同时落到提案级字段（卡面/审计读得到）
+        assertEquals(java.util.Arrays.asList("v2", "v4"), proposal.getAffectedVolunteerIds());
+    }
+
+    @Test
+    void shouldNameMatchedMajorGroupUnitsInPriorityPreview() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO beijingA = candidate("v1", "北京学校", "数学", "理学", 90D);
+        beijingA.setPlanSchoolDataId("u1");
+        beijingA.setProvinceName("北京");
+        beijingA.setTier("稳");
+        CandidateItemDTO shanghaiA = candidate("v2", "上海学校", "法学", "法学", 89D);
+        shanghaiA.setPlanSchoolDataId("u2");
+        shanghaiA.setProvinceName("上海");
+        shanghaiA.setTier("稳");
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(beijingA, shanghaiA));
+        OrderedUnitDTO beijingUnit = new OrderedUnitDTO();
+        beijingUnit.setUnitId("u1");
+        beijingUnit.setTier("稳");
+        beijingUnit.setProvinceName("北京");
+        beijingUnit.setSchoolName("北京学校");
+        beijingUnit.getMajorItems().add(unitMajor("v1", "数学"));
+        OrderedUnitDTO shanghaiUnit = new OrderedUnitDTO();
+        shanghaiUnit.setUnitId("u2");
+        shanghaiUnit.setTier("稳");
+        shanghaiUnit.setProvinceName("上海");
+        shanghaiUnit.setSchoolName("上海学校");
+        shanghaiUnit.getMajorItems().add(unitMajor("v2", "法学"));
+        state.getOrderedPlanState().getUnits().add(beijingUnit);
+        state.getOrderedPlanState().getUnits().add(shanghaiUnit);
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v1", "北京学校", "数学", "稳"));
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v2", "上海学校", "法学", "稳"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("prioritize_within_tier");
+        req.setSourceVersionGuard(12);
+        req.getPriorityRules().add(priorityRule("region", "province", "上海"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        // 组模式卡面用 review §五-20 的号令句式，并带具体院校名；提案级 affectedUnitIds 同步
+        assertTrue(proposal.getSummary().contains("确认后会把 1 个上海院校专业组在所在档位内前移"),
+                proposal.getSummary());
+        assertTrue(proposal.getSummary().contains("上海学校"), proposal.getSummary());
+        assertTrue(proposal.getActions().get(0).getDetail().contains("上海学校"),
+                proposal.getActions().get(0).getDetail());
+        assertEquals(java.util.Arrays.asList("u2"), proposal.getAffectedUnitIds());
     }
 
     @Test
@@ -1640,6 +1706,9 @@ public class UserGoalProposalBuilderTest {
         assertEquals("ready", proposal.getStatus());
         assertTrue(proposal.getActions().isEmpty());
         assertTrue(proposal.getSummary().contains("已经"));
+        assertFalse(proposal.getSummary().contains("命中"), proposal.getSummary());
+        // 已满足分支同样带具体项目名（review §五-20）
+        assertTrue(proposal.getSummary().contains("上海学校-法学"), proposal.getSummary());
         assertEquals(Integer.valueOf(0), proposal.getDryRunResult().getPriorityBeforeInversionCount());
     }
 
