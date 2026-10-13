@@ -817,6 +817,20 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
                 channel_resolver=_current_channel,
                 watermark=watermark,
             )
+            # 预览结局的跟话（blocked/info/preview_only → 用户拿不到可确认的卡）：
+            # 与动作续接同一个位置、同一种新回合 ✓（见 `_maybe_continue_after_preview` ✓）。
+            await _maybe_continue_after_preview(
+                gateway=gateway,
+                tenant_id=tenant_id,
+                session_id=str(msg.session_id),
+                user_id=msg.user_id,
+                result=result,
+                source_turn_id=turn_id,
+                channel=channel,
+                make_emit=_make_emit,
+                channel_resolver=_current_channel,
+                watermark=watermark,
+            )
 
         # 编号事件要写会话与回合号：它们是 envelope 的必填字段。
         channel.bind_session(key)
@@ -1161,6 +1175,94 @@ async def _maybe_continue_after_action(
     except Exception:
         logger.exception(
             "action continuation crashed: session_id=%s turn_id=%s", session_id, continuation_turn_id
+        )
+        return
+    if continuation is None:
+        return
+    await _emit_turn_terminal(
+        emit=emit,
+        channel=channel,
+        result=continuation,
+        session_id=session_id,
+        channel_resolver=channel_resolver,
+    )
+
+
+async def _maybe_continue_after_preview(
+    *,
+    gateway,
+    tenant_id: str,
+    session_id: str,
+    user_id: str,
+    result: Mapping[str, Any] | None,
+    source_turn_id: str,
+    channel,
+    make_emit,
+    channel_resolver=None,
+    watermark: int,
+) -> None:
+    """这一轮的 `proposal.preview` 结局**没有可确认的卡片**时，触发一次助手跟话。
+
+    缺口（2026-10-13 用户实测，会话 10041981，20:22）：模型说"……**提交给你确认了**，
+    点卡片或回复确认"，而本轮预览结局是 `info`（"当前方案里已经有 3 个专业组……
+    本轮不需要调整方案"，**无按钮**）——用户被引向一个**不存在的确认动作**。
+    同族历史：多规则场景 blocked 卡而文案称"待确认"（review §五-19/23 异常 B）。
+
+    判定只在这**一处** ✓：`result["proposalPreview"]["status"] ∈
+    {blocked, info, preview_only}` ✓——它就在回合收尾要发的那个键上
+    （`_emit_turn_terminal` 读的同一处 ✓），终态到达时已知、不需要等任何东西 ✓。
+    `ready`（有可确认卡片 ✓）与 `pending`（写模式补录卡 ✓）**不触发** ✗✓；
+    带 `actionResult` 的回合让路给 `_maybe_continue_after_action` ✗✓（两支在网关
+    里本就互斥 ✓，这里只做防御 ✓）。
+
+    其余与 `_maybe_continue_after_action` 逐条同构 ✓：新 `cont-` 式回合号 ✓、
+    **不落用户消息** ✓（网关 `continue_after_proposal_preview` 走 `_codex_turn`，
+    与 `handle_turn` 无关 ✓）、幂等键 = **触发它的这个用户回合** `source_turn_id` ✓
+    （`turn_id/proposalRef` 口径见网关方法 docstring ✓）、跳过不发半个回合 ✓、
+    失败只发一条带措辞的可恢复错误 ✓（措辞见 `_PREVIEW_CONTINUATION_FAILURE_REPLY` ✓）。
+
+    **防递归是结构性的** ✗✓：这个调用点只有用户回合这一处 ✓——跟话回合自己的结果
+    只交给 `_emit_turn_terminal` ✓（下面那行 ✓），它再产出 info/blocked 预览也
+    **不会**再触发第二轮 ✓。
+    """
+    continue_after_preview = getattr(gateway, "continue_after_proposal_preview", None)
+    if not callable(continue_after_preview) or make_emit is None:
+        return
+    if not isinstance(result, Mapping):
+        return
+    # 整轮失败时预览事件根本不会出站（`_emit_turn_terminal` 的失败分支不读它 ✓）：
+    # 用户看到的是一句失败文案，没有可纠正的"确认"话术 ✗✓。
+    if result.get("error"):
+        return
+    action_result = result.get("actionResult")
+    if isinstance(action_result, Mapping) and action_result:
+        return
+    preview = result.get("proposalPreview")
+    if not isinstance(preview, Mapping) or not preview:
+        return
+    if str(preview.get("status") or "").strip().lower() not in {"blocked", "info", "preview_only"}:
+        return
+    # 跟话回合号用**新的** `cont-…`（与动作续接同款：日志/事件流里一眼认出来源 ✓）。
+    continuation_turn_id = f"cont-{uuid.uuid4()}"
+    emit = make_emit(continuation_turn_id)
+    try:
+        continuation = await continue_after_preview(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            user_id=user_id,
+            turn_id=continuation_turn_id,
+            source_turn_id=source_turn_id,
+            preview=preview,
+            user_turn_watermark=watermark,
+            emit=emit,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "preview continuation crashed: session_id=%s turn_id=%s",
+            session_id,
+            continuation_turn_id,
         )
         return
     if continuation is None:

@@ -1024,3 +1024,123 @@ async def test_a_failed_continuation_is_told_once_and_never_loops(monkeypatch) -
     assert message_store.user_messages == []
     # Java 执行恰好一趟：失败的是"自动接上"，不是确认本身 ✓。
     assert len(resolve.calls) == 2 and len(execute.calls) == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 预览**没有可确认卡片**（blocked / info / preview_only）时的跟话（2026-10-13 实测：
+# 会话 10041981，20:22）——模型收尾说"提交给你确认了、点卡片或回复确认"，
+# 而本轮 `proposal.preview` 结局是 `info`（无按钮）：用户被引向不存在的确认动作。
+#
+# 触发源是**回合内的预览结局**（`result["proposalPreview"]["status"]`，回合收尾时已知），
+# 跟话与 applied/failed 同构：一个 `cont-…` 新回合。这里盯三条：
+# ① info 预览 → 恰好一轮跟话（助手消息上屏、不进用户那一侧）；
+# ② ready 预览 → **不触发**（那是有可确认卡片的正常路径，正常话术是对的）；
+# ③ 跟话回合**自己**又产出 blocked 预览 → **不再触发**（防递归，结构上只有用户回合这一处钩子）。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _PreviewGateway:
+    """预览结局的网关替身：`handle_turn` 给一个带预览结局的结果，跟话走记录 + 真回发事件。"""
+
+    def __init__(self, status: str, followup_status: str = "blocked") -> None:
+        self.status = status
+        self.followup_status = followup_status
+        self.continue_calls: list[dict] = []
+
+    def user_turn_watermark(self, *, tenant_id: str, session_id: str) -> int:
+        return 1  # 真网关这条是**同步**的（server.py `_user_turn_watermark` 直接 int()）。
+
+    async def handle_turn(self, **kwargs):
+        return {
+            "reply": "我把这三所学校合成一件事，提交给你确认了——点卡片或回复确认。",
+            "events": [],
+            "proposalPreview": {
+                "status": self.status,
+                "summary": "当前方案里已经有 3 个专业组，本轮不需要调整方案",
+                "requiresConfirmation": self.status == "ready",
+            },
+            "snapshotVersion": 1,
+        }
+
+    async def continue_after_proposal_preview(self, **kwargs):
+        self.continue_calls.append(dict(kwargs))
+        emit = kwargs.get("emit")
+        if emit is not None:
+            await emit({"type": "turn.started", "payload": {"startedAt": 1}})
+        # 跟话回合**自己**又产出一个阻塞预览（递归诱饵：若钩子会在 cont- 回合上再触发，
+        # 这里就会被叫第二次，断言会红）。
+        return {
+            "reply": "纠正一下：这一轮其实没有需要你确认的卡片——三所学校方案里都已经在了。",
+            "events": [],
+            "proposalPreview": {"status": self.followup_status, "summary": "还是不需要调整"},
+            "snapshotVersion": 1,
+        }
+
+
+@pytest.mark.asyncio
+async def test_an_info_preview_gets_exactly_one_followup_turn() -> None:
+    """info 预览（无卡片）→ 一轮 `cont-…` 跟话：纠正收尾的话上屏；跟话回合再出 blocked 预览**不再触发**。"""
+    session_id = "900050"
+    store = _MemoryEventStore()
+    runtime = SessionRuntime()
+    gateway = _PreviewGateway(status="info")
+    ws = _Socket(store, runtime, session_id)
+    ws.push(_chat(session_id, turn_id="turn-preselect"))
+
+    task = asyncio.create_task(_handle_gateway_ws_loop(ws, gateway))
+    await _wait_for(
+        lambda: any(
+            event.turn_id.startswith("cont-") and event.type == "turn.completed"
+            for event in store.events
+        ),
+        what="预览跟话回合收尾",
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    # ① 恰好一轮跟话（防递归：跟话回合自己的 blocked 预览不会再触发）。
+    assert len(gateway.continue_calls) == 1
+    call = gateway.continue_calls[0]
+    assert call["tenant_id"] == "1" and call["session_id"] == session_id
+    assert call["preview"]["status"] == "info"
+    # 幂等锚 = **触发它的用户回合**（不是 cont- 回合号）。
+    assert call["source_turn_id"] == "turn-preselect"
+    # ② 跟话回合的事件：started → proposal.preview → assistant.completed → completed，全在 cont- 名下。
+    continuation = [event for event in store.events if event.turn_id.startswith("cont-")]
+    assert [event.type for event in continuation] == [
+        "turn.started",
+        "proposal.preview",
+        "assistant.completed",
+        "turn.completed",
+    ]
+    # ③ 纠正的话必须**上屏**（V1 连接收得到）。
+    messages = [
+        frame
+        for frame in ws.frames("assistant.completed")
+        if str(frame.get("turnId") or "").startswith("cont-")
+    ]
+    assert messages and "没有需要你确认的卡片" in messages[0]["payload"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_ready_preview_never_starts_a_followup_turn() -> None:
+    """ready 预览（有可确认卡片）→ **不触发**跟进：正常路径一个字节不动。"""
+    session_id = "900051"
+    store = _MemoryEventStore()
+    runtime = SessionRuntime()
+    gateway = _PreviewGateway(status="ready")
+    ws = _Socket(store, runtime, session_id)
+    ws.push(_chat(session_id, turn_id="turn-ready"))
+
+    task = asyncio.create_task(_handle_gateway_ws_loop(ws, gateway))
+    await _wait_for(
+        lambda: any(event.type == "turn.completed" for event in store.events),
+        what="原回合收尾",
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert gateway.continue_calls == []
+    assert [event for event in store.events if event.turn_id.startswith("cont-")] == []

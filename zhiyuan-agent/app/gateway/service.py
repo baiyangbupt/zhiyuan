@@ -602,6 +602,90 @@ _CONTINUATION_FAILURE_REPLY_FAILED = (
 _CONTINUATION_LEDGER_MAX = 2048
 
 
+# ── 预览结局跟话：这一轮**没有生成可确认的卡片**时，助手的收尾必须被纠正 ──────────
+#
+# 2026-10-13 用户实测（会话 10041981，20:22 ✓）：用户选了三所学校 ✓，模型回复
+# "我把它们和「学费一年 3 万以内」合成一件事，**提交给你确认了**……点卡片或回复确认" ✓，
+# 而本轮 `proposal.preview` 的真实结局是 `info` ✓（"当前方案里已经有 3 个专业组……
+# 本轮不需要调整方案" ✓，**无按钮** ✓）——用户被引向一个**不存在的确认动作** ✗✗。
+# 同族历史：更早的多规则场景里 blocked 卡而文案称"待确认"（review §五-19/23 异常 B ✓）。
+#
+# 触发源与 applied/failed 两版**不同** ✗✓：那两版从**动作结果**
+# （`conversationAction.result` ✓）触发 ✓；这一版从**回合内的预览结局**触发 ✓——
+# 回合收尾时它已经在 `result["proposalPreview"]["status"]` 里 ✓
+# （server.py 收尾发 `proposal.preview` 事件读的就是同一处 ✓），
+# 判据挂在 `_maybe_continue_after_preview`（server.py ✓）这一处 ✓。
+_PREVIEW_CONTINUATION_STATUSES = frozenset({"blocked", "info", "preview_only"})
+
+# 三种结局各自的**事实**与**动线**（写给模型看，由它翻成用户语言 ✓）。
+# `ready` 不在表里 ✓：那是有可确认卡片的正常路径 ✓，模型收尾说"点卡确认"是对的 ✓
+# ——那条路一个字节都不动 ✗✓（`applied` 同此 ✓）。
+_PREVIEW_OUTCOME_FACTS = {
+    "info": "本轮提案想做的事，**方案里已经满足了**（后端结论原文：{reason}）"
+    "——本轮**没有产生任何需要调整的改动**，也**没有生成可确认的卡片**",
+    "blocked": "本轮提案**被校验拒绝了**（后端原因原文：{reason}）"
+    "——这件事**没有落成待确认**，也**没有生成可确认的卡片**",
+    "preview_only": "本轮只给出了**参考预览**（后端说明原文：{reason}）"
+    "——它**仅供参考、不能确认落地**，也**没有生成可确认的卡片**",
+}
+
+_PREVIEW_OUTCOME_NEXT_STEPS = {
+    "info": "这一轮不需要做任何调整——把结论说清（哪些要求已经满足、方案现在是什么样），"
+    "再问用户接下来想看什么；",
+    "blocked": "说明为什么这次没成，并给出替代路径（放宽口径 / 换个顺序 / 分步来），"
+    "挑最贴合用户诉求的一到两种；",
+    "preview_only": "说明这次只是参考预览、要真正落地需要先把口径谈拢，"
+    "并给出可执行的下一步（例如把口径确认下来后重新整理一次）；",
+}
+
+
+def _preview_outcome_nudge(preview: Mapping[str, Any]) -> str:
+    """预览没有生成可确认卡片时的内部跟话指令：**如实纠正收尾** + 讲清结局 + 给动线。
+
+    与 `_continuation_nudge*` 同一族 ✓（同一对 `CONTINUATION_*` 标签 ✓、同样
+    `content_is_user_message=False` ✓），差别只在**要纠正的事实**：那两版的前提是
+    "用户做了确认动作" ✓，这一版的前提是"用户拿不到可确认的卡，而助手可能刚刚
+    让他去点卡" ✗✓。原因原文必须喂进来 ✓（同 `_continuation_nudge_failed` 的道理 ✓：
+    不给原因，模型只能猜 ✓，而"猜结局"正是最容易再造一遍谎话的地方 ✗✗）。
+    """
+    status = str(preview.get("status") or "").strip().lower()
+    reason = str(
+        preview.get("blockingReason") or preview.get("summary") or preview.get("title") or ""
+    ).strip()
+    fact = (_PREVIEW_OUTCOME_FACTS.get(status) or _PREVIEW_OUTCOME_FACTS["preview_only"]).format(
+        reason=reason or "后端未给出具体说明"
+    )
+    next_step = (
+        _PREVIEW_OUTCOME_NEXT_STEPS.get(status) or _PREVIEW_OUTCOME_NEXT_STEPS["preview_only"]
+    )
+    return (
+        f"{CONTINUATION_OPEN_TAG}\n"
+        f"本轮提案的**真实结局**：{fact}。\n"
+        "这一段不是用户发来的消息，是系统在「本轮没有生成可确认的卡片」之后自动触发的跟话指令。\n"
+        "请接住这一轮，把收尾纠正过来、把路指出来：\n"
+        "① **如实纠正收尾**：如果你上一条回复里让用户「点卡片确认」「回复确认」"
+        "「提交给你确认了」（或任何让用户去做确认动作的说法），而**实际并没有可确认的卡片**——"
+        "请明确纠正这一点（例如「这一轮其实没有需要你确认的卡片」），"
+        "**不要重复那条确认指令**，也不要装作已经提交给用户确认了；\n"
+        "② **说清真实结局**：把上面的结局翻成用户能懂的业务语言"
+        "（不要原样甩状态名、字段名或错误码；原因里读不出的细节不要编造）；\n"
+        f"③ **给出下一步动线**：{next_step}\n"
+        "④ 不要原样重发同一个提案——同样的口径再来一次结局不会变；"
+        "也不要停在「已提交」「待确认」这类话术上；\n"
+        "⑤ 需要用户表态时用**封闭式**提问（给 2-4 个明确选项）；\n"
+        "⑥ 这一段是内部指令：不要原样转述它，也不要输出其中的字段名或内部标识。\n"
+        f"{CONTINUATION_CLOSE_TAG}"
+    )
+
+
+# 预览跟话**自己**没跑起来时的措辞：不许说"已提交/待确认" ✗（这一轮本来就没有卡 ✓），
+# 只如实说"没有可确认的卡片" + 给一个零成本动作（回「继续」→ 普通用户回合 ✓）。
+_PREVIEW_CONTINUATION_FAILURE_REPLY = (
+    "刚才这一轮的提案预览没有生成可确认的卡片。"
+    "接下来这一步的说明我没能自动接上——你回一句「继续」，我就接着说清楚。"
+)
+
+
 def _maybe_await(value: Any) -> Any:
     return value if inspect.isawaitable(value) else _Immediate(value)
 
@@ -1707,6 +1791,160 @@ class GatewayService:
                     "reply": _CONTINUATION_FAILURE_REPLY
                     if status == "applied"
                     else _CONTINUATION_FAILURE_REPLY_FAILED,
+                    "events": list(codex_result.get("events", [])) if isinstance(codex_result, Mapping) else [],
+                    "snapshotVersion": snapshot.snapshot_version,
+                }
+            output = codex_result["output"]
+            await self._persist_agent(session_id, output.message)
+            working_set = self._working_sets.get(key)
+            return {
+                "mode": self.mode,
+                "reply": output.message,
+                "events": codex_result.get("events", []),
+                "trace": codex_result.get("trace", {}),
+                "snapshotVersion": snapshot.snapshot_version,
+                "writeAttempted": bool(output.proposal_ref),
+                "output": output.model_dump(by_alias=True),
+                "workingSet": working_set.as_payload() if working_set is not None else None,
+                "proposalPreview": codex_result.get("proposalPreview"),
+            }
+
+    async def continue_after_proposal_preview(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        user_id: str,
+        turn_id: str,
+        preview: Mapping[str, Any],
+        user_turn_watermark: int,
+        source_turn_id: str | None = None,
+        emit: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> dict[str, Any] | None:
+        """预览**没有生成可确认的卡片**（blocked / info / preview_only）时，让助手自动接住这一轮。
+
+        缺口（2026-10-13 用户实测 ✓，会话 10041981，20:22）：用户选了三所学校 ✓，
+        模型回复"我把它们和「学费一年 3 万以内」合成一件事，**提交给你确认了**……
+        点卡片或回复确认" ✓——而本轮 `proposal.preview` 的真实结局是 `info` ✓
+        （"当前方案里已经有 3 个专业组……本轮不需要调整方案" ✓，**无按钮** ✓）：
+        用户被引向一个**不存在的确认动作** ✗✗。更早的同族：多规则场景 blocked 卡
+        而文案称"待确认"（review §五-19/23 异常 B ✓）。
+
+        与 `continue_after_action` 的差别只有**触发源** ✗✓：那一版吃
+        `conversationAction.result`（applied/failed ✓），这一版吃**回合内的
+        `proposal.preview` 结局** ✓（回合收尾时已在 `result["proposalPreview"]` 里 ✓，
+        server.py 发事件读的是同一处 ✓）。其余每一条硬约束逐条同构 ✓：
+
+        · 触发档 = `blocked` ∪ `info` ∪ `preview_only` ✓。`ready` **不在**触发集里 ✓
+          ——那是有可确认卡片的正常路径 ✓；`pending`（补录预览在写模式下带卡片 ✓）
+          与 `applied` 同此 ✓：一个字节都不动 ✗✓。
+        · **不伪造用户消息** ✓✓：不走 `handle_turn` → `_handle_uncached` ✓，不落 user
+          消息 ✓；喂给模型的是 `_preview_outcome_nudge`（自带 `CONTINUATION_*` 标签的
+          系统指令 ✓），产出照旧是**助手消息** ✓（`_persist_agent` ✓）。
+        · **同一触发回合只跟一次** ✓：键取**触发它的那个用户回合** `source_turn_id`
+          （缺省退到本回合号 ✓）——预览结局是**回合事实** ✓，一条收尾话术对应一个回合 ✓；
+          写成"按 proposalRef"会把后续回合该有的纠正也吞掉 ✗（ref 会被活动提案覆盖成
+          跨回合复用的值 ✓，见 `_active_proposal_preview_override` ✓）。
+          台账在**入口就记** ✓（跳过也算"处理过" ✓），并发重入不会双跑 ✓。
+        · **不打架** ✓：与动作续接同款——会话锁空 ✓、用户回合水位没动 ✓，任一不满足
+          就放弃 ✓（不排队、不等待 ✓，用户优先 ✗✗）。
+        · **不递归** ✓✓：触发点只有用户回合收尾那一处（server.py
+          `_maybe_continue_after_preview` ✓）——跟话回合自己（cont-… ✓）哪怕又产出
+          info/blocked 预览 ✓，也不会再触发第二轮 ✓；模型回合只跑一次 ✓，失败翻成一条
+          带措辞的 `_PREVIEW_CONTINUATION_FAILURE_REPLY` ✓（由调用方发终态 ✓），
+          不重试、不循环 ✓。
+
+        返回：跑了 → 回合结果（形状与 `_handle_uncached` 一致 ✓，调用方交
+        `_emit_turn_terminal` 发终态 ✓——跟话回合若修出了可确认的卡片 ✓，那条
+        `proposal.preview` 事件也会照常发出去 ✓）；跳过 → None ✓（**什么事件都没发** ✓）。
+        """
+        status = str((preview or {}).get("status") or "").strip().lower()
+        if status not in _PREVIEW_CONTINUATION_STATUSES:
+            return None
+        if self.mode == "legacy" or self.codex is None:
+            return None
+        key = _session_key(tenant_id, session_id)
+        anchor = str(source_turn_id or turn_id).strip() or str(turn_id)
+        once_key = f"{key.tenant_id}:{key.session_id}:preview:turn:{anchor}"
+        if not self._claim_continuation(once_key):
+            logger.info(
+                "preview continuation already handled: session=%s turn=%s status=%s",
+                session_id,
+                anchor,
+                status,
+            )
+            return None
+        lock = self._session_locks.setdefault(key, asyncio.Lock())
+        # 锁被占着就不插队（与 `continue_after_action` 逐条同款 ✓）。
+        if lock.locked() or self._user_turn_seq.get(key, 0) != int(user_turn_watermark):
+            logger.info(
+                "preview continuation skipped (session busy or user moved on): session=%s turn=%s",
+                session_id,
+                anchor,
+            )
+            return None
+        async with lock:
+            # 排队等锁的这中间用户可能又说话了：进锁之后**再比一次** ✓。
+            if self._user_turn_seq.get(key, 0) != int(user_turn_watermark):
+                logger.info(
+                    "preview continuation skipped (user turn started while waiting): session=%s",
+                    session_id,
+                )
+                return None
+            try:
+                snapshot = _snapshot_payload(
+                    await _maybe_await(
+                        self.snapshot_loader(
+                            tenant_id=tenant_id, session_id=str(session_id), skill=None
+                        )
+                    )
+                )
+            except Exception:
+                # 快照读不到就没有可注入的上下文：放弃（**不**发 turn.started ✓）。
+                logger.warning(
+                    "preview continuation snapshot unavailable (session=%s)", session_id, exc_info=True
+                )
+                return None
+            self._store_snapshot(key, snapshot, authoritative=True)
+            if emit is not None:
+                await emit({"type": "turn.started", "payload": {"startedAt": int(time.time() * 1000)}})
+            try:
+                codex_result = await self._codex_turn(
+                    snapshot,
+                    _preview_outcome_nudge(preview),
+                    str(session_id),
+                    user_id,
+                    str(tenant_id),
+                    str(turn_id),
+                    snapshot.allowed_capabilities,
+                    snapshot.admission_mode,
+                    state_patch=None,
+                    emit=emit,
+                    # 系统内部指令（自带 CONTINUATION 标签），不是用户消息：
+                    # 不套用户消息分隔（与 `continue_after_action` 同一条理由）。
+                    content_is_user_message=False,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("preview continuation turn crashed (session=%s)", session_id)
+                codex_result = {"error": "continuation_turn_failed", "events": []}
+            if not isinstance(codex_result, Mapping) or codex_result.get("error"):
+                error = (
+                    str(codex_result.get("error"))
+                    if isinstance(codex_result, Mapping)
+                    else "continuation_turn_failed"
+                )
+                logger.warning(
+                    "preview continuation turn failed: session=%s turn=%s status=%s error=%s",
+                    session_id,
+                    anchor,
+                    status,
+                    error,
+                )
+                return {
+                    "error": error,
+                    "reply": _PREVIEW_CONTINUATION_FAILURE_REPLY,
                     "events": list(codex_result.get("events", [])) if isinstance(codex_result, Mapping) else [],
                     "snapshotVersion": snapshot.snapshot_version,
                 }
