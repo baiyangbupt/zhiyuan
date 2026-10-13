@@ -316,7 +316,19 @@ class ProposalRequest(_ContractModel):
     persist_target_count: bool = True
     tier_quota_goal: ProposalTierQuota | None = None
     requirements: list[ProposalRequirement] = Field(default_factory=list)
-    priority_rules: list[ProposalPriorityRule] = Field(default_factory=list)
+    # 同档前置"只支持一条"（2026-10-13 实测，会话 10041981）在 **Java 侧**是硬约束
+    # （`PriorityRuleSupport.validate()`：`size() > 1` → "当前只支持一条同档前置规则"
+    # → 拒单死卡）。这里**不在契约层硬拒**（硬拒会把"修不好时的 blocked 卡兜底"也
+    # 一起砍掉、变成整轮失败），改为把口径写进模型侧 schema 的 description 让它在生成
+    # 时就一次只给一条；模型仍给多条时，由网关提案分支的先修一次守卫
+    # （`service.py` `_PRIORITY_RULE_COUNT_REPAIR_HINT` / `_repair_priority_rule_count`）兜底。
+    priority_rules: list[ProposalPriorityRule] = Field(
+        default_factory=list,
+        description=(
+            "同档前置每次只支持一条规则；多条/分层偏好请先选最重要的一条进入本轮提案，"
+            "或先向用户确认先后顺序，其余分步推进。"
+        ),
+    )
     target_scopes: list[ProposalScope] = Field(default_factory=list)
     negative_scopes: list[ProposalScope] = Field(default_factory=list)
     quality_guards: list[str] = Field(default_factory=list)

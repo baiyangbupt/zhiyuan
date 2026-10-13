@@ -601,6 +601,23 @@ _ADMISSION_EVIDENCE_REPAIR_HINT = (
     "③没有对应证据的事实直接删掉——不要为了让事实留下而拼 id 或编证据。"
 )
 
+# 同档前置"只支持一条"（2026-10-13 实测，会话 10041981）：模型把多层偏好
+# （"地域：北京；院校：财经；地域：上海/广州/深圳"）塞进**一次提案**的
+# `priorityRules` → Java `PriorityRuleSupport.validate()` 拒单（"当前只支持一条
+# 同档前置规则；多个有先后层级的优先目标需要先明确顺序"）→ `blocked` 死卡，
+# 用户走不通。处置与 832c53c 同族：先给**一次**修复回合让它自纠。它**不在**
+# `_REPAIR_HINT_BY_CODE` 里：那条回路修不好会硬失败，而这里修不好必须**维持
+# 原行为**（原请求照发 Java、照旧出 blocked 卡）——所以单列常量，由提案分支
+# 的守卫（`_repair_priority_rule_count`）使用：采纳成功才替换本轮输出。
+_PRIORITY_RULE_COUNT_REPAIR_HINT = (
+    "你本轮 proposalRequest 的 priorityRules 给了多条同档前置规则；"
+    "**同档前置每次只支持一条规则**，多条会整单被后端拒绝、用户拿到一张走不通的死卡。"
+    "请三选一：①只保留最重要的一条 priorityRule（其余偏好后续轮次再推进），"
+    "其余的用正文说明会分步处理；②如果这些偏好本身有先后层级（先地域后院校等），"
+    "也可以不带提案、先向用户确认顺序，再按顺序分步推进；③确实不需要前置时，"
+    "干脆不带 priorityRules。goalType 等其余字段保持不变，不要调用工具、不要编造事实。"
+)
+
 # 先给一次修复回合、修不好再维持硬失败的校验码 → 对应的修复提示（一次、不循环）。
 # 两类："模型对提案状态的声明与网关状态不符"（引用对不上/版本过旧）；"招生事实/
 # 证据的声明与账本不符"（证据缺失/模式写错）。其余校验失败（产物/一致性/范围…）
@@ -2136,6 +2153,27 @@ class GatewayService:
                     [ref.evidence_id for ref in output.evidence_refs],
                 )
                 return {"error": f"{decision.code}: {decision.detail}", "events": []}
+            # 同档前置一次一条（2026-10-13，会话 10041981 死卡）：多条 priorityRules 直投
+            # 必被 Java 拒成 blocked 卡。这里在**投递前**先给一次修复回合让它自纠
+            # （选一条 / 先问顺序）；修不成**原样放行**（照旧由 Java 出 blocked 卡）——
+            # 不新增失败路径，也不许修第二次（见 `_repair_priority_rule_count`）。
+            # 与 `scoreUpdateRequest` 同轮的形状排除在外：那是 `conflicting_proposals`
+            # 硬错误，处置在下面那条检查，不走本守卫。
+            if (
+                output.proposal_request is not None
+                and output.score_update_request is None
+                and len(output.proposal_request.priority_rules) > 1
+            ):
+                output, priority_repaired = await self._repair_priority_rule_count(
+                    thread_id,
+                    output,
+                    turn,
+                    snapshot=snapshot,
+                    evidence_ledger=evidence_ledger,
+                    artifacts=artifacts,
+                    tenant_id=tenant_id,
+                )
+                output_repaired = output_repaired or priority_repaired
             events: list[dict[str, Any]] = []
             for item in turn.get("events", []) if isinstance(turn, Mapping) else []:
                 event = adapt_codex_item(item)
@@ -2536,3 +2574,79 @@ class GatewayService:
         if collected.status != "completed" or not isinstance(collected.output, dict):
             return None
         return {"output": collected.output, "events": collected.events}
+
+    async def _repair_priority_rule_count(
+        self,
+        thread_id: str,
+        output: TurnOutput,
+        turn: Any,
+        *,
+        snapshot: Any,
+        evidence_ledger: list[dict[str, Any]],
+        artifacts: dict[str, Any],
+        tenant_id: str,
+    ) -> tuple[TurnOutput, bool]:
+        """同档前置多条 → 先给**一次**纠错回合；修不成原样返回（不吞、不硬失败）。
+
+        2026-10-13 真事故（会话 10041981）：多层偏好被模型压进一次提案的多条
+        `priorityRules`（"北京→财经→沪广深"）→ Java `priority_rule_invalid`
+        （"当前只支持一条同档前置规则"）→ `blocked` 死卡。与契约层的拒收（如
+        location 域）不同：那条路的语义是"拒了就走修复回合、修不好 `output_schema_invalid`
+        硬失败"，而这里**修不好必须维持原行为**（原请求照发 Java、照旧出 blocked 卡，
+        用户至少能看到"为什么没成"的解释）——所以修复提示不挂 `_REPAIR_HINT_BY_CODE`，
+        采纳与否由本方法看守：
+
+        - 修复回合拿不到输出（或拿到的输出连 `TurnOutput` 都不合法 / 仍多条）→
+          返回原输出，`False`，后续一切照旧；
+        - 修好的候选还要过 `validate_turn_output`（与 `_validate_round` 的 `_check`
+          同一套参数）才采纳：替换输出、把修复回合事件并进本回合，返回 `True`。
+          修复提示写死"不要调用新工具"（`_repair_turn_output`），所以不重建账本；
+          候选的引用仍必须全在现有账本里 ✅ 否则整体退回原输出（fail-closed）。
+        """
+        if not isinstance(turn, dict):
+            return output, False
+        repaired = await self._repair_turn_output(
+            thread_id,
+            _PRIORITY_RULE_COUNT_REPAIR_HINT,
+            raw_output=_last_agent_text(turn),
+        )
+        if repaired is None:
+            return output, False
+        try:
+            candidate = TurnOutput.model_validate(repaired["output"])
+            if (
+                candidate.proposal_request is not None
+                and (
+                    # 又给多条：不修第二次——原样放行（Java 照旧拒单）。
+                    len(candidate.proposal_request.priority_rules) > 1
+                    # 版本守卫必须在采纳前核掉：否则下面的提案分支会以 `stale_state`
+                    # 硬失败——修复回合反而制造了一条新的失败路径。
+                    or candidate.proposal_request.source_version_guard
+                    != snapshot.snapshot_version
+                )
+            ):
+                return output, False
+            if candidate.conversation_action.action_type in EXECUTABLE_CONVERSATION_ACTIONS:
+                # 修复回合不是执行回合：候选若带上可执行的确认/取消动作，一律不采纳
+                # （多规则提案这条路上，原输出今天走不到任何动作执行）。
+                return output, False
+            validate_turn_output(
+                turn_output=candidate,
+                current_snapshot=snapshot,
+                evidence_ledger=evidence_ledger,
+                artifacts=artifacts,
+                thread_id=thread_id,
+                tenant_id=tenant_id,
+                allow_proposal=True,
+                strict_scope=True,
+            )
+        except (ValidationError, OutputContractError):
+            # 候选自身不合格：丢掉它、维持原行为（这里绝不让修复变成新的失败路径）。
+            return output, False
+        turn.update(
+            {
+                "output": repaired["output"],
+                "events": [*(turn.get("events") or []), *(repaired.get("events") or [])],
+            }
+        )
+        return candidate, True

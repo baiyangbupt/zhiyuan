@@ -460,6 +460,23 @@ def test_proposal_priority_rule_accepts_region_city() -> None:
     assert rule.scope == "within_tier"
 
 
+def test_priority_rules_one_at_a_time_guidance_reaches_the_model_facing_schema() -> None:
+    """同档前置"只支持一条"（2026-10-13，会话 10041981）的口径要进**模型侧 schema**：
+
+    该列表仅服务"同档前置"链（Java `PriorityRuleSupport.validate()`：>1 条 = 拒单），
+    但契约层**不硬拒**（硬拒会连"修不好时的 blocked 卡兜底"一起砍掉、变成整轮失败）——
+    改为在 description 里把口径讲给模型（生成时一次只给一条），超条由网关提案分支
+    的先修一次守卫兜底（见 `tests/unit/test_gateway_output_repair.py` ⑥）。
+    """
+    from app.gateway.service import TURN_OUTPUT_SCHEMA
+
+    node = TURN_OUTPUT_SCHEMA["properties"]["proposalRequest"]["anyOf"][0]
+    description = node["properties"]["priorityRules"]["description"]
+
+    assert "只支持一条" in description
+    assert "顺序" in description
+
+
 def test_proposal_requirement_kind_domain_key_follow_the_java_whitelist() -> None:
     """`ProposalRequirement` 与 priority 规则同一个校验器家族（`ProjectedHardRequirementSupport.validate`）：
 

@@ -610,3 +610,154 @@ async def test_a_wrong_admission_mode_gets_the_same_repair_path() -> None:
     assert "admission_mode_mismatch" in prompt
     assert "逐字相等" in prompt, "mode 门用的也是招生事实修复提示（不是提案那条）"
     assert "不是当前有效提案" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# ⑥ 同档前置"只支持一条"（2026-10-13 实测，会话 10041981）：多条 priorityRules
+#    在**投递前**先给一次修复回合；修不成**维持原行为**（原请求照发 Java、照旧出
+#    blocked 卡，不引入新的失败路径）；单条合法路径零回归。
+#
+# 与 ④⑤ 的差别（为什么这里不挂 `_REPAIR_HINT_BY_CODE`）：那条回路"修不好 = 原错误码
+# 硬失败"（整轮作废）；而本事故的既有行为是用户至少能看到一张 blocked 卡（带
+# `attemptedRuleBrief` 人话解释）。所以修不好必须原样放行，由下面的 ② 钉死。
+# ---------------------------------------------------------------------------
+
+_BEIJING_RULE = {"domain": "region", "key": "city", "values": ["北京"]}
+_SHANGHAI_RULE = {"domain": "region", "key": "city", "values": ["上海"]}
+
+
+def _priority_proposal_output(rules: list[dict]) -> dict:
+    return {
+        "responseType": "text",
+        "message": "我把你更想去的方向整理成一项同档前置调整。",
+        "proposalRequest": {
+            "goalType": "prioritize_within_tier",
+            "userOriginalText": "北京优先，上海广州深圳次之",
+            "confidence": "high",
+            "sourceVersionGuard": _snapshot()["version"],  # = 42，与快照一致
+            "priorityRules": rules,
+        },
+    }
+
+
+def _java_preview(status: str, calls: list[dict]):
+    async def preview(tenant_id, session_id, payload):
+        calls.append(payload)
+        proposal = {
+            "proposalId": "ugp-1",
+            "status": status,
+            "requiresConfirmation": status == "ready",
+        }
+        if status == "blocked":
+            proposal["blockingReason"] = (
+                "当前只支持一条同档前置规则；多个有先后层级的优先目标需要先明确顺序。"
+            )
+        return {"code": 0, "data": {"proposals": [proposal]}}
+
+    return preview
+
+
+@pytest.mark.asyncio
+async def test_a_multi_rule_priority_proposal_gets_one_repair_turn_and_the_single_rule_fix_is_adopted(
+    monkeypatch,
+) -> None:
+    """① 多条 → 一次修复回合（提示带"一次一条/选一条/先问顺序"）→ 自纠成一条就采纳。"""
+    from app.util import internal_client
+
+    multi = _priority_proposal_output([_BEIJING_RULE, _SHANGHAI_RULE])
+    raw_text = json.dumps(multi, ensure_ascii=False)
+    single = _priority_proposal_output([_BEIJING_RULE])
+    codex = RepairHarness(
+        [
+            Collected(status="completed", output=multi, events=[_agent_event(raw_text)]),
+            Collected(status="completed", output=single, events=[]),
+        ]
+    )
+    java_payloads: list[dict] = []
+    monkeypatch.setattr(
+        internal_client,
+        "generate_user_goal_planning_fix_proposals",
+        _java_preview("ready", java_payloads),
+    )
+
+    result = await _turn(_gateway(codex))
+
+    assert "error" not in result, result
+    assert result["recovery"] == {"outputRepaired": True}
+    assert len(codex.turns) == 2, "多条 → 修复回合必须跑，且只跑一次"
+    assert len(java_payloads) == 1, "Java 只收到修复后的那一份"
+    assert [rule["values"] for rule in java_payloads[0]["priorityRules"]] == [["北京"]]
+    assert result["output"]["message"] == single["message"]
+
+    prompt = _prompt_text(codex.turns[1])
+    assert "同档前置每次只支持一条规则" in prompt
+    assert "只保留最重要的一条" in prompt, "提示要给可执行的处置：选一条"
+    assert "先向用户确认顺序" in prompt, "另一条处置：先问顺序"
+    assert "分步推进" in prompt
+    assert raw_text in prompt, "上一回合原文要摆回去（修复目标可定位）"
+    # 首回合（正常输入）里不许出现修复提示——它不是用户说的话。
+    assert "给了多条同档前置规则" not in _prompt_text(codex.turns[0])
+
+
+@pytest.mark.asyncio
+async def test_a_repair_turn_that_still_carries_multiple_rules_keeps_the_blocked_card(
+    monkeypatch,
+) -> None:
+    """② 修复后仍多条 → 维持原行为：原请求照发 Java、照旧出 blocked 卡（带人话摘要），
+    整轮不失败、修复只跑一次——不引入新的失败路径。"""
+    from app.util import internal_client
+
+    multi = _priority_proposal_output([_BEIJING_RULE, _SHANGHAI_RULE])
+    codex = RepairHarness(
+        [
+            Collected(status="completed", output=multi, events=[]),
+            Collected(status="completed", output=multi, events=[]),
+            # 第三个是"诱饵"：真要是修了两轮，取到的就是它（会成功、只剩一条）→ 断言会红。
+            Collected(
+                status="completed",
+                output=_priority_proposal_output([_BEIJING_RULE]),
+                events=[],
+            ),
+        ]
+    )
+    java_payloads: list[dict] = []
+    monkeypatch.setattr(
+        internal_client,
+        "generate_user_goal_planning_fix_proposals",
+        _java_preview("blocked", java_payloads),
+    )
+
+    result = await _turn(_gateway(codex))
+
+    assert "error" not in result, result
+    assert len(codex.turns) == 2, "修复回合只许一次"
+    assert len(java_payloads) == 1
+    assert len(java_payloads[0]["priorityRules"]) == 2, "修不好 → 原请求原样发出去（逐字同今日）"
+    assert result["recovery"] == {"outputRepaired": False}
+    assert result["proposalPreview"]["status"] == "blocked"
+    assert (
+        result["proposalPreview"]["attemptedRuleBrief"] == "地域：北京；地域：上海"
+    ), "blocked 卡上的人话摘要照旧"
+
+
+@pytest.mark.asyncio
+async def test_a_single_rule_priority_proposal_never_triggers_a_repair_turn(monkeypatch) -> None:
+    """③ 单条合法路径零回归：一个修复回合都不多跑，载荷一个字节不变。"""
+    from app.util import internal_client
+
+    single = _priority_proposal_output([_BEIJING_RULE])
+    codex = RepairHarness([Collected(status="completed", output=single, events=[])])
+    java_payloads: list[dict] = []
+    monkeypatch.setattr(
+        internal_client,
+        "generate_user_goal_planning_fix_proposals",
+        _java_preview("ready", java_payloads),
+    )
+
+    result = await _turn(_gateway(codex))
+
+    assert "error" not in result, result
+    assert result["recovery"] == {"outputRepaired": False}
+    assert len(codex.turns) == 1, "单条合法路径不许触发修复回合"
+    assert len(java_payloads) == 1
+    assert len(java_payloads[0]["priorityRules"]) == 1
