@@ -527,9 +527,53 @@ def _continuation_nudge(action_result: Mapping[str, Any]) -> str:
     )
 
 
+def _continuation_nudge_failed(action_result: Mapping[str, Any]) -> str:
+    """续接回合的内部提示（**失败版**）：说明"确认收到、执行没成功"，要求**如实解释 + 给替代路径**。
+
+    2026-10-13 实测（会话 10041981）："学费≤2 万"优先规则 preview=ready ✓、用户打字确认 ✓，
+    apply 却以 `409 priority_target_not_in_plan: 当前方案没有命中优先目标` 失败 ✗——失败后
+    **没有任何助手跟话** ✗，用户只见一张失败卡，观感=割裂/报错 ✓。失败同样得接住话头 ✓。
+
+    与生效版只差一个前提 ✓，但这个前提要命 ✗✓：那一版说"已经生效、接着往下做"；
+    这一版必须说"**没有生效**"，并把**后端给的原因原样喂进来** ✓（`code: message` ✓）——
+    原因不给到，模型只能猜 ✗，而"猜失败原因"正是最容易编出错误解释的地方 ✗✗。
+    转述纪律照旧 ✓：模型看得见错误码，用户不该看见 ✗（翻成业务语言 ✓）。
+    """
+    ref = str(action_result.get("proposalRef") or "").strip()
+    ref_clause = f"（本条对应 {ref}）" if ref else ""
+    code = str(action_result.get("code") or "").strip()
+    message = str(action_result.get("message") or "").strip()
+    reason = f"{code}: {message}" if code and message else (code or message or "后端未给出具体原因")
+    return (
+        f"{CONTINUATION_OPEN_TAG}\n"
+        f"用户刚才的确认**执行失败**，本次改动没有生效{ref_clause}。"
+        f"后端给出的原因：{reason}。"
+        "这一段不是用户发来的消息，是系统在确认执行失败后自动触发的续接指令。\n"
+        "请主动接住这一轮，把失败讲清楚、把路给出来：\n"
+        "① **如实解释**刚才这一步为什么没成——把上面的原因翻成用户能懂的业务语言"
+        "（不原样甩错误码/字段名，也不许含糊带过；原因里读不出的细节不要编造，"
+        "就按这个原因的直白含义说明）；"
+        "② 给出**替代路径**：放宽口径（把范围放小一点或换相近条件）、换一种做法"
+        "（换个顺序，比如先补进方案再设优先）、先补数据（先把缺的目标选进来）——"
+        "挑最贴合用户诉求的一到两种，并说清每种大概会得到什么；"
+        "③ 不要重复已经说过的内容，也不要把责任推回给用户（别暗示「你没说清楚」）；"
+        "④ 需要用户表态时用**封闭式**提问（给 2-4 个明确选项）；"
+        "⑤ 不要原样重发同一个提案——同样的口径再来一次还会失败；用户要的若是原方向，"
+        "先把口径谈拢（放宽/换方向/先筛）再动；"
+        "⑥ 这段是内部指令：不要原样转述它，也不要输出其中的字段名或内部标识。\n"
+        f"{CONTINUATION_CLOSE_TAG}"
+    )
+
+
 _CONTINUATION_FAILURE_REPLY = (
     "刚才的确认已经生效。接下来这一步我没能自动接上——"
     "你回一句「继续」，我就接着往下做。"
+)
+# 失败版续接自己又失败时的措辞：**不能说"已生效"** ✗（本次执行就是没成功 ✓）；
+# 说清"哪一步没成" + 给一个用户零成本的动作（回一句「继续」→ 普通用户回合 ✓）。
+_CONTINUATION_FAILURE_REPLY_FAILED = (
+    "刚才这一步没能执行成功，本次改动没有生效。"
+    "详细的解释和替代做法我没能自动接上——你回一句「继续」，我就接着说清楚。"
 )
 # 续接的幂等台账上限（同一个操作只续一次 ✓）：按到达顺序裁掉最旧的，
 # 台账只是"别重复触发"的短期记忆，不是审计账本。
@@ -1511,38 +1555,48 @@ class GatewayService:
         user_turn_watermark: int,
         emit: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> dict[str, Any] | None:
-        """确认**生效**之后，让助手自动接着走下一步（一个新的助手回合 ✓）。
+        """确认之后，让助手自动接住这一轮（一个新的助手回合 ✓）——生效照旧、**失败也接** ✓。
 
         为什么要有它 ✗✓（2026-10-09 用户实测，会话 10041981 ✓）：助手在上文承诺了
         下一步（"确认成绩后我先按方向给你几个院校专业组参考…" ✓），用户点卡确认后
         只收到一句写死的"操作已处理。" ✗——话头断了 ✓。写死的回执不可能是"下一步"，
         而**只有模型知道它承诺过什么** ✓，所以续接必须真跑一个回合 ✓。
 
+        为什么失败也要续 ✗✓（2026-10-13 同一会话实测 ✓）："学费≤2 万"优先规则
+        preview=ready ✓、用户打字确认 ✓，apply 失败 `409 priority_target_not_in_plan`
+        （"当前方案没有命中优先目标" ✓）——失败后**没有任何助手跟话** ✗，用户只见一张
+        失败卡 ✓；失败比成功更欠用户一个解释和替代路径 ✓，所以失败也续 ✓。
+
         形状（每一条都是硬约束 ✓）：
-        · 只认 `applied` ✓（confirm/cancel 家族里只有 confirm 能落这一档 ✗✓：
-          cancel → `cancelled`、别的动作 → `not_executable` ✓，见
-          `conversation_actions.py::_status` ✓）；failed/conflict/cancelled 不续接 ✓
-          （维持现状 ✓——失败时用户要做的是处理失败，不是被拉去下一步 ✗）。
+        · 触发档 = `applied` ∪ `failed` ✓。其余维持现状 ✗：`cancelled` 是用户自己的
+          取消（没有下一步欠他 ✓）；`stale_state`（`_status` 把 `conflict` 也并进
+          这一档 ✓）/`expired` 是"这张卡已经过期" ✓——要做的是刷新重来 ✓，接话会盖过
+          刷新动线 ✗；`applying` **不是终态** ✗✓——它后面还会到 applied/failed ✓，
+          此刻续接既可能接早 ✓✗、又会先把幂等台账占掉 ✓（终态到达时反而续不了 ✓），
+          所以**死等终态** ✓；`not_executable` 是动作类型就不对 ✗（什么都没试过 ✓），
+          没有可解释的事 ✓。
         · **不伪造用户消息** ✓✓：续接回合不走 `handle_turn` → `_handle_uncached` ✓，
           所以不落 user 消息、不进会话 transcript 的用户那一侧 ✓；喂给模型的是一条
-          带内部分隔标签的**续接指令** ✓（`_continuation_nudge` ✓，与每轮注入的内部
-          状态同一类 ✓——模型看得见、用户看不见 ✓），产出照旧是**助手消息** ✓
+          带内部分隔标签的**续接指令** ✓（生效版 `_continuation_nudge` ✓ / 失败版
+          `_continuation_nudge_failed` ✓，与每轮注入的内部状态同一类 ✓——模型看得见、
+          用户看不见 ✓），产出照旧是**助手消息** ✓
           （回合事件 + `_persist_agent` 落库 ✓，与普通回合同一条路径 ✓）。
         · 同一操作**只续一次** ✓：键取 `proposalRef`（没有才退到 turn_id ✓）——
-          applied 是终态、提案随之被消费 ✓，同一次写入不会产出第二个 applied ✓；
+          applied/failed 都是终态、提案随之被消费 ✓，同一次写入不会产出第二个终态 ✓；
           台账在**入口就记** ✓（跳过也算"处理过" ✓），并发重入因此不会双跑 ✓。
         · **不打架** ✓：续接前先看两样——会话锁空不空 ✓、用户回合水位动没动 ✓；
           任一不满足就**放弃** ✓（不排队、不等待 ✓——让路给用户 ✓）。真的跑起来之后
           它就在锁里 ✓，后来的用户回合按既有串行语义排在它后面 ✓。
         · **失败不重试不循环** ✓：模型回合只跑一次 ✓，失败翻成一条带措辞的
-          `continuation_turn_failed` ✓（由调用方发终态 ✓），不再触发第二次 ✓；
-          续接回合自己若又执行了动作 ✓，也**不会**再触发续接（触发点只有用户回合那两处 ✓）。
+          `continuation_turn_failed` ✓（由调用方发终态 ✓，措辞分两版：生效版说"已生效" ✓、
+          失败版说"没成功" ✓），不再触发第二次 ✓；续接回合自己若又执行了动作 ✓，
+          也**不会**再触发续接（触发点只有用户回合那两处 ✓）。
 
         返回：跑了 → 回合结果（形状与 `_handle_uncached` 一致 ✓，调用方交
         `_emit_turn_terminal` 发终态 ✓）；跳过 → None ✓（**什么事件都没发** ✓）。
         """
         status = str((action_result or {}).get("actionStatus") or "")
-        if status != "applied":
+        if status not in {"applied", "failed"}:
             return None
         if self.mode == "legacy" or self.codex is None:
             return None
@@ -1592,7 +1646,10 @@ class GatewayService:
             try:
                 codex_result = await self._codex_turn(
                     snapshot,
-                    _continuation_nudge(action_result),
+                    # 两版 nudge：生效版"接着做"✓ / 失败版"如实解释 + 给替代路径"✓（见各自 docstring ✓）。
+                    _continuation_nudge(action_result)
+                    if status == "applied"
+                    else _continuation_nudge_failed(action_result),
                     str(session_id),
                     user_id,
                     str(tenant_id),
@@ -1616,12 +1673,15 @@ class GatewayService:
                 logger.warning(
                     "continuation turn failed: session=%s ref=%s error=%s", session_id, ref, error
                 )
-                # 措辞要点 ✗✓：**别让用户以为确认失败**——确认已经生效 ✓，
-                # 这里丢的是"自动接上"的那一步 ✓，所以要给出可行动的下一句 ✓
-                # （不重试、不循环 ✓；用户回一句"继续"就是一个普通的用户回合 ✓）。
+                # 措辞要点 ✗✓（分两版 ✓）：applied 时说"**别让用户以为确认失败**"——
+                # 确认已经生效 ✓，这里丢的是"自动接上"的那一步 ✓；failed 时反过来 ✓，
+                # **别让用户以为已经生效** ✗（本次执行就是没成功 ✓）。两版都给
+                # 可行动的下一句 ✓（不重试、不循环 ✓；用户回一句"继续"就是普通用户回合 ✓）。
                 return {
                     "error": error,
-                    "reply": _CONTINUATION_FAILURE_REPLY,
+                    "reply": _CONTINUATION_FAILURE_REPLY
+                    if status == "applied"
+                    else _CONTINUATION_FAILURE_REPLY_FAILED,
                     "events": list(codex_result.get("events", [])) if isinstance(codex_result, Mapping) else [],
                     "snapshotVersion": snapshot.snapshot_version,
                 }

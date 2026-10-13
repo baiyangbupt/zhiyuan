@@ -1,16 +1,22 @@
-"""确认**生效**之后的自动续接（2026-10-09）：助手要接着把承诺的下一步做出来。
+"""确认之后的自动续接（2026-10-09 生效版 / 2026-10-13 失败版）：助手要接住这一轮的话头。
 
-用户实测（会话 10041981）：助手先承诺"确认成绩后我先按方向给你几个院校专业组参考…"，
-用户点确认后只收到写死的"操作已处理。"——话头断了。
+用户实测一（会话 10041981，10-09）：助手先承诺"确认成绩后我先按方向给你几个院校专业组
+参考…"，用户点确认后只收到写死的"操作已处理。"——话头断了。
+用户实测二（同一会话，10-13）："学费≤2 万"优先规则 preview=ready，用户打字确认后 apply
+失败 `409 priority_target_not_in_plan`——失败后没有任何助手跟话，用户只见一张失败卡。
 
-这里钉 `GatewayService.continue_after_action` 的六条：
-① 只有 `applied` 触发（failed / stale_state / cancelled / 其它动作维持现状）；
+这里钉 `GatewayService.continue_after_action` 的七条：
+① 触发档 = `applied` ∪ `failed`；`stale_state` / `cancelled` / `applying`（非终态）/
+   `not_executable` 等维持现状（边界见 `continue_after_action` docstring）；
 ② 续接是**助手回合**：喂进去的是内部分隔标签包住的续接指令，
    **不落 user 消息**（transcript 里没有伪造的用户消息），产出落 agent 消息；
-③ 同一操作（proposalRef 为键）只续一次——重复结果照样不重复触发；
-④ 续接回合自己失败：只返回一次带措辞的失败，不重试、不循环（再来一次调用也走台账）；
-⑤ 用户已动话头（水位变了）→ 让路，不续接；
-⑥ 会话锁被占着 → 不插队（既有串行语义优先），也不死锁。
+③ 失败版 nudge 必须带**原因原文**（`code: message`）并点名三样纪律：
+   如实解释（翻业务语言）、给替代路径、封闭式提问；
+④ 同一操作（proposalRef 为键）只续一次——重复结果照样不重复触发（applied/failed 同款）；
+⑤ 续接回合自己失败：只返回一次带措辞的失败（生效版说"已生效"、失败版说"没成功"），
+   不重试、不循环（再来一次调用也走台账）；
+⑥ 用户已动话头（水位变了）→ 让路，不续接；
+⑦ 会话锁被占着 → 不插队（既有串行语义优先），也不死锁。
 """
 from __future__ import annotations
 
@@ -121,13 +127,21 @@ def _collector() -> tuple[list[dict], Any]:
     return events, emit
 
 
-async def _continue(gateway: GatewayService, *, status: str = "applied", ref: str = "pending-1", watermark: int = 0, emit=None):
+async def _continue(
+    gateway: GatewayService,
+    *,
+    status: str = "applied",
+    ref: str = "pending-1",
+    watermark: int = 0,
+    emit=None,
+    extra: dict[str, Any] | None = None,
+):
     return await gateway.continue_after_action(
         tenant_id="tenant-1",
         session_id="session-1",
         user_id="user-1",
         turn_id="cont-1",
-        action_result={"actionStatus": status, "proposalRef": ref},
+        action_result={"actionStatus": status, "proposalRef": ref, **(extra or {})},
         user_turn_watermark=watermark,
         emit=emit,
     )
@@ -161,9 +175,17 @@ async def test_an_applied_confirm_runs_exactly_one_continuation_turn() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["failed", "stale_state", "cancelled", "applying", "conflict", "not_executable"])
-async def test_only_applied_actions_continue(status: str) -> None:
-    """未生效/被取消/未终结的动作**维持现状**：没有续接回合，也没有事件。"""
+@pytest.mark.parametrize(
+    "status",
+    ["stale_state", "cancelled", "applying", "conflict", "not_executable", "expired"],
+)
+async def test_actions_outside_the_trigger_set_never_continue(status: str) -> None:
+    """触发档只有 applied/failed 两档；其余**维持现状**：没有续接回合，也没有事件。
+
+    逐档理由见 `continue_after_action` docstring：cancelled 是用户自己的取消；stale_state
+    （conflict 并进这一档）/expired 要的是刷新重来；applying **不是终态**（续接会提前占掉
+    幂等台账）；not_executable 什么都没试过。
+    """
     codex = _ScriptedCodex([{"responseType": "text", "message": "不该被用到"}])
     gateway, store = _gateway(codex)
     events, emit = _collector()
@@ -173,6 +195,73 @@ async def test_only_applied_actions_continue(status: str) -> None:
     assert codex.turns == []
     assert events == []
     assert store.agent_messages == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_confirm_runs_exactly_one_continuation_turn() -> None:
+    """失败 → 同样恰好一轮续接（2026-10-13 缺口）：助手消息入流并落库，**没有**用户消息 ✓。
+
+    现场复刻（会话 10041981 ✓）：apply `409 priority_target_not_in_plan` ✗，修前失败后
+    一片安静 ✗；修后喂给模型的是**失败版 nudge** ✓——原因原文在内 ✓、三条纪律在内 ✓。
+    """
+    codex = _ScriptedCodex(
+        [{"responseType": "text", "message": "这条优先要求当前方案里没有落点，我们换个口径。"}]
+    )
+    gateway, store = _gateway(codex)
+    events, emit = _collector()
+
+    result = await _continue(
+        gateway,
+        status="failed",
+        emit=emit,
+        extra={"code": "409", "message": "priority_target_not_in_plan: 当前方案没有命中优先目标"},
+    )
+
+    assert result is not None
+    assert result["reply"] == "这条优先要求当前方案里没有落点，我们换个口径。"
+    # ① 恰好一轮续接（失败也接，且只接一次）。
+    assert len(codex.turns) == 1
+    nudge = codex.turns[0][-1]["text"]
+    # ② 失败版 nudge：分隔标签 + 明说**没有生效** + 原因原文逐字在内。
+    assert nudge.startswith(CONTINUATION_OPEN_TAG)
+    assert nudge.endswith(CONTINUATION_CLOSE_TAG)
+    assert "执行失败" in nudge and "没有生效" in nudge
+    assert "409: priority_target_not_in_plan: 当前方案没有命中优先目标" in nudge
+    assert "pending-1" in nudge
+    # ③ 三条纪律：如实解释（翻业务语言）/ 给替代路径 / 封闭式提问 / 不许原样重发提案。
+    assert "如实解释" in nudge
+    assert "替代路径" in nudge and "放宽口径" in nudge
+    assert "封闭式" in nudge
+    assert "不要原样重发同一个提案" in nudge
+    # ④ 助手消息：回合事件 + 落库（transcript 的助手那一侧）；**不伪造用户消息**。
+    assert [event["type"] for event in events] == ["turn.started"]
+    assert store.agent_messages == ["这条优先要求当前方案里没有落点，我们换个口径。"]
+    assert store.user_messages == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_result_without_a_reason_still_continues() -> None:
+    """失败但后端没给 code/message：照续 ✓（措辞里有兜底说法 ✓），不许因此静默 ✗。"""
+    codex = _ScriptedCodex([{"responseType": "text", "message": "这一步没成，我说下可能的方向。"}])
+    gateway, _ = _gateway(codex)
+
+    assert await _continue(gateway, status="failed") is not None
+
+    nudge = codex.turns[0][-1]["text"]
+    assert "后端未给出具体原因" in nudge
+
+
+@pytest.mark.asyncio
+async def test_the_same_failed_result_never_continues_twice() -> None:
+    """同一个操作失败结果重复到达 → 只续一次（幂等与 applied 同款）。"""
+    codex = _ScriptedCodex([{"responseType": "text", "message": "接住失败。"}])
+    gateway, _ = _gateway(codex)
+
+    first = await _continue(gateway, status="failed", extra={"code": "409", "message": "x"})
+    second = await _continue(gateway, status="failed", extra={"code": "409", "message": "x"})
+
+    assert first is not None and second is None
+    assert len(codex.turns) == 1
 
 
 @pytest.mark.asyncio
@@ -203,6 +292,24 @@ async def test_a_failed_continuation_is_reported_once_and_never_retried() -> Non
     assert store.agent_messages == []  # 失败不产助手消息 ✓
     # 不循环：同一个操作再来一次，还是不发第二轮。
     assert await _continue(gateway) is None
+    assert len(codex.turns) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_continuation_after_a_failed_action_never_claims_success() -> None:
+    """失败版续接自己崩了 → 措辞**不许说"已生效"** ✗（本次执行就是没成功），
+    说清"哪一步没成"并给下一步动作 ✓；同样不重试、不循环 ✓。"""
+    codex = _ScriptedCodex([{"__error__": "turn_failed"}])
+    gateway, store = _gateway(codex)
+
+    result = await _continue(gateway, status="failed", extra={"code": "409", "message": "x"})
+
+    assert result is not None and result["error"] == "turn_failed"
+    assert "已经生效" not in result["reply"]
+    assert "没能执行成功" in result["reply"] and "继续" in result["reply"]
+    assert len(codex.turns) == 1
+    assert store.agent_messages == []
+    assert await _continue(gateway, status="failed") is None
     assert len(codex.turns) == 1
 
 

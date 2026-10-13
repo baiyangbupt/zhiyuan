@@ -359,3 +359,25 @@ def test_advancement_is_host_style_and_major_direction_is_recommended_first() ->
     ).read_text(encoding="utf-8")
     assert "先推荐、再征询" in write_rules, "写实例规则没有'专业方向先推荐再征询'"
     assert "内部依据" in write_rules, "写实例规则没有把打分标注为内部依据"
+
+
+def test_priority_rules_need_a_hit_check_and_budget_intents_are_translated() -> None:
+    """2026-10-13 实测（会话 10041981）："学费≤2 万"被表达成优先规则 → 用户确认后
+    `409 priority_target_not_in_plan`（方案内零命中）——preview=ready 也挡不住，
+    因为 `prioritize_within_tier` 只能重排**方案内已有条目**。两条指令是预防：
+    ① 提议优先类规则前先自检方案内命中目标数 ≥1，命中 0 不把提案发出去；
+    ② 学费/预算类自然表达由**系统**翻译成正确操作（筛选/替换/补档），
+       翻译职责不得推给用户（用户点名：不许要求用户改用程序化措辞）。
+    指令文本不写进实例级指令，模型下一次还会把预算塞进 priorityRules。
+    """
+    dev = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.md"
+    ).read_text(encoding="utf-8")
+    assert "命中目标数 ≥1" in dev, "优先规则前的命中数自检没有写进实例级指令"
+    assert "priority_target_not_in_plan" in dev, "没有点名确认后 409 的后果"
+    assert "命中为 0" in dev and "不要把该提案发出去" in dev, "命中 0 的处理没有写进指令"
+    assert "翻译职责在系统侧" in dev, "学费/预算类诉求的翻译职责没有写进指令"
+    assert "不要要求用户改用" in dev, "没有禁止把翻译责任推回用户"
+    assert "替换/补档" in dev, "没有给出预算类诉求的正确动作映射"
+    assert "业务语言 + 封闭式" in dev, "拿不准时的确认口径没有写进指令"
+    assert "不得把还没进方案的候选说成已经安排" in dev, "文案预支未生效操作的禁令缺失"

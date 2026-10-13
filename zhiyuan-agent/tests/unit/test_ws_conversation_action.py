@@ -827,6 +827,115 @@ async def test_a_stale_confirm_neither_executes_nor_continues(monkeypatch) -> No
     assert execute.calls == []
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 确认**执行失败**之后的自动续接（2026-10-13 实测：会话 10041981 ✓）
+#
+# 现场复刻 ✓："学费≤2 万"优先规则 preview=ready ✓、用户打字确认 ✓、apply 失败
+# `409 priority_target_not_in_plan`（"当前方案没有命中优先目标" ✓）——失败后
+# **没有任何助手跟话** ✗，用户只见一张失败卡，观感=割裂/报错 ✓。
+# 修后：失败与生效同款触发一轮 `cont-…` 新回合 ✓，喂给模型的原因原文在内 ✓。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_failed_confirm_gets_a_continuation_turn_that_owns_the_failure(monkeypatch) -> None:
+    """apply 失败（409）→ 自动续接**一轮新回合**：如实解释 + 给替代路径 ✓✓。
+
+    失败卡照旧出站 ✓（续接是**额外**一轮，不是替换 ✓）；续接回合里模型拿到的是
+    **失败版 nudge**（`code: message` 原文 ✓）；不伪造用户消息 ✓、恰好一轮 ✓。
+    """
+    from app.gateway import conversation_actions
+    from app.gateway.service import GatewayService
+    from app.harness.binding import ThreadBinding
+
+    resolve = _JavaRecorder([
+        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "failed"},  # 回写 pending 的 fail（claim token 复用 ✓）
+    ])
+    execute = _JavaRecorder([
+        {
+            "code": 409,
+            "message": "priority_target_not_in_plan: 当前方案没有命中优先目标",
+        },
+    ])
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolve)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", execute)
+
+    session_id = "900049"
+    store = _MemoryEventStore()
+    runtime = SessionRuntime()
+    codex = _ContinuationCodex(
+        message=(
+            "这条「学费 2 万以内优先」当前方案里没有能命中的志愿，所以没能生效。"
+            "要么把口径放宽到 3 万，要么先把符合的志愿补进方案再谈优先——你想走哪种？"
+        )
+    )
+    message_store = _RecordingStore()
+    gateway = GatewayService(
+        mode="codex_write",
+        codex=codex,
+        legacy=None,
+        message_store=message_store,
+        binding_loader=lambda **kwargs: ThreadBinding(
+            thread_id="thr-continuation",
+            tenant_id="1",
+            session_id=session_id,
+            user_id="u1",
+            allowed_capabilities=frozenset({"catalog_read", "admission_read"}),
+        ),
+        snapshot_loader=_ActionSnapshotLoader(),
+    )
+    ws = _Socket(store, runtime, session_id)
+    confirm = _confirm(session_id, "pending-1")
+    confirm["conversationAction"]["expectedSourceVersion"] = 5
+    ws.push(confirm)
+
+    task = asyncio.create_task(_handle_gateway_ws_loop(ws, gateway))
+    await _wait_for(
+        lambda: any(
+            event.turn_id.startswith("cont-") and event.type == "turn.completed"
+            for event in store.events
+        ),
+        what="失败后的续接回合收尾",
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    # ① 失败卡照旧：`failed` + 原因码/消息都要在（白名单 ✓），记在**确认那一轮**名下 ✓。
+    results = store.of_type("conversationAction.result")
+    assert len(results) == 1 and results[0].payload["actionStatus"] == "failed"
+    assert results[0].payload["code"] == "409"
+    assert "priority_target_not_in_plan" in results[0].payload["message"]
+    assert results[0].turn_id == "turn-confirm"
+
+    # ② 续接（失败版）是一个**新回合**：started → assistant.completed → completed ✓。
+    continuation = [event for event in store.events if event.turn_id.startswith("cont-")]
+    assert [event.type for event in continuation] == [
+        "turn.started",
+        "assistant.completed",
+        "turn.completed",
+    ]
+    message = continuation[1].payload["message"]
+    assert "没能生效" in message and "放宽" in message  # 解释 + 替代都在 ✓
+    for frame_type in ("turn.started", "assistant.completed", "turn.completed"):
+        assert any(
+            str(frame.get("turnId") or "").startswith("cont-") for frame in ws.frames(frame_type)
+        ), f"{frame_type} 没到连接上"
+
+    # ③ 喂进去的是**失败版 nudge**：明说"没有生效" + 原因原文（`code: message` ✓）+ 替代路径。
+    assert len(codex.turns) == 1
+    nudge = codex.turns[0][-1]["text"]
+    assert "执行失败" in nudge and "没有生效" in nudge
+    assert "409: priority_target_not_in_plan: 当前方案没有命中优先目标" in nudge
+    assert "替代路径" in nudge
+
+    # ④ 不伪造用户消息；助手那一侧落的正是续接文本 ✓、恰好一轮 ✓、Java 恰好那几趟 ✓。
+    assert message_store.user_messages == []
+    assert message_store.agent_messages == [message]
+    assert len(resolve.calls) == 2 and len(execute.calls) == 1
+
+
 class _FailingContinuationCodex(_ContinuationCodex):
     """续接那一轮就崩的替身（进程/模型侧故障的形状 ✓）。"""
 
