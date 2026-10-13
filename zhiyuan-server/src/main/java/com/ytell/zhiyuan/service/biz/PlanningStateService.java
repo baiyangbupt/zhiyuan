@@ -1312,6 +1312,15 @@ public class PlanningStateService {
         }
     }
 
+    /**
+     * 约束/意向状态写入（内部接口）。**legacy 围栏**（2026-10-13 队列 21 定稿）：
+     * {@code softPreferences} 自 4.0 起为 **legacy 只读**（权威 = {@code hardPlanningObjectives}
+     * + {@code hardConstraints}）——4.0 写链恒发 {@code intentMode=constraint}（网关
+     * {@code _constraint_update_from_goal} 显式带 {@code "intentMode": "constraint"}；agent 侧
+     * {@code _apply_intent_pending} 亦把一切取值归一为 constraint），因此
+     * {@code intentMode != "constraint"}（含缺省 "preference"）的**软偏好写分支已无现网调用者**，
+     * 仅为兼容旧会话保留：**不删字段、不删读分支；勿在此分支新增逻辑**。
+     */
     public PlanningStateVersionDTO updateConstraintState(Long chatSessionId, UpdateConstraintStateReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         boolean hardMode = applyConstraintStateUpdate(state, req);
@@ -1348,6 +1357,8 @@ public class PlanningStateService {
         HardConstraintsDTO hard = constraintState.getHardConstraints();
         SoftPreferencesDTO soft = constraintState.getSoftPreferences();
         normalizeConstraintStateLists(hard, soft);
+        // true = 4.0 写链（唯一现网路径）；false = legacy preference 软偏好写分支
+        // （现网无写者，围栏见 {@link #updateConstraintState} 方法注）。
         boolean hardMode = req != null && "constraint".equalsIgnoreCase(req.getIntentMode());
 
         if (req != null && req.getMajorPreferences() != null) {
@@ -1455,6 +1466,8 @@ public class PlanningStateService {
             removeValues(softNegative, negative);
             return;
         }
+        // ⚠ legacy 软偏好写入分支（现网无写者，仅旧会话兼容；围栏见 #updateConstraintState 方法注）：
+        // 4.0 起权威字段为 hardPlanningObjectives/hardConstraints，勿新增逻辑。
         List<String> softPositiveToAdd = positive.stream()
                 .filter(value -> !hardPositive.contains(value))
                 .collect(Collectors.toList());

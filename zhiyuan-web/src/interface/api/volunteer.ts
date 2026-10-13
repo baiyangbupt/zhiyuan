@@ -765,6 +765,9 @@ export interface PlanningStateRes {
   };
   constraintState?: {
     hardConstraints?: Record<string, unknown>;
+    /** 4.0 权威意向字段：priorityRules / coverageRequirements / tierQuotaGoal（横幅派生标签读它）。 */
+    hardPlanningObjectives?: Record<string, unknown>;
+    /** legacy 只读（4.0 起）：仅为兼容旧会话保留字段与读取，勿在写链新增（口径见队列 21）。 */
     softPreferences?: Record<string, unknown>;
     derivedPreferences?: Record<string, unknown>;
   };

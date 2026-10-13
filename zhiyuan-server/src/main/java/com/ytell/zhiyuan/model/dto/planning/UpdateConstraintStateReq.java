@@ -7,7 +7,9 @@ import java.util.List;
 @Data
 public class UpdateConstraintStateReq {
     /**
-     * preference: soft user preference; constraint: hard/exclusive requirement.
+     * preference: soft user preference（**legacy 只读通道**——4.0 起写链恒发 constraint，
+     * 此取值仅为兼容旧会话，见 {@code PlanningStateService#updateConstraintState} 围栏）;
+     * constraint: hard/exclusive requirement（4.0 唯一现网取值）。
      */
     private String intentMode = "preference";
     private PreferenceGroup majorPreferences;

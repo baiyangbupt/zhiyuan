@@ -28,46 +28,14 @@ import { navigateTo } from '@/utils/router';
 import useAuthParams from '@/hooks/useAuthParams';
 import { hasDataFreshnessChangeSummary, shouldShowDataFreshnessNotice } from '@/utils/planningDataFreshness.mjs';
 import { isPredictPrepareType, isVolunteerPrepareType } from '@/utils/prepareTypeText.mjs';
+import { buildIntentTags } from '@/utils/intentTags.mjs';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useIsMinip } from '@/hooks/useIsMinip';
 import { formatSubjectShortText } from '@/utils/subjectText';
 import style from './style.module.scss';
 
-const uniqueStrings = (values: Array<string | null | undefined>) =>
-  Array.from(new Set(values.map(item => (item || '').trim()).filter(Boolean)));
-
-const toDisplayString = (value: unknown): string => {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  if (typeof value === 'string' || typeof value === 'number') {
-    return String(value).trim();
-  }
-  if (typeof value === 'object') {
-    const item = value as Record<string, unknown>;
-    return toDisplayString(
-      item.name ||
-        item.label ||
-        item.value ||
-        item.desc ||
-        item.data ||
-        item.subjectName ||
-        item.provinceName ||
-        item.majorName ||
-        item.majorSubName ||
-        item.schoolName
-    );
-  }
-  return '';
-};
-
-const toDisplayStrings = (value: unknown): string[] => {
-  if (Array.isArray(value)) {
-    return uniqueStrings(value.map(toDisplayString));
-  }
-  const text = toDisplayString(value);
-  return text ? [text] : [];
-};
+// 意向标签派生已收敛到 '@/utils/intentTags.mjs'（2026-10-13：横幅改读权威字段
+// hardPlanningObjectives，softPreferences=legacy 只读仍读；派生纯逻辑+单测在模块内）。
 
 const formatFreshnessTime = (value?: string) => {
   if (!value) {
@@ -352,103 +320,12 @@ const SessionDetailV2 = () => {
       .join('/');
   }, [studentSummary]);
 
-  const intentTags = useMemo(() => {
-    const constraintState = planningWorkspaceState?.constraintState || {};
-    const hard = (constraintState.hardConstraints || {}) as Record<string, unknown>;
-    const soft = (constraintState.softPreferences || {}) as Record<string, unknown>;
-    const explicit = planningWorkspaceState?.profileState?.explicitProfile || {};
-    const groups: Array<{
-      label: string;
-      values: string[];
-      type: 'positive' | 'negative' | 'required' | 'excluded';
-    }> = [
-      {
-        label: '优先地域',
-        values: uniqueStrings([
-          ...toDisplayStrings(soft.preferRegions),
-          ...toDisplayStrings(explicit.positiveRegions),
-        ]),
-        type: 'positive',
-      },
-      {
-        label: '优先专业',
-        values: uniqueStrings([
-          ...toDisplayStrings(soft.preferMajors),
-          ...toDisplayStrings(explicit.positiveMajors),
-        ]),
-        type: 'positive',
-      },
-      {
-        label: '优先院校',
-        values: uniqueStrings([
-          ...toDisplayStrings(soft.preferSchools),
-          ...toDisplayStrings(explicit.positiveSchools),
-        ]),
-        type: 'positive',
-      },
-      {
-        label: '不优先地域',
-        values: uniqueStrings([
-          ...toDisplayStrings(soft.avoidRegions),
-          ...toDisplayStrings(explicit.negativeRegions),
-        ]),
-        type: 'negative',
-      },
-      {
-        label: '不优先专业',
-        values: uniqueStrings([
-          ...toDisplayStrings(soft.avoidMajors),
-          ...toDisplayStrings(explicit.negativeMajors),
-        ]),
-        type: 'negative',
-      },
-      {
-        label: '不优先院校',
-        values: uniqueStrings([
-          ...toDisplayStrings(soft.avoidSchools),
-          ...toDisplayStrings(explicit.negativeSchools),
-        ]),
-        type: 'negative',
-      },
-      {
-        label: '只看地域',
-        values: toDisplayStrings(hard.mustIncludeRegions),
-        type: 'required',
-      },
-      {
-        label: '只看专业',
-        values: toDisplayStrings(hard.mustIncludeMajors),
-        type: 'required',
-      },
-      {
-        label: '只看院校',
-        values: toDisplayStrings(hard.mustIncludeSchools),
-        type: 'required',
-      },
-      {
-        label: '避开地域',
-        values: toDisplayStrings(hard.mustExcludeRegions),
-        type: 'excluded',
-      },
-      {
-        label: '避开专业',
-        values: toDisplayStrings(hard.mustExcludeMajors),
-        type: 'excluded',
-      },
-      {
-        label: '避开院校',
-        values: toDisplayStrings(hard.mustExcludeSchools),
-        type: 'excluded',
-      },
-    ];
-    return groups.flatMap(group =>
-      group.values.map(value => ({
-        key: `${group.label}-${value}`,
-        text: `${group.label}: ${value}`,
-        type: group.type,
-      }))
-    );
-  }, [planningWorkspaceState]);
+  // 标签派生在 '@/utils/intentTags.mjs'（纯模块 + 单测）：权威 hardPlanningObjectives
+  // →「优先地域: 北京（同档靠前）/覆盖要求/档位配比」，softPreferences=legacy 只读仍读。
+  const intentTags = useMemo(
+    () => buildIntentTags(planningWorkspaceState),
+    [planningWorkspaceState]
+  );
 
   const handlePlanningStateChange = useCallback((nextState: PlanningStateRes | null) => {
     setPlanningWorkspaceState(prev => {
