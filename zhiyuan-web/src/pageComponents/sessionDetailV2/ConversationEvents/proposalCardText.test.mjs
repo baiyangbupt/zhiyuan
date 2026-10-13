@@ -5,8 +5,11 @@ import {
   PROPOSAL_STALE_STATE_TEXT,
   UNKNOWN_STATUS_TEXT,
   isSettledProposalStatus,
+  legacyPendingCardBadgeText,
   proposalBlockedText,
+  proposalCardStatusTagText,
   proposalFailureText,
+  proposalNeedsConfirmation,
   proposalShortageLine,
   proposalStatusLabel,
   proposalStrategyLabel,
@@ -294,4 +297,65 @@ test('blocked 卡的 summary 与 blockingReason 同句时判重（同一句黑�
   assert.equal(proposalSummaryDuplicatesReason({ blockingReason: 'A' }), false);
   assert.equal(proposalSummaryDuplicatesReason({ summary: '   ', blockingReason: '   ' }), false);
   assert.equal(proposalSummaryDuplicatesReason(null), false);
+});
+
+// ── 卡面 Tag 的兜底语义（2026-10-13 用户实测：`status=info` 的卡挂着"待确认" ✗）────────
+// 事故形状：`status=info`、summary"当前方案里已经有 3 个专业组…本轮不需要为了这个目标
+// 调整方案"、`requiresConfirmation=false`（无按钮 ✓）——标签却是"待确认" ✗，误导。
+
+test('info 卡 → "无需调整"：绝不出现"待确认"，也没有按钮', () => {
+  const tag = proposalCardStatusTagText({ status: 'info' });
+  assert.equal(tag, '无需调整');
+  assert.notEqual(tag, '待确认');
+  // 服务端本来就把 info 标成 requiresConfirmation=false ✓ → 无按钮 ✓。
+  assert.equal(proposalNeedsConfirmation({ status: 'info', requiresConfirmation: false }), false);
+  // 就算哪天某个入口漏了那个 flag ✗，也不许给"无需调整"的卡配确认按钮 ✓（按状态自保 ✓）。
+  assert.equal(proposalNeedsConfirmation({ status: 'info' }), false);
+});
+
+test('ready 卡行为不变：仍"待确认"、仍配确认按钮（唯一的等待档 ✓）', () => {
+  assert.equal(proposalCardStatusTagText({ status: 'ready' }), '待确认');
+  assert.equal(proposalNeedsConfirmation({ status: 'ready', requiresConfirmation: true }), true);
+});
+
+test("动作结果（actionStatus）行为不变：'active' → '待处理'，且优先于提案状态表", () => {
+  assert.equal(proposalCardStatusTagText({ actionStatus: 'active' }), '待处理');
+  assert.equal(proposalCardStatusTagText({ status: 'ready', actionStatus: 'active' }), '待处理');
+  assert.equal(proposalCardStatusTagText({ status: 'info', actionStatus: 'applied' }), '已生效');
+  assert.equal(proposalCardStatusTagText({ actionStatus: 'some_future_state' }), UNKNOWN_STATUS_TEXT);
+});
+
+test('未知提案状态不误称"待确认"：中性兜底"处理结果未知"', () => {
+  for (const status of ['', undefined, null, 'some_future_state']) {
+    const tag = proposalCardStatusTagText({ status });
+    assert.notEqual(tag, '待确认', `${String(status)} 不许说"待确认"`);
+    assert.equal(tag, UNKNOWN_STATUS_TEXT);
+  }
+});
+
+test('preview_only 卡 → "仅供参考"：只给看、不配按钮（preview-only 策略本来就没有可确认动作 ✓）', () => {
+  assert.equal(proposalCardStatusTagText({ status: 'preview_only' }), '仅供参考');
+  assert.equal(proposalNeedsConfirmation({ status: 'preview_only' }), false);
+});
+
+test('blocked 优先于动作结果的口径不变："无法执行"、无按钮', () => {
+  assert.equal(proposalCardStatusTagText({ status: 'blocked', actionStatus: 'active' }), '无法执行');
+  assert.equal(proposalNeedsConfirmation({ status: 'blocked', requiresConfirmation: true }), false);
+});
+
+test('本地等待态（点了还没回结果）优先于提案状态表', () => {
+  assert.equal(proposalCardStatusTagText({ status: 'ready', pendingText: '确认中…' }), '确认中…');
+  assert.equal(proposalCardStatusTagText({ status: 'info', pendingText: '取消中…' }), '取消中…');
+});
+
+// ── legacy `pendingConfirmationCard` 的徽标兜底（`MessageList/index.tsx` ✓）：同一原则 ✓ ────
+
+test('legacy 待确认卡：active / 缺省 → "待确认"；未知状态 → 中性文案，不冒充', () => {
+  // 家族惯例：缺省视作 active ✓（`(status || 'active') === 'active'` ✓）。
+  assert.equal(legacyPendingCardBadgeText('active'), '待确认');
+  assert.equal(legacyPendingCardBadgeText(undefined), '待确认');
+  assert.equal(legacyPendingCardBadgeText(''), '待确认');
+  const unknown = legacyPendingCardBadgeText('some_future_state');
+  assert.notEqual(unknown, '待确认', '未知状态不许冒充"待确认" ✗');
+  assert.equal(unknown, UNKNOWN_STATUS_TEXT);
 });

@@ -5,8 +5,9 @@ import {
   PROPOSAL_STALE_STATE_TEXT,
   isSettledProposalStatus,
   proposalBlockedText,
+  proposalCardStatusTagText,
   proposalFailureText,
-  proposalStatusLabel,
+  proposalNeedsConfirmation,
   proposalSummaryDuplicatesReason,
 } from './proposalCardText.mjs';
 import {
@@ -33,8 +34,9 @@ import {
  * 三种状态要分得开 ✓（照设计里"等待/已答/过期可区分"那条 ✓）：
  *   · `blocked` —— 求解器没能给出可用方案 ✓：**只解释原因、不给按钮** ✗
  *     （给了按钮就是"让用户确认一个不存在的东西" ✗）；
- *   · 要确认 —— 给"确认/取消" ✓；
- *   · 其余（如 `ready` 但不需要确认）—— 只展示 ✓。
+ *   · 要确认 —— 给"确认/取消" ✓（`ready` ✓，"待确认"这个标签只说给它 ✓）；
+ *   · 其余（`info` / `preview_only` / `ready` 但不需要确认）—— 只展示 ✓
+ *     （"无需调整"/"仅供参考" ✓，也没有按钮 ✓）。
  */
 /**
  * 补录成绩卡的结构化摘要（`diff.scoreUpdate` ✓）：来源是 **Java 按合并后成绩算的**
@@ -163,7 +165,13 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
   const action = String(actionResult?.actionStatus || '');
   // 到了结果就收按钮（`applying` 除外 ✓）——排除法，见 `isSettledProposalStatus` ✓。
   const settled = isSettledProposalStatus(action);
-  const needsConfirm = !blocked && !settled && diff.requiresConfirmation !== false && status !== '';
+  // 要不要出按钮的判据在 `proposalCardText.mjs` ✓（2026-10-13：info/preview_only 这类
+  // "没有可确认动作"的已知状态由状态表自保 ✓——"无需调整"的卡不许配确认按钮 ✗）。
+  const needsConfirm = proposalNeedsConfirmation({
+    status,
+    actionStatus: action,
+    requiresConfirmation: diff.requiresConfirmation,
+  });
   const scoreUpdate = diff.scoreUpdate;
   // 按钮要画的样子（锁 / 转圈 / "确认中…"）——判据在 `proposalDecision.mjs` ✓。
   const buttons = proposalDecisionButtonState(decision, {
@@ -221,12 +229,13 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
       <Typography.Text strong>{diff.title || '方案调整预览'}</Typography.Text>
       <Space size={4} style={{ marginLeft: 8 }}>
         <Tag data-testid="proposal-status">
-          {/* `blocked` 优先于动作状态 ✓：这张卡本身没编译出可执行的方案 ✓，
-              标签就该是"无法执行" ✓（冷加载兜底卡若带 `actionStatus=active` ✓，
-              不许把它说成"待处理" ✗——那会让卡片自相矛盾 ✓）。
-              服务端结果还没到时，本地等待态先顶上"确认中…/取消中…" ✓（2026-10-09：
-              点了之后一直停在"待确认"、然后结果突然出现，就是观感割裂的来源 ✗）。 */}
-          {blocked ? '无法执行' : action ? proposalStatusLabel(action) : pendingTagText || '待确认'}
+          {/* 文案判据全在 `proposalCardText.mjs` 的 `proposalCardStatusTagText` ✓（有单测钉 ✓）：
+              `blocked` 优先于动作状态 ✓（这张卡本身没编译出可执行的方案 ✓，不许把它说成
+              "待处理/待确认" ✗——那会让卡片自相矛盾 ✓）；结果没到时本地等待态先顶上
+              "确认中…/取消中…" ✓（2026-10-09 ✓）；**"待确认"只属于 `status=ready`
+              这一档** ✓——2026-10-13 用户实测：`status=info`（"本轮不需要调整方案" ✓、
+              本来就没有按钮 ✓）的卡挂着"待确认" ✗，误导。 */}
+          {proposalCardStatusTagText({ status, actionStatus: action, pendingText: pendingTagText })}
         </Tag>
       </Space>
       {action && !settled ? (

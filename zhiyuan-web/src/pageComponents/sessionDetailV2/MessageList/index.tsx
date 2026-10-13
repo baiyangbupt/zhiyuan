@@ -42,7 +42,7 @@ import {
 } from '@/utils/conversationProtocol.mjs';
 import ClarificationCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ClarificationCard';
 import ProposalCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ProposalCard';
-import { isSettledProposalStatus, proposalFailureText } from '@/pageComponents/sessionDetailV2/ConversationEvents/proposalCardText.mjs';
+import { isSettledProposalStatus, legacyPendingCardBadgeText, proposalFailureText } from '@/pageComponents/sessionDetailV2/ConversationEvents/proposalCardText.mjs';
 import UnderstandingCard from '@/pageComponents/sessionDetailV2/ConversationEvents/UnderstandingCard';
 import { WebSocketMessage } from '@/hooks/websocket';
 import TypingAnimation from '@/components/generating/TypingAnimation';
@@ -2071,7 +2071,11 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                                       effectiveContentObj?.status || ''
                                     );
                                   let statusText = '';
-                                  let badgeText = '待确认';
+                                  // 徽标兜底（判据在 `proposalCardText.mjs` ✓，有单测钉 ✓）：
+                                  // '待确认'只属于真正在等确认的卡（`active` / 缺省 ✓，该卡家族的
+                                  // 既有惯例 ✓）；未知状态用中性文案 ✓，不冒充'待确认' ✗
+                                  // （2026-10-13：与提案卡 `status=info` 挂"待确认" ✗ 同一原则 ✓）。
+                                  let badgeText = legacyPendingCardBadgeText(effectiveContentObj?.status);
                                   if (effectiveContentObj?.status === 'applied' || effectiveContentObj?.clicked) {
                                     statusText =
                                       effectiveContentObj?.kind === 'intent_change' ? '已采纳' : '已确认';

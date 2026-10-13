@@ -58,6 +58,68 @@ export function proposalStatusLabel(status) {
   return PROPOSAL_STATUS_TEXT[value] || UNKNOWN_STATUS_TEXT;
 }
 
+// ── 卡面 Tag：**提案状态**（`diff.status` ✓，Java `RepairProposalTaxonomy.Status` ✓）──────
+//
+// 与上面 `PROPOSAL_STATUS_TEXT`（动作**结果** `actionStatus` ✓）是**两张不同的表** ✗✓——
+// 两张表都带"状态"两个字，来源却是两个完全不同的字段 ✓。
+//
+// 事故（2026-10-13 用户实测）：`status=info` 的卡（summary："当前方案里已经有 3 个专业组…
+// 本轮不需要为了这个目标调整方案" ✓、`requiresConfirmation=false` 本来就没有按钮 ✓）
+// 却挂着"待确认" ✗——旧实现把"还没有 actionStatus"的卡**一律**兜底成"待确认" ✗，
+// 而真正在等用户点确认的只有 `ready` 一档 ✓（Java 侧 `ready` ⇔ `requiresConfirmation=true` ✓）。
+export const PROPOSAL_DIFF_STATUS_TEXT = {
+  // **唯一**名副其实的"待确认" ✓：可执行、等用户点"采纳/放弃" ✓（按钮与它配套出现 ✓）。
+  ready: '待确认',
+  // 提醒/核验档（`Status.INFO` ✓："本轮不需要为了这个目标调整方案" ✓）：与 summary 同义 ✓。
+  // 工作台侧同档的口径："这项主要是提醒或核验，不会直接调整方案"（`getFixProposalStatusDescription` ✓）。
+  info: '无需调整',
+  // 只给预览、没有可确认动作（`Status.PREVIEW_ONLY` ✓，`requiresConfirmation=false` ✓）：
+  // 工作台侧口径"可以先参考预览"（同 `getFixProposalStatusDescription` ✓）。
+  preview_only: '仅供参考',
+  // 求解器没编出可执行方案（`Status.BLOCKED` ✓）：与卡上 Alert / 既有 Tag 同一口径 ✓。
+  blocked: '无法执行',
+};
+
+/** 已知**不可确认**的三档（Java 侧 `blocked`/`info`/`preview_only` 一律 `requiresConfirmation=false` ✓，没有任何可确认动作 ✓）。 */
+const DIFF_STATUS_NON_CONFIRMABLE = new Set(['blocked', 'info', 'preview_only']);
+
+/**
+ * 卡面 Tag 的文案 ✓（判据从组件里挪出来 ✓，才有单测钉 ✓）。优先级与旧实现**逐字对齐** ✓，
+ * 只改兜底那一步 ✗✓：
+ *   ① `status=blocked` → "无法执行" ✓（它优先于动作结果 ✓：这张卡本身没编出方案 ✓，
+ *      不许因为带了个 `actionStatus=active` 就说成"待处理/待确认" ✗——自相矛盾 ✓）；
+ *   ② 动作结果（`actionStatus` ✓）到了 → 照 `PROPOSAL_STATUS_TEXT` 翻中文 ✓；
+ *   ③ 本地等待态（`pendingText` ✓——点了还没回结果先顶着 ✓）→ "确认中…/取消中…" ✓；
+ *   ④ 落回**提案状态表**（`diff.status` ✓）命中；
+ *   ⑤ 都不认识 → "处理结果未知" ✓——**不许**默认声称"待确认" ✗✗（"待确认"只说
+ *      真正在等用户点确认的卡 ✓，见 `PROPOSAL_DIFF_STATUS_TEXT` ✓；用户实测的
+ *      "info 卡挂着待确认"就是这一步兜错造成的 ✗）。
+ */
+export function proposalCardStatusTagText({ status, actionStatus, pendingText } = {}) {
+  const statusValue = String(status || '');
+  if (statusValue === 'blocked') return PROPOSAL_DIFF_STATUS_TEXT.blocked;
+  const actionValue = String(actionStatus || '');
+  if (actionValue) return proposalStatusLabel(actionValue);
+  const pendingValue = String(pendingText || '');
+  if (pendingValue) return pendingValue;
+  return PROPOSAL_DIFF_STATUS_TEXT[statusValue] || UNKNOWN_STATUS_TEXT;
+}
+
+/**
+ * 这张卡现在要不要出"确认/取消"按钮 ✓（判据从组件里挪出来 ✓，info 卡的"无按钮"才有单测钉 ✓）。
+ * 旧组件里的式子逐字搬来 ✓：`!blocked && !settled && requiresConfirmation !== false && status !== ''`；
+ * 只多一条**按状态自保** ✓：三档"没有可确认动作"的已知状态（`DIFF_STATUS_NON_CONFIRMABLE` ✓）
+ * 永远不给按钮 ✗——就算哪天某个入口漏了 `requiresConfirmation=false` 那个 flag ✗，
+ * 也不许让"无需调整"的卡配着确认按钮 ⇒ 自相矛盾 ✓。
+ */
+export function proposalNeedsConfirmation({ status, actionStatus, requiresConfirmation } = {}) {
+  const statusValue = String(status || '');
+  if (DIFF_STATUS_NON_CONFIRMABLE.has(statusValue)) return false;
+  if (isSettledProposalStatus(actionStatus)) return false;
+  if (requiresConfirmation === false) return false;
+  return statusValue !== '';
+}
+
 /** `stale_state` 的说明（legacy 卡 statusText 的口径 ✓）：卡上要说得出"下一步做什么" ✓。 */
 export const PROPOSAL_STALE_STATE_TEXT = '方案已变化，请重新生成预览后再确认。';
 
@@ -353,4 +415,17 @@ export function proposalBlockedText(diff = {}) {
     details,
     reason,
   };
+}
+
+// ── legacy "待确认卡"（`pendingConfirmationCard` ✓，`MessageList/index.tsx` ✓）的徽标兜底 ────
+//
+// 该卡的 status 分支表（applied / cancelled / replaced / expired / applying / stale_state /
+// failed ✓）在 `MessageList` 里各自覆盖徽标 ✓；这里只管**分支没命中**的那一档 ✗✓。
+// 家族惯例：**缺省视作 `active`** ✓（同文件 `(status || 'active') === 'active'` ✓）——
+// `active` 才是真正在等用户点确认的卡 ✓ → '待确认' ✓。
+// **未知状态不许冒充 '待确认'** ✗（与卡面 Tag `proposalCardStatusTagText` 同一条原则 ✓，
+// 2026-10-13 ✓）：用中性文案 ✓——用户至少不会以为自己（还）欠一次点击 ✓。
+export function legacyPendingCardBadgeText(status) {
+  const value = String(status || 'active');
+  return value === 'active' ? '待确认' : UNKNOWN_STATUS_TEXT;
 }
