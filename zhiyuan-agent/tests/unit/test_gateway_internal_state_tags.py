@@ -5,11 +5,15 @@ state_patch、执行计划骨架、工具契约每轮都以裸 JSON / 半结构�
 分不清"给我推理用的机器状态"和"可以讲给用户听的内容"（base_instructions 第 10
 条是另一道闸，这里钉的是网关注入层）。
 
-两件事：
+三件事：
 1. 每个机器块都被 `【内部状态（机器格式，禁止原样转述给用户）】…【内部状态结束】`
    包住，并紧跟一句"只能用业务语言转述"；
 2. 块内内容**逐字不变**（与不加标签时会产生的文本逐字相等）——只加标签/引导，
    不删真值：模型仍需要版本、缺口、候选和约束才能干活。
+3. 用户正文**同样**带显式边界（2026-10-13，"短消息被读成空"事故）：多块带标签的
+   机器文本之后，最后一条**裸**短消息（"1"、"好"）会被模型读成机器块尾注、当成
+   "这一轮没有新消息"，自我否读为空。用户正文前后各一条 `USER_MESSAGE_OPEN/CLOSE_TAG`，
+   开标签点明"本轮唯一需要回应的内容"；正文同样逐字不变。
 
 断言不用"包含子串"而是逐字相等：子串只能证明"标签在"，证明不了"真值没被顺手
 裁掉"；后来者改注释、改渲染顺序都会在这两条上现形。
@@ -29,6 +33,8 @@ from app.gateway.service import (
     INTERNAL_STATE_CLOSE_TAG,
     INTERNAL_STATE_OPEN_TAG,
     INTERNAL_STATE_REMINDER,
+    USER_MESSAGE_CLOSE_TAG,
+    USER_MESSAGE_OPEN_TAG,
     GatewayService,
 )
 from app.gateway.snapshot import build_snapshot
@@ -133,13 +139,15 @@ def _gateway(loader: StaticSnapshotLoader, codex: CodexHarness) -> GatewayServic
     )
 
 
-async def _turn(gateway: GatewayService, *, turn_id: str) -> dict[str, Any]:
+async def _turn(
+    gateway: GatewayService, *, turn_id: str, content: str = "你好"
+) -> dict[str, Any]:
     return await gateway.handle_turn(
         tenant_id="tenant-1",
         session_id="session-1",
         user_id="user-1",
         turn_id=turn_id,
-        content="你好",
+        content=content,
     )
 
 
@@ -154,6 +162,13 @@ def _unwrap(text: str) -> str:
     return body
 
 
+def _unwrap_user(text: str) -> str:
+    """取出用户消息块里的原文（两端标记缺失直接失败）。"""
+    assert text.startswith(USER_MESSAGE_OPEN_TAG + "\n"), text[:120]
+    assert text.endswith("\n" + USER_MESSAGE_CLOSE_TAG), text[-120:]
+    return text[len(USER_MESSAGE_OPEN_TAG) + 1: -len(USER_MESSAGE_CLOSE_TAG) - 1]
+
+
 @pytest.mark.asyncio
 async def test_machine_blocks_are_tagged_and_contents_are_byte_identical() -> None:
     workspace = _workspace(version=10)
@@ -166,8 +181,12 @@ async def test_machine_blocks_are_tagged_and_contents_are_byte_identical() -> No
 
     items = codex.turns[0]
     assert len(items) == 5
-    # 用户原话是最后一条，**不加**标签（标签只给机器块）。
-    assert items[-1] == {"type": "text", "text": "你好"}
+    # 用户原话是最后一条，**也**带显式边界（内部状态标签仍只给机器块）：
+    # 正文逐字不变，两端是用户消息标记。
+    assert items[-1] == {
+        "type": "text",
+        "text": f"{USER_MESSAGE_OPEN_TAG}\n你好\n{USER_MESSAGE_CLOSE_TAG}",
+    }
 
     snapshot = build_snapshot(workspace)
     expected_state = json.dumps(
@@ -228,3 +247,32 @@ async def test_state_patch_block_is_tagged_with_content_untouched() -> None:
     # 计划骨架块也仍带着新真值（标签没有把内容吃掉）。
     plan_body = _unwrap(codex.turns[1][2]["text"])
     assert '"taskFamily": "unclassified"' in plan_body
+
+
+@pytest.mark.asyncio
+async def test_a_short_user_message_keeps_its_own_delimited_slot_after_four_machine_blocks() -> None:
+    """形状=4 块内部状态 + 一行短消息（2026-10-13）：短消息不再裸挂，也不再被否读为空。
+
+    事故形状：四块带标签的机器文本 + 最后一条**裸**"1"——模型把这一行读成机器块
+    尾注、"这一轮没有新的用户消息"。这里钉住：① 短消息原文逐字落在用户消息标记之间
+    （没被吞掉、也没被并进上一条内部块）；② 归属不用猜——开标签点明它是"本轮唯一
+    需要回应的内容"，且这条**不**共用内部状态标签（两套边界的语义不许混）。
+    """
+    codex = CodexHarness()
+    gateway = _gateway(StaticSnapshotLoader(_workspace(version=10)), codex)
+
+    await _turn(gateway, turn_id="ui-1", content="1")
+
+    items = codex.turns[0]
+    assert len(items) == 5
+    # 4 块机器文本一一带着内部状态标签——两侧边界并存，互不串。
+    for item in items[:4]:
+        assert item["text"].startswith(INTERNAL_STATE_OPEN_TAG)
+    last = items[-1]
+    assert INTERNAL_STATE_OPEN_TAG not in last["text"]
+    assert _unwrap_user(last["text"]) == "1"
+    assert last["text"].count(USER_MESSAGE_OPEN_TAG) == 1
+    assert last["text"].count(USER_MESSAGE_CLOSE_TAG) == 1
+    # 标签措辞本身不许被改弱：点明"用户消息"与"唯一需要回应"。
+    assert "用户消息" in USER_MESSAGE_OPEN_TAG
+    assert "唯一需要回应" in USER_MESSAGE_OPEN_TAG

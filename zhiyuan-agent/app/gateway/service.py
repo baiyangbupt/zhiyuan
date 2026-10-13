@@ -494,6 +494,28 @@ def _internal_state_block(text: str) -> str:
     )
 
 
+# 用户消息正文的显式分隔（2026-10-13，"短消息被读成空"事故）。
+#
+# 事故形状：4 块【内部状态】都带标签，最后一条**裸文本**恰恰是用户消息（"1"、"好"）——
+# 短消息挂在大段机器文本末尾时，模型会把它读成机器块的尾注、"这一轮没有新消息"，
+# 于是自我否读。即"有标签的是机器内容、没标签的反倒像内部尾注"：边界单边清晰，
+# 反而把用户那一侧衬成了可忽略的。
+#
+# 修法=把用户正文也框起来：开标签点明"这是本轮唯一需要回应的内容"，两侧都有边界，
+# 最后一条的归属不再需要模型自己猜。与 `INTERNAL_STATE_*` 互斥使用（机器块 vs 用户正文），
+# 内容**逐字不变**（同款纪律：只加边界，不动真值）。
+#
+# 只在**用户消息**上用；续接 nudge 有自己的 `CONTINUATION_*` 标签（它是系统指令、
+# 不是用户消息），套上"用户消息"标记会让两套标签的语义互相污染。
+USER_MESSAGE_OPEN_TAG = "【以下是用户消息原文（本轮唯一需要回应的内容）】"
+USER_MESSAGE_CLOSE_TAG = "【用户消息结束】"
+
+
+def _user_message_block(text: str) -> str:
+    """把用户正文包进显式分隔标签，正文本身逐字不变。"""
+    return f"{USER_MESSAGE_OPEN_TAG}\n{text}\n{USER_MESSAGE_CLOSE_TAG}"
+
+
 # 确认生效后的**自动续接**（2026-10-09，用户实测：会话 10041981 里助手先承诺了
 # "确认成绩后我先按方向给你几个院校专业组参考…" ✓，用户点确认后只收到一句写死的
 # "操作已处理。" ✗——话头断了 ✓）。续接回合的输入是一条**内部指令**：它不是用户
@@ -1658,6 +1680,9 @@ class GatewayService:
                     snapshot.admission_mode,
                     state_patch=None,
                     emit=emit,
+                    # 这一段是系统内部指令（自带 CONTINUATION 标签），不是用户消息：
+                    # 不套用户消息分隔（见 `_codex_turn` 里该参数与两套标签的注释）。
+                    content_is_user_message=False,
                 )
             except asyncio.CancelledError:
                 raise
@@ -1924,6 +1949,9 @@ class GatewayService:
         admission_mode: str,
         state_patch: Any = None,
         emit: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        # 最后一条输入是**用户正文**还是**系统内部指令**（续接 nudge）。默认 True：
+        # 绝大多数调用就是用户回合；续接路径显式传 False（见 `continue_after_action`）。
+        content_is_user_message: bool = True,
     ) -> dict[str, Any]:
         if self.codex is None:
             return {"error": "codex_unavailable", "events": []}
@@ -2001,7 +2029,14 @@ class GatewayService:
                     }
                 )
             turn_input = list(context_items)
-            turn_input.append({"type": "text", "text": content})
+            if content_is_user_message:
+                # 用户正文带显式边界（2026-10-13 短消息事故，见 `USER_MESSAGE_OPEN_TAG`）：
+                # 多块机器文本之后，最后一条必须是"框起来、点明归属"的用户原话。
+                turn_input.append({"type": "text", "text": _user_message_block(content)})
+            else:
+                # 续接 nudge：它自带 `CONTINUATION_*` 标签（系统指令，不是用户消息），
+                # **不**套用户消息标记——套上会把"这不是用户发的"这件事又说反。
+                turn_input.append({"type": "text", "text": content})
             # 没有 emit 时**不传**这个参数：多传一个 None 会让所有既有的
             # 替身 harness（签名里没有它）当场 TypeError——"旧调用不变"
             # 指的是调用形态也不变，不只是语义不变。
