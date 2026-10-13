@@ -422,3 +422,191 @@ async def test_a_legal_confirmation_never_triggers_a_repair_turn(monkeypatch) ->
     assert len(claim_calls) == 1, "合法性没被破坏：执行照样走点卡路径"
     # 执行结果照常挂进回合结果（Java 侧判冲突 → 软失败结果，不是整轮失败）。
     assert result["actionResult"]["actionStatus"] == "stale_state"
+
+
+# ---------------------------------------------------------------------------
+# ⑤ 招生事实与证据对不上（`admission_evidence_missing` / `admission_mode_mismatch`）：
+#    同样是先修一次、修不好才硬失败
+#
+# 2026-10-13 真事故（会话 10041981，18:51:49 与 18:55:19 连续两轮同族硬失败）：模型把
+# `recommendation.preview_candidates` 候选行里的 `entityId`/`volunteerId`——`_` 拼接的
+# 方案行键（实测 `43020271000088_43020272000269`、`43020271000538_43020272001410`），
+# 横跨两个单元、不是招生单元号——直接当 `admissionFacts[].admissionUnitId` 填了
+# （引用是"对比/同批讨论两所院校"），而本回合证据的 unit id 是单值 → 永远对不上 →
+# `admission_evidence_missing` → 整轮硬失败（`recoverable=False`），模型收不到任何
+# 反馈。这里钉四件事：
+# ① 复合/错配的 fact 走**一次**修复回合，提示里带错误码 + 单值/拆分规则 + 上回合原文；
+# ② 修复回合改对了（拆成单值事实、各引各的证据）→ 采纳、回合成功、`outputRepaired=True`；
+# ③ 再犯 → 与现状逐字一致的硬失败（**同一个错误码**），只修一次、不循环；
+# ④ 合法事实路径零回归：带匹配证据的单值 fact 首轮直接通过，一个回合都不多跑。
+# ---------------------------------------------------------------------------
+
+# 复合串：两个单元用 `_` 拼出来的实体键（真实形状来自候选行 entityId/volunteerId）。
+_COMPOSITE_UNIT_ID = "43020271000088_43020272000269"
+_UNIT_ID_A = "43020271000088"
+_UNIT_ID_B = "43020271000538"
+
+
+def _admission_evidence(evidence_id: str, unit_id: str) -> dict:
+    """快照里一条招生证据（单值 unit id；会话/租户放 scope 里，与 Java 形状同）。"""
+    return {
+        "evidenceId": evidence_id,
+        "sourceLevel": "authoritative",
+        "dataVersion": "2",
+        "admissionMode": "major_group",
+        "admissionUnitId": unit_id,
+        "scope": {
+            "kind": "admission_history",
+            "sessionId": "session-1",
+            "tenantId": "tenant-1",
+        },
+        "limitations": [],
+    }
+
+
+def _admission_snapshot() -> dict:
+    return {
+        **_snapshot(),
+        "admissionMode": "major_group",
+        "evidence": [
+            _admission_evidence("ev-admission-a", _UNIT_ID_A),
+            _admission_evidence("ev-admission-b", _UNIT_ID_B),
+        ],
+    }
+
+
+def _fact(unit_id: str, *, mode: str = "major_group") -> dict:
+    return {
+        "admissionUnitId": unit_id,
+        "admissionMode": mode,
+        "schoolId": "987",
+        "schoolName": "北京金融科技学院",
+        "majorId": "842",
+        "majorName": "会计学",
+        "unitAdmissionRate": 86.0,
+        "riskTier": "保",
+        "dataVersion": "2",
+    }
+
+
+def _evidence_ref(evidence_id: str, unit_id: str) -> dict:
+    return {
+        "evidenceId": evidence_id,
+        "sourceLevel": "authoritative",
+        "dataVersion": "2",
+        "admissionMode": "major_group",
+        "admissionUnitId": unit_id,
+    }
+
+
+def _composite_fact_output(*, mode: str = "major_group") -> dict:
+    """第一回合的坏输出：一条 fact 的 unit id 是 A_B 复合串（候选行 entityId）。"""
+    return {
+        "responseType": "text",
+        "message": "两所学校的会计学都在保底档，我给你按学校分开说。",
+        "admissionFacts": [_fact(_COMPOSITE_UNIT_ID, mode=mode)],
+    }
+
+
+def _split_fact_output() -> dict:
+    """修复后的正确形状：拆成逐条事实，每条单值 unit id + 各自匹配的证据引用。"""
+    return {
+        "responseType": "text",
+        "message": "两所学校的会计学都在保底档，我给你按学校分开说。",
+        "evidenceRefs": [
+            _evidence_ref("ev-admission-a", _UNIT_ID_A),
+            _evidence_ref("ev-admission-b", _UNIT_ID_B),
+        ],
+        "admissionFacts": [_fact(_UNIT_ID_A), _fact(_UNIT_ID_B)],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_composite_admission_unit_id_gets_one_repair_turn_and_the_split_fix_is_adopted() -> None:
+    """①+② 复合串/错配 fact 被拒 → 一次修复回合（提示带单值/拆分规则）→ 拆对了就采纳。"""
+    composite = _composite_fact_output()
+    raw_text = json.dumps(composite, ensure_ascii=False)
+    codex = RepairHarness(
+        [
+            Collected(status="completed", output=composite, events=[_agent_event(raw_text)]),
+            Collected(status="completed", output=_split_fact_output(), events=[]),
+        ]
+    )
+
+    result = await _turn(_gateway(codex, _admission_snapshot()))
+
+    assert "error" not in result, result
+    assert result["recovery"] == {"outputRepaired": True}
+    assert len(codex.turns) == 2, "修复回合必须跑，且只跑一次"
+    units = [fact["admissionUnitId"] for fact in result["output"]["admissionFacts"]]
+    assert units == [_UNIT_ID_A, _UNIT_ID_B], "修完后每条事实必须是单值 unit id"
+
+    prompt = _prompt_text(codex.turns[1])
+    assert "admission_evidence_missing" in prompt, "issue 必须带原错误码"
+    assert "逐字相等" in prompt, "提示要说清 unit id 必须与证据同值"
+    assert "方案行定位键" in prompt, "提示要讲清候选行 entityId/volunteerId 是什么（不是招生单元号）"
+    assert "拆成逐条事实" in prompt, "提示要给出可执行的处置：拆成多条事实"
+    assert "编造" in prompt, "提示要堵住'编证据'这条歪路"
+    assert _COMPOSITE_UNIT_ID in prompt, "复合串形态要被点名（提示词 + 上回合原文）"
+    assert raw_text in prompt, "上一回合原文要摆回去（修复目标可定位）"
+    # 首回合（正常输入）里不许出现修复提示——它不是用户说的话。
+    assert "拆成逐条事实" not in _prompt_text(codex.turns[0])
+
+
+@pytest.mark.asyncio
+async def test_a_repair_turn_that_still_carries_the_composite_fact_keeps_the_hard_failure() -> None:
+    """③ 再犯 → 与现状一致的硬失败：同一个错误码、同一条通用文案、不再循环修复。"""
+    composite = _composite_fact_output()
+    codex = RepairHarness(
+        [
+            Collected(status="completed", output=composite, events=[]),
+            Collected(status="completed", output=composite, events=[]),
+            # 第三个是"诱饵"：真要是修了两轮，取到的就是它（回合会成功）→ 断言会红。
+            Collected(status="completed", output=_split_fact_output(), events=[]),
+        ]
+    )
+
+    result = await _turn(_gateway(codex, _admission_snapshot()))
+
+    assert result["error"].startswith("admission_evidence_missing:"), result["error"]
+    assert result["reply"] == _RECOVERABLE_TURN_FAILURE
+    assert result.get("output") is None
+    assert len(codex.turns) == 2, "修复回合只许一次"
+
+
+@pytest.mark.asyncio
+async def test_a_legal_admission_fact_never_triggers_a_repair_turn() -> None:
+    """④ 合法路径零回归：单值 fact + 匹配的本回合证据 → 首轮直接通过，不修。"""
+    codex = RepairHarness(
+        [Collected(status="completed", output=_split_fact_output(), events=[])]
+    )
+
+    result = await _turn(_gateway(codex, _admission_snapshot()))
+
+    assert "error" not in result, result
+    assert result["recovery"] == {"outputRepaired": False}
+    assert len(codex.turns) == 1, "合法事实不许触发修复回合"
+    assert len(result["output"]["admissionFacts"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_admission_mode_gets_the_same_repair_path() -> None:
+    """同族另一扇门：mode 写错（`admission_mode_mismatch`）走同一修复回路，用招生提示。"""
+    wrong = _composite_fact_output(mode="major")  # admissionMode 与快照不一致
+    fixed = {"responseType": "text", "message": "这轮先不给招生事实，只说结论。"}
+    codex = RepairHarness(
+        [
+            Collected(status="completed", output=wrong, events=[]),
+            Collected(status="completed", output=fixed, events=[]),
+        ]
+    )
+
+    result = await _turn(_gateway(codex, _admission_snapshot()))
+
+    assert "error" not in result, result
+    assert result["recovery"] == {"outputRepaired": True}
+    assert len(codex.turns) == 2
+    prompt = _prompt_text(codex.turns[1])
+    assert "admission_mode_mismatch" in prompt
+    assert "逐字相等" in prompt, "mode 门用的也是招生事实修复提示（不是提案那条）"
+    assert "不是当前有效提案" not in prompt

@@ -86,6 +86,7 @@ test('每个网关自产的拒绝码都有中文映射（proposal_reference_mism
     'proposal_version_invalid',
     'pending_revision_missing',
     'action_not_executable',
+    'admission_evidence_missing',
   ]) {
     const text = proposalFailureText({ code, message: 'internal english message' });
     assert.match(text, new RegExp(`^\\[${code}\\] `), `${code} 要带锚点`);
@@ -93,6 +94,22 @@ test('每个网关自产的拒绝码都有中文映射（proposal_reference_mism
     assert.doesNotMatch(text.replace(`[${code}]`, ''), /[A-Za-z]{3,}/, `${code} 文案里不该留英文`);
     assert.match(text, /[㐀-鿿]/, `${code} 文案要中文`);
   }
+});
+
+test('admission_evidence_missing 的复合码（裸码: 单元号明细）也说人话（会话 10041981）', () => {
+  // 真事故形状：`admission_evidence_missing: 43020271000088_43020272000269`
+  // ——裸码先取冒号前那段再查表；正文（锚点之后）只留人话，英文原文不铺。
+  const text = proposalFailureText({
+    code: 'admission_evidence_missing: 43020271000088_43020272000269',
+    message: 'admission evidence missing',
+  });
+  assert.equal(
+    text,
+    '[admission_evidence_missing: 43020271000088_43020272000269] 这轮引用的录取数据凭证没对上，已自动中止——稍后重试或换个问法。',
+  );
+  // 锚点（`[code]`，排障对账要它）之外的正文不许再出现服务端明细。
+  const body = text.slice(text.indexOf('] ') + 2);
+  assert.doesNotMatch(body, /43020271000088|evidence missing|admission/);
 });
 
 test('码没有映射、但服务端 message 本来就是中文 → 转述它（Java 的校验话要留住）', () => {

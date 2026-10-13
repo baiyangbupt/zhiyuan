@@ -69,6 +69,10 @@ const FAILURE_TEXT_BY_CODE = {
   proposal_version_invalid: '这张卡的版本信息无法识别，请重新生成预览后再确认。',
   pending_revision_missing: '这条待确认已经结束或被取代，请重新生成预览后再确认。',
   action_not_executable: '这个动作当前不可执行，请按对话提示重新发起。',
+  // 整轮契约失败（`recoverable.error` 的复合串形态 ✓）：模型这轮引用的录取数据
+  // 凭证没对上账本 → 网关先给过一次自动修复回合、修不好才把整轮作废 ✓
+  //（2026-10-13 会话 10041981 实测：模型把两个招生单元拼成一个复合单元号 ✗）。
+  admission_evidence_missing: '这轮引用的录取数据凭证没对上，已自动中止——稍后重试或换个问法。',
 };
 
 const DEFAULT_FAILURE_TEXT = '这次确认没有生效，请重试或重新生成预览后再确认。';

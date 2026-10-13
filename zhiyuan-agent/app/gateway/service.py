@@ -567,12 +567,51 @@ _PROPOSAL_REFERENCE_REPAIR_HINT = (
     "这张提案已失效、需要重新发起，不要声称已提交。"
 )
 
-# 先给一次修复回合、修不好再维持硬失败的校验码——"模型对提案状态的声明与网关状态
-# 不符"这一族（引用对不上、版本过旧）。其余校验失败（证据/产物/模式/一致性…）保持
-# 原样：直接硬失败，不修（它们要么不可修复，要么不属于本回路的处置范围）。
-_REPAIRABLE_CONTRACT_CODES = frozenset(
-    {"proposal_reference_mismatch", "proposal_version_mismatch"}
+# 招生事实对不上证据（`admission_evidence_missing` / `admission_mode_mismatch`）时的修复提示。
+#
+# 2026-10-13 真事故（会话 10041981，18:51:49 与 18:55:19 连续两轮同族硬失败）：模型把
+# `recommendation.preview_candidates` 候选行里的 `entityId`/`volunteerId` 直接当成
+# `admissionFacts[].admissionUnitId` 填了（实测 `43020271000088_43020272000269`、
+# `43020271000538_43020272001410`）。那个 `A_B` 形状**本身是合法的**——它是"专业+大学"
+# 那条链的**方案行键**（Java `PlanningStateService.canonicalMajorVolunteerId`：
+# `planSchoolDataId + "_" + majorId`；`WorkingPlanMutationSupport.resolveWorkingPlanUnitId`
+# 取第一个 `_` 之前那段当单元号）——但它**不是招生单元号**：招生单元（`schoolUnitId`/
+# 招生单位编号）是单值（`PlanMajorFilterNode` 末层、`queryPlanMajorData` 入参），
+# `A_B` 是"单元_专业行"。两条链（院校专业组 / 专业+大学）的证据里 unit id 长什么样，
+# 模型都只能**照证据填**。这两轮里 `preview_candidates` 都已成功返回但**没有签发任何
+# 证据**（`evidenceRefs` 空数组），模型等于拿方案行键给无证据的事实凑了个 id → 与本回合
+# 证据永远对不上 → 硬失败（`recoverable=False`），用户只看到"对话引擎暂时不可用"。
+# 问题不在工具，而在模型输出的 fact 构造与证据绑定——与 proposal 一族同病：模型收不到
+# "哪条事实被拒、为什么"，下一轮还会照旧填。所以同样**先给一次修复回合**。
+# 口径是"**与证据同套同值**"（不是简单禁拼接）：证据是哪套 ID 就填哪套、逐字相等才许勾；
+# 今天两套链的 unit id 都是单值，候选行的 `A_B` 只有与证据逐字相同时才合法。
+# `admission_mode_mismatch` 是同一形态的另一扇门（fact/证据的模式写错），处置方式相同
+# （改对/删掉），一并纳入；其余校验失败照旧直接硬失败。
+_ADMISSION_EVIDENCE_REPAIR_HINT = (
+    "你输出里的招生事实（admissionFacts）没有匹配到本回合证据。硬规则：每条事实必须匹配"
+    "本回合输出 evidenceRefs 里的一条**真实存在**的证据（引用的 evidenceId 必须在账本里）："
+    "admissionMode 与本会话快照一致，admissionUnitId 与证据里的那个值**逐字相等**"
+    "（证据是哪套 ID 逻辑就填哪套、同值才许勾上），groupCode 两边都有时必须一致。"
+    "候选名单行（preview_candidates 等）的 entityId/volunteerId 是 `_` 拼接的**方案行定位键**"
+    "（形如 43020271000088_43020272000269：前半是院校计划行、后半是专业行），**不是**招生"
+    "单元号；除非某条证据的 admissionUnitId 本身就是这个值（那就像其他值一样逐字照抄），"
+    "否则不得拿它当 unit id，也不得把两个单元拼成一条。请三选一：①跨单元/拼接的汇总拆成"
+    "逐条事实，每条与各自证据同值，并在 evidenceRefs 里补上对应证据引用（证据 id 抄本回合"
+    "工具结果里真实签发的那条，不要编造）；②事实的单元或模式写错了就更正为与证据一致的值；"
+    "③没有对应证据的事实直接删掉——不要为了让事实留下而拼 id 或编证据。"
 )
+
+# 先给一次修复回合、修不好再维持硬失败的校验码 → 对应的修复提示（一次、不循环）。
+# 两类："模型对提案状态的声明与网关状态不符"（引用对不上/版本过旧）；"招生事实/
+# 证据的声明与账本不符"（证据缺失/模式写错）。其余校验失败（产物/一致性/范围…）
+# 保持原样：直接硬失败，不修（它们要么不可修复，要么不属于本回路的处置范围）。
+_REPAIR_HINT_BY_CODE = {
+    "proposal_reference_mismatch": _PROPOSAL_REFERENCE_REPAIR_HINT,
+    "proposal_version_mismatch": _PROPOSAL_REFERENCE_REPAIR_HINT,
+    "admission_evidence_missing": _ADMISSION_EVIDENCE_REPAIR_HINT,
+    "admission_mode_mismatch": _ADMISSION_EVIDENCE_REPAIR_HINT,
+}
+_REPAIRABLE_CONTRACT_CODES = frozenset(_REPAIR_HINT_BY_CODE)
 
 
 def _agent_message_text(item: Any) -> str | None:
@@ -1968,14 +2007,17 @@ class GatewayService:
                 artifacts: dict[str, Any],
                 turn_payload: Any,
             ) -> tuple[TurnOutput, bool]:
-                """校验本回合输出；"引用了失效提案"先给模型一次纠错回合再定生死。
+                """校验本回合输出；可修复的契约违反先给模型一次纠错回合再定生死。
 
                 2026-10-09 真事故（会话 10041980）：模型对一张早已失效的提案卡反复发
                 confirm → `proposal_reference_mismatch` → 整轮 `recoverable=False` 硬
                 失败 → 模型**收不到任何纠错反馈** → 下一轮继续确认同一张死卡，用户
                 被卡死。这类失败与 schema 失败一样是**可修复**的：把冲突讲给模型
                 （`_PROPOSAL_REFERENCE_REPAIR_HINT`），让它改用当前有效引用 / 重新提案
-                / 如实说明。修复回合再被拒（或压根拿不到结构化输出）时**维持现状硬
+                / 如实说明。2026-10-13 同病又见于招生事实（会话 10041981）：模型把
+                候选行的 `entityId` 拼接串当 `admissionUnitId` → `admission_evidence_missing`
+                硬失败，修复提示见 `_ADMISSION_EVIDENCE_REPAIR_HINT`（拆单值 / 更正 /
+                删掉）。修复回合再被拒（或压根拿不到结构化输出）时**维持现状硬
                 失败**，错误码不变（前端按码查兜底文案 ✓），也不许再修第二次。
                 """
                 def _check(value: TurnOutput | Mapping[str, Any]) -> TurnOutput:
@@ -2008,12 +2050,12 @@ class GatewayService:
                         raise
                     # 复用 schema 修复那条回路（`_repair_turn_output`）：一次、不循环。
                     logger.warning(
-                        "turn output rejected (%s); attempting one repair turn for a stale proposal reference",
+                        "turn output rejected (%s); attempting one repair turn for a repairable contract violation",
                         exc,
                     )
                     fresh = await self._repair_turn_output(
                         thread_id,
-                        f"{exc}\n{_PROPOSAL_REFERENCE_REPAIR_HINT}",
+                        f"{exc}\n{_REPAIR_HINT_BY_CODE[exc.code]}",
                         raw_output=_last_agent_text(turn_payload),
                     )
                     if fresh is None:
