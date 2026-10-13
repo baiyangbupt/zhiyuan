@@ -53,6 +53,80 @@ class ThreadRecoveryError(RuntimeError):
         super().__init__(message or code)
 
 
+def compose_current_binding_lookup(
+    backend: Callable[[str, str], Any],
+    registry: Any | None = None,
+) -> Callable[[str, str], Any]:
+    """两级恢复查询：后端（权威）优先，本地登记表兜底。
+
+    **为什么需要兜底**（2026-10-13 实测，会话 10041981）：后端绑定行带
+    `expires_at`（登记 TTL 默认 900 秒），而"查当前绑定"这条路按
+    `expires_at > now` 过滤。进程重启若晚于最后一次登记 + TTL，查询只会
+    回 `null`——与"真新会话"**不可区分** → `load_or_resume` 静默新建 thread
+    → 用户得到"历史都在、模型却看不见"的对话（19:07 与 19:23 两次都栽在
+    这条路上：行分别 18:50:19 登记（19:05:19 过期）、19:07:18 登记
+    （19:22:18 过期），而查询发生在 19:07:17 / 19:23:41）。
+
+    本地登记表（`ThreadBindingRegistry`）由本进程每回合无条件写、没有 TTL，
+    它记得"这个会话最后用过的 thread"。只在后端说"没有绑定"时用它，且它
+    只回答"找回哪个 thread"——拿回 thread 后 `backend_binding_loader` 会
+    重新登记，后端那行的 handle 与 expires_at 随之刷新（自愈）。
+
+    纪律与原查询一致：后端查询失败、本地查询失败都**抛**（由调用方判成
+    可恢复错误），不许降级成"没有绑定"——那就是拿一次故障换一次上下文丢失。
+    尤其：后端回 `code != 0`（"查不了"）时**不**兜底，原样往下走让
+    `_load_binding` 判成可恢复错误——后端故障不许被一次本地命中盖掉。
+    """
+
+    async def lookup(tenant_id: str, session_id: str) -> Any:
+        payload = await _maybe_await(backend(tenant_id, session_id))
+        if _answers_with_a_binding(payload) or registry is None:
+            return payload
+        try:
+            fallback = registry.latest_for_session(str(tenant_id), str(session_id))
+        except Exception as exc:  # noqa: BLE001 —— 分类逻辑就在下面
+            raise ThreadRecoveryError(
+                "binding_registry_lookup_failed",
+                f"local binding registry lookup failed: {exc}",
+            ) from exc
+        if fallback is not None:
+            # 留痕：这轮走的是兜底恢复（后端行大概已过期）。没有这行日志，
+            # "这轮为什么恢复了 / 为什么没恢复"只能靠猜。
+            logger.warning(
+                "current binding lookup returned none for tenant=%s session=%s; "
+                "falling back to the local registry thread %s (the backend row is "
+                "probably expired, its TTL is minutes)",
+                tenant_id,
+                session_id,
+                fallback.get("threadId"),
+            )
+        return fallback
+
+    return lookup
+
+
+def _answers_with_a_binding(payload: Any) -> bool:
+    """这次后端回答里有没有"一条绑定"。
+
+    认的形状与 `ThreadRecovery._load_binding` 一致：裸 payload，或
+    `{"code": .., "data": ..}` 信封（server.py 已把信封收敛成裸 payload，
+    但测试与旧调用点会直接给信封——两种都得认，不然兜底在两种形状之间
+    行为不一致）。
+
+    信封里 `code != 0`（"查不了"）算"有东西"：那种情况必须原样往下走，
+    由 `_load_binding` 判成可恢复错误——不许在这里吃成本地兜底。
+    """
+    if payload is None:
+        return False
+    if isinstance(payload, Mapping):
+        if "data" in payload:
+            if payload.get("code") not in (None, 0):
+                return True
+            return isinstance(payload.get("data"), Mapping)
+        return True
+    return True
+
+
 # 只有这两类允许落到"重建"分支。依据见模块开头的实测记录：
 # 都是 -32600（JSON-RPC invalid request）+ 一句能认出来的话。
 # 单靠 code 不够——把任何 -32600 都当成"thread 没了"，会把将来某个
@@ -203,9 +277,15 @@ class ThreadRecovery:
                 if is_not_resumable(exc):
                     # 这条以前是**静默**的，于是"这一轮到底走了哪条恢复分支"
                     # 只能靠推断（自愈那次就是这样）。三条分支各留一条日志，
-                    # 诊断才不用回头猜。
-                    logger.info(
-                        "thread %s is not resumable (%s); rebuilding", binding.thread_id, exc
+                    # 诊断才不用回头猜。级别是 WARNING、措辞含"context is lost"：
+                    # 这是**唯一**允许丢模型侧历史的分支（rollout 确实没了），
+                    # "用户发现它忘了刚说过的话"必须在日志里一眼可见（与另两条
+                    # 重建分支同一口径）。
+                    logger.warning(
+                        "thread %s is not resumable (%s); rebuilding "
+                        "(model-side context is lost, business state is not)",
+                        binding.thread_id,
+                        exc,
                     )
                     return await self._create_thread()
                 if is_lock_conflict(exc) and await self._retry_locked(binding.thread_id):
@@ -332,6 +412,7 @@ __all__ = [
     "NOT_RESUMABLE_MARKERS",
     "ThreadRecovery",
     "ThreadRecoveryError",
+    "compose_current_binding_lookup",
     "is_lock_conflict",
     "is_not_resumable",
 ]

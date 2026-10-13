@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from app.gateway.thread_recovery import (
@@ -288,3 +290,139 @@ async def test_a_dead_runtime_without_a_restart_hook_says_so() -> None:
         await recovery.load_or_resume(SessionKey(tenant_id="1", session_id="42"))
 
     assert err.value.code == "runtime_restart_unavailable"
+
+
+# ── 两级恢复查询：后端过期 → 本地登记表兜底（2026-10-13 会话 10041981 真因） ──
+
+
+@pytest.mark.asyncio
+async def test_an_expired_backend_binding_falls_back_to_the_local_registry() -> None:
+    """后端说"没有绑定"、本地登记表记得这个会话 → 用本地那份。
+
+    后端那行按 `expires_at > now` 过滤，TTL 是分钟级；重启晚过 TTL 时它只会
+    回 null——与"真新会话"不可区分。不兜底就是**静默新建**（模型侧历史全丢）。
+    """
+    from app.gateway.thread_recovery import compose_current_binding_lookup
+
+    consulted: list[tuple[str, str]] = []
+
+    class _Registry:
+        def latest_for_session(self, tenant_id: str, session_id: str):
+            consulted.append((tenant_id, session_id))
+            return {"threadId": "thr-from-registry", "tenantId": tenant_id, "chatSessionId": session_id}
+
+    async def backend(tenant_id: str, session_id: str):
+        return None  # 后端过期行的形状：code=0 / data=null 已被 server.py 收敛成 None
+
+    lookup = compose_current_binding_lookup(backend, _Registry())
+    payload = await lookup("1", "42")
+
+    assert payload == {"threadId": "thr-from-registry", "tenantId": "1", "chatSessionId": "42"}
+    assert consulted == [("1", "42")]
+
+
+@pytest.mark.asyncio
+async def test_a_backend_binding_is_never_overridden_by_the_local_registry() -> None:
+    """后端是权威：它给了绑定就不许再看本地那份（本地可能更旧）。"""
+
+    from app.gateway.thread_recovery import compose_current_binding_lookup
+
+    class _Registry:
+        def latest_for_session(self, tenant_id: str, session_id: str):  # pragma: no cover
+            raise AssertionError("后端有绑定的时候不该查本地表")
+
+    async def backend(tenant_id: str, session_id: str):
+        return {"threadId": "thr-backend", "tenantId": tenant_id, "chatSessionId": session_id}
+
+    lookup = compose_current_binding_lookup(backend, _Registry())
+
+    assert (await lookup("1", "42"))["threadId"] == "thr-backend"
+
+
+@pytest.mark.asyncio
+async def test_a_local_registry_lookup_failure_is_not_a_missing_binding() -> None:
+    """本地查不了 ≠ 没有绑定：照旧抛出去，由调用方判成可恢复错误。
+
+    降级成"没有绑定"与后端查询失败降级的后果一模一样：一次故障换一次上下文丢失。
+    """
+
+    from app.gateway.thread_recovery import compose_current_binding_lookup
+
+    class _Registry:
+        def latest_for_session(self, tenant_id: str, session_id: str):
+            raise sqlite3.OperationalError("no such table: codex_thread_binding_registry")
+
+    async def backend(tenant_id: str, session_id: str):
+        return None
+
+    lookup = compose_current_binding_lookup(backend, _Registry())
+
+    with pytest.raises(ThreadRecoveryError) as err:
+        await lookup("1", "42")
+
+    assert err.value.code == "binding_registry_lookup_failed"
+
+
+@pytest.mark.asyncio
+async def test_without_a_local_registry_the_backend_answer_stands() -> None:
+    """没配本地登记表（legacy / 没路径）时行为与从前一致：None 就是 None。"""
+
+    from app.gateway.thread_recovery import compose_current_binding_lookup
+
+    async def backend(tenant_id: str, session_id: str):
+        return None
+
+    assert await compose_current_binding_lookup(backend, None)("1", "42") is None
+
+
+@pytest.mark.asyncio
+async def test_a_backend_error_envelope_is_not_masked_by_the_local_registry() -> None:
+    """后端回 `code != 0`（"查不了"）：不许兜底，原样往下走 → 可恢复错误。
+
+    后端故障被一次本地命中盖掉，等于把一次真实故障做成"看起来恢复了"——
+    与把故障降级成"没有绑定"是同一类错误，只是方向相反。
+    """
+
+    from app.gateway.thread_recovery import compose_current_binding_lookup
+
+    class _Registry:
+        def latest_for_session(self, tenant_id: str, session_id: str):  # pragma: no cover
+            raise AssertionError("后端说'查不了'时不许查本地表")
+
+    async def backend(tenant_id: str, session_id: str):
+        return {"code": 500, "msg": "backend down", "data": None}
+
+    lookup = compose_current_binding_lookup(backend, _Registry())
+
+    payload = await lookup("1", "42")
+    assert payload == {"code": 500, "msg": "backend down", "data": None}
+
+    async def resume(thread_id: str):
+        raise AssertionError("不该走到 resume")
+
+    async def create():  # pragma: no cover
+        raise AssertionError("不该走到新建")
+
+    recovery = ThreadRecovery(resume=resume, create=create, lookup=lookup)
+    with pytest.raises(ThreadRecoveryError) as err:
+        await recovery.load_or_resume(SessionKey(tenant_id="1", session_id="42"))
+
+    assert err.value.code == "binding_lookup_failed"
+
+
+@pytest.mark.asyncio
+async def test_an_expired_backend_envelope_falls_back_to_the_local_registry() -> None:
+    """信封形状的 null（`{"code":0,"data":null}`，测里后端替身的原样回包）也走兜底。"""
+
+    from app.gateway.thread_recovery import compose_current_binding_lookup
+
+    class _Registry:
+        def latest_for_session(self, tenant_id: str, session_id: str):
+            return {"threadId": "thr-local", "tenantId": tenant_id, "chatSessionId": session_id}
+
+    async def backend(tenant_id: str, session_id: str):
+        return {"code": 0, "data": None}
+
+    lookup = compose_current_binding_lookup(backend, _Registry())
+
+    assert (await lookup("1", "42"))["threadId"] == "thr-local"

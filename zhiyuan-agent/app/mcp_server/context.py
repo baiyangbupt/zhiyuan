@@ -6,6 +6,7 @@ import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from app.harness.binding import ThreadBinding
 from app.util import internal_client
@@ -68,8 +69,8 @@ class ThreadBindingRegistry:
                 """
                 INSERT OR REPLACE INTO codex_thread_binding_registry
                     (thread_id, tenant_id, session_id, user_id, capabilities, admission_mode, handle, expires_at,
-                     snapshot_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     snapshot_version, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     binding.thread_id,
@@ -81,8 +82,55 @@ class ThreadBindingRegistry:
                     binding.opaque_handle or "",
                     expires_at,
                     binding.snapshot_version,
+                    _now_iso(),
                 ),
             )
+
+    def latest_for_session(self, tenant_id: str, session_id: str) -> dict[str, Any] | None:
+        """该 (租户, 会话) **最近登记过**的 thread——恢复专用，**不看 expires_at**。
+
+        为什么必须有它（2026-10-13 实测，会话 10041981）：后端绑定表按
+        `expires_at > now` 过滤，而登记 TTL 是分钟级（默认 900 秒）——进程重启
+        若比最后一次登记晚过 TTL，"当前绑定"就查不到了。那不是"新会话"，是
+        **恢复键过期**：Gateway 拿不到绑定 → 静默新建 thread → 模型侧历史全丢，
+        而链路上不报任何错（模型把用户回的「1」当成新问题）。
+
+        本地登记表是本进程每回合都写的（`store` 在 `backend_binding_loader` 里
+        无条件调用），没有 TTL 语义，正好承担"重启后找回 thread"：拿回 thread
+        之后下一次 `backend_binding_loader` 会重新登记，后端那份随之刷新。
+
+        返回的是 `CurrentBinding.from_payload` 认得的形状；查不到返回 None。
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT thread_id, tenant_id, session_id, user_id, capabilities,
+                       admission_mode, snapshot_version, expires_at
+                FROM codex_thread_binding_registry
+                WHERE tenant_id = ? AND session_id = ?
+                ORDER BY updated_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (str(tenant_id), str(session_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            capabilities = json.loads(row[4]) if row[4] else []
+        except ValueError:
+            capabilities = []
+        return {
+            "threadId": row[0],
+            "tenantId": row[1],
+            "chatSessionId": row[2],
+            "userId": row[3],
+            "allowedCapabilities": [
+                str(item) for item in capabilities if isinstance(item, str)
+            ],
+            "admissionMode": row[5],
+            "snapshotVersion": row[6],
+            "expiresAt": row[7],
+        }
 
     async def resolve(self, *, thread_id: str, capability: str) -> ThreadBinding:
         row = self._load(thread_id)
@@ -129,7 +177,8 @@ class ThreadBindingRegistry:
                     admission_mode TEXT NOT NULL,
                     handle TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
-                    snapshot_version INTEGER
+                    snapshot_version INTEGER,
+                    updated_at TEXT
                 )
                 """
             )
@@ -142,6 +191,14 @@ class ThreadBindingRegistry:
             if "snapshot_version" not in columns:
                 connection.execute(
                     "ALTER TABLE codex_thread_binding_registry ADD COLUMN snapshot_version INTEGER"
+                )
+            if "updated_at" not in columns:
+                # 老库（无 updated_at）先补列：不补的话 `latest_for_session` 的
+                # ORDER BY 会直接报 no such column——恢复兜底在**升级当刻**失效。
+                # 老行的 updated_at 保持 NULL：SQLite 里 NULL 最小，DESC 排最后，
+                # 于是"有时间的行优先、老行按 rowid 兜底"。
+                connection.execute(
+                    "ALTER TABLE codex_thread_binding_registry ADD COLUMN updated_at TEXT"
                 )
         try:
             os.chmod(self.path, 0o600)
@@ -161,6 +218,12 @@ class ThreadBindingRegistry:
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
+
+
+def _now_iso() -> str:
+    """登记时刻（UTC，ISO-8601 带 Z）。排序键必须是**单调可读**的字符串：
+    `latest_for_session` 按它倒序取"最近登记的那一条"。"""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def extract_trusted_thread_id(server: object) -> str:

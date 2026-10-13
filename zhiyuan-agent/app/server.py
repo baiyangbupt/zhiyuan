@@ -305,11 +305,11 @@ async def lifespan(app: FastAPI):
             tenant_id, chat_session_id, evidence_ids, thread_id=thread_id
         )
 
-    async def current_binding_loader(tenant_id: str, session_id: str):
-        """A7：进程重启后靠它找回这个会话该用的 thread。
+    async def backend_current_binding(tenant_id: str, session_id: str):
+        """后端的"当前绑定"查询（权威那份）。
 
-        查不到绑定返回 None（新建），查询**失败**则抛出去由 ThreadRecovery
-        判成可恢复错误——把失败当"没有绑定"会把一次后端故障变成一次上下文丢失。
+        查不到绑定返回 None（由组合层决定是否新建），查询**失败**则抛出去——
+        把失败当"没有绑定"会把一次后端故障变成一次上下文丢失。
         """
         from app.util.internal_client import get_current_codex_thread_binding
 
@@ -319,6 +319,16 @@ async def lifespan(app: FastAPI):
         if response.get("code") not in (None, 0):
             raise RuntimeError("binding_lookup_failed")
         return response.get("data")
+
+    # A7：进程重启后靠它找回这个会话该用的 thread。后端优先；后端行按
+    # `expires_at > now` 过滤（登记 TTL 默认 900 秒），重启晚过 TTL 时它只会回
+    # null——与"真新会话"不可区分，于是**静默新建**（2026-10-13 会话 10041981
+    # 两次失忆的真因）。本地登记表没有 TTL，作为兜底把原 thread 找回来。
+    from app.gateway.thread_recovery import compose_current_binding_lookup
+
+    current_binding_loader = compose_current_binding_lookup(
+        backend_current_binding, binding_registry
+    )
 
     gateway_runtime = await build_gateway_runtime(
         gateway_config,

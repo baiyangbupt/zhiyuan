@@ -17,17 +17,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from app.gateway.service import GatewayService
+from app.gateway.thread_recovery import compose_current_binding_lookup
 from app.gateway.ui_events import SessionKey
 from app.harness.binding import ThreadBinding
 from app.harness.codex import CodexAppServerHarness
+from app.mcp_server.context import ThreadBindingRegistry
 
 FAKE_SERVER = Path(__file__).resolve().parents[1] / "fixtures" / "codex" / "fake_app_server.py"
 
@@ -123,13 +127,23 @@ async def _harness() -> _RecordingHarness:
     return harness
 
 
-def _gateway(harness: CodexAppServerHarness, backend: _Backend | None) -> GatewayService:
+def _gateway(
+    harness: CodexAppServerHarness,
+    backend: _Backend | None,
+    registry: ThreadBindingRegistry | None = None,
+) -> GatewayService:
     async def binding_loader(**kwargs):
         return _binding(
             kwargs["thread_id"],
             tenant_id=str(kwargs["tenant_id"]),
             session_id=str(kwargs["session_id"]),
         )
+
+    # `registry` 给了就按 server.py 的同一个组合接（后端优先、本地兜底）：
+    # 被测的是那条真实组合，不是测试里另写一遍的替身。
+    lookup = backend.current if backend is not None else None
+    if lookup is not None and registry is not None:
+        lookup = compose_current_binding_lookup(lookup, registry)
 
     return GatewayService(
         mode="codex_readonly",
@@ -138,8 +152,19 @@ def _gateway(harness: CodexAppServerHarness, backend: _Backend | None) -> Gatewa
         message_store=FakeMessageStore(),
         binding_loader=binding_loader,
         snapshot_loader=lambda **kwargs: _snapshot(),
-        current_binding_loader=backend.current if backend is not None else None,
+        current_binding_loader=lookup,
     )
+
+
+def _registry(tmp_path, *thread_ids: str) -> ThreadBindingRegistry:
+    """本地登记表：按登记顺序写入（最后一条 = "最近用过"的那个 thread）。"""
+    registry = ThreadBindingRegistry(str(tmp_path / "bindings.sqlite3"))
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    for thread_id in thread_ids:
+        registry.store(
+            _binding(thread_id, tenant_id="1", session_id="42"), expires_at=expires
+        )
+    return registry
 
 
 async def _turn(gateway: GatewayService, *, tenant_id: str, session_id: str, turn_id: str = "ui-1"):
@@ -199,6 +224,133 @@ async def test_a_restart_resumes_the_bound_thread_instead_of_rebuilding() -> Non
         assert restarted.scope_for_thread("thr-survived-restart") == SessionKey(
             tenant_id="1", session_id="42"
         )
+        assert result.get("reply") is not None
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_an_expired_backend_binding_resumes_via_the_local_registry(tmp_path) -> None:
+    """后端行过期（current 回 null）之后重启：本地登记表把原 thread 找回来。
+
+    这是 2026-10-13 会话 10041981 的真实形状，也是"静默失忆"的真因：
+    后端行按 `expires_at > now` 过滤（登记 TTL 900 秒），而重启后的查询
+    发生在过期之后——18:50:19 登记（19:05:19 过期）→ 19:07:17 查询；
+    19:07:18 登记（19:22:18 过期）→ 19:23:41 查询。`current` 回 null 与
+    "真新会话"不可区分，于是静默新建——用户看到历史都在、模型看不见。
+    """
+    harness = await _harness()
+    # 后端：这个会话没有**有效**绑定（过期的行对 current 不可见）。
+    backend = _Backend({})
+    registry = _registry(tmp_path, "thr-survived-restart")
+    gateway = _gateway(harness, backend, registry=registry)
+    try:
+        result = await _turn(gateway, tenant_id="1", session_id="42")
+
+        assert harness.resumed == ["thr-survived-restart"], "必须 resume 原 thread"
+        stats = await harness.client.request("test/stats", {})
+        assert stats["threadStarts"] == 0, "恢复成功的路径不许新建 thread"
+        assert gateway._threads[SessionKey(tenant_id="1", session_id="42")] == (
+            "thr-survived-restart"
+        )
+        assert result.get("reply") is not None
+        # 后端查询仍然被问过（兜底只在它说"没有"时才用）。
+        assert backend.calls == [("1", "42")]
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_the_local_registry_prefers_the_thread_this_session_used_last(tmp_path) -> None:
+    """会话重建过 thread：兜底要拿**最近登记**的那个，不是先写进去的。"""
+    harness = await _harness()
+    backend = _Backend({})
+    registry = _registry(tmp_path, "thr-old", "thr-new")
+    gateway = _gateway(harness, backend, registry=registry)
+    try:
+        await _turn(gateway, tenant_id="1", session_id="42")
+
+        assert harness.resumed == ["thr-new"]
+        stats = await harness.client.request("test/stats", {})
+        assert stats["threadStarts"] == 0
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_restart_after_an_expired_binding_still_resumes_not_rebuilds(tmp_path) -> None:
+    """回合中途死掉 + 进程重拉：下一轮仍旧 resume 原 thread（兜底那条路）。
+
+    回合被掐断**不**让线程作废（codex 侧只写了一条 `turn_aborted`）；会作废
+    它的是"拿不到绑定 → 静默新建"。所以这里把两个条件叠齐：绑定查询过期 +
+    进程中途死过——断言仍然是 resume，且没有新建。
+    """
+    harness = await _harness()
+    backend = _Backend({})
+    registry = _registry(tmp_path, "thr-in-flight")
+    gateway = _gateway(harness, backend, registry=registry)
+    try:
+        first = await _turn(gateway, tenant_id="1", session_id="42")
+        assert first.get("reply") is not None
+        assert harness.resumed == ["thr-in-flight"]
+
+        # 回合中途死亡：直接 kill 掉原生进程。
+        assert harness.client.process is not None
+        harness.client.process.kill()
+        await harness.client.process.wait()
+
+        dead = await _turn(gateway, tenant_id="1", session_id="42", turn_id="ui-2")
+        assert dead["error"] == "app_server_exited"
+        assert dead["recoverable"] is True
+
+        resumed = await _turn(gateway, tenant_id="1", session_id="42", turn_id="ui-3")
+        assert resumed.get("reply") is not None, resumed
+        assert harness.resumed == ["thr-in-flight", "thr-in-flight"], "重拉之后仍要 resume"
+        stats = await harness.client.request("test/stats", {})
+        assert stats["threadStarts"] == 0
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_a_registry_thread_with_a_lost_rollout_rebuilds_with_an_explicit_warning(
+    tmp_path, caplog
+) -> None:
+    """兜底找回来的 thread 如果 rollout 真的没了：重建，但**必须留痕**。
+
+    这是唯一允许丢模型侧历史的分支。"用户发现它忘了刚说过的话"不许可发生得
+    悄无声息——日志里要有 WARNING，写明 model-side context is lost。
+    """
+    harness = await _harness()
+    backend = _Backend({})
+    registry = _registry(tmp_path, "thr-rollout-lost")
+    gateway = _gateway(harness, backend, registry=registry)
+    try:
+        await harness.client.request("test/arm_resume", {"mode": "no_rollout"})
+        with caplog.at_level(logging.WARNING, logger="app.gateway.thread_recovery"):
+            result = await _turn(gateway, tenant_id="1", session_id="42")
+
+        assert harness.resumed == ["thr-rollout-lost"], "先试 resume，不许直接新建"
+        stats = await harness.client.request("test/stats", {})
+        assert stats["threadStarts"] == 1, "rollout 确实没了才允许新建"
+        assert "model-side context is lost" in caplog.text
+        assert result.get("reply") is not None
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_session_without_any_binding_still_creates_a_thread() -> None:
+    """兜底不许把"真新会话"变成错误：后端没绑定、本地也没登记过 → 新建。"""
+    harness = await _harness()
+    backend = _Backend({})
+    gateway = _gateway(harness, backend, registry=None)
+    try:
+        result = await _turn(gateway, tenant_id="1", session_id="42")
+
+        assert harness.resumed == []
+        stats = await harness.client.request("test/stats", {})
+        assert stats["threadStarts"] == 1
         assert result.get("reply") is not None
     finally:
         await harness.close()
