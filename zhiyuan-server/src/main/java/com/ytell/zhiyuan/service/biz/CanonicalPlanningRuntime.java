@@ -79,6 +79,18 @@ final class CanonicalPlanningRuntime {
 
     static PlanSolverResultDTO enforceOrdering(PlanningStateDTO state,
                                                List<CandidateItemDTO> effectiveCandidates) {
+        return enforceOrdering(state, effectiveCandidates, true);
+    }
+
+    /**
+     * @param failOnPriorityMiss true：显式应用「同档前置」排序（用户动作，如修复建议应用）——存量优先规则
+     *                           零命中时响亮 409，不静默吞掉用户意图
+     *                           false：方案重生成路径（学费/范围等约束应用连带重排）——存量优先规则只是
+     *                           顺带生效的排序偏好，零命中不应阻塞无关动作，降级为不改序（no_change）
+     */
+    static PlanSolverResultDTO enforceOrdering(PlanningStateDTO state,
+                                               List<CandidateItemDTO> effectiveCandidates,
+                                               boolean failOnPriorityMiss) {
         CanonicalPlanningObjectiveSetDTO compiled = PlanningObjectiveCompiler.compileConfirmed(state);
         List<PriorityRuleDTO> priorities = defaultList(compiled.getOrderingConstraints());
         if (priorities.isEmpty()) {
@@ -87,6 +99,9 @@ final class CanonicalPlanningRuntime {
         boolean unitMode = "unit".equals(compiled.getCountMode());
         List<Entity> ordered = orderedEntities(state, effectiveCandidates, unitMode);
         if (ordered.isEmpty()) {
+            if (!failOnPriorityMiss) {
+                return noChange(compiled);
+            }
             throw new BusinessException(409, "priority_target_not_in_plan: 当前没有正式方案");
         }
         if (ordered.stream().anyMatch(entity -> Strings.isNullOrEmpty(
@@ -94,6 +109,9 @@ final class CanonicalPlanningRuntime {
             throw new BusinessException(409, "priority_tier_unavailable: 当前方案存在未标注档位的项目");
         }
         if (ordered.stream().noneMatch(entity -> entity.priorityMatched)) {
+            if (!failOnPriorityMiss) {
+                return noChange(compiled);
+            }
             throw new BusinessException(409, "priority_target_not_in_plan: 当前方案没有命中优先目标");
         }
         CanonicalPlanningObjectiveSetDTO objectives = copyWithTarget(compiled, ordered.size());

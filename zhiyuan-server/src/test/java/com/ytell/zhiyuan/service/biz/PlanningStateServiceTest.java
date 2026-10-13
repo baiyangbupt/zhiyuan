@@ -8329,6 +8329,47 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldNotBlockOrderedRegenerationWhenStoredPriorityRuleMatchesNothing() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(3);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        CandidateItemDTO shanghai = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "上海学校", "稳", "数学", 30D, 90D, 30D, false);
+        shanghai.setProvinceName("上海");
+        CandidateItemDTO jiangsu = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "江苏学校", "稳", "法学", 60D, 80D, 60D, false);
+        jiangsu.setProvinceName("江苏");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(shanghai, jiangsu));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "上海学校", "数学", "稳"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps2_m2", "江苏学校", "法学", "稳"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "上海学校", "数学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "江苏学校", "法学", "稳", 2));
+        // 陈旧存量规则：北京（市）优先，但当前方案里没有任何北京项目（复现 2026-10-13 演示 409）
+        PriorityRuleDTO staleRule = new PriorityRuleDTO();
+        staleRule.setDomain("region");
+        staleRule.setKey("city");
+        staleRule.setValues(java.util.Arrays.asList("北京"));
+        staleRule.setOrderingTarget("rank_before");
+        staleRule.setScope("within_tier");
+        state.getConstraintState().getHardPlanningObjectives().getPriorityRules().add(staleRule);
+        saveStateToStore(1L, state);
+
+        OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+        generateReq.setRegroupByTier(true);
+        generateReq.setForceRegenerate(true);
+        PlanningStateDTO regenerated = planningStateService.generateOrderedPlan(1L, 1L, generateReq);
+
+        assertEquals(java.util.Arrays.asList("ps1_m1", "ps2_m2"),
+                regenerated.getOrderedPlanState().getItems().stream()
+                        .map(OrderedItemDTO::getVolunteerId).collect(Collectors.toList()));
+        assertEquals(1, regenerated.getConstraintState().getHardPlanningObjectives()
+                .getPriorityRules().size());
+    }
+
+    @Test
     void shouldPrioritizeLocalProtectWithinProtectTierWhenGenerateOrderedPlan() {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(null);

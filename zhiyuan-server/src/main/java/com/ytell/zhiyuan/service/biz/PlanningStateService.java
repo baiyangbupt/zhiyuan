@@ -2371,7 +2371,9 @@ public class PlanningStateService {
         }
         syncOrderedPlanWithEffectiveCandidatesForConfirmedRequirements(state, effectiveCandidates);
         if (frozenResult == null) {
-            CanonicalPlanningRuntime.enforceOrdering(state, effectiveCandidates);
+            // 方案重生成路径：存量优先规则零命中（例如陈旧规则与当前方案完全不搭）不应阻塞无关动作，
+            // 降级为不改序；显式应用排序建议（applySupportedFixProposalStrategy）仍走 failOnPriorityMiss=true
+            CanonicalPlanningRuntime.enforceOrdering(state, effectiveCandidates, false);
         } else {
             CanonicalPlanningRuntime.applyFrozenOrdering(state, frozenResult);
             CanonicalPlanningRuntime.verifyFrozenState(state, frozenResult);

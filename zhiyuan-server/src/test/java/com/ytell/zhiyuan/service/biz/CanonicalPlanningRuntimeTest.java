@@ -246,6 +246,48 @@ class CanonicalPlanningRuntimeTest {
     }
 
     @Test
+    void shouldDegradeToNoChangeWhenStoredPriorityMissesEveryPlanItemDuringRegeneration() {
+        PlanningStateDTO state = state("major", 2);
+        CandidateItemDTO v1 = candidate("v1", "u1", "数学", "稳", "北京", 90D);
+        CandidateItemDTO v2 = candidate("v2", "u2", "法学", "稳", "上海", 89D);
+        state.getCandidatePoolState().setItems(Arrays.asList(v1, v2));
+        state.getOrderedPlanState().getItems().add(ordered(v1));
+        state.getOrderedPlanState().getItems().add(ordered(v2));
+        PriorityRuleSupport.persist(state, Arrays.asList(priority("天津")));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceOrdering(
+                state, state.getCandidatePoolState().getItems(), false);
+
+        assertEquals("no_change", result.getStatus());
+        assertEquals(Arrays.asList("v1", "v2"), state.getOrderedPlanState().getItems().stream()
+                .map(OrderedItemDTO::getVolunteerId).collect(Collectors.toList()));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> CanonicalPlanningRuntime.enforceOrdering(
+                        state, state.getCandidatePoolState().getItems()));
+        assertEquals(409, error.getStatus());
+        assertTrue(error.getMessage().contains("priority_target_not_in_plan"));
+    }
+
+    @Test
+    void shouldDegradeToNoChangeForEmptyOrderedPlanDuringRegeneration() {
+        PlanningStateDTO state = state("major", 2);
+        CandidateItemDTO v1 = candidate("v1", "u1", "数学", "稳", "北京", 90D);
+        state.getCandidatePoolState().setItems(Arrays.asList(v1));
+        PriorityRuleSupport.persist(state, Arrays.asList(priority("上海")));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceOrdering(
+                state, state.getCandidatePoolState().getItems(), false);
+
+        assertEquals("no_change", result.getStatus());
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> CanonicalPlanningRuntime.enforceOrdering(
+                        state, state.getCandidatePoolState().getItems()));
+        assertEquals(409, error.getStatus());
+        assertTrue(error.getMessage().contains("priority_target_not_in_plan: 当前没有正式方案"));
+    }
+
+    @Test
     void shouldApplyAndVerifyFrozenSelectionAndOrder() {
         PlanningStateDTO state = state("major", 2);
         state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(2);
