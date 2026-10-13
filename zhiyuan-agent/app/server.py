@@ -1098,16 +1098,20 @@ async def _maybe_continue_after_action(
     channel_resolver=None,
     watermark: int,
 ) -> None:
-    """确认**生效**之后触发一次续接回合（兑现助手上文的承诺 ✓）——用户实测的观感缺口 ✓。
+    """确认之后触发一次续接回合（兑现助手上文的承诺 ✓ / 说清失败与替代 ✓）——用户实测的观感缺口 ✓。
 
     缺口（2026-10-09，会话 10041981 ✓）：助手先说"确认成绩后我先按方向给你几个院校
     专业组参考…" ✓，用户点确认 ✓，回执却只有写死的"操作已处理。" ✗——**话头断了** ✓。
+    又一个缺口（2026-10-13，同一会话 ✓）："学费≤2 万"优先规则确认后 apply 失败
+    `409 priority_target_not_in_plan` ✗，失败后没有任何助手跟话 ✗，用户只见一张失败卡 ✓
+    ——失败比成功更欠一句解释和可走的替代 ✓。
 
-    判定只在这里（一处）✓：`actionResult.actionStatus == "applied"` ✓。
-    confirm/cancel 家族里只有 confirm 能落到这一档 ✗✓（cancel → cancelled、
-    其它动作 → not_executable ✓，见 `conversation_actions.py::_status` ✓）——
-    所以"applied"就是"confirm 家族 + 生效" ✓；failed/conflict/stale_state 一律不续接 ✓
-    （维持现状：失败时用户要处理失败，不该被拉去下一步 ✗）。
+    判定只在这里（一处）✓：`actionResult.actionStatus ∈ {applied, failed}` ✓。
+    其余维持现状 ✗：`cancelled`（用户自己的取消 ✓）、`stale_state`（`conflict` 并进
+    这一档 ✓）/`expired`（卡过期 → 用户要刷新重来 ✓）、`not_executable`（什么都没试 ✓）
+    不续接 ✓；`applying` **不是终态** ✗✓（后面还会到 applied/failed ✓），此刻续接会
+    把幂等台账提前占掉 ✓✗——死等终态 ✓（档位口径与 `GatewayService.continue_after_action`
+    逐条一致 ✓，两处判据同进同退 ✓）。
 
     **续接是助手消息，不是用户消息** ✓✓：网关那条路（`continue_after_action` ✓）不落
     user 消息、不进会话 transcript 的用户那一侧 ✓；事件与落库走普通回合同一条路径 ✓
@@ -1127,7 +1131,7 @@ async def _maybe_continue_after_action(
     action_result = result.get("actionResult") if isinstance(result, Mapping) else None
     if not isinstance(action_result, Mapping) or not action_result:
         return
-    if str(action_result.get("actionStatus") or "") != "applied":
+    if str(action_result.get("actionStatus") or "") not in {"applied", "failed"}:
         return
     # 续接回合号用**新的** ✓（前缀只为在日志/事件流里一眼认出来源 ✓，语义仍是普通回合号 ✓）。
     continuation_turn_id = f"cont-{uuid.uuid4()}"
