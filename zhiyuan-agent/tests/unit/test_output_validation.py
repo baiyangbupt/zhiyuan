@@ -139,6 +139,95 @@ def test_output_validator_rejects_artifact_from_old_snapshot() -> None:
         )
 
 
+def test_output_validator_accepts_a_rebased_artifact_within_the_ceiling() -> None:
+    """2026-10-14：回合内版本前进（候选池生成 v42→v43）后重基签发的产物必须放行。
+
+    上限由 Gateway 重新向 Java 读到（这里以参数形式给出）；下界仍是回合起始版本。
+    """
+    output = TurnOutput.model_validate(
+        {
+            "responseType": "recommendation",
+            "message": "候选",
+            "artifactRefs": [
+                {"artifactId": "artifact-1", "artifactType": "candidate", "stateVersion": 43}
+            ],
+            "evidenceRefs": [],
+        }
+    )
+
+    result = validate_turn_output(
+        turn_output=output,
+        current_snapshot=_snapshot(42),
+        evidence_ledger={},
+        artifacts={
+            "artifact-1": {
+                "artifactId": "artifact-1",
+                "stateVersion": 43,
+                "sessionId": "session-1",
+            }
+        },
+        artifact_version_ceiling=43,
+    )
+
+    assert result.artifact_refs[0].state_version == 43
+
+
+def test_output_validator_still_rejects_artifacts_older_than_the_turn_version() -> None:
+    """上限放宽了，**下界没放宽**：早于回合起始版本的产物依旧 stale_state（旧数据不拼）。"""
+    output = TurnOutput.model_validate(
+        {
+            "responseType": "recommendation",
+            "message": "候选",
+            "artifactRefs": [
+                {"artifactId": "artifact-1", "artifactType": "candidate", "stateVersion": 41}
+            ],
+            "evidenceRefs": [],
+        }
+    )
+
+    with pytest.raises(OutputContractError, match="stale_state"):
+        validate_turn_output(
+            turn_output=output,
+            current_snapshot=_snapshot(42),
+            evidence_ledger={},
+            artifacts={"artifact-1": {"artifactId": "artifact-1", "stateVersion": 41}},
+            artifact_version_ceiling=43,
+        )
+
+
+def test_output_validator_rejects_an_artifact_beyond_the_confirmed_ceiling() -> None:
+    """上限之外不放行：账本戳与模型声明**各自**核——44 既超过已核实的 43，也拒。"""
+    output = TurnOutput.model_validate(
+        {
+            "responseType": "recommendation",
+            "message": "候选",
+            "artifactRefs": [
+                {"artifactId": "artifact-1", "artifactType": "candidate", "stateVersion": 44}
+            ],
+            "evidenceRefs": [],
+        }
+    )
+
+    with pytest.raises(OutputContractError, match="stale_state"):
+        validate_turn_output(
+            turn_output=output,
+            current_snapshot=_snapshot(42),
+            evidence_ledger={},
+            artifacts={"artifact-1": {"artifactId": "artifact-1", "stateVersion": 44}},
+            artifact_version_ceiling=43,
+        )
+
+    # 账本戳在界内、模型声明的版本越界：模型自证的"更新"一样拒（上界不是它说了算）。
+    with pytest.raises(OutputContractError, match="stale_state"):
+        validate_turn_output(
+            turn_output=output,
+            current_snapshot=_snapshot(42),
+            evidence_ledger={},
+            artifacts={"artifact-1": {"artifactId": "artifact-1", "stateVersion": 43}},
+            artifact_version_ceiling=43,
+        )
+
+
 def test_output_validator_returns_normalized_output_when_refs_are_valid() -> None:
     output = validate_turn_output(
         turn_output=_fact_output("ev-known"),

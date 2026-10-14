@@ -449,6 +449,220 @@ async def test_tool_issued_artifact_ref_survives_the_normal_chain(monkeypatch) -
     assert len(codex.turns) == 1, "首轮就该过：不该出现补一轮"
 
 
+class VersionedSnapshotLoader:
+    """按调用次序返回不同版本的快照替身：第 N 次调用返回 `versions[N-1]`（越界取最后一个）。
+
+    用它才能表达"回合开始时 v42、回合中途候选池生成后 v43"这条时间线。
+    `calls` 同时是"读了权威快照几次"的计数器——重试**有界**靠它断言。
+    """
+
+    def __init__(self, versions: list[int]) -> None:
+        self.versions = versions
+        self.calls = 0
+
+    async def __call__(self, **kwargs):
+        self.calls += 1
+        version = self.versions[min(self.calls - 1, len(self.versions) - 1)]
+        return {
+            "sessionId": "session-1",
+            "version": version,
+            "phase": "candidate_exploration",
+            "allowedCapabilities": ["catalog_read", "admission_read"],
+        }
+
+
+def _artifact_record(artifact_id: str, version: int) -> dict:
+    """工具签发点的产物形状（与 `ReadonlyDomainTools._attach_artifacts` 一致）。"""
+    return {
+        "artifactId": artifact_id,
+        "artifactType": "candidate",
+        "stateVersion": version,
+        "tenantId": "tenant-1",
+        "sessionId": "session-1",
+        "threadId": "thr-p1c2",
+    }
+
+
+def _candidate_payload(refs: list[tuple[str, dict]], output_refs: list[dict]) -> dict:
+    """一个拉名单回合的载荷：工具结果里带着产物记录，模型输出引用它们。"""
+    output = {
+        "responseType": "recommendation",
+        "message": "候选名单",
+        "artifactRefs": output_refs,
+        "evidenceRefs": [],
+    }
+    return {
+        "output": output,
+        "events": [
+            {
+                "type": "tool.progress",
+                "item": {
+                    "type": "McpToolCall",
+                    "tool": "recommendation.preview_candidates",
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps({"artifacts": [record for _, record in refs]}, ensure_ascii=False),
+                            }
+                        ]
+                    },
+                },
+            },
+            {
+                "type": "item_completed",
+                "item": {
+                    "type": "AgentMessage",
+                    "id": "msg-1",
+                    "text": json.dumps(output, ensure_ascii=False),
+                },
+            },
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_version_bump_no_longer_blocks_the_turn() -> None:
+    """2026-10-14 事故（会话 10041982）：回合内候选池生成把版本 42→43。
+
+    形状：模型先按 v42 拉了一段（产物戳 42），中途前端生成候选池、版本 +1，
+    MCP 侧有界重基后其余产物按 **43** 签发。这里的断言就是修复目标本身：
+    ①回合不再被挡死（正常返回、无 error）；②引用新旧**本回合**产物都能过
+    （区间 [42, 43]）；③权威上限只重读一次（有界）。
+    """
+    codex = CodexHarness(
+        [
+            _candidate_payload(
+                [
+                    ("candidate-v42", _artifact_record("candidate-v42", 42)),
+                    ("candidate-v43", _artifact_record("candidate-v43", 43)),
+                ],
+                [
+                    {"artifactId": "candidate-v42", "artifactType": "candidate", "stateVersion": 42},
+                    {"artifactId": "candidate-v43", "artifactType": "candidate", "stateVersion": 43},
+                ],
+            )
+        ]
+    )
+    loader = VersionedSnapshotLoader([42, 43])
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=codex,
+        legacy=None,
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=loader,
+        evidence_verifier=None,
+    )
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result.get("error")
+    assert result.get("output") is not None
+    cited = [ref["artifactId"] for ref in result["output"]["artifactRefs"]]
+    assert cited == ["candidate-v42", "candidate-v43"]
+    assert loader.calls == 2, "回合一读 + 上限一读：重试有界，不会反复重读"
+
+
+@pytest.mark.asyncio
+async def test_turn_without_a_bump_still_reads_the_snapshot_exactly_once() -> None:
+    """对照：没有重基产物时**一次额外读都没有**——旧行为（含读快照的次数）逐字不变。"""
+    codex = CodexHarness(
+        [
+            _candidate_payload(
+                [("candidate-v42", _artifact_record("candidate-v42", 42))],
+                [{"artifactId": "candidate-v42", "artifactType": "candidate", "stateVersion": 42}],
+            )
+        ]
+    )
+    loader = VersionedSnapshotLoader([42])
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=codex,
+        legacy=None,
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=loader,
+        evidence_verifier=None,
+    )
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result.get("error")
+    assert result.get("output") is not None
+    assert loader.calls == 1, "没触发重基就不许多读"
+
+
+@pytest.mark.asyncio
+async def test_unconfirmable_ceiling_fails_closed_instead_of_letting_new_artifacts_through() -> None:
+    """上限**读不到**就不放行：不能拿产物自证的版本当许可（fail-closed）。"""
+    codex = CodexHarness(
+        [
+            _candidate_payload(
+                [("candidate-v43", _artifact_record("candidate-v43", 43))],
+                [{"artifactId": "candidate-v43", "artifactType": "candidate", "stateVersion": 43}],
+            )
+        ]
+    )
+
+    class BrokenAfterStart(VersionedSnapshotLoader):
+        async def __call__(self, **kwargs):
+            if self.calls >= 1:
+                self.calls += 1
+                raise RuntimeError("snapshot backend down")
+            return await super().__call__(**kwargs)
+
+    loader = BrokenAfterStart([42])
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=codex,
+        legacy=None,
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=loader,
+        evidence_verifier=None,
+    )
+
+    result = await _turn(gateway)
+
+    assert str(result.get("error", "")).startswith("stale_state:"), result.get("error")
+    assert result.get("output") is None
+    assert loader.calls == 2, "只重读一次，失败即止（不重试风暴）"
+
+
+@pytest.mark.asyncio
+async def test_model_claimed_artifact_version_never_raises_the_ceiling() -> None:
+    """上限只由"账本里有更高版本的产物"触发、由 Java 权威读数给出。
+
+    模型只在输出里**声称** stateVersion 43（账本那条是 42）时：既不触发额外读
+    （loader.calls 仍是 1），声明的 43 也会被 stale_state 拒收——数据不能自己
+    给自己发许可。
+    """
+    codex = CodexHarness(
+        [
+            _candidate_payload(
+                [("candidate-v42", _artifact_record("candidate-v42", 42))],
+                [{"artifactId": "candidate-v42", "artifactType": "candidate", "stateVersion": 43}],
+            )
+        ]
+    )
+    loader = VersionedSnapshotLoader([42, 43])
+    gateway = GatewayService(
+        mode="codex_readonly",
+        codex=codex,
+        legacy=None,
+        message_store=FakeMessageStore(),
+        binding_loader=lambda **kwargs: _binding(),
+        snapshot_loader=loader,
+        evidence_verifier=None,
+    )
+
+    result = await _turn(gateway)
+
+    assert str(result.get("error", "")).startswith("stale_state:"), result.get("error")
+    assert loader.calls == 1, "模型声称的新版本不许触发权威重读"
+
+
 @pytest.mark.asyncio
 async def test_recheck_round_gets_the_same_progress_callbacks_as_the_first_round() -> None:
     """重查轮必须和首轮拿到**同一份**回调（2026-09-23 复核第 2 项）。

@@ -65,12 +65,21 @@ def validate_turn_output(
     tenant_id: str | None = None,
     allow_proposal: bool = False,
     strict_scope: bool = False,
+    artifact_version_ceiling: int | None = None,
 ) -> TurnOutput:
     """Validate every backend reference before output reaches a user.
 
     The model can only reference records already issued by the current
     Gateway turn.  Optional scope fields are checked when present in a ledger
     entry; absence is not treated as proof of a different scope.
+
+    `artifact_version_ceiling`：产物的版本上限（闭区间 [回合起始版本, 上限]）。
+    默认 `None` ＝ 上限就是回合起始版本（与旧的严格相等逐字一致）。只有 Gateway
+    在**本回合内检测到重基产物**（工具按推进后的版本签发）并**重新向 Java 读到**
+    那个新版本之后才会传进来——上限是权威读数，不是产物自证（见
+    `GatewayService._artifact_version_ceiling`）。下界**保持**回合起始版本：
+    早于本回合的产物（上一回合签发的、缓存里翻出来的）依旧 stale_state，旧数据
+    绝不拼给用户。
     """
     if isinstance(turn_output, Mapping):
         for fact in turn_output.get("admissionFacts", turn_output.get("admission_facts", [])) or []:
@@ -82,6 +91,15 @@ def validate_turn_output(
                 )
     output = _as_output(turn_output)
     snapshot = _as_snapshot(current_snapshot)
+    artifact_version_lower = int(snapshot.snapshot_version)
+    artifact_version_upper = artifact_version_lower
+    if artifact_version_ceiling is not None:
+        try:
+            artifact_version_upper = int(artifact_version_ceiling)
+        except (TypeError, ValueError):
+            artifact_version_upper = artifact_version_lower
+        if artifact_version_upper < artifact_version_lower:
+            artifact_version_upper = artifact_version_lower
 
     for fact in output.admission_facts:
         if any("semantic_fixture_only" in limitation for limitation in fact.limitations):
@@ -178,9 +196,11 @@ def validate_turn_output(
                 parsed_state = int(entry_state)
             except (TypeError, ValueError) as exc:
                 raise OutputContractError("artifact_invalid", artifact_id) from exc
-            if parsed_state != snapshot.snapshot_version:
+            # 区间而非等值：下界=回合起始版本（旧数据拒收），上界=已核实的重基版本
+            # （默认与下界相同＝旧行为）。见上面 docstring 的 `artifact_version_ceiling`。
+            if not artifact_version_lower <= parsed_state <= artifact_version_upper:
                 raise OutputContractError("stale_state", artifact_id)
-        if reference.state_version != snapshot.snapshot_version:
+        if not artifact_version_lower <= reference.state_version <= artifact_version_upper:
             raise OutputContractError("stale_state", artifact_id)
         entry_session = _scoped_field(entry, "sessionId", "session_id")
         # 与证据同一处置：值一样、类型不同不能算越权。

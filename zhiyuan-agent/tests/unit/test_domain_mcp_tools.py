@@ -631,22 +631,70 @@ async def test_production_mcp_runner_uses_authoritative_snapshot_version(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_production_mcp_runner_rejects_a_snapshot_changed_after_turn_start(monkeypatch) -> None:
+async def test_production_mcp_runner_rebases_to_a_snapshot_moved_during_the_turn(monkeypatch) -> None:
+    """2026-10-14：回合内版本前进（候选池生成）→ **有界重基**后按新版本续读。
+
+    语义在 2026-10-14 变更（会话 10041982）：以前任何前进都返回 `stale_state`、
+    余下每个读全被挡死；现在**连续两次读到同一版本**（写已落定）即按新版本继续。
+    这条同时把"有界"钉死：一次落定只多读一次快照（1 次首读 + 1 次确认）。
+    """
     from app.mcp_server import server as mcp_server
+
+    reads: list[int] = []
 
     class Registry:
         async def resolve(self, *, thread_id, capability):
             return trusted_context(snapshot_version=77)
 
     async def snapshot(*args, **kwargs):
+        reads.append(len(reads))
         return {"data": {"snapshotVersion": 78}}
+
+    class Backend:
+        def __init__(self, **kwargs):
+            pass
+
+        async def resolve(self, **kwargs):
+            return {"data": {"entityId": kwargs["query"]}}
+
+    monkeypatch.setattr(mcp_server.internal_client, "get_conversation_turn_snapshot", snapshot)
+    monkeypatch.setattr(mcp_server, "InternalClientBackend", Backend)
+    result = await mcp_server._call_domain_tool(
+        "entity.resolve",
+        {"query": "浙江大学"},
+        metadata={"threadId": "thr_test"},
+        binding_registry=Registry(),
+    )
+
+    assert result["status"] == "ok"
+    # 信封的版本戳来自 ReadonlyDomainTools 的 `current_state_version`：
+    # 78 证明干活的那个 runner 就是按重基后的版本构造的。
+    assert result["stateVersion"] == 78, "重基后的读必须以**新版本**签发"
+    assert len(reads) == 2, "重试有界：首读一次 + 落定确认一次，不允许反复读"
+
+
+@pytest.mark.asyncio
+async def test_production_mcp_runner_fails_closed_while_the_snapshot_keeps_moving(monkeypatch) -> None:
+    """版本**还在动**（真并发写没停）→ 有界试用完仍 fail-closed，绝不拿中间版本当最新。"""
+    from app.mcp_server import server as mcp_server
+
+    reads: list[int] = []
+    versions = [78, 79, 80]
+
+    class Registry:
+        async def resolve(self, *, thread_id, capability):
+            return trusted_context(snapshot_version=77)
+
+    async def snapshot(*args, **kwargs):
+        reads.append(len(reads))
+        return {"data": {"snapshotVersion": versions[min(len(reads) - 1, len(versions) - 1)]}}
 
     monkeypatch.setattr(mcp_server.internal_client, "get_conversation_turn_snapshot", snapshot)
     monkeypatch.setattr(
         mcp_server,
         "ReadonlyDomainTools",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("must not construct a domain runner for stale state")
+            AssertionError("must not construct a domain runner while the snapshot keeps moving")
         ),
     )
     result = await mcp_server._call_domain_tool(
@@ -657,8 +705,39 @@ async def test_production_mcp_runner_rejects_a_snapshot_changed_after_turn_start
     )
 
     assert result["status"] == "stale_state"
-    assert result["stateVersion"] == 78
+    assert result["stateVersion"] == 80
     assert result["evidenceRefs"] == []
+    assert len(reads) == 3, "重试有界：1 次首读 + 至多 2 次落定尝试"
+
+
+@pytest.mark.asyncio
+async def test_production_mcp_runner_fails_closed_when_the_rebase_read_fails(monkeypatch) -> None:
+    """重基途中读不到权威快照 → `state_version_unavailable`（不放行、也不说成 stale）。"""
+    from app.mcp_server import server as mcp_server
+
+    calls = {"count": 0}
+
+    class Registry:
+        async def resolve(self, *, thread_id, capability):
+            return trusted_context(snapshot_version=77)
+
+    async def snapshot(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] > 1:
+            raise RuntimeError("snapshot backend down")
+        return {"data": {"snapshotVersion": 78}}
+
+    monkeypatch.setattr(mcp_server.internal_client, "get_conversation_turn_snapshot", snapshot)
+    result = await mcp_server._call_domain_tool(
+        "entity.resolve",
+        {"query": "浙江大学"},
+        metadata={"threadId": "thr_test"},
+        binding_registry=Registry(),
+        fallback_tool_runner=None,
+    )
+
+    assert result["status"] == "state_version_unavailable"
+    assert calls["count"] == 2
 
 
 @pytest.mark.asyncio

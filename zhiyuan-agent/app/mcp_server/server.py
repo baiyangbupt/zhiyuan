@@ -11,6 +11,7 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from app.harness.binding import ThreadBinding
 from app.mcp_server.context import (
     ThreadBindingRegistry,
     TrustedContextError,
@@ -484,24 +485,35 @@ async def _call_domain_tool(
         except (TypeError, ValueError, AttributeError) as exc:
             return error("state_version_unavailable", str(exc), kind=_kind_for(name), state_version=0)
         try:
-            snapshot_response = await internal_client.get_conversation_turn_snapshot(
-                binding.tenant_id,
-                binding.session_id,
-            )
-            snapshot_data = (snapshot_response or {}).get("data") or {}
-            raw_version = snapshot_data.get("snapshotVersion", snapshot_data.get("version"))
-            state_version = int(raw_version)
-            if state_version < 0:
-                raise ValueError("negative snapshot version")
+            state_version = await _read_snapshot_version(binding)
         except (TypeError, ValueError, AttributeError, KeyError, RuntimeError) as exc:
             return error("state_version_unavailable", str(exc), kind=_kind_for(name), state_version=0)
         if state_version != expected_state_version:
-            return error(
-                "stale_state",
-                "the authoritative snapshot changed during this turn",
-                kind=_kind_for(name),
-                state_version=state_version,
-            )
+            # 版本在本回合中途前进了 → **有界重基**，不再把余下的读全部硬挡。
+            # 2026-10-14 实测（会话 10041982）：本回合拉候选名单时前端把候选池生成了一遍
+            # （`ensureCandidatePoolReady`），规划版本 +1；之后每个工具调用都撞上
+            # "the authoritative snapshot changed during this turn"，模型"拉到一半"只能停手
+            # 让用户回「继续」。
+            # 守卫的宗旨是"绝不把**旧**版本的数据拼给用户"，不是"回合必须死在版本推进上"：
+            # 重取最新快照、连续两次读到同一版本（写已落定）就按新版本继续读；旧证据/旧产物
+            # 不会因此混拼——账本与产物各自按自己的版本核验（Gateway 侧产物上限、Java 侧
+            # 证据 dataVersion ），重定版本之后本回合签发的都是**新版本**的读数。
+            # 版本还在动（真并发写没停）或重读失败，维持 fail-closed。
+            # 只重基**本次调用**、不回写登记表：绑定版本是 Gateway 每回合写一次的回合起点，
+            # MCP 子进程不该改它；代价只是本回合后续调用各多读一次快照（有界、幂等）。
+            try:
+                state_version, settled = await _rebase_snapshot_version(
+                    binding, observed=state_version
+                )
+            except (TypeError, ValueError, AttributeError, KeyError, RuntimeError) as exc:
+                return error("state_version_unavailable", str(exc), kind=_kind_for(name), state_version=0)
+            if not settled:
+                return error(
+                    "stale_state",
+                    "the authoritative snapshot changed during this turn",
+                    kind=_kind_for(name),
+                    state_version=state_version,
+                )
         active_tool_runner = ReadonlyDomainTools(
             binding,
             backend=InternalClientBackend(
@@ -520,6 +532,47 @@ async def _call_domain_tool(
     if active_tool_runner is None:
         return error("binding_unconfigured", "trusted binding is unavailable", kind=_kind_for(name), state_version=0)
     return await active_tool_runner.call(name, arguments)
+
+
+# 版本前进后的重基次数上界（"落定确认"的额外读数次数）。一次通常就够
+# （写已完成：第二读与第一读同版本）；给到 2 只是让"写还在收尾"的多写序列
+# 多一次机会。超界一律 fail-closed，不做无界重试。
+_REBASE_ATTEMPTS = 2
+
+
+async def _read_snapshot_version(binding: ThreadBinding) -> int:
+    """读一次权威快照版本（Java 的 turn-snapshot）。
+
+    读不到、解不出、负数都抛出去——调用侧转 `state_version_unavailable`（fail-closed）。
+    """
+    snapshot_response = await internal_client.get_conversation_turn_snapshot(
+        binding.tenant_id,
+        binding.session_id,
+    )
+    snapshot_data = (snapshot_response or {}).get("data") or {}
+    raw_version = snapshot_data.get("snapshotVersion", snapshot_data.get("version"))
+    state_version = int(raw_version)
+    if state_version < 0:
+        raise ValueError("negative snapshot version")
+    return state_version
+
+
+async def _rebase_snapshot_version(
+    binding: ThreadBinding, *, observed: int
+) -> tuple[int, bool]:
+    """重基到最新版本：**连续两次读到同一版本**才算落定（有界，最多 `_REBASE_ATTEMPTS` 次）。
+
+    返回 `(last_version, settled)`。`settled=False`（次数用完版本仍在动）由调用侧
+    按 `stale_state` fail-closed：那是"真并发写还没停"的形状，此时把任何一个中间
+    版本当"最新"读，都可能把半程数据拼给用户。
+    """
+    previous = observed
+    for _ in range(_REBASE_ATTEMPTS):
+        current = await _read_snapshot_version(binding)
+        if current == previous:
+            return current, True
+        previous = current
+    return previous, False
 
 
 def serve(binding_registry_path: str) -> None:

@@ -2356,6 +2356,7 @@ class GatewayService:
                 evidence_ledger: list[dict[str, Any]],
                 artifacts: dict[str, Any],
                 turn_payload: Any,
+                artifact_ceiling: int | None = None,
             ) -> tuple[TurnOutput, bool]:
                 """校验本回合输出；可修复的契约违反先给模型一次纠错回合再定生死。
 
@@ -2380,6 +2381,7 @@ class GatewayService:
                         tenant_id=tenant_id,
                         allow_proposal=True,
                         strict_scope=True,
+                        artifact_version_ceiling=artifact_ceiling,
                     )
 
                 try:
@@ -2430,7 +2432,19 @@ class GatewayService:
 
             output, output_repaired = await _extract_output(turn)
             evidence_ledger, artifacts = self._evidence_inputs(turn, snapshot)
-            output, round_repaired = await _validate_round(output, evidence_ledger, artifacts, turn)
+            # 产物版本上限（按回合缓存，见 `_artifact_version_ceiling`）：没有"本回合
+            # 重基过的产物"时是 None，校验逐字维持旧行为（只认回合起始版本）。
+            artifact_ceiling_cache: dict[str, Any] = {}
+            artifact_ceiling = await self._artifact_version_ceiling(
+                artifacts,
+                snapshot=snapshot,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                cache=artifact_ceiling_cache,
+            )
+            output, round_repaired = await _validate_round(
+                output, evidence_ledger, artifacts, turn, artifact_ceiling
+            )
             output_repaired = output_repaired or round_repaired
             # P1c-2：核验在**事件展开之前**——整轮作废时用户侧不许留下任何东西
             #（连已经"发生过"的进度事件也不行，那会让人以为这一步跑通了）。
@@ -2460,8 +2474,17 @@ class GatewayService:
                 # 账本要**重建**：模型第二轮引用的是新证据，拿首轮那份去校验
                 # 会把新证据判成 `evidence_not_found`。
                 evidence_ledger, artifacts = self._evidence_inputs(turn, snapshot)
+                # 上限同样重算（重查轮可能按更高的版本读到新产物）；已缓存的
+                # 权威读数不会重复取（见 `_artifact_version_ceiling`）。
+                artifact_ceiling = await self._artifact_version_ceiling(
+                    artifacts,
+                    snapshot=snapshot,
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    cache=artifact_ceiling_cache,
+                )
                 output, round_repaired = await _validate_round(
-                    output, evidence_ledger, artifacts, turn
+                    output, evidence_ledger, artifacts, turn, artifact_ceiling
                 )
                 output_repaired = output_repaired or round_repaired
                 decision = await self._settle_evidence(
@@ -2505,6 +2528,7 @@ class GatewayService:
                     evidence_ledger=evidence_ledger,
                     artifacts=artifacts,
                     tenant_id=tenant_id,
+                    artifact_version_ceiling=artifact_ceiling,
                 )
                 output_repaired = output_repaired or priority_repaired
             events: list[dict[str, Any]] = []
@@ -2772,6 +2796,65 @@ class GatewayService:
         )
         return merge_evidence(snapshot_evidence, turn_evidence), artifacts
 
+    async def _artifact_version_ceiling(
+        self,
+        artifacts: Mapping[str, Any],
+        *,
+        snapshot: ConversationTurnSnapshot,
+        tenant_id: str,
+        session_id: str,
+        cache: dict[str, Any],
+    ) -> int | None:
+        """本回合成品引用的**版本上限**；没有"重基过的产物"时返回 None（＝旧行为）。
+
+        2026-10-14 事故（会话 10041982）：回合内候选池生成把版本从 v 推到 v+1，
+        MCP 侧有界重基之后工具按 **v+1** 签发产物；网关若仍拿回合起始的 v 严格
+        相等去卡，模型终态引用 v+1 产物就会在收尾处以**非可修复**的 `stale_state`
+        硬失败——"回合不再被挡死"在最后一步落空。上限让这些产物过闸。
+
+        上限**不是**产物自证的版本：产物记录从本回合事件（含模型正文）收集，
+        模型能往里塞任意 `stateVersion`；拿它当上限等于让数据自己给自己发许可。
+        所以这里只在检测到"有产物版本高于回合起始"时，**重新向 Java 读一次**
+        权威快照，取它的版本作上限；读不到 → 保持 None（回到严格相等，fail-closed，
+        与今天一致）。`cache` 按回合传入：权威读数一个回合只取一次；没触发
+        （最常见的路径）则一次都不取——旧行为在代码路径上也逐字不变。
+        """
+        bumped = False
+        for entry in (artifacts or {}).values():
+            state = entry.get("stateVersion", entry.get("state_version")) if isinstance(entry, Mapping) else None
+            if state in (None, ""):
+                continue
+            try:
+                parsed = int(state)
+            except (TypeError, ValueError):
+                continue
+            if parsed > snapshot.snapshot_version:
+                bumped = True
+                break
+        if not bumped:
+            return None
+        if "resolved" not in cache:
+            cache["resolved"] = None
+            try:
+                fresh = _snapshot_payload(
+                    await _maybe_await(
+                        self.snapshot_loader(
+                            tenant_id=tenant_id,
+                            session_id=str(session_id),
+                            skill=None,
+                        )
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 —— 读不到就退回严格相等（fail-closed）
+                logger.warning(
+                    "artifact version ceiling unavailable (session=%s): %s",
+                    session_id,
+                    exc,
+                )
+            else:
+                cache["resolved"] = int(fresh.snapshot_version)
+        return cache["resolved"]
+
     async def _settle_evidence(
         self,
         output: TurnOutput,
@@ -2918,6 +3001,7 @@ class GatewayService:
         evidence_ledger: list[dict[str, Any]],
         artifacts: dict[str, Any],
         tenant_id: str,
+        artifact_version_ceiling: int | None = None,
     ) -> tuple[TurnOutput, bool]:
         """同档前置多条 → 先给**一次**纠错回合；修不成原样返回（不吞、不硬失败）。
 
@@ -2972,6 +3056,7 @@ class GatewayService:
                 tenant_id=tenant_id,
                 allow_proposal=True,
                 strict_scope=True,
+                artifact_version_ceiling=artifact_version_ceiling,
             )
         except (ValidationError, OutputContractError):
             # 候选自身不合格：丢掉它、维持原行为（这里绝不让修复变成新的失败路径）。
