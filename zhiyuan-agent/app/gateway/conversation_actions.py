@@ -12,7 +12,9 @@ import logging
 import uuid
 
 from app.domain.career_slots import diff_career_labels, merge_career_labels, normalize_career_labels
+from app.domain.region_entity_resolver import resolve_region_entity
 from app.gateway.contracts import ConversationAction, ConversationTurnSnapshot
+from app.services.profile_manager import merge_confirmed_intents_into_profile
 from app.util import internal_client
 from app.util.internal_client import execute_pending_planning_command, resolve_pending_confirmation
 
@@ -441,6 +443,61 @@ def _scope_bundle(scope: Mapping[str, Any]) -> str | None:
             if bundle is not None:
                 return bundle
     return None
+
+
+def _region_scope_level(scope: Mapping[str, Any], name: str) -> str:
+    """区域范围 → 省/市/区一层（`scopeLevel` 优先，缺了回目录现问一次）。
+
+    与 `_resolve_region_scope_ids` 的区别：那个要的是**权威 ID**（解析不出就不给），
+    这里只要**归位到哪一层**（名字照旧落库）——所以现问失败也不拦，按省级落。
+    """
+    for key in ("scopeLevel", "scope_level"):
+        value = str(scope.get(key) or "").strip().lower()
+        if value in {"province", "city", "area"}:
+            return value
+    try:
+        resolved = resolve_region_entity(name)
+    except Exception:  # noqa: BLE001 —— 归位失败按省级落（名字照旧，不拦执行）
+        resolved = None
+    best = getattr(resolved, "best", None)
+    level = str(getattr(best, "level", "") or "").strip().lower()
+    return level if level in {"province", "city", "area"} else "province"
+
+
+def _confirmed_profile_scopes(
+    goal: Mapping[str, Any],
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]]]:
+    """把 user-goal 的范围翻成 userprofile 的三族意向（确认成功后落库用）。
+
+    与 `_constraint_update_from_goal` 读的是**同一份载荷**（同源）；差别是这里
+    **不抛错**：落库是旁路，认不出的范围在这里安静跳过（主链路的拒绝逻辑在
+    `_constraint_update_from_goal` 里照旧）。专业名字先落 `level3`，由
+    `profile_manager` 按目录归位到 level1/2/3；区域按 scopeLevel 定层。
+    """
+    majors: dict[str, list[str]] = {}
+    schools: dict[str, list[str]] = {}
+    regions: dict[str, list[str]] = {}
+
+    def add(scope: Any, *, negative: bool) -> None:
+        if not isinstance(scope, Mapping):
+            return
+        name = str(scope.get("name") or scope.get("value") or "").strip()
+        if not name:
+            return
+        bundle = _scope_bundle(scope)
+        if bundle == "majorPreferences":
+            majors.setdefault("negative_level3" if negative else "level3", []).append(name)
+        elif bundle == "schoolPreferences":
+            schools.setdefault("negative_colleges" if negative else "colleges", []).append(name)
+        elif bundle == "regionPreferences":
+            level = _region_scope_level(scope, name)
+            regions.setdefault(f"negative_{level}" if negative else level, []).append(name)
+
+    for scope in goal.get("targetScopes") or goal.get("target_scopes") or []:
+        add(scope, negative=False)
+    for scope in goal.get("negativeScopes") or goal.get("negative_scopes") or []:
+        add(scope, negative=True)
+    return majors, schools, regions
 
 
 async def _resolve_region_scope_ids(goal: Mapping[str, Any]) -> dict[str, str]:
@@ -916,6 +973,28 @@ async def _execute_claimed_command(
             "pending command still applying after execute (pending=%s); not reporting complete/fail",
             pending_id,
         )
+    # 约束类确认成功 → **同源意向并入 userprofile**（排序输入通道；评审 §五-31a）。
+    # 名字/层级取自与约束装配**同一份** `userGoalRequest`（同源），batch 由会话批次推出。
+    # 落库是旁路：失败只留日志，不改这次确认的结论。
+    if career_update is None and status == "applied" and command_type == APPLY_CONSTRAINT_AND_REGENERATE:
+        goal = active_data.get("userGoalRequest") or active_data.get("user_goal_request")
+        if isinstance(goal, Mapping):
+            majors, schools, regions = _confirmed_profile_scopes(goal)
+            if majors or schools or regions:
+                try:
+                    await merge_confirmed_intents_into_profile(
+                        session_id,
+                        batch="02" if education_level == "专科" else "01",
+                        major_intents=majors,
+                        school_intents=schools,
+                        region_intents=regions,
+                    )
+                except Exception as exc:  # noqa: BLE001 —— 旁路失败不改主链路结果
+                    logger.warning(
+                        "confirmed intents merge into userprofile failed (session=%s): %s",
+                        session_id,
+                        exc,
+                    )
     changes = data.get("actualChanges", data.get("changes", []))
     planning_state = data.get("planningState")
     return ConversationActionResult(

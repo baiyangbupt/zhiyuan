@@ -40,6 +40,7 @@ from app.domain.region_entity_resolver import REGION_AREA_PROVINCES, resolve_reg
 from app.domain.school_major_ref_resolver import resolve_school_major_ref
 from app.domain.school_entity_resolver import resolve_school_entity, resolve_school_mentions_from_text
 from app.schemas.user_profile import UserProfile
+from app.services.profile_manager import merge_confirmed_intents_into_profile
 from app.tools.review_issue_registry import normalize_review_issue_code
 from app.util import internal_client
 from app.util.code_enrichment import (
@@ -7658,6 +7659,18 @@ async def _apply_intent_pending(
         message = "已采纳这次报考要求，但当前方案暂时没有重新调整成功，请稍后重新生成方案。"
     else:
         message = "已采纳这次报考要求，后续生成方案会按这个要求处理。"
+    if constraint_success and has_constraint_payload:
+        # 确认成功之后，把**同源意向**并入 userprofile（排序输入通道；评审 §五-31a）：
+        # 名字/值取自同一份 merged（与 constraintUpdate 同源），只并集、正压负、写回带 code。
+        # 旁路：失败只留日志，不改这次确认的结论（`merged` 里的属性键由上游走 constraintUpdate，
+        # 这里只认标准键）。
+        await merge_confirmed_intents_into_profile(
+            ctx.deps.sessionid,
+            batch=getattr(ctx.deps, "batch", None) or "01",
+            major_intents=merged.get("major_intents"),
+            school_intents=merged.get("school_intents"),
+            region_intents=merged.get("city_intents"),
+        )
     return success, data, message
 
 
