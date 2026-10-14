@@ -123,13 +123,30 @@ def get_area_batch_codes(area_id: str, year: str = "2024") -> dict[str, list[str
     return batches.get(area_id, {}).get(year, {})
 
 
+# 首选科目整词归一（3+1+2 新高考：首选决定物理类/历史类）。
+# 必须按整词判定：裸子串匹配里 "物" 会命中 "生物" —— 历史类 + 生物 曾被误判成物理类（WL）。
+_FIRST_CHOICE_PHYSICS = {"物", "物理"}
+_FIRST_CHOICE_HISTORY = {"历", "史", "历史"}
+
+
+def _first_choice(subject: str) -> Optional[str]:
+    """把单个选科名归一为首选科目（物理/历史）；不是首选科目返回 None。"""
+    token = (subject or "").strip()
+    if token in _FIRST_CHOICE_PHYSICS:
+        return "物理"
+    if token in _FIRST_CHOICE_HISTORY:
+        return "历史"
+    return None
+
+
 def resolve_subject_type(area_id: str, subject_list: list[str], year: str = "2025") -> str:
     """根据省份和选科列表，解析出 gaotu API 需要的 subject_type 编码。
 
     规则：
     - 先查该省该年支持哪些科目类型 (N/W/L/WL/LS)
     - 如果只有 N（综合），直接返回 N
-    - 新高考省份 (WL/LS)：物理相关→WL，历史相关→LS
+    - 新高考省份 (WL/LS)：**先按整词判首选**——含历史=历史类(LS)；含物理且不含历史=物理类(WL)；
+      识别不出整词首选再退回旧包含匹配（"文科/理科"这类写法）
     - 传统省份 (W/L)：文科→W，理科→L
     """
     area_subjects = get_area_subject_codes(area_id, year)
@@ -145,8 +162,13 @@ def resolve_subject_type(area_id: str, subject_list: list[str], year: str = "202
 
     # 新高考省份 (WL=物理, LS=历史)
     if "WL" in area_subjects:
-        if any(k in subject_str for k in ("物", "理")):
+        first_choices = {c for c in (_first_choice(s) for s in (subject_list or [])) if c}
+        if "历史" in first_choices:
+            return "LS"
+        if "物理" in first_choices:
             return "WL"
+        # 整词首选识别不出（如"文科""理科"这类旧写法）才走包含匹配；
+        # 这里不再用裸 "物" 子串——"生物"会假命中物理。
         if any(k in subject_str for k in ("历", "史", "文")):
             return "LS"
         return "WL"  # 默认物理
