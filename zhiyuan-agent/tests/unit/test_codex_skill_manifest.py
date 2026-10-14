@@ -381,3 +381,65 @@ def test_priority_rules_need_a_hit_check_and_budget_intents_are_translated() -> 
     assert "替换/补档" in dev, "没有给出预算类诉求的正确动作映射"
     assert "业务语言 + 封闭式" in dev, "拿不准时的确认口径没有写进指令"
     assert "不得把还没进方案的候选说成已经安排" in dev, "文案预支未生效操作的禁令缺失"
+
+
+def test_career_v1_is_pinned_in_profile_discovery_and_exploration_skills() -> None:
+    """career v1（2026-10-14）：发展方向走**四类中文规范标签**的弱偏好语义。
+
+    这组契约分散在四处（收集/探索/推荐/方案），任何一处被改回旧口径
+    （英文槽位、硬筛、或重新引用已删除的 career_path_chat），
+    用户侧表现都是"方向被当成硬条件筛掉候选"或"方向确认卡出不来了"。
+    """
+    profile = (_root() / "profile-discovery" / "SKILL.md").read_text(encoding="utf-8")
+    assert "careerUpdateRequest" in profile, "画像收集没有结构化草稿字段名"
+    for label in ("体制内/考公导向", "稳定就业导向", "深造发展导向", "市场化就业导向"):
+        assert label in profile, f"画像收集缺四类规范标签：{label}"
+    assert "封闭式四选" in profile, "发展方向没有封闭式四选口径"
+    assert "能推断的一律推断" in profile, "发展方向缺'能推断不问'"
+    assert "更新发展方向" in profile, "确认卡名称没有写进收集口径"
+
+    exploration = (_root() / "school-major-exploration" / "SKILL.md").read_text(encoding="utf-8")
+    assert "职业路径主题" in exploration
+    assert "career_path_chat" not in exploration, "探索技能仍引用已删除的 career_path_chat"
+    assert "先看学生本人" in exploration
+    assert "中低分段" in exploration and "优先就业" in exploration
+    assert "弱偏好" in exploration and "不硬筛" in exploration
+    assert "preferences.careerTypes" in exploration, "探索技能没有指向快照字段"
+    assert "careerUpdateRequest" in exploration, "探索技能没有写方向草稿的触发条件"
+    assert "不和意向混用" in exploration
+
+
+def test_career_v1_weak_preference_is_pinned_in_recommendation_and_plan_skills() -> None:
+    recommendation = (_root() / "candidate-recommendation" / "SKILL.md").read_text(encoding="utf-8")
+    assert "preferences.careerTypes" in recommendation
+    assert "弱偏好" in recommendation
+    assert "不做硬筛" in recommendation, "候选推荐仍可能把方向当硬筛"
+    assert "Preference Fit" in recommendation
+
+    for name in ("plan-construction", "plan-final-review"):
+        body = (_root() / name / "SKILL.md").read_text(encoding="utf-8")
+        assert "方向覆盖核对" in body, f"{name} 缺方向覆盖核对"
+        assert "preferences.careerTypes" in body, f"{name} 没有指向快照字段"
+        assert "承接证据" in body, f"{name} 没有要求逐条给出承接证据"
+    review = (_root() / "plan-final-review" / "SKILL.md").read_text(encoding="utf-8")
+    assert "不做硬筛" in review and "只审不筛" in review
+
+
+def test_write_rules_pin_career_update_request_contract() -> None:
+    """写实例规则必须把 careerUpdateRequest 的契约写死（career v1）：
+
+    - 字段名与走同一条确认链；
+    - `careerTypes` 只能是四类中文规范标签（别名归一在系统侧）；
+    - 弱偏好语义（不得据此硬筛），且与提案/补录同属'一回合只出一件事'。
+    """
+    rules = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.write.md"
+    ).read_text(encoding="utf-8")
+    assert "careerUpdateRequest" in rules
+    assert "更新发展方向" in rules
+    for label in ("体制内/考公导向", "稳定就业导向", "深造发展导向", "市场化就业导向"):
+        assert label in rules, f"写实例规则缺四类规范标签：{label}"
+    assert "只能是四类中文规范标签" in rules
+    assert "弱偏好" in rules
+    assert "更新发展方向" in rules
+    assert "一回合" in rules and "只出一件事" in rules

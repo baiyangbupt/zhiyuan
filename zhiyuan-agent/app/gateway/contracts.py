@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.admission.facts import AdmissionFactError, canonical_admission_mode, derive_risk_tier
+from app.domain.career_slots import CAREER_LABEL_MAP, merge_career_labels, normalize_career_labels
 
 
 class _ContractModel(BaseModel):
@@ -381,6 +382,64 @@ class ScoreUpdateRequest(_ContractModel):
     subject_score_list: list[ScoreUpdateSubjectScore] = Field(default_factory=list)
 
 
+class CareerUpdateRequest(_ContractModel):
+    """模型产出的**发展方向草稿**（career v1「完整落库」：写 latentProfile）。
+
+    与 `ScoreUpdateRequest` 同一个角色定位：模型只表达**结构化草稿**（用户表达过的
+    发展方向），归一化、合并、写库由网关执行链完成（`career_slots` 词表是唯一权威）。
+
+    · **中文规范标签唯一落库**（2026-10-14 拍板）：入口可以是别名/英文槽位名/近义
+      说法（见 `career_slots.CAREER_ALIAS_MAP`），契约层归一成四类之一——
+      `体制内/考公导向`、`稳定就业导向`、`深造发展导向`、`市场化就业导向`；
+      归不了一律**拒绝**（修复回合），不许静默丢弃：丢掉一项等于"用户说了、
+      卡片上没有"，用户看不见的分叉比整轮失败糟得多。
+    · **弱偏好语义**：这些方向只用于推荐理由/排序/解释与方案方向覆盖核对，
+      **不做硬筛**（不排除院校/专业），模型侧描述与技能口径一致。
+    · `source_version_guard` 与提案同一条纪律：模型看到的会话版本必须与当前
+      快照一致，不一致就 `stale_state`。
+    """
+
+    source_version_guard: int = Field(ge=0)
+    user_original_text: str = ""
+    career_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "用户表达的发展方向，必须是这四类之一（同义说法会自动归一）："
+            "体制内/考公导向、稳定就业导向、深造发展导向、市场化就业导向。"
+            "只放用户真正表达过的方向，不要替用户补充。"
+        ),
+    )
+
+    @field_validator("career_types", mode="before")
+    @classmethod
+    def _coerce_text_list(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
+
+    @field_validator("career_types")
+    @classmethod
+    def _require_canonical_labels(cls, value: list[str]) -> list[str]:
+        normalized = merge_career_labels(None, [str(item) for item in value])
+        unknown = [
+            str(item)
+            for item in value
+            if not normalize_career_labels([str(item)])
+        ]
+        if unknown:
+            raise ValueError(
+                "unsupported careerTypes "
+                + "、".join(unknown)
+                + "；仅支持："
+                + "、".join(CAREER_LABEL_MAP.values())
+            )
+        if not normalized:
+            raise ValueError("careerTypes must contain at least one direction")
+        return normalized
+
+
 class TurnOutput(_ContractModel):
     response_type: Literal["text", "fact", "recommendation", "review", "clarification"]
     message: str
@@ -397,6 +456,8 @@ class TurnOutput(_ContractModel):
     # 与 `proposal_request` 互斥（同一次输出不许携带两个待确认草稿——卡片只能是
     # 一个"要用户确认的东西"；网关对"两个都带"按契约错误拒）。
     score_update_request: ScoreUpdateRequest | None = None
+    # 发展方向草稿（career v1）：与上面两个草稿**三者互斥**（同一口径：一次确认只落一个动作）。
+    career_update_request: CareerUpdateRequest | None = None
     conversation_action: ConversationAction = Field(default_factory=ConversationAction)
 
     @field_validator("response_type", mode="before")

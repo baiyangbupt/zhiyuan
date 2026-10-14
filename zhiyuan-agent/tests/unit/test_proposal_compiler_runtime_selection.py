@@ -499,24 +499,6 @@ def test_needs_plan_first_guard_blocks_implicit_sort_without_formal_plan_referen
     assert resolution.blocking_reasons == ["missing_formal_plan"]
 
 
-def test_needs_plan_first_guard_preserves_career_direction_focus_without_formal_plan():
-    resolution = proposal_compiler.resolve_needs_plan_first_guard(
-        "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案",
-        planning_summary={"ordered_total": 0, "working_total": 0},
-    )
-
-    assert resolution.side_effect == "needs_plan_first"
-    assert resolution.reference_resolution == "no_referent"
-    assert resolution.target_issues == ["career_direction_support"]
-    assert "体制内/考公导向" in resolution.primary_reply
-    assert "稳定就业导向" in resolution.primary_reply
-    assert "承接" in resolution.primary_reply
-    assert "不会改动当前方案" in resolution.primary_reply
-    assert resolution.display_payload["presentation"] == "readonly_boundary"
-    assert resolution.display_payload["focusLabel"] == "体制内/考公导向、稳定就业导向的方案承接"
-    assert resolution.reply_plan["focus"] == ["career_direction_support"]
-
-
 def test_needs_plan_first_guard_preserves_recent_intent_conflict_focus():
     resolution = proposal_compiler.resolve_needs_plan_first_guard(
         "现在方案里哪些和这些要求冲突",

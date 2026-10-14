@@ -25,6 +25,8 @@ version: 1.0.0
 - 已取得当前 Snapshot 和最新 `stateVersion`。
 - 目标院校/专业/招生单元已由 `entity.resolve` 解析为标准 ID。
 - 读取用户确认的偏好与排除项；tentative 偏好只能影响解释，不能当硬约束。
+- 已确认的发展方向（快照 `preferences.careerTypes`，四类中文标签）是**弱偏好**：
+  只进 Preference Fit 维度、推荐理由、排序与解释，**不做硬筛**（不据此排除候选 ✗）。
 - Required gate fields are `province`, `year`, `score` or `rank`, subject mode/batch, and confirmed hard constraints.
 
 ## 允许能力
@@ -38,6 +40,8 @@ version: 1.0.0
 2. 解析实体并检查资格；任何硬约束冲突都列入排除原因。
 3. 获取招生单元层面的系统录取率、历史可比性和 Evidence。
 4. 分开呈现 Eligibility、Admission Probability、Preference Fit、Data Confidence 四个维度。
+   已确认的发展方向（careerTypes）进 Preference Fit 与排序解释（如"该校该专业近年去向与
+   考公/深造路线衔接"）：只作为**理由**，不改变资格判定、不排除候选。
 5. 依据系统录取率标记风险：`<50%` 为“冲”，`50%~70%` 为“稳”，`70%~99%` 为“保”；不自行重算或改变边界。
 6. 给出少量可比较候选、取舍，并**宣布下一步**（需要用户定的用封闭式选项），而非伪造确定性。
 

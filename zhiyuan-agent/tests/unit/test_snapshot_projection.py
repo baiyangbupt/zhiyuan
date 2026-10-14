@@ -179,6 +179,118 @@ def test_projection_rejects_non_mapping_backend_payload() -> None:
         build_snapshot([])
 
 
+# ── 发展方向（career v1）：模型快照里必须看得见 ────────────────────────────────
+#
+# 数据源：`latentProfile.futureDevelopment.careerTypes`（中文规范标签落库 ✓）。
+# 投影 DTO 里**没有** latentProfile（Java 未暴露 ✓）——组合层由 `server.py` 的
+# snapshot_loader 包装（`_attach_career_directions`，agent 侧直读画像）把值按
+# **workspace 形状**注入进来，本节就在那个形状上钉：挪到 `preferences.careerTypes`
+# ✓、**弱偏好**语义 ✓（只进推荐理由/排序/解释，绝不做硬筛 ✗）、旧数据里的槽位名/
+# 别名也归一 ✓（历史值曾写过非标签形式 ✓）。
+
+
+def test_projection_exposes_career_types_as_normalized_labels() -> None:
+    workspace = fake_backend_workspace()
+    workspace["profileState"]["latentProfile"] = {
+        "futureDevelopment": {
+            "careerTypes": ["考公", "深造发展导向"],
+            "industryPreferences": ["互联网"],
+        }
+    }
+
+    snapshot = build_snapshot(workspace)
+
+    assert snapshot.preferences["careerTypes"] == ["体制内/考公导向", "深造发展导向"], \
+        "落库/快照同一形式：中文规范标签（旧数据护栏也在这一层归一）"
+    assert snapshot.preferences["careerTypes"] != ["考公", "深造发展导向"], "别名不进快照"
+
+
+def test_projection_omits_career_types_key_when_nothing_is_recorded() -> None:
+    """没落过库时**键就不出现** ✓：一个空列表会被模型读成"用户说了但没有方向" ✗。"""
+    snapshot = build_snapshot(fake_backend_workspace())
+    assert "careerTypes" not in snapshot.preferences
+
+
+def test_projection_drops_unknown_career_entries_instead_of_guessing() -> None:
+    workspace = fake_backend_workspace()
+    workspace["profileState"]["latentProfile"] = {
+        "futureDevelopment": {"careerTypes": ["当医生", "进企业"]}
+    }
+
+    snapshot = build_snapshot(workspace)
+
+    assert snapshot.preferences["careerTypes"] == ["市场化就业导向"], "归不了的丢弃，不猜"
+
+
+@pytest.mark.asyncio
+async def test_career_enrichment_reads_the_profile_and_injects_workspace_shape(monkeypatch) -> None:
+    """`_attach_career_directions`：投影 DTO 载荷 → 直读画像 → 注入 workspace 形状 ✓。"""
+    from app.server import _attach_career_directions
+
+    calls = []
+
+    async def get_profile(session_id):
+        calls.append(session_id)
+        return {
+            "code": 0,
+            "data": {
+                "latentProfile": {
+                    "futureDevelopment": {"careerTypes": ["考研"], "industryPreferences": []}
+                }
+            },
+        }
+
+    monkeypatch.setattr(internal_client, "get_planning_profile", get_profile)
+    payload = {"data": {"sessionId": "900047", "snapshotVersion": 12}}
+
+    enriched = await _attach_career_directions(payload)
+
+    assert calls == ["900047"]
+    assert enriched["data"]["profileState"]["latentProfile"]["futureDevelopment"]["careerTypes"] == [
+        "深造发展导向"
+    ]
+    # 原载荷不被就地改写（快照缓存里还挂着同一份对象）
+    assert "profileState" not in payload["data"]
+    # 注入后的形状正是 `build_snapshot` 读的形状 ✓（钉住两层的接缝）
+    workspace = dict(enriched["data"])
+    workspace.setdefault("studentSummary", {})
+    snapshot = build_snapshot(workspace)
+    assert snapshot.preferences["careerTypes"] == ["深造发展导向"]
+
+
+@pytest.mark.asyncio
+async def test_career_enrichment_degrades_to_passthrough_on_every_failure_mode(monkeypatch) -> None:
+    """补读失败**不阻断回合** ✓：异常 / 码非 0 / 没有方向 / 非投影形状 → 原样放行 ✓。"""
+    from app.server import _attach_career_directions
+
+    async def boom(session_id):
+        raise RuntimeError("java down")
+
+    monkeypatch.setattr(internal_client, "get_planning_profile", boom)
+    payload = {"data": {"sessionId": "900047"}}
+    assert await _attach_career_directions(payload) == payload
+
+    async def rejected(session_id):
+        return {"code": 404, "msg": "not found"}
+
+    monkeypatch.setattr(internal_client, "get_planning_profile", rejected)
+    assert await _attach_career_directions(payload) == payload
+
+    async def empty(session_id):
+        return {"code": 0, "data": {"latentProfile": {"futureDevelopment": {"careerTypes": []}}}}
+
+    monkeypatch.setattr(internal_client, "get_planning_profile", empty)
+    assert await _attach_career_directions(payload) == payload
+
+    # 非投影形状（替身/单测的 workspace 载荷）不补、也不打画像接口
+    async def must_not_call(session_id):
+        raise AssertionError("workspace 形状不该触发直读")
+
+    monkeypatch.setattr(internal_client, "get_planning_profile", must_not_call)
+    workspace_payload = {"sessionId": "900047", "version": 3}
+    assert await _attach_career_directions(workspace_payload) == workspace_payload
+
+
 @pytest.mark.asyncio
 async def test_turn_snapshot_client_uses_tenant_session_and_skill(monkeypatch) -> None:
     calls = []

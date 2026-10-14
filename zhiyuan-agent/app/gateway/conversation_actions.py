@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable, Mapping
 import logging
 import uuid
 
+from app.domain.career_slots import diff_career_labels, merge_career_labels, normalize_career_labels
 from app.gateway.contracts import ConversationAction, ConversationTurnSnapshot
 from app.util import internal_client
 from app.util.internal_client import execute_pending_planning_command, resolve_pending_confirmation
@@ -32,6 +33,12 @@ APPLY_CONSTRAINT_AND_REGENERATE = "apply_constraint_and_regenerate"
 # 执行体是 `ChatSessionBizService.updateScoreDetailForUser`（与表单补录同一条核心）。
 UPDATE_SCORE_DETAIL = "update_score_detail"
 SCORE_UPDATE_KIND = "score_update"
+# 发展方向（career v1）：Java 的 `PendingPlanningCommandBizService` **没有**这一族命令类型
+# （profile-patch 不在它的分支里 ✓），所以执行体在网关侧自己完成（读-合并-写 latent ✓）；
+# pending 只承担"待确认 + 幂等键 + 结果回写"三件事 ✓——kind/actionFamily 用这一对常量，
+# prepare（service.py）与执行链（本模块）必须逐字一致。
+CAREER_UPDATE_KIND = "career_update"
+UPDATE_CAREER_TYPES = "update_career_types"
 PLAN_CHANGE_GOALS = frozenset({"fill_to_count", "prioritize_within_tier"})
 SCOPE_GOALS = frozenset({"only_keep_scope", "must_include_scope", "exclude_scope", "tuition_budget_scope"})
 # 目标里的范围种类 → `constraintUpdate` 的三个偏好束（与 legacy 的分组一致 ✓）。
@@ -569,6 +576,112 @@ def _score_update_payload(
     return is_score_update, dict(payload) if isinstance(payload, Mapping) else None
 
 
+def _career_update_payload(
+    active: Mapping[str, Any], active_data: Mapping[str, Any]
+) -> tuple[bool, dict[str, Any] | None]:
+    """识别"这一条待确认是不是更新发展方向"，并取回执行草稿。
+
+    与 `_score_update_payload` 同一条判据形状（生产者落下的三种标记 kind / actionFamily /
+    dataValue.proposalSource 任一命中即认定）；草稿取 `careerUpdateRequest`（只在
+    career_update 的 pending 里存在）。"是方向更新、但草稿丢了"与"不是"必须分开：
+    前者是生产者缺陷，**拒绝执行**（没有草稿就不知道要落什么库）。
+    """
+    kind = str(active.get("kind") or "").strip().lower()
+    family = str(active.get("actionFamily") or active.get("action_family") or "").strip().lower()
+    source = str(
+        active_data.get("proposalSource") or active_data.get("proposal_source") or ""
+    ).strip().lower()
+    is_career_update = (
+        kind == CAREER_UPDATE_KIND or family == UPDATE_CAREER_TYPES or source == CAREER_UPDATE_KIND
+    )
+    payload = active_data.get("careerUpdateRequest", active_data.get("career_update_request"))
+    return is_career_update, dict(payload) if isinstance(payload, Mapping) else None
+
+
+async def _execute_career_update(
+    session_id: str | int,
+    career_update: Mapping[str, Any],
+) -> dict[str, Any]:
+    """把"更新发展方向"落到 `latentProfile.futureDevelopment.careerTypes`（读-合并-写）。
+
+    为什么执行体在网关侧（而不是 `pending-command/execute`）：Java 的
+    `PendingPlanningCommandBizService` **没有** profile-patch 命令类型 ✓——走未知类型
+    只会拿 40001 ✓。所以这段由网关自己完成，pending 仍照常承担"待确认 + 幂等键 +
+    结果回写"三件事 ✓。
+
+    **落库形式 = 中文规范标签**（入口别名已在契约层归一，这里落库前再归一一次）；
+    **整字段赋值纪律**：Java 的 latent 更新是整字段赋值 ✓（`applyLatentProfileUpdate`），
+    不先把现行 `futureDevelopment` 全文读回来就写，会把 `industryPreferences` 等既有键
+    整个抹掉 ✗——所以任何读不到全文的情形**都拒绝执行**（fail closed），不拿残缺值写库。
+    """
+    labels = normalize_career_labels(
+        [str(item) for item in (career_update.get("careerTypes") or career_update.get("career_types") or [])]
+    )
+    if not labels:
+        return {
+            "code": "career_update_empty",
+            "status": "failed",
+            "msg": "待确认内容里没有可落库的发展方向，拒绝执行（不自造要写入的方向）。",
+        }
+    try:
+        profile_response = await internal_client.get_planning_profile(session_id)
+    except Exception as exc:  # noqa: BLE001 —— 读不到就不写（整字段赋值下残缺值会抹库）
+        logger.warning("career update profile read failed (session=%s): %s", session_id, exc)
+        return {
+            "code": "career_profile_unreadable",
+            "status": "failed",
+            "msg": "读不到当前画像，无法安全写入发展方向（未生效）。",
+        }
+    if not isinstance(profile_response, Mapping) or (profile_response.get("code") not in (None, 0)):
+        return {
+            "code": str((profile_response or {}).get("code") or "career_profile_unreadable"),
+            "status": "failed",
+            "msg": str((profile_response or {}).get("msg") or "读不到当前画像，未写入发展方向。"),
+        }
+    profile_data = profile_response.get("data") if isinstance(profile_response.get("data"), Mapping) else {}
+    latent = profile_data.get("latentProfile") if isinstance(profile_data.get("latentProfile"), Mapping) else {}
+    future = latent.get("futureDevelopment") if isinstance(latent.get("futureDevelopment"), Mapping) else {}
+    existing_raw = future.get("careerTypes")
+    existing = [str(item) for item in existing_raw] if isinstance(existing_raw, list) else []
+    merged = merge_career_labels(existing, labels)
+    added = diff_career_labels(existing, labels)
+    if not added:
+        # 幂等：要落的方向已经在库里——不重写（不制造一次无谓的版本推进），照实报"已生效"。
+        logger.info("career update no-op (session=%s labels=%s)", session_id, labels)
+        return {
+            "code": 0,
+            "status": "applied",
+            "data": {"actualChanges": [], "careerTypes": merged},
+        }
+    payload = dict(future)
+    payload["careerTypes"] = merged
+    response = await internal_client.update_planning_latent_profile(
+        session_id, future_development=payload
+    )
+    if not isinstance(response, Mapping) or (response.get("code") not in (None, 0)):
+        return {
+            "code": str((response or {}).get("code") or "career_write_failed"),
+            "status": "failed",
+            "msg": str((response or {}).get("msg") or "发展方向写入未生效。"),
+        }
+    data = response.get("data") if isinstance(response.get("data"), Mapping) else {}
+    logger.info(
+        "career update applied (session=%s added=%s version=%s)",
+        session_id,
+        added,
+        data.get("version"),
+    )
+    return {
+        "code": 0,
+        "status": "applied",
+        "data": {
+            "actualChanges": [{"target": "careerTypes", "value": label} for label in added],
+            "careerTypes": merged,
+            "stateVersion": data.get("version"),
+        },
+    }
+
+
 def _command_for_goal(
     active_data: Mapping[str, Any], *, proposal_apply: dict[str, Any],
     region_ids: Mapping[str, str] | None = None,
@@ -669,7 +782,18 @@ async def _execute_claimed_command(
             "failed", proposal_ref, code="score_update_payload_missing",
             message="待确认内容里没有补录成绩草稿，拒绝执行（不自造要写入的成绩）。",
         )
-    if score_update is not None:
+    is_career_update, career_update = _career_update_payload(active, active_data)
+    if is_career_update and career_update is None:
+        return ConversationActionResult(
+            "failed", proposal_ref, code="career_update_payload_missing",
+            message="待确认内容里没有发展方向草稿，拒绝执行（不自造要写入的方向）。",
+        )
+    # **发展方向（career_update 动作族）**：执行体在网关侧（Java 没有 profile-patch
+    # 命令类型 ✓，见 `_execute_career_update` ✓）——不走 `pending-command/execute` ✗，
+    # 但结果回写（complete/fail）与返回形状与其它族完全一致 ✓（下面共享的那一段 ✓）。
+    if career_update is not None:
+        response = await _execute_career_update(session_id, career_update)
+    elif score_update is not None:
         # **补录成绩（score_update 动作族）**：执行输入是 Java prepare 落进 pending 的
         # `scoreUpdateRequest` 草稿 —— 网关只透传（**不合并、不校验、不摘要**）：合并 →
         # 校验（110）→ 落 userScoreDetail → 拉志愿数据 → 规划状态 +1 置 stale，全在 Java
@@ -743,16 +867,17 @@ async def _execute_claimed_command(
             return ConversationActionResult(
                 "failed", proposal_ref, code=code.strip(), message=detail.strip() or None
             )
-    response = await (executor or execute_pending_planning_command)(
-        tenant_id,
-        session_id,
-        operation_id=operation_id,
-        pending_id=pending_id,
-        claim_token=claim_token,
-        expected_plan_version=int(expected_plan_version or 0),
-        command_type=command_type,
-        **extra_kwargs,
-    )
+    if career_update is None:
+        response = await (executor or execute_pending_planning_command)(
+            tenant_id,
+            session_id,
+            operation_id=operation_id,
+            pending_id=pending_id,
+            claim_token=claim_token,
+            expected_plan_version=int(expected_plan_version or 0),
+            command_type=command_type,
+            **extra_kwargs,
+        )
     status = _status(response)
     data = _data(response)
     # 一行出真相 ✓：`_status` 把业务码翻成状态 **不抛异常** ✗，外面只看得到"卡显示未生效" ✗——

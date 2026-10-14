@@ -77,7 +77,7 @@ PolicyDomain = Literal[
 ]
 ReviewFocus = Literal["full_review", "risk_only", "tier_balance", "tuition", "career_fit"]
 CareerSlot = Literal["system_public_service", "stable_employment", "further_study", "market_employment"]
-IntentType = Literal["major", "school", "region", "career", "tuition_budget"]
+IntentType = Literal["major", "school", "region", "tuition_budget"]
 ConstraintType = Literal["exclude", "only_keep", "must_have"]
 PlanScope = Literal["plan", "candidates"]
 PendingAction = Literal["confirm", "cancel"]
@@ -3567,7 +3567,7 @@ _SEMANTIC_REFERENCE_STRENGTHS = frozenset(
 
 def _semantic_requirement_domain(value: Any) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"school", "major", "region", "career", "tuition_budget"}:
+    if normalized in {"school", "major", "region", "tuition_budget"}:
         return normalized
     if normalized in {"city", "area", "province"}:
         return "region"
@@ -3661,7 +3661,6 @@ def _semantic_reference_summary(semantic_requirements: list[dict[str, Any]] | No
         "major": "专业方向参考",
         "school": "院校参考",
         "region": "地域参考",
-        "career": "发展方向参考",
     }
     grouped: dict[str, list[str]] = {}
     for item in semantic_requirements:
@@ -3676,7 +3675,7 @@ def _semantic_reference_summary(semantic_requirements: list[dict[str, Any]] | No
         for value in values:
             _append_unique(grouped.setdefault(domain, []), value)
     parts: list[str] = []
-    for domain in ("major", "school", "region", "career"):
+    for domain in ("major", "school", "region"):
         values = grouped.get(domain) or []
         if values:
             parts.append(f"{labels.get(domain, '参考')}：{'、'.join(values[:6])}")
@@ -4198,20 +4197,6 @@ def _normalize_region_payload(payload: dict[str, Any] | None) -> tuple[dict[str,
     return normalized, ambiguities, display_aliases
 
 
-def _normalize_career_payload(payload: dict[str, Any] | None) -> tuple[dict[str, list[str]], list[dict[str, Any]], dict[str, str]]:
-    if not payload:
-        return {"slots": []}, [], {}
-    values: list[str] = []
-    for key in ("slots", "career", "items", "values", "names"):
-        values.extend(_as_list(payload.get(key)))
-    slots = normalize_career_slots(values)
-    unknown = [value for value in values if value and value not in slots and not normalize_career_slots([value])]
-    result = {"slots": slots}
-    if unknown:
-        result["unknown"] = list(dict.fromkeys(unknown))
-    return result, [], {}
-
-
 def _normalize_tuition_budget_payload(payload: dict[str, Any] | None) -> tuple[dict[str, list[int]], list[dict[str, Any]], dict[str, str]]:
     normalized: dict[str, list[int]] = {
         "max_tuition_per_year": [],
@@ -4249,8 +4234,6 @@ def _normalize_intent_side(
         return _normalize_school_payload(payload, batch=batch)
     if intent_type == "region":
         return _normalize_region_payload(payload)
-    if intent_type == "career":
-        return _normalize_career_payload(payload)
     if intent_type == "tuition_budget":
         return _normalize_tuition_budget_payload(payload)
     return {}, [], {}
@@ -4266,7 +4249,6 @@ def _preview_message(
         "major": "专业要求",
         "school": "院校要求",
         "region": "地域要求",
-        "career": "发展方向要求",
         "tuition_budget": "学费预算要求",
     }
     label = labels.get(intent_type, "报考要求")
@@ -4284,13 +4266,11 @@ def _preview_message(
         if values:
             parts.append(f"{name}：{'、'.join(list(dict.fromkeys(values))[:6])}")
     detail = "；".join(parts) if parts else "未识别到明确实体"
-    if intent_type == "career":
-        detail = detail.replace("system_public_service", to_career_label("system_public_service"))
     return f"我先把这次{label}整理成待确认预览：{detail}。确认前不会生效。"
 
 
 def _display_intent_value(value: Any, display_aliases: dict[str, str] | None = None) -> str:
-    text = to_career_label(value) if value == "system_public_service" else str(value or "").strip()
+    text = str(value or "").strip()
     if not text:
         return ""
     raw = str((display_aliases or {}).get(text) or "").strip()
@@ -4353,7 +4333,6 @@ def _intent_summary_from_merged(merged: dict[str, Any], display_aliases: dict[st
     major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
     school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
     city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
-    career_intents = merged.get("career_intents") if isinstance(merged.get("career_intents"), dict) else {}
     tuition_budget = merged.get("tuition_budget") if isinstance(merged.get("tuition_budget"), dict) else {}
     parts = [
         _summary_part(
@@ -4392,11 +4371,6 @@ def _intent_summary_from_merged(merged: dict[str, Any], display_aliases: dict[st
                 display_aliases=display_aliases,
             ),
         ),
-        _summary_part(
-            "发展方向要求",
-            _intent_values_for_summary(career_intents, ("positive",), display_aliases=display_aliases),
-            _intent_values_for_summary(career_intents, ("negative",), display_aliases=display_aliases),
-        ),
         _tuition_budget_summary_part(tuition_budget),
     ]
     return "；".join(part for part in parts if part) or "本次报考要求"
@@ -4407,7 +4381,7 @@ def _preview_message_from_merged(merged: dict[str, Any], display_aliases: dict[s
 
 
 def _merged_intents_have_values(merged: dict[str, Any]) -> bool:
-    for section_name in ("major_intents", "school_intents", "city_intents", "career_intents", "tuition_budget"):
+    for section_name in ("major_intents", "school_intents", "city_intents", "tuition_budget"):
         section = merged.get(section_name) if isinstance(merged, dict) else None
         if not isinstance(section, dict):
             continue
@@ -4465,15 +4439,6 @@ def _merged_intents_from_normalized(intent_type: str, normalized: dict[str, Any]
             if negative_values:
                 payload[f"negative_{key}"] = negative_values
         return {"city_intents": payload} if payload else {}
-    if intent_type == "career":
-        positive_slots = _as_list(positive.get("slots"))
-        negative_slots = _as_list(negative.get("slots"))
-        payload = {}
-        if positive_slots:
-            payload["positive"] = positive_slots
-        if negative_slots:
-            payload["negative"] = negative_slots
-        return {"career_intents": payload} if payload else {}
     if intent_type == "tuition_budget":
         payload = {}
         for key in _TUITION_BUDGET_INTENT_KEYS:
@@ -4714,7 +4679,7 @@ def _proposed_profile_from_intent(
     normalized: dict[str, Any],
     batch: str,
 ) -> dict[str, Any] | None:
-    if current_profile is None or intent_type in {"career", "tuition_budget"} or not hasattr(current_profile, "to_backend_format"):
+    if current_profile is None or intent_type == "tuition_budget" or not hasattr(current_profile, "to_backend_format"):
         return None
 
     profile = deepcopy(current_profile).to_backend_format()
@@ -8345,7 +8310,7 @@ async def preview_intent_change(
     semantic_requirements; it does not infer extra requirements from raw_user_text.
 
     Args:
-        intent_type: Domain being changed. Must be major, school, region, career, or tuition_budget.
+        intent_type: Domain being changed. Must be major, school, region, or tuition_budget.
         positive: Things the user explicitly wants, keeps, or requires. For major
             requirements preserve the named taxonomy level: level1 for a named
             discipline such as 管理学/医学/工学, level2 for a named category such as
@@ -8377,15 +8342,15 @@ async def preview_intent_change(
             from raw_user_text scanning.
     """
     normalized_type = str(intent_type or "").strip().lower()
-    if normalized_type not in {"major", "school", "region", "career", "tuition_budget"}:
+    if normalized_type not in {"major", "school", "region", "tuition_budget"}:
         return _json(
             {
                 "data": {
                     "intent_type": intent_type,
-                    "allowed_intent_types": ["major", "school", "region", "career", "tuition_budget"],
+                    "allowed_intent_types": ["major", "school", "region", "tuition_budget"],
                 },
                 "next_step": "clarify",
-                "message": "需要说明这是专业、院校、地域、发展方向还是学费预算要求。",
+                "message": "需要说明这是专业、院校、地域还是学费预算要求。",
             }
         )
     normalized_constraint = str(constraint_type or "exclude").strip() or "exclude"
@@ -10382,7 +10347,7 @@ async def preview_plan_action(
                         if isinstance(intent_fallback.get("negative"), dict)
                         else {}
                     )
-                    if fallback_intent_type not in {"school", "region", "major", "career"} or not fallback_negative:
+                    if fallback_intent_type not in {"school", "region", "major"} or not fallback_negative:
                         return _json(
                             {
                                 "data": {

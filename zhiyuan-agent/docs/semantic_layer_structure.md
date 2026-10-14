@@ -74,7 +74,6 @@
 - `skills/intent_detect/SKILL.md`
 - `skills/plan_chat/SKILL.md`
 - `skills/plan_query/SKILL.md`
-- `skills/career_path_chat/SKILL.md`
 
 它们负责：
 
@@ -87,9 +86,9 @@ skill 不直接执行状态，也不应该替代 tool 的安全边界。
 
 说明：
 
-- `skills/career_path_chat/SKILL.md` 是 `Explore + career` 的语义说明层。
+- 职业路径方向的语义说明层并入 `skills/codex-marketplace/.../school-major-exploration/SKILL.md`（原 `skills/career_path_chat` 已删除）。
 - 4.0 direct 职业路径探索运行时走 `explore_topic(topic_type="career")`。
-- 用户明确表达职业方向报考要求时，运行时走 `preview_intent_change` 生成统一待确认预览，再等用户采纳后由确认链路生效。
+- 用户明确表达长期发展方向时（career v1）：模型产出 `careerUpdateRequest` 草稿，网关物化成"更新发展方向"确认卡，确认后走执行链路写 `latentProfile.futureDevelopment.careerTypes`（四类中文规范标签，弱偏好语义）。
 
 ### 3.3 Tool 层
 

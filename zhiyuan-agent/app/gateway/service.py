@@ -6,12 +6,15 @@ import inspect
 import json
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from pydantic import ValidationError
 
+from app.domain.career_slots import normalize_career_labels
 from app.gateway.contracts import (
+    CareerUpdateRequest,
     ConversationTurnSnapshot,
     ProposalRequest,
     ScoreUpdateRequest,
@@ -24,7 +27,12 @@ from app.gateway.output_validation import (
     validate_turn_output,
 )
 from app.gateway.evidence_verification import Decision, classify
-from app.gateway.conversation_actions import ConversationActionResult, execute_conversation_action
+from app.gateway.conversation_actions import (
+    CAREER_UPDATE_KIND,
+    UPDATE_CAREER_TYPES,
+    ConversationActionResult,
+    execute_conversation_action,
+)
 from app.gateway.snapshot import build_snapshot, diff_snapshots
 from app.gateway.thread_recovery import ThreadRecovery, ThreadRecoveryError
 from app.harness.client import AppServerExited
@@ -267,6 +275,17 @@ TURN_OUTPUT_SCHEMA["$defs"].update(_score_update_definitions)
 TURN_OUTPUT_SCHEMA["required"].append("scoreUpdateRequest")
 TURN_OUTPUT_SCHEMA["properties"]["scoreUpdateRequest"] = {
     "anyOf": [_score_update_subject_schema, {"type": "null"}]
+}
+
+# 发展方向草稿（career v1「完整落库」）：同样必须**先声明**进严格 schema——
+# `additionalProperties: false` 不会因为契约新增字段就放行（症状是"模型从不产出
+# 方向草稿"，与补录那条同款）。字段 description 一并进 schema：模型从这里读到
+# 四类规范标签的口径（弱偏好语义也在 description 里，见契约）。
+_career_update_schema, _career_update_definitions = _strict_model_schema(CareerUpdateRequest)
+TURN_OUTPUT_SCHEMA["$defs"].update(_career_update_definitions)
+TURN_OUTPUT_SCHEMA["required"].append("careerUpdateRequest")
+TURN_OUTPUT_SCHEMA["properties"]["careerUpdateRequest"] = {
+    "anyOf": [_career_update_schema, {"type": "null"}]
 }
 
 
@@ -1364,6 +1383,106 @@ class GatewayService:
         active = getattr(fresh, "active_proposal", None) if fresh is not None else None
         if active is not None:
             preview = _active_proposal_preview_override(preview, active)
+        return preview
+
+    async def _prepare_career_update_preview(
+        self,
+        key: SessionKey,
+        *,
+        tenant_id: str,
+        session_id: str,
+        turn_id: str,
+        request: CareerUpdateRequest,
+        snapshot: ConversationTurnSnapshot,
+    ) -> dict[str, Any]:
+        """发展方向草稿（career v1）的 prepare/preview —— 与补录成绩同构的一段。
+
+        - 写模式：**agent 侧**把预览物化成 pending（`kind=career_update`）——
+          Java 没有 profile-patch 命令类型（`PendingPlanningCommandBizService` 的分支
+          里没有它），所以"写 latent"由执行链自己完成（读-合并-写），pending 只承担
+          "待确认 + 幂等键（operationId）+ 结果回写"三件事；
+        - 只读模式：只出只读预览，**不做成可确认的卡**（写路径不在这台实例上活着）。
+        返回前端合同形状（`_proposal_preview_payload` 消费它）；身份与版本在
+        `_refresh_snapshot_cache` 之后换成"待确认那一条"的值（与提案同一处口径）。
+        """
+        if request.source_version_guard != snapshot.snapshot_version:
+            raise OutputContractError(
+                "stale_state",
+                "career update source version does not match the current snapshot",
+            )
+        # 契约层已归一（`CareerUpdateRequest._require_canonical_labels`），这里再归一是
+        # "落库前最后一道"：唯一落库形式 = 中文规范标签（2026-10-14 拍板）。
+        labels = normalize_career_labels(request.career_types)
+        summary = "、".join(labels)
+        preview: dict[str, Any] = {
+            "status": "pending",
+            "title": "更新发展方向",
+            "summary": f"发展方向：{summary}",
+            # 只读模式下**不给确认按钮**：按钮背后没有可确认的 pending
+            # （与补录那条同一口径）。
+            "requiresConfirmation": self.mode == "codex_write",
+            "sourceVersion": snapshot.snapshot_version,
+            # 待确认身份只认 pendingId（只读模式下没有它 → 卡片不带确认按钮）。
+            "proposalRef": None,
+            # 给人看的结构化那份：**只看中文规范标签**（模型复述不作数）。
+            "careerUpdate": {
+                "careerTypes": list(labels),
+                "userOriginalText": request.user_original_text,
+            },
+        }
+        if self.mode == "codex_write":
+            # 幂等键与待确认身份都**按回合派生**：同一回合的重试是重放（upsert 命中
+            # `isSameActiveSnapshot` 直接返回当前那条 ✓）；新回合的新提案按 pending
+            # 的 supersede 语义替换旧的（与 Java prepare 同一条口径）。
+            operation_id = uuid.uuid5(
+                uuid.NAMESPACE_URL, f"zhiyuan:career:{tenant_id}:{session_id}:{turn_id}"
+            ).hex
+            pending_id = f"career_{operation_id[:24]}"
+            response = await internal_client.save_pending_confirmation(
+                session_id,
+                {
+                    "pendingId": pending_id,
+                    "kind": CAREER_UPDATE_KIND,
+                    "actionFamily": UPDATE_CAREER_TYPES,
+                    "status": "active",
+                    "sourceVersion": snapshot.snapshot_version,
+                    # operationId 由**生产者**（这一层）落下：执行时只复用、不自铸
+                    # （与 Java prepare 的纪律逐字相同，见 `_execute_claimed_command`）。
+                    "operationId": operation_id,
+                    "proposalSource": CAREER_UPDATE_KIND,
+                    "careerUpdateRequest": {
+                        "careerTypes": list(labels),
+                        "userOriginalText": request.user_original_text,
+                    },
+                },
+                tenant_id=tenant_id,
+            )
+            if (response or {}).get("code") not in (None, 0):
+                java_msg = str(
+                    (response or {}).get("msg") or (response or {}).get("message") or ""
+                ).strip()
+                logger.warning(
+                    "career update pending rejected: code=%s msg=%s session=%s",
+                    (response or {}).get("code"),
+                    java_msg,
+                    session_id,
+                )
+                raise OutputContractError(
+                    "career_update_unavailable",
+                    java_msg or "career update pending was rejected",
+                )
+            pending_data = (response or {}).get("data") or {}
+            if isinstance(pending_data, Mapping) and pending_data.get("pendingId"):
+                preview["proposalRef"] = str(pending_data["pendingId"])
+            if isinstance(pending_data, Mapping) and pending_data.get("sourceVersion") is not None:
+                preview["sourceVersion"] = pending_data["sourceVersion"]
+            # 提案**改变了服务端状态**（pending 已落库）：把快照缓存刷掉（理由与
+            # 提案/补录分支逐字相同：不刷的话下一轮确认会被自己的旧缓存挡掉）。
+            await self._refresh_snapshot_cache(key, tenant_id=tenant_id, session_id=session_id)
+            fresh = self._snapshots.get(key)
+            active = getattr(fresh, "active_proposal", None) if fresh is not None else None
+            if active is not None:
+                preview = _active_proposal_preview_override(preview, active)
         return preview
 
     async def _restart_runtime(self) -> None:
@@ -2513,11 +2632,12 @@ class GatewayService:
             # 必被 Java 拒成 blocked 卡。这里在**投递前**先给一次修复回合让它自纠
             # （选一条 / 先问顺序）；修不成**原样放行**（照旧由 Java 出 blocked 卡）——
             # 不新增失败路径，也不许修第二次（见 `_repair_priority_rule_count`）。
-            # 与 `scoreUpdateRequest` 同轮的形状排除在外：那是 `conflicting_proposals`
-            # 硬错误，处置在下面那条检查，不走本守卫。
+            # 与 `scoreUpdateRequest` / `careerUpdateRequest` 同轮的形状排除在外：那是
+            # `conflicting_proposals` 硬错误，处置在下面那条检查，不走本守卫。
             if (
                 output.proposal_request is not None
                 and output.score_update_request is None
+                and output.career_update_request is None
                 and len(output.proposal_request.priority_rules) > 1
             ):
                 output, priority_repaired = await self._repair_priority_rule_count(
@@ -2537,12 +2657,22 @@ class GatewayService:
                 if event is not None:
                     events.append(event)
             proposal_preview = None
-            if output.proposal_request is not None and output.score_update_request is not None:
+            _draft_count = sum(
+                draft is not None
+                for draft in (
+                    output.proposal_request,
+                    output.score_update_request,
+                    output.career_update_request,
+                )
+            )
+            if _draft_count > 1:
                 # 两个待确认草稿 = 两张卡，而一次确认只能落一个动作：**按契约错误拒** ✗，
                 # 不许"先提案后补录"这种静默取舍（用户根本不知道自己确认的是哪一件事）。
+                # 三个草稿（提案 / 补录 / 发展方向）两两互斥，判据统一在这里。
                 raise OutputContractError(
                     "conflicting_proposals",
-                    "a single turn must not carry both proposalRequest and scoreUpdateRequest",
+                    "a single turn must not carry more than one of "
+                    "proposalRequest / scoreUpdateRequest / careerUpdateRequest",
                 )
             if output.proposal_request is not None:
                 if output.proposal_request.source_version_guard != snapshot.snapshot_version:
@@ -2651,6 +2781,17 @@ class GatewayService:
                     session_id=session_id,
                     turn_id=turn_id,
                     request=output.score_update_request,
+                    snapshot=snapshot,
+                )
+            elif output.career_update_request is not None:
+                # **发展方向草稿**（career v1「完整落库」）——与提案/补录同一张卡、
+                # 同一条确认链；差别只在执行体在网关侧（Java 没有 profile-patch 命令）。
+                proposal_preview = await self._prepare_career_update_preview(
+                    key,
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    request=output.career_update_request,
                     snapshot=snapshot,
                 )
             elif output.conversation_action.action_type in EXECUTABLE_CONVERSATION_ACTIONS:

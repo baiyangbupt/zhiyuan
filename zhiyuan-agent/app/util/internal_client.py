@@ -1014,6 +1014,21 @@ async def get_planning_workspace_state(thread_id: Union[str, int]) -> Dict[str, 
     )
 
 
+async def get_planning_profile(thread_id: Union[str, int]) -> Dict[str, Any]:
+    """获取 planning 画像（`ProfileStateDTO`：含 `latentProfile.futureDevelopment` ✓）。
+
+    用途：career v1 的两处**agent 侧直读**——
+    · 回合快照补 `careerTypes`（turn-snapshot 的投影 DTO 里没有 latentProfile ✓）；
+    · 发展方向提案执行时读-改-写（Java 的 latent 更新是**整字段赋值** ✓，
+      不先读回全文就写，会把 industryPreferences 等既有键抹掉 ✓）。
+    """
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/planning/1/session/profile",
+        params={"chatSessionId": thread_id},
+        error_msg="获取 planning 画像失败",
+    )
+
+
 async def get_conversation_turn_snapshot(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],

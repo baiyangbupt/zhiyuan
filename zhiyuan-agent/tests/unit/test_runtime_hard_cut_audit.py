@@ -39,9 +39,11 @@ ZHIYUAN_SANDBOX_TEXT = (
 EXPLORE_CHAT_SKILL_TEXT = (
     Path(__file__).resolve().parents[2] / "skills" / "explore_chat" / "SKILL.md"
 ).read_text(encoding="utf-8")
-CAREER_PATH_CHAT_SKILL_TEXT = (
-    Path(__file__).resolve().parents[2] / "skills" / "career_path_chat" / "SKILL.md"
-).read_text(encoding="utf-8")
+CAREER_INTENT_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "career_intent_tool.py"
+CAREER_INTENT_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "app" / "schemas" / "career_intent.py"
+CAREER_PLANNING_PATH = Path(__file__).resolve().parents[2] / "app" / "domain" / "career_planning.py"
+EXPLORE_DIRECTION_TOOL_PATH = Path(__file__).resolve().parents[2] / "app" / "tools" / "explore_direction_tool.py"
+CAREER_PATH_CHAT_SKILL_PATH = Path(__file__).resolve().parents[2] / "skills" / "career_path_chat" / "SKILL.md"
 PLAN_ACTION_EXECUTION_PATH = Path(__file__).resolve().parents[2] / "app" / "domain" / "plan_action_execution.py"
 HANDLERS_PATH = Path(__file__).resolve().parents[2] / "app" / "handlers"
 EXAMPLES_PATH = Path(__file__).resolve().parents[2] / "examples"
@@ -263,8 +265,7 @@ def test_legacy_major_topic_tools_and_skill_are_removed_from_4_0_runtime():
         "analyze_volunteer_intent_change",
         "preview_current_intent_confirmation",
     ]
-    for text in (EXPLORE_CHAT_SKILL_TEXT, CAREER_PATH_CHAT_SKILL_TEXT):
-        assert [snippet for snippet in forbidden if snippet in text] == []
+    assert [snippet for snippet in forbidden if snippet in EXPLORE_CHAT_SKILL_TEXT] == []
 
 
 def test_legacy_school_topic_tools_and_skill_are_removed_from_4_0_runtime():
@@ -282,8 +283,29 @@ def test_legacy_school_topic_tools_and_skill_are_removed_from_4_0_runtime():
         "school_info_tool",
         "school_recommend_tool",
     ]
-    for text in (EXPLORE_CHAT_SKILL_TEXT, CAREER_PATH_CHAT_SKILL_TEXT):
-        assert [snippet for snippet in forbidden if snippet in text] == []
+    assert [snippet for snippet in forbidden if snippet in EXPLORE_CHAT_SKILL_TEXT] == []
+
+
+def test_legacy_career_intent_stack_is_removed_from_4_0_runtime():
+    assert not CAREER_INTENT_TOOL_PATH.exists()
+    assert not CAREER_INTENT_SCHEMA_PATH.exists()
+    assert not CAREER_PLANNING_PATH.exists()
+    assert not EXPLORE_DIRECTION_TOOL_PATH.exists()
+    assert not CAREER_PATH_CHAT_SKILL_PATH.exists()
+
+    legacy_career_snippets = [
+        "career_intents",
+        "career_preference",
+        "_normalize_career_payload",
+        "extract_career_intent",
+        "explore_direction_tool",
+        "career_planning",
+    ]
+    for text in (SERVICE_TEXT, INTENT_STATE_TOOL_TEXT, ZHIYUAN_TOOLS_TEXT, EXPLORE_FOLLOWUP_TOOL_TEXT):
+        assert [snippet for snippet in legacy_career_snippets if snippet in text] == []
+    assert "career_direction_support" not in PROPOSAL_COMPILER_TEXT
+    assert "career_intents" not in PROPOSAL_COMPILER_TEXT
+    assert "career" not in INTENT_STATE_TOOL_TEXT.lower()
 
 
 def test_frontend_followup_compat_bridge_does_not_reintroduce_legacy_plan_chain():

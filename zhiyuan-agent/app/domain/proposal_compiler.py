@@ -7,13 +7,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.domain.career_slots import (
-    CAREER_FURTHER_STUDY,
-    CAREER_MARKET_EMPLOYMENT,
-    CAREER_STABLE_EMPLOYMENT,
-    CAREER_SYSTEM_PUBLIC_SERVICE,
-    to_career_label,
-)
 logger = logging.getLogger(__name__)
 
 PENDING_PLAN_ACTION_FAMILIES = frozenset(
@@ -1080,52 +1073,6 @@ _REVIEW_BOUNDARY_MARKERS = (
 )
 
 
-_CAREER_DIRECTION_MARKERS_BY_SLOT = {
-    CAREER_SYSTEM_PUBLIC_SERVICE: (
-        "体制内",
-        "考公",
-        "考编",
-        "公务员",
-        "事业单位",
-        "编制",
-        "进体制",
-    ),
-    CAREER_STABLE_EMPLOYMENT: (
-        "稳定就业",
-        "就业稳定",
-        "工作稳定",
-        "岗位稳定",
-        "求稳",
-        "抗风险",
-    ),
-    CAREER_FURTHER_STUDY: (
-        "读研",
-        "考研",
-        "深造",
-        "升学",
-        "保研",
-    ),
-    CAREER_MARKET_EMPLOYMENT: (
-        "市场化就业",
-        "企业就业",
-        "大厂",
-        "互联网",
-        "产业",
-        "实习",
-    ),
-}
-
-
-def _current_plan_career_focus_labels(compact: str) -> list[str]:
-    labels: list[str] = []
-    for slot, markers in _CAREER_DIRECTION_MARKERS_BY_SLOT.items():
-        if any(marker in compact for marker in markers):
-            label = to_career_label(slot)
-            if label not in labels:
-                labels.append(label)
-    return labels
-
-
 def _append_needs_plan_first_target_issues(
     target_issues: list[str],
     compact: str,
@@ -1139,7 +1086,6 @@ def _append_needs_plan_first_target_issues(
         if issue and issue not in target_issues:
             target_issues.append(issue)
 
-    career_focus_labels = _current_plan_career_focus_labels(compact)
     has_intent_reference = bool(recent_intent_summary) and any(
         marker in compact
         for marker in (
@@ -1161,13 +1107,11 @@ def _append_needs_plan_first_target_issues(
     )
     if has_intent_reference:
         append("intent_conflict_check_without_referent")
-    if career_focus_labels:
-        append("career_direction_support")
     if any(marker in compact for marker in ("民办", "公办")):
         append("college_type")
     if "中外合作" in compact:
         append("program_type")
-    if not career_focus_labels and not has_intent_reference and any(marker in compact for marker in ("保底", "稳", "冲", "风险", "太冲")):
+    if not has_intent_reference and any(marker in compact for marker in ("保底", "稳", "冲", "风险", "太冲")):
         append("tier_or_risk")
     if has_current_plan_add:
         append("plan_add_without_referent")
@@ -1183,11 +1127,6 @@ def _needs_plan_first_focus_label(compact: str, target_issues: list[str], *, rec
         if summary:
             return f"已采纳要求（{summary}）的方案冲突检查"
         return "已采纳要求的方案冲突检查"
-    if "career_direction_support" in target_issues:
-        labels = _current_plan_career_focus_labels(compact)
-        if labels:
-            return f"{'、'.join(labels[:3])}的方案承接"
-        return "职业发展方向的方案承接"
     if "college_type" in target_issues:
         return "公办/民办这类要求"
     if "program_type" in target_issues:
@@ -1236,8 +1175,6 @@ def _compile_needs_plan_first_reply(
     )
     if "intent_conflict_check_without_referent" in target_issues:
         focus_sentence = f"你这轮关注的是{focus}；需要先有正式方案，才能逐项判断哪些志愿冲突或不符合。"
-    elif "career_direction_support" in target_issues:
-        focus_sentence = f"你这轮关注的是{focus}；需要先有正式方案，才能评估方案内是否承接。"
     elif "current_plan_query_without_referent" in target_issues:
         focus_sentence = f"你这轮关注的是{focus}；需要先有正式方案，才能检查方案内具体情况。"
     else:
@@ -1587,7 +1524,6 @@ def _intent_payload_has_positive_value(payload: dict[str, Any] | None) -> bool:
             ("city_intents", "province"),
             ("city_intents", "city"),
             ("city_intents", "area"),
-            ("career_intents", "positive"),
         ],
     ) or _intent_payload_has_tuition_budget_value(payload)
 
@@ -1608,7 +1544,6 @@ def _intent_payload_has_negative_value(payload: dict[str, Any] | None) -> bool:
             ("city_intents", "negative_province"),
             ("city_intents", "negative_city"),
             ("city_intents", "negative_area"),
-            ("career_intents", "negative"),
             ("physical_constraints", "special_limits"),
             ("physicalConstraints", "specialLimits"),
         ],

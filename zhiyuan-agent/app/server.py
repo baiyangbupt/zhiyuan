@@ -64,6 +64,65 @@ def _build_legacy_chat_service(gateway_mode: str) -> ChatService | None:
     return ChatService(llm_client, history_store)
 
 
+async def _attach_career_directions(payload: object) -> object:
+    """把 `latentProfile.futureDevelopment.careerTypes` 补进回合快照载荷（agent 侧直读）。
+
+    为什么在这一层 ✗✓：`turn-snapshot` 的投影 DTO **没有 latentProfile**（Java 侧未暴露，
+    见 `ConversationSnapshotService` ✓）——career v1 让模型看得见发展方向，又不想为此
+    动 Java（四槽扩展在 Java 批排队 ✓），最小路径就是**这里直读一次画像** ✓，
+    把值按 **workspace 形状**（`profileState.latentProfile.futureDevelopment`）注入载荷 ✓
+    ——`build_snapshot` 读的正是这个形状 ✓，落进 `preferences.careerTypes` ✓。
+
+    纪律（与快照其余部分同款）：**只补事实、不改行为** ✓——取不到（Java 不可达、
+    码非 0、值为空）就**原样返回** ✓（模型这轮看不到方向 ✓，下一轮再补 ✓），
+    绝不因为这次补读让整轮失败 ✗；非投影形状（替身/单测的 workspace 形状）原样放行 ✗✓。
+    """
+    if not isinstance(payload, Mapping):
+        return payload
+    data = payload.get("data")
+    if not isinstance(data, Mapping) or not data.get("sessionId"):
+        return payload
+    try:
+        profile = await internal_client.get_planning_profile(str(data.get("sessionId")))
+    except Exception as exc:  # noqa: BLE001 —— 补读失败不阻断回合（降级：这轮不带方向）
+        logger.warning("career directions read failed: %s", exc)
+        return payload
+    if not isinstance(profile, Mapping) or profile.get("code") not in (None, 0):
+        logger.warning(
+            "career directions read rejected: code=%s", (profile or {}).get("code")
+        )
+        return payload
+    profile_data = profile.get("data") if isinstance(profile.get("data"), Mapping) else {}
+    latent = profile_data.get("latentProfile") if isinstance(profile_data.get("latentProfile"), Mapping) else {}
+    future = latent.get("futureDevelopment") if isinstance(latent.get("futureDevelopment"), Mapping) else {}
+    raw_career = future.get("careerTypes")
+    from app.domain.career_slots import normalize_career_labels
+
+    career_types = (
+        normalize_career_labels([str(item) for item in raw_career])
+        if isinstance(raw_career, list)
+        else []
+    )
+    if not career_types:
+        return payload
+    profile_state = data.get("profileState")
+    if not isinstance(profile_state, Mapping):
+        profile_state = {}
+    profile_state = dict(profile_state)
+    latent_state = profile_state.get("latentProfile")
+    latent_state = dict(latent_state) if isinstance(latent_state, Mapping) else {}
+    future_state = latent_state.get("futureDevelopment")
+    future_state = dict(future_state) if isinstance(future_state, Mapping) else {}
+    future_state["careerTypes"] = career_types
+    latent_state["futureDevelopment"] = future_state
+    profile_state["latentProfile"] = latent_state
+    data = dict(data)
+    data["profileState"] = profile_state
+    payload = dict(payload)
+    payload["data"] = data
+    return payload
+
+
 def _has_primary_reply_content(reply: object) -> bool:
     if isinstance(reply, WSResponse):
         return bool(str(reply.content or "").strip())
@@ -291,7 +350,8 @@ async def lifespan(app: FastAPI):
     async def snapshot_loader(*, tenant_id: str, session_id: str, skill: str | None = None):
         from app.util.internal_client import get_conversation_turn_snapshot
 
-        return await get_conversation_turn_snapshot(tenant_id, session_id, skill)
+        payload = await get_conversation_turn_snapshot(tenant_id, session_id, skill)
+        return await _attach_career_directions(payload)
 
     async def evidence_verifier(*, tenant_id, chat_session_id, evidence_ids, thread_id=None):
         """P1c-2：把本回合引用的证据全量提交 Java 台账核验。
@@ -938,6 +998,9 @@ def _proposal_preview_payload(preview: Mapping[str, Any]) -> dict[str, Any]:
             # 按**合并后**成绩算的 `scoreSummary` ✓（`ChatSessionBizService.buildScoreUpdateSummary`）——
             # 模型文本里的复述不作数 ✗。白名单放到这里 ✓：卡片按它渲染明细行 ✓。
             "scoreUpdate",
+            # 发展方向卡的结构化那份（只含四类中文规范标签 ✓）：网关在 prepare 时
+            # 归一后落卡 ✓——模型文本里的复述不作数 ✗。
+            "careerUpdate",
             # 被拒（`blocked`）的卡上，模型**本来想调整的规则**翻成的人话（"地域：北方/北京…" ✓）：
             # 由网关从它自己发出去的 `userGoalRequest` 生成 ✓（见 `_attempted_rule_brief` ✓），
             # Java 的校验原文（`blockingReason`）用户读不懂它想说哪条规则 ✗。

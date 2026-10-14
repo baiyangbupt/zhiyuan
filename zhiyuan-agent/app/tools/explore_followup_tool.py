@@ -179,14 +179,12 @@ async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
                 merged.get("major_intents"),
                 merged.get("school_intents"),
                 merged.get("city_intents"),
-                merged.get("career_intents"),
             ):
                 intent_mode = execution_payload.get("intentMode") or pending_data.get("intentMode") or "preference"
                 return {
                     "major_intents": merged.get("major_intents") or {},
                     "school_intents": merged.get("school_intents") or {},
                     "city_intents": merged.get("city_intents") or {},
-                    "career_intents": merged.get("career_intents") or {},
                 }, intent_mode
     except Exception:
         logger.warning("Load pendingConfirmation intents failed: session_id=%s", session_id, exc_info=True)
@@ -198,7 +196,6 @@ def _has_any_intent_payload(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> bool:
     def _has_values(payload: dict | None) -> bool:
         return bool(payload and any(values for values in payload.values()))
@@ -207,7 +204,6 @@ def _has_any_intent_payload(
         _has_values(major_intents)
         or _has_values(school_intents)
         or _has_values(city_intents)
-        or _has_values(career_intents)
     )
 
 
@@ -222,7 +218,6 @@ async def handle_interest_analysis_action_result(
         merged.get("major_intents"),
         merged.get("school_intents"),
         merged.get("city_intents"),
-        merged.get("career_intents"),
     ):
         return serialize_explore_followup_result(
             ExploreFollowupResult(
@@ -317,7 +312,6 @@ async def handle_interest_analysis_action_result(
             merged.get("city_intents"),
             None,
             analysis_stage="confirmed",
-            career_intents=merged.get("career_intents"),
             confirm_enabled=action_type in {"prefer_confirm", "constrain_confirm"},
             intent_mode=intent_mode,
         )

@@ -780,7 +780,7 @@ async def test_preview_plan_change_rejects_unrepresentable_intent_pending_append
     ctx = _direct_context()
     _prime_active_negative_major_intent_pending(
         ctx,
-        section={"career_intents": {"positive": ["stable_employment"]}},
+        section={"tuition_budget": {"max_tuition_per_year": [20000]}},
     )
 
     result = _load(

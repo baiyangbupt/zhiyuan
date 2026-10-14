@@ -35,7 +35,6 @@ from app.domain.major_entity_resolver import compact_major_text, resolve_major_e
 from app.domain import proposal_compiler
 from app.domain.region_entity_resolver import normalize_region_names, resolve_region_entity
 from app.domain.school_entity_resolver import resolve_school_entity
-from app.domain.career_slots import normalize_career_slots, to_career_labels
 from app.llm.client import LLMClient
 from app.schemas.user_profile import UserProfile
 from app.services.profile_manager import _normalize_batch
@@ -1064,7 +1063,6 @@ def _summarize_intent_values(
     major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
     school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
     city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
-    career_intents = merged.get("career_intents") if isinstance(merged.get("career_intents"), dict) else {}
     tuition_budget = merged.get("tuition_budget") if isinstance(merged.get("tuition_budget"), dict) else {}
     physical_constraints = (
         merged.get("physical_constraints")
@@ -1099,14 +1097,6 @@ def _summarize_intent_values(
         _as_text_list(city_intents.get("negative_province"))
         + _as_text_list(city_intents.get("negative_city"))
         + _as_text_list(city_intents.get("negative_area")),
-    )
-    add(
-        _positive_intent_label("发展方向", constraint_intent_type=constraint_intent_type),
-        to_career_labels(career_intents.get("positive")) or _as_text_list(career_intents.get("positive")),
-    )
-    add(
-        _soft_negative_label("排除方向", intent_mode=intent_mode),
-        to_career_labels(career_intents.get("negative")) or _as_text_list(career_intents.get("negative")),
     )
     min_tuition = _positive_int_from_structured_value(
         tuition_budget.get("min_tuition_per_year") or tuition_budget.get("minTuitionPerYear")
@@ -1375,11 +1365,6 @@ def _intent_summary_from_item_content(
         ("偏好专业：", "major_intents", "level3"),
         ("排除专业：", "major_intents", "negative_level3"),
         ("不优先专业：", "major_intents", "negative_level3"),
-        ("只保留发展方向：", "career_intents", "positive"),
-        ("至少保留发展方向：", "career_intents", "positive"),
-        ("发展方向：", "career_intents", "positive"),
-        ("排除方向：", "career_intents", "negative"),
-        ("不优先发展方向：", "career_intents", "negative"),
     ]
     rewritten: list[str] = []
     for part in parts:
@@ -1530,8 +1515,6 @@ def _intent_preview_payload_entity_kinds(payload: dict[str, Any] | None) -> set[
         kinds.add("school")
     if isinstance(merged.get("city_intents"), dict) and merged.get("city_intents"):
         kinds.add("region")
-    if isinstance(merged.get("career_intents"), dict) and merged.get("career_intents"):
-        kinds.add("career")
     if _normalize_admission_path(payload.get("admissionPath") or payload.get("admission_path")):
         kinds.add("admission_path")
     return kinds
@@ -1545,7 +1528,7 @@ def _semantic_intent_decision_entity_kinds(decision: dict[str, Any] | None) -> s
         if not isinstance(span, dict):
             continue
         entity_type = str(span.get("entityType") or "").strip()
-        if entity_type in {"major", "school", "region", "career"}:
+        if entity_type in {"major", "school", "region"}:
             kinds.add(entity_type)
         elif entity_type in {"admissionPath", "admission_path", "path"}:
             kinds.add("admission_path")
@@ -1576,11 +1559,9 @@ def _intent_preview_payload_from_semantic_decision(
     major_values: list[str] = []
     school_values: list[str] = []
     region_values: list[str] = []
-    career_values: list[str] = []
     negative_major_values: list[str] = []
     negative_school_values: list[str] = []
     negative_region_values: list[str] = []
-    negative_career_values: list[str] = []
 
     for span in decision.get("entityPolaritySpans") or []:
         if not isinstance(span, dict):
@@ -1598,8 +1579,6 @@ def _intent_preview_payload_from_semantic_decision(
             (negative_school_values if negative else school_values).append(entity)
         elif entity_type == "region":
             (negative_region_values if negative else region_values).append(entity)
-        elif entity_type == "career":
-            (negative_career_values if negative else career_values).append(entity)
 
     def _dedupe(values: list[str]) -> list[str]:
         result: list[str] = []
@@ -1611,11 +1590,9 @@ def _intent_preview_payload_from_semantic_decision(
     major_values = _dedupe(major_values)
     school_values = _dedupe(_normalize_school_intent_names(_dedupe(school_values)))
     region_values = _dedupe(region_values)
-    career_values = _dedupe(career_values)
     negative_major_values = _dedupe(negative_major_values)
     negative_school_values = _dedupe(_normalize_school_intent_names(_dedupe(negative_school_values)))
     negative_region_values = _dedupe(negative_region_values)
-    negative_career_values = _dedupe(negative_career_values)
 
     items: list[dict[str, Any]] = []
     if major_values:
@@ -1630,10 +1607,6 @@ def _intent_preview_payload_from_semantic_decision(
         items.append({"content": f"偏好地域：{'、'.join(region_values)}", "selected": True, "value": {"city_intents": {"area": region_values}}})
     if negative_region_values:
         items.append({"content": f"排除地域：{'、'.join(negative_region_values)}", "selected": True, "value": {"city_intents": {"negative_area": negative_region_values}}})
-    if career_values:
-        items.append({"content": f"发展方向：{'、'.join(career_values)}", "selected": True, "value": {"career_intents": {"positive": career_values}}})
-    if negative_career_values:
-        items.append({"content": f"排除方向：{'、'.join(negative_career_values)}", "selected": True, "value": {"career_intents": {"negative": negative_career_values}}})
     admission_path = _normalize_admission_path(decision.get("admissionPath") or decision.get("admission_path"))
     if not items and not admission_path:
         return None
@@ -1752,7 +1725,6 @@ def _intent_payload_has_positive_value(payload: dict[str, Any] | None) -> bool:
         ("city_intents", "province"),
         ("city_intents", "city"),
         ("city_intents", "area"),
-        ("career_intents", "positive"),
     ]
     return _intent_payload_has_any_value(payload, paths)
 
@@ -1767,7 +1739,6 @@ def _intent_payload_has_negative_value(payload: dict[str, Any] | None) -> bool:
         ("city_intents", "negative_province"),
         ("city_intents", "negative_city"),
         ("city_intents", "negative_area"),
-        ("career_intents", "negative"),
         ("physical_constraints", "special_limits"),
         ("physicalConstraints", "specialLimits"),
     ]

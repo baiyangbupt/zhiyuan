@@ -104,7 +104,6 @@ ORDERED_WITH_PREFERENCES = make_plan_context_inputs(
     negative_majors=["医学类"],
     positive_regions=["北京", "天津"],
     negative_regions=["新疆"],
-    career_types=["体制内"],
 )
 
 

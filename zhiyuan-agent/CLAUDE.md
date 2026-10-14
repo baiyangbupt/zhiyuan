@@ -80,14 +80,13 @@ bash run-docker.sh
 
 ### Tools（`app/tools/`）
 
-`app/tools/` 下现有 20 个模块：
+`app/tools/` 下现有 16 个模块：
 
-- 意向抽取：`school_intent_tool.py`、`major_intent_tool.py`（含负面意向）、`city_intent_tool.py`（含负面意向）、`career_intent_tool.py`
+- 意向抽取：`school_intent_tool.py`、`major_intent_tool.py`（含负面意向）、`city_intent_tool.py`（含负面意向）
 - 分数与建议：`score_query_tool.py`、`major_recommend_tool.py`、`admission_policy_tool.py`、`admission_fit_match_tool.py`
-- 方案与校验：`plan_validation_tool.py`、`plan_orchestration_models.py`、`plan_goal_resolution.py`
-- 探索与多轮状态：`explore_direction_tool.py`、`explore_followup_tool.py`、`intent_state_tool.py`、`intent_relation_tool.py`、`intent_response_tool.py`
+- 方案与校验：`plan_validation_tool.py`、`plan_orchestration_models.py`
+- 探索与多轮状态：`explore_followup_tool.py`、`intent_state_tool.py`、`intent_relation_tool.py`、`intent_response_tool.py`
 - 共享/基础设施：`candidate_filter_extraction_tool.py`、`extraction_json.py`、`review_issue_registry.py`
-- 示例：`example_context_tool.py`
 
 Release 4.0 实际注册到 `ZhiyuanAgent` 的工具定义在 `app/zhiyuan_agent/tools.py`：`acknowledge_readonly`、`answer_policy`、`clarify_request`、`compare_entities`、`confirm_pending`、`discover_options`、`explore_topic`、`preview_intent_change`、`preview_plan_change`、`preview_plan_action`、`query_plan`、`read_state`、`respond_casual`、`review_plan`。在 `app/` 内（`app/tools/` 以外）目前只有 `app/service.py` 与 `app/zhiyuan_agent/tools.py` 引用 `app/tools/` 下的模块，其余引用来自测试。
 
@@ -99,9 +98,9 @@ Release 4.0 实际注册到 `ZhiyuanAgent` 的工具定义在 `app/zhiyuan_agent
 
 ### Skills 机制
 
-技能定义在 `skills/` 目录下，共 7 个 `skills/<skill-name>/SKILL.md`（`intake_chat`、`intent_detect`、`explore_chat`、`plan_chat`、`plan_query`、`score_query`、`career_path_chat`）。
+技能定义在 `skills/` 目录下，共 6 个 `skills/<skill-name>/SKILL.md`（`intake_chat`、`intent_detect`、`explore_chat`、`plan_chat`、`plan_query`、`score_query`）。
 
-注意：这 7 个技能目前**仅由 `examples/demo_agent.py` 加载**（该脚本传 `skill_dirs=["./skills"]`），生产 `ZhiyuanAgent` 未传 `skill_dirs`，因此 `pydantic-ai-skills` 的 `SkillsToolset` 在生产运行时不生效。
+注意：这 6 个技能目前**仅由 `examples/demo_agent.py` 加载**（该脚本传 `skill_dirs=["./skills"]`），生产 `ZhiyuanAgent` 未传 `skill_dirs`，因此 `pydantic-ai-skills` 的 `SkillsToolset` 在生产运行时不生效。
 
 **给外部 codex 二进制用的技能已改成真插件**（2026-09-21，此前是手写的 `skills/codex/plugin.json`，**codex 从不读它、模型一份业务技能都看不到**）：
 

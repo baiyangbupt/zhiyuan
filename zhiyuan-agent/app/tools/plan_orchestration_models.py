@@ -20,7 +20,6 @@ class PlanContextInputs(BaseModel):
     negative_schools: list[str] = Field(default_factory=list)
     positive_regions: list[str] = Field(default_factory=list)
     negative_regions: list[str] = Field(default_factory=list)
-    career_types: list[str] = Field(default_factory=list)
     relation_lines: list[str] = Field(default_factory=list)
     review_issues: list[dict[str, Any]] = Field(default_factory=list)
     review_issue_summary_lines: list[str] = Field(default_factory=list)
@@ -87,7 +86,7 @@ class PlanEntityResolution(BaseModel):
     """
 
     raw_text: str
-    entity_type: Literal["major", "school", "region", "career", "tag", "risk", "program_type"]
+    entity_type: Literal["major", "school", "region", "tag", "risk", "program_type"]
     canonical_name: str = ""
     canonical_level: str = ""
     matched_plan_items: list[dict[str, Any]] = Field(default_factory=list)

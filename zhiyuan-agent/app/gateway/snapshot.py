@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.admission.facts import AdmissionFactError, canonical_admission_mode
+from app.domain.career_slots import normalize_career_labels
 from app.gateway.contracts import ConversationTurnSnapshot, StatePatch
 
 # `turn-snapshot` 的 `scoreContext` 用 `strengthSubjects` ✓，投影出的用 `subjects` ✓——
@@ -44,6 +45,18 @@ def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
     explicit = profile.get("explicitProfile") or {}
     hard = constraints.get("hardConstraints") or {}
     soft = constraints.get("softPreferences") or {}
+    # 发展方向（career v1）：存在 `latentProfile.futureDevelopment.careerTypes`（**中文规范
+    # 标签**）。turn-snapshot 的投影 DTO 里**没有** latentProfile（Java 侧未暴露）——
+    # 数据由组合层**agent 侧直读**补进 workspace 形状（`server.py` 的 snapshot_loader
+    # 包装，见 `_attach_career_directions`），这里只负责把它摆到模型面前。
+    latent = profile.get("latentProfile") or {}
+    future_development = latent.get("futureDevelopment") or {}
+    career_types = []
+    if isinstance(future_development, Mapping):
+        raw_career = future_development.get("careerTypes")
+        if isinstance(raw_career, list):
+            # 落库已归一（中文标签）；这里再归一一次是**旧数据护栏**（历史上可能写过槽位名）。
+            career_types = normalize_career_labels([str(item) for item in raw_career])
 
     score_context = {
         key: value
@@ -94,6 +107,9 @@ def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
             "school": _first(explicit, "schoolPreferences", "positiveSchools", default={}),
             "region": _first(explicit, "regionPreferences", "positiveRegions", default={}),
             "soft": soft,
+            # career v1：**弱偏好**——只进推荐理由/排序/解释与方案方向覆盖核对，
+            # **不做硬筛**（不排除院校/专业）。只摆中文规范标签，与落库同一形式。
+            "careerTypes": career_types,
         }.items()
         if value not in (None, {}, [])
     }

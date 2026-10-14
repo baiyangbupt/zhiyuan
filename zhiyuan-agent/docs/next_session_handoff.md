@@ -841,8 +841,8 @@
 ## 重要文件入口
 
 - Agent 主编排：`app/agent/chat_agent.py`
-- Explore：`skills/explore_chat`、`app/tools/explore_direction_tool.py`
-- Career 分析：`skills/career_path_chat` 只负责语义边界说明，运行时主入口是 `app/tools/intent_preview_tool.py::analyze_current_career_direction`
+- Explore：`skills/explore_chat`、`app/zhiyuan_agent/tools.py::explore_topic`
+- Career 分析（career v1）：方向语义说明并入 `school-major-exploration` 技能；写链路 = `careerUpdateRequest` 草稿 → 网关确认卡 → `PATCH /session/profile/latent` 写 `latentProfile.futureDevelopment.careerTypes`
 - Intent 状态与预览：`app/tools/intent_state_tool.py`、`app/tools/intent_preview_tool.py`、`app/tools/intent_response_tool.py`
 - Intent/候选关系分析：`app/tools/intent_relation_tool.py`
 - Plan skill：`skills/plan_chat`、`skills/plan_query`

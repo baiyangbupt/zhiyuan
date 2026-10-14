@@ -5,15 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.domain.career_alignment import matches_career_slot
-from app.domain.career_slots import (
-    CAREER_FURTHER_STUDY,
-    CAREER_LABEL_MAP,
-    CAREER_MARKET_EMPLOYMENT,
-    CAREER_STABLE_EMPLOYMENT,
-    CAREER_SYSTEM_PUBLIC_SERVICE,
-    to_career_labels,
-)
 from app.util.internal_client import get_planning_state
 
 logger = logging.getLogger(__name__)
@@ -297,51 +288,6 @@ def _sort_relation_examples(
     return [item for _, item in indexed_items]
 
 
-def _is_public_service_aligned_item(item: dict[str, Any]) -> bool:
-    return matches_career_slot(_collect_item_search_texts(item), CAREER_SYSTEM_PUBLIC_SERVICE)
-
-
-def _is_stable_employment_aligned_item(item: dict[str, Any]) -> bool:
-    return matches_career_slot(_collect_item_search_texts(item), CAREER_STABLE_EMPLOYMENT)
-
-
-def _is_further_study_aligned_item(item: dict[str, Any]) -> bool:
-    return matches_career_slot(_collect_item_search_texts(item), CAREER_FURTHER_STUDY)
-
-
-def _is_market_employment_aligned_item(item: dict[str, Any]) -> bool:
-    return matches_career_slot(_collect_item_search_texts(item), CAREER_MARKET_EMPLOYMENT)
-
-
-_CAREER_MATCHERS = {
-    CAREER_SYSTEM_PUBLIC_SERVICE: _is_public_service_aligned_item,
-    CAREER_STABLE_EMPLOYMENT: _is_stable_employment_aligned_item,
-    CAREER_FURTHER_STUDY: _is_further_study_aligned_item,
-    CAREER_MARKET_EMPLOYMENT: _is_market_employment_aligned_item,
-}
-
-
-def _item_matches_any_career_slot(item: dict[str, Any], slots: list[str]) -> bool:
-    for slot in slots:
-        matcher = _CAREER_MATCHERS.get(slot)
-        if matcher and matcher(item):
-            return True
-    return False
-
-
-def _item_matches_career_intents(
-    item: dict[str, Any],
-    career_intents: dict | None,
-) -> tuple[bool, bool]:
-    if not career_intents:
-        return False, False
-    positive = career_intents.get("positive") or []
-    negative = career_intents.get("negative") or []
-    positive_match = _item_matches_any_career_slot(item, positive)
-    negative_match = _item_matches_any_career_slot(item, negative)
-    return positive_match, negative_match
-
-
 def _item_matches_any_intent(item: dict[str, Any], values: list[str], *, negative: bool = False) -> bool:
     if not values:
         return False
@@ -383,21 +329,15 @@ def _intent_scope_text(values: list[str]) -> str:
 def _matches_positive_intent(
     item: dict[str, Any],
     intent_labels: dict[str, list[str]],
-    career_intents: dict | None,
 ) -> bool:
-    positive_match = _item_matches_any_intent(item, intent_labels["positive"])
-    career_positive_match, _ = _item_matches_career_intents(item, career_intents)
-    return bool(positive_match or career_positive_match)
+    return bool(_item_matches_any_intent(item, intent_labels["positive"]))
 
 
 def _matches_negative_intent(
     item: dict[str, Any],
     intent_labels: dict[str, list[str]],
-    career_intents: dict | None,
 ) -> bool:
-    negative_match = _item_matches_any_intent(item, intent_labels["negative"], negative=True)
-    _, career_negative_match = _item_matches_career_intents(item, career_intents)
-    return bool(negative_match or career_negative_match)
+    return bool(_item_matches_any_intent(item, intent_labels["negative"], negative=True))
 
 
 _GENERIC_RELATION_PLACEHOLDERS = {
@@ -430,7 +370,6 @@ def _collect_intent_labels(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> dict[str, list[str]]:
     labels: dict[str, list[str]] = {"positive": [], "negative": []}
 
@@ -457,9 +396,6 @@ def _collect_intent_labels(
         _extend(city_intents.get("city"))
         _extend(city_intents.get("negative_province"), negative=True)
         _extend(city_intents.get("negative_city"), negative=True)
-    if career_intents:
-        _extend(to_career_labels(career_intents.get("positive")))
-        _extend(to_career_labels(career_intents.get("negative")), negative=True)
 
     return labels
 
@@ -467,7 +403,6 @@ def _collect_intent_labels(
 def build_plan_relation_analysis(
     intent_mode: str,
     analysis_stage: str = "confirmed",
-    career_intents: dict | None = None,
 ) -> dict[str, Any]:
     fit_points: list[str] = []
     conflict_points: list[str] = []
@@ -479,17 +414,7 @@ def build_plan_relation_analysis(
     else:
         fit_points.append("这轮会重点看当前方案里是否已有贴近方向，以及候选里还有哪些值得继续关注的机会。")
 
-    if career_intents:
-        positive = to_career_labels(career_intents.get("positive"))
-        negative = to_career_labels(career_intents.get("negative"))
-        if positive:
-            fit_points.insert(0, f"你刚提到更看重 {'、'.join(positive)}，后面我会按这个方向帮你一起看方案。")
-        if negative:
-            conflict_points.insert(0, f"你刚提到不考虑 {'、'.join(negative)}，后面我会尽量避开这类方向来帮你看。")
-        if positive or negative:
-            opportunity_points.insert(0, "这类想法不会立刻改动候选结果，但会影响我后面怎么帮你分析和给建议。")
-    else:
-        opportunity_points.append("方案外如果还有更贴近这个方向的候选机会，也会一起作为补充参考。")
+    opportunity_points.append("方案外如果还有更贴近这个方向的候选机会，也会一起作为补充参考。")
 
     if analysis_stage == ANALYSIS_STAGE_INTEREST:
         if intent_mode == INTENT_MODE_CONSTRAINT:
@@ -522,7 +447,6 @@ async def enrich_plan_relation_analysis_from_state(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> dict[str, Any]:
     try:
         planning_state_resp = await get_planning_state(session_id)
@@ -535,7 +459,7 @@ async def enrich_plan_relation_analysis_from_state(
         candidate_items = ((planning_state.get("candidatePoolState") or {}).get("items")) or []
         display_preferences = _extract_display_preferences(planning_state)
         candidate_by_id = {item.get("volunteerId"): item for item in candidate_items if item.get("volunteerId")}
-        intent_labels = _collect_intent_labels(major_intents, school_intents, city_intents, career_intents)
+        intent_labels = _collect_intent_labels(major_intents, school_intents, city_intents)
 
         fit_items: list[dict[str, Any]] = []
         conflict_items: list[dict[str, Any]] = []
@@ -543,9 +467,9 @@ async def enrich_plan_relation_analysis_from_state(
 
         for ordered_item in ordered_items:
             match_item = candidate_by_id.get(ordered_item.get("volunteerId")) or ordered_item
-            if _matches_positive_intent(match_item, intent_labels, career_intents):
+            if _matches_positive_intent(match_item, intent_labels):
                 fit_items.append(match_item)
-            if _matches_negative_intent(match_item, intent_labels, career_intents):
+            if _matches_negative_intent(match_item, intent_labels):
                 conflict_items.append(match_item)
 
         if fit_items:
@@ -575,7 +499,7 @@ async def enrich_plan_relation_analysis_from_state(
             volunteer_id = item.get("volunteerId")
             if not volunteer_id or volunteer_id in ordered_volunteer_ids:
                 continue
-            if _matches_positive_intent(item, intent_labels, career_intents):
+            if _matches_positive_intent(item, intent_labels):
                 opportunity_items.append(item)
         if opportunity_items:
             sorted_opportunities = _sort_relation_examples(opportunity_items, display_preferences, positive=True)
@@ -591,7 +515,7 @@ async def enrich_plan_relation_analysis_from_state(
             negative_opportunities = [
                 item
                 for item in candidate_items
-                if _matches_negative_intent(item, intent_labels, career_intents)
+                if _matches_negative_intent(item, intent_labels)
             ]
             if intent_labels["negative"] and not negative_opportunities:
                 scope_text = _intent_scope_text(intent_labels["negative"])

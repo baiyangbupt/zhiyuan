@@ -7,7 +7,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.domain.career_slots import to_career_labels
 from app.domain.major_entity_resolver import build_major_relation_notes
 from app.tools.intent_relation_tool import compact_relation_impact_lines
 
@@ -215,15 +214,6 @@ def _format_confirmed_intent_summary(
         if negative_regions:
             summary.append(f"{_negative_label('排除地域', intent_mode=intent_mode)}：{'、'.join(dict.fromkeys(negative_regions))}")
 
-    career_intents = merged.get("career_intents") or {}
-    if isinstance(career_intents, dict):
-        preferred_careers = _unique_text_values(to_career_labels(career_intents.get("positive")))
-        negative_careers = _unique_text_values(to_career_labels(career_intents.get("negative")))
-        if preferred_careers:
-            label = _positive_label("偏好发展方向", constraint_intent_type=constraint_intent_type)
-            summary.append(f"{label}：{'、'.join(preferred_careers)}")
-        if negative_careers:
-            summary.append(f"{_negative_label('排除发展方向', intent_mode=intent_mode)}：{'、'.join(negative_careers)}")
     tuition_budget = merged.get("tuition_budget") or {}
     if isinstance(tuition_budget, dict):
         budget_summary = _format_tuition_budget_summary(tuition_budget)
@@ -610,11 +600,6 @@ def _render_intent_preview_item(
         for key, label in city_labels.items():
             if city := _format_values(city_intents.get(key)):
                 return f"{label}：{city}"
-        career_intents = value.get("career_intents") or {}
-        if career := _format_values(to_career_labels(career_intents.get("positive"))):
-            return f"偏好发展方向：{career}"
-        if career := _format_values(to_career_labels(career_intents.get("negative"))):
-            return f"{_negative_label('排除发展方向', intent_mode=intent_mode)}：{career}"
         tuition_budget = value.get("tuition_budget") or {}
         if isinstance(tuition_budget, dict):
             budget_summary = _format_tuition_budget_summary(tuition_budget)

@@ -10,8 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.schemas.ws import WSResponse
 from app.schemas.user_profile import CityIntent, MajorIntent, SchoolIntent, UserProfile
 from app.tools import intent_state_tool as intent_state_tool_module
-from app.tools.explore_direction_tool import _is_public_service_aligned_item
-from app.tools.intent_relation_tool import _item_matches_career_intents
 from app.tools.intent_response_tool import (
     ExploreFollowupResult,
     IntentStateUpdateResult,
@@ -548,11 +546,9 @@ async def test_analyze_intent_change_recovers_empty_args_via_fallback_extraction
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
         patch("app.tools.city_intent_tool.extract_city_intents_with_polarity", new=AsyncMock(return_value='{"positive": {"province": [], "city": [], "area": []}, "negative": {"province": ["上海"], "city": []}}')),
         patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock(return_value='{"positive": {"level1": [], "level2": [], "level3": []}, "negative": {"level1": [], "level2": [], "level3": []}}')),
         patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock(return_value='{"colleges": [], "negative_colleges": []}')),
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock(return_value='{"positive": [], "negative": []}')),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
@@ -575,7 +571,6 @@ async def test_analyze_intent_change_soft_negative_stays_preference(empty_profil
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
@@ -757,7 +752,6 @@ async def test_analyze_intent_change_interest_stage_returns_structured_analysis(
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
@@ -774,38 +768,6 @@ async def test_analyze_intent_change_interest_stage_returns_structured_analysis(
     assert "先看影响" in resp
     assert "初步判断" not in resp
     assert "这次识别到的参考范围" in resp
-    assert "下一步" in resp
-
-
-@pytest.mark.asyncio
-async def test_analyze_intent_change_interest_stage_without_confirm_returns_interest_preview(empty_profile):
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="82",
-            batch="01",
-            chat_history=[{"role": "user", "content": "体制内适合我吗"}],
-        )
-    )
-
-    with (
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
-
-        resp = await _render_analysis(
-            ctx,
-            None,
-            None,
-            None,
-            None,
-            analysis_stage="interest",
-            career_intents={"positive": ["system_public_service"]},
-            confirm_enabled=False,
-        )
-
-    assert "体制内/考公导向" in resp
     assert "下一步" in resp
 
 
@@ -1406,7 +1368,7 @@ async def test_region_intent_downgrade_ignores_recovered_entity_for_abstract_reg
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch(
             "app.tools.intent_state_tool._recover_intents_from_context",
-            new=AsyncMock(return_value=(None, None, {"province": ["江苏"]}, None)),
+            new=AsyncMock(return_value=(None, None, {"province": ["江苏"]})),
         ) as recover_mock,
         patch(
             "app.tools.intent_state_tool._classify_intent_side_effect",
@@ -1457,7 +1419,7 @@ async def test_region_intent_empty_recovery_returns_boundary_clarification(empty
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch(
             "app.tools.intent_state_tool._recover_intents_from_context",
-            new=AsyncMock(return_value=(None, None, None, None)),
+            new=AsyncMock(return_value=(None, None, None)),
         ) as recover_mock,
     ):
         mock_pm = mock_pm_cls.return_value
@@ -1525,7 +1487,7 @@ def test_analyze_intent_change_interest_stage_existing_preference_returns_analys
 
 
 @pytest.mark.asyncio
-async def test_analyze_intent_change_major_scope_drops_unrelated_career_payload(empty_profile):
+async def test_analyze_intent_change_major_only_keep_preview_single_item(empty_profile):
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             userid="u1",
@@ -1540,7 +1502,6 @@ async def test_analyze_intent_change_major_scope_drops_unrelated_career_payload(
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
@@ -1548,14 +1509,6 @@ async def test_analyze_intent_change_major_scope_drops_unrelated_career_payload(
             await analyze_volunteer_intent_change(
                 ctx,
                 major_intents={"level1": ["医学"]},
-                career_intents={
-                    "negative": [
-                        "market_employment",
-                        "system_public_service",
-                        "stable_employment",
-                        "further_study",
-                    ]
-                },
                 recovery_scope="major",
                 intent_mode=INTENT_MODE_CONSTRAINT,
                 constraint_intent_type="only_keep",
@@ -1568,8 +1521,6 @@ async def test_analyze_intent_change_major_scope_drops_unrelated_career_payload(
     assert len(payload["items"]) == 1
     assert payload["items"][0]["value"] == {"major_intents": {"level1": ["医学"]}}
     assert payload["items"][0]["selected"] is True
-    assert "career_intents" not in json.dumps(payload, ensure_ascii=False)
-    assert "排除就业导向" not in json.dumps(payload, ensure_ascii=False)
 
 
 def test_interest_stage_major_analysis_renders_concrete_impact_boundaries():
@@ -1715,7 +1666,7 @@ async def test_recover_major_intent_from_context_uses_local_shortcut_for_fit_que
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as extract_major_mock,
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as extract_negative_mock,
     ):
-        major_intents, school_intents, city_intents, career_intents = await intent_state_tool_module._recover_intents_from_context(
+        major_intents, school_intents, city_intents = await intent_state_tool_module._recover_intents_from_context(
             ctx,
             recovery_scope="major",
         )
@@ -1723,7 +1674,6 @@ async def test_recover_major_intent_from_context_uses_local_shortcut_for_fit_que
     assert major_intents == {"level3": ["网络与新媒体"]}
     assert school_intents is None
     assert city_intents is None
-    assert career_intents is None
     extract_polarity_mock.assert_not_awaited()
     extract_major_mock.assert_not_awaited()
     extract_negative_mock.assert_not_awaited()
@@ -1747,7 +1697,7 @@ async def test_recover_major_intent_from_context_recovers_mixed_polarity_locally
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as extract_major_mock,
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as extract_negative_mock,
     ):
-        major_intents, school_intents, city_intents, career_intents = await intent_state_tool_module._recover_intents_from_context(
+        major_intents, school_intents, city_intents = await intent_state_tool_module._recover_intents_from_context(
             ctx,
             recovery_scope="major",
         )
@@ -1759,14 +1709,13 @@ async def test_recover_major_intent_from_context_recovers_mixed_polarity_locally
     }
     assert school_intents is None
     assert city_intents is None
-    assert career_intents is None
     extract_polarity_mock.assert_not_awaited()
     extract_major_mock.assert_not_awaited()
     extract_negative_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_recover_major_scope_drops_recent_analysis_career_payload():
+async def test_recover_major_scope_uses_recent_analysis_major_payload():
     from app.agent.context import RequestContext
 
     ctx = SimpleNamespace(
@@ -1782,7 +1731,6 @@ async def test_recover_major_scope_drops_recent_analysis_career_payload():
             {
                 "value": {
                     "major_intents": {"level3": ["法学"], "negative_level3": ["护理学"]},
-                    "career_intents": {"negative": ["system_public_service"]},
                 }
             }
         ]
@@ -1793,7 +1741,7 @@ async def test_recover_major_scope_drops_recent_analysis_career_payload():
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock(return_value="{}")),
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock(return_value="{}")),
     ):
-        major_intents, school_intents, city_intents, career_intents = await intent_state_tool_module._recover_intents_from_context(
+        major_intents, school_intents, city_intents = await intent_state_tool_module._recover_intents_from_context(
             ctx,
             recovery_scope="major",
         )
@@ -1801,7 +1749,6 @@ async def test_recover_major_scope_drops_recent_analysis_career_payload():
     assert major_intents == {"level3": ["法学"], "negative_level3": ["护理学"]}
     assert school_intents is None
     assert city_intents is None
-    assert career_intents is None
 
 
 def test_local_major_recovery_keeps_positive_tendency_and_negative_constraint():
@@ -1848,28 +1795,25 @@ def test_refine_major_intents_replaces_model_negative_when_user_reverses_exclusi
     assert payload == {"level2": ["经济学类"]}
 
 
-def test_negative_constraint_reversal_payload_rewrites_school_region_and_career():
-    major, school, city, career = _apply_negative_constraint_reversal_to_intent_payloads(
+def test_negative_constraint_reversal_payload_rewrites_school_and_region():
+    major, school, city = _apply_negative_constraint_reversal_to_intent_payloads(
         None,
         {"negative_colleges": ["民办"]},
         {"negative_area": ["东北"]},
-        {"negative": ["system_public_service"]},
-        latest_utterance="不要排除民办，别避开东北，也不要排除体制内",
+        latest_utterance="不要排除民办，别避开东北",
         batch="01",
     )
 
     assert major is None
     assert school == {"colleges": ["民办"]}
     assert city == {"area": ["东北"]}
-    assert career == {"positive": ["system_public_service"]}
 
 
 def test_negative_constraint_reversal_payload_does_not_leak_school_region():
-    major, school, city, career = _apply_negative_constraint_reversal_to_intent_payloads(
+    major, school, city = _apply_negative_constraint_reversal_to_intent_payloads(
         None,
         {"negative_colleges": ["江西财经大学"]},
         {"negative_province": ["江西"], "negative_city": ["南昌"]},
-        None,
         latest_utterance="别排除江西财经大学",
         batch="01",
     )
@@ -1877,13 +1821,11 @@ def test_negative_constraint_reversal_payload_does_not_leak_school_region():
     assert major is None
     assert school == {"colleges": ["江西财经大学"]}
     assert city is None
-    assert career is None
 
 
 def test_negative_constraint_reversal_payload_only_rewrites_covered_major_clause():
-    major, school, city, career = _apply_negative_constraint_reversal_to_intent_payloads(
+    major, school, city = _apply_negative_constraint_reversal_to_intent_payloads(
         {"negative_level2": ["经济学类"], "negative_level3": ["临床医学"]},
-        None,
         None,
         None,
         latest_utterance="不要排除经济学类，但临床医学还是排除",
@@ -1893,15 +1835,13 @@ def test_negative_constraint_reversal_payload_only_rewrites_covered_major_clause
     assert major == {"negative_level3": ["临床医学"], "level2": ["经济学类"]}
     assert school is None
     assert city is None
-    assert career is None
 
 
 def test_negative_constraint_reversal_payload_keeps_explicit_region_exclusion_after_school_reversal():
-    major, school, city, career = _apply_negative_constraint_reversal_to_intent_payloads(
+    major, school, city = _apply_negative_constraint_reversal_to_intent_payloads(
         None,
         {"negative_colleges": ["江西财经大学"]},
         {"negative_province": ["江西"], "negative_city": ["南昌"]},
-        None,
         latest_utterance="别排除江西财经大学，但江西地区还是排除",
         batch="01",
     )
@@ -1909,7 +1849,6 @@ def test_negative_constraint_reversal_payload_keeps_explicit_region_exclusion_af
     assert major is None
     assert school == {"colleges": ["江西财经大学"]}
     assert city == {"negative_province": ["江西"]}
-    assert career is None
 
 
 def test_refine_major_intents_dedupes_same_name_across_levels():
@@ -2038,7 +1977,7 @@ async def test_recover_major_intent_from_context_recovers_common_major_abbreviat
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as extract_major_mock,
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as extract_negative_mock,
     ):
-        major_intents, school_intents, city_intents, career_intents = await intent_state_tool_module._recover_intents_from_context(
+        major_intents, school_intents, city_intents = await intent_state_tool_module._recover_intents_from_context(
             ctx,
             recovery_scope="major",
         )
@@ -2049,7 +1988,6 @@ async def test_recover_major_intent_from_context_recovers_common_major_abbreviat
     }
     assert school_intents is None
     assert city_intents is None
-    assert career_intents is None
     extract_polarity_mock.assert_not_awaited()
     extract_major_mock.assert_not_awaited()
     extract_negative_mock.assert_not_awaited()
@@ -2093,7 +2031,7 @@ async def test_recover_major_intent_from_recent_compare_context_for_anaphora_con
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as extract_major_mock,
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as extract_negative_mock,
     ):
-        major_intents, school_intents, city_intents, career_intents = await intent_state_tool_module._recover_intents_from_context(
+        major_intents, school_intents, city_intents = await intent_state_tool_module._recover_intents_from_context(
             ctx,
             recovery_scope="major",
         )
@@ -2101,61 +2039,9 @@ async def test_recover_major_intent_from_recent_compare_context_for_anaphora_con
     assert major_intents == {"level3": ["网络与新媒体", "跨境电子商务"]}
     assert school_intents is None
     assert city_intents is None
-    assert career_intents is None
     extract_polarity_mock.assert_not_awaited()
     extract_major_mock.assert_not_awaited()
     extract_negative_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_analyze_intent_change_career_negative_request_preserves_career_exclusion_in_payload():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            userid="u1",
-            sessionid="1011",
-            chat_history=[{"role": "user", "content": "现在不想进体制内了"}],
-            batch="01",
-            score_detail=None,
-            init_profile=None,
-            planning_summary=None,
-        )
-    )
-
-    with (
-        patch("app.tools.city_intent_tool.extract_city_intent", new=AsyncMock(return_value=json.dumps({"province": [], "city": [], "area": []}, ensure_ascii=False))),
-        patch("app.tools.city_intent_tool.extract_negative_city_intent", new=AsyncMock(return_value=json.dumps({"province": [], "city": []}, ensure_ascii=False))),
-        patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock(return_value=json.dumps({"level1": [], "level2": [], "level3": []}, ensure_ascii=False))),
-        patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock(return_value=json.dumps({"level1": [], "level2": [], "level3": []}, ensure_ascii=False))),
-        patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock(return_value=json.dumps({"colleges": [], "negative_colleges": []}, ensure_ascii=False))),
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock(return_value=json.dumps({"positive": [], "negative": ["system_public_service"]}, ensure_ascii=False))),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
-        patch(
-            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
-            new=AsyncMock(
-                return_value={
-                    "summaryTitle": "先帮你看一眼",
-                    "currentPlanFit": [],
-                    "currentPlanConflict": ["当前方案里先避开体制内/考公导向更合适。"],
-                    "candidateOpportunity": [],
-                    "nextActionHints": ["如果确认，我就按这个方向作为后续要求。"],
-                }
-            ),
-        ),
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.get_current_profile = AsyncMock(return_value=UserProfile())
-        payload_text = await analyze_volunteer_intent_change(
-            ctx,
-            recovery_scope="career_preference",
-            analysis_stage=ANALYSIS_STAGE_CONFIRMED,
-            confirm_enabled=True,
-        )
-
-    assert "体制内/考公导向" in payload_text
-    payload = json.loads(payload_text)
-    assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
-    assert payload["items"][0]["value"] == {"career_intents": {"negative": ["system_public_service"]}}
 
 
 @pytest.mark.asyncio
@@ -2170,7 +2056,6 @@ async def test_analyze_volunteer_intent_change_returns_structured_payload(empty_
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
@@ -2244,7 +2129,7 @@ async def test_handle_intent_select_interest_plan_analyze_returns_interest_previ
     with (
         patch(
             "app.tools.explore_followup_tool.get_last_pending_confirmation",
-            new=AsyncMock(return_value=_pending_intent_response({"career_intents": {"positive": ["system_public_service"]}})),
+            new=AsyncMock(return_value=_pending_intent_response({"major_intents": {"level3": ["法学"]}})),
         ),
         patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {}})),
         patch("app.tools.explore_followup_tool.query_plan", new=AsyncMock(return_value='{"message":"当前判断：可以继续优化方案。"}')) as query_mock,
@@ -2267,7 +2152,6 @@ async def test_handle_intent_select_interest_prefer_confirm_returns_confirm_prev
             new=AsyncMock(return_value=_pending_intent_response({"city_intents": {"province": ["北京"]}})),
         ),
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
@@ -2329,7 +2213,6 @@ async def test_analyze_intent_change_hard_constraint_in_constraint_state_returns
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=existing_profile)
@@ -2359,7 +2242,6 @@ async def test_analyze_intent_change_existing_preference_returns_helpful_text(ex
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=existing_profile)
@@ -2745,7 +2627,7 @@ async def test_semantic_only_keep_region_recovers_missing_positive_area(empty_pr
         ),
         patch(
             "app.tools.intent_state_tool._recover_intents_from_context",
-            new=AsyncMock(return_value=(None, None, {"area": ["南方"], "negative_area": ["北方"]}, None)),
+            new=AsyncMock(return_value=(None, None, {"area": ["南方"], "negative_area": ["北方"]})),
         ) as recover_mock,
         patch(
             "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
@@ -2811,7 +2693,7 @@ async def test_negative_only_region_constraint_not_blocked_by_semantic_only_keep
         ),
         patch(
             "app.tools.intent_state_tool._recover_intents_from_context",
-            new=AsyncMock(return_value=(None, None, {"negative_area": ["东北", "西北"]}, None)),
+            new=AsyncMock(return_value=(None, None, {"negative_area": ["东北", "西北"]})),
         ) as recover_mock,
         patch(
             "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
@@ -3309,42 +3191,6 @@ def test_build_preview_title_uses_explore_wording_for_interest_stage():
     assert "初步分析" in title
     assert "记成你的偏好" not in title
     assert "勾选" not in title
-
-
-def test_public_service_alignment_does_not_match_generic_public_undergraduate():
-    item = {
-        "schoolNature": "公办",
-        "schoolLevel": "本科",
-        "schoolCategory": "理工",
-        "majorName": "计算机科学与技术",
-        "majorCategory": "计算机类",
-        "majorDiscipline": "工学",
-        "schoolRankTags": [],
-        "schoolBasicTags": [],
-        "schoolPopupTags": [],
-        "majorRankTags": [],
-        "majorPlanTags": [],
-    }
-
-    assert _is_public_service_aligned_item(item) is False
-
-
-def test_public_service_alignment_matches_policy_oriented_major():
-    item = {
-        "schoolNature": "公办",
-        "schoolLevel": "本科",
-        "schoolCategory": "理工",
-        "majorName": "行政管理",
-        "majorCategory": "公共管理类",
-        "majorDiscipline": "管理学",
-        "schoolRankTags": [],
-        "schoolBasicTags": [],
-        "schoolPopupTags": [],
-        "majorRankTags": [],
-        "majorPlanTags": [],
-    }
-
-    assert _is_public_service_aligned_item(item) is True
 
 
 @pytest.mark.asyncio
@@ -4033,7 +3879,7 @@ async def test_recover_intents_from_context_uses_latest_user_message_only():
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as negative_major_mock,
         patch("app.tools.school_intent_tool.extract_school_intent", side_effect=_assert_single_turn_school),
     ):
-        major, school, city, career = await _recover_intents_from_context(ctx)
+        major, school, city = await _recover_intents_from_context(ctx)
 
     city_mock.assert_not_awaited()
     negative_city_mock.assert_not_awaited()
@@ -4042,19 +3888,18 @@ async def test_recover_intents_from_context_uses_latest_user_message_only():
     assert major is None
     assert school is None
     assert city == {"negative_province": ["北京"]}
-    assert career is None
 
 
 @pytest.mark.asyncio
-async def test_recover_intents_from_context_extracts_career_intent_from_latest_message():
+async def test_recover_intents_from_context_extracts_school_intent_from_latest_message():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             userid="u1",
             sessionid="s1",
             chat_history=[
-                {"role": "user", "content": "之前先看看学校"},
+                {"role": "user", "content": "之前先看看方向"},
                 {"role": "assistant", "content": "好的"},
-                {"role": "user", "content": "想去体制内"},
+                {"role": "user", "content": "想去北京联合大学"},
             ],
             batch="01",
             score_detail=None,
@@ -4064,58 +3909,15 @@ async def test_recover_intents_from_context_extracts_career_intent_from_latest_m
     )
 
     with (
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock(return_value=json.dumps({"positive": ["system_public_service"], "negative": []}, ensure_ascii=False))),
         patch("app.tools.city_intent_tool.extract_city_intents_with_polarity", new=AsyncMock(return_value=json.dumps({"positive": {"province": [], "city": [], "area": []}, "negative": {"province": [], "city": []}}, ensure_ascii=False))),
         patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock(return_value=json.dumps({"positive": {"level1": [], "level2": [], "level3": []}, "negative": {"level1": [], "level2": [], "level3": []}}, ensure_ascii=False))),
-        patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock(return_value=json.dumps({"colleges": [], "negative_colleges": []}, ensure_ascii=False))),
+        patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock(return_value=json.dumps({"colleges": ["北京联合大学"], "negative_colleges": []}, ensure_ascii=False))),
     ):
-        major, school, city, career = await _recover_intents_from_context(ctx)
+        major, school, city = await _recover_intents_from_context(ctx)
 
     assert major is None
-    assert school is None
+    assert school == {"colleges": ["北京联合大学"]}
     assert city is None
-    assert career == {"positive": ["system_public_service"]}
-
-
-@pytest.mark.asyncio
-async def test_recover_intents_from_context_career_scope_skips_city_major_school_extractors():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            userid="u1",
-            sessionid="s1",
-            chat_history=[
-                {"role": "user", "content": "想进体制"},
-            ],
-            batch="01",
-            score_detail=None,
-            init_profile=None,
-            planning_summary=None,
-        )
-    )
-
-    with (
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock(return_value=json.dumps({"positive": ["system_public_service"], "negative": []}, ensure_ascii=False))),
-        patch("app.tools.city_intent_tool.extract_city_intents_with_polarity", new=AsyncMock()) as city_polarity_mock,
-        patch("app.tools.city_intent_tool.extract_city_intent", new=AsyncMock()) as city_mock,
-        patch("app.tools.city_intent_tool.extract_negative_city_intent", new=AsyncMock()) as negative_city_mock,
-        patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock()) as major_polarity_mock,
-        patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as major_mock,
-        patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as negative_major_mock,
-        patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock()) as school_mock,
-    ):
-        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="career_preference")
-
-    city_polarity_mock.assert_not_awaited()
-    city_mock.assert_not_awaited()
-    negative_city_mock.assert_not_awaited()
-    major_polarity_mock.assert_not_awaited()
-    major_mock.assert_not_awaited()
-    negative_major_mock.assert_not_awaited()
-    school_mock.assert_not_awaited()
-    assert major is None
-    assert school is None
-    assert city is None
-    assert career == {"positive": ["system_public_service"]}
 
 
 @pytest.mark.asyncio
@@ -4140,9 +3942,8 @@ async def test_recover_intents_from_context_school_scope_only_uses_school_extrac
         patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock()) as major_polarity_mock,
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as major_mock,
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as negative_major_mock,
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock()) as career_mock,
     ):
-        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="school")
+        major, school, city = await _recover_intents_from_context(ctx, recovery_scope="school")
 
     school_mock.assert_awaited_once()
     city_polarity_mock.assert_not_awaited()
@@ -4151,11 +3952,9 @@ async def test_recover_intents_from_context_school_scope_only_uses_school_extrac
     major_polarity_mock.assert_not_awaited()
     major_mock.assert_not_awaited()
     negative_major_mock.assert_not_awaited()
-    career_mock.assert_not_awaited()
     assert major is None
     assert school == {"colleges": ["北京联合大学"]}
     assert city is None
-    assert career is None
 
 
 @pytest.mark.asyncio
@@ -4191,9 +3990,8 @@ async def test_recover_intents_from_context_school_scope_redirects_region_like_s
         patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock()) as major_polarity_mock,
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as major_mock,
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as negative_major_mock,
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock()) as career_mock,
     ):
-        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="school")
+        major, school, city = await _recover_intents_from_context(ctx, recovery_scope="school")
 
     school_mock.assert_awaited_once()
     city_polarity_mock.assert_not_awaited()
@@ -4202,11 +4000,9 @@ async def test_recover_intents_from_context_school_scope_redirects_region_like_s
     major_polarity_mock.assert_not_awaited()
     major_mock.assert_not_awaited()
     negative_major_mock.assert_not_awaited()
-    career_mock.assert_not_awaited()
     assert major is None
     assert school is None
     assert city == {"province": ["江苏"]}
-    assert career is None
 
 
 @pytest.mark.asyncio
@@ -4242,9 +4038,8 @@ async def test_recover_intents_from_context_major_scope_only_uses_major_extracto
         patch("app.tools.city_intent_tool.extract_city_intent", new=AsyncMock()) as city_mock,
         patch("app.tools.city_intent_tool.extract_negative_city_intent", new=AsyncMock()) as negative_city_mock,
         patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock()) as school_mock,
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock()) as career_mock,
     ):
-        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="major")
+        major, school, city = await _recover_intents_from_context(ctx, recovery_scope="major")
 
     major_polarity_mock.assert_awaited_once()
     major_mock.assert_not_awaited()
@@ -4253,11 +4048,9 @@ async def test_recover_intents_from_context_major_scope_only_uses_major_extracto
     city_mock.assert_not_awaited()
     negative_city_mock.assert_not_awaited()
     school_mock.assert_not_awaited()
-    career_mock.assert_not_awaited()
     assert major == {"level2": ["计算机类"]}
     assert school is None
     assert city is None
-    assert career is None
 
 
 @pytest.mark.asyncio
@@ -4282,20 +4075,17 @@ async def test_recover_intents_from_context_major_scope_falls_back_when_combined
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock(return_value=json.dumps({"level1": [], "level2": ["护理学类"], "level3": []}, ensure_ascii=False))) as negative_major_mock,
         patch("app.tools.city_intent_tool.extract_city_intents_with_polarity", new=AsyncMock()) as city_polarity_mock,
         patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock()) as school_mock,
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock()) as career_mock,
     ):
-        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="major")
+        major, school, city = await _recover_intents_from_context(ctx, recovery_scope="major")
 
     major_polarity_mock.assert_awaited_once()
     major_mock.assert_awaited_once()
     negative_major_mock.assert_awaited_once()
     city_polarity_mock.assert_not_awaited()
     school_mock.assert_not_awaited()
-    career_mock.assert_not_awaited()
     assert major == {"level2": ["法学类"], "negative_level2": ["护理学类"]}
     assert school is None
     assert city is None
-    assert career is None
 
 
 @pytest.mark.asyncio
@@ -4348,19 +4138,16 @@ async def test_recover_intents_from_context_uses_recent_existing_only_payload_wh
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as negative_major_mock,
         patch("app.tools.city_intent_tool.extract_city_intents_with_polarity", new=AsyncMock()) as city_polarity_mock,
         patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock()) as school_mock,
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock()) as career_mock,
     ):
-        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="major")
+        major, school, city = await _recover_intents_from_context(ctx, recovery_scope="major")
 
     major_mock.assert_not_awaited()
     negative_major_mock.assert_not_awaited()
     city_polarity_mock.assert_not_awaited()
     school_mock.assert_not_awaited()
-    career_mock.assert_not_awaited()
     assert major == {"level3": ["会计学"], "negative_level3": ["土木工程"]}
     assert school is None
     assert city is None
-    assert career is None
 
 
 @pytest.mark.asyncio
@@ -4396,9 +4183,8 @@ async def test_recover_intents_from_context_region_scope_only_uses_city_extracto
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as major_mock,
         patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as negative_major_mock,
         patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock()) as school_mock,
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock()) as career_mock,
     ):
-        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="region")
+        major, school, city = await _recover_intents_from_context(ctx, recovery_scope="region")
 
     city_polarity_mock.assert_awaited_once()
     city_mock.assert_not_awaited()
@@ -4407,11 +4193,9 @@ async def test_recover_intents_from_context_region_scope_only_uses_city_extracto
     major_mock.assert_not_awaited()
     negative_major_mock.assert_not_awaited()
     school_mock.assert_not_awaited()
-    career_mock.assert_not_awaited()
     assert major is None
     assert school is None
     assert city == {"province": ["北京"]}
-    assert career is None
 
 
 @pytest.mark.asyncio
@@ -4434,20 +4218,17 @@ async def test_recover_intents_from_context_region_scope_falls_back_when_combine
         patch("app.tools.city_intent_tool.extract_negative_city_intent", new=AsyncMock(return_value=json.dumps({"province": ["上海"], "city": []}, ensure_ascii=False))) as negative_city_mock,
         patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock()) as major_polarity_mock,
         patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock()) as school_mock,
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock()) as career_mock,
     ):
-        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="region")
+        major, school, city = await _recover_intents_from_context(ctx, recovery_scope="region")
 
     city_polarity_mock.assert_awaited_once()
     city_mock.assert_awaited_once()
     negative_city_mock.assert_awaited_once()
     major_polarity_mock.assert_not_awaited()
     school_mock.assert_not_awaited()
-    career_mock.assert_not_awaited()
     assert major is None
     assert school is None
     assert city == {"province": ["北京"], "negative_province": ["上海"]}
-    assert career is None
 
 
 @pytest.mark.asyncio
@@ -4501,7 +4282,6 @@ async def test_apply_constraint_intents_marks_stale_without_candidate_filtering(
         patch("app.tools.intent_state_tool.update_planning_constraint_state", new=AsyncMock(return_value={"code": 0})) as constraint_state_mock,
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 64}})) as query_mock,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 3200}}}})) as state_mock,
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.update_city_intent = AsyncMock()
@@ -4525,7 +4305,6 @@ async def test_apply_constraint_intents_marks_stale_without_candidate_filtering(
     )
     query_mock.assert_awaited_once()
     assert query_mock.await_args.kwargs["sort_field"] == "finalScore"
-    state_mock.assert_not_awaited()
     assert resp.filteredTotal is None
     assert resp.baseTotal is None
     assert resp.candidateFilters is None
@@ -4621,8 +4400,6 @@ async def test_apply_preference_intents_refreshes_recommendation_overlay_without
         patch("app.tools.intent_state_tool.update_planning_constraint_state", new=AsyncMock(return_value={"code": 0})) as constraint_state_mock,
         patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
-        patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.update_city_intent = AsyncMock()
@@ -4645,8 +4422,6 @@ async def test_apply_preference_intents_refreshes_recommendation_overlay_without
         school_preferences=None,
         region_preferences={"positive": [], "negative": ["北京"]},
     )
-    state_mock.assert_not_awaited()
-    latent_mock.assert_not_awaited()
     assert resp.applied is True
     assert resp.intentMode == INTENT_MODE_PREFERENCE
     assert resp.recommendationRefresh == {
@@ -4661,167 +4436,6 @@ async def test_apply_preference_intents_refreshes_recommendation_overlay_without
     assert "后续推荐和专家优选" in resp.message
     assert "现在这份方案" in resp.message
     assert "专家优选组合" not in resp.message
-
-
-@pytest.mark.asyncio
-async def test_apply_preference_career_intent_updates_planning_latent_profile():
-    with (
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
-        patch(
-            "app.tools.intent_state_tool.get_planning_state",
-            new=AsyncMock(return_value={"data": {"profileState": {"latentProfile": {"futureDevelopment": {"careerTypes": ["读研"]}}}}}),
-        ) as state_mock,
-        patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.update_city_intent = AsyncMock()
-        mock_pm.update_major_intent = AsyncMock()
-        mock_pm.update_school_intent = AsyncMock()
-
-        resp = await _apply_intents(
-            session_id="13",
-            batch="01",
-            merged={"career_intents": {"positive": ["system_public_service"]}},
-            intent_mode=INTENT_MODE_PREFERENCE,
-        )
-
-    query_mock.assert_awaited_once()
-    stale_mock.assert_awaited_once_with(13, INTENT_MODE_PREFERENCE)
-    state_mock.assert_awaited_once()
-    latent_mock.assert_awaited_once_with(
-        13,
-        future_development={"careerTypes": ["读研", "体制内/考公导向"]},
-    )
-    assert resp.applied is True
-    assert "已采纳" in resp.message
-    assert "后续推荐和专家优选" in resp.message
-
-
-def test_career_relation_matching_uses_each_direction_slot_not_only_public_service():
-    market_item = {
-        "schoolName": "北京工业大学",
-        "schoolCategory": "理工",
-        "majorName": "计算机科学与技术",
-        "majorCategory": "计算机类",
-        "majorRankTags": ["就业面较宽"],
-    }
-    further_study_item = {
-        "schoolName": "北京交通大学",
-        "schoolRankTags": ["211", "保研"],
-        "majorName": "数学与应用数学",
-    }
-    public_service_item = {
-        "schoolName": "北京师范大学",
-        "schoolCategory": "师范",
-        "majorName": "法学",
-    }
-
-    assert _item_matches_career_intents(market_item, {"positive": ["market_employment"]}) == (True, False)
-    assert _item_matches_career_intents(further_study_item, {"positive": ["further_study"]}) == (True, False)
-    assert _item_matches_career_intents(public_service_item, {"positive": ["market_employment"]}) == (False, False)
-    assert _item_matches_career_intents(market_item, {"negative": ["market_employment"]}) == (False, True)
-
-
-@pytest.mark.asyncio
-async def test_analyze_intent_change_builds_preview_for_career_intent_recovery():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            userid="u1",
-            sessionid="23",
-            chat_history=[{"role": "user", "content": "想去体制内"}],
-            batch="01",
-            score_detail=None,
-            init_profile=None,
-            planning_summary=None,
-        )
-    )
-
-    with (
-        patch("app.tools.city_intent_tool.extract_city_intent", new=AsyncMock(return_value=json.dumps({"province": [], "city": [], "area": []}, ensure_ascii=False))),
-        patch("app.tools.city_intent_tool.extract_negative_city_intent", new=AsyncMock(return_value=json.dumps({"province": [], "city": []}, ensure_ascii=False))),
-        patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock(return_value=json.dumps({"level1": [], "level2": [], "level3": []}, ensure_ascii=False))),
-        patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock(return_value=json.dumps({"level1": [], "level2": [], "level3": []}, ensure_ascii=False))),
-        patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock(return_value=json.dumps({"colleges": [], "negative_colleges": []}, ensure_ascii=False))),
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock(return_value=json.dumps({"positive": ["system_public_service"], "negative": []}, ensure_ascii=False))),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.get_current_profile = AsyncMock(return_value=UserProfile())
-        resp = await _render_analysis(ctx)
-
-    assert "体制内/考公导向" in resp
-
-
-@pytest.mark.asyncio
-async def test_analyze_intent_change_career_scope_avoids_general_extractors():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            userid="u1",
-            sessionid="24",
-            chat_history=[{"role": "user", "content": "想进体制"}],
-            batch="01",
-            score_detail=None,
-            init_profile=None,
-            planning_summary=None,
-        )
-    )
-
-    with (
-        patch("app.tools.city_intent_tool.extract_city_intent", new=AsyncMock()) as city_mock,
-        patch("app.tools.city_intent_tool.extract_negative_city_intent", new=AsyncMock()) as negative_city_mock,
-        patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as major_mock,
-        patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as negative_major_mock,
-        patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock()) as school_mock,
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock(return_value=json.dumps({"positive": ["system_public_service"], "negative": []}, ensure_ascii=False))) as career_mock,
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.get_current_profile = AsyncMock(return_value=UserProfile())
-        resp = await _render_analysis(ctx, recovery_scope="career_preference")
-
-    city_mock.assert_not_awaited()
-    negative_city_mock.assert_not_awaited()
-    major_mock.assert_not_awaited()
-    negative_major_mock.assert_not_awaited()
-    school_mock.assert_not_awaited()
-    career_mock.assert_awaited_once()
-    assert "体制内/考公导向" in resp
-
-
-@pytest.mark.asyncio
-async def test_recover_intents_from_context_uses_career_extractor_negative_result():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            userid="u1",
-            sessionid="s1",
-            chat_history=[
-                {"role": "user", "content": "不想进体制内"},
-            ],
-            batch="01",
-            score_detail=None,
-            init_profile=None,
-            planning_summary=None,
-        )
-    )
-
-    with (
-        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock(return_value=json.dumps({"positive": [], "negative": ["system_public_service"]}, ensure_ascii=False))),
-        patch("app.tools.city_intent_tool.extract_city_intent", new=AsyncMock(return_value=json.dumps({"province": [], "city": [], "area": []}, ensure_ascii=False))),
-        patch("app.tools.city_intent_tool.extract_negative_city_intent", new=AsyncMock(return_value=json.dumps({"province": [], "city": []}, ensure_ascii=False))),
-        patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock(return_value=json.dumps({"level1": [], "level2": [], "level3": []}, ensure_ascii=False))),
-        patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock(return_value=json.dumps({"level1": [], "level2": [], "level3": []}, ensure_ascii=False))),
-        patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock(return_value=json.dumps({"colleges": [], "negative_colleges": []}, ensure_ascii=False))),
-    ):
-        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="career_preference")
-
-    assert major is None
-    assert school is None
-    assert city is None
-    assert career == {"negative": ["system_public_service"]}
 
 
 @pytest.mark.asyncio

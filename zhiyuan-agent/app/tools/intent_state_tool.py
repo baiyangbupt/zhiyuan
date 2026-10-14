@@ -20,16 +20,6 @@ from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext, has_pending_intent_confirmation, resolve_pending_confirmation
 from app.config import LLMConfig
-from app.domain.career_slots import (
-    CAREER_FURTHER_STUDY,
-    CAREER_LABEL_MAP,
-    CAREER_STABLE_EMPLOYMENT,
-    CAREER_SYSTEM_PUBLIC_SERVICE,
-    is_career_slot,
-    normalize_career_slots,
-    to_career_label,
-    to_career_labels,
-)
 from app.domain.major_entity_resolver import (
     append_major_mentions_to_payload,
     dedupe_major_intent_payload_across_levels,
@@ -73,13 +63,11 @@ from app.util.code_enrichment import (
     resolve_major_names_async,
 )
 from app.util.internal_client import (
-    get_planning_state,
     mark_planning_intent_change_stale,
     get_message_by_id,
     query_planning_candidate_pool,
     update_planning_constraint_state,
     update_planning_physical_constraints,
-    update_planning_latent_profile,
     update_session_tuition_range,
     update_message,
 )
@@ -215,7 +203,7 @@ def _get_intent_side_effect_agent() -> Agent[None, str]:
                 "entityPolaritySpans 记录用户原文里的实体极性，元素包含 entity、entityType、polarity、strength；"
                 "entityPolaritySpans 中的 entity 应使用规范实体名；例如“跨境电商”写成“跨境电子商务”，“口腔”写成“口腔医学”。"
                 "输入里的 structuredIntents 是本轮已经抽取出的实体候选；当 decision=intent_preview 时，"
-                "必须把 positiveMajors/positiveSchools/positive region/career 等正向实体保留到 preferenceStrength 中，"
+                "必须把 positiveMajors/positiveSchools/positive region 等正向实体保留到 preferenceStrength 中，"
                 "没有更强语义时放 preferred，不要只输出抽象类型词而丢掉这些实体。"
                 "如果 structuredIntents.school.positiveSchools 非空，这些具体院校名必须原样进入 preferenceStrength.preferred；"
                 "不能解释为“没有更强语义支撑所以不输出”，也不能用“公办/民办”等抽象性质替代具体院校。"
@@ -294,7 +282,6 @@ def _build_cache_data(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
     intent_mode: str = INTENT_MODE_PREFERENCE,
     constraint_intent_type: str | None = None,
 ) -> dict[str, Any]:
@@ -306,8 +293,6 @@ def _build_cache_data(
         cache["school_intents"] = school_intents
     if city_intents:
         cache["city_intents"] = city_intents
-    if career_intents:
-        cache["career_intents"] = career_intents
     cache["intent_mode"] = intent_mode
     normalized_constraint_type = _normalize_constraint_intent_type(constraint_intent_type)
     if normalized_constraint_type != CONSTRAINT_INTENT_DEFAULT:
@@ -319,7 +304,6 @@ def _collect_intent_labels(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> dict[str, list[str]]:
     labels: dict[str, list[str]] = {
         "positive": [],
@@ -351,9 +335,6 @@ def _collect_intent_labels(
         _extend(city_intents.get("negative_province"), negative=True)
         _extend(city_intents.get("negative_city"), negative=True)
         _extend(city_intents.get("negative_area"), negative=True)
-    if career_intents:
-        _extend(to_career_labels(career_intents.get("positive")))
-        _extend(to_career_labels(career_intents.get("negative")), negative=True)
 
     return labels
 
@@ -385,7 +366,6 @@ def _has_positive_values_in_payload(merged: dict[str, Any] | None) -> bool:
         merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else None,
         merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else None,
         merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else None,
-        merged.get("career_intents") if isinstance(merged.get("career_intents"), dict) else None,
     )
 
 
@@ -403,10 +383,9 @@ def _payload_is_negative_only_region(merged: dict[str, Any] | None) -> bool:
     major = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else None
     school = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else None
     city = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else None
-    career = merged.get("career_intents") if isinstance(merged.get("career_intents"), dict) else None
-    return bool(city) and _has_negative_intents(None, None, city, None) and not (
-        _has_positive_intents(major, school, city, career)
-        or _has_negative_intents(major, school, None, career)
+    return bool(city) and _has_negative_intents(None, None, city) and not (
+        _has_positive_intents(major, school, city)
+        or _has_negative_intents(major, school, None)
     )
 
 
@@ -449,11 +428,10 @@ async def _recover_positive_scope_for_positive_constraint(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None,
     recovery_scope: str | None,
     batch: str,
     latest_utterance: str,
-) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+) -> tuple[dict | None, dict | None, dict | None]:
     """Recover missing positive scope for only-keep / must-have constraints.
 
     The tool model can occasionally pass only the negative half of a positive
@@ -462,7 +440,7 @@ async def _recover_positive_scope_for_positive_constraint(
     exclusion complements.
     """
 
-    recovered_major, recovered_school, recovered_city, recovered_career = await _recover_intents_from_context(
+    recovered_major, recovered_school, recovered_city = await _recover_intents_from_context(
         ctx,
         recovery_scope=recovery_scope,
     )
@@ -493,14 +471,7 @@ async def _recover_positive_scope_for_positive_constraint(
         )
         if positive_city:
             city_intents = _merge_city_intent_payloads(city_intents, positive_city)
-    if recovered_career:
-        positive_career = _normalize_intent_payload(
-            recovered_career,
-            allowed_keys=_CAREER_POSITIVE_KEYS,
-        )
-        if positive_career:
-            career_intents = _merge_intent_payload_dict(career_intents, positive_career)
-    return major_intents, school_intents, city_intents, career_intents
+    return major_intents, school_intents, city_intents
 
 
 def _latest_utterance_has_positive_scope_signal(text: str, recovery_scope: str | None) -> bool:
@@ -1088,8 +1059,6 @@ _SCHOOL_POSITIVE_KEYS = ("colleges",)
 _SCHOOL_NEGATIVE_KEYS = ("negative_colleges",)
 _CITY_POSITIVE_KEYS = ("province", "city", "area")
 _CITY_NEGATIVE_KEYS = ("negative_province", "negative_city", "negative_area")
-_CAREER_POSITIVE_KEYS = ("positive",)
-_CAREER_NEGATIVE_KEYS = ("negative",)
 
 _LABEL_MAP: dict[str, str] = {
     # major positive
@@ -1110,8 +1079,6 @@ _LABEL_MAP: dict[str, str] = {
     "city_intents.negative_province": "排除省份",
     "city_intents.negative_city": "排除城市",
     "city_intents.negative_area": "排除地域",
-    "career_intents.positive": "就业导向偏好",
-    "career_intents.negative": "排除就业导向",
 }
 
 
@@ -1125,7 +1092,6 @@ def _label_for_intent_mode(label: str, *, intent_mode: str) -> str:
         "排除学校": "不优先学校",
         "排除省份": "不优先省份",
         "排除城市": "不优先城市",
-        "排除就业导向": "不优先就业导向",
     }
     return replacements.get(label, label)
 
@@ -1287,13 +1253,6 @@ def _interest_stage_item_content(value: dict[str, Any] | None, intent_mode: str)
                 ("negative_city", "城市", "negative"),
             ),
         ),
-        (
-            "career_intents",
-            (
-                ("positive", "发展方向", "positive"),
-                ("negative", "发展方向", "negative"),
-            ),
-        ),
     )
 
     for category, specs in label_specs:
@@ -1302,8 +1261,6 @@ def _interest_stage_item_content(value: dict[str, Any] | None, intent_mode: str)
             continue
         for key, label, polarity in specs:
             names = _as_string_list(payload.get(key))
-            if category == "career_intents":
-                names = to_career_labels(names)
             if not names:
                 continue
             text = "、".join(names)
@@ -1392,7 +1349,6 @@ def _build_select_items(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
     *,
     intent_mode: str = INTENT_MODE_PREFERENCE,
     analysis_stage: str = ANALYSIS_STAGE_CONFIRMED,
@@ -1413,7 +1369,7 @@ def _build_select_items(
     positive_intent_mode = (
         INTENT_MODE_CONSTRAINT
         if intent_mode == INTENT_MODE_CONSTRAINT
-        and not _has_negative_intents(major_intents, school_intents, city_intents, career_intents)
+        and not _has_negative_intents(major_intents, school_intents, city_intents)
         else INTENT_MODE_PREFERENCE
     )
 
@@ -1730,31 +1686,6 @@ def _build_select_items(
                         "selected": True,
                     })
 
-    if career_intents:
-        for sub_key in _CAREER_POSITIVE_KEYS:
-            values = career_intents.get(sub_key, [])
-            if not values:
-                continue
-            for value in values:
-                label = to_career_label(value)
-                items.append({
-                    "content": f"把“{label}”记成你更看重的方向，后面我会优先按这个思路帮你看方案。",
-                    "value": {"career_intents": {sub_key: [value]}},
-                    "selected": True,
-                })
-
-        for sub_key in _CAREER_NEGATIVE_KEYS:
-            values = career_intents.get(sub_key, [])
-            if not values:
-                continue
-            for value in values:
-                label = to_career_label(value)
-                items.append({
-                    "content": f"把“{label}”记成你暂时不考虑的方向，后面我会尽量避开这类建议。",
-                    "value": {"career_intents": {sub_key: [value]}},
-                    "selected": True,
-                })
-
     return (
         _neutralize_interest_stage_items(
             items,
@@ -1771,7 +1702,6 @@ def _negative_values_overlap_positive_profile(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> bool:
     major_profile = getattr(current_profile, "major", None)
     school_profile = getattr(current_profile, "school", None)
@@ -1802,11 +1732,6 @@ def _negative_values_overlap_positive_profile(
         if negative_values & positive_values:
             return True
 
-    # Career preferences are stored in planning latent profile rather than
-    # UserProfile; keep them confirmable unless a later backend API exposes the
-    # same positive/negative split here.
-    if career_intents:
-        return True
     return False
 
 
@@ -1829,14 +1754,12 @@ def _negative_preference_scope_text(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> str:
     values: list[str] = []
     for payload, keys in (
         (major_intents, ("negative_level3", "negative_level2", "negative_level1")),
         (school_intents, ("negative_colleges",)),
         (city_intents, ("negative_province", "negative_city", "negative_area")),
-        (career_intents, ("negative",)),
     ):
         if not isinstance(payload, dict):
             continue
@@ -1856,7 +1779,6 @@ def _build_no_effect_negative_preference_message(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
     intent_mode: str,
     analysis_stage: str,
     impact_analysis: dict[str, Any] | None,
@@ -1868,7 +1790,6 @@ def _build_no_effect_negative_preference_message(
         major_intents=major_intents,
         school_intents=school_intents,
         city_intents=city_intents,
-        career_intents=career_intents,
     ):
         return None
     if _negative_values_overlap_positive_profile(
@@ -1876,12 +1797,11 @@ def _build_no_effect_negative_preference_message(
         major_intents=major_intents,
         school_intents=school_intents,
         city_intents=city_intents,
-        career_intents=career_intents,
     ):
         return None
     if _has_concrete_current_conflict(impact_analysis):
         return None
-    scope_text = _negative_preference_scope_text(major_intents, school_intents, city_intents, career_intents)
+    scope_text = _negative_preference_scope_text(major_intents, school_intents, city_intents)
     return (
         f"当前已记录的偏好和这份方案里暂时没有明显命中“{scope_text}”，"
         "这次不需要额外采纳。后续如果这是必须避开的报考条件，可以直接说明，我会再列出来让你采纳。"
@@ -2061,31 +1981,25 @@ def _has_negative_intents(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> bool:
-    payload_has_negative = any(
+    return any(
         payload and any(key.startswith("negative_") and values for key, values in payload.items())
         for payload in (major_intents, school_intents, city_intents)
     )
-    career_has_negative = bool(career_intents and career_intents.get("negative"))
-    return payload_has_negative or career_has_negative
 
 
 def _has_positive_intents(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> bool:
-    payload_has_positive = any(
+    return any(
         payload and any(
             not key.startswith("negative_") and values
             for key, values in payload.items()
         )
         for payload in (major_intents, school_intents, city_intents)
     )
-    career_has_positive = bool(career_intents and career_intents.get("positive"))
-    return payload_has_positive or career_has_positive
 
 
 def _is_negative_only_preference(
@@ -2094,12 +2008,11 @@ def _is_negative_only_preference(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> bool:
     return (
         intent_mode == INTENT_MODE_PREFERENCE
-        and _has_negative_intents(major_intents, school_intents, city_intents, career_intents)
-        and not _has_positive_intents(major_intents, school_intents, city_intents, career_intents)
+        and _has_negative_intents(major_intents, school_intents, city_intents)
+        and not _has_positive_intents(major_intents, school_intents, city_intents)
     )
 
 
@@ -2132,7 +2045,6 @@ def _classify_intent_mode(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
     *,
     edit_flag: str | None = None,
     explicit_intent_mode: str | None = None,
@@ -2140,12 +2052,12 @@ def _classify_intent_mode(
 ) -> str:
     if explicit_intent_mode == INTENT_MODE_CONSTRAINT:
         return INTENT_MODE_CONSTRAINT
-    if not _has_negative_intents(major_intents, school_intents, city_intents, career_intents):
+    if not _has_negative_intents(major_intents, school_intents, city_intents):
         return INTENT_MODE_PREFERENCE
     if explicit_intent_mode == INTENT_MODE_PREFERENCE and _latest_utterance_indicates_soft_negative_preference(latest_utterance):
         return INTENT_MODE_PREFERENCE
     if (
-        not _has_positive_intents(major_intents, school_intents, city_intents, career_intents)
+        not _has_positive_intents(major_intents, school_intents, city_intents)
         and _latest_utterance_indicates_soft_negative_preference(latest_utterance)
     ):
         return INTENT_MODE_PREFERENCE
@@ -2157,7 +2069,6 @@ def _intent_topic(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> str:
     topics: list[str] = []
     if major_intents:
@@ -2166,8 +2077,6 @@ def _intent_topic(
         topics.append("school")
     if city_intents:
         topics.append("region")
-    if career_intents:
-        topics.append("career")
     return ",".join(topics) if topics else "unknown"
 
 
@@ -2177,19 +2086,17 @@ async def _classify_intent_side_effect(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None,
     intent_mode: str,
 ) -> IntentSideEffectDecision:
     prompt = json.dumps(
         {
             "latestUserText": latest_utterance,
-            "topic": _intent_topic(major_intents, school_intents, city_intents, career_intents),
+            "topic": _intent_topic(major_intents, school_intents, city_intents),
             "intentMode": intent_mode,
             "structuredIntents": {
                 "major": major_intents or {},
                 "school": school_intents or {},
                 "region": city_intents or {},
-                "career": career_intents or {},
             },
             "decisionQuestion": (
                 "当前是否应生成待确认偏好/要求卡片并写入待确认缓存？"
@@ -2209,7 +2116,6 @@ async def _maybe_downgrade_intent_preview_by_semantics(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None,
     intent_mode: str,
     analysis_stage: str,
     confirm_enabled: bool,
@@ -2224,7 +2130,6 @@ async def _maybe_downgrade_intent_preview_by_semantics(
             major_intents=major_intents,
             school_intents=school_intents,
             city_intents=city_intents,
-            career_intents=career_intents,
             intent_mode=intent_mode,
         )
     except Exception:
@@ -2328,7 +2233,6 @@ def _has_any_intent_payload(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
 ) -> bool:
     def _has_values(payload: dict | None) -> bool:
         return bool(payload and any(values for values in payload.values()))
@@ -2337,7 +2241,6 @@ def _has_any_intent_payload(
         _has_values(major_intents)
         or _has_values(school_intents)
         or _has_values(city_intents)
-        or _has_values(career_intents)
     )
 
 
@@ -2423,8 +2326,7 @@ def _normalize_intent_inputs(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None = None,
-) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+) -> tuple[dict | None, dict | None, dict | None]:
     major_aliases = {
         "add": "level3",
         "include": "level3",
@@ -2459,10 +2361,6 @@ def _normalize_intent_inputs(
         _normalize_intent_payload(
             city_intents,
             allowed_keys=_CITY_POSITIVE_KEYS + _CITY_NEGATIVE_KEYS,
-        ),
-        _normalize_intent_payload(
-            career_intents,
-            allowed_keys=_CAREER_POSITIVE_KEYS + _CAREER_NEGATIVE_KEYS,
         ),
     )
 
@@ -2586,14 +2484,13 @@ def _apply_negative_constraint_reversal_to_intent_payloads(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None,
     *,
     latest_utterance: str,
     batch: str,
-) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+) -> tuple[dict | None, dict | None, dict | None]:
     targets = negative_constraint_reversal_targets(latest_utterance, batch)
     if not targets:
-        return major_intents, school_intents, city_intents, career_intents
+        return major_intents, school_intents, city_intents
 
     major_targets_by_level: dict[str, list[str]] = {}
     for name in targets.get("major", []):
@@ -2625,49 +2522,35 @@ def _apply_negative_constraint_reversal_to_intent_payloads(
         city_intents = _remove_payload_values(city_intents, (negative_key,), [normalized_value])
         city_intents = _append_payload_values(city_intents, positive_key, [normalized_value])
 
-    career_values: list[str] = []
-    for value in targets.get("career", []):
-        slots = normalize_career_slots([value])
-        for slot in slots:
-            if slot not in career_values:
-                career_values.append(slot)
-    if career_values:
-        career_intents = _remove_payload_values(career_intents, ("negative",), career_values)
-        career_intents = _append_payload_values(career_intents, "positive", career_values)
-
-    return major_intents, school_intents, city_intents, career_intents
+    return major_intents, school_intents, city_intents
 
 
 def _restrict_intents_to_recovery_scope(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
-    career_intents: dict | None,
     *,
     recovery_scope: str | None,
-) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+) -> tuple[dict | None, dict | None, dict | None]:
     """Keep theme-specific preview tools from carrying unrelated model guesses."""
 
     normalized_scope = str(recovery_scope or "").strip().lower()
     if normalized_scope == "major":
-        return major_intents, None, None, None
+        return major_intents, None, None
     if normalized_scope in {"school", "college"}:
-        return None, school_intents, city_intents, None
+        return None, school_intents, city_intents
     if normalized_scope in {"region", "city"}:
-        return None, None, city_intents, None
-    if normalized_scope == "career_preference":
-        return None, None, None, career_intents
-    return major_intents, school_intents, city_intents, career_intents
+        return None, None, city_intents
+    return major_intents, school_intents, city_intents
 
 
-def _merge_intents_from_preview_items(items: Any) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+def _merge_intents_from_preview_items(items: Any) -> tuple[dict | None, dict | None, dict | None]:
     """Recover structured intent facts from prior preview items/existingItems."""
     merged_major: dict[str, Any] = {}
     merged_school: dict[str, Any] = {}
     merged_city: dict[str, Any] = {}
-    merged_career: dict[str, Any] = {}
     if not isinstance(items, list):
-        return None, None, None, None
+        return None, None, None
 
     for item in items:
         if not isinstance(item, dict):
@@ -2675,17 +2558,15 @@ def _merge_intents_from_preview_items(items: Any) -> tuple[dict | None, dict | N
         value = item.get("value")
         if not isinstance(value, dict):
             continue
-        major_payload, school_payload, city_payload, career_payload = _normalize_intent_inputs(
+        major_payload, school_payload, city_payload = _normalize_intent_inputs(
             value.get("major_intents") if isinstance(value.get("major_intents"), dict) else None,
             value.get("school_intents") if isinstance(value.get("school_intents"), dict) else None,
             value.get("city_intents") if isinstance(value.get("city_intents"), dict) else None,
-            value.get("career_intents") if isinstance(value.get("career_intents"), dict) else None,
         )
         for target, payload in (
             (merged_major, major_payload),
             (merged_school, school_payload),
             (merged_city, city_payload),
-            (merged_career, career_payload),
         ):
             for key, values in (payload or {}).items():
                 if not values:
@@ -2696,33 +2577,30 @@ def _merge_intents_from_preview_items(items: Any) -> tuple[dict | None, dict | N
         _dedupe_major_intent_payload_across_levels(merged_major),
         _drop_empty_entries(merged_school),
         _drop_empty_entries(merged_city),
-        _drop_empty_entries(merged_career),
     )
 
 
 def _recover_intents_from_recent_analysis(
     ctx: RunContext[RequestContext],
     recovery_scope: str | None = None,
-) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+) -> tuple[dict | None, dict | None, dict | None]:
     recent_payload = getattr(ctx.deps, "recent_intent_analysis", None)
     if not isinstance(recent_payload, dict):
-        return None, None, None, None
+        return None, None, None
     items: list[Any] = []
     for key in ("items", "existingItems"):
         raw_items = recent_payload.get(key)
         if isinstance(raw_items, list):
             items.extend(raw_items)
-    major, school, city, career = _merge_intents_from_preview_items(items)
+    major, school, city = _merge_intents_from_preview_items(items)
     normalized_scope = (recovery_scope or "generic").strip().lower()
     if normalized_scope == "major":
-        return major, None, None, None
+        return major, None, None
     if normalized_scope == "school":
-        return None, school, None, None
+        return None, school, None
     if normalized_scope in {"region", "city"}:
-        return None, None, city, None
-    if normalized_scope == "career_preference":
-        return None, None, None, career
-    return major, school, city, career
+        return None, None, city
+    return major, school, city
 
 
 async def _normalize_major_intent_names_for_batch(
@@ -2752,26 +2630,6 @@ async def _normalize_major_intent_names_for_batch(
             resolved_names = names
         normalized[key] = list(dict.fromkeys(resolved_names or names))
     return normalize_major_intent_payload_by_catalog(normalized, batch)
-
-
-def _should_use_direction_interest_analysis(
-    major_intents: dict | None,
-    school_intents: dict | None,
-    city_intents: dict | None,
-    career_intents: dict | None,
-    *,
-    analysis_stage: str,
-    confirm_enabled: bool,
-) -> bool:
-    if analysis_stage != ANALYSIS_STAGE_INTEREST or confirm_enabled:
-        return False
-    if major_intents or school_intents or city_intents:
-        return False
-    if not career_intents:
-        return False
-    positive = [slot for slot in (career_intents.get("positive") or []) if is_career_slot(slot)]
-    negative = career_intents.get("negative") or []
-    return bool(positive) and not negative
 
 
 def _should_attempt_intent_recovery(
@@ -3468,9 +3326,8 @@ def _normalize_region_area_polarity_payloads(
 async def _recover_intents_from_context(
     ctx: RunContext[RequestContext],
     recovery_scope: str | None = None,
-) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+) -> tuple[dict | None, dict | None, dict | None]:
     """Best-effort recovery when the model calls intent analysis with empty params."""
-    from app.tools.career_intent_tool import extract_career_intent
     from app.tools.city_intent_tool import (
         extract_city_intent,
         extract_city_intents_with_polarity,
@@ -3486,18 +3343,11 @@ async def _recover_intents_from_context(
     recovered_major: dict[str, Any] = {}
     recovered_school: dict[str, Any] = {}
     recovered_city: dict[str, Any] = {}
-    recovered_career: dict[str, Any] = {}
     recovery_ctx = _build_single_turn_recovery_context(ctx)
     normalized_scope = (recovery_scope or "generic").strip().lower()
     batch = ctx.deps.batch or "01"
     latest_utterance = _latest_user_utterance(ctx)
     school_scope = normalized_scope in {"school", "college"}
-
-    if normalized_scope == "career_preference":
-        extracted_career = json.loads(await extract_career_intent(recovery_ctx))
-        if _has_non_empty_payload(extracted_career):
-            recovered_career.update(extracted_career)
-        return None, None, None, _drop_empty_entries(recovered_career)
 
     if school_scope:
         try:
@@ -3590,33 +3440,23 @@ async def _recover_intents_from_context(
         except Exception:
             logger.warning("Fallback school intent extraction failed: session_id=%s", ctx.deps.sessionid, exc_info=True)
 
-    if normalized_scope == "generic":
-        try:
-            extracted_career = json.loads(await extract_career_intent(recovery_ctx))
-            if _has_non_empty_payload(extracted_career):
-                recovered_career.update(extracted_career)
-        except Exception:
-            logger.warning("Fallback career intent extraction failed: session_id=%s", ctx.deps.sessionid, exc_info=True)
-
     major = recovered_major or None
     school = recovered_school or None
     city = recovered_city or None
-    career = _drop_empty_entries(recovered_career)
-    if not _has_any_intent_payload(major, school, city, career):
-        major, school, city, career = _recover_intents_from_recent_analysis(ctx, recovery_scope=recovery_scope)
-        if _has_any_intent_payload(major, school, city, career):
+    if not _has_any_intent_payload(major, school, city):
+        major, school, city = _recover_intents_from_recent_analysis(ctx, recovery_scope=recovery_scope)
+        if _has_any_intent_payload(major, school, city):
             logger.info(
                 "Recovered intents from recent structured intent analysis: session_id=%s recovery_scope=%s",
                 ctx.deps.sessionid,
                 recovery_scope,
             )
     if school_scope and city:
-        return None, school, city, None
+        return None, school, city
     return _restrict_intents_to_recovery_scope(
         major,
         school,
         city,
-        career,
         recovery_scope=recovery_scope,
     )
 
@@ -3786,13 +3626,11 @@ async def _sync_constraint_state_best_effort(
             merged.get("major_intents"),
             merged.get("school_intents"),
             merged.get("city_intents"),
-            merged.get("career_intents"),
         )
         and _has_negative_intents(
             merged.get("major_intents"),
             merged.get("school_intents"),
             merged.get("city_intents"),
-            merged.get("career_intents"),
         )
     ):
         positive_payload, negative_payload = _split_constraint_state_payload_by_polarity(merged)
@@ -3883,22 +3721,6 @@ async def _apply_intents(
         }
         await pm.update_city_intent(json.dumps(positive), json.dumps(negative))
 
-    career_intents = merged.get("career_intents")
-    if career_intents:
-        planning_state_resp = await get_planning_state(int(session_id))
-        planning_state = (planning_state_resp or {}).get("data") or {}
-        latent_profile = ((planning_state.get("profileState") or {}).get("latentProfile")) or {}
-        future_development = dict(latent_profile.get("futureDevelopment") or {})
-        existing_career_types = list(future_development.get("careerTypes") or [])
-        positive_labels = to_career_labels(career_intents.get("positive"))
-        negative_labels = to_career_labels(career_intents.get("negative"))
-        merged_career_types = [value for value in existing_career_types if value not in set(negative_labels)]
-        for label in positive_labels:
-            if label not in merged_career_types:
-                merged_career_types.append(label)
-        future_development["careerTypes"] = merged_career_types
-        await update_planning_latent_profile(int(session_id), future_development=future_development)
-
     constraint_state_sync_success = await _sync_constraint_state_best_effort(
         session_id=session_id,
         merged=merged,
@@ -3961,7 +3783,6 @@ async def analyze_volunteer_intent_change(
     city_intents: dict | None = None,
     edit_flag: str | None = None,
     analysis_stage: str = ANALYSIS_STAGE_CONFIRMED,
-    career_intents: dict | None = None,
     recovery_scope: str | None = None,
     confirm_enabled: bool = True,
     intent_mode: str | None = None,
@@ -3994,25 +3815,22 @@ async def analyze_volunteer_intent_change(
         analysis_stage = ANALYSIS_STAGE_INTEREST
         confirm_enabled = False
 
-    major_intents, school_intents, city_intents, career_intents = _normalize_intent_inputs(
+    major_intents, school_intents, city_intents = _normalize_intent_inputs(
         major_intents,
         school_intents,
         city_intents,
-        career_intents,
     )
-    major_intents, school_intents, city_intents, career_intents = _apply_negative_constraint_reversal_to_intent_payloads(
+    major_intents, school_intents, city_intents = _apply_negative_constraint_reversal_to_intent_payloads(
         major_intents,
         school_intents,
         city_intents,
-        career_intents,
         latest_utterance=latest_utterance,
         batch=batch,
     )
-    major_intents, school_intents, city_intents, career_intents = _restrict_intents_to_recovery_scope(
+    major_intents, school_intents, city_intents = _restrict_intents_to_recovery_scope(
         major_intents,
         school_intents,
         city_intents,
-        career_intents,
         recovery_scope=recovery_scope,
     )
     major_intents = _refine_major_intents_with_local_latest_utterance(
@@ -4038,7 +3856,7 @@ async def analyze_volunteer_intent_change(
             latest_utterance=latest_utterance,
             batch=batch,
         )
-    had_explicit_intent_payload = _has_any_intent_payload(major_intents, school_intents, city_intents, career_intents)
+    had_explicit_intent_payload = _has_any_intent_payload(major_intents, school_intents, city_intents)
 
     if not had_explicit_intent_payload and _should_attempt_intent_recovery(
         analysis_stage=analysis_stage,
@@ -4050,29 +3868,26 @@ async def analyze_volunteer_intent_change(
             session_id,
             recovery_scope,
         )
-        major_intents, school_intents, city_intents, career_intents = await _recover_intents_from_context(
+        major_intents, school_intents, city_intents = await _recover_intents_from_context(
             ctx,
             recovery_scope=recovery_scope,
         )
-        major_intents, school_intents, city_intents, career_intents = _normalize_intent_inputs(
+        major_intents, school_intents, city_intents = _normalize_intent_inputs(
             major_intents,
             school_intents,
             city_intents,
-            career_intents,
         )
-        major_intents, school_intents, city_intents, career_intents = _apply_negative_constraint_reversal_to_intent_payloads(
+        major_intents, school_intents, city_intents = _apply_negative_constraint_reversal_to_intent_payloads(
             major_intents,
             school_intents,
             city_intents,
-            career_intents,
             latest_utterance=latest_utterance,
             batch=batch,
         )
-        major_intents, school_intents, city_intents, career_intents = _restrict_intents_to_recovery_scope(
+        major_intents, school_intents, city_intents = _restrict_intents_to_recovery_scope(
             major_intents,
             school_intents,
             city_intents,
-            career_intents,
             recovery_scope=recovery_scope,
         )
         major_intents = await _normalize_major_intent_names_for_batch(major_intents, batch)
@@ -4093,7 +3908,7 @@ async def analyze_volunteer_intent_change(
                 batch=batch,
             )
 
-    if not _has_any_intent_payload(major_intents, school_intents, city_intents, career_intents):
+    if not _has_any_intent_payload(major_intents, school_intents, city_intents):
         if recovery_scope == "region" and not contains_concrete_region_mention(latest_utterance):
             return serialize_intent_analysis_payload(
                 IntentAnalysisPayload(
@@ -4110,7 +3925,7 @@ async def analyze_volunteer_intent_change(
                 status="empty",
                 sessionId=session_id,
                 analysisStage=analysis_stage,
-                message="我这次还没准确整理出可调整的报考意向。你可以再明确说一下想保留、排除或更偏好的专业、院校、地域，或者像体制内、考公、稳定就业这类发展方向。",
+                message="我这次还没准确整理出可调整的报考意向。你可以再明确说一下想保留、排除或更偏好的专业、院校或地域。",
             )
         )
 
@@ -4118,7 +3933,6 @@ async def analyze_volunteer_intent_change(
         major_intents,
         school_intents,
         city_intents,
-        career_intents,
         edit_flag=edit_flag,
         explicit_intent_mode=intent_mode,
         latest_utterance=latest_utterance,
@@ -4129,7 +3943,6 @@ async def analyze_volunteer_intent_change(
         major_intents=major_intents,
         school_intents=school_intents,
         city_intents=city_intents,
-        career_intents=career_intents,
         intent_mode=resolved_intent_mode,
         analysis_stage=analysis_stage,
         confirm_enabled=confirm_enabled,
@@ -4157,7 +3970,6 @@ async def analyze_volunteer_intent_change(
         "major_intents": major_intents or {},
         "school_intents": school_intents or {},
         "city_intents": city_intents or {},
-        "career_intents": career_intents or {},
     }
     resolved_constraint_intent_type = _normalize_constraint_type_for_payload(
         resolved_constraint_intent_type,
@@ -4192,7 +4004,6 @@ async def analyze_volunteer_intent_change(
                 "major_intents": major_intents or {},
                 "school_intents": school_intents or {},
                 "city_intents": city_intents or {},
-                "career_intents": career_intents or {},
             }
             semantic_constraint_intent_type = _constraint_type_from_semantic_decision(
                 semantic_decision,
@@ -4202,7 +4013,7 @@ async def analyze_volunteer_intent_change(
         resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
         and semantic_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
         and original_semantic_constraint_type in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE}
-        and _has_negative_intents(major_intents, school_intents, city_intents, career_intents)
+        and _has_negative_intents(major_intents, school_intents, city_intents)
         and not _has_positive_values_in_payload(merged_for_constraint_type)
         and not _payload_is_negative_only_region(merged_for_constraint_type)
     ):
@@ -4240,7 +4051,6 @@ async def analyze_volunteer_intent_change(
             "major_intents": major_intents or {},
             "school_intents": school_intents or {},
             "city_intents": city_intents or {},
-            "career_intents": career_intents or {},
         }
         resolved_constraint_intent_type = _normalize_constraint_type_for_payload(
             resolved_constraint_intent_type,
@@ -4251,12 +4061,11 @@ async def analyze_volunteer_intent_change(
         and not _has_positive_values_in_payload(merged_for_constraint_type)
         and _latest_utterance_has_positive_scope_signal(latest_utterance, recovery_scope)
     ):
-        major_intents, school_intents, city_intents, career_intents = await _recover_positive_scope_for_positive_constraint(
+        major_intents, school_intents, city_intents = await _recover_positive_scope_for_positive_constraint(
             ctx,
             major_intents=major_intents,
             school_intents=school_intents,
             city_intents=city_intents,
-            career_intents=career_intents,
             recovery_scope=recovery_scope,
             batch=batch,
             latest_utterance=latest_utterance,
@@ -4271,14 +4080,13 @@ async def analyze_volunteer_intent_change(
             "major_intents": major_intents or {},
             "school_intents": school_intents or {},
             "city_intents": city_intents or {},
-            "career_intents": career_intents or {},
         }
         if _has_positive_values_in_payload(merged_for_constraint_type):
             resolved_constraint_intent_type = semantic_constraint_intent_type
     if (
         resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
         and semantic_constraint_intent_type in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE}
-        and _has_negative_intents(major_intents, school_intents, city_intents, career_intents)
+        and _has_negative_intents(major_intents, school_intents, city_intents)
         and not _has_positive_values_in_payload(merged_for_constraint_type)
     ):
         semantic_constraint_intent_type = CONSTRAINT_INTENT_DEFAULT
@@ -4320,7 +4128,6 @@ async def analyze_volunteer_intent_change(
         major_intents,
         school_intents,
         city_intents,
-        career_intents,
         intent_mode=resolved_intent_mode,
         analysis_stage=analysis_stage,
         batch=batch,
@@ -4333,7 +4140,7 @@ async def analyze_volunteer_intent_change(
     impact_text = ""
     impact_analysis: dict[str, Any] | None = None
     try:
-        impact_analysis = _build_plan_relation_analysis(resolved_intent_mode, analysis_stage, career_intents)
+        impact_analysis = _build_plan_relation_analysis(resolved_intent_mode, analysis_stage)
         impact_analysis = await _enrich_plan_relation_analysis_from_state(
             session_id,
             impact_analysis,
@@ -4341,7 +4148,6 @@ async def analyze_volunteer_intent_change(
             major_intents=major_intents,
             school_intents=school_intents,
             city_intents=city_intents,
-            career_intents=career_intents,
         )
         impact_text = _build_impact_preview_from_analysis(impact_analysis)
     except Exception:
@@ -4356,7 +4162,6 @@ async def analyze_volunteer_intent_change(
         major_intents=major_intents,
         school_intents=school_intents,
         city_intents=city_intents,
-        career_intents=career_intents,
         intent_mode=resolved_intent_mode,
         analysis_stage=analysis_stage,
         impact_analysis=impact_analysis,

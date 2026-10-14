@@ -440,18 +440,6 @@ def test_summarize_intent_values_uses_constraint_specific_positive_labels():
     assert _summarize_intent_values(merged, intent_mode="preference") == "偏好专业：临床医学"
 
 
-def test_summarize_intent_values_uses_career_labels():
-    merged = {"career_intents": {"positive": ["system_public_service"], "negative": ["stable_employment"]}}
-
-    assert _summarize_intent_values(merged, intent_mode="preference") == "发展方向：体制内/考公导向；不优先发展方向：稳定就业导向"
-
-
-def test_summarize_intent_values_keeps_literal_career_values_when_slots_are_unmapped():
-    merged = {"career_intents": {"positive": ["体制内", "稳定就业"]}}
-
-    assert _summarize_intent_values(merged, intent_mode="preference") == "发展方向：体制内/考公导向、稳定就业导向"
-
-
 def test_summarize_intent_values_supports_tuition_budget():
     merged = {"tuition_budget": {"max_tuition_per_year": [20000]}}
 
@@ -484,7 +472,7 @@ def test_apply_selected_intents_syncs_tuition_budget_range():
     tuition_mock.assert_awaited_once_with("20001", min_tuition=0, max_tuition=20000)
 
 
-def test_intent_card_primary_reply_uses_career_item_values_before_generic_title():
+def test_intent_card_primary_reply_uses_item_values_before_generic_title():
     reply = _intent_card_primary_reply_from_preview_payload(
         {
             "status": "ready",
@@ -494,13 +482,13 @@ def test_intent_card_primary_reply_uses_career_item_values_before_generic_title(
             "analysisStage": "confirmed",
             "items": [
                 {
-                    "content": "把“体制内”记成你更看重的方向，后面我会优先按这个思路帮你看方案。",
-                    "value": {"career_intents": {"positive": ["体制内"]}},
+                    "content": "偏好专业：计算机科学与技术",
+                    "value": {"major_intents": {"level3": ["计算机科学与技术"]}},
                     "selected": True,
                 },
                 {
-                    "content": "把“稳定就业”记成你更看重的方向，后面我会优先按这个思路帮你看方案。",
-                    "value": {"career_intents": {"positive": ["稳定就业"]}},
+                    "content": "偏好专业：软件工程",
+                    "value": {"major_intents": {"level3": ["软件工程"]}},
                     "selected": True,
                 },
             ],
@@ -508,9 +496,8 @@ def test_intent_card_primary_reply_uses_career_item_values_before_generic_title(
         }
     )
 
-    assert "发展方向" in reply
-    assert "体制内" in reply
-    assert "稳定就业" in reply
+    assert "计算机科学与技术" in reply
+    assert "软件工程" in reply
     assert "好的，我先把这次你提到的想法整理一下" not in reply
 
 

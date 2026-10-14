@@ -1144,3 +1144,151 @@ async def test_a_ready_preview_never_starts_a_followup_turn() -> None:
 
     assert gateway.continue_calls == []
     assert [event for event in store.events if event.turn_id.startswith("cont-")] == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 发展方向（career_update 动作族，career v1）：点卡确认 → 写 latent → 结果事件 → 续接
+#
+# 与 `test_a_clicked_confirm_continues_the_thread_on_a_fresh_turn`（score_update 那族）
+# 同构，差别只在执行体：Java 没有 profile-patch 命令类型 ✓，网关自己**读-合并-写**
+# `latentProfile.futureDevelopment.careerTypes` ✓（整字段赋值：先读回全文 ✓）。
+# 全链从 WS 入帧一路盯到 PATCH 替身：确认（claim）→ 执行 → 结果回写（complete）→
+# `conversationAction.result` 入流 → applied 触发续接回合 ✓✓。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _CareerSnapshotLoader:
+    """带 career_update pending 的快照（Java `fillActiveProposal` 的扁平暴露形状 ✓）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, **kwargs):
+        self.calls += 1
+        return {
+            "sessionId": "900049",
+            "version": 5,
+            "allowedCapabilities": ["catalog_read", "admission_read"],
+            "activeProposal": {
+                "proposalRef": "career_pending_1",
+                "pendingId": "career_pending_1",
+                "sourceVersion": 5,
+                "revision": 1,
+                "kind": "career_update",
+                "actionFamily": "update_career_types",
+                "data": {
+                    "operationId": "op-career-1",
+                    "proposalSource": "career_update",
+                    "sourceVersion": 5,
+                    "careerUpdateRequest": {
+                        "careerTypes": ["体制内/考公导向"],
+                        "userOriginalText": "想考公",
+                    },
+                },
+            },
+        }
+
+
+@pytest.mark.asyncio
+async def test_a_clicked_career_confirm_patches_the_profile_and_continues(monkeypatch) -> None:
+    """点卡确认发展方向 → PATCH 被调用（读-合并-写）→ 结果事件 → 自动续接 ✓✓。"""
+    from app.gateway import conversation_actions
+    from app.gateway.service import GatewayService
+    from app.harness.binding import ThreadBinding
+    from app.util import internal_client
+
+    resolve = _JavaRecorder([
+        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "completed"},
+    ])
+    execute = _JavaRecorder([])  # career 不许走 pending-command 执行器
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolve)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", execute)
+
+    profile = _JavaRecorder([{
+        "code": 0,
+        "data": {
+            "latentProfile": {
+                "futureDevelopment": {
+                    "careerTypes": ["市场化就业导向"],
+                    "industryPreferences": ["互联网"],
+                }
+            }
+        },
+    }])
+    patch = _JavaRecorder([{"code": 0, "data": {"version": 6}}])
+    monkeypatch.setattr(internal_client, "get_planning_profile", profile)
+    monkeypatch.setattr(internal_client, "update_planning_latent_profile", patch)
+
+    session_id = "900049"
+    store = _MemoryEventStore()
+    runtime = SessionRuntime()
+    codex = _ContinuationCodex("确认好了。我按你的方向接着推荐。")
+    message_store = _RecordingStore()
+    gateway = GatewayService(
+        mode="codex_write",
+        codex=codex,
+        legacy=None,
+        message_store=message_store,
+        binding_loader=lambda **kwargs: ThreadBinding(
+            thread_id="thr-continuation",
+            tenant_id="1",
+            session_id=session_id,
+            user_id="u1",
+            allowed_capabilities=frozenset({"catalog_read", "admission_read"}),
+        ),
+        snapshot_loader=_CareerSnapshotLoader(),
+    )
+    ws = _Socket(store, runtime, session_id)
+    confirm = _confirm(session_id, "career_pending_1")
+    confirm["conversationAction"]["expectedSourceVersion"] = 5
+    ws.push(confirm)
+
+    task = asyncio.create_task(_handle_gateway_ws_loop(ws, gateway))
+    await _wait_for(
+        lambda: any(
+            event.turn_id.startswith("cont-") and event.type == "turn.completed"
+            for event in store.events
+        ),
+        what="续接回合收尾",
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    # ① 写入落地：读了全文、合并后整字段写回（既有键一个不少）。
+    assert len(profile.calls) == 1 and profile.calls[0][0] == ("900049",)
+    assert len(patch.calls) == 1
+    written = patch.calls[0][1]["future_development"]
+    assert written["careerTypes"] == ["市场化就业导向", "体制内/考公导向"]
+    assert written["industryPreferences"] == ["互联网"]
+
+    # ② 结果事件：applied + 新版本，记在**确认那一轮**名下，也上了连接 ✓
+    #（前端白名单没有 actualChanges 的位置——写作入确认格的 "新增一项" 在单测层钉 ✓）。
+    results = store.of_type("conversationAction.result")
+    assert len(results) == 1
+    assert results[0].payload["actionStatus"] == "applied"
+    assert results[0].payload["newStateVersion"] == 6, "PATCH 响应里的版本要带出来"
+    assert results[0].turn_id == "turn-confirm"
+    frame = ws.frames("conversationAction.result")[0]
+    assert frame["payload"]["actionStatus"] == "applied"
+    assert frame["payload"]["proposalRef"] == "career_pending_1"
+
+    # ③ 结果回写 pending：complete 用与 claim 相同的 claim token ✓；执行器没走 Java 路 ✓。
+    assert len(resolve.calls) == 2
+    assert resolve.calls[0][1]["action"] == "confirm"
+    assert resolve.calls[1][1]["action"] == "complete"
+    assert resolve.calls[1][1]["claim_token"] == resolve.calls[0][1]["claim_token"]
+    assert execute.calls == []
+
+    # ④ 续接：新回合 started → assistant.completed → completed，Java 侧只这一趟写入 ✓。
+    continuation = [event for event in store.events if event.turn_id.startswith("cont-")]
+    assert [event.type for event in continuation] == [
+        "turn.started",
+        "assistant.completed",
+        "turn.completed",
+    ]
+    assert continuation[1].payload["message"] == "确认好了。我按你的方向接着推荐。"
+    assert message_store.agent_messages == ["确认好了。我按你的方向接着推荐。"]
+    assert len(codex.turns) == 1
+    assert len(patch.calls) == 1, "续接回合不再写库（恰好一趟）"

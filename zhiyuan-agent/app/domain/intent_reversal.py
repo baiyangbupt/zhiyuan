@@ -7,7 +7,6 @@ They are domain helpers, not a model-node benchmark surface.
 
 from __future__ import annotations
 
-from app.domain.career_slots import CAREER_ALIAS_MAP, normalize_career_slots, to_career_labels
 from app.domain.intent_polarity import negative_constraint_reversal_clauses, parse_constraint_polarity_operation
 from app.domain.major_entity_resolver import resolve_major_mentions_from_text
 from app.domain.region_entity_resolver import resolve_region_entity, resolve_region_mentions_from_text
@@ -51,12 +50,6 @@ def _compact_profile_text(value: object) -> str:
     return "".join(str(value or "").split())
 
 
-def _career_profile_label(value: str) -> str:
-    slots = normalize_career_slots([value])
-    labels = to_career_labels(slots)
-    return labels[0] if labels else ""
-
-
 def _region_reversal_values_from_utterance(
     utterance: str,
     *,
@@ -96,19 +89,6 @@ def _region_reversal_values_from_utterance(
     return values
 
 
-def _career_reversal_values_from_utterance(utterance: str) -> list[str]:
-    compact = _compact_profile_text(utterance)
-    values: list[str] = []
-    for alias in sorted(CAREER_ALIAS_MAP, key=lambda value: len(_compact_profile_text(value)), reverse=True):
-        compact_alias = _compact_profile_text(alias)
-        if not compact_alias or compact_alias not in compact:
-            continue
-        label = _career_profile_label(alias)
-        if label and label not in values:
-            values.append(label)
-    return values
-
-
 def _special_limit_reversal_values_from_utterance(utterance: str) -> list[str]:
     compact = _compact_profile_text(utterance)
     values: list[str] = []
@@ -130,7 +110,6 @@ def negative_constraint_reversal_targets(utterance: str, batch: str = "01") -> d
         "major": [],
         "school": [],
         "region": [],
-        "career": [],
         "budget": [],
     }
 
@@ -158,8 +137,6 @@ def negative_constraint_reversal_targets(utterance: str, batch: str = "01") -> d
             excluded_compact_spans=[(start, end) for _name, start, end in school_name_spans],
         ):
             append("region", value)
-        for value in _career_reversal_values_from_utterance(clause):
-            append("career", value)
         for value in _special_limit_reversal_values_from_utterance(clause):
             append("budget", value)
     return {key: values for key, values in targets.items() if values}
