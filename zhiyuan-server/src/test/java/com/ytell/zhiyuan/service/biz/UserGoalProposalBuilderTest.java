@@ -737,6 +737,81 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void shouldCapFillSolverCandidatePoolToSolverLimit() {
+        // review §五-36（10041982 实拍）：大候选池（>600）经 fill 路径全量直达 canonical solver，
+        // 撞 OjalgoDeterministicPlanSolver.MAX_CANDIDATES 硬帽 → blocked solver_complexity_limit。
+        // 修后：UserGoalProposalBuilder 侧按既有展示名次（finalScore 预览序）头部截断输入池，
+        // 解仍出 targetCount 条（名次头部 = 挑最好的 N 条）。
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        for (int index = 0; index < 700; index++) {
+            state.getCandidatePoolState().getItems().add(candidate(
+                    "v" + index, "学校" + index, "专业" + index, "类别", 90D - index * 0.001D));
+        }
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(12);
+        req.setSourceVersionGuard(12);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(Integer.valueOf(OjalgoDeterministicPlanSolver.MAX_CANDIDATES),
+                proposal.getSolverResult().getCandidateCount());
+        assertEquals(java.util.Arrays.asList(
+                        "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"),
+                proposal.getSolverResult().getSelectedEntityIds());
+        assertEquals("fill_total_count", proposal.getActions().get(0).getActionType());
+        assertEquals(12, proposal.getActions().get(0).getVolunteerIds().size());
+    }
+
+    @Test
+    void shouldKeepFillSolverCandidatePoolIntactWhenWithinSolverLimit() {
+        // review §五-36：池 ≤ MAX_CANDIDATES 时不截断——送入 solver 的候选数与原池一致，行为与改前逐字不变。
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        for (int index = 0; index < 599; index++) {
+            state.getCandidatePoolState().getItems().add(candidate(
+                    "v" + index, "学校" + index, "专业" + index, "类别", 90D - index * 0.001D));
+        }
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(12);
+        req.setSourceVersionGuard(12);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(Integer.valueOf(599), proposal.getSolverResult().getCandidateCount());
+        assertEquals(java.util.Arrays.asList(
+                        "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"),
+                proposal.getSolverResult().getSelectedEntityIds());
+    }
+
+    @Test
+    void shouldReportOriginalEligibleCountWhenSolverPoolIsTruncated() {
+        // review §五-36 诊断数字语义：截断只降维"送入求解"的输入；卡面"可用数"仍按原始 eligible 口径，
+        // 不能让用户看到"可用 600"这种假数。
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        for (int index = 0; index < 700; index++) {
+            state.getCandidatePoolState().getItems().add(candidate(
+                    "v" + index, "学校" + index, "专业" + index, "类别", 90D - index * 0.001D));
+        }
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("include", "major", "major", "法学"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("coverage_requirement_insufficient", proposal.getBlockingReasonCodes().get(0));
+        assertEquals(Integer.valueOf(700), proposal.getCandidateShortages().get(0).getAvailableCount());
+    }
+
+    @Test
     void shouldAllowPriorityTargetIntroducedByFillCandidate() {
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().setVolunteerModel("major");

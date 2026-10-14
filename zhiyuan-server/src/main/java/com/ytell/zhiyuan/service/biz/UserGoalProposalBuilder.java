@@ -814,6 +814,25 @@ final class UserGoalProposalBuilder {
         }
     }
 
+    /**
+     * review §五-36：canonical solver 的 {@link OjalgoDeterministicPlanSolver#MAX_CANDIDATES} 硬帽保留
+     * （继续 fail-closed 保护 solver）；本处只做输入降维：把交给 solver 的补入候选池按已有确定性名次
+     * （buildFillOptions 已排序的 finalScore/展示序）头部截断，保证 retained + 补入的候选总数不超帽。
+     * 被截掉的是名次尾部，对"挑 N 条最好"的语义影响可忽略；池不超帽时返回原列表，行为逐字不变。
+     * 诊断口径（"可用数"）由调用方继续使用截断前的全量池，不把帽值当成可用数。
+     *
+     * <p>TODO(review §五-36 顺带核查)：{@link OjalgoDeterministicPlanSolver#MAX_COVERAGE_CONSTRAINTS}（64）
+     * 是覆盖约束数的同类硬帽，本处不处理——约束数超帽仍由 solver fail-closed 拦截并给出人话建议，
+     * 本次候选池截断不会新增该路径（截断只减少候选、不影响约束数）。
+     */
+    private static List<FillOption> capSolverCandidatePool(List<FillOption> eligible, int retainedCount) {
+        int limit = Math.max(0, OjalgoDeterministicPlanSolver.MAX_CANDIDATES - Math.max(0, retainedCount));
+        if (eligible == null || eligible.size() <= limit) {
+            return eligible;
+        }
+        return Lists.newArrayList(eligible.subList(0, limit));
+    }
+
     private static FillSelection selectFillCandidates(HardConstraintsDTO projectedHardConstraints,
                                                       List<CandidateItemDTO> poolCandidates,
                                                       Set<String> selectedVolunteerIds,
@@ -836,8 +855,14 @@ final class UserGoalProposalBuilder {
 
         List<CoverageEntity> retained = buildRetainedCoverageEntities(
                 current, currentProjection, unitMode);
+        // review §五-36：solver 硬帽（MAX_CANDIDATES）保留，用于兜底保护 solver 本身；
+        // 本处只做输入降维——eligible 已按既有展示名次（intentScore/admissionRatio/finalScore 预览序）排序，
+        // 按名次头部截断到帽内后交给 solver。被截掉的是名次尾部，对"挑 N 条最好"的语义影响可忽略；
+        // 池不超帽时列表逐字不变。注意：selection.availableWithHardConstraints 等诊断口径仍用截断前的全量池，
+        // 卡面不出现"可用=帽值"这种假数（"原始可用"与"送入求解"保持可区分）。
+        List<FillOption> solverEligible = capSolverCandidatePool(eligible, retained.size());
         PlanSolverInputDTO solverInput = buildSolverInput(
-                objectiveSet, retained, eligible, unitMode, priorityRule);
+                objectiveSet, retained, solverEligible, unitMode, priorityRule);
         selection.solverResult = PLAN_SOLVER.solve(solverInput);
         if (RepairProposalTaxonomy.Status.BLOCKED.equals(selection.solverResult.getStatus())) {
             PlanSolverResultDTO.DiagnosticDTO diagnostic = selection.solverResult.getDiagnostics().isEmpty()
