@@ -3,6 +3,7 @@ package com.ytell.zhiyuan.service.biz;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.common.util.SubjectRequirementParser;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.planning.CandidateFitExplainReq;
 import com.ytell.zhiyuan.model.dto.planning.CandidateFitExplainRes;
@@ -54,7 +55,8 @@ public class CandidateFitExplainService {
     /** 候选行字段缺失，某一维度算不了（如学费为空）。 */
     public static final String LIMITATION_CANDIDATE_FIELD_MISSING_PREFIX = "candidate_field_missing:";
 
-    /** 选科要求原样无法解析（如"物理或化学"这种选一格式）：如实标注，不硬猜。 */
+    /** 选科要求原样无法解析（如"语种:英语"这类非科目取值）：如实标注，不硬猜。
+     *  "物理或化学"这类或表达式自 2026-10-14 起已能求值，不再走本分支。 */
     public static final String LIMITATION_SUBJECT_REQUIREMENT_UNPARSED_PREFIX = "subject_requirement_unparsed:";
 
     /** 带标签的范围（如"性质:985"）本切片不逐条求值：如实标注，不假装核过。 */
@@ -209,36 +211,28 @@ public class CandidateFitExplainService {
     private void explainSubjectRequirement(Context ctx) {
         CandidateItemDTO candidate = ctx.candidate;
         List<String> rawRequirements = defaultList(candidate.getMustSubjects());
-        List<String> parsed = new ArrayList<String>();
-        boolean hadRawRequirement = false;
+        List<String> parsedValues = new ArrayList<String>();
+        List<String> unparsed = new ArrayList<String>();
         for (String raw : rawRequirements) {
             String value = trimToNull(raw);
             if (value == null || value.contains("不限")) {
                 continue;
             }
-            hadRawRequirement = true;
-            if (value.contains("或")) {
-                // "物理或化学"是选一格式，本切片不强行求值：如实标注，不把"解析不了"说成"不满足"。
-                addLimitation(ctx, LIMITATION_SUBJECT_REQUIREMENT_UNPARSED_PREFIX + value);
-                continue;
-            }
-            List<String> one = parseSelectInfo(value);
-            if (one.isEmpty()) {
-                addLimitation(ctx, LIMITATION_SUBJECT_REQUIREMENT_UNPARSED_PREFIX + value);
-                continue;
-            }
-            for (String subject : one) {
-                if (!parsed.contains(subject)) {
-                    parsed.add(subject);
-                }
+            if (SubjectRequirementParser.parseOptions(value).isEmpty()) {
+                unparsed.add(value);
+            } else {
+                parsedValues.add(value);
             }
         }
-        if (!hadRawRequirement) {
+        if (parsedValues.isEmpty() && unparsed.isEmpty()) {
             addDimension(ctx, DIM_SUBJECT_REQUIREMENT, STATUS_NOT_APPLICABLE,
                     "该候选行没有选科要求（mustSubjects 为空或原样为「不限」），本维度无可评估内容");
             return;
         }
-        if (parsed.isEmpty()) {
+        if (parsedValues.isEmpty()) {
+            for (String value : unparsed) {
+                addLimitation(ctx, LIMITATION_SUBJECT_REQUIREMENT_UNPARSED_PREFIX + value);
+            }
             addDimension(ctx, DIM_SUBJECT_REQUIREMENT, STATUS_UNKNOWN,
                     "选科要求存在但原样无法解析（见 limitations），不硬猜是否满足");
             return;
@@ -248,86 +242,77 @@ public class CandidateFitExplainService {
         if (userSubjects.isEmpty()) {
             addLimitation(ctx, LIMITATION_PROFILE_FIELD_MISSING_PREFIX + "subjectList");
             addDimension(ctx, DIM_SUBJECT_REQUIREMENT, STATUS_UNKNOWN,
-                    "档案缺选科（subjectList），选科要求「" + String.join("、", parsed) + "」无法核对");
+                    "档案缺选科（subjectList），选科要求「" + String.join("、", parsedValues) + "」无法核对");
             return;
         }
 
-        if (userSubjects.containsAll(parsed)) {
-            addDimension(ctx, DIM_SUBJECT_REQUIREMENT, STATUS_MATCHED,
-                    "档案选科「" + String.join("、", userSubjects) + "」满足选科要求「"
-                            + String.join("、", parsed) + "」");
-            addMatched(ctx, DIM_SUBJECT_REQUIREMENT,
-                    "选科要求「" + String.join("、", parsed) + "」已满足：档案选科「"
-                            + String.join("、", userSubjects) + "」包含全部要求",
-                    SOURCE_SUBJECT);
-        } else {
+        // 逐条求值（2026-10-14 修复）：每条要求是「外层或、内层与」结构——
+        // "物理或化学"这类选一格式此前整体标注"无法解析"，现在如实求值；
+        // "物和化"等与表达式口径不变。
+        List<String> unmet = new ArrayList<String>();
+        List<String> missing = new ArrayList<String>();
+        for (String value : parsedValues) {
+            List<List<String>> options = SubjectRequirementParser.parseOptions(value);
+            if (isAnyOptionSatisfied(options, userSubjects)) {
+                continue;
+            }
+            unmet.add(value);
+            for (String subject : bestMissingSubjects(options, userSubjects)) {
+                if (!missing.contains(subject)) {
+                    missing.add(subject);
+                }
+            }
+        }
+        if (!unmet.isEmpty()) {
+            addDimension(ctx, DIM_SUBJECT_REQUIREMENT, STATUS_CONFLICT,
+                    "选科要求「" + String.join("、", unmet) + "」未满足：档案选科缺「"
+                            + String.join("、", missing) + "」");
+            for (String value : unparsed) {
+                addLimitation(ctx, LIMITATION_SUBJECT_REQUIREMENT_UNPARSED_PREFIX + value);
+            }
+            return;
+        }
+
+        addMatched(ctx, DIM_SUBJECT_REQUIREMENT,
+                "选科要求「" + String.join("、", parsedValues) + "」已满足：档案选科「"
+                        + String.join("、", userSubjects) + "」逐条核对通过",
+                SOURCE_SUBJECT);
+        for (String value : unparsed) {
+            addLimitation(ctx, LIMITATION_SUBJECT_REQUIREMENT_UNPARSED_PREFIX + value);
+        }
+        addDimension(ctx, DIM_SUBJECT_REQUIREMENT, STATUS_MATCHED,
+                "档案选科「" + String.join("、", userSubjects) + "」满足选科要求「"
+                        + String.join("、", parsedValues) + "」");
+    }
+
+    /** 任一组合的全部科目都在档案选科里 → 该条要求满足。 */
+    private static boolean isAnyOptionSatisfied(List<List<String>> options, List<String> userSubjects) {
+        for (List<String> option : options) {
+            if (userSubjects.containsAll(option)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 未满足时，取"缺得最少"的那组组合的缺项（说明缺哪一科最贴近事实）。 */
+    private static List<String> bestMissingSubjects(List<List<String>> options, List<String> userSubjects) {
+        List<String> best = null;
+        for (List<String> option : options) {
             List<String> missing = new ArrayList<String>();
-            for (String subject : parsed) {
+            for (String subject : option) {
                 if (!userSubjects.contains(subject)) {
                     missing.add(subject);
                 }
             }
-            addDimension(ctx, DIM_SUBJECT_REQUIREMENT, STATUS_CONFLICT,
-                    "选科要求「" + String.join("、", parsed) + "」未满足：档案选科缺「"
-                            + String.join("、", missing) + "」");
-        }
-    }
-
-    /**
-     * 选科要求解析：与 {@code VolunteerFilterChain.parseSelectInfo} **同一套口径**
-     * （"物和化"→[物理,化学]、单科缩写→全称、已是全称原样保留）。
-     */
-    static List<String> parseSelectInfo(String selectInfo) {
-        List<String> required = new ArrayList<String>();
-        String info = Strings.nullToEmpty(selectInfo).trim();
-        if (info.isEmpty()) {
-            return required;
-        }
-        if (info.contains("和")) {
-            for (String part : info.split("和")) {
-                addParsedSubject(required, part);
+            if (best == null || missing.size() < best.size()) {
+                best = missing;
+                if (best.isEmpty()) {
+                    break;
+                }
             }
-        } else {
-            addParsedSubject(required, info);
         }
-        return required;
-    }
-
-    private static void addParsedSubject(List<String> required, String raw) {
-        String fullName = convertSubjectAbbreviation(raw);
-        if (!Strings.isNullOrEmpty(fullName) && !required.contains(fullName)) {
-            required.add(fullName);
-        }
-    }
-
-    private static String convertSubjectAbbreviation(String raw) {
-        if (Strings.isNullOrEmpty(raw)) {
-            return null;
-        }
-        String abbr = raw.trim();
-        if ("物".equals(abbr)) {
-            return "物理";
-        }
-        if ("化".equals(abbr)) {
-            return "化学";
-        }
-        if ("生".equals(abbr)) {
-            return "生物";
-        }
-        if ("政".equals(abbr)) {
-            return "政治";
-        }
-        if ("史".equals(abbr)) {
-            return "历史";
-        }
-        if ("地".equals(abbr)) {
-            return "地理";
-        }
-        if (abbr.contains("物理") || abbr.contains("化学") || abbr.contains("生物")
-                || abbr.contains("政治") || abbr.contains("历史") || abbr.contains("地理")) {
-            return abbr;
-        }
-        return null;
+        return best == null ? new ArrayList<String>() : best;
     }
 
     /** 档案选科名：优先建会话时采集的 subjectList（name），退而取科目分数表的科名。 */

@@ -1,6 +1,7 @@
 package com.ytell.zhiyuan.service.biz;
 
 import com.google.common.collect.Lists;
+import com.ytell.zhiyuan.common.util.SubjectRequirementParser;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.inner.UserIntentQueryReq;
@@ -531,6 +532,10 @@ public class VolunteerFilterChain {
     /**
      * 选科过滤
      * 根据专业选科要求和用户选科列表进行匹配
+     *
+     * <p>2026-10-14 修复（选科适配 P0）：此前"或"表达式（"物理或化学"）被当单一科目名，
+     * 整条专业被误杀；也不认识"技/技术"（浙江）。现统一走 {@link SubjectRequirementParser}：
+     * 外层任一组合满足即保留；解析不出（含"不限"）视为没有可核对的约束，不过滤（fail-open）。</p>
      */
     private boolean isSubjectFiltered(UserIntentQueryReq filterReq, VolunteerMajor major) {
         String selectInfo = major.getSelectInfo();
@@ -546,78 +551,19 @@ public class VolunteerFilterChain {
             return false;
         }
 
-        // 解析专业选科要求
-        List<String> requiredSubjects = parseSelectInfo(selectInfo);
-        if (requiredSubjects.isEmpty()) {
+        // 解析专业选科要求（或/与表达式、技/技术、单科缩写）
+        List<List<String>> options = SubjectRequirementParser.parseOptions(selectInfo);
+        if (options.isEmpty()) {
             return false;
         }
 
-        // 检查用户选科是否满足专业要求
-        return !userSubjects.containsAll(requiredSubjects);
-    }
-
-    /**
-     * 解析专业选科要求
-     * 支持格式：物和化、物、化、历和政等
-     */
-    private List<String> parseSelectInfo(String selectInfo) {
-        List<String> requiredSubjects = new ArrayList<>();
-
-        if (selectInfo == null || selectInfo.trim().isEmpty()) {
-            return requiredSubjects;
-        }
-
-        String info = selectInfo.trim();
-
-        // 处理"和"连接的多个学科
-        if (info.contains("和")) {
-            String[] subjects = info.split("和");
-            for (String subject : subjects) {
-                String fullName = convertSubjectAbbreviation(subject.trim());
-                if (fullName != null && !fullName.isEmpty()) {
-                    requiredSubjects.add(fullName);
-                }
-            }
-        } else {
-            // 单个学科
-            String fullName = convertSubjectAbbreviation(info);
-            if (fullName != null && !fullName.isEmpty()) {
-                requiredSubjects.add(fullName);
+        // 任意一种组合的全部科目都在用户选科里即保留；一种都满足不了才过滤
+        for (List<String> requiredCombination : options) {
+            if (userSubjects.containsAll(requiredCombination)) {
+                return false;
             }
         }
-
-        return requiredSubjects;
-    }
-
-    /**
-     * 转换学科缩写为全称
-     */
-    private String convertSubjectAbbreviation(String abbr) {
-        if (abbr == null) {
-            return null;
-        }
-
-        switch (abbr.trim()) {
-            case "物":
-                return "物理";
-            case "化":
-                return "化学";
-            case "生":
-                return "生物";
-            case "政":
-                return "政治";
-            case "史":
-                return "历史";
-            case "地":
-                return "地理";
-            default:
-                // 如果已经是全称，直接返回
-                if (abbr.contains("物理") || abbr.contains("化学") || abbr.contains("生物") ||
-                        abbr.contains("政治") || abbr.contains("历史") || abbr.contains("地理")) {
-                    return abbr;
-                }
-                return null;
-        }
+        return true;
     }
 
     /**

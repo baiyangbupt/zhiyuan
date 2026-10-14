@@ -1,5 +1,6 @@
 package com.ytell.zhiyuan.manager;
 
+import com.ytell.zhiyuan.common.util.SubjectRequirementParser;
 import com.ytell.zhiyuan.model.dto.MajorProfileDto;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
@@ -128,8 +129,9 @@ public class MajorProfileManager {
         majorProfile.setUpgradOrientation(getCellValueAsString(row.getCell(colIndex++)));
         String selectInfo = getCellValueAsString(row.getCell(colIndex++));
         majorProfile.setSelectInfo(selectInfo);
-        majorProfile.setSelectLimit(convertSelectInfoToSelectLimit(selectInfo));
-        majorProfile.setSelectGroup(getCellValueAsString(row.getCell(colIndex++)));
+        String selectGroup = getCellValueAsString(row.getCell(colIndex++));
+        majorProfile.setSelectGroup(selectGroup);
+        majorProfile.setSelectLimit(convertSelectInfoToSelectLimit(selectInfo, selectGroup));
         majorProfile.setCreatedBy(getCellValueAsString(row.getCell(colIndex++)));
         majorProfile.setCreateTime(getCellValueAsDate(row.getCell(colIndex++)));
         majorProfile.setTenantCode(getCellValueAsString(row.getCell(colIndex++)));
@@ -333,114 +335,40 @@ public class MajorProfileManager {
     }
 
     /**
-     * 将selectInfo转换为selectLimit
-     * 处理选科限制信息，转换为二维列表格式
+     * 将 selectInfo / selectGroup 转换为 selectLimit（二维列表：外层"或"、内层"与"）。
      *
-     * @param selectInfo 原始选科限制信息
-     * @return 转换后的选科限制列表
+     * <p>2026-10-14 修复（选科适配 P0）：此前只认自然语言里少数形态，且"或"表达式
+     * （如"化或生"）解析成空 → {@code selectLimit} 恒空 → 选科校验恒"满足"（假阳性，全模式）。
+     * 现在统一走 {@link SubjectRequirementParser}：</p>
+     * <ol>
+     *   <li>selectInfo 本身就是两位组合码（如 {@code 010205,010305}）→ 按码解析；
+     *       数据里组合码在 selectGroup 列（如 010205→物理+历史+化学），selectInfo 兜底同路；</li>
+     *   <li>自然语言（物 / 物和化 / 化或生 / 物和(化或生) / 物理或化学）→ 按 和=与、或=或 解析；</li>
+     *   <li>selectInfo 非空且非"不限"、但自然语言解析不出时，退回 selectGroup 组合码。</li>
+     * </ol>
+     * <p>"不限"或空 → 空列表（无选科限制）。</p>
+     *
+     * @param selectInfo  原始选科限制信息（自然语言/组合码）
+     * @param selectGroup 组合码列（两位一组、逗号分隔的合法组合枚举）
+     * @return 转换后的选科限制列表；解析不出时为空列表（不硬猜）
      */
-    private List<List<String>> convertSelectInfoToSelectLimit(String selectInfo) {
-        List<List<String>> selectLimit = new ArrayList<>();
-
-        // 处理空值或空字符串
-        if (selectInfo == null || selectInfo.trim().isEmpty()) {
-            return selectLimit;
+    private List<List<String>> convertSelectInfoToSelectLimit(String selectInfo, String selectGroup) {
+        List<List<String>> byCodes = SubjectRequirementParser.parseCombinationCodes(selectInfo);
+        if (!byCodes.isEmpty()) {
+            return byCodes;
         }
-
-        String info = selectInfo.trim();
-
-        // 处理"不限"的情况
-        if ("不限".equals(info)) {
-            return selectLimit;
+        List<List<String>> byText = SubjectRequirementParser.parseOptions(selectInfo);
+        if (!byText.isEmpty()) {
+            return byText;
         }
-
-        // 处理单个学科的情况
-        if (isSingleSubject(info)) {
-            List<String> singleOption = Arrays.asList(convertSubjectAbbreviation(info));
-            selectLimit.add(singleOption);
-            return selectLimit;
-        }
-
-        // 处理"物和化"的情况
-        if (info.contains("和") && !info.contains("(") && !info.contains("）")) {
-            String[] subjects = info.split("和");
-            List<String> combination = new ArrayList<>();
-            for (String subject : subjects) {
-                combination.add(convertSubjectAbbreviation(subject.trim()));
+        String info = selectInfo == null ? "" : selectInfo.trim();
+        boolean explicitlyNoConstraint = info.isEmpty() || info.contains("不限");
+        if (!explicitlyNoConstraint) {
+            List<List<String>> fallback = SubjectRequirementParser.parseCombinationCodes(selectGroup);
+            if (!fallback.isEmpty()) {
+                return fallback;
             }
-            selectLimit.add(combination);
-            return selectLimit;
         }
-
-        // 处理"物和(化或生)"的情况
-        if (info.contains("和") && (info.contains("(") || info.contains("（"))) {
-            String[] parts = info.split("和");
-            if (parts.length == 2) {
-                String firstSubject = convertSubjectAbbreviation(parts[0].trim());
-                String secondPart = parts[1].trim();
-
-                // 提取括号中的内容
-                String bracketContent = extractBracketContent(secondPart);
-                if (bracketContent.contains("或")) {
-                    String[] orSubjects = bracketContent.split("或");
-                    for (String orSubject : orSubjects) {
-                        List<String> combination = Arrays.asList(firstSubject, convertSubjectAbbreviation(orSubject.trim()));
-                        selectLimit.add(combination);
-                    }
-                }
-            }
-            return selectLimit;
-        }
-
-        return selectLimit;
-    }
-
-    /**
-     * 判断是否为单个学科
-     */
-    private boolean isSingleSubject(String info) {
-        return "物".equals(info) || "化".equals(info) || "生".equals(info) ||
-                "政".equals(info) || "史".equals(info) || "地".equals(info);
-    }
-
-    /**
-     * 转换学科缩写为全称
-     */
-    private String convertSubjectAbbreviation(String abbr) {
-        switch (abbr) {
-            case "物":
-                return "物理";
-            case "化":
-                return "化学";
-            case "生":
-                return "生物";
-            case "政":
-                return "政治";
-            case "史":
-                return "历史";
-            case "地":
-                return "地理";
-            default:
-                return abbr;
-        }
-    }
-
-    /**
-     * 提取括号中的内容
-     */
-    private String extractBracketContent(String text) {
-        int start = text.indexOf('(');
-        if (start == -1) {
-            start = text.indexOf('（');
-        }
-        int end = text.indexOf(')');
-        if (end == -1) {
-            end = text.indexOf('）');
-        }
-
-        if (start != -1 && end != -1 && start < end) {
-            return text.substring(start + 1, end);
-        }
-        return text;
+        return new ArrayList<>();
     }
 }

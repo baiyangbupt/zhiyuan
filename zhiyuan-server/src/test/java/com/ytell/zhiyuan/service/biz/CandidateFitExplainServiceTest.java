@@ -298,7 +298,9 @@ public class CandidateFitExplainServiceTest {
         session = goingSession();
         recommendResponse = responseWithProfile();
         CandidateItemDTO item = candidate("v1");
-        item.setMustSubjects(Lists.newArrayList("物理或化学"));
+        // 2026-10-14：或表达式（"物理或化学"）已能求值，不再走"无法解析"；
+        // 真正解析不出的是非科目取值（如"语种:英语"）。
+        item.setMustSubjects(Lists.newArrayList("语种:英语"));
         poolState = poolOf(item);
         planningState = stateWithVersion();
         CandidateFitExplainService service = buildService();
@@ -309,7 +311,73 @@ public class CandidateFitExplainServiceTest {
                 dimension(res, CandidateFitExplainService.DIM_SUBJECT_REQUIREMENT);
         assertEquals(CandidateFitExplainService.STATUS_UNKNOWN, subject.getStatus());
         assertTrue(res.getLimitations().contains(
+                CandidateFitExplainService.LIMITATION_SUBJECT_REQUIREMENT_UNPARSED_PREFIX + "语种:英语"));
+    }
+
+    @Test
+    void orExpressionSubjectRequirementIsEvaluatedNotGuessed() {
+        session = goingSession();
+        recommendResponse = responseWithProfile();
+        CandidateItemDTO item = candidate("v1");
+        item.setMustSubjects(Lists.newArrayList("物理或化学"));
+        poolState = poolOf(item);
+        planningState = stateWithVersion();
+        // 档案只有物理："物理或化学"选一即可 → 满足（修复前整体标"无法解析"）。
+        recommendResponse.getUserScoreDetail().setSubjectList(Lists.newArrayList(
+                new CreateSessionReq.SubjectItem(1, "WL", "01", "物理")));
+        CandidateFitExplainService service = buildService();
+
+        CandidateFitExplainRes res = service.explain(1L, 900047L, request("v1"));
+
+        CandidateFitExplainRes.Dimension subject =
+                dimension(res, CandidateFitExplainService.DIM_SUBJECT_REQUIREMENT);
+        assertEquals(CandidateFitExplainService.STATUS_MATCHED, subject.getStatus());
+        assertTrue(matchedSources(res).contains(CandidateFitExplainService.SOURCE_SUBJECT));
+        assertFalse(res.getLimitations().contains(
                 CandidateFitExplainService.LIMITATION_SUBJECT_REQUIREMENT_UNPARSED_PREFIX + "物理或化学"));
+    }
+
+    @Test
+    void nestedAndOrRequirementExplainsWhichSubjectIsMissing() {
+        session = goingSession();
+        recommendResponse = responseWithProfile();
+        CandidateItemDTO item = candidate("v1");
+        item.setMustSubjects(Lists.newArrayList("物和(化或生)"));
+        poolState = poolOf(item);
+        planningState = stateWithVersion();
+        recommendResponse.getUserScoreDetail().setSubjectList(Lists.newArrayList(
+                new CreateSessionReq.SubjectItem(1, "WL", "01", "物理")));
+        CandidateFitExplainService service = buildService();
+
+        CandidateFitExplainRes res = service.explain(1L, 900047L, request("v1"));
+
+        CandidateFitExplainRes.Dimension subject =
+                dimension(res, CandidateFitExplainService.DIM_SUBJECT_REQUIREMENT);
+        assertEquals(CandidateFitExplainService.STATUS_CONFLICT, subject.getStatus());
+        assertTrue(subject.getDetail().contains("未满足"));
+        assertTrue(subject.getDetail().contains("化学") || subject.getDetail().contains("生物"),
+                "缺的科目要说清（取最贴近的一组组合）");
+        assertFalse(matchedSources(res).contains(CandidateFitExplainService.SOURCE_SUBJECT));
+    }
+
+    @Test
+    void mixedParsedAndUnparsedRequirementsAreBothHonestlyReported() {
+        session = goingSession();
+        recommendResponse = responseWithProfile();
+        CandidateItemDTO item = candidate("v1");
+        item.setMustSubjects(Lists.newArrayList("物和化", "语种:英语"));
+        poolState = poolOf(item);
+        planningState = stateWithVersion();
+        CandidateFitExplainService service = buildService();
+
+        CandidateFitExplainRes res = service.explain(1L, 900047L, request("v1"));
+
+        assertEquals(CandidateFitExplainService.STATUS_MATCHED,
+                dimension(res, CandidateFitExplainService.DIM_SUBJECT_REQUIREMENT).getStatus());
+        assertTrue(matchedSources(res).contains(CandidateFitExplainService.SOURCE_SUBJECT));
+        assertTrue(res.getLimitations().contains(
+                CandidateFitExplainService.LIMITATION_SUBJECT_REQUIREMENT_UNPARSED_PREFIX + "语种:英语"),
+                "解析不了的那条要如实标注，且不影响已求值那条的结论");
     }
 
     @Test
@@ -378,11 +446,20 @@ public class CandidateFitExplainServiceTest {
     }
 
     @Test
-    void subjectParsingMirrorsFilterChainAbbreviations() {
-        assertEquals(Lists.newArrayList("物理", "化学"),
-                CandidateFitExplainService.parseSelectInfo("物和化"));
-        assertEquals(Lists.newArrayList("物理"), CandidateFitExplainService.parseSelectInfo("物理"));
-        assertEquals(Lists.newArrayList("历史"), CandidateFitExplainService.parseSelectInfo("史"));
-        assertTrue(CandidateFitExplainService.parseSelectInfo("不限").isEmpty());
+    void unlimitedSubjectRequirementIsNotApplicable() {
+        session = goingSession();
+        recommendResponse = responseWithProfile();
+        CandidateItemDTO item = candidate("v1");
+        item.setMustSubjects(Lists.newArrayList("不限"));
+        poolState = poolOf(item);
+        planningState = stateWithVersion();
+        CandidateFitExplainService service = buildService();
+
+        CandidateFitExplainRes res = service.explain(1L, 900047L, request("v1"));
+
+        assertEquals(CandidateFitExplainService.STATUS_NOT_APPLICABLE,
+                dimension(res, CandidateFitExplainService.DIM_SUBJECT_REQUIREMENT).getStatus());
+        assertFalse(matchedSources(res).contains(CandidateFitExplainService.SOURCE_SUBJECT),
+                "无约束就没有可说的匹配点");
     }
 }
