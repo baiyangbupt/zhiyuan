@@ -124,6 +124,8 @@ pong 契约完好（ping 不刷新自己）；时间线合并不变量成立；t
 
 35. **build_snapshot 丢字段（既有生产 bug，待修）**（10-14 career 批上报）：`app/gateway/snapshot.py::build_snapshot` 从投影 DTO 组装快照时丢 `preferences`/`confirmedConstraints`——900047、10041981 真机 curl/rollout 双复现（上游会话数据里有、返回快照里没有）；career 批以 `_attach_career_directions` 专用挂接旁路（职业方向路径可用），**通用字段丢失待决策修复**——影响模型所见约束面（与 31a/32 同链，疑似与 §21 快照字段族同源）。列入大礼包后一批评估。
 
+36. **"补足数量+专业约束"组合超 solver 复杂度上限（M1）**（10-14 晚，10041982 实拍）："补齐到 12 个专业组"预览 blocked——`[solver_complexity_limit] canonical solver 输入超过 M1 受控复杂度上限`；卡面：方向=补足数量、规则=专业:电气工程及其自动化/自动化、"需要 12，当前 0，缺口 725，可用 1325"、建议=拆开分步。**卡机制本身工作正常**（fail-closed+人话+建议；跟话待核）。三个待查：①"12"来源（用户是否选了 18:47 的 A="共 12 条"；若用户选定则非自设，仅需对照 §34"推荐→调整"口径）；②该组合为何到达 solver（双闸门 `plan_change_composite_not_supported` 是否只拦规划目标组合、fill/repair 路径未拦？）；③M1 上限的定义/量级/是否过紧。**用户问"是否需要解决"→需要**（分层：对话引导 vs solver 输入降维 vs 上限评估）。侦查在飞。
+
 ### 环境守卫与回退
 - `oom_score_adj`：18290/18090 = -500；18291/18091 = -400（内存再紧时优先牺牲测试进程）。
 - 18290 回退：`bash /tmp/restart-18290-bc1e216.sh`（bc1e216 jar 在 /tmp/f09fix）；**回退"无兜底"行为**：`bash /tmp/restart-18290-6e7.sh`；10-09 起 18290 运行 jar 在 `/tmp/zyfallbackbuild`，后续重启用 `/tmp/restart-18290-fallback.sh`。
