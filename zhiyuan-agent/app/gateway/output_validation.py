@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from typing import Any
 
 from pydantic import ValidationError
@@ -61,6 +61,8 @@ def validate_turn_output(
     current_snapshot: ConversationTurnSnapshot | Mapping[str, Any],
     evidence_ledger: Mapping[str, Any],
     artifacts: Mapping[str, Any],
+    # 签名兼容保留：thread 已**不参与**产物/证据的准入判定（理由见下面 docstring
+    # 与 artifact 校验处；2026-10-15 §41）。调用方仍传（审计上下文），校验不用。
     thread_id: str | None = None,
     tenant_id: str | None = None,
     allow_proposal: bool = False,
@@ -72,6 +74,12 @@ def validate_turn_output(
     The model can only reference records already issued by the current
     Gateway turn.  Optional scope fields are checked when present in a ledger
     entry; absence is not treated as proof of a different scope.
+
+    `artifacts` 是**产物账本**，由 Gateway 用 `merge_artifacts(会话登记, 本回合产物)`
+    并出来（本模块与 `merge_evidence` 同一套快照法）：模型引用的产物要么是本回合
+    工具签发的，要么是**本会话此前签发并登记过**的——跨会话/跨租户的记录进不了
+    登记表，也照旧被 `artifact_scope_violation` 拒。`thread_id` 仍按调用方传入，
+    但已**不参与**产物或证据的准入判定（运行身份不承载安全语义，§41）。
 
     `artifact_version_ceiling`：产物的版本上限（闭区间 [回合起始版本, 上限]）。
     默认 `None` ＝ 上限就是回合起始版本（与旧的严格相等逐字一致）。只有 Gateway
@@ -163,7 +171,9 @@ def validate_turn_output(
         # 一个易失的标识符不能承载安全语义——一次 Gateway 重启就会让所有在世会话的
         # 证据全部作废，而隔离边界本来是 (tenantId, chatSessionId)。
         # 这不是放松：这里的检查在改成"证据由 Java 真实签发"之后会真的开始拒绝，
-        # 而它拒绝的理由（thread 变了）与安全无关。artifact 那侧的 thread 检查保留。
+        # 而它拒绝的理由（thread 变了）与安全无关。artifact 那侧**也删了**同一句
+        # （2026-10-15 §41）：同一个易失标识符在两侧承载同样的错误语义，留着它只是
+        # 把"重启换了 thread"升级成"同会话产物全作废"（B 类硬失败），与安全无关。
         # 同上：Java 给的是数字（`"tenantId": 1`），我们手上是字符串（"1"）。
         # 用字符串比，避免"值一样、类型不同"被判成越权。
         entry_tenant = _scoped_field(entry, "tenantId", "tenant_id")
@@ -209,9 +219,13 @@ def validate_turn_output(
         )
         if (strict_scope and entry_session in (None, "")) or not artifact_session_matches:
             raise OutputContractError("artifact_scope_violation", artifact_id)
-        entry_thread = _scoped_field(entry, "threadId", "thread_id")
-        if (strict_scope and thread_id and entry_thread in (None, "")) or (thread_id and entry_thread not in (None, "", thread_id)):
-            raise OutputContractError("artifact_scope_violation", artifact_id)
+        # 产物**不校验 thread**（2026-10-15 §41，与证据侧同一处置）：thread 是运行身份，
+        # Gateway/运行时重启就会变，而隔离边界是 (tenantId, chatSessionId)——产物的章在
+        # 签发点（`tools_readonly._attach_artifacts`）盖的是签发那一刻的 thread，"重启
+        # 换了 thread"不能把同会话的产物作废（那是 B 类硬失败，与安全无关）。
+        # 会话/租户/stateVersion 三项检查**一项没少**：跨会话照旧
+        # `artifact_scope_violation`（`test_artifact_without_a_session_stamp_is_still_refused`
+        # 与跨会话用例钉着）。
 
     return output
 
@@ -304,6 +318,71 @@ def merge_evidence(snapshot_records: list, turn_records: list) -> dict:
             raise ValueError("evidence_identity_conflict")
         # 同 ID、根身份不冲突 = 对快照记录的转述：快照留着，转述不覆盖、不报错。
         # （"为什么不再抛"的完整理由见上面 docstring。）
+    return merged
+
+
+def register_scoped_artifacts(
+    registry: MutableMapping[str, Any],
+    records: Mapping[str, Any],
+    *,
+    tenant_id: str | int | None,
+    session_id: str | int | None,
+) -> None:
+    """把带**完整会话章**的产物登记进会话级产物表（产物侧的快照法，2026-10-15 §41）。
+
+    为什么需要这张表：产物账本原来只从**本回合**事件建（`service._evidence_inputs`），
+    于是"停顿/跟话之后模型凭记忆引用上一回合签发的产物、本回合一次工具都不调"必挂——
+    账本里唯一那条是模型正文里的**无章转述**（只有 artifactId/type/stateVersion）
+    → `artifact_scope_violation`（`recoverable=False`、无跟话；会话 10041983 18:01
+    实拍），而产物本身完全合规。证据侧早就有同样的结构（快照 vs 转述，见
+    `merge_evidence`），产物侧缺的就是"签发过的东西留一份"。
+
+    **登记条件**（比校验严，不松）：
+    · 章必须完整——`tenantId`、`sessionId`、`stateVersion` 三个字段都在；
+      模型正文里那种无章转述**登记不进来**，它仍走当回合的严格校验；
+    · 章必须**就是本会话**（tenant + session 都比对上），别的会话/租户的章一概不登记
+      ——登记了等于把越权引用洗成"本会话已签发"，那正是这套章要防的事。
+    · thread **不要求**、也不比对：它是易失的运行身份（见 artifact 校验处的说明），
+      与"这份产物属于谁"无关。
+    """
+    for key, record in (records or {}).items():
+        if not isinstance(record, Mapping):
+            continue
+        entry_session = _scoped_field(record, "sessionId", "session_id")
+        if entry_session in (None, ""):
+            continue
+        if session_id in (None, "") or str(entry_session) != str(session_id):
+            continue
+        entry_tenant = _scoped_field(record, "tenantId", "tenant_id")
+        if entry_tenant in (None, ""):
+            continue
+        if tenant_id in (None, "") or str(entry_tenant) != str(tenant_id):
+            continue
+        state = _field(record, "stateVersion", "state_version")
+        if state in (None, ""):
+            continue
+        # 同 ID 覆盖为最新一份：产物 id 是"同会话、同工具、同入参、同工作区版本"的
+        # 确定性摘要（`tools_readonly._artifact_id`），同一个 id 的章只会在本会话内
+        # 出现，同值覆盖是无副作用的重写。
+        registry[str(key)] = dict(record)
+
+
+def merge_artifacts(
+    session_registry: Mapping[str, Any] | None, turn_records: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """会话登记产物 + 本回合产物 = 产物账本。**登记优先；本回合新签照收。**
+
+    与 `merge_evidence` 同一口径（信快照，不信转述）：跨回合引用时账本里留的是
+    **签发点盖过章的那份**（`register_scoped_artifacts` 在同一会话里留下），模型正文
+    的残缺转述不会覆盖它——否则"引用了上一回合真实签发的产物"会因为转述少了 scope
+    而被判越权。本回合工具**新签发**的产物（账本里原本没有的 id）照收，不能只认
+    登记表，那样本该回合新签的东西一引用就是 `artifact_not_found`。
+    """
+    merged: dict[str, Any] = {}
+    for key, record in (session_registry or {}).items():
+        merged[str(key)] = record
+    for key, record in (turn_records or {}).items():
+        merged.setdefault(str(key), record)
     return merged
 
 

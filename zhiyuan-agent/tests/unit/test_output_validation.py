@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from app.gateway.contracts import ConversationTurnSnapshot, EvidenceRef, TurnOutput
-from app.gateway.output_validation import OutputContractError, validate_turn_output
+from app.gateway.output_validation import (
+    OutputContractError,
+    merge_artifacts,
+    register_scoped_artifacts,
+    validate_turn_output,
+)
 
 
 def test_validate_output_ignores_json_schema_root_type_echo():
@@ -657,11 +662,13 @@ def test_evidence_signed_in_a_previous_thread_is_still_accepted() -> None:
     assert validated is not None
 
 
-def test_artifact_from_a_previous_thread_is_still_refused() -> None:
-    """P1c-1 验收 4 的另一半：**artifact 侧的 thread 检查留着**（与证据侧不对称是有意的）。
+def test_artifact_from_a_previous_thread_is_no_longer_refused() -> None:
+    """§41（2026-10-15）与证据侧对齐：**artifact 侧的 thread 检查删了**。
 
-    证据不绑 thread（易失的运行身份不能承载安全语义）、产物**绑**（它绑定产生它的那条链）。
-    这条防的是后来的人"顺手把两侧一起删了"✗。
+    理由与证据侧逐字同源：thread 是运行身份，Gateway/运行时重启就变；易失标识符
+    不能承载安全语义——留着它，一次重启就把同会话在世产物全部作废（B 类硬失败），
+    而隔离边界本来是 (tenantId, chatSessionId)。会话/租户/stateVersion 三项**一项
+    没少**（跨会话的对照见 `test_artifact_from_another_session_is_still_refused`）。
     """
     output = TurnOutput.model_validate(
         {
@@ -674,19 +681,80 @@ def test_artifact_from_a_previous_thread_is_still_refused() -> None:
         }
     )
 
+    validated = validate_turn_output(
+        turn_output=output,
+        current_snapshot=ConversationTurnSnapshot(
+            snapshot_version=42, session_id="900017", planning_stage="candidate_exploration"
+        ),
+        evidence_ledger={},
+        artifacts={
+            "artifact-1": {
+                "artifactId": "artifact-1",
+                "stateVersion": 42,
+                "sessionId": "900017",
+                "threadId": "thr-old",
+            }
+        },
+        thread_id="thr-current",
+        tenant_id="1",
+        strict_scope=True,
+    )
+
+    assert validated.artifact_refs[0].artifact_id == "artifact-1"
+
+
+def test_artifact_without_a_thread_stamp_is_not_refused() -> None:
+    """④ thread 空（旧记录/未盖线程章）也不再拒：它本就不参与准入判定。"""
+    validated = validate_turn_output(
+        turn_output={
+            "responseType": "recommendation",
+            "message": "候选",
+            "artifactRefs": [
+                {"artifactId": "artifact-1", "artifactType": "candidate", "stateVersion": 42}
+            ],
+            "evidenceRefs": [],
+        },
+        current_snapshot=_snapshot(42),
+        evidence_ledger={},
+        artifacts={
+            "artifact-1": {
+                "artifactId": "artifact-1",
+                "stateVersion": 42,
+                "sessionId": "session-1",
+            }
+        },
+        thread_id="thr-current",
+        tenant_id="1",
+        strict_scope=True,
+    )
+
+    assert validated.artifact_refs[0].artifact_id == "artifact-1"
+
+
+def test_artifact_from_another_session_is_still_refused() -> None:
+    """② 跨会话照旧 fail-closed：thread 放宽**没有**顺手把会话检查也放宽。
+
+    这条在会话级登记表引入之后更要点名：登记表只收本会话的章，别的会话的章
+    进不去；当回合事件里带着别的会话的章时，校验一样当场拒。
+    """
     with pytest.raises(OutputContractError, match="artifact_scope_violation"):
         validate_turn_output(
-            turn_output=output,
-            current_snapshot=ConversationTurnSnapshot(
-                snapshot_version=42, session_id="900017", planning_stage="candidate_exploration"
-            ),
+            turn_output={
+                "responseType": "recommendation",
+                "message": "候选",
+                "artifactRefs": [
+                    {"artifactId": "artifact-1", "artifactType": "candidate", "stateVersion": 42}
+                ],
+                "evidenceRefs": [],
+            },
+            current_snapshot=_snapshot(42),
             evidence_ledger={},
             artifacts={
                 "artifact-1": {
                     "artifactId": "artifact-1",
                     "stateVersion": 42,
-                    "sessionId": "900017",
-                    "threadId": "thr-old",
+                    "sessionId": "session-other",
+                    "threadId": "thr-current",
                 }
             },
             thread_id="thr-current",
@@ -807,3 +875,91 @@ def test_evidence_signed_before_a_workspace_write_is_still_accepted() -> None:
     )
 
     assert validated is not None
+
+
+def test_register_scoped_artifacts_keeps_only_this_sessions_stamps() -> None:
+    """登记表只收**本会话完整章**的产物（会话级登记的第 1 步，§41）。
+
+    · 带完整章（tenant + session + stateVersion）的本会话产物 → 入表；
+    · 无章转述（模型正文里那种只有 id/type/version 的）→ 不收；
+    · 别的会话的章 → 不收（收了就是把越权引用洗白）；
+    · 别的租户、以及缺 stateVersion 的 → 不收。
+    """
+    registry: dict = {}
+    register_scoped_artifacts(
+        registry,
+        {
+            "art-ok": {
+                "artifactId": "art-ok",
+                "stateVersion": 42,
+                "tenantId": "1",
+                "sessionId": "session-1",
+            },
+            "art-nostamp": {"artifactId": "art-nostamp", "stateVersion": 42},
+            "art-other-session": {
+                "artifactId": "art-other-session",
+                "stateVersion": 42,
+                "tenantId": "1",
+                "sessionId": "session-other",
+            },
+            "art-other-tenant": {
+                "artifactId": "art-other-tenant",
+                "stateVersion": 42,
+                "tenantId": "2",
+                "sessionId": "session-1",
+            },
+            "art-no-version": {
+                "artifactId": "art-no-version",
+                "tenantId": "1",
+                "sessionId": "session-1",
+            },
+        },
+        tenant_id="1",
+        session_id="session-1",
+    )
+
+    assert sorted(registry) == ["art-ok"]
+
+
+def test_merge_artifacts_prefers_the_registered_stamp_over_a_restatement() -> None:
+    """登记优先、转述不覆盖：模型正文的残缺转述**不许**把签发章的记录挤掉。
+
+    形状就是 10041983 那一轮：账本里同时有"登记的本会话签发章"与"模型转述
+    （无 scope）"，合并后留的必须是前者——校验随后拿它去对，会话检查才有东西可对。
+    """
+    registered = {
+        "mcp_art_preview_candidates_abc": {
+            "artifactId": "mcp_art_preview_candidates_abc",
+            "artifactType": "candidate",
+            "stateVersion": 42,
+            "tenantId": "1",
+            "sessionId": "10041983",
+            "threadId": "01a13df2",
+        }
+    }
+    restatement = {
+        "mcp_art_preview_candidates_abc": {
+            "artifactId": "mcp_art_preview_candidates_abc",
+            "artifactType": "candidate",
+            "stateVersion": 42,
+        }
+    }
+
+    merged = merge_artifacts(registered, restatement)
+
+    assert merged["mcp_art_preview_candidates_abc"] is registered["mcp_art_preview_candidates_abc"]
+
+
+def test_merge_artifacts_collects_newly_signed_artifacts_from_the_turn() -> None:
+    """本回合新签照收（登记表非空时也一样）：只认登记会让新产物一引用就 not_found。"""
+    registered = {"art-old": {"artifactId": "art-old", "stateVersion": 42, "sessionId": "s"}}
+    turn = {
+        "art-old": {"artifactId": "art-old", "stateVersion": 42},
+        "art-new": {"artifactId": "art-new", "stateVersion": 42, "sessionId": "s"},
+    }
+
+    merged = merge_artifacts(registered, turn)
+
+    assert sorted(merged) == ["art-new", "art-old"]
+    assert merged["art-old"] is registered["art-old"], "登记的旧产物不被本回合转述覆盖"
+    assert merged["art-new"] is turn["art-new"], "本回合新签的照收"

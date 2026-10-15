@@ -740,3 +740,158 @@ async def test_recheck_without_a_collect_harness_returns_none_instead_of_the_ack
 
     assert result is None, "启动确认不许当回合结果"
     assert codex.calls == 0, "连 start_turn 都不该被调——它等不到终态"
+
+
+async def _turn_with(gateway: GatewayService, turn_id: str, content: str = "查一下某校的分数") -> dict:
+    """与 `_turn` 同形，但回合号不同——第二次 `handle_turn` 才不会被幂等缓存拦下。"""
+    return await gateway.handle_turn(
+        tenant_id="tenant-1",
+        session_id="session-1",
+        user_id="user-1",
+        turn_id=turn_id,
+        content=content,
+    )
+
+
+def _restated_citation_payload(artifact_id: str, *, response_type: str = "recommendation") -> dict:
+    """"模型凭记忆引用产物"那一轮的载荷：**零工具调用**，引用只在正文里。
+
+    正文（AgentMessage）是原始 TurnOutput JSON——`_collect_records` 会把它挖出来，
+    当成"本回合产物记录"（只剩 artifactId/artifactType/stateVersion，没有章）。
+    10041983 18:01 那一轮就是这个形状：账本里唯一那条就是这个无章转述。
+    """
+    output = {
+        "responseType": response_type,
+        "message": "按刚才那份名单继续。",
+        "artifactRefs": [
+            {"artifactId": artifact_id, "artifactType": "candidate", "stateVersion": 42}
+        ],
+        "evidenceRefs": [],
+    }
+    return {
+        "output": output,
+        "events": [
+            {
+                "type": "item_completed",
+                "item": {
+                    "type": "AgentMessage",
+                    "id": "msg-cited",
+                    "text": json.dumps(output, ensure_ascii=False),
+                },
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_cross_turn_artifact_reference_survives_a_tool_free_turn() -> None:
+    """① 2026-10-15 §41 事故回归（会话 10041983，18:01）：跨回合引用已登记产物 → 通过。
+
+    事故形状：用户回"A"（18:00:47），模型**零工具调用**、直接引用 13:34 签发的预览
+    产物。产物账本原来只收本回合事件（`service._evidence_inputs`），于是账本里唯一
+    那条是模型正文的**无章转述** → `strict_scope` 会话检查硬失败
+    （`artifact_scope_violation`，`recoverable=False`、无跟话）。
+
+    修复：签发那一回合把带完整章的产物登记进会话级登记表；之后凭记忆引用它照样过。
+    """
+    artifact_id = "mcp_art_preview_candidates_9919d3abc001"
+    first = _candidate_payload(
+        [(artifact_id, _artifact_record(artifact_id, 42))],
+        [{"artifactId": artifact_id, "artifactType": "candidate", "stateVersion": 42}],
+    )
+    codex = CodexHarness([first, _restated_citation_payload(artifact_id)])
+    gateway = _gateway(codex, None)
+
+    opened = await _turn(gateway)
+    assert opened.get("error") is None, opened.get("error")
+
+    continued = await _turn_with(gateway, "ui-2", content="A")
+
+    assert continued.get("error") is None, continued.get("error")
+    assert continued["output"]["artifactRefs"][0]["artifactId"] == artifact_id
+    assert len(codex.turns) == 2, "两个回合各跑一次，第二回合不该出现修复轮"
+
+
+@pytest.mark.asyncio
+async def test_cross_session_artifact_is_still_refused_after_the_registry() -> None:
+    """② 跨会话引用 → **仍拒**（登记表没有把越权洗白；fail-closed 语义没动）。
+
+    同一回合事件里带着一条"别的会话签发"的产物章：登记表不收它（章不是本会话的），
+    校验当场 `artifact_scope_violation`；随后的修复回合拿到同样的坏引用，修不好
+    **按原错误码**硬失败（不换码、不放行）。
+    """
+    foreign_id = "mcp_art_preview_candidates_other_session"
+    foreign_record = {**_artifact_record(foreign_id, 42), "sessionId": "session-other"}
+    payload = _candidate_payload(
+        [(foreign_id, foreign_record)],
+        [{"artifactId": foreign_id, "artifactType": "candidate", "stateVersion": 42}],
+    )
+    codex = CodexHarness([payload])
+    gateway = _gateway(codex, None)
+
+    result = await _turn(gateway)
+
+    assert str(result.get("error", "")).startswith("artifact_scope_violation:"), result.get("error")
+    assert result.get("output") is None
+    assert len(codex.turns) == 2, "先给一次修复回合，修不好维持原码硬失败"
+
+
+@pytest.mark.asyncio
+async def test_newly_signed_artifact_still_lands_beside_a_registered_one() -> None:
+    """③ 同回合新签 → 照旧收（登记表里已有别的东西时也不例外）。
+
+    第 1 回合登记 A；第 2 回合工具签发了 B，模型同时引用 A 与 B：
+    两个都必须过——只认登记表会让 B 一引用就 `artifact_not_found`。
+    """
+    registered_id = "mcp_art_preview_candidates_registered"
+    fresh_id = "mcp_art_preview_candidates_fresh"
+    first = _candidate_payload(
+        [(registered_id, _artifact_record(registered_id, 42))],
+        [{"artifactId": registered_id, "artifactType": "candidate", "stateVersion": 42}],
+    )
+    second = _candidate_payload(
+        [(fresh_id, _artifact_record(fresh_id, 42))],
+        [
+            {"artifactId": registered_id, "artifactType": "candidate", "stateVersion": 42},
+            {"artifactId": fresh_id, "artifactType": "candidate", "stateVersion": 42},
+        ],
+    )
+    codex = CodexHarness([first, second])
+    gateway = _gateway(codex, None)
+
+    opened = await _turn(gateway)
+    assert opened.get("error") is None, opened.get("error")
+
+    result = await _turn_with(gateway, "ui-2", content="再来一份")
+
+    assert result.get("error") is None, result.get("error")
+    cited = [ref["artifactId"] for ref in result["output"]["artifactRefs"]]
+    assert cited == [registered_id, fresh_id]
+    assert len(codex.turns) == 2, "不该出现修复轮"
+
+
+@pytest.mark.asyncio
+async def test_artifact_scope_violation_gets_one_repair_turn_with_a_reissued_artifact() -> None:
+    """③ 可修复化：**不允许**编 id，但**允许**重新调只读工具拿一份新的。
+
+    第 1 回合模型引用了本会话从未签发过的 id（无章转述在账本里）→
+    `artifact_scope_violation` → 一次修复回合：提示明确允许调用只读工具（"允许调用
+    只读工具重新获取产物引用"），工具签发新产物后账本**重建**（含修复回合事件），
+    新引用原样照抄 → 通过。不重建的话，重签的产物在旧账本里查不到，修了也照挂。
+    """
+    never_signed = "mcp_art_preview_candidates_never_signed"
+    reissued = "mcp_art_preview_candidates_reissued"
+    repair_payload = _candidate_payload(
+        [(reissued, _artifact_record(reissued, 42))],
+        [{"artifactId": reissued, "artifactType": "candidate", "stateVersion": 42}],
+    )
+    codex = CodexHarness([_restated_citation_payload(never_signed), repair_payload])
+    gateway = _gateway(codex, None)
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result.get("error")
+    assert result["output"]["artifactRefs"][0]["artifactId"] == reissued
+    assert len(codex.turns) == 2, "恰好一次修复回合"
+    repair_prompt = json.dumps(codex.turns[1], ensure_ascii=False)
+    assert "允许调用只读工具重新获取产物引用" in repair_prompt

@@ -23,7 +23,9 @@ from app.gateway.contracts import (
 from app.gateway.event_adapter import adapt_codex_item, adapt_notification
 from app.gateway.output_validation import (
     OutputContractError,
+    merge_artifacts,
     merge_evidence,
+    register_scoped_artifacts,
     validate_turn_output,
 )
 from app.gateway.evidence_verification import Decision, classify
@@ -787,17 +789,39 @@ _PRIORITY_RULE_COUNT_REPAIR_HINT = (
     "干脆不带 priorityRules。goalType 等其余字段保持不变，不要调用工具、不要编造事实。"
 )
 
+# 产物引用被拒的修复提示（2026-10-15 §41）。被拒的形态有二：跨会话/跨租户的章
+# （**不修**——那是越权，改不掉也不许改）、以及"引用不在账本里/版本对不上"（可以
+# 修：照抄本会话真实签发的 id，或**重新调只读工具**拿一份新的）。允许重调工具的
+# 那一支对应 `_LEDGER_REBUILD_REPAIR_CODES` 的账本重建——不重建的话，重签的产物
+# 在旧账本里查不到，修复回合修了也照挂。
+_ARTIFACT_REF_REPAIR_HINT = (
+    "你输出里的产物引用（artifactRefs）没有对上产物账本。硬规则：引用的 artifactId 必须"
+    "来自**本会话真实签发**的产物（工具结果里 `artifacts` 那条记录，带 tenantId/sessionId/"
+    "stateVersion 的章）——不得自己编造 id、不得改写 id 形状、不得引用别的会话的产物，"
+    "也不得用它并未在工作区版本内签发过的版本号。请二选一：①本会话真实签发过、且版本与"
+    "当前工作区一致的那份，就**原样照抄**它的 artifactId/artifactType/stateVersion；"
+    "②手头没有有效引用（例如工作区版本已经推进、旧产物过期）时，**允许调用只读工具重新"
+    "获取**，把工具结果里新签发的产物 id 原样填进 artifactRefs（推荐类输出必须带引用，"
+    "不能留空）。仍不确定时，如实向用户说明当前没有可引用的产物，不要编造。"
+)
+
 # 先给一次修复回合、修不好再维持硬失败的校验码 → 对应的修复提示（一次、不循环）。
-# 两类："模型对提案状态的声明与网关状态不符"（引用对不上/版本过旧）；"招生事实/
-# 证据的声明与账本不符"（证据缺失/模式写错）。其余校验失败（产物/一致性/范围…）
-# 保持原样：直接硬失败，不修（它们要么不可修复，要么不属于本回路的处置范围）。
+# 三类："模型对提案状态的声明与网关状态不符"（引用对不上/版本过旧）；"招生事实/
+# 证据的声明与账本不符"（证据缺失/模式写错）；"产物引用与产物账本不符"（不在账本/
+# 章对不上/版本过期）。其余校验失败（一致性/范围…）保持原样：直接硬失败，不修
+# （它们要么不可修复，要么不属于本回路的处置范围）。
 _REPAIR_HINT_BY_CODE = {
     "proposal_reference_mismatch": _PROPOSAL_REFERENCE_REPAIR_HINT,
     "proposal_version_mismatch": _PROPOSAL_REFERENCE_REPAIR_HINT,
     "admission_evidence_missing": _ADMISSION_EVIDENCE_REPAIR_HINT,
     "admission_mode_mismatch": _ADMISSION_EVIDENCE_REPAIR_HINT,
+    "artifact_scope_violation": _ARTIFACT_REF_REPAIR_HINT,
 }
 _REPAIRABLE_CONTRACT_CODES = frozenset(_REPAIR_HINT_BY_CODE)
+# 修复回合**允许重调工具**、修完必须重建账本的码：只有产物引用这一族（重签发的产物
+# 只会进"按最新载荷重建"的账本；证据侧的提示写死了"不要编造/重查走核验回路"，
+# 维持原样不重建，见 `_repair_priority_rule_count` 的同款说明）。
+_LEDGER_REBUILD_REPAIR_CODES = frozenset({"artifact_scope_violation"})
 
 
 def _agent_message_text(item: Any) -> str | None:
@@ -1155,6 +1179,11 @@ class GatewayService:
         self._threads: dict[SessionKey, str] = {}
         self._snapshots: dict[SessionKey, ConversationTurnSnapshot] = {}
         self._working_sets: dict[SessionKey, ConversationWorkingSet] = {}
+        # 会话级产物登记表（2026-10-15 §41）：签发过章的产物留一份，供**跨回合**引用
+        # 时校验（模型凭记忆引用旧产物、本回合一次工具都不调的情形）。只在进程内
+        # ——MCP 签发点是 codex 的子进程（`composition.build_codex_command`），它自己
+        # 的内存网关看不见；重启即失效的残留与后续办法见 `_evidence_inputs` 的说明。
+        self._registered_artifacts: dict[SessionKey, dict[str, dict[str, Any]]] = {}
         self._turn_cache: dict[tuple[SessionKey, str], dict[str, Any]] = {}
         self._turn_digests: dict[tuple[SessionKey, str], str] = {}
         self._session_locks: dict[SessionKey, asyncio.Lock] = {}
@@ -2476,7 +2505,7 @@ class GatewayService:
                 artifacts: dict[str, Any],
                 turn_payload: Any,
                 artifact_ceiling: int | None = None,
-            ) -> tuple[TurnOutput, bool]:
+            ) -> tuple[TurnOutput, bool, list[dict[str, Any]], dict[str, Any]]:
                 """校验本回合输出；可修复的契约违反先给模型一次纠错回合再定生死。
 
                 2026-10-09 真事故（会话 10041980）：模型对一张早已失效的提案卡反复发
@@ -2489,6 +2518,11 @@ class GatewayService:
                 硬失败，修复提示见 `_ADMISSION_EVIDENCE_REPAIR_HINT`（拆单值 / 更正 /
                 删掉）。修复回合再被拒（或压根拿不到结构化输出）时**维持现状硬
                 失败**，错误码不变（前端按码查兜底文案 ✓），也不许再修第二次。
+                2026-10-15 增补（§41）：产物引用被拒（`artifact_scope_violation`）同样
+                先给一次纠错机会，且**允许修复回合调用只读工具重新签发**——所以修完
+                要按**含修复回合事件**的载荷重建产物/证据账本（`_LEDGER_REBUILD_REPAIR_CODES`；
+                不重建的话，重新签发的产物在旧账本里查不到，修了也照挂）。返回值把
+                （可能重建过的）账本带回给调用方，重查与后续守卫用的是同一份。
                 """
                 def _check(value: TurnOutput | Mapping[str, Any]) -> TurnOutput:
                     return validate_turn_output(
@@ -2504,7 +2538,7 @@ class GatewayService:
                     )
 
                 try:
-                    return _check(output_value), False
+                    return _check(output_value), False, evidence_ledger, artifacts
                 except OutputContractError as exc:
                     # 拒收时把**账本里有什么**一起打出来：只报一个
                     # `evidence_not_found: ev_xxx` 的话，"模型引用了不存在的证据"
@@ -2528,6 +2562,9 @@ class GatewayService:
                         thread_id,
                         f"{exc}\n{_REPAIR_HINT_BY_CODE[exc.code]}",
                         raw_output=_last_agent_text(turn_payload),
+                        # 产物引用这一族允许修复回合**重新调只读工具**拿新签发的引用
+                        # （旧引用可能因版本推进而过期）——所以下面要重建账本。
+                        allow_tool_calls=exc.code in _LEDGER_REBUILD_REPAIR_CODES,
                     )
                     if fresh is None:
                         raise
@@ -2541,8 +2578,28 @@ class GatewayService:
                             ],
                         }
                     )
+                    if exc.code in _LEDGER_REBUILD_REPAIR_CODES:
+                        # 重建（与 `_recheck_turn` 同一条理由：账本按**最新载荷**建，
+                        # 否则修复回合新签发的产物一引用就是 `artifact_not_found`）。
+                        # 重建失败维持原账本：`_evidence_inputs` 只在证据真冲突时抛，
+                        # 那种情况本来就该硬失败（错误码仍是原码）。
+                        evidence_ledger, artifacts = self._evidence_inputs(
+                            turn_payload,
+                            snapshot,
+                            tenant_id=tenant_id,
+                            session_id=session_id,
+                        )
+                        # 上限同样重算：修复回合可能按推进后的版本签发（缓存保证
+                        # 权威读数不重复取，见 `_artifact_version_ceiling`）。
+                        artifact_ceiling = await self._artifact_version_ceiling(
+                            artifacts,
+                            snapshot=snapshot,
+                            tenant_id=tenant_id,
+                            session_id=session_id,
+                            cache=artifact_ceiling_cache,
+                        )
                     try:
-                        return _check(fresh["output"]), True
+                        return _check(fresh["output"]), True, evidence_ledger, artifacts
                     except OutputContractError as second:
                         # 修复无效：按**原错误码**硬失败（与修复前逐字一致；前端兜底
                         # 文案按码查表，码不许换）。
@@ -2550,7 +2607,9 @@ class GatewayService:
                         raise exc
 
             output, output_repaired = await _extract_output(turn)
-            evidence_ledger, artifacts = self._evidence_inputs(turn, snapshot)
+            evidence_ledger, artifacts = self._evidence_inputs(
+                turn, snapshot, tenant_id=tenant_id, session_id=session_id
+            )
             # 产物版本上限（按回合缓存，见 `_artifact_version_ceiling`）：没有"本回合
             # 重基过的产物"时是 None，校验逐字维持旧行为（只认回合起始版本）。
             artifact_ceiling_cache: dict[str, Any] = {}
@@ -2561,7 +2620,7 @@ class GatewayService:
                 session_id=session_id,
                 cache=artifact_ceiling_cache,
             )
-            output, round_repaired = await _validate_round(
+            output, round_repaired, evidence_ledger, artifacts = await _validate_round(
                 output, evidence_ledger, artifacts, turn, artifact_ceiling
             )
             output_repaired = output_repaired or round_repaired
@@ -2592,7 +2651,9 @@ class GatewayService:
                 output_repaired = output_repaired or recheck_repaired
                 # 账本要**重建**：模型第二轮引用的是新证据，拿首轮那份去校验
                 # 会把新证据判成 `evidence_not_found`。
-                evidence_ledger, artifacts = self._evidence_inputs(turn, snapshot)
+                evidence_ledger, artifacts = self._evidence_inputs(
+                    turn, snapshot, tenant_id=tenant_id, session_id=session_id
+                )
                 # 上限同样重算（重查轮可能按更高的版本读到新产物）；已缓存的
                 # 权威读数不会重复取（见 `_artifact_version_ceiling`）。
                 artifact_ceiling = await self._artifact_version_ceiling(
@@ -2602,7 +2663,7 @@ class GatewayService:
                     session_id=session_id,
                     cache=artifact_ceiling_cache,
                 )
-                output, round_repaired = await _validate_round(
+                output, round_repaired, evidence_ledger, artifacts = await _validate_round(
                     output, evidence_ledger, artifacts, turn, artifact_ceiling
                 )
                 output_repaired = output_repaired or round_repaired
@@ -2895,7 +2956,12 @@ class GatewayService:
             }
 
     def _evidence_inputs(
-        self, turn: Any, snapshot: ConversationTurnSnapshot
+        self,
+        turn: Any,
+        snapshot: ConversationTurnSnapshot,
+        *,
+        tenant_id: str | int | None = None,
+        session_id: str | int | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """账本与产物表：**快照证据 + 本回合证据**，缺一不可。
 
@@ -2903,6 +2969,19 @@ class GatewayService:
         模型一引用就 `evidence_not_found`——看得见、够不着（断链 4）。
         重查（P1c-2）之后要**重建**而不是复用首轮那份：模型第二轮引用的是
         新证据，拿首轮的账本去校验新输出，会把新证据判成 `evidence_not_found`。
+
+        产物侧同理（2026-10-15 §41 事故，会话 10041983）：账本原来**只有**本回合
+        产物，于是"停顿/跟话之后模型引用上一回合签发的产物、本回合零工具调用"必挂
+        ——账本里唯一那条是模型正文的无章转述 → `artifact_scope_violation`。现在
+        产物账本 = **本会话登记过的产物 + 本回合产物**（`merge_artifacts`，登记优先），
+        登记由 `register_scoped_artifacts` 在**每一次建账本时**完成：带完整会话章
+        （tenant + session + stateVersion）的产物入表，别的会话/租户的章一概不收。
+
+        持久性说明：登记表在**进程内**（与 `_threads`/`_snapshots` 同级）。签发点在
+        MCP（codex 的子进程），网关进程看不到它的内存；Java 侧虽有产物库
+        （`ConversationArtifactService`），但 `mcp_art_*` 没有写入口。所以跨重启
+        仍会丢（B 类残留）：重启后第一次引用旧产物照旧 fail-closed——不做持久化
+        只是不做，**不会**把没核过的东西放进来。
         """
         snapshot_evidence = [
             item.model_dump(by_alias=True) if hasattr(item, "model_dump") else item
@@ -2935,6 +3014,15 @@ class GatewayService:
             "artifactId",
             "artifact_id",
         )
+        if tenant_id is not None:
+            scope_session = session_id if session_id is not None else snapshot.session_id
+            registry = self._registered_artifacts.setdefault(
+                _session_key(tenant_id, scope_session), {}
+            )
+            register_scoped_artifacts(
+                registry, artifacts, tenant_id=tenant_id, session_id=scope_session
+            )
+            artifacts = merge_artifacts(registry, artifacts)
         return merge_evidence(snapshot_evidence, turn_evidence), artifacts
 
     async def _artifact_version_ceiling(
@@ -3094,6 +3182,7 @@ class GatewayService:
         issue: str,
         *,
         raw_output: str | None = None,
+        allow_tool_calls: bool = False,
     ) -> dict[str, Any] | None:
         """让模型修一次不合格的最终输出；拿不到合法结构化输出返回 None。
 
@@ -3105,12 +3194,24 @@ class GatewayService:
         "当前对话引擎暂时不可用"。把坏文本摆回去 + 写死引号规则，修复回合才有
         可执行的修改目标。没拿到文本（旧 harness / 非 collect 路径）时，提示词
         退化成原来的形状，行为不变。
+
+        `allow_tool_calls=True`（2026-10-15 §41，仅产物引用一族）：把"不要调用
+        新工具"换成"允许调用只读工具重新取引用"——旧产物可能因版本推进而没得引，
+        而推荐类输出又必须带引用，不给重取的路，模型只能编。调用方负责在这种修复
+        之后**重建账本**（`_LEDGER_REBUILD_REPAIR_CODES`）。
         """
         if not hasattr(self.codex, "start_turn_and_collect"):
             return None
+        tool_rule = (
+            "允许调用只读工具重新获取产物引用（不得编造 id）；"
+            if allow_tool_calls
+            else "不要调用新工具；"
+        )
         instruction = (
             "上一回合已经完成用户问题和已有工具调用，但最终结构化输出未通过契约校验。"
-            "不要重新解释用户意图、不要调用新工具、不要编造事实；仅依据本线程已有上下文和工具结果，"
+            "不要重新解释用户意图、"
+            + tool_rule
+            + "不要编造事实；仅依据本线程已有上下文和工具结果，"
             "修正并返回符合输出 Schema 的最终结果。"
             "硬性要求：只输出一段合法 JSON（不要 markdown 围栏、不要任何解释文字）；"
             "字符串值内不得出现英文双引号（\"），需要引用时一律用「」或『』；"
