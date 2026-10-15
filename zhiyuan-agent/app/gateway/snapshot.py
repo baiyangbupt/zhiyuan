@@ -19,6 +19,26 @@ def _first(mapping: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
     return default
 
 
+def _prefer_authoritative(derived: dict[str, Any], authoritative: Any) -> dict[str, Any]:
+    """上游 turn-snapshot 已算的权威字段优先；派生值只补上游没有的键（缺才回落 ✓）。
+
+    为什么逐键合并不整块取（✗✓）：`_attach_career_directions` 旁路把 `careerTypes`
+    按 workspace 形状注入**同一个载荷** ✓——整块取权威会把它丢掉 ✗；逐键时权威非空
+    的键永远赢 ✓，派生只填空键 ✓。空值（None/""/[]/{}）也算缺 ✓（与 `scoreContext`
+    补缺口径一致 ✓）。真载荷与两套形状都认不出时**原样透传** ✗——**绝不用空覆盖
+    非空** ✓（下游模型校验报错好过静默丢数据 ✓）。"""
+
+    if authoritative in (None, "", [], {}):
+        return derived
+    if isinstance(authoritative, Mapping):
+        merged = {str(key): value for key, value in authoritative.items()}
+        for key, value in derived.items():
+            if merged.get(key) in (None, "", [], {}):
+                merged[key] = value
+        return merged
+    return authoritative
+
+
 def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
     """Project backend workspace state into a bounded model-facing snapshot."""
     if not isinstance(workspace, Mapping):
@@ -83,36 +103,46 @@ def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
             # 只判"键在不在"会把它当成已有值 ✗，权威的选科就永远补不进来 ✗。
             if value not in (None, "") and score_context.get(target) in (None, "", [], {}):
                 score_context[target] = value
-    confirmed_constraints = {
-        key: value
-        for key, value in {
-            "hard": hard,
-            "excludedMajors": _first(explicit, "negativeMajors", default=[]),
-            "excludedSchools": _first(explicit, "negativeSchools", default=[]),
-            "excludedRegions": _first(explicit, "negativeRegions", default=[]),
-            "exclusions": _first(
-                explicit,
-                "unacceptableMajors",
-                "excludedMajors",
-                "negativeMajors",
-                default=[],
-            ),
-        }.items()
-        if value not in (None, {}, [])
-    }
-    preferences = {
-        key: value
-        for key, value in {
-            "major": _first(explicit, "majorPreferences", "positiveMajors", default={}),
-            "school": _first(explicit, "schoolPreferences", "positiveSchools", default={}),
-            "region": _first(explicit, "regionPreferences", "positiveRegions", default={}),
-            "soft": soft,
-            # career v1：**弱偏好**——只进推荐理由/排序/解释与方案方向覆盖核对，
-            # **不做硬筛**（不排除院校/专业）。只摆中文规范标签，与落库同一形式。
-            "careerTypes": career_types,
-        }.items()
-        if value not in (None, {}, [])
-    }
+    # §35/§37 真因（§五-48 最重案件）：真载荷是 **turn-snapshot 形状** ✓（Java 已把
+    # confirmedConstraints/preferences 算好 ✓），**没有** profileState/constraintState ✗——
+    # 只按 workspace 键重导会让 Java 算好的整块被**空覆盖丢弃** ✗。口径：**权威字段优先，
+    # 缺才回落**（fallback 保留，防 workspace 形状载荷回归 ✓）；careerTypes 旁路照旧注入 ✓。
+    confirmed_constraints = _prefer_authoritative(
+        {
+            key: value
+            for key, value in {
+                "hard": hard,
+                "excludedMajors": _first(explicit, "negativeMajors", default=[]),
+                "excludedSchools": _first(explicit, "negativeSchools", default=[]),
+                "excludedRegions": _first(explicit, "negativeRegions", default=[]),
+                "exclusions": _first(
+                    explicit,
+                    "unacceptableMajors",
+                    "excludedMajors",
+                    "negativeMajors",
+                    default=[],
+                ),
+            }.items()
+            if value not in (None, {}, [])
+        },
+        _first(workspace, "confirmedConstraints", "confirmed_constraints"),
+    )
+    preferences = _prefer_authoritative(
+        {
+            key: value
+            for key, value in {
+                "major": _first(explicit, "majorPreferences", "positiveMajors", default={}),
+                "school": _first(explicit, "schoolPreferences", "positiveSchools", default={}),
+                "region": _first(explicit, "regionPreferences", "positiveRegions", default={}),
+                "soft": soft,
+                # career v1：**弱偏好**——只进推荐理由/排序/解释与方案方向覆盖核对，
+                # **不做硬筛**（不排除院校/专业）。只摆中文规范标签，与落库同一形式。
+                "careerTypes": career_types,
+            }.items()
+            if value not in (None, {}, [])
+        },
+        _first(workspace, "preferences"),
+    )
 
     missing = list(workspace.get("missingFacts") or [])
     if "score" not in score_context and "score" not in missing:

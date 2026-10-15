@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from app.gateway.snapshot import build_snapshot, diff_snapshots
 from app.util import internal_client
@@ -313,3 +314,138 @@ async def test_turn_snapshot_client_uses_tenant_session_and_skill(monkeypatch) -
             "获取 conversation turn snapshot 失败",
         )
     ]
+
+
+# ── §五-48 最小第一步：真载荷（turn-snapshot）形状回归 ────────────────────────
+#
+# 真载荷按 `ConversationTurnSnapshotDTO`（Java 12 字段）序列化 ✓：**没有**
+# profileState / constraintState / studentSummary 这些 workspace 形状键 ✗——
+# 旧投影从这些键重导，产出 `confirmedConstraints={}` / `preferences={}`，
+# **Java 已算好的权威数据被空覆盖丢弃** ✗（§35/§37 真因 ✓，§五-48 最重案件）。
+# 本节钉住口径：**权威字段优先、缺才回落** ✓；careerTypes 旁路照旧合入 ✓；
+# 两套形状认不出时**原样透传/报错，禁静默空** ✓。
+
+
+def real_turn_snapshot_payload() -> dict:
+    """按 `ConversationTurnSnapshotDTO` 字段清单造的真载荷（camelCase 与 Java JSON 一致 ✓）。"""
+    return {
+        "snapshotVersion": 42,
+        "sessionId": 900047,
+        "admissionMode": "major",
+        "planningStage": "candidate_exploration",
+        "scoreContext": {
+            "province": "江西",
+            "examYear": 2026,
+            "score": 484,
+            "rank": 32000,
+            "batch": "本科批(批次线429分)",
+            "batchScore": 429,
+            "subjects": ["物理", "化学"],
+            "strengthSubjects": ["物理", "化学"],
+        },
+        "confirmedConstraints": {
+            "excludedMajors": ["临床医学"],
+            "hard": {"maxTuition": 60000},
+            "hardPlanningObjectives": {"priorityRules": [{"ruleId": "pr-1", "minCount": 1}]},
+            "staleFlags": {"review": False},
+        },
+        "preferences": {
+            "major": {"include": ["计算机科学与技术"]},
+            "school": {"include": ["浙江大学"]},
+            "region": {"include": ["华东"]},
+            "soft": {"regions": ["华东"]},
+            "candidateSummary": {"total": 80},
+            "reviewSummary": {"riskCount": 1, "warnCount": 2},
+            "workflow": {"reviewStatus": "reviewed"},
+        },
+        "activeProposal": {
+            "proposalRef": "pending-1",
+            "pendingId": "pending-1",
+            "status": "active",
+            "requiresConfirmation": True,
+            "data": {"action": "preview"},
+        },
+        "missingFacts": [],
+        "allowedCapabilities": ["catalog_read", "admission_read"],
+        "evidence": [],
+        "admissionFacts": [],
+    }
+
+
+def test_real_turn_snapshot_payload_carries_java_computed_fields_verbatim() -> None:
+    """§35 的锁 ✓：真载荷里 Java 已算的约束/偏好必须**非空且逐字**进快照 ✗勿重导。"""
+    payload = real_turn_snapshot_payload()
+    assert payload["confirmedConstraints"], "夹具本身就得非空（否则测不到覆盖）"
+    assert payload["preferences"], "夹具本身就得非空（否则测不到覆盖）"
+
+    snapshot = build_snapshot(payload)
+
+    assert snapshot.confirmed_constraints == payload["confirmedConstraints"], "权威约束逐字携带"
+    assert snapshot.preferences == payload["preferences"], "权威偏好逐字携带"
+    assert snapshot.snapshot_version == 42
+    assert snapshot.planning_stage == "candidate_exploration"
+    # 成绩上下文：权威值带上（别名桥保持现状 ✓——strengthSubjects 只归到 subjects ✓，不重复留键 ✓）
+    assert snapshot.score_context == {
+        key: value for key, value in payload["scoreContext"].items() if key != "strengthSubjects"
+    }, "权威成绩上下文不被派生值挤掉"
+    assert snapshot.missing_facts == []
+    assert "admission_read" in snapshot.allowed_capabilities
+
+
+def test_projection_falls_back_to_workspace_shape_when_authoritative_fields_are_missing() -> None:
+    """缺才回落 ✓（fallback 保留，防 workspace 形状载荷回归 ✗）：空 `{}` 也算缺 ✓。"""
+    workspace = fake_backend_workspace()
+    assert "confirmedConstraints" not in workspace and "preferences" not in workspace
+
+    snapshot = build_snapshot(workspace)
+
+    assert snapshot.preferences["major"] == {"include": ["计算机科学与技术"]}
+    assert snapshot.preferences["school"] == {"include": ["浙江大学"]}
+    assert snapshot.preferences["soft"] == {"regions": ["华东"]}
+    assert snapshot.confirmed_constraints["hard"] == {"maxTuition": 60000}
+
+    # 键在但值为空（Java 未记录时就是空 map ✓）→ 仍算缺，回落照旧 ✓
+    workspace["confirmedConstraints"] = {}
+    workspace["preferences"] = {}
+
+    snapshot = build_snapshot(workspace)
+
+    assert snapshot.preferences["major"] == {"include": ["计算机科学与技术"]}
+    assert snapshot.confirmed_constraints["hard"] == {"maxTuition": 60000}
+
+
+def test_authoritative_preferences_still_receive_injected_career_types() -> None:
+    """权威非空时 careerTypes 旁路照旧合入 ✓（§五-48 bullet 3：旁路别拆 ✗）——权威键一个不丢。"""
+    payload = real_turn_snapshot_payload()
+    payload["profileState"] = {
+        "latentProfile": {"futureDevelopment": {"careerTypes": ["考研"]}}
+    }
+
+    snapshot = build_snapshot(payload)
+
+    assert snapshot.preferences["careerTypes"] == ["深造发展导向"]
+    for key, value in payload["preferences"].items():
+        assert snapshot.preferences[key] == value, f"权威键 {key} 不许丢"
+    assert set(snapshot.preferences) == set(payload["preferences"]) | {"careerTypes"}
+
+
+def test_projection_never_covers_unrecognized_non_empty_fields_with_empty() -> None:
+    """两套派生清单都认不出的键：**非空内容逐字透传** ✓（假空覆盖被禁 ✗，原则②）。"""
+    payload = {
+        "sessionId": "s1",
+        "confirmedConstraints": {"priorityRules": [{"ruleId": "pr-1", "minCount": 1}]},
+        "preferences": {"unknownBucket": {"kept": True}},
+    }
+
+    snapshot = build_snapshot(payload)
+
+    assert snapshot.confirmed_constraints == payload["confirmedConstraints"]
+    assert snapshot.preferences == payload["preferences"]
+
+
+def test_projection_passes_through_unrecognizable_non_mapping_fields_loudly() -> None:
+    """认不出的**非空非对象**形状：透传→契约层报错 ✓（报错好过静默空 ✗，原则②）。"""
+    payload = {"sessionId": "s1", "confirmedConstraints": ["opaque-shape"]}
+
+    with pytest.raises(ValidationError):
+        build_snapshot(payload)
