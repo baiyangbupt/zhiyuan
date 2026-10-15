@@ -28,7 +28,7 @@ version: 1.0.0
 ## 允许能力
 
 - 允许 `entity.resolve` 仅用于确认用户明确提到的院校、专业或城市。
-- 不调用招生计算、推荐或任何写能力；本 Skill 不创建方案 Proposal。
+- 本 Skill 只读；**例外**：方向推荐按 §3 调 `recommendation.preview_majors`（只读方向级预览）。除该例外外不调用招生计算、推荐或任何写能力；本 Skill 不创建方案 Proposal。
   （发展方向是例外的一种**结构化草稿**：`careerUpdateRequest` 由系统物化成确认卡、
   用户确认后才写入，它不是工具调用，也不是本技能自行执行的写入。）
 
