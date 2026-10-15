@@ -313,8 +313,19 @@ class ProposalRequest(_ContractModel):
     user_original_text: str = ""
     confidence: Literal["low", "medium", "high"] = "medium"
     source_version_guard: int = Field(ge=0)
-    target_count: int | None = Field(default=None, gt=0)
-    persist_target_count: bool = True
+    target_count: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "fill_to_count 必填且 >0（补齐目标数量）；数字是提案内容，供用户确认或调整。"
+        ),
+    )
+    persist_target_count: bool = Field(
+        default=True,
+        description=(
+            "true=按新总数补齐；false=保持当前方案总数（preserve；仅当已有正式方案时有效）。"
+        ),
+    )
     tier_quota_goal: ProposalTierQuota | None = None
     requirements: list[ProposalRequirement] = Field(default_factory=list)
     # 同档前置"只支持一条"（2026-10-13 实测，会话 10041981）在 **Java 侧**是硬约束

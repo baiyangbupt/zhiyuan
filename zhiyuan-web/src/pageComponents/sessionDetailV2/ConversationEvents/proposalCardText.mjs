@@ -294,6 +294,18 @@ const BLOCKED_TEXT_BY_CODE = {
 const DEFAULT_BLOCKED_EXPLANATION = '这条调整暂时没法生成可以执行的方案。';
 const DEFAULT_BLOCKED_SUGGESTION = '换一种更明确、更简单的说法重试。';
 
+/**
+ * 同一码、不同 `strategy` 缺的东西不一样（2026-10-15，会话 10041983）：
+ * `user_goal_unclear` × `fill_missing_count` 缺的只是**数量**（用户已经说清"补足"，
+ * 差的是一个数字）——通用句"说得再具体一点"对不上，这里给专用建议；
+ * 查不到组合就回退到通用表 ✓。
+ */
+const BLOCKED_SUGGESTION_BY_CODE_STRATEGY = {
+  user_goal_unclear: {
+    fill_missing_count: '补足数量需要一个具体数字——直接告诉我要补到多少个即可（例如"补到 30 个"）。',
+  },
+};
+
 /** `candidateShortages` 行的 scope/原因 中文（短口径 ✓）——查不到就略过该半句 ✓，**不铺原始码** ✗。 */
 const SHORTAGE_SCOPE_TEXT = {
   candidate_pool: '候选池',
@@ -371,7 +383,8 @@ export function proposalShortageLine(shortage = {}) {
 /**
  * `blocked` 卡要说的话（**纯数据** ✓——渲染在 `ProposalCard` ✓，测试在这里钉 ✓）：
  *   · `explanation`：一句人话（按 `blockingReasonCodes[0]` 查表 ✓，查不到用通用中文 ✓）；
- *   · `suggestion`：一句建议动作 ✓（"换一种说法重试……" ✓）；
+ *   · `suggestion`：一句建议动作 ✓（"换一种说法重试……" ✓；同码×`strategy` 有专用句时优先，
+ *     如 `user_goal_unclear`×`fill_missing_count` → "补足数量需要一个具体数字……" ✓）；
  *   · `details`：明细行（调整方向 / 想调整的规则 / 候选情况 ✓，按序 ✓）；
  *   · `reason`：Java 原文降级成次要信息 ✓（有 code 就带 `[code]` 锚点 ✓；没有则原样 ✓）。
  *
@@ -394,7 +407,10 @@ export function proposalBlockedText(diff = {}) {
   )
     .map((code) => String(code ?? '').trim())
     .filter(Boolean);
-  const mapped = codes.map((code) => BLOCKED_TEXT_BY_CODE[code]).find(Boolean);
+  const mappedCode = codes.find((code) => BLOCKED_TEXT_BY_CODE[code]) || '';
+  const mapped = mappedCode ? BLOCKED_TEXT_BY_CODE[mappedCode] : null;
+  const variantSuggestion =
+    (BLOCKED_SUGGESTION_BY_CODE_STRATEGY[mappedCode] || {})[String(source.strategy || '').trim()] || '';
 
   const details = [];
   const strategyText = proposalStrategyLabel(source.strategy);
@@ -411,7 +427,7 @@ export function proposalBlockedText(diff = {}) {
   const reason = rawReason ? (codes[0] ? `[${codes[0]}] ${rawReason}` : rawReason) : '';
   return {
     explanation: (mapped && mapped.explanation) || DEFAULT_BLOCKED_EXPLANATION,
-    suggestion: (mapped && mapped.suggestion) || DEFAULT_BLOCKED_SUGGESTION,
+    suggestion: variantSuggestion || (mapped && mapped.suggestion) || DEFAULT_BLOCKED_SUGGESTION,
     details,
     reason,
   };

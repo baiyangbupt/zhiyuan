@@ -273,6 +273,22 @@ test('diff 什么都没有：也给一句中文解释 + 一句建议（卡不许
   }
 });
 
+test('user_goal_unclear × 补足形态：建议句给"要一个具体数字"，不落通用句（会话 10041983）', () => {
+  const text = proposalBlockedText({
+    blockingReasonCodes: ['user_goal_unclear'],
+    blockingReason: '补齐目标数量必须是大于 0 的整数。',
+    strategy: 'fill_missing_count',
+  });
+  assert.match(text.suggestion, /具体数字/);
+  assert.match(text.suggestion, /多少个/);
+  assert.doesNotMatch(text.suggestion, /说得再具体一点/);
+  // 没有 fill 形态（无 strategy / 别的 strategy）时仍用通用句 ✓，不误伤其他 user_goal_unclear。
+  const generic = proposalBlockedText({ blockingReasonCodes: ['user_goal_unclear'] });
+  assert.match(generic.suggestion, /说得再具体一点/);
+  const other = proposalBlockedText({ blockingReasonCodes: ['user_goal_unclear'], strategy: 'only_keep_scope' });
+  assert.match(other.suggestion, /说得再具体一点/);
+});
+
 test('blockingReasonCodes 单个字符串也认（载荷形状容错）', () => {
   const text = proposalBlockedText({
     blockingReasonCodes: 'priority_rule_invalid',
