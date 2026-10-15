@@ -83,6 +83,57 @@
   line-height: 1.45;
 }
 
+/* 空方案自动预铺说明（2026-10-15）：浅色、可关闭、不打断操作，语气参考 dataFreshnessTip。 */
+.autoPlanNotice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #f0e2da;
+  border-radius: 12px;
+  background: #fdf8f5;
+}
+
+.autoPlanNoticeContent {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.autoPlanNoticeTitle {
+  color: #6b544b;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.autoPlanNoticeDesc {
+  color: #9a8379;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.autoPlanNoticeClose {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border: 1px solid #eed8d0;
+  border-radius: 999px;
+  background: #fff;
+  color: #ff6b45;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.autoPlanNoticeClose:hover {
+  border-color: #ffb59f;
+  color: #ff4f55;
+}
+
 .stageToolbar {
   width: 100%;
 }

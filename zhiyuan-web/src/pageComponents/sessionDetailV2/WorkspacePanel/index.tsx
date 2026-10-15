@@ -224,6 +224,10 @@ interface WorkspacePanelProps {
 const getWorkspaceViewStorageKey = (chatSessionId?: string) =>
   `session_detail_v2_active_view_${chatSessionId || 'default'}`;
 
+/** 自动预铺说明的关闭标记：同会话关过就不再出现（键含 chatSessionId，切会话天然重置）。 */
+const getAutoPlanNoticeDismissedKey = (chatSessionId?: string) =>
+  `session_detail_v2_auto_plan_notice_dismissed_${chatSessionId || 'default'}`;
+
 const DATA_FRESHNESS_AUTO_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 // 模式码归一已收敛到 '@/utils/prepareTypeText.mjs'（2026-10-08：code 优先，
@@ -645,6 +649,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [planningLoading, setPlanningLoading] = useState(false);
   const [scoreSupplementOpen, setScoreSupplementOpen] = useState(false);
   const [dataFreshnessChecking, setDataFreshnessChecking] = useState(false);
+  /**
+   * 空方案自动预铺的成功说明（2026-10-15）：ensureInitialPlanReady 自举成功时置位，
+   * 方案页顶部给一条可关闭的轻提示（治"没人说过却已经有方案了"的突兀感）。
+   * itemCount 取当次响应里的方案条数，取不到为 null——不写数字，别硬编；
+   * 关闭后写 sessionStorage（键含 chatSessionId），本会话不再出现。
+   */
+  const [autoPlanNotice, setAutoPlanNotice] = useState<{ itemCount: number | null } | null>(null);
   const [actionLoading, setActionLoading] = useState<
     'candidate' | 'workingPlan' | 'ordered' | 'review' | null
   >(null);
@@ -1703,6 +1714,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     await fetchWorkspaceState();
   };
 
+  /** 关闭自动预铺说明：本会话（含刷新）不再出现。 */
+  const dismissAutoPlanNotice = () => {
+    setAutoPlanNotice(null);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(
+        getAutoPlanNoticeDismissedKey(routerParams.chatSessionId),
+        '1'
+      );
+    }
+  };
+
   const ensureInitialPlanReady = async () => {
     if (initialPlanRequestedRef.current) {
       return;
@@ -1735,6 +1757,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       if (code === 0 && data) {
         applyPlanningState(data);
         setActiveView('ordered');
+        // 成功说明（治突兀）：同一会话里关过就不再提示；条数取当次响应，取不到不写数字。
+        const orderedCount = (data.orderedPlanState?.items || []).length;
+        const dismissedInSession =
+          typeof window !== 'undefined' &&
+          window.sessionStorage.getItem(getAutoPlanNoticeDismissedKey(routerParams.chatSessionId)) === '1';
+        if (!dismissedInSession) {
+          setAutoPlanNotice({ itemCount: orderedCount > 0 ? orderedCount : null });
+        }
       } else {
         initialPlanRequestedRef.current = false;
       }
@@ -2565,6 +2595,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setFocusVolunteerIds([]);
     setExpandedSchoolMetaKeys([]);
     setDraftExpanded(false);
+    setAutoPlanNotice(null);
   }, [routerParams.chatSessionId]);
 
   useEffect(() => {
@@ -5751,6 +5782,26 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             </div>
           ) : (
             <div className={style.orderedView}>
+              {autoPlanNotice ? (
+                <div className={style.autoPlanNotice} role="status">
+                  <div className={style.autoPlanNoticeContent}>
+                    <div className={style.autoPlanNoticeTitle}>
+                      系统已按你的分数自动预铺了一版初始方案
+                      {autoPlanNotice.itemCount !== null ? `（${autoPlanNotice.itemCount} 条）` : ''}
+                    </div>
+                    <div className={style.autoPlanNoticeDesc}>
+                      可直接在对话里让我调整，改动会实时更新到这里
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className={style.autoPlanNoticeClose}
+                    onClick={dismissAutoPlanNotice}
+                  >
+                    知道了
+                  </button>
+                </div>
+              ) : null}
               {(orderedItems || []).length > 0 ? (
                 <>
                   <div className={style.reviewSummaryBar} ref={reviewSummaryRef}>
