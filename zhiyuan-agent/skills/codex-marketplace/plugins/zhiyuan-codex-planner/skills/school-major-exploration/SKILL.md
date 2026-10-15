@@ -39,6 +39,7 @@ version: 1.0.0
 - `entity.resolve`
 - `catalog.search_schools`、`catalog.get_school`
 - `catalog.search_majors`、`catalog.get_major`
+- `recommendation.preview_majors`（只读：方向级聚合预览，按画像取 topN）
 - 仅只读；禁止 profile、plan、recommendation 写操作。
 
 ## 标准步骤
