@@ -103,6 +103,8 @@ TOOL_KINDS = {
     "catalog.get_major": "catalog",
     "admission.get_history": "history",
     "admission.check_eligibility": "eligibility",
+    # 方案读两个别名：这里的 kind 是**默认值**（错误信封与工作台方案源）；
+    # 命中排序方案源时成功信封的 kind 是 `orderedPlan`（见 `_plan_envelope`）。
     "admission.get_current_plan": "workingPlan",
     "planning.get_working_plan": "workingPlan",
     "admission.compare": "comparison",
@@ -258,6 +260,65 @@ def _pick_comparison_row(rows: list[Any], year: int) -> dict[str, Any] | None:
         if _as_int(row.get("year")) == year:
             return row
     return max(candidates, key=lambda row: _as_int(row.get("year")) or 0)
+
+
+# 方案读投影的字段白名单。这些是 Java 方案 DTO 的**真实字段名**
+# （DraftPlanStateDTO / OrderedPlanStateDTO 及其 items/units/majorItems），
+# 逐字透出：不改名、不补默认值、不合成——上游没给的键就不出现在结果里。
+_PLAN_ITEM_FIELDS = (
+    "position", "volunteerId", "tier", "schoolName", "majorName",
+    "unitId", "cityName", "locked", "pinned",
+)
+_PLAN_UNIT_FIELDS = (
+    "position", "unitId", "planSchoolDataId", "schoolId", "schoolUnitCode",
+    "tier", "schoolName", "provinceName", "cityName", "schoolNature",
+    "admissionRatio", "finalScore", "schoolEnrollRatio", "totalMajorCount",
+    "locked", "pinned", "majorItems",
+)
+_PLAN_MAJOR_FIELDS = (
+    "volunteerId", "majorId", "majorName", "majorCode", "tier",
+    "tuitionPerYear", "admissionRatio", "finalScore",
+    "selected", "preferred", "safetyMajor",
+)
+
+
+def _plan_rows(rows: Any, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    """按白名单**逐字**透出方案行：缺的键不补、值不改写。"""
+    if not isinstance(rows, list):
+        return []
+    projected: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        item = {key: row[key] for key in fields if key in row}
+        if isinstance(row.get("majorItems"), list):
+            item["majorItems"] = _plan_rows(row["majorItems"], _PLAN_MAJOR_FIELDS)
+        projected.append(item)
+    return projected
+
+
+def _plan_state(payload: Any) -> Mapping[str, Any]:
+    """上游可能是裸 state，也可能把 state 套在 `*PlanState` 键里（沙箱读路径两种形状都见过）。"""
+    if not isinstance(payload, Mapping):
+        return {}
+    for key in (
+        "orderedPlanState", "ordered_plan_state",
+        "workingPlanState", "working_plan_state",
+        "draftPlanState", "draft_plan_state",
+    ):
+        nested = payload.get(key)
+        if isinstance(nested, Mapping):
+            return nested
+    return payload
+
+
+def _transport_failed(response: Any) -> bool:
+    """`http_client` 传输失败**不抛异常**，而是回 `{"error": ..., "success": False}`。
+
+    这种形状必须与"上游说没有数据"分开：把传输失败当空方案，会把"读不到"
+    说成"你没有方案"。
+    """
+    return isinstance(response, Mapping) and response.get("success") is False
 
 
 def _write_refusal_message(mode: str) -> str:
@@ -454,20 +515,33 @@ class ReadonlyDomainTools:
         # 给任一方法加一个透传就会变成"模型能指定去比/看哪个会话"。
         return {key: value for key, value in arguments.items() if key not in {"threadId", "tenantId", "sessionId", "chatSessionId", "userId", "handle", "stateVersion"}}
 
-    # 走"事实/证据配对"那条路的工具。按**名字前缀**判断是错的：
-    # `planning.get_working_plan` 是 `admission.get_current_plan` 的新名，
-    # 前缀不同却走同一个实现，于是同一个工具因名字不同给出两种结果形状。
-    # 用显式集合，别名不可能再分叉。
-    _ADMISSION_SHAPED_TOOLS = frozenset(
+    # 方案读（两个别名同实现）。**不从 `_ADMISSION_SHAPED_TOOLS` 走**：
+    # working-plan/ordered-plan 的 items/units 是**方案条目**（位置/院校/专业/
+    # 校区/学费/录取率），不是招生单元事实——逐行 `validate_admission_fact`
+    # 会因 DraftItemDTO 没有 majorId/planMajorDataId 把每一行都判成
+    # `major_required` 占位码（2026-10-15 实拍：80 行全弃、只剩 80 个码，
+    # 模型读到的"方案"里什么都没有）。
+    # 别名必须落到同一个实现：`planning.get_working_plan` 是
+    # `admission.get_current_plan` 的新名，前缀不同却走同一实现——按名字前缀
+    # 分派会让同一个工具因名字不同给出两种结果形状。用显式集合，别名不可能再分叉。
+    _PLAN_SHAPED_TOOLS = frozenset(
         {
             "admission.get_current_plan",
-            "admission.get_history",
-            "admission.check_eligibility",
             "planning.get_working_plan",
         }
     )
 
+    # 走"事实/证据配对"那条路的工具。
+    _ADMISSION_SHAPED_TOOLS = frozenset(
+        {
+            "admission.get_history",
+            "admission.check_eligibility",
+        }
+    )
+
     def _envelope(self, name: str, result: Any) -> dict[str, Any]:
+        if name in self._PLAN_SHAPED_TOOLS:
+            return self._plan_envelope(name, result)
         if name in self._ADMISSION_SHAPED_TOOLS:
             return self._admission_envelope(name, result)
         if isinstance(result, dict):
@@ -534,6 +608,57 @@ class ReadonlyDomainTools:
         normalized["stateVersion"] = self.current_state_version
         normalized["admissionMode"] = self.binding.admission_mode
         return normalized
+
+    def _plan_envelope(self, name: str, result: Any) -> dict[str, Any]:
+        """方案读投影：把当前方案的**条目明细**原样透出（items + units）。
+
+        §五-47（2026-10-15 实拍）：这条读曾经走 `_admission_envelope`，把方案的
+        80 行条目逐行当**招生事实**校验（major 模式强制 majorId/planMajorDataId），
+        而 DraftItemDTO 根本没有这些键 → **80 行全弃**、只剩 80×`major_required`
+        占位码——模型读到的"方案"里没有任何院校/专业/校区/学费/档位/顺序。
+        方案条目就是方案条目：这里只做字段白名单透出——**不校验招生事实、
+        不合成、不补默认值**；空方案（items:[]）是正常态，不是 limitation。
+        """
+        plan_source = "workingPlan"
+        payload: Mapping[str, Any] = {}
+        evidence: list[Any] = []
+        limitations: list[str] = []
+        status = "ok"
+        if isinstance(result, Mapping) and isinstance(result.get("planSource"), str):
+            # 受信后端的形状：`{planSource, plan}`，plan 是保留信封后的上游响应
+            # （`status`/`data`/`evidence`/`limitations`）。
+            plan_source = result["planSource"]
+            preserved = result.get("plan")
+            if isinstance(preserved, Mapping):
+                status = str(preserved.get("status") or "ok")
+                evidence = list(preserved.get("evidence") or [])
+                limitations = [str(code) for code in (preserved.get("limitations") or [])]
+                payload = _plan_state(preserved.get("data"))
+        elif isinstance(result, Mapping):
+            # 替身/历史形状：裸 state，或上游 `{code, data}` 信封。
+            payload = _plan_state(result.get("data") if isinstance(result.get("data"), Mapping) else result)
+            evidence = list(result.get("evidence") or [])
+            limitations = [str(code) for code in (result.get("limitations") or [])]
+        kind = plan_source if plan_source in {"orderedPlan", "workingPlan"} else "workingPlan"
+        if status != "ok":
+            return error(
+                status,
+                "plan upstream returned an error",
+                kind=kind,
+                state_version=self.current_state_version,
+                limitations=limitations,
+            )
+        data = {
+            "items": _plan_rows(payload.get("items"), _PLAN_ITEM_FIELDS),
+            "units": _plan_rows(payload.get("units"), _PLAN_UNIT_FIELDS),
+        }
+        return ok(
+            data,
+            kind=kind,
+            state_version=self.current_state_version,
+            evidence=evidence,
+            limitations=limitations,
+        )
 
     def _admission_envelope(self, name: str, result: Any) -> dict[str, Any]:
         """Normalize backend admission rows into unit facts plus scoped Evidence."""
@@ -1705,10 +1830,46 @@ class InternalClientBackend:
             major_name=arguments.get("name"), major_id=arguments.get("majorId")))
 
     async def get_current_plan(self, **arguments: Any) -> Any:
-        # tenant 从**可信 binding** 传入，不从模型参数取：
-        # 一旦模型能指定 tenant，它就能读别的租户的志愿表。
-        return self._data(await internal_client.get_working_plan(
-            self.chat_session_id, self.tenant_id))
+        """读当前方案：**排序方案优先**，不可用/还没生成时回落工作台方案。
+
+        tenant/session 从**可信 binding** 传入，不从模型参数取：
+        一旦模型能指定 tenant，它就能读别的租户的志愿表。
+        两条链读的是同一个"当前方案"问题：ordered-plan 是右面板同源的**排序后**
+        方案（`position`/`unitId`/`cityName`/单元级 majorItems 都在那），
+        working-plan 是它的工作区（排序方案生成前的正常态，items 贫字段但
+        units 带 unitId + 专业明细）。上游响应原样带出（含 evidence/status），
+        投影由 `_plan_envelope` 做——这里只判"哪份有内容"，不判"哪份对"。
+        """
+        ordered = await self._read_ordered_plan()
+        if ordered is not None:
+            return ordered
+        working_response = await internal_client.get_working_plan(
+            self.chat_session_id, self.tenant_id)
+        if _transport_failed(working_response):
+            # 传输失败不是"空方案"：如实失败（外层按 backend_unavailable 处理），
+            # 否则会把"读不到"说成"你没有方案"。
+            raise RuntimeError(
+                str(working_response.get("error") or "working_plan_unreachable"))
+        return {"planSource": "workingPlan", "plan": self._preserve_envelope(working_response)}
+
+    async def _read_ordered_plan(self) -> dict[str, Any] | None:
+        """排序方案：读得到**且有内容**才用；否则回 None（调用方回落工作台方案）。"""
+        try:
+            response = await internal_client.get_planning_ordered_plan(
+                self.chat_session_id, self.tenant_id)
+        except Exception:
+            return None
+        if _transport_failed(response):
+            return None
+        preserved = self._preserve_envelope(response)
+        if not isinstance(preserved, Mapping) or preserved.get("status") != "ok":
+            return None
+        state = _plan_state(preserved.get("data"))
+        if not state.get("items") and not state.get("units"):
+            # 排序方案**还没生成**：空结果是生成前的正常态，不构成"当前方案"，
+            # 回落工作台方案而不是回一个空信封。
+            return None
+        return {"planSource": "orderedPlan", "plan": preserved}
 
     async def get_history(self, **arguments: Any) -> Any:
         group_code = str(arguments.get("groupCode") or "").strip()

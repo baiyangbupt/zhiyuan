@@ -115,7 +115,24 @@ _ARTIFACT_REF_HINT = (
     "（不多抄、不改写、更不自行编造 id——自行编造的 id 缺会话章，会让整轮失败）。"
 )
 
+# 方案读（两个别名同实现）共用这一句：返回的是**方案条目明细**，不是招生事实。
+# 不写清楚的话，模型会把"方案里有什么"变成一个靠印象回答的问题。
+_PLAN_READ_DESCRIPTION = (
+    "读取当前方案/工作区的条目明细（只读、不改状态）：优先读**排序方案**"
+    "（kind=orderedPlan，items 带 position 位置、tier 档位、schoolName 院校、"
+    "majorName 专业、volunteerId），尚未生成排序方案时回落**工作台方案**"
+    "（kind=workingPlan）。两源都含 units（院校专业组单元）：unitId、schoolName、"
+    "cityName 校区/城市文本、schoolNature、admissionRatio 录取率、finalScore；"
+    "unit 内 majorItems 是专业明细（majorId/majorName/tier/tuitionPerYear 学费/"
+    "admissionRatio/finalScore）。字段逐字来自上游、缺省即缺省，不得据此补值；"
+    "空方案（items:[]）是正常态、不是读取失败；讨论方案内容一律以本工具返回为准，"
+    "不得凭印象复述。"
+)
+
 TOOL_DESCRIPTIONS: dict[str, str] = {
+    "admission.get_current_plan": _PLAN_READ_DESCRIPTION,
+    # 新名与旧名是同一个工具：描述也共用同一句，不许两份说法分叉。
+    "planning.get_working_plan": _PLAN_READ_DESCRIPTION,
     "catalog.get_score_position": (
         "一分一段表查询：按省份+分数查位次。同分考生不可分辨——"
         "highest_rank/lowest_rank 是区间（same_score_count 为同分人数），"
@@ -353,7 +370,9 @@ TOOL_OUTPUT_SCHEMA: dict[str, Any] = {
         # 变成一个靠字段猜的问题，而猜错的方向是把过去当未来。
         "kind": {
             "type": "string",
-            "enum": ["catalog", "history", "probability", "enrollment", "policy", "eligibility", "workingPlan", "comparison", "candidate"],
+            # `orderedPlan` = 排序后的当前方案（方案读命中 ordered-plan 源时的 kind）；
+            # `workingPlan` = 工作台方案/排序方案生成前的工作区。
+            "enum": ["catalog", "history", "probability", "enrollment", "policy", "eligibility", "workingPlan", "orderedPlan", "comparison", "candidate"],
         },
         "status": {"type": "string"},
         "data": {},

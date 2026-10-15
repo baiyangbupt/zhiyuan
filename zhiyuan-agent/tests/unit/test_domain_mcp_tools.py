@@ -799,24 +799,312 @@ def test_error_envelope_has_no_backend_data_or_evidence() -> None:
     }
 
 
-@pytest.mark.asyncio
-async def test_internal_backend_keeps_tenant_and_session_server_owned(monkeypatch) -> None:
-    calls = []
+def _plan_tools() -> ReadonlyDomainTools:
+    """真实方案读路径：真 Backend + 受信 binding（两源 I/O 由 `_install_plan_sources` 替身）。"""
+    return ReadonlyDomainTools(
+        trusted_context(),
+        backend=InternalClientBackend(tenant_id="tenant-1", chat_session_id="101"),
+    )
+
+
+def _install_plan_sources(monkeypatch, *, ordered, working):
+    """装配两条方案源替身；实参是 Exception 实例时该源以异常失败。返回调用记录。"""
+    calls: list[tuple] = []
+
+    async def get_planning_ordered_plan(thread_id, tenant_id):
+        calls.append(("ordered", thread_id, tenant_id))
+        if isinstance(ordered, BaseException):
+            raise ordered
+        return ordered
 
     async def get_working_plan(thread_id, tenant_id):
-        calls.append((thread_id, tenant_id))
-        return {"code": 0, "data": {"items": []}}
+        calls.append(("working", thread_id, tenant_id))
+        if isinstance(working, BaseException):
+            raise working
+        return working
 
+    monkeypatch.setattr(
+        "app.util.internal_client.get_planning_ordered_plan", get_planning_ordered_plan
+    )
     monkeypatch.setattr("app.util.internal_client.get_working_plan", get_working_plan)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_internal_backend_keeps_tenant_and_session_server_owned(monkeypatch) -> None:
+    calls = _install_plan_sources(
+        monkeypatch,
+        ordered={"code": 0, "data": {"items": [], "units": []}},
+        working={"code": 0, "data": {"items": [], "units": []}},
+    )
     backend = InternalClientBackend(tenant_id=7, chat_session_id=101)
 
     result = await backend.get_current_plan(sessionId=999, userId=888)
 
-    assert result == {"items": []}
     # 模型传进来的 sessionId/userId 一律不采信：租户与会话都取自**可信 binding**。
     # tenant 也在这里断言，因为路径里的 tenant 曾经是硬编码的 1——那会让
     # tenant 非 1 的会话安静地读到别人的志愿表。
-    assert calls == [(101, 7)]
+    # 方案读**排序方案优先**：空排序方案回落工作台方案，两条链都带受信身份。
+    assert calls == [("ordered", 101, 7), ("working", 101, 7)]
+    assert result["planSource"] == "workingPlan"
+    assert result["plan"]["data"] == {"items": [], "units": []}
+
+
+# §五-47 实拍形状：OrderedItemDTO + OrderedUnitDTO（含单元级 majorItems）。
+ORDERED_PLAN_PAYLOAD: dict = {
+    "items": [
+        {
+            "position": 1,
+            "volunteerId": "u1_1",
+            "tier": "冲",
+            "schoolName": "浙江大学",
+            "majorName": "计算机科学与技术",
+            "unitId": "unit-1",
+            "locked": False,
+            "pinned": True,
+            "pinnedPosition": 1,
+            "orderedBy": "manual",
+            "orderReason": "用户指定",
+            "source": "candidate",
+        },
+        {
+            "position": 2,
+            "volunteerId": "u2_1",
+            "tier": "稳",
+            "schoolName": "浙江工业大学",
+            "majorName": "软件工程",
+        },
+    ],
+    "units": [
+        {
+            "position": 1,
+            "unitId": "unit-1",
+            "planSchoolDataId": "u1",
+            "schoolId": "s1",
+            "schoolUnitCode": "3301",
+            "tier": "冲",
+            "schoolName": "浙江大学",
+            "provinceName": "浙江",
+            "cityName": "杭州",
+            "schoolNature": "公办",
+            "admissionRatio": 45.5,
+            "finalScore": 661.0,
+            "schoolEnrollRatio": 0.92,
+            "totalMajorCount": 1,
+            "majorItems": [
+                {
+                    "volunteerId": "u1_1",
+                    "majorId": "m-1",
+                    "majorName": "计算机科学与技术",
+                    "majorCode": "080901",
+                    "tier": "冲",
+                    "tuitionPerYear": 6900,
+                    "admissionRatio": 42.0,
+                    "finalScore": 663.0,
+                }
+            ],
+        }
+    ],
+    "summary": {"unitTotal": 1, "total": 2},
+    "generationMode": "auto",
+}
+
+
+@pytest.mark.asyncio
+async def test_plan_read_prefers_ordered_plan_and_reveals_items_and_units(monkeypatch) -> None:
+    """方案读的条目明细必须真的读得到：位置/院校/专业/校区文本/学费/录取率。"""
+    calls = _install_plan_sources(
+        monkeypatch,
+        ordered={
+            "code": 0,
+            "data": ORDERED_PLAN_PAYLOAD,
+            "evidence": [{"evidenceId": "ev_plan_1"}],
+        },
+        working=AssertionError("排序方案有内容时不该回落工作台方案"),
+    )
+
+    result = await _plan_tools().call(
+        "admission.get_current_plan", {"sessionId": 999, "userId": 888}
+    )
+
+    assert result["kind"] == "orderedPlan"
+    assert result["status"] == "ok"
+    assert result["evidenceRefs"] == [{"evidenceId": "ev_plan_1"}]
+
+    first_item = result["data"]["items"][0]
+    assert first_item["position"] == 1
+    assert first_item["volunteerId"] == "u1_1"
+    assert first_item["tier"] == "冲"
+    assert first_item["schoolName"] == "浙江大学"
+    assert first_item["majorName"] == "计算机科学与技术"
+    assert first_item["unitId"] == "unit-1"
+    # 上游没给的键不出现（不补默认值）；白名单外的噪声字段不透出。
+    assert "cityName" not in first_item
+    assert "orderReason" not in first_item
+
+    unit = result["data"]["units"][0]
+    assert unit["unitId"] == "unit-1"
+    assert unit["cityName"] == "杭州"
+    assert unit["schoolName"] == "浙江大学"
+    assert unit["schoolNature"] == "公办"
+    assert unit["admissionRatio"] == 45.5
+    assert unit["finalScore"] == 661.0
+    assert unit["majorItems"][0] == {
+        "volunteerId": "u1_1",
+        "majorId": "m-1",
+        "majorName": "计算机科学与技术",
+        "majorCode": "080901",
+        "tier": "冲",
+        "tuitionPerYear": 6900,
+        "admissionRatio": 42.0,
+        "finalScore": 663.0,
+    }
+    # 模型塞的 sessionId/userId 一律不采信：两条链都用受信 binding 的会话与租户。
+    assert calls == [("ordered", "101", "tenant-1")]
+    # 方案读**不再走招生事实校验**：没有 major_required 墙。
+    assert "major_required" not in result["limitations"]
+
+
+@pytest.mark.asyncio
+async def test_plan_read_falls_back_to_working_plan_when_ordered_plan_unavailable(
+    monkeypatch,
+) -> None:
+    """排序方案不可用（调用失败/传输失败/上游错误码/还没生成）→ 回落工作台方案。"""
+    working_payload = {
+        "code": 0,
+        "data": {
+            "items": [
+                {
+                    "volunteerId": "u1_1",
+                    "tier": "稳",
+                    "schoolName": "浙江工业大学",
+                    "majorName": "软件工程",
+                    "source": "candidate",
+                }
+            ],
+            "units": [
+                {
+                    "unitId": "unit-9",
+                    "tier": "稳",
+                    "schoolName": "浙江工业大学",
+                    "majorItems": [
+                        {
+                            "majorId": "m-9",
+                            "majorName": "软件工程",
+                            "tuitionPerYear": 5300,
+                            "admissionRatio": 66.0,
+                            "finalScore": 601.0,
+                        }
+                    ],
+                }
+            ],
+        },
+    }
+    unavailable_sources = [
+        RuntimeError("ordered plan unreachable"),  # 调用抛异常
+        {"error": "connection refused", "success": False, "data": {}},  # 传输失败形状
+        {"code": 50001, "msg": "内部错误", "data": None},  # 上游错误码
+        {"code": 0, "data": {"items": [], "units": []}},  # 还没生成（生成前正常态）
+        {"code": 0, "data": {"items": [], "units": [], "summary": {}}},
+    ]
+    for ordered in unavailable_sources:
+        calls = _install_plan_sources(monkeypatch, ordered=ordered, working=working_payload)
+
+        result = await _plan_tools().call("planning.get_working_plan", {})
+
+        assert result["kind"] == "workingPlan", ordered
+        assert result["status"] == "ok", ordered
+        assert [item["volunteerId"] for item in result["data"]["items"]] == ["u1_1"], ordered
+        assert result["data"]["units"][0]["unitId"] == "unit-9", ordered
+        assert result["data"]["units"][0]["majorItems"][0]["majorId"] == "m-9", ordered
+        assert calls == [("ordered", "101", "tenant-1"), ("working", "101", "tenant-1")], ordered
+
+
+@pytest.mark.asyncio
+async def test_empty_plan_reads_as_a_normal_ok_result_not_a_limitation_wall(monkeypatch) -> None:
+    """空方案是正常态：items:[]、无 limitation 墙，更不许造 major_required 占位码。"""
+    _install_plan_sources(
+        monkeypatch,
+        ordered={"code": 0, "data": {"items": [], "units": []}},
+        working={"code": 0, "data": {"items": [], "units": [], "summary": {"unitTotal": 0}}},
+    )
+
+    result = await _plan_tools().call("admission.get_current_plan", {})
+
+    assert result["status"] == "ok"
+    assert result["data"] == {"items": [], "units": []}
+    assert result["limitations"] == []
+
+
+@pytest.mark.asyncio
+async def test_plan_rows_never_go_through_admission_fact_validation(monkeypatch) -> None:
+    """§五-47 决定性回归：DraftItemDTO 行（无 majorId/planMajorDataId）逐行透出。
+
+    修前这些行被当**招生事实**校验 → 每行一条 `major_required`、80 行全弃；
+    修后 `validate_admission_fact` 一次都不会被方案读触发。
+    """
+    from app.mcp_server import tools_readonly
+
+    validated: list[object] = []
+    real_validate = tools_readonly.validate_admission_fact
+
+    def spy(value):
+        validated.append(value)
+        return real_validate(value)
+
+    monkeypatch.setattr("app.mcp_server.tools_readonly.validate_admission_fact", spy)
+    draft_items = [
+        {
+            "volunteerId": f"v{i}",
+            "tier": "冲",
+            "schoolName": f"学校{i}",
+            "majorName": f"专业{i}",
+            "locked": False,
+            "source": "candidate",
+        }
+        for i in range(80)
+    ]
+    _install_plan_sources(
+        monkeypatch,
+        ordered={"code": 0, "data": {"items": [], "units": []}},
+        working={"code": 0, "data": {"items": draft_items, "units": []}},
+    )
+
+    result = await _plan_tools().call("admission.get_current_plan", {})
+
+    assert validated == []
+    assert len(result["data"]["items"]) == 80
+    assert result["data"]["items"][0]["schoolName"] == "学校0"
+    assert result["data"]["items"][79]["majorName"] == "专业79"
+    assert result["limitations"] == []
+    assert "major_required" not in json.dumps(result)
+
+
+def test_plan_read_description_states_detail_fields_and_the_empty_is_normal_rule() -> None:
+    """工具描述是模型实际读到的那句话：明细字段与"空方案是正常态"都要写死，
+    两个别名必须给同一句话（同一个工具，不许两份说法分叉）。"""
+    from app.mcp_server.server import TOOL_DESCRIPTIONS, tool_listing
+
+    description = TOOL_DESCRIPTIONS["admission.get_current_plan"]
+    for phrase in (
+        "position",
+        "schoolName",
+        "majorName",
+        "unitId",
+        "cityName",
+        "schoolNature",
+        "tuitionPerYear",
+        "admissionRatio",
+        "学费",
+        "录取率",
+        "orderedPlan",
+        "items:[]",
+        "正常态",
+    ):
+        assert phrase in description, f"工具描述缺少明细口径：{phrase}"
+
+    listed = {entry["name"]: entry for entry in tool_listing()}
+    assert listed["planning.get_working_plan"]["description"] == description
 
 
 @pytest.mark.asyncio
