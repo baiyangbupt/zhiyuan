@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 from app.config import CodexAppServerConfig
 from app.gateway.artifact_store import SqliteArtifactStore
 from app.gateway.service import GatewayService
-from app.gateway.user_input import UserInputBroker
+from app.gateway.user_input import PendingInput, UserInputBroker, UserInputError
 
 # A1 探针实测（.runtime/codex-capabilities.json）：原生提问在真实二进制上可用，
 # 但**必须同时满足两件事**——启动时带上这两个特性开关，且 initialize 声明能力。
@@ -148,9 +148,25 @@ async def build_gateway_runtime(
     # `turn_resolver`：原生请求带的是 codex 原生回合号，事件流要的是业务号——
     # 翻译边界放在**桥**里（见 `UserInputBroker._business_turn_id`），
     # 解析器要等运行时装配，所以这里先注入一个惰性查表。
+    runtime_client = getattr(codex, "client", None)
+    generation = getattr(runtime_client, "runtime_generation", None)
+
+    async def expire_user_input(record: PendingInput) -> None:
+        if record.runtime_generation != broker.runtime_generation:
+            raise UserInputError("clarification_runtime_gone")
+        if not record.native_thread_id or not record.native_turn_id:
+            raise UserInputError("clarification_interrupt_unavailable")
+        if gateway.scope_for_thread(record.native_thread_id) != record.key:
+            raise PermissionError("clarification_scope_unavailable")
+        interrupt = getattr(codex, "interrupt_turn_and_wait", None)
+        if interrupt is None:
+            raise UserInputError("clarification_interrupt_unavailable")
+        await interrupt(record.native_thread_id, record.native_turn_id)
+
     broker = UserInputBroker(
-        runtime_generation=secrets.token_hex(8),
+        runtime_generation=generation if isinstance(generation, str) else secrets.token_hex(8),
         turn_resolver=_ui_turn_for_codex,
+        on_expired=expire_user_input,
     )
     codex.set_server_request_handler(broker.handle_server_request)
     gateway = GatewayService(
@@ -171,6 +187,13 @@ async def build_gateway_runtime(
     broker.set_scope_resolver(gateway.scope_for_thread)
     broker.set_emitter(_publish_to_session)
     gateway.user_input_broker = broker
+    set_runtime_handlers = getattr(runtime_client, "set_runtime_handlers", None)
+    if set_runtime_handlers is not None:
+        set_runtime_handlers(
+            on_started=broker.start_runtime,
+            on_exited=broker.expire_runtime,
+            on_notification=broker.handle_notification,
+        )
     return GatewayRuntime(gateway=gateway, codex=codex)
 
 

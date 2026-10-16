@@ -1,8 +1,151 @@
 from __future__ import annotations
 
+import asyncio
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+
+async def _native_runtime_for_lifecycle():
+    from app.config import CodexAppServerConfig
+    from app.gateway.composition import build_gateway_runtime
+    from app.gateway.ui_events import SessionKey
+    from app.harness.codex import CodexAppServerHarness
+
+    server = Path(__file__).resolve().parents[1] / "fixtures" / "codex" / "fake_app_server.py"
+    codex = CodexAppServerHarness([sys.executable, str(server)], request_timeout=1)
+    runtime = await build_gateway_runtime(
+        SimpleNamespace(mode="codex_shadow"), legacy=None, message_store=None,
+        binding_loader=lambda **arguments: None, snapshot_loader=lambda **arguments: None,
+        codex=codex, codex_config=CodexAppServerConfig(_env_file=None, user_input_mode="native"),
+    )
+    key = SessionKey("tenant-1", "session-1")
+    runtime.gateway._threads[key] = "thr_test"
+    return runtime, key
+
+
+@pytest.mark.asyncio
+async def test_native_composition_tracks_actual_transport_generation():
+    runtime, key = await _native_runtime_for_lifecycle()
+    try:
+        broker = runtime.gateway.user_input_broker
+        assert broker.runtime_generation == runtime.codex.client.runtime_generation
+        first = broker.runtime_generation
+        await runtime.codex.restart()
+        assert broker.runtime_generation == runtime.codex.client.runtime_generation != first
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_native_composition_invalidates_cards_when_transport_exits():
+    runtime, key = await _native_runtime_for_lifecycle()
+    cards = asyncio.Queue()
+
+    async def emit(key, event):
+        cards.put_nowait(event)
+
+    broker = runtime.gateway.user_input_broker
+    broker.set_emitter(emit)
+    try:
+        await runtime.codex.client.request("test/request_user_input", {"threadId": "thr_test"})
+        await asyncio.wait_for(cards.get(), timeout=2)
+        assert broker.snapshot(key)
+        runtime.codex.client.process.terminate()
+        await asyncio.wait_for(runtime.codex.client._reader_task, timeout=2)
+        assert broker._pending == broker._by_rpc == {}
+        assert broker.snapshot(key) == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_native_composition_expiry_interrupts_native_ids_and_waits_for_terminal():
+    from app.gateway.user_input import INPUT_KIND_CHOICE, UserInputError
+
+    runtime, key = await _native_runtime_for_lifecycle()
+    interrupted = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def interrupt(thread_id, turn_id):
+        calls.append((thread_id, turn_id))
+        interrupted.set()
+        await release.wait()
+
+    runtime.codex.interrupt_turn_and_wait = interrupt
+    broker = runtime.gateway.user_input_broker
+    waiter = None
+    try:
+        assert broker._on_expired is not None
+        record = await broker._register(
+            {"id": 1, "params": {"threadId": "thr_test"}}, native_turn_id="native-turn-1",
+            input_kind=INPUT_KIND_CHOICE, questions=[], question_ids=frozenset(), key=key,
+        )
+        record.ui_turn_id = "business-turn-1"
+        record.expires_at = 0.0
+        waiter = asyncio.create_task(broker._await_answer(record))
+        await asyncio.wait_for(interrupted.wait(), timeout=1)
+        assert not waiter.done()
+        release.set()
+        with pytest.raises(UserInputError, match="clarification_expired"):
+            await waiter
+        assert calls == [("thr_test", "native-turn-1")]
+    finally:
+        if waiter is not None:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_native_expiry_round_trip_interrupts_collector_before_error_reply():
+    runtime, key = await _native_runtime_for_lifecycle()
+    broker = runtime.gateway.user_input_broker
+    broker._ttl = 0.01
+    turn_started = asyncio.Event()
+    cards = asyncio.Queue()
+
+    async def on_started(turn_id):
+        turn_started.set()
+
+    async def emit(key, event):
+        cards.put_nowait(event)
+
+    broker.set_emitter(emit)
+    collector = None
+    try:
+        await runtime.codex.create_thread()
+        await runtime.codex.client.request("test/arm_gate", {})
+        collector = asyncio.create_task(runtime.codex.start_turn_and_collect(
+            "thr_test", [{"type": "text", "text": "offline lifecycle test"}],
+            on_turn_started=on_started,
+        ))
+        await asyncio.wait_for(turn_started.wait(), timeout=1)
+        await runtime.codex.client.request("test/request_user_input", {
+            "threadId": "thr_test", "turnId": "turn_test",
+        })
+        await asyncio.wait_for(cards.get(), timeout=1)
+        result = await asyncio.wait_for(collector, timeout=2)
+        assert result.status == "interrupted"
+        answered = await runtime.codex.client.wait_for_notification(
+            lambda notification: notification.get("method") == "test/server_request_answered", timeout=1,
+        )
+        assert answered["params"]["requestId"] == 9001
+        assert answered["params"]["result"] is None
+        assert "clarification_expired" in answered["params"]["error"]["message"]
+        assert broker._pending == broker._by_rpc == {}
+        assert runtime.codex.client._notification_observers == []
+        stats = await runtime.codex.client.request("test/stats", {})
+        assert stats["turnStarts"] == 1
+    finally:
+        if collector is not None:
+            collector.cancel()
+            await asyncio.gather(collector, return_exceptions=True)
+        await runtime.close()
 
 
 @pytest.mark.asyncio

@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import secrets
 import time
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,6 +66,16 @@ class PendingInput:
     expires_at: float = 0.0
     answered: bool = False
     answer_digest: str = ""
+    native_thread_id: str = ""
+    native_turn_id: str = ""
+
+
+@dataclass(frozen=True)
+class _AnswerReceipt:
+    key: SessionKey
+    runtime_generation: str
+    answer_digest: str
+    expires_at: float
 
 
 class UserInputBroker:
@@ -74,11 +87,24 @@ class UserInputBroker:
         on_expired: Any | None = None,
         scope_resolver: Any | None = None,
         turn_resolver: Any | None = None,
+        answer_cache_max_entries: int = 1024,
+        answer_cache_ttl_seconds: float = 600.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        if not math.isfinite(ttl_seconds) or ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive and finite")
+        if type(answer_cache_max_entries) is not int or answer_cache_max_entries <= 0:
+            raise ValueError("answer_cache_max_entries must be a positive integer")
+        if not math.isfinite(answer_cache_ttl_seconds) or answer_cache_ttl_seconds <= 0:
+            raise ValueError("answer_cache_ttl_seconds must be positive and finite")
         self.runtime_generation = str(runtime_generation)
         self._ttl = float(ttl_seconds)
+        self._clock = clock
+        self._answer_cache_max_entries = answer_cache_max_entries
+        self._answer_cache_ttl = float(answer_cache_ttl_seconds)
+        self._answered: OrderedDict[str, _AnswerReceipt] = OrderedDict()
         self._pending: dict[str, PendingInput] = {}
-        self._by_rpc: dict[str, str] = {}
+        self._by_rpc: dict[tuple[str, type, int | str], str] = {}
         self._on_expired = on_expired
         # 卡片要推给前端才有意义。没有 emitter 时桥是**惰性**的——
         # 模型提问、服务端挂起、十分钟后过期，而用户从头到尾没被告知过。
@@ -176,6 +202,12 @@ class UserInputBroker:
         rpc_id = raw.get("id")
         if rpc_id is None:
             raise UserInputError("server_request_without_id")
+        if type(rpc_id) not in (int, str):
+            raise UserInputError("server_request_invalid_id")
+        rpc_key = self._rpc_key(self.runtime_generation, rpc_id)
+        if rpc_key in self._by_rpc:
+            raise UserInputError("server_request_id_conflict")
+        self._prune_answered()
         # **原生回合号在**这里**翻译成业务回合号** ✓✓：这条事件从头到尾都该
         # 以业务号出现（入流盖章 ✓、快照恢复 ✓、前端按 `[data-turn-id]` 归位 ✓）
         # ——见 `_business_turn_id` 里那条实测根因 ✓。
@@ -194,65 +226,101 @@ class UserInputBroker:
             questions=questions,
             requested_schema=requested_schema,
             future=asyncio.get_running_loop().create_future(),
-            expires_at=time.monotonic() + self._ttl,
+            expires_at=self._clock() + self._ttl,
+            native_thread_id=str((raw.get("params") or {}).get("threadId") or ""),
+            native_turn_id=native_turn_id,
         )
         self._pending[ui_request_id] = record
-        self._by_rpc[self._rpc_key(raw)] = ui_request_id
-        if self._emitter is not None:
-            await self._emitter(
-                key,
-                {
-                    "type": "clarification.requested",
-                    "sessionId": key.session_id,
-                    "turnId": ui_turn_id,
-                    "payload": {
-                        "requestId": ui_request_id,
-                        "inputKind": input_kind,
-                        "questions": questions,
-                        "requestedSchema": requested_schema,
-                        "expiresIn": max(record.expires_at - time.monotonic(), 0.0),
+        self._by_rpc[rpc_key] = ui_request_id
+        try:
+            if self._emitter is not None:
+                await self._emitter(
+                    key,
+                    {
+                        "type": "clarification.requested",
+                        "sessionId": key.session_id,
+                        "turnId": ui_turn_id,
+                        "payload": {
+                            "requestId": ui_request_id,
+                            "inputKind": input_kind,
+                            "questions": questions,
+                            "requestedSchema": requested_schema,
+                            "expiresIn": max(record.expires_at - self._clock(), 0.0),
+                        },
                     },
-                },
-            )
+                )
+        except BaseException:
+            self._release_record(record)
+            if not record.future.done():
+                record.future.cancel()
+            elif not record.future.cancelled():
+                record.future.exception()
+            raise
         return record
+
+    def _release_record(self, record: PendingInput) -> None:
+        if self._pending.get(record.ui_request_id) is record:
+            self._pending.pop(record.ui_request_id)
+        rpc_key = self._rpc_key(record.runtime_generation, record.rpc_id)
+        if self._by_rpc.get(rpc_key) == record.ui_request_id:
+            self._by_rpc.pop(rpc_key)
+
+    def _prune_answered(self) -> None:
+        now = self._clock()
+        while self._answered:
+            oldest = next(iter(self._answered.values()))
+            if len(self._answered) <= self._answer_cache_max_entries and oldest.expires_at > now:
+                break
+            self._answered.popitem(last=False)
 
     async def _await_answer(self, record: PendingInput) -> dict[str, Any]:
         assert record.future is not None
-        remaining = max(record.expires_at - time.monotonic(), 0.0)
+        remaining = max(record.expires_at - self._clock(), 0.0)
         try:
             return await asyncio.wait_for(record.future, timeout=remaining or 0.001)
         except asyncio.TimeoutError as exc:
-            self._pending.pop(record.ui_request_id, None)
+            self._release_record(record)
             if self._on_expired is not None:
                 # 过期**不能只回一个 RPC error**：调用方需要先中断回合、
                 # 等它到终态，否则 Runtime 可能把错误当成空答案继续跑。
                 await self._on_expired(record)
             raise UserInputError("clarification_expired") from exc
+        finally:
+            self._release_record(record)
+            if record.future.done() and not record.future.cancelled():
+                record.future.exception()
 
     # ── 浏览器 → 我们 ───────────────────────────────────────────────
     async def answer(
         self, key: SessionKey, ui_request_id: str, response: dict[str, Any]
     ) -> dict[str, Any]:
+        self._prune_answered()
+        receipt = self._answered.get(str(ui_request_id))
+        if receipt is not None:
+            if receipt.key != key:
+                raise PermissionError("clarification_scope_mismatch")
+            return {"status": "accepted" if _digest(response) == receipt.answer_digest else "conflict"}
         record = self._pending.get(str(ui_request_id))
         if record is None:
             return {"status": "unknown_request"}
         if record.key != key:
             # 跨会话作答：这是越权，不是"输错了"。
             raise PermissionError("clarification_scope_mismatch")
-        # 顺序要紧：先判"答过没有"，再判"future 结束没有"。
-        # 反过来的话，第一次作答就让 future 结束，此后所有重发都会被当成
-        # already_answered——同答案重发拿不到"收到"、异答案重发也拿不到"冲突"，
-        # 而这两种恰恰是客户端最需要区分的情况。
-        if record.answered:
-            if _digest(response) == record.answer_digest:
-                return {"status": "accepted"}
-            return {"status": "conflict"}
+        if record.expires_at <= self._clock():
+            return {"status": "unknown_request"}
         if record.future is None or record.future.done():
+            self._release_record(record)
             return {"status": "already_answered"}
         payload = self._validate(record, response)
         record.answered = True
         record.answer_digest = _digest(response)
         record.future.set_result(payload)
+        self._release_record(record)
+        self._answered[record.ui_request_id] = _AnswerReceipt(
+            key=key, runtime_generation=record.runtime_generation,
+            answer_digest=record.answer_digest, expires_at=self._clock() + self._answer_cache_ttl,
+        )
+        self._prune_answered()
         return {"status": "accepted"}
 
     def _validate(self, record: PendingInput, response: dict[str, Any]) -> dict[str, Any]:
@@ -311,7 +379,8 @@ class UserInputBroker:
     # ── 生命周期 ────────────────────────────────────────────────────
     def snapshot(self, key: SessionKey) -> list[dict[str, Any]]:
         """仍然可答的卡片。断线重连时用它把卡恢复出来。"""
-        now = time.monotonic()
+        self._prune_answered()
+        now = self._clock()
         return [
             {
                 "requestId": record.ui_request_id,
@@ -323,6 +392,7 @@ class UserInputBroker:
             }
             for record in self._pending.values()
             if record.key == key and not record.answered and record.expires_at > now
+            and record.future is not None and not record.future.done()
         ]
 
     def resolve_native(self, runtime_generation: str, rpc_id: int | str, reason: str) -> None:
@@ -331,13 +401,15 @@ class UserInputBroker:
         注意该通知**只有 threadId/requestId，没有原因**——所以原因由本地状态决定，
         拿不到就记 `resolved`，不猜。
         """
-        ui_request_id = self._by_rpc.pop(self._rpc_key({"id": rpc_id}), None)
+        ui_request_id = self._by_rpc.get(self._rpc_key(runtime_generation, rpc_id))
         if ui_request_id is None:
             return
-        record = self._pending.pop(ui_request_id, None)
-        if record is None or record.future is None or record.future.done():
+        record = self._pending.get(ui_request_id)
+        if record is None or record.runtime_generation != runtime_generation:
             return
-        record.future.set_exception(UserInputError("clarification_resolved", reason))
+        self._release_record(record)
+        if record.future is not None and not record.future.done():
+            record.future.set_exception(UserInputError("clarification_resolved", reason))
 
     def expire_runtime(self, runtime_generation: str) -> None:
         """运行时换代（进程退出）：未答的原生请求全部作废。
@@ -347,9 +419,30 @@ class UserInputBroker:
         for ui_request_id, record in list(self._pending.items()):
             if record.runtime_generation != runtime_generation:
                 continue
-            self._pending.pop(ui_request_id, None)
+            self._release_record(record)
             if record.future is not None and not record.future.done():
                 record.future.set_exception(UserInputError("clarification_runtime_gone"))
+        for ui_request_id, receipt in list(self._answered.items()):
+            if receipt.runtime_generation == runtime_generation:
+                self._answered.pop(ui_request_id)
+
+    def start_runtime(self, runtime_generation: str) -> None:
+        if self.runtime_generation != runtime_generation:
+            self.expire_runtime(self.runtime_generation)
+            self.runtime_generation = str(runtime_generation)
+
+    def handle_notification(self, runtime_generation: str, notification: dict[str, Any]) -> None:
+        if notification.get("method") != "serverRequest/resolved":
+            return
+        params = notification.get("params")
+        if not isinstance(params, dict) or type(params.get("requestId")) not in (int, str):
+            return
+        rpc_id = params["requestId"]
+        request_id = self._by_rpc.get(self._rpc_key(runtime_generation, rpc_id))
+        record = self._pending.get(request_id) if request_id is not None else None
+        if record is None or record.native_thread_id != str(params.get("threadId") or ""):
+            return
+        self.resolve_native(runtime_generation, rpc_id, "resolved")
 
     def _business_turn_id(self, key: SessionKey, native_turn_id: str) -> str:
         """codex **原生**回合号 → **业务**回合号 ✓✓（F10 的真根就在这一步 ✗✓）。
@@ -379,10 +472,11 @@ class UserInputBroker:
 
     def _scope_from_params(self, params: dict[str, Any]) -> SessionKey:
         thread_id = str(params.get("threadId") or "")
-        if self._scope_resolver is not None and thread_id:
-            resolved = self._scope_resolver(thread_id)
+        if self._scope_resolver is not None:
+            resolved = self._scope_resolver(thread_id) if thread_id else None
             if resolved is not None:
                 return resolved
+            raise PermissionError("clarification_scope_unavailable")
         meta = params.get("_meta") or {}
         return SessionKey(
             tenant_id=str(meta.get("tenantId") or params.get("tenantId") or ""),
@@ -390,10 +484,8 @@ class UserInputBroker:
         )
 
     @staticmethod
-    def _rpc_key(raw: dict[str, Any]) -> str:
-        # 只用 rpc id 作键：JSON-RPC 的 id 在一条连接内唯一，而 `serverRequest/resolved`
-        # 通知里带的是 requestId（不是它自己的 id），带上 threadId 会让两边对不上。
-        return str(raw.get("id"))
+    def _rpc_key(runtime_generation: str, rpc_id: int | str) -> tuple[str, type, int | str]:
+        return runtime_generation, type(rpc_id), rpc_id
 
 
 def _digest(payload: dict[str, Any]) -> str:

@@ -248,6 +248,23 @@ class CodexAppServerHarness:
             "turn/interrupt", {"threadId": thread_id, "turnId": turn_id}
         )
 
+    async def interrupt_turn_and_wait(self, thread_id: str, turn_id: str) -> None:
+        def terminal_for_turn(notification: dict[str, Any]) -> bool:
+            event = _notification_to_event(notification)
+            native_turn = event.get("turn") or {}
+            event_turn_id = str(
+                event.get("turnId") or event.get("turn_id") or native_turn.get("id") or ""
+            )
+            return (
+                event_turn_id == turn_id
+                and _matches_turn(notification, thread_id, turn_id)
+                and _terminal_status(event) is not None
+            )
+
+        with self.client.observe_notification(terminal_for_turn) as terminal:
+            await self.interrupt_turn(thread_id, turn_id)
+            await asyncio.wait_for(terminal, timeout=self.client.request_timeout)
+
     async def next_event(self) -> dict[str, Any]:
         return await self.client.next_notification()
 

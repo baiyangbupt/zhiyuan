@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from app.harness.protocol import JsonRpcResponse, Notification
@@ -74,6 +76,41 @@ class AppServerClient:
         self.server_request_handler = server_request_handler
         self._server_request_tasks: set[asyncio.Task[None]] = set()
         self._overflow_dropped = 0
+        self.runtime_generation = secrets.token_hex(8)
+        self._ended_generation: str | None = None
+        self._on_runtime_started: Callable[[str], None] | None = None
+        self._on_runtime_exited: Callable[[str], None] | None = None
+        self._on_runtime_notification: Callable[[str, dict[str, Any]], None] | None = None
+        self._notification_observers: list[
+            tuple[str, Callable[[dict[str, Any]], bool], asyncio.Future[dict[str, Any]]]
+        ] = []
+
+    def set_runtime_handlers(
+        self,
+        *,
+        on_started: Callable[[str], None] | None = None,
+        on_exited: Callable[[str], None] | None = None,
+        on_notification: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> None:
+        self._on_runtime_started = on_started
+        self._on_runtime_exited = on_exited
+        self._on_runtime_notification = on_notification
+
+    @contextmanager
+    def observe_notification(
+        self, predicate: Callable[[dict[str, Any]], bool],
+    ) -> Iterator[asyncio.Future[dict[str, Any]]]:
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        observer = self.runtime_generation, predicate, future
+        self._notification_observers.append(observer)
+        try:
+            yield future
+        finally:
+            self._notification_observers.remove(observer)
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                future.exception()
 
     @property
     def protocol_overflow_count(self) -> int:
@@ -96,6 +133,10 @@ class AppServerClient:
             # 而后果是"把活着的进程判成死的"。
             limit=self.line_limit,
         )
+        self.runtime_generation = secrets.token_hex(8)
+        self._ended_generation = None
+        if self._on_runtime_started is not None:
+            self._on_runtime_started(self.runtime_generation)
         self._reader_task = asyncio.create_task(self._read_stdout())
         asyncio.create_task(self._read_stderr())
         asyncio.create_task(self._watch_process_exit())
@@ -200,13 +241,23 @@ class AppServerClient:
             entry for entry in self._notification_backlog if entry[0] >= cutoff
         ]
 
-    def _route_notification(self, notification: dict[str, Any]) -> None:
+    def _route_notification(
+        self, notification: dict[str, Any], *, runtime_generation: str | None = None,
+    ) -> None:
         """Deliver a notification to one matching waiter or preserve it for later.
 
         顺序很重要：**先匹配等待者，匹配不上才进 backlog**。这个顺序保证了
         积压上限再小也不会吃掉某次运行的终态——终态到达时那个运行的等待者正在
         等着，第一步就把它领走了。
         """
+        generation = runtime_generation if runtime_generation is not None else self.runtime_generation
+        if generation != self.runtime_generation or generation == self._ended_generation:
+            return
+        if self._on_runtime_notification is not None:
+            self._on_runtime_notification(generation, notification)
+        for observer_generation, predicate, future in list(self._notification_observers):
+            if observer_generation == generation and not future.done() and predicate(notification):
+                future.set_result(notification)
         for predicate, future in list(self._notification_waiters):
             if future.done():
                 continue
@@ -229,11 +280,14 @@ class AppServerClient:
 
     async def _read_stdout(self) -> None:
         assert self.process is not None and self.process.stdout is not None
+        process = self.process
+        generation = self.runtime_generation
+        request_tasks: set[asyncio.Task[None]] = set()
         stream_broken: str | None = None
         try:
             while True:
                 try:
-                    raw_line = await self.process.stdout.readline()
+                    raw_line = await process.stdout.readline()
                 except ValueError as exc:
                     # **超长行不等于进程死了**（这个区分是本文件最贵的一课，见模块常量
                     # `DEFAULT_STDOUT_LINE_LIMIT` 的注释）：readline 撞上限时抛 ValueError，
@@ -248,6 +302,8 @@ class AppServerClient:
                     break
                 if not raw_line:
                     break
+                if self.process is not process or generation != self.runtime_generation:
+                    break
                 # `errors="replace"` 与 `_read_stderr` 一致：一行里有坏字节的解码错误
                 # 也会走进同一个 finally，把活着的进程判成死的——那是同一课的另一个入口。
                 # 换掉之后它退化成"非 JSON 行"，只丢这一条。
@@ -261,9 +317,13 @@ class AppServerClient:
                     continue
                 if "id" in payload and payload.get("method"):
                     if self.server_request_handler is not None:
-                        task = asyncio.create_task(self._handle_server_request(payload))
+                        task = asyncio.create_task(self._handle_server_request(
+                            payload, runtime_generation=generation,
+                        ))
                         self._server_request_tasks.add(task)
+                        request_tasks.add(task)
                         task.add_done_callback(self._server_request_tasks.discard)
+                        task.add_done_callback(request_tasks.discard)
                     else:
                         await self._write(
                             {
@@ -286,7 +346,9 @@ class AppServerClient:
                     else:
                         future.set_result(response.result or {})
                 elif payload.get("method"):
-                    self._route_notification(Notification.model_validate(payload).model_dump())
+                    self._route_notification(
+                        Notification.model_validate(payload).model_dump(), runtime_generation=generation,
+                    )
         finally:
             # 进程退出的唤醒必须是**全面**的：只唤醒 _pending 的话，
             # 正在等通知的回合会一直等到自己的 deadline——而对方已经不可能再说话了。
@@ -295,20 +357,35 @@ class AppServerClient:
             error = AppServerExited(
                 "app server exited" if stream_broken is None else f"app server {stream_broken}"
             )
-            for future in self._pending.values():
-                if not future.done():
+            if self.process is process and self.runtime_generation == generation:
+                self._ended_generation = generation
+                for future in self._pending.values():
+                    if not future.done():
+                        future.set_exception(error)
+                for _, future in list(self._notification_waiters):
+                    if not future.done():
+                        future.set_exception(error)
+            for observer_generation, _, future in list(self._notification_observers):
+                if observer_generation == generation and not future.done():
                     future.set_exception(error)
-            for _, future in list(self._notification_waiters):
-                if not future.done():
-                    future.set_exception(error)
-            for task in list(self._server_request_tasks):
+            if self._on_runtime_exited is not None:
+                self._on_runtime_exited(generation)
+            tasks_to_cancel = list(request_tasks)
+            for task in tasks_to_cancel:
                 task.cancel()
-            self._server_request_tasks.clear()
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+            self._server_request_tasks.difference_update(tasks_to_cancel)
 
-    async def _handle_server_request(self, payload: dict[str, Any]) -> None:
+    async def _handle_server_request(
+        self, payload: dict[str, Any], *, runtime_generation: str | None = None,
+    ) -> None:
         assert self.server_request_handler is not None
+        if not self._accepts_generation(runtime_generation):
+            return
         try:
             result = await self.server_request_handler(payload)
+            if not self._accepts_generation(runtime_generation):
+                return
             response: dict[str, Any] = {"jsonrpc": "2.0", "id": payload["id"]}
             if result is None:
                 response["result"] = None
@@ -316,6 +393,8 @@ class AppServerClient:
                 response["result"] = result
             await self._write(response)
         except Exception as exc:
+            if not self._accepts_generation(runtime_generation):
+                return
             await self._write(
                 {
                     "jsonrpc": "2.0",
@@ -323,6 +402,13 @@ class AppServerClient:
                     "error": {"code": -32000, "message": str(exc)},
                 }
             )
+
+    def _accepts_generation(self, runtime_generation: str | None) -> bool:
+        return runtime_generation is None or (
+            runtime_generation == self.runtime_generation
+            and runtime_generation != self._ended_generation
+            and not self._closed
+        )
 
     async def _read_stderr(self) -> None:
         if self.process is None or self.process.stderr is None:
