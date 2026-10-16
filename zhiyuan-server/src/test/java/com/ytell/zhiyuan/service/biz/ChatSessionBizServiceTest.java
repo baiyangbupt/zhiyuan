@@ -34,10 +34,14 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.RejectedExecutionException;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -82,6 +86,9 @@ public class ChatSessionBizServiceTest {
 
         ReflectionTestUtils.setField(chatSessionBizService, "chatSessionExtraDataSharedService", chatSessionExtraDataSharedService);
         ReflectionTestUtils.setField(chatSessionBizService, "planningStateService", planningStateService);
+        // 画像同步已移出请求路径（走专用池）：单测默认用"同线程执行"的替身，让既有断言保持确定性；
+        // 要验证"请求不等同步"的用例自行换成受控 executor（见 shouldNotBlockProfileSaveOnPlanningProfileSync）。
+        ReflectionTestUtils.setField(chatSessionBizService, "planningProfileSyncExecutor", (TaskExecutor) Runnable::run);
         ReflectionTestUtils.setField(chatSessionBizService, "volunteerDataProvider", volunteerDataProvider);
         ReflectionTestUtils.setField(chatSessionBizService, "volunteerRankClient", volunteerRankClient);
         ReflectionTestUtils.setField(chatSessionBizService, "conversationAccessService", conversationAccessService);
@@ -131,6 +138,79 @@ public class ChatSessionBizServiceTest {
 
         verify(chatSessionExtraDataSharedService).save(any(ChatSessionExtraData.class));
         verify(planningStateService, never()).syncProfileStateFromLegacy(any(Long.class), any(CreateSessionReq.class), any(UserProfileData.class), eq(true));
+    }
+
+    /**
+     * 画像保存**不等**规划态同步（2026-10-16 review §五-52）：请求路径只做落库 + 投递，
+     * 池里任务在请求返回后才被消费。这里用"只记录不执行"的 executor 替身钉住"不等"。
+     */
+    @Test
+    void shouldNotBlockProfileSaveOnPlanningProfileSync() {
+        Queue<Runnable> pendingSyncTasks = new ConcurrentLinkedQueue<>();
+        ReflectionTestUtils.setField(chatSessionBizService, "planningProfileSyncExecutor",
+                (TaskExecutor) pendingSyncTasks::add);
+
+        ChatSessionExtraDataReq req = buildUserProfileReq();
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKeyAndVersion(
+                6L, ChatSessionExtraDataConstants.USER_PROFILE_KEY, 0)).thenReturn(null);
+        when(volunteerDataProvider.getUserScoreDetail(6L)).thenReturn(new CreateSessionReq());
+
+        chatSessionBizService.addOrUpdateSessionExtraData(1L, req);
+
+        verify(chatSessionExtraDataSharedService).save(any(ChatSessionExtraData.class));
+        assertEquals(1, pendingSyncTasks.size(), "画像落库后同步任务必须已投递到专用池");
+        verify(planningStateService, never()).syncProfileStateFromLegacy(
+                any(Long.class), any(CreateSessionReq.class), any(UserProfileData.class), eq(true));
+
+        pendingSyncTasks.poll().run();
+        verify(planningStateService).syncProfileStateFromLegacy(
+                eq(6L), any(CreateSessionReq.class), any(UserProfileData.class), eq(true));
+    }
+
+    /** 同步任务抛异常只吞掉记 WARN：画像保存已经成功，绝不把请求翻成假失败（agent 10s 超时旧现场）。 */
+    @Test
+    void shouldSwallowProfileSyncFailureAndKeepSaveSuccessful() {
+        when(planningStateService.syncProfileStateFromLegacy(any(Long.class), any(), any(), eq(true)))
+                .thenThrow(new IllegalStateException("planningState 38MB 读/写超时"));
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKeyAndVersion(
+                6L, ChatSessionExtraDataConstants.USER_PROFILE_KEY, 0)).thenReturn(null);
+        when(volunteerDataProvider.getUserScoreDetail(6L)).thenReturn(new CreateSessionReq());
+
+        ChatSessionExtraData saved = chatSessionBizService.addOrUpdateSessionExtraData(1L, buildUserProfileReq());
+
+        assertNotNull(saved, "画像保存必须成功返回，不受同步失败影响");
+        verify(chatSessionExtraDataSharedService).save(any(ChatSessionExtraData.class));
+        verify(planningStateService).syncProfileStateFromLegacy(
+                eq(6L), any(CreateSessionReq.class), any(UserProfileData.class), eq(true));
+    }
+
+    /** 同步池拒绝（队列满）也只记 WARN：异常绝不抖回画像保存请求。 */
+    @Test
+    void shouldKeepProfileSaveSuccessfulWhenSyncPoolRejects() {
+        ReflectionTestUtils.setField(chatSessionBizService, "planningProfileSyncExecutor",
+                (TaskExecutor) task -> {
+                    throw new RejectedExecutionException("profile sync queue full");
+                });
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKeyAndVersion(
+                6L, ChatSessionExtraDataConstants.USER_PROFILE_KEY, 0)).thenReturn(null);
+
+        ChatSessionExtraData saved = chatSessionBizService.addOrUpdateSessionExtraData(1L, buildUserProfileReq());
+
+        assertNotNull(saved);
+        verify(chatSessionExtraDataSharedService).save(any(ChatSessionExtraData.class));
+        verify(planningStateService, never()).syncProfileStateFromLegacy(
+                any(Long.class), any(CreateSessionReq.class), any(UserProfileData.class), eq(true));
+    }
+
+    private ChatSessionExtraDataReq buildUserProfileReq() {
+        ChatSessionExtraDataReq req = new ChatSessionExtraDataReq();
+        req.setChatSessionId(6L);
+        req.setDataKey(ChatSessionExtraDataConstants.USER_PROFILE_KEY);
+        req.setDataType(DataType.JSON_OBJECT);
+        UserProfileData userProfileData = new UserProfileData();
+        userProfileData.getNegative_city_info().setProvince(java.util.Arrays.asList("北京"));
+        req.setDataValue(userProfileData);
+        return req;
     }
 
     @Test

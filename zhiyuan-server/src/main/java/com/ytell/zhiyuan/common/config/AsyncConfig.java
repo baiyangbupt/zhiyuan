@@ -37,6 +37,28 @@ public class AsyncConfig implements AsyncConfigurer {
     }
 
     /**
+     * 画像落库后的规划态补写池（`ChatSessionBizService` 的 add-extra-data 链路，
+     * 2026-10-16 review §五-52：38.4MB planningState 重写不能挂在画像保存的请求线程上）。
+     *
+     * <p>任务全是"可重放的补缺"（fillIfEmpty + 写路径 CAS 自身有重读重放）：小池 + 有界队列，
+     * 队列满直接拒绝（AbortPolicy）由提交点吞掉记 WARN，**绝不 CallerRuns 反压请求线程**，
+     * 也绝不与 SSE 池（asyncTaskExecutor）共池互相拖累。</p>
+     */
+    @Bean("planningProfileSyncExecutor")
+    public TaskExecutor planningProfileSyncExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(2);
+        executor.setQueueCapacity(200);
+        executor.setThreadNamePrefix("profile-sync-");
+        executor.setKeepAliveSeconds(60);
+        executor.setAllowCoreThreadTimeOut(true);
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        executor.initialize();
+        return executor;
+    }
+
+    /**
      * 专门用于SSE推送的异步线程池
      * 配置较小的线程池，避免过多线程影响性能
      */

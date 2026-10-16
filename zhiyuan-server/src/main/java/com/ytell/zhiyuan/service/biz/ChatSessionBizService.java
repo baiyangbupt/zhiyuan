@@ -55,9 +55,13 @@ import com.ytell.zhiyuan.web.interceptor.UserInfoThreadLocalUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FileUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronizationAdapter;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.io.File;
 import java.io.IOException;
@@ -120,6 +124,13 @@ public class ChatSessionBizService {
     private VolunteerDataProvider volunteerDataProvider;
     @Autowired
     private PlanningStateService planningStateService;
+    /**
+     * 画像落库后的规划态补写专用池（`planningProfileSyncExecutor`，见 AsyncConfig）。
+     * 补写要读/重写 38.4MB 的 planningState，绝不能占着画像保存的请求线程（2026-10-16 review §五-52）。
+     */
+    @Autowired
+    @Qualifier("planningProfileSyncExecutor")
+    private TaskExecutor planningProfileSyncExecutor;
     @Autowired
     private VolunteerFileAsyncService volunteerFileAsyncService;
     @Autowired
@@ -1643,35 +1654,74 @@ public class ChatSessionBizService {
             data.setDataVersion(req.getVersion());
             data.setDataValue(convertedValue);
             chatSessionExtraDataSharedService.save(data);
-            syncPlanningProfileStateIfNeeded(req, convertedValue);
+            schedulePlanningProfileStateSync(req, convertedValue);
             return data;
         } else {
             dbData.setDataType(req.getDataType());
             dbData.setDataValue(convertedValue);
             chatSessionExtraDataSharedService.updateById(dbData);
-            syncPlanningProfileStateIfNeeded(req, convertedValue);
+            schedulePlanningProfileStateSync(req, convertedValue);
             return dbData;
 
         }
     }
 
-    private void syncPlanningProfileStateIfNeeded(ChatSessionExtraDataReq req, String convertedValue) {
+    /**
+     * 画像（userprofile）落库后的规划态补写：**移出请求路径**（2026-10-16 review §五-52 治本）。
+     *
+     * <p>背景：{@code syncProfileStateFromLegacy} 要读→解析→CAS 重写 38.4MB 的 planningState
+     * （实测 20.6s），把一次小画像保存拖成 agent 侧 10s 超时的"假失败"（写其实已成功）。</p>
+     *
+     * <p>现在是：画像行落库（有事务则 afterCommit）后把补写丢给专用线程池
+     * （`planningProfileSyncExecutor`），主请求不等待、不等结果；补写是幂等的 fillIfEmpty + 写路径
+     * CAS（输的一方重读重放），失败/拒绝只记 WARN——真正的状态一致性由 sync 自己的 CAS 兜住，
+     * 不需要请求线程替它背时延。</p>
+     */
+    private void schedulePlanningProfileStateSync(ChatSessionExtraDataReq req, String convertedValue) {
         if (req == null
                 || req.getChatSessionId() == null
                 || !ChatSessionExtraDataConstants.USER_PROFILE_KEY.equals(req.getDataKey())
                 || Strings.isNullOrEmpty(convertedValue)) {
             return;
         }
+        final Long chatSessionId = req.getChatSessionId();
+        final String dataKey = req.getDataKey();
+        Runnable syncTask = () -> {
+            try {
+                UserProfileData userProfileData = JSONObject.parseObject(convertedValue, UserProfileData.class);
+                planningStateService.syncProfileStateFromLegacy(
+                        chatSessionId,
+                        volunteerDataProvider.getUserScoreDetail(chatSessionId),
+                        userProfileData,
+                        true);
+            } catch (Exception e) {
+                // 补写失败不响亮：下一次规划读写会重放（fillIfEmpty 幂等），只留 WARN 给排障
+                log.warn("async sync planning profile from extra-data failed, chatSessionId={}, dataKey={}",
+                        chatSessionId, dataKey, e);
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            try {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+                    @Override
+                    public void afterCommit() {
+                        submitPlanningProfileSync(syncTask, chatSessionId);
+                    }
+                });
+                return;
+            } catch (RuntimeException e) {
+                log.warn("register afterCommit for planning profile sync failed, submit directly, chatSessionId={}",
+                        chatSessionId, e);
+            }
+        }
+        submitPlanningProfileSync(syncTask, chatSessionId);
+    }
+
+    private void submitPlanningProfileSync(Runnable syncTask, Long chatSessionId) {
         try {
-            UserProfileData userProfileData = JSONObject.parseObject(convertedValue, UserProfileData.class);
-            planningStateService.syncProfileStateFromLegacy(
-                    req.getChatSessionId(),
-                    volunteerDataProvider.getUserScoreDetail(req.getChatSessionId()),
-                    userProfileData,
-                    true);
+            planningProfileSyncExecutor.execute(syncTask);
         } catch (Exception e) {
-            log.error("sync planning profile from extra-data failed, chatSessionId={}, dataKey={}",
-                    req.getChatSessionId(), req.getDataKey(), e);
+            log.warn("planning profile sync task rejected, chatSessionId={}", chatSessionId, e);
         }
     }
 
