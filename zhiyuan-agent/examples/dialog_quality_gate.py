@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -152,6 +153,60 @@ def _existing_local_pytest_targets() -> list[str]:
     return [target for target in LOCAL_PYTEST_TARGETS if (ROOT / target).exists()]
 
 
+def clone_fixture_violations(commands: list[GateCommand]) -> list[str]:
+    violations: list[str] = []
+    for command in commands:
+        if not any(part.endswith("dialog_regression_runner.py") for part in command.command):
+            continue
+        if "--cases" not in command.command:
+            continue
+        case_path = ROOT / command.command[command.command.index("--cases") + 1]
+        volunteer_dir = ROOT / Path(
+            os.environ.get("ZHIYUAN_REGRESSION_VOLUNTEER_DATA_DIR")
+            or ROOT.parent / "zhiyuan-server" / "data" / "tmp"
+        )
+        if "--backend-volunteer-data-dir" in command.command:
+            volunteer_dir = ROOT / command.command[command.command.index("--backend-volunteer-data-dir") + 1]
+        try:
+            payload = json.loads(case_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            violations.append(f"{case_path.name}: unreadable case manifest")
+            continue
+        defaults = payload.get("defaults") if isinstance(payload, dict) else None
+        defaults = defaults if isinstance(defaults, dict) else {}
+        cases = payload.get("cases") if isinstance(payload, dict) else payload
+        if not isinstance(cases, list) or any(not isinstance(case, dict) for case in cases):
+            violations.append(f"{case_path.name}: invalid case manifest")
+            continue
+        for case in cases:
+            source = case.get("cloneBackendStateFromSessionId", defaults.get("cloneBackendStateFromSessionId"))
+            if not source:
+                continue
+            source = str(source).strip()
+            label = f"{case_path.name}:{case.get('name', 'unnamed')}"
+            if not source.isdigit():
+                violations.append(f"{label}: clone source must be numeric")
+                continue
+            source_file = volunteer_dir / f"session_volunteer_{source}.json"
+            try:
+                json.loads(source_file.read_text(encoding="utf-8"))
+            except OSError:
+                violations.append(f"{label}: missing or unreadable fixture {source_file}")
+            except ValueError:
+                violations.append(f"{label}: invalid JSON fixture {source_file}")
+    return violations
+
+
+def _fixture_preflight(commands: list[GateCommand]) -> int:
+    violations = clone_fixture_violations(commands)
+    if violations:
+        print(f"[gate] fixture preflight failed ({len(violations)} references); no commands started", flush=True)
+        for violation in violations:
+            print(f"[gate] {violation}", flush=True)
+        return 2
+    return 0
+
+
 def _build_final_action_commands(
     case_names: list[str],
     *,
@@ -205,6 +260,7 @@ def build_gate_plan(
     agent_url: str | None = None,
     internal_service_url: str | None = None,
     backend_db_password: str | None = None,
+    backend_volunteer_data_dir: str | None = None,
     provider_config: str = "examples/model_provider_benchmark.providers.example.json",
     provider_names: list[str] | None = None,
 ) -> list[GateCommand]:
@@ -351,6 +407,10 @@ def build_gate_plan(
                 output=str(output),
             )
         )
+    if backend_volunteer_data_dir is not None:
+        for command in commands:
+            if "examples/dialog_regression_runner.py" in command.command:
+                command.command.extend(["--backend-volunteer-data-dir", backend_volunteer_data_dir])
     return commands
 
 
@@ -417,6 +477,8 @@ def _write_plan(path: str | None, commands: list[GateCommand], *, markdown: bool
 
 
 def _run_commands(commands: list[GateCommand], *, stop_on_failure: bool) -> int:
+    if _fixture_preflight(commands):
+        return 2
     exit_code = 0
     for command in commands:
         print(f"[gate] running {command.name}: {' '.join(_command_for_display(command.command))}", flush=True)
@@ -432,6 +494,7 @@ def _run_commands(commands: list[GateCommand], *, stop_on_failure: bool) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build or run the Agent dialog quality gate.")
     parser.add_argument("--execute", action="store_true", help="run selected commands; default only prints the plan")
+    parser.add_argument("--check-fixtures", action="store_true", help="check selected clone fixtures without executing commands")
     parser.add_argument(
         "--mode",
         action="append",
@@ -443,6 +506,7 @@ def main() -> None:
     parser.add_argument("--agent-url", help="override WebSocket URL for live dialog runner")
     parser.add_argument("--internal-service-url", help="backend base URL passed to clone-backed final-action runners")
     parser.add_argument("--backend-db-password", help="database password passed to clone-backed final-action runners")
+    parser.add_argument("--backend-volunteer-data-dir", help="local directory containing clone source session_volunteer JSON fixtures")
     parser.add_argument("--provider-config", default="examples/model_provider_benchmark.providers.example.json")
     parser.add_argument("--provider", action="append", default=[], help="provider name passed to model_provider_benchmark")
     parser.add_argument("--output", help="write the dry-run plan to this path")
@@ -456,11 +520,15 @@ def main() -> None:
         agent_url=args.agent_url,
         internal_service_url=args.internal_service_url,
         backend_db_password=args.backend_db_password,
+        backend_volunteer_data_dir=args.backend_volunteer_data_dir,
         provider_config=args.provider_config,
         provider_names=list(args.provider or []),
     )
     default_modes = {"local"} if args.execute else {"all"}
     selected = _filter_commands(commands, set(args.mode or default_modes))
+
+    if args.check_fixtures:
+        raise SystemExit(_fixture_preflight(selected))
 
     if not args.execute:
         _write_plan(args.output, selected, markdown=args.markdown)

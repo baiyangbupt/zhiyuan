@@ -248,9 +248,8 @@ def test_final_action_ordered_plan_pruning_cannot_pass_with_empty_plan():
     assert violations == []
 
 
-def test_final_action_explicit_clone_sources_have_volunteer_fixture():
+def test_final_action_explicit_clone_sources_are_numeric():
     violations = []
-    volunteer_dir = gate.ROOT.parent / "zhiyuan-server" / "data" / "tmp"
     for case_file_name in gate.FINAL_ACTION_CASE_FILES:
         payload = json.loads((gate.EXAMPLES / case_file_name).read_text(encoding="utf-8"))
         defaults = payload.get("defaults", {}) if isinstance(payload, dict) else {}
@@ -262,11 +261,111 @@ def test_final_action_explicit_clone_sources_have_volunteer_fixture():
             )
             if not source_session:
                 continue
-            source_file = volunteer_dir / f"session_volunteer_{source_session}.json"
-            if not source_file.exists():
+            if not str(source_session).isdigit():
                 violations.append(f"{case_file_name}:{case.get('name')}:{source_session}")
 
     assert violations == []
+
+
+def _fixture_command(tmp_path, payload):
+    case_path = tmp_path / "cases.json"
+    case_path.write_text(json.dumps(payload), encoding="utf-8")
+    return gate.GateCommand(
+        name="fixture-regression",
+        category="final-action",
+        command=[
+            "python", "examples/dialog_regression_runner.py", "--cases", str(case_path),
+            "--backend-volunteer-data-dir", str(tmp_path),
+        ],
+        description="offline fixture check",
+    )
+
+
+def test_fixture_preflight_reports_missing_file_and_case(tmp_path):
+    command = _fixture_command(tmp_path, {"defaults": {"cloneBackendStateFromSessionId": "123"}, "cases": [{"name": "missing-plan"}]})
+    violations = gate.clone_fixture_violations([command])
+    assert len(violations) == 1
+    assert "session_volunteer_123.json" in violations[0]
+    assert "missing-plan" in violations[0]
+
+
+def test_fixture_preflight_respects_case_override_and_accepts_valid_json(tmp_path):
+    command = _fixture_command(tmp_path, {
+        "defaults": {"cloneBackendStateFromSessionId": "123"},
+        "cases": [{"name": "override", "cloneBackendStateFromSessionId": "456"}],
+    })
+    (tmp_path / "session_volunteer_456.json").write_text('{"volunteers":[]}', encoding="utf-8")
+    assert gate.clone_fixture_violations([command]) == []
+
+
+def test_fixture_preflight_reports_invalid_json_without_dumping_contents(tmp_path):
+    command = _fixture_command(tmp_path, [{"name": "bad-plan", "cloneBackendStateFromSessionId": "123"}])
+    (tmp_path / "session_volunteer_123.json").write_text("sensitive-invalid-fixture", encoding="utf-8")
+    violations = gate.clone_fixture_violations([command])
+    assert len(violations) == 1
+    assert "invalid JSON" in violations[0]
+    assert "sensitive-invalid-fixture" not in violations[0]
+
+
+def test_fixture_preflight_rejects_non_numeric_clone_source(tmp_path):
+    command = _fixture_command(tmp_path, [{"name": "bad-source", "cloneBackendStateFromSessionId": "../../secret"}])
+    assert "numeric" in gate.clone_fixture_violations([command])[0]
+
+
+@pytest.mark.parametrize("stop_on_failure", [True, False])
+def test_missing_fixtures_block_execution_before_any_child_process(tmp_path, monkeypatch, capsys, stop_on_failure):
+    command = _fixture_command(tmp_path, [{"name": "missing-plan", "cloneBackendStateFromSessionId": "123"}])
+    monkeypatch.setattr(gate.subprocess, "run", lambda *args, **kwargs: pytest.fail("no process before fixture preflight"))
+    assert gate._run_commands([command], stop_on_failure=stop_on_failure) == 2
+    assert "fixture preflight failed" in capsys.readouterr().out
+
+
+def test_local_gate_has_no_private_fixture_dependency(monkeypatch):
+    command = gate.GateCommand(name="local", category="local", command=["python", "-m", "pytest"], description="unit tests")
+    assert gate.clone_fixture_violations([command]) == []
+    monkeypatch.setattr(gate.subprocess, "run", lambda *args, **kwargs: type("Result", (), {"returncode": 0})())
+    assert gate._run_commands([command], stop_on_failure=True) == 0
+
+
+def test_gate_passes_fixture_directory_to_every_dialog_runner(tmp_path):
+    commands = gate.build_gate_plan(backend_volunteer_data_dir=str(tmp_path))
+    runners = [command for command in commands if "examples/dialog_regression_runner.py" in command.command]
+    assert runners
+    for command in runners:
+        assert command.command[command.command.index("--backend-volunteer-data-dir") + 1] == str(tmp_path)
+
+
+def test_check_fixtures_cli_never_executes_or_creates_metrics(tmp_path, monkeypatch):
+    command = _fixture_command(tmp_path, [{"name": "missing-plan", "cloneBackendStateFromSessionId": "123"}])
+    monkeypatch.setattr(gate, "build_gate_plan", lambda **kwargs: [command])
+    monkeypatch.setattr(sys, "argv", ["gate", "--check-fixtures", "--mode", "final-action", "--metrics-dir", str(tmp_path / "metrics")])
+    monkeypatch.setattr(gate.subprocess, "run", lambda *args, **kwargs: pytest.fail("fixture check must not execute"))
+    with pytest.raises(SystemExit) as failure:
+        gate.main()
+    assert failure.value.code == 2
+    assert not (tmp_path / "metrics").exists()
+
+
+@pytest.mark.parametrize("payload", [None, 123, {}, {"cases": None}, {"cases": "not-an-array"}, {"cases": [None]}])
+def test_fixture_preflight_rejects_malformed_case_manifests(tmp_path, payload):
+    command = _fixture_command(tmp_path, payload)
+    violations = gate.clone_fixture_violations([command])
+    assert len(violations) == 1
+    assert "invalid case manifest" in violations[0]
+
+
+def test_fixture_preflight_handles_nullable_defaults_like_runner(tmp_path):
+    command = _fixture_command(tmp_path, {"defaults": None, "cases": [{"name": "standalone", "cloneBackendStateFromSessionId": " 123 "}]})
+    (tmp_path / "session_volunteer_123.json").write_text("[]", encoding="utf-8")
+    assert gate.clone_fixture_violations([command]) == []
+
+
+def test_fixture_preflight_uses_runner_environment_default(tmp_path, monkeypatch):
+    command = _fixture_command(tmp_path, [{"name": "env-fixture", "cloneBackendStateFromSessionId": "123"}])
+    command.command = command.command[:-2]
+    monkeypatch.setenv("ZHIYUAN_REGRESSION_VOLUNTEER_DATA_DIR", str(tmp_path))
+    (tmp_path / "session_volunteer_123.json").write_text("[]", encoding="utf-8")
+    assert gate.clone_fixture_violations([command]) == []
 
 
 def test_gate_plan_adds_quality_report_for_each_live_case(tmp_path):
