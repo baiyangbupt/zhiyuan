@@ -16,8 +16,13 @@ export interface IRefParams {
   };
 }
 
-const SubjectScores = forwardRef<IRefParams, ISubjectScoresProps>((props: ISubjectScoresProps,
-    ref: any) => {
+interface ISubjectScoresProps {
+    selectedSubjects: string[];
+    areaId?: string;
+}
+
+const SubjectScores = forwardRef<Pick<IRefParams, 'form'>, ISubjectScoresProps>((props,
+    ref) => {
     const {selectedSubjects, areaId} = props;
     const [form] = Form.useForm();
     const mainSubjectMax = resolveSubjectScoreMax(areaId, 'main');

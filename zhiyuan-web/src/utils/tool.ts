@@ -63,7 +63,25 @@ export const getYuzhiToken = () => {
   if (!isClient) {
     return '';
   }
-  return getStorage(EStorageKey.TOKEN);
+  const token = getStorage(EStorageKey.TOKEN);
+  return typeof token === 'string' ? token : '';
+};
+
+export const getSaasInfo = () => {
+  const stored = getStorage(EStorageKey.ZY_SAAS_PC);
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
+    return { uToken: '', institutionId: '' };
+  }
+  const uToken = 'uToken' in stored && typeof stored.uToken === 'string' ? stored.uToken : '';
+  const institutionId = 'institutionId' in stored ? stored.institutionId : null;
+  return {
+    uToken,
+    institutionId:
+      typeof institutionId === 'string' ||
+      (typeof institutionId === 'number' && Number.isFinite(institutionId))
+        ? String(institutionId)
+        : '',
+  };
 };
 
 // 统一前缀：所有 localStorage key 一律加上该前缀

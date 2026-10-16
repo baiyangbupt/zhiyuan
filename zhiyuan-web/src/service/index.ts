@@ -1,5 +1,5 @@
 import { AxiosResponse } from 'axios';
-import { getSid, getToken, getTicket, getYuzhiToken } from '@/utils/tool';
+import { getSid, getToken, getTicket, getYuzhiToken, getSaasInfo } from '@/utils/tool';
 import { isClient, tenant } from '@/constants/constants';
 import { message } from '@/store/message';
 import getSign from '@/utils/encryptData';

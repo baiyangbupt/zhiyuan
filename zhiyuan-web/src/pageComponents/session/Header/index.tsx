@@ -12,6 +12,7 @@ import { useIsMinip } from '@/hooks/useIsMinip';
 import style from './style.module.scss';
 import LogoImg from '@/images/icons/logo2.png';
 import type { MenuProps } from 'antd';
+import type { IUserInfo } from '@/interface/api/user';
 
 const navList = [
   { label: 'ai志愿填报', value: 'customer' },
@@ -20,13 +21,8 @@ const navList = [
   // { label: '关于我们', value: 'about' },
 ];
 
-interface IUserInfo {
-  userName: string;
-  avatarUrl: string;
-}
-
 interface IHeaderProps {
-  userInfo: IUserInfo;
+  userInfo?: Pick<IUserInfo, 'userName' | 'avatarUrl'>;
   currentItem?: string;
 }
 const Header: React.FC<IHeaderProps> = ({ userInfo, currentItem }) => {
@@ -49,7 +45,10 @@ const Header: React.FC<IHeaderProps> = ({ userInfo, currentItem }) => {
 
   useEffect(() => {
     if (userInfo) {
-      setDisplayUserInfo(userInfo);
+      setDisplayUserInfo({
+        userName: userInfo.userName || '用户名称',
+        avatarUrl: userInfo.avatarUrl || '',
+      });
     }
   }, [userInfo]);
 

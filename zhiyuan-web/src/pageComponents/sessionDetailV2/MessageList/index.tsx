@@ -47,7 +47,7 @@ import UnderstandingCard from '@/pageComponents/sessionDetailV2/ConversationEven
 import { WebSocketMessage } from '@/hooks/websocket';
 import TypingAnimation from '@/components/generating/TypingAnimation';
 import SendPng from '@/images/icons/send.png';
-import { marked } from 'marked';
+import { renderMarkdown } from '@/utils/markdown.mjs';
 import { createFetchQueue } from './fetchQueue.mjs';
 import {
   createHeartbeatWatchdog,
@@ -56,10 +56,6 @@ import {
   shouldSkipSilenceCheck,
 } from '@/utils/heartbeatWatchdog.mjs';
 import { applyPendingActionResult, parseConversationActionResult } from '@/utils/conversationEvents.mjs';
-
-marked.use({ gfm: true, breaks: true });
-
-const renderMarkdown = (content: string) => marked.parse(content) as string;
 
 const OPTIMISTIC_MESSAGE_ID_BASE = 1_000_000_000_000;
 

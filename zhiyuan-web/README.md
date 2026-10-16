@@ -11,12 +11,18 @@
 
 ## 开发
 
+需要 Node.js >= 22.14.0。
+
 ```bash
 npm install
 npm run dev          # 开发服务器 (端口 3001)
+npm run typecheck    # 严格类型检查，不写增量缓存
+npm run test:unit    # 无网络工具及消息组件单元测试
 npm run build:dev    # 开发环境构建
 npm run build:prod   # 生产环境构建
 ```
+
+Next 构建会阻止 TypeScript 错误，不再忽略类型失败。ESLint 仍沿用已有的构建豁免，尚未恢复完整 lint 门禁，不能用类型检查通过替代 lint 通过。
 
 ## 页面路由
 

@@ -5,6 +5,8 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
+    "typecheck": "tsc --noEmit --incremental false",
+    "test:unit": "node --test src/utils/*.test.mjs src/pageComponents/sessionDetailV2/*/*.test.mjs",
     "dev": "env-cmd -f .env.dev next dev -H 127.0.0.1 -p 3001",
     "dev:expert": "env-cmd -f .env.expert next dev -H 127.0.0.1 -p 3002",
     "dev:test": "env-cmd -f .env.test next dev -H 127.0.0.1",
@@ -48,6 +50,7 @@
     "qs": "^6.11.0",
     "react": "18.2.0",
     "react-dom": "18.2.0",
+    "sanitize-html": "2.18.1",
     "swiper": "^12.0.2",
     "wavesurfer.js": "^7.10.2"
   },

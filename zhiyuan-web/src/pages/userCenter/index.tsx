@@ -27,14 +27,31 @@ import { getOssSignApi, getUserInfoApi, updateUserInfoApi } from '@/service/apis
 import { LoadingOutlined, PlusOutlined } from '@ant-design/icons';
 import { EStorageKey, getStorage, getYuzhiToken, setStorage } from '@/utils/tool';
 import {
-  ISelectConfig,
+  ICommonSelectProps,
   ISelectDataItem,
   ISelectTypeEnum,
   ISubjectItem,
-  ISubjectList,
+  ISubjectTypeAndExamObject,
   ISubjectType,
 } from '@/interface/api/updateBaseInfo';
+import type { IUserInfo, IUpdateUserInfo } from '@/interface/api/user';
 import { navigateTo } from '@/utils/router';
+
+interface IUserInfoForm {
+  userName: string;
+  sex?: string;
+  areaId: string;
+  examYear?: number;
+  avatar?: string;
+  firstSubject?: string;
+  secondSubject?: string[];
+  artsOrSciences?: string;
+}
+
+type UserSubjectSelectConfig = {
+  name?: string;
+  config: Omit<ICommonSelectProps, 'selectedDataIndex' | 'onChooseItem'>;
+};
 
 const sexOptions = [
   { value: 'male', label: '男' },
@@ -105,10 +122,10 @@ const RIGHTS_DESCRIPTION_MAP: Record<
 };
 
 const UserCenter: React.FC = () => {
-  const [form] = Form.useForm();
-  const firstSubject = Form.useWatch('firstSubject', form);
-  const secondSubject = Form.useWatch('secondSubject', form);
-  const artsOrSciences = Form.useWatch('artsOrSciences', form);
+  const [form] = Form.useForm<IUserInfoForm>();
+  const firstSubject: string | undefined = Form.useWatch('firstSubject', form);
+  const secondSubject: string[] | undefined = Form.useWatch('secondSubject', form);
+  const artsOrSciences: string | undefined = Form.useWatch('artsOrSciences', form);
 
   // isCustomer true-C端 false-B端
 
@@ -121,35 +138,33 @@ const UserCenter: React.FC = () => {
   }, []);
   useEffect(() => {
     if (subjectType === '01') {
-      setSelectedArtsOrSciences([firstSubject]);
+      setSelectedArtsOrSciences(firstSubject ? [firstSubject] : []);
     }
   }, [firstSubject]);
 
   const [provinceList, setProvinceList] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [yearList, setYearList] = useState<any[]>([]);
-  const [userSubjectList, setUserSubjectList] = useState<any[]>([]); // 新增状态存储用户科目列表
   const [loading, setLoading] = useState(false);
   const [imageUrl, setImageUrl] = useState<string>();
   const [ossSign, setOssSign] = useState<any>({});
   const token: any = getYuzhiToken();
-  const [updateSelectConfig, setUpdateSelectConfig] = useState<any>([]);
-  const [tempSubjectList, setTempSubjectList] = useState<any>();
+  const [updateSelectConfig, setUpdateSelectConfig] = useState<UserSubjectSelectConfig[]>([]);
 
   const [subjectType, setSubjectType] = useState<ISubjectType>(); // 学科类型
   const [selectedFirstSubject, setSelectedFirstSubject] = useState<string[]>([]); // 首选科目
   const [selectedSecondSubject, setSelectedSecondSubject] = useState<string[]>([]); // 次选科目
   const [selectedArtsOrSciences, setSelectedArtsOrSciences] = useState<string[]>([]); // 文理分科
-  const [artsOrSciencesList, setArtsOrSciencesList] = useState<any[]>([]); // 文理分科
-  const [firstSubjectList, setFirstSubjectList] = useState<any[]>([]); // 首选科目
-  const [secondSubjectList, setSecondSubjectList] = useState<any[]>([]); // 次选科目
+  const [artsOrSciencesList, setArtsOrSciencesList] = useState<ISelectDataItem[]>([]);
+  const [firstSubjectList, setFirstSubjectList] = useState<ISubjectItem[]>([]);
+  const [secondSubjectList, setSecondSubjectList] = useState<ISubjectItem[]>([]);
   const [policy, setPolicy] = useState<string>('');
   const layout = {
     labelCol: { span: 6 },
     wrapperCol: { span: 18 },
   };
 
-  const [userInfo, setUserInfo] = useState<any>();
+  const [userInfo, setUserInfo] = useState<IUserInfo>();
   const [activeTab, setActiveTab] = useState<string>('basic');
   const [userInfoLoading, setUserInfoLoading] = useState<boolean>(false);
   
@@ -230,14 +245,13 @@ const UserCenter: React.FC = () => {
       userName: userInfo.userName || '',
       sex: userScoreOb?.sex?.code || '',
       areaId: userScoreOb?.province?.code || '',
-      examYear: userScoreOb?.examYear || '',
+      examYear: userScoreOb?.examYear,
       avatar: userInfo.avatarUrl || '',
     });
 
     if (userInfo.avatarUrl) setImageUrl(userInfo.avatarUrl);
 
     if (userScoreOb?.subjectList?.length) {
-      setUserSubjectList(userScoreOb.subjectList);
       // 文理科回显
       if (userScoreOb.subjectType?.code) {
         form.setFieldValue('artsOrSciences', userScoreOb.subjectType.code);
@@ -391,7 +405,6 @@ const UserCenter: React.FC = () => {
       setSelectedSecondSubject([]);
       setSelectedArtsOrSciences([]);
     }
-    setTempSubjectList(data);
     setPolicy(data.policy);
     setSubjectType(data.policy);
 
@@ -424,7 +437,7 @@ const UserCenter: React.FC = () => {
     setArtsOrSciencesList(artsList);
 
     // 生成渲染配置
-    const config: ISelectConfig[] = [];
+    const config: UserSubjectSelectConfig[] = [];
     if (data.policy === ISubjectType.ArtsOrSciences) {
       config.push({
         config: {
@@ -482,36 +495,24 @@ const UserCenter: React.FC = () => {
   // 获取选科参数
   const getParams = () => {
     let type = '';
-    let subjectTypeObject = {};
-    let subjectMapList: ISubjectList[] = [];
+    let subjectTypeObject: ISubjectTypeAndExamObject = { code: '', desc: '' };
+    let subjectMapList: ISubjectItem[] = [];
 
     switch (subjectType) {
       case ISubjectType.ArtsOrSciences: {
         type = selectedArtsOrSciences[0] || '';
         subjectTypeObject = {
-          desc: artsOrSciencesList?.find(item => item.value === artsOrSciences)?.name,
-          code: artsOrSciences,
+          desc: artsOrSciencesList.find(item => item.value === artsOrSciences)?.name || '',
+          code: artsOrSciences || '',
         };
         break;
       }
 
       case ISubjectType.FirstAndSecond: {
-        [firstSubject].forEach(item => {
-          tempSubjectList.subjectList.push({
-            isFirst: 1,
-            subject: item,
-          });
-        });
-        secondSubject.forEach(item => {
-          tempSubjectList.subjectList.push({
-            isFirst: 0,
-            subject: item,
-          });
-        });
         // 合并首选和再选科目
         subjectMapList = [
           ...(firstSubjectList?.filter(item => [firstSubject].includes(item.value)) || []),
-          ...(secondSubjectList?.filter(item => secondSubject.includes(item.value)) || []),
+          ...secondSubjectList.filter(item => secondSubject?.includes(item.value)),
         ];
 
         type = firstSubjectList.find(item => item.value === firstSubject)?.subjectType || '';
@@ -523,16 +524,10 @@ const UserCenter: React.FC = () => {
       }
 
       case ISubjectType.ThreeOutOfSix: {
-        secondSubject.forEach(item => {
-          tempSubjectList.subjectList.push({
-            isFirst: 0,
-            subject: item,
-          });
-        });
         subjectMapList =
-          secondSubjectList?.filter(item => secondSubject.includes(item.value)) || [];
-        type = artsOrSciencesList[0].value || '';
-        subjectTypeObject = { desc: artsOrSciencesList[0].name, code: artsOrSciencesList[0].value };
+          secondSubjectList.filter(item => secondSubject?.includes(item.value));
+        type = artsOrSciencesList[0]?.value || '';
+        subjectTypeObject = { desc: artsOrSciencesList[0]?.name || '', code: type };
         break;
       }
     }
@@ -541,47 +536,26 @@ const UserCenter: React.FC = () => {
   };
 
   const handleVerify = () => {
-    let params = null;
-
-    if (storedIsCustomer) {
-      params = getParams();
-    }
     form.validateFields().then(async values => {
       const { userName, sex, areaId, examYear, firstSubject, secondSubject } = values;
       const selectedOption = sexOptions.find(opt => opt.value === sex);
       const selectedProvince = provinceList.find(opt => opt.code === areaId);
 
       const basicInfo = { userName, avatarUrl: imageUrl || userInfo?.avatarUrl };
-      let infoParams = { ...basicInfo };
+      const infoParams: IUpdateUserInfo = { ...basicInfo };
 
       if (storedIsCustomer) {
-        const subjectMapList: ISubjectList[] = [];
-
-        if (subjectType === ISubjectType.ArtsOrSciences) {
-          subjectMapList.push({ isFirst: 1, subject: firstSubject });
-        } else if (
-          subjectType === ISubjectType.FirstAndSecond ||
-          subjectType === ISubjectType.ThreeOutOfSix
-        ) {
-          (Array.isArray(secondSubject) ? secondSubject : []).forEach(s => {
-            subjectMapList.push({ isFirst: 0, subject: s });
-          });
-          if (subjectType === ISubjectType.FirstAndSecond) {
-            subjectMapList.push({ isFirst: 1, subject: firstSubject });
-          }
-        }
-
+        const params = getParams();
         infoParams.userScoreOb = {
           examYear,
           province: selectedProvince
             ? { code: selectedProvince.code, name: selectedProvince.label }
             : null,
           sex: selectedOption ? { code: selectedOption.value, name: selectedOption.label } : null,
-          subjectList: params?.subjectMapList,
-          subjectType: params?.subjectTypeObject,
+          subjectList: params.subjectMapList,
+          subjectType: params.subjectTypeObject,
         };
       }
-      console.log('infoParams', params, infoParams);
 
       try {
         const { code, data } = await updateUserInfoApi(infoParams);
@@ -726,7 +700,7 @@ const UserCenter: React.FC = () => {
                             </Form.Item>
                           ) : (
                             <>
-                              {updateSelectConfig?.map((item: any, index: number) => {
+                              {updateSelectConfig.map((item, index) => {
                                 const isSingle = item?.config?.selectType === ISelectTypeEnum.Single;
                                 const fieldName = item.name === '首选科目' ? 'firstSubject' : 'secondSubject';
 
@@ -785,6 +759,7 @@ const UserCenter: React.FC = () => {
                                             key={config.value}
                                             value={config.value}
                                             disabled={
+                                              item.config.limitNum !== undefined &&
                                               form.getFieldValue('secondSubject')?.length >=
                                                 item.config.limitNum &&
                                               !(form.getFieldValue('secondSubject') || []).includes(

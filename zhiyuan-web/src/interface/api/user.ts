@@ -1,3 +1,32 @@
+import type {
+  ISubjectItem,
+  ISubjectTypeAndExamObject,
+  ISexAndProvinceAndBatchObject,
+} from './updateBaseInfo';
+
+export interface IUserScoreInfo {
+  examYear?: number;
+  province?: ISexAndProvinceAndBatchObject | null;
+  sex?: ISexAndProvinceAndBatchObject | null;
+  subjectList?: ISubjectItem[];
+  subjectType?: ISubjectTypeAndExamObject;
+}
+
+export interface IUpdateUserInfo {
+  userName: string;
+  avatarUrl?: string;
+  userScoreOb?: IUserScoreInfo;
+}
+
+export interface IUserInfo {
+  id?: string | number;
+  userName?: string;
+  avatarUrl?: string;
+  userLevel?: string;
+  expiredDate?: string | number | null;
+  userScoreOb?: IUserScoreInfo;
+}
+
 export interface ILoginParams {
   userName: string;
   password: string;

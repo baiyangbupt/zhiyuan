@@ -44,7 +44,7 @@ const configObj = {
   },
   // 添加 TypeScript 配置
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: false,
   },
   images: {
     minimumCacheTTL: 31536000,
