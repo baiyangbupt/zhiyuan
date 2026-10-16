@@ -28,6 +28,167 @@ async def _native_runtime_for_lifecycle():
 
 
 @pytest.mark.asyncio
+async def test_native_ownership_survives_broker_answer_until_response_write_finishes():
+    runtime, key = await _native_runtime_for_lifecycle()
+    client = runtime.codex.client
+    broker = runtime.gateway.user_input_broker
+    cards = asyncio.Queue()
+    writing = asyncio.Event()
+    release = asyncio.Event()
+    write = client._write
+
+    async def emit(key, event):
+        cards.put_nowait(event)
+
+    async def blocked_write(payload):
+        if payload.get("id") == 9001:
+            writing.set()
+            await release.wait()
+        await write(payload)
+
+    broker.set_emitter(emit)
+    client._write = blocked_write
+    try:
+        await client.request("test/request_user_input", {"threadId": "thr_test"})
+        await asyncio.wait_for(cards.get(), 1)
+        card = broker.snapshot(key)[0]
+        assert runtime.gateway.lifecycle.inspect(key).owners == {"native_request": 1}
+        await broker.answer(key, card["requestId"], {
+            "inputKind": "choice", "answers": {"major": {"answers": ["计算机类"]}},
+        })
+        await asyncio.wait_for(writing.wait(), 1)
+        assert broker.snapshot(key) == []
+        assert runtime.gateway.lifecycle.inspect(key).owners == {"native_request": 1}
+        release.set()
+        response = await client.wait_for_notification(
+            lambda event: event.get("method") == "test/server_request_answered", timeout=1,
+        )
+        assert response["params"]["requestId"] == 9001
+        await asyncio.gather(*client._server_request_tasks)
+        assert runtime.gateway.lifecycle.inspect(key).total == 0
+    finally:
+        release.set()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_native_process_exit_releases_request_but_keeps_detached_action_owner():
+    from app.gateway.session_runtime import SessionRuntime
+
+    runtime, key = await _native_runtime_for_lifecycle()
+    lifecycle = runtime.gateway.lifecycle
+    sessions = SessionRuntime(lifecycle=lifecycle)
+    release = asyncio.Event()
+    sessions.detach_work(key, release.wait, label="offline action")
+    cards = asyncio.Queue()
+
+    async def emit(key, event):
+        cards.put_nowait(event)
+
+    runtime.gateway.user_input_broker.set_emitter(emit)
+    try:
+        await runtime.codex.client.request("test/request_user_input", {"threadId": "thr_test"})
+        await asyncio.wait_for(cards.get(), 1)
+        assert lifecycle.inspect(key).owners == {"action": 1, "native_request": 1}
+        generation = lifecycle.inspect(key).generation
+        runtime.codex.client.process.terminate()
+        await asyncio.wait_for(runtime.codex.client._reader_task, 2)
+        assert lifecycle.inspect(key).owners == {"action": 1}
+        await runtime.codex.restart()
+        assert lifecycle.inspect(key).generation == generation
+        assert lifecycle.inspect(key).owners == {"action": 1}
+    finally:
+        release.set()
+        await asyncio.gather(*sessions._detached)
+        await runtime.close()
+    assert lifecycle.inspect(key).total == 0
+
+
+@pytest.mark.asyncio
+async def test_native_untrusted_scope_is_rpc_error_without_ownership_or_reader_exit():
+    runtime, key = await _native_runtime_for_lifecycle()
+    try:
+        await runtime.codex.client.request("test/request_user_input", {"threadId": "unbound"})
+        response = await runtime.codex.client.wait_for_notification(
+            lambda event: event.get("method") == "test/server_request_answered", timeout=1,
+        )
+        assert "clarification_scope_unavailable" in response["params"]["error"]["message"]
+        assert runtime.gateway.lifecycle.inspect(key) is None
+        assert not runtime.codex.client._reader_task.done()
+        assert runtime.gateway.user_input_broker.snapshot(key) == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["resolved", "expiry", "form_decline"])
+async def test_native_terminal_paths_release_protocol_owner(outcome):
+    runtime, key = await _native_runtime_for_lifecycle()
+    client = runtime.codex.client
+    broker = runtime.gateway.user_input_broker
+    cards = asyncio.Queue()
+    expiry_release = asyncio.Event()
+
+    async def emit(key, event):
+        cards.put_nowait(event)
+        if outcome == "expiry":
+            await expiry_release.wait()
+
+    async def interrupt(thread_id, turn_id):
+        assert runtime.gateway.lifecycle.inspect(key).owners == {"native_request": 1}
+
+    runtime.codex.interrupt_turn_and_wait = interrupt
+    broker.set_emitter(emit)
+    try:
+        method = "test/elicitation" if outcome == "form_decline" else "test/request_user_input"
+        await client.request(method, {"threadId": "thr_test"})
+        await asyncio.wait_for(cards.get(), 1)
+        assert runtime.gateway.lifecycle.inspect(key).owners == {"native_request": 1}
+        record = next(iter(broker._pending.values()))
+        if outcome == "resolved":
+            client._route_notification({
+                "method": "serverRequest/resolved", "params": {"threadId": "thr_test", "requestId": 9001},
+            })
+        elif outcome == "expiry":
+            record.expires_at = 0
+            expiry_release.set()
+        else:
+            await broker.answer(key, record.ui_request_id, {"inputKind": "form", "action": "decline"})
+        response = await client.wait_for_notification(
+            lambda event: event.get("method") == "test/server_request_answered", timeout=1,
+        )
+        assert response["params"]["requestId"] == 9001
+        await asyncio.gather(*client._server_request_tasks)
+        assert runtime.gateway.lifecycle.inspect(key).total == 0
+        assert broker.snapshot(key) == []
+    finally:
+        expiry_release.set()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_protocol_method_keeps_null_reply_without_claiming_session():
+    runtime, key = await _native_runtime_for_lifecycle()
+    client = runtime.codex.client
+    responses = []
+    write = client._write
+
+    async def capture(payload):
+        responses.append(payload)
+
+    try:
+        payload = {"id": "unknown", "method": "unsupported", "params": {"threadId": "thr_test"}}
+        assert client.server_request_lease_factory(payload) is None
+        client._write = capture
+        await client._handle_server_request(payload)
+        assert responses == [{"jsonrpc": "2.0", "id": "unknown", "result": None}]
+        assert runtime.gateway.lifecycle.inspect(key) is None
+    finally:
+        client._write = write
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_native_composition_tracks_actual_transport_generation():
     runtime, key = await _native_runtime_for_lifecycle()
     try:

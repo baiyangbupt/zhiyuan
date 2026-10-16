@@ -11,6 +11,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any
 
 from pydantic import ValidationError
@@ -41,6 +42,8 @@ from app.gateway.snapshot import build_snapshot, diff_snapshots
 from app.gateway.thread_recovery import ThreadRecovery, ThreadRecoveryError
 from app.harness.client import AppServerExited
 from app.gateway.ui_events import SessionKey
+from app.gateway.session_lifecycle import SessionLifecycle
+from app.gateway.session_runtime import SessionRuntime
 from app.engine.working_set import ConversationWorkingSet
 from app.engine.execution_plan import build_execution_plan
 from app.engine.tool_orchestration import render_tool_contracts
@@ -1149,6 +1152,21 @@ class _CachedTurn:
     expires_at: float
 
 
+def _session_owner(kind: str, *, key_argument: bool = False):
+    def decorate(method):
+        @wraps(method)
+        async def owned(self, *args, **kwargs):
+            key = (
+                self._as_session_key(kwargs["key"] if "key" in kwargs else args[0])
+                if key_argument
+                else _session_key(kwargs.get("tenant_id", 1), kwargs["session_id"])
+            )
+            with self.lifecycle.acquire(key, kind):
+                return await method(self, *args, **kwargs)
+        return owned
+    return decorate
+
+
 class GatewayService:
     """Orchestrate one conversation turn behind a stable Gateway contract."""
 
@@ -1162,6 +1180,7 @@ class GatewayService:
         binding_loader: Callable[..., Any],
         snapshot_loader: Callable[..., Any],
         session_runtime: Any | None = None,
+        lifecycle: SessionLifecycle | None = None,
         base_instructions: str = "",
         developer_instructions: str = "",
         current_binding_loader: Callable[..., Any] | None = None,
@@ -1196,6 +1215,10 @@ class GatewayService:
         # P1c-2：证据核验器。None ＝ 不核验（本地最小栈、单测），是显式的选择而不是
         # "忘了接"；有它的时候，模型每引用一次证据都要去问一次 Java 台账。
         self.evidence_verifier = evidence_verifier
+        runtime_lifecycle = session_runtime.lifecycle if isinstance(session_runtime, SessionRuntime) else None
+        if lifecycle is not None and runtime_lifecycle is not None and lifecycle is not runtime_lifecycle:
+            raise ValueError("gateway/session runtime lifecycle mismatch")
+        self.lifecycle = lifecycle or runtime_lifecycle or SessionLifecycle()
         self.session_runtime = session_runtime
         self.base_instructions = base_instructions
         self.developer_instructions = developer_instructions
@@ -1219,6 +1242,17 @@ class GatewayService:
             restart=self._restart_runtime,
         )
 
+    @property
+    def session_runtime(self) -> Any | None:
+        return self._session_runtime
+
+    @session_runtime.setter
+    def session_runtime(self, runtime: Any | None) -> None:
+        if isinstance(runtime, SessionRuntime) and runtime.lifecycle is not self.lifecycle:
+            raise ValueError("gateway/session runtime lifecycle mismatch")
+        self._session_runtime = runtime
+
+    @_session_owner("action")
     async def execute_action(
         self,
         *,
@@ -1265,6 +1299,7 @@ class GatewayService:
 
         return bind
 
+    @_session_owner("gateway_read", key_argument=True)
     async def interrupt_codex_turn(self, key: Any, codex_turn_id: str) -> bool:
         """停止一个**原生**回合。只停推理，不撤销已提交的 Java 事务。"""
         thread_id = self._threads.get(self._as_session_key(key))
@@ -1273,6 +1308,7 @@ class GatewayService:
         await self.codex.interrupt_turn(thread_id, codex_turn_id)
         return True
 
+    @_session_owner("gateway_read", key_argument=True)
     async def steer_codex_turn(self, key: Any, codex_turn_id: str, text: str) -> bool:
         thread_id = self._threads.get(self._as_session_key(key))
         if not thread_id or self.codex is None:
@@ -1570,6 +1606,7 @@ class GatewayService:
             )
             self._threads.clear()
 
+    @_session_owner("gateway_read")
     async def get_current_snapshot(
         self, *, tenant_id: str, session_id: str
     ) -> ConversationTurnSnapshot | None:
@@ -1594,6 +1631,7 @@ class GatewayService:
         self._working_sets[key] = ConversationWorkingSet.from_snapshot(snapshot)
         return snapshot
 
+    @_session_owner("gateway_read")
     async def get_authoritative_snapshot(
         self, *, tenant_id: str, session_id: str
     ) -> ConversationTurnSnapshot | None:
@@ -1641,6 +1679,7 @@ class GatewayService:
         self._snapshots[key] = snapshot
         return True
 
+    @_session_owner("action")
     async def execute_action_and_refresh(
         self,
         *,
@@ -1778,6 +1817,7 @@ class GatewayService:
             snapshot_version = None
         return dict(result), snapshot_version
 
+    @_session_owner("turn")
     async def handle_turn(
         self,
         *,
@@ -1846,6 +1886,7 @@ class GatewayService:
         """
         return self._user_turn_seq.get(_session_key(tenant_id, session_id), 0)
 
+    @_session_owner("continuation")
     async def continue_after_action(
         self,
         *,
@@ -2005,6 +2046,7 @@ class GatewayService:
                 "proposalPreview": codex_result.get("proposalPreview"),
             }
 
+    @_session_owner("continuation")
     async def continue_after_proposal_preview(
         self,
         *,

@@ -7,7 +7,8 @@ import pytest
 from fastapi import WebSocketDisconnect
 
 from app.gateway.access import TicketIdentity
-from app.gateway.session_runtime import ACCEPTED, BUSY, CONFLICT, DUPLICATE, SessionRuntime
+from app.gateway.session_lifecycle import SessionLifecycle
+from app.gateway.session_runtime import ACCEPTED, BUSY, CONFLICT, DUPLICATE, ConnectionChannel, SessionRuntime
 from app.gateway.ui_events import SessionKey
 
 
@@ -176,15 +177,16 @@ class RequestSocket:
         return self.payload
 
 
-class RequestChannel:
+class RequestChannel(ConnectionChannel):
     uses_v1 = False
 
     def __init__(self):
+        super().__init__(AsyncMock(return_value=True))
         self.frames = []
         self.events = []
 
     def bind_session(self, key):
-        pass
+        super().bind_session(key)
 
     def bind_turn(self, turn_id):
         pass
@@ -280,7 +282,10 @@ async def test_application_startup_wires_the_event_store_into_admission(monkeypa
     from app.server import lifespan
 
     store = RequestStore()
-    gateway = SimpleNamespace(interrupt_codex_turn=AsyncMock(), steer_codex_turn=AsyncMock())
+    gateway = SimpleNamespace(
+        interrupt_codex_turn=AsyncMock(), steer_codex_turn=AsyncMock(),
+        lifecycle=SessionLifecycle(),
+    )
     gateway_runtime = SimpleNamespace(gateway=gateway, close=AsyncMock())
     monkeypatch.setattr("app.server.configure_logfire", lambda: None)
     monkeypatch.setattr("app.server.GatewayConfig", lambda: SimpleNamespace(mode="codex_readonly"))
@@ -293,6 +298,7 @@ async def test_application_startup_wires_the_event_store_into_admission(monkeypa
     async with lifespan(application):
         assert application.state.session_runtime._store is store
         assert gateway.session_runtime is application.state.session_runtime
+        assert gateway.lifecycle is application.state.session_runtime.lifecycle
     gateway_runtime.close.assert_awaited_once()
 
 

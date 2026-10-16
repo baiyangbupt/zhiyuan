@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 from app.config import CodexAppServerConfig
 from app.gateway.artifact_store import SqliteArtifactStore
 from app.gateway.service import GatewayService
+from app.gateway.session_lifecycle import SessionLifecycle
 from app.gateway.user_input import PendingInput, UserInputBroker, UserInputError
 
 # A1 探针实测（.runtime/codex-capabilities.json）：原生提问在真实二进制上可用，
@@ -169,6 +170,7 @@ async def build_gateway_runtime(
         on_expired=expire_user_input,
     )
     codex.set_server_request_handler(broker.handle_server_request)
+    lifecycle = SessionLifecycle()
     gateway = GatewayService(
         mode=mode,
         codex=codex,
@@ -182,9 +184,18 @@ async def build_gateway_runtime(
         current_binding_loader=current_binding_loader,
         evidence_verifier=evidence_verifier,
         artifact_store=artifact_store,
+        lifecycle=lifecycle,
     )
     # scope 解析器要等 gateway 建好：它从业务绑定反查身份，是唯一可信的来源。
     broker.set_scope_resolver(gateway.scope_for_thread)
+
+    def acquire_request(raw: dict[str, Any]):
+        key = broker.scope_for_request(raw)
+        return lifecycle.acquire(key, "native_request") if key is not None else None
+
+    set_request_lease_factory = getattr(codex, "set_server_request_lease_factory", None)
+    if set_request_lease_factory is not None:
+        set_request_lease_factory(acquire_request)
     broker.set_emitter(_publish_to_session)
     gateway.user_input_broker = broker
     set_runtime_handlers = getattr(runtime_client, "set_runtime_handlers", None)

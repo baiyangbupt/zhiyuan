@@ -125,6 +125,14 @@ class UserInputBroker:
         """延迟注入：解析器要拿业务绑定，而绑定在 broker 建好之后才存在。"""
         self._scope_resolver = resolver
 
+    def scope_for_request(self, raw: dict[str, Any]) -> SessionKey | None:
+        if raw.get("method") not in {NATIVE_USER_INPUT_METHOD, MCP_ELICITATION_METHOD}:
+            return None
+        params = raw.get("params")
+        if not isinstance(params, dict):
+            raise PermissionError("clarification_scope_unavailable")
+        return self._scope_from_params(params)
+
     # ── Codex → 我们 ────────────────────────────────────────────────
     async def handle_server_request(self, raw: dict[str, Any]) -> dict[str, Any] | None:
         """挂到 `set_server_request_handler` 上。

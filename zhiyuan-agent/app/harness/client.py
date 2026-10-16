@@ -7,7 +7,7 @@ import secrets
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Protocol
 
 from app.harness.protocol import JsonRpcResponse, Notification
 
@@ -29,6 +29,10 @@ NOTIFICATION_BACKLOG_TTL_SECONDS = 60.0
 # 进程从此再也读不到任何回复，**每一轮都超时，CPU 却空着**（评估器最初报的就是这个）。
 # 16 MiB 比实测最大值高两个数量级；它只是个缓冲上限，不会预分配内存。
 DEFAULT_STDOUT_LINE_LIMIT = 16 * 1024 * 1024
+
+
+class RequestLease(Protocol):
+    def close(self) -> None: ...
 
 
 class AppServerProtocolError(RuntimeError):
@@ -59,6 +63,7 @@ class AppServerClient:
         *,
         request_timeout: float = 30.0,
         server_request_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None,
+        server_request_lease_factory: Callable[[dict[str, Any]], RequestLease | None] | None = None,
         line_limit: int = DEFAULT_STDOUT_LINE_LIMIT,
     ) -> None:
         self.command = command
@@ -74,6 +79,7 @@ class AppServerClient:
         self._next_id = 0
         self._closed = False
         self.server_request_handler = server_request_handler
+        self.server_request_lease_factory = server_request_lease_factory
         self._server_request_tasks: set[asyncio.Task[None]] = set()
         self._overflow_dropped = 0
         self.runtime_generation = secrets.token_hex(8)
@@ -302,7 +308,7 @@ class AppServerClient:
                     break
                 if not raw_line:
                     break
-                if self.process is not process or generation != self.runtime_generation:
+                if self.process is not process or not self._accepts_generation(generation):
                     break
                 # `errors="replace"` 与 `_read_stderr` 一致：一行里有坏字节的解码错误
                 # 也会走进同一个 finally，把活着的进程判成死的——那是同一课的另一个入口。
@@ -317,9 +323,26 @@ class AppServerClient:
                     continue
                 if "id" in payload and payload.get("method"):
                     if self.server_request_handler is not None:
-                        task = asyncio.create_task(self._handle_server_request(
+                        lease = None
+                        admission_error = None
+                        if self.server_request_lease_factory is not None:
+                            try:
+                                lease = self.server_request_lease_factory(payload)
+                            except Exception as exc:
+                                admission_error = exc
+                        coroutine = self._handle_server_request(
                             payload, runtime_generation=generation,
-                        ))
+                            admission_error=admission_error,
+                        )
+                        try:
+                            task = asyncio.create_task(coroutine)
+                        except BaseException:
+                            coroutine.close()
+                            if lease is not None:
+                                lease.close()
+                            raise
+                        if lease is not None:
+                            task.add_done_callback(lambda done, lease=lease: lease.close())
                         self._server_request_tasks.add(task)
                         request_tasks.add(task)
                         task.add_done_callback(self._server_request_tasks.discard)
@@ -378,11 +401,14 @@ class AppServerClient:
 
     async def _handle_server_request(
         self, payload: dict[str, Any], *, runtime_generation: str | None = None,
+        admission_error: Exception | None = None,
     ) -> None:
         assert self.server_request_handler is not None
         if not self._accepts_generation(runtime_generation):
             return
         try:
+            if admission_error is not None:
+                raise admission_error
             result = await self.server_request_handler(payload)
             if not self._accepts_generation(runtime_generation):
                 return

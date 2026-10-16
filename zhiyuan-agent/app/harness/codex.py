@@ -43,6 +43,9 @@ class CodexAppServerHarness:
     def set_server_request_handler(self, handler: Any) -> None:
         self.client.server_request_handler = handler
 
+    def set_server_request_lease_factory(self, factory: Any) -> None:
+        self.client.server_request_lease_factory = factory
+
     async def restart(self) -> None:
         """重拉原生 runtime 并重新握手。
 

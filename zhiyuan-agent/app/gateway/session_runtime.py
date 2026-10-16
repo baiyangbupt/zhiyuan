@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.gateway.ui_events import SessionKey
+from app.gateway.session_lifecycle import SessionLease, SessionLifecycle
 
 
 logger = logging.getLogger(__name__)
@@ -122,17 +123,40 @@ class ConnectionChannel:
         # 调用方就不必知道自己在哪条路由上。
         self._frame_builder = frame_builder
         self._on_overflow = on_overflow
+        self._lifecycle: SessionLifecycle | None = None
+        self._connection_lease: SessionLease | None = None
+        self._closed = False
+        self._close_waiter: asyncio.Future[None] | None = None
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize)
         self._task: asyncio.Task[None] | None = None
         self.overflowed = False
 
     def start(self) -> None:
+        if self._closed:
+            raise ValueError("connection already closed")
         if self._task is None:
-            self._task = asyncio.create_task(self._drain())
+            coroutine = self._drain()
+            try:
+                self._task = asyncio.create_task(coroutine)
+            except BaseException:
+                coroutine.close()
+                raise
 
     def bind_session(self, key: SessionKey) -> None:
         """这条连接属于哪个会话。第一条消息到达时才知道，所以是延迟绑定。"""
+        if self._session_key is not None and self._session_key != key:
+            raise ValueError("connection cannot be rebound to another session")
         self._session_key = key
+
+    def hold_connection(self, key: SessionKey, lifecycle: SessionLifecycle) -> None:
+        if self._closed:
+            raise ValueError("connection already closed")
+        if self._lifecycle is not None and self._lifecycle is not lifecycle:
+            raise ValueError("connection lifecycle mismatch")
+        self.bind_session(key)
+        if self._connection_lease is None:
+            self._lifecycle = lifecycle
+            self._connection_lease = lifecycle.acquire(key, "connection")
 
     @property
     def session_key(self) -> SessionKey | None:
@@ -218,11 +242,20 @@ class ConnectionChannel:
                 return
 
     async def close(self) -> None:
-        if self._task is None:
+        if self._close_waiter is not None:
+            await asyncio.shield(self._close_waiter)
             return
-        self._task.cancel()
-        await asyncio.gather(self._task, return_exceptions=True)
-        self._task = None
+        self._close_waiter = asyncio.get_running_loop().create_future()
+        self._closed = True
+        try:
+            if self._task is not None:
+                self._task.cancel()
+                await asyncio.gather(self._task, return_exceptions=True)
+        finally:
+            self._task = None
+            if self._connection_lease is not None:
+                self._connection_lease.close()
+            self._close_waiter.set_result(None)
 
 
 class SessionRuntime:
@@ -232,6 +265,7 @@ class SessionRuntime:
         store: Any | None = None,
         interrupt_impl: Callable[[str, str], Awaitable[Any]] | None = None,
         steer_impl: Callable[[str, str, str], Awaitable[Any]] | None = None,
+        lifecycle: SessionLifecycle | None = None,
     ) -> None:
         self._active: dict[SessionKey, ActiveTurn] = {}
         self._channels: dict[SessionKey, ConnectionChannel] = {}
@@ -243,6 +277,7 @@ class SessionRuntime:
         self._store = store
         self._interrupt_impl = interrupt_impl
         self._steer_impl = steer_impl
+        self.lifecycle = lifecycle or SessionLifecycle()
 
     def detach_work(
         self,
@@ -272,7 +307,14 @@ class SessionRuntime:
         pending = self._pending_requests.get((key, client_request_id))
         if not ui_turn_id and pending is not None:
             ui_turn_id = pending.ui_turn_id
-        task = asyncio.create_task(self._run_request(key, client_request_id, ui_turn_id, work))
+        coroutine = self._run_request(key, client_request_id, ui_turn_id, work)
+        lease = self.lifecycle.acquire(key, "action")
+        try:
+            task = asyncio.create_task(coroutine)
+        except BaseException:
+            coroutine.close()
+            lease.close()
+            raise
         if client_request_id:
             self._pending_requests[key, client_request_id] = _PendingRequest(
                 ui_turn_id=ui_turn_id,
@@ -284,6 +326,7 @@ class SessionRuntime:
         def _done(done: asyncio.Task[Any]) -> None:
             self._detached.discard(done)
             self._release_request(key, client_request_id, done)
+            lease.close()
             if done.cancelled():
                 return
             error = done.exception()
@@ -299,6 +342,7 @@ class SessionRuntime:
         一个会话同时只留最新的一条：旧连接要么已经断了，要么马上会被前端换掉，
         往上推会让"同一张卡出现两次"。
         """
+        channel.hold_connection(key, self.lifecycle)
         self._channels[key] = channel
 
     def detach_connection(self, key: SessionKey, channel: ConnectionChannel) -> None:
@@ -310,8 +354,12 @@ class SessionRuntime:
         channel = self._channels.get(key)
         if channel is None:
             return False
-        await channel.emit(event)
-        return True
+        lease = self.lifecycle.acquire(key, "publish")
+        try:
+            await channel.emit(event)
+            return True
+        finally:
+            lease.close()
 
     def current_channel(self, key: SessionKey) -> ConnectionChannel | None:
         """该会话**当前**该往哪条连接推（没有则 None ✓）✓——**收尾那一刻**再问 ✓。
@@ -360,17 +408,23 @@ class SessionRuntime:
 
     @asynccontextmanager
     async def _admission_gate(self, key: SessionKey):
+        lease = self.lifecycle.acquire(key, "admission")
         gate = self._admission_gates.setdefault(key, AdmissionGate())
         gate.users += 1
         try:
             async with gate.lock:
                 yield
         finally:
+            lease.close()
             gate.users -= 1
             if gate.users == 0:
                 self._admission_gates.pop(key, None)
 
     async def request_status(self, key: SessionKey, client_request_id: str) -> dict[str, Any]:
+        with self.lifecycle.acquire(key, "gateway_read"):
+            return await self._request_status(key, client_request_id)
+
+    async def _request_status(self, key: SessionKey, client_request_id: str) -> dict[str, Any]:
         pending = self._pending_requests.get((key, client_request_id))
         if pending is not None and not pending.task.done():
             return {"status": "running", "turnId": pending.ui_turn_id}
@@ -455,7 +509,14 @@ class SessionRuntime:
                     raise RuntimeError("invalid_request_admission_verdict")
                 await self._save_request_status(key, client_request_id, ui_turn_id, "running")
 
-            task = asyncio.create_task(self._run_request(key, client_request_id, ui_turn_id, work))
+            coroutine = self._run_request(key, client_request_id, ui_turn_id, work)
+            lease = self.lifecycle.acquire(key, "turn")
+            try:
+                task = asyncio.create_task(coroutine)
+            except BaseException:
+                coroutine.close()
+                lease.close()
+                raise
             if client_request_id:
                 self._pending_requests[key, client_request_id] = _PendingRequest(
                     ui_turn_id=ui_turn_id, request_digest=digest, task=task,
@@ -465,11 +526,23 @@ class SessionRuntime:
                 key=key, ui_turn_id=ui_turn_id,
                 client_request_id=client_request_id, request_digest=digest,
             )
-            task.add_done_callback(lambda done, key=key: self._release(key, done, client_request_id))
+            task.add_done_callback(
+                lambda done, key=key, lease=lease: self._release(
+                    key, done, client_request_id, lease
+                )
+            )
             return ACCEPTED
 
-    def _release(self, key: SessionKey, done: asyncio.Task[Any], request_id: str = "") -> None:
+    def _release(
+        self,
+        key: SessionKey,
+        done: asyncio.Task[Any],
+        request_id: str = "",
+        lease: SessionLease | None = None,
+    ) -> None:
         self._release_request(key, request_id, done)
+        if lease is not None:
+            lease.close()
         if self._tasks.get(key) is done:
             self._tasks.pop(key, None)
             self._active.pop(key, None)
@@ -482,6 +555,10 @@ class SessionRuntime:
             logger.warning("turn worker failed for %s: %r", key, error)
 
     async def interrupt(self, key: SessionKey, ui_turn_id: str) -> dict[str, Any]:
+        with self.lifecycle.acquire(key, "gateway_read"):
+            return await self._interrupt(key, ui_turn_id)
+
+    async def _interrupt(self, key: SessionKey, ui_turn_id: str) -> dict[str, Any]:
         turn = self.active_turn(key)
         if turn is None:
             return {"status": "no_active_turn"}
@@ -494,6 +571,10 @@ class SessionRuntime:
         return {"status": "interrupting", "codexTurnId": turn.codex_turn_id}
 
     async def steer(self, key: SessionKey, ui_turn_id: str, text: str) -> dict[str, Any]:
+        with self.lifecycle.acquire(key, "gateway_read"):
+            return await self._steer(key, ui_turn_id, text)
+
+    async def _steer(self, key: SessionKey, ui_turn_id: str, text: str) -> dict[str, Any]:
         turn = self.active_turn(key)
         if turn is None:
             return {"status": "no_active_turn"}

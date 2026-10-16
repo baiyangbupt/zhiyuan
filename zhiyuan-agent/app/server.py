@@ -420,6 +420,7 @@ async def lifespan(app: FastAPI):
             store=app.state.event_store,
             interrupt_impl=gateway_runtime.gateway.interrupt_codex_turn,
             steer_impl=gateway_runtime.gateway.steer_codex_turn,
+            lifecycle=gateway_runtime.gateway.lifecycle,
         )
         # 回填给 gateway：回合开始时它要把原生回合号绑上来，
         # 否则"停止"永远找不到目标（返回 unavailable，用户看到的是"不支持"）。
@@ -624,9 +625,12 @@ async def _handle_gateway_ws_loop(ws: WebSocket, gateway) -> None:
     )
     # 补发要在 `start()` **之前**入队：队列是 FIFO、发送器只有一个，
     # 于是"先补发、后实时"由队列顺序保证，不靠时序假设。
-    await _replay_on_connect(ws, runtime, channel)
-    channel.start()
     try:
+        key = _resume_session_key(ws)
+        if isinstance(runtime, SessionRuntime) and key is not None:
+            channel.hold_connection(key, runtime.lifecycle)
+        await _replay_on_connect(ws, runtime, channel)
+        channel.start()
         await _native_gateway_loop(ws, gateway, runtime, channel)
     finally:
         # 连接关了就**摘掉它** ✓✓：不摘的话，这条会话的"当前连接"还是这条死连接 ✗——
@@ -647,14 +651,15 @@ def _resume_session_key(ws: WebSocket) -> SessionKey | None:
     点名另一条会话时，既不补发、也不照它建键——否则"拿 A 的票读 B 的事件"
     就是一条跨会话泄漏。不一致时留一条 warning，让人看得见。
     """
-    identity = getattr(ws.state, "identity", None)
+    identity = getattr(getattr(ws, "state", None), "identity", None)
     tenant_id = str(getattr(identity, "tenant_id", "") or "")
     granted = str(getattr(identity, "session_id", "") or "").strip()
-    asked = str(
-        ws.query_params.get("chatSessionId") or ws.query_params.get("sessionId") or ""
-    ).strip()
     if not tenant_id or not granted:
         return None
+    asked = str(
+        getattr(ws, "query_params", {}).get("chatSessionId")
+        or getattr(ws, "query_params", {}).get("sessionId") or ""
+    ).strip()
     if asked and asked != granted:
         logger.warning(
             "conversation replay refused: session mismatch (asked=%s granted=%s)", asked, granted
@@ -1612,15 +1617,17 @@ async def _handle_gateway_compat_ws_loop(
     """
     del bot_id
     runtime = getattr(ws.app.state, "session_runtime", None)
-    session_key = None
     channel = ConnectionChannel(
         lambda frame: _safe_send_json(ws, _as_mapping(frame), context="compat.gateway.event"),
         frame_builder=_compat_event_frame,
         store=getattr(ws.app.state, "event_store", None),
         on_overflow=lambda: _close_slow_consumer(ws, "compat"),
     )
-    channel.start()
     try:
+        key = _resume_session_key(ws)
+        if isinstance(runtime, SessionRuntime) and key is not None:
+            channel.hold_connection(key, runtime.lifecycle)
+        channel.start()
         await _compat_gateway_loop(ws, gateway, tenant_id, runtime, channel)
     finally:
         if runtime is not None:
