@@ -1392,7 +1392,15 @@ class GatewayService:
         # title/summary/status（Java 提案预览本来就是平铺的 ✓）——这里必须与它同一个口径，
         # 包一层 `diff` 的话翻译出来的 `diff` 会是空对象 ✗（卡成一张没有内容的壳 ✓）。
         preview: dict[str, Any] = {
-            "status": "pending",
+            # **状态词表三端统一**（2026-10-16 修订 ✗）：原来写死的 `pending` 前端卡面
+            # 词表根本不认识（`proposalCardText.mjs` 只有 ready/info/preview_only/
+            # blocked ✗）→ 兜底成"处理结果未知" ✗（而这张卡明明是"待确认" ✓）。
+            # 写模式 = 待确认 pending 已落库 ⇒ `ready` ✓（web 本该有的按钮判据/词表就
+            # 认识它 ✓）；只读模式 = 没有可确认的卡 ⇒ `preview_only` ✓（与 Java
+            # `Status.PREVIEW_ONLY` 逐字一致 ✓、web 不给按钮 ✓）。**不给 web 词表
+            # 补 `pending` 映射** ✗（10-13 前车之鉴：错标"待确认"事故，加词只会把
+            # "这张卡要用户做什么"的语义搅浑 ✓）。
+            "status": "ready" if self.mode == "codex_write" else "preview_only",
             "title": "更新成绩",
             "summary": _score_update_summary_text(summary),
             # 只读模式下**不给确认按钮**：按钮背后没有可确认的 pending，
@@ -1444,7 +1452,10 @@ class GatewayService:
         labels = normalize_career_labels(request.career_types)
         summary = "、".join(labels)
         preview: dict[str, Any] = {
-            "status": "pending",
+            # **与补录同口径**（2026-10-16 ✓）：写模式 pending 落库 ⇒ `ready` ✓（卡上
+            # 有待确认按钮 ✓）；只读模式 ⇒ `preview_only` ✓。理由与词表约束见
+            # `_prepare_score_update_preview` 里那段注释（同一件事只说一次 ✓）。
+            "status": "ready" if self.mode == "codex_write" else "preview_only",
             "title": "更新发展方向",
             "summary": f"发展方向：{summary}",
             # 只读模式下**不给确认按钮**：按钮背后没有可确认的 pending
@@ -1984,8 +1995,11 @@ class GatewayService:
         server.py 发事件读的是同一处 ✓）。其余每一条硬约束逐条同构 ✓：
 
         · 触发档 = `blocked` ∪ `info` ∪ `preview_only` ✓。`ready` **不在**触发集里 ✓
-          ——那是有可确认卡片的正常路径 ✓；`pending`（补录预览在写模式下带卡片 ✓）
-          与 `applied` 同此 ✓：一个字节都不动 ✗✓。
+          ——那是有可确认卡片的正常路径 ✓（补录/发展方向预览在**写模式**下发的就是它 ✓，
+          2026-10-16 词表统一后 ✓）；`applied` 同此 ✓：一个字节都不动 ✗✓。
+          **只读模式**的补录/发展方向预览改发 `preview_only` ✓ → 落进触发档 ✓：那正是
+          "给了一张没有确认按钮的预览、而文案可能让用户去点卡"的情形 ✓（这台实例上写路
+          径不活着 ✓），跟话纠正本来就是为它准备的 ✓。
         · **不伪造用户消息** ✓✓：不走 `handle_turn` → `_handle_uncached` ✓，不落 user
           消息 ✓；喂给模型的是 `_preview_outcome_nudge`（自带 `CONTINUATION_*` 标签的
           系统指令 ✓），产出照旧是**助手消息** ✓（`_persist_agent` ✓）。

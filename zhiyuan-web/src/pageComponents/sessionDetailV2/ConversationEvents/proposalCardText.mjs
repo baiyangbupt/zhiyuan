@@ -445,3 +445,64 @@ export function legacyPendingCardBadgeText(status) {
   const value = String(status || 'active');
   return value === 'active' ? '待确认' : UNKNOWN_STATUS_TEXT;
 }
+
+// ── 冷加载兜底卡"要不要画"（`MessageList/index.tsx` 的 `lastProposal` 兜底 ✓）────────────
+//
+// 事故（2026-10-16 用户实测 ✓，会话 10041983）：同一个 career 待确认出现了**两张卡面** ✗
+// ——② 事件流里的回合卡正文 ✓；② 刷新后的**兜底卡** ✗：它只带 `proposalRef`，
+// **没有可重建的明细** ✗ → 标题退成"方案调整预览" ✓、状态还是词表外的 `pending` →
+// "处理结果未知" ✓ = 一张**标题不对的空壳卡** ✗（与 review §五-60 的"重复出卡"同案 ✓）。
+//
+// 兜底卡的初衷必须保 ✗✓（F13 用例第③条 ✓：消息历史重建后旧卡仍要可见 ✓）——所以这里
+// 只排除两种"不该画"的情形 ✓，其余照旧画：
+//   ① **同一待确认已在别的卡面出现过** ✓✓：判据是身份（`proposalRef` ✓，口径与
+//      `applyPendingActionResult` 逐字一致 ✓——`proposalRef || pendingId` ✓，不许各取各的 ✗），
+//      两个卡面来源都算：事件流回合卡（旧守卫 ✓）+ 历史里的 legacy 待确认卡
+//      （`pendingConfirmationCard` ✓，老信封通道落库的那种 ✓，刷新后它会与兜底卡
+//      **同时**在屏幕上 ✓ → 同一个 pending 两张卡 ✗）。
+//   ② **没有可重建的明细** ✓：`career_update` 一族就属于这种 ✗——`LastProposalVo`
+//      里它没有任何能重建卡面正文的字段 ✓（没有 `scoreSummary` ✓、没有 `title` ✓、
+//      没有提案族那套 blocked 明细 ✓；结构化那份只在**事件流**的 `proposal.preview`
+//      里 ✓）→ 兜底只会画出一张**标题不对**（"方案调整预览" ✗）的空壳 ✓。
+//      **按 `kind` 精准排除**而不是按"`scoreSummary` 为空"一刀切 ✗✓：提案族
+//      （`plan_change_proposal` ✓）同样没有 `scoreSummary` ✓，但那正是兜底初衷要保的
+//      ——它的标题退成"方案调整预览"是**贴切的** ✓（blocked 时还带原因 ✓）。
+//      `kind` 缺失/未知时**照旧画** ✓（fail-open：旧数据/旧服务端行为一个字节不变 ✓）。
+//
+// 判据从组件挪进这里 ✓ 才有单测钉（本仓没有 React 渲染测试的基建 ✓，同 `fetchQueue.mjs` 先例 ✓）。
+
+/** 兜底卡没有可重建明细、不许画的 `kind`（见上；缺失/未知一律放行 ✓）。 */
+export const COLD_FALLBACK_HIDDEN_KINDS = new Set(['career_update']);
+
+/**
+ * 冷加载兜底卡要不要画 ✓。三条判据（顺序即语义 ✓）：
+ *   ① 没有 `proposalRef` → 不画 ✓（旧式判据第一条 ✓，逐字保留）；
+ *   ② `alreadyRendered`（同一待确认已在回合卡/legacy 卡上画过 ✓）→ 不画 ✓（去重 ✓）；
+ *   ③ 已落定（`liveActionStatus || actionStatus` ✓，与旧实现同一取法 ✓）且会话里已有
+ *      回合 → 不画 ✓（旧式判据后半截 ✓，逐字保留：让位给新回合 ✓）；
+ *   ④ 明细重建不出来的 `kind` → 不画 ✓（见上 ✓）。
+ *
+ * @param {{
+ *   proposalRef?: string | null,
+ *   kind?: string | null,
+ *   actionStatus?: string | null,
+ *   liveActionStatus?: string | null,
+ *   hasTurns?: boolean,
+ *   alreadyRendered?: boolean,
+ * }} [input]
+ * @returns {boolean}
+ */
+export function coldFallbackProposalVisible({
+  proposalRef,
+  kind,
+  actionStatus,
+  liveActionStatus,
+  hasTurns,
+  alreadyRendered,
+} = {}) {
+  if (!String(proposalRef || '')) return false;
+  if (alreadyRendered) return false;
+  if (isSettledProposalStatus(liveActionStatus || actionStatus) && hasTurns) return false;
+  if (COLD_FALLBACK_HIDDEN_KINDS.has(String(kind || ''))) return false;
+  return true;
+}

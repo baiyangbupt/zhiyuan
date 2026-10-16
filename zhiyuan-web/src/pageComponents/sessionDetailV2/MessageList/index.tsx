@@ -42,7 +42,7 @@ import {
 } from '@/utils/conversationProtocol.mjs';
 import ClarificationCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ClarificationCard';
 import ProposalCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ProposalCard';
-import { isSettledProposalStatus, legacyPendingCardBadgeText, proposalFailureText } from '@/pageComponents/sessionDetailV2/ConversationEvents/proposalCardText.mjs';
+import { coldFallbackProposalVisible, legacyPendingCardBadgeText, proposalFailureText } from '@/pageComponents/sessionDetailV2/ConversationEvents/proposalCardText.mjs';
 import UnderstandingCard from '@/pageComponents/sessionDetailV2/ConversationEvents/UnderstandingCard';
 import { WebSocketMessage } from '@/hooks/websocket';
 import TypingAnimation from '@/components/generating/TypingAnimation';
@@ -135,6 +135,13 @@ interface IMessageListProps {
     proposalRef?: string;
     proposalId?: string;
     actionStatus?: string;
+    /**
+     * 待确认的家族（服务端 `LastProposalVo.kind`，2026-10-16 起随包已在 ✓）：
+     * `score_update` / `career_update` / `plan_change_proposal`。
+     * **只影响兜底卡要不要画** ✓（career 没有可重建的明细 → 不画空壳 ✓，
+     * 见 `coldFallbackProposalVisible` ✓）；缺省/未知一律照旧画 ✓（fail-open ✓）。
+     */
+    kind?: string;
     /** 补录族的结构化明细（服务端 `LastProposalVo.scoreSummary`，2026-10-08 起）。 */
     scoreSummary?: Record<string, any> | null;
     /**
@@ -1719,6 +1726,38 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   const coldFallbackLiveResult = lastProposal?.proposalRef
     ? findActionResultFor(conversationState, lastProposal.proposalRef)
     : undefined;
+  // **兜底卡去重** ✓✓（2026-10-16 用户实测：同一个 career 待确认出现两张卡面 ✗，§五-60）：
+  // 判据是**身份**（`proposalRef` ✓，与 legacy 卡落结果时的取法逐字一致 ✓——
+  // `proposalRef || pendingId` ✓，见上面 `applyPendingActionResult` 那处 ✓）。
+  // 两个卡面来源都要算进"已画过" ✓：① 事件流里的回合卡 ✓（旧守卫 ✓）；
+  // ② 历史里的 legacy 待确认卡 ✗（老信封通道落库的那种 ✓，刷新后它与兜底卡会**同时**
+  // 在屏幕上 ✓ → 同一个 pending 两张卡 ✗）。注意只按 ref 比对**卡面** ✓，
+  // 不按 `turn.actionResult` ✗：那条通道的结果要能**更新**兜底卡的状态 ✓（打字确认 ✓，
+  // 见上面 `coldFallbackLiveResult` ✓），拿它当"已画过"会把卡整个藏掉 ✗。
+  const coldFallbackRef = String(lastProposal?.proposalRef || '');
+  const coldFallbackAlreadyRendered =
+    coldFallbackRef !== '' &&
+    (Object.values(conversationState.turns || {}).some(
+      (turn: any) => String(turn?.proposal?.proposalRef || '') === coldFallbackRef,
+    ) ||
+      displayMessageList.some(record => {
+        if (record.messageFrom !== '0' || record.contentType !== 'CARD') return false;
+        const contentObj = parseCardContent(record.content);
+        if (!isPendingConfirmationCard(contentObj)) return false;
+        return String(contentObj?.proposalRef || contentObj?.pendingId || '') === coldFallbackRef;
+      }));
+  // 兜底卡要不要画：判据整体挪进纯函数 ✓（`coldFallbackProposalVisible` ✓，
+  // node:test 钉住 ✓）——旧式两条判据（无 ref 不画 / 已落定且已有回合让位 ✓）
+  // 逐字保留 ✓，新增"已画过 / 明细重建不出来的 career 族不画"两条 ✓，
+  // **兜底初衷不变** ✓（消息历史重建后旧卡仍可见 ✓）。
+  const shouldRenderColdFallbackProposal = coldFallbackProposalVisible({
+    proposalRef: coldFallbackRef,
+    kind: lastProposal?.kind,
+    actionStatus: lastProposal?.actionStatus,
+    liveActionStatus: coldFallbackLiveResult?.actionStatus,
+    hasTurns: Object.values(conversationState.turns || {}).length > 0,
+    alreadyRendered: coldFallbackAlreadyRendered,
+  });
   const activePendingCardMessageId = displayMessageList.reduce<number | null>((latestId, record) => {
     if (record.messageFrom !== '0' || record.contentType !== 'CARD') {
       return latestId;
@@ -2318,28 +2357,16 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
             **冷加载补一张"最后一条提案"的卡** ✓✗（理由见 props 里 `lastProposal` 那段 ✓）：
             回合块只在**事件到达**时才长出来 ✗，刷新之后一个都没有 ✓——所以这里按
             "回合里没画过这个 `proposalRef`" 判一次 ✓，补一张**只读**的卡 ✓（终态时按钮本来就收起 ✓）。
+            判据整体挪进纯函数 ✓✓（2026-10-16 ✓）：`coldFallbackProposalVisible` ✓——
+              ① 同一待确认已在回合卡/历史 legacy 卡上画过 → 不重复画 ✓（"重复出卡"✗，§五-60 ✓）；
+              ② career 族没有可重建的明细 → 不画标题不对的空壳 ✓（"结果未知"✗）；
+              ③ 旧式两条判据逐字保留 ✓：无 ref 不画 ✓；**终态兜底卡让位新对话** ✓
+                 （2026-10-08 用户实测："更新成绩的卡片一直在对话的底部"✗——**已落定**
+                 （非 applying）的恢复卡，出现新回合后自动收起 ✓；`active`/`applying`
+                 保持显示 ✓；落定判据取**事件流里的结果优先** ✓，打字确认那条通道要能更新它 ✓）。
+            **兜底初衷不变** ✓：消息历史重建后旧卡仍要可见 ✓（F13 第③条 ✓）。
           */}
-          {lastProposal?.proposalRef &&
-          !Object.values(conversationState.turns || {}).some(
-            (turn: any) =>
-              String(turn?.proposal?.proposalRef || '') === String(lastProposal.proposalRef),
-          ) &&
-          /*
-            **终态兜底卡让位新对话**（2026-10-08 用户实测："更新成绩的卡片一直在对话的底部"✗）：
-            冷加载恢复卡的本意是"刷新后把最近一条提案画出来" ✓，但它锚在列表末尾 ✗——
-            用户继续聊出新回合后，它被顶在最新消息下面，像是永远杵在底部 ✗。
-            规则（2026-10-08）：**已落定**（非 applying）的恢复卡，出现新回合后自动收起 ✓；
-            `active`/`applying` 保持显示 ✓（那是还等着用户动作的状态，不能被藏 ✗）。
-          */
-          !(
-            // 落定判据取**事件流里的结果优先** ✓（`coldFallbackLiveResult` ✓，同一条口径也管
-            // "打字确认"那条通道 ✓）：详情快照说 `active`、而事件流已经 `applied` 时，
-            // 该收起的卡就得收起 ✓（否则刚确认完的卡永远杵在底部说"待处理" ✗）。
-            isSettledProposalStatus(
-              coldFallbackLiveResult?.actionStatus || lastProposal.actionStatus,
-            ) &&
-            Object.values(conversationState.turns || {}).length > 0
-          ) ? (
+          {shouldRenderColdFallbackProposal && lastProposal ? (
             <div className={style.turnLiveCard}>
               <ProposalCard
                 proposal={{

@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  COLD_FALLBACK_HIDDEN_KINDS,
   PROPOSAL_STALE_STATE_TEXT,
   UNKNOWN_STATUS_TEXT,
+  coldFallbackProposalVisible,
   isSettledProposalStatus,
   legacyPendingCardBadgeText,
   proposalBlockedText,
@@ -374,4 +376,80 @@ test('legacy 待确认卡：active / 缺省 → "待确认"；未知状态 → �
   const unknown = legacyPendingCardBadgeText('some_future_state');
   assert.notEqual(unknown, '待确认', '未知状态不许冒充"待确认" ✗');
   assert.equal(unknown, UNKNOWN_STATUS_TEXT);
+});
+
+// ── 冷加载兜底卡"要不要画"（2026-10-16 用户实测：career 卡"结果未知 + 重复出卡" ✗）──────
+// 事故形状（会话 10041983 ✓）：同一个 career 待确认出现了事件流回合卡 ✓ 与刷新后的
+// 兜底空壳卡 ✗（无明细 → 标题"方案调整预览" + 词表外状态 → "处理结果未知" ✓）两张卡面。
+
+test('兜底初衷不变：没有回合卡、也没在别处画过 → 照绘画（F13 第③条要保）', () => {
+  assert.equal(
+    coldFallbackProposalVisible({ proposalRef: 'pending-1', actionStatus: 'active' }),
+    true,
+  );
+  // 提案族没有 scoreSummary 也要照画（它的"方案调整预览"标题是贴切的）——
+  // 去重不许按"scoreSummary 为空"一刀切 ✗。
+  assert.equal(
+    coldFallbackProposalVisible({ proposalRef: 'pending-2', kind: 'plan_change_proposal' }),
+    true,
+  );
+  assert.equal(
+    coldFallbackProposalVisible({ proposalRef: 'pending-3', kind: 'score_update' }),
+    true,
+  );
+});
+
+test('同一待确认已在回合卡/legacy 卡上画过 → 不重复画（两条卡面来源都算）', () => {
+  assert.equal(
+    coldFallbackProposalVisible({ proposalRef: 'pending-1', alreadyRendered: true }),
+    false,
+    '事件流回合卡或 legacy 卡已画过 → 兜底卡让位 ✓',
+  );
+});
+
+test('career_update 兜底壳不画：没有可重建的明细，画出来是标题不对的空壳', () => {
+  assert.equal(
+    coldFallbackProposalVisible({ proposalRef: 'career_1', kind: 'career_update' }),
+    false,
+  );
+  assert.equal(COLD_FALLBACK_HIDDEN_KINDS.has('career_update'), true);
+  // blocked 也要拦住：career 没有提案族那套 blocked 明细，空壳加个"无法执行"仍然没内容。
+  assert.equal(
+    coldFallbackProposalVisible({ proposalRef: 'career_2', kind: 'career_update', actionStatus: 'active' }),
+    false,
+  );
+});
+
+test('kind 缺失/未知 → fail-open 照旧画（旧数据/旧服务端行为不变）', () => {
+  for (const kind of [undefined, null, '', 'some_future_kind']) {
+    assert.equal(
+      coldFallbackProposalVisible({ proposalRef: 'pending-1', kind }),
+      true,
+      `kind=${String(kind)} 不许拦 ✓（fail-open）`,
+    );
+  }
+});
+
+test('无 proposalRef → 不画（旧判据第一条逐字保留）；已落定且已有新回合 → 让位', () => {
+  assert.equal(coldFallbackProposalVisible({ proposalRef: '' }), false);
+  assert.equal(coldFallbackProposalVisible({}), false);
+  assert.equal(
+    coldFallbackProposalVisible({ proposalRef: 'p', actionStatus: 'applied', hasTurns: true }),
+    false,
+  );
+  // 事件流结果优先于详情快照（与组件同一取法）：live 落定 + 已有回合 → 收起 ✓。
+  assert.equal(
+    coldFallbackProposalVisible({
+      proposalRef: 'p',
+      actionStatus: 'active',
+      liveActionStatus: 'applied',
+      hasTurns: true,
+    }),
+    false,
+  );
+  // 落定但还没有回合（历史重建中）→ 照画 ✓（兜底初衷：旧卡仍要可见 ✓，逐字保留旧语义 ✓）。
+  assert.equal(
+    coldFallbackProposalVisible({ proposalRef: 'p', actionStatus: 'applied', hasTurns: false }),
+    true,
+  );
 });

@@ -172,7 +172,9 @@ async def test_write_mode_prepares_the_pending_and_returns_the_flat_card_shape(m
 
     # **扁平**合同形状：server.py 从顶层读 title/summary/status（包 diff 会出空卡 ✗）
     assert preview["title"] == "更新发展方向"
-    assert preview["status"] == "pending"
+    # 词表统一（2026-10-16）：写模式 = pending 已落库 ⇒ `ready`（前端卡面词表认识它，
+    # 显示"待确认" + 按钮 ✓）；原来写死的 `pending` 不在 web 词表 → "处理结果未知" ✗。
+    assert preview["status"] == "ready"
     assert preview["requiresConfirmation"] is True
     assert preview["summary"] == "发展方向：体制内/考公导向、深造发展导向"
     assert preview["careerUpdate"]["careerTypes"] == ["体制内/考公导向", "深造发展导向"]
@@ -225,6 +227,9 @@ async def test_readonly_mode_only_previews_and_never_offers_confirmation(monkeyp
     )
 
     assert recorder.calls == []
+    # 词表统一（2026-10-16）：只读模式没有可确认的卡 ⇒ `preview_only`（与 Java
+    # `Status.PREVIEW_ONLY` 逐字一致 ✓），不再是词表外的 `pending`。
+    assert preview["status"] == "preview_only"
     assert preview["requiresConfirmation"] is False
     assert preview["proposalRef"] is None
     assert preview["summary"] == "发展方向：体制内/考公导向、深造发展导向"
