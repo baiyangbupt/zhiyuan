@@ -972,10 +972,13 @@ async def save_user_profile(
         "version": version,
     }
     logger.info("存储用户画像: {}", payload)
+    # Java 侧该请求连带做 38MB planningState 同步 ✓——2026-10-16 实测整段 **20.6s** ✓，
+    # 默认 10s 会在**写已提交**之后超时 ✗（成功被显示成失败的假失败 ✗），故单独放宽到 60s ✓。
     return await http_client.post(
         endpoint="/gaotu-assistant-bot/inner/chat/1/session/add-extra-data",
         json_data=payload,
         error_msg="存储用户画像失败",
+        timeout_seconds=60,
     )
 
 
