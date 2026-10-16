@@ -12,6 +12,7 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanChangePostconditionReportDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountsDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaChangeDTO;
@@ -20,6 +21,7 @@ import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -149,6 +151,118 @@ class UnifiedPlanPostconditionValidatorTest {
                 () -> validator.validateConstraintApply("apply_constraint_and_regenerate", state));
 
         assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, error.getStatus());
+    }
+
+    /**
+     * 报告口径 == 生成口径（2026-10-16 40905 定案）：请求不带 `priorityRules`、state 里有一条
+     * **持久化**优先规则时，报告必须**按 state 规则重建** ✓。
+     *
+     * <p>生成侧 `PlanningObjectiveCompiler.compile`（:58-60）请求为空即回落已确认规则，
+     * 冻结目标因此带 `priority:0`；报告侧以前只遍历请求 ⇒ 请求为空时漏掉这条 objective ⇒
+     * 冻结目标对不上 ⇒ 卡任何点击必挂 `frozen objective result mismatch` ✗
+     * （"浙江优先"卡 rev15 实拍，100% 复现）。
+     */
+    @Test
+    void shouldReportStatePersistedPriorityRuleWhenRequestOmitsPriorityRules() {
+        PlanningStateDTO state = stateWithPersistedPriorityRule("浙江");
+        PendingPlanningCommandReq request = fillRequestWithoutPriorityRules(2);
+
+        PlanChangePostconditionReportDTO report = validator.validate(
+                request, state, userGoalApplyResult());
+
+        assertTrue(report.getSatisfied());
+        assertEquals(Integer.valueOf(1), report.getPriorityRuleCount());
+        assertEquals(Integer.valueOf(1), report.getSatisfiedPriorityRuleCount());
+        assertTrue(report.getPriorityRuleResults().get(0).getPersisted());
+        assertEquals("priority:0", report.getObjectiveResults().get(1).getObjectiveId());
+        assertTrue(report.getObjectiveResults().get(1).getSatisfied());
+    }
+
+    /** 反向对照 ✓：请求与 state 都没有优先规则时照旧通过，且不许凭空造出一条规则 ✗。 */
+    @Test
+    void shouldNotReportPriorityRuleWhenNeitherRequestNorStateHasOne() {
+        PlanningStateDTO state = stateWithPersistedPriorityRule(null);
+        PendingPlanningCommandReq request = fillRequestWithoutPriorityRules(2);
+
+        PlanChangePostconditionReportDTO report = validator.validate(
+                request, state, userGoalApplyResult());
+
+        assertTrue(report.getSatisfied());
+        assertEquals(Integer.valueOf(0), report.getPriorityRuleCount());
+        for (int index = 0; index < report.getObjectiveResults().size(); index++) {
+            assertFalse("priority_within_tier".equals(
+                    report.getObjectiveResults().get(index).getObjectiveType()),
+                    "没有规则就没有这条 objective ✗："
+                            + report.getObjectiveResults().get(index).getObjectiveId());
+        }
+    }
+
+    private PlanningStateDTO stateWithPersistedPriorityRule(String province) {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(2);
+        CandidateItemDTO prioritized = candidate("v-prioritized", province);
+        CandidateItemDTO other = candidate("v-other", "北京");
+        state.getCandidatePoolState().getItems().add(prioritized);
+        state.getCandidatePoolState().getItems().add(other);
+        state.getOrderedPlanState().getItems().add(orderedItem(prioritized.getVolunteerId(), "稳"));
+        state.getOrderedPlanState().getItems().add(orderedItem(other.getVolunteerId(), "稳"));
+        if (province != null) {
+            state.getConstraintState().getHardPlanningObjectives().getPriorityRules()
+                    .add(priorityRule(province));
+        }
+        return state;
+    }
+
+    private CandidateItemDTO candidate(String volunteerId, String province) {
+        CandidateItemDTO candidate = new CandidateItemDTO();
+        candidate.setVolunteerId(volunteerId);
+        candidate.setSchoolName(volunteerId);
+        candidate.setProvinceName(province);
+        return candidate;
+    }
+
+    private OrderedItemDTO orderedItem(String volunteerId, String tier) {
+        OrderedItemDTO item = new OrderedItemDTO();
+        item.setVolunteerId(volunteerId);
+        item.setTier(tier);
+        return item;
+    }
+
+    private PriorityRuleDTO priorityRule(String province) {
+        PriorityRuleDTO rule = new PriorityRuleDTO();
+        rule.setDomain("region");
+        rule.setKey("province");
+        rule.setValues(Lists.newArrayList(province));
+        rule.setOrderingTarget("rank_before");
+        rule.setScope("within_tier");
+        return rule;
+    }
+
+    private PendingPlanningCommandReq fillRequestWithoutPriorityRules(int targetCount) {
+        UserGoalFixProposalReq userGoal = new UserGoalFixProposalReq();
+        userGoal.setGoalType("fill_to_count");
+        userGoal.setTargetCount(targetCount);
+        FixProposalApplyReq applyReq = new FixProposalApplyReq();
+        applyReq.setProposalId("ugp-fill");
+        applyReq.setProposalSource("user_goal");
+        applyReq.setSourceVersionGuard(12);
+        applyReq.setUserGoalRequest(userGoal);
+        PendingPlanningCommandReq request = new PendingPlanningCommandReq();
+        request.setCommandType(PendingPlanningCommandBizService.APPLY_PLAN_CHANGE_PROPOSAL);
+        request.setProposalApply(applyReq);
+        return request;
+    }
+
+    private FixProposalApplyRes userGoalApplyResult() {
+        FixProposalDTO proposal = new FixProposalDTO();
+        proposal.setProposalId("ugp-fill");
+        proposal.setProposalSource("user_goal");
+        proposal.setStrategy("fill_missing_count");
+        FixProposalApplyRes result = new FixProposalApplyRes();
+        result.setStatus("applied");
+        result.setProposal(proposal);
+        return result;
     }
 
     @Test

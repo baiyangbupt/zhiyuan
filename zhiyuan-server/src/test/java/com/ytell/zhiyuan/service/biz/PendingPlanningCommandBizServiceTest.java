@@ -601,6 +601,49 @@ public class PendingPlanningCommandBizServiceTest {
                 .getObjectiveResults().get(1).getObjectiveId());
     }
 
+    /**
+     * 40905 定案回归（2026-10-16，355→358 卡 rev15 100% 复现）：请求 `priorityRules=[]`、
+     * state 里有**已持久化**优先规则（"浙江优先"）时，报告侧必须按 state 规则重建 ✓——
+     * 生成侧 `PlanningObjectiveCompiler.compile`（:58-60）请求为空即回落已确认规则，
+     * 冻结目标因此带 `priority:0`；报告侧以前只遍历请求 ⇒ 这条 objective 无对应报告项 ⇒
+     * `frozen objective result mismatch` ⇒ 必挂 40905 ✗。修复后：执行通过、报告含该规则 ✓。
+     */
+    @Test
+    void shouldAcceptFillProposalWhenRequestOmitsStatePersistedPriorityRule() {
+        PendingPlanningCommandReq req = canonicalPlanChangeReq(2);
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+        when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        FixProposalApplyRes applied = priorityApplyResult("浙江", true);
+        String persistedDigest = PlanningObjectiveCompiler.compileConfirmed(
+                applied.getState()).getObjectiveDigest();
+        req.getProposalApply().setCanonicalObjectiveDigest(persistedDigest);
+        FixProposalDTO proposal = canonicalProposal(
+                Arrays.asList("v-shanghai", "v-beijing"),
+                Arrays.asList("v-shanghai", "v-beijing"), 2);
+        proposal.setProposalId("ugp-fill-priority-from-state");
+        proposal.setCanonicalObjectiveDigest(persistedDigest);
+        PlanSolverResultDTO.ObjectiveResultDTO priority = new PlanSolverResultDTO.ObjectiveResultDTO();
+        priority.setObjectiveId("priority:0");
+        priority.setObjectiveType("priority_within_tier");
+        priority.setRequiredMin(0);
+        priority.setRequiredMax(0);
+        priority.setActualCount(0);
+        priority.setSatisfied(true);
+        proposal.getSolverResult().getObjectiveResults().add(priority);
+        applied.setProposal(proposal);
+        when(planningStateService.applyFixProposal(1L, 101L, req.getProposalApply())).thenReturn(applied);
+
+        PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+        assertTrue(response.getPostconditionReport().getSatisfied());
+        assertEquals(Integer.valueOf(1), response.getPostconditionReport().getPriorityRuleCount());
+        assertEquals(Integer.valueOf(1), response.getPostconditionReport().getSatisfiedPriorityRuleCount());
+        assertEquals("priority:0", response.getPostconditionReport()
+                .getObjectiveResults().get(1).getObjectiveId());
+        verify(planningStateService).applyFixProposal(1L, 101L, req.getProposalApply());
+    }
+
     @Test
     void shouldAcceptFillProposalWithPriorityRuleAndVerifyBothObjectives() {
         PendingPlanningCommandReq req = planChangeReq(2);

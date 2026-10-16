@@ -246,13 +246,27 @@ class UnifiedPlanPostconditionValidator {
         return satisfiedRequirements;
     }
 
+    /**
+     * 优先规则满足度：**报告口径与生成口径同源** ✓（2026-10-16 40905 定案）。
+     *
+     * <p>生成侧 `PlanningObjectiveCompiler.compile`（:58-60）在请求不带 `priorityRules` 时**回落
+     * state 持久化规则**（`PriorityRuleSupport.confirmedRules` ✓），冻结目标因此带着 `priority:0`；
+     * 报告侧以前只遍历请求 ✗ → 请求为空（模型没带规则）时报告里没有这条 objective ⇒
+     * `validateCanonicalObjectiveResults` 拿冻结目标找不到对应项 ⇒
+     * `40905 frozen objective result mismatch`——"浙江优先"卡（rev15）任何点击必挂 ✗。
+     * 修复 = 与生成侧走**同一条回落**：请求里有的规则保留，为空时按 state 已确认规则重建 ✓。
+     */
     private int populatePriorityRules(PlanChangePostconditionReportDTO report,
                                       PlanningStateDTO state,
                                       UserGoalFixProposalReq userGoal) {
         int satisfiedPriorityRules = 0;
         List<CandidateItemDTO> candidates = state == null || state.getCandidatePoolState() == null
                 ? new ArrayList<CandidateItemDTO>() : defaultList(state.getCandidatePoolState().getItems());
-        for (PriorityRuleDTO rule : defaultList(userGoal.getPriorityRules())) {
+        List<PriorityRuleDTO> effectiveRules = defaultList(userGoal.getPriorityRules());
+        if (effectiveRules.isEmpty()) {
+            effectiveRules = PriorityRuleSupport.confirmedRules(state);
+        }
+        for (PriorityRuleDTO rule : effectiveRules) {
             PriorityRuleSupport.Analysis analysis = PriorityRuleSupport.analyze(state, candidates, rule);
             PlanChangePostconditionReportDTO.PriorityRuleResultDTO result =
                     new PlanChangePostconditionReportDTO.PriorityRuleResultDTO();
