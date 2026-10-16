@@ -140,7 +140,7 @@ def test_output_validator_rejects_artifact_from_old_snapshot() -> None:
             turn_output=output,
             current_snapshot=_snapshot(42),
             evidence_ledger={},
-            artifacts={"artifact-1": {"artifactId": "artifact-1", "stateVersion": 41}},
+            artifacts={"artifact-1": {"artifactId": "artifact-1", "artifactType": "candidate", "stateVersion": 41}},
         )
 
 
@@ -166,7 +166,7 @@ def test_output_validator_accepts_a_rebased_artifact_within_the_ceiling() -> Non
         evidence_ledger={},
         artifacts={
             "artifact-1": {
-                "artifactId": "artifact-1",
+                "artifactId": "artifact-1", "artifactType": "candidate",
                 "stateVersion": 43,
                 "sessionId": "session-1",
             }
@@ -195,7 +195,7 @@ def test_output_validator_still_rejects_artifacts_older_than_the_turn_version() 
             turn_output=output,
             current_snapshot=_snapshot(42),
             evidence_ledger={},
-            artifacts={"artifact-1": {"artifactId": "artifact-1", "stateVersion": 41}},
+            artifacts={"artifact-1": {"artifactId": "artifact-1", "artifactType": "candidate", "stateVersion": 41}},
             artifact_version_ceiling=43,
         )
 
@@ -218,7 +218,7 @@ def test_output_validator_rejects_an_artifact_beyond_the_confirmed_ceiling() -> 
             turn_output=output,
             current_snapshot=_snapshot(42),
             evidence_ledger={},
-            artifacts={"artifact-1": {"artifactId": "artifact-1", "stateVersion": 44}},
+            artifacts={"artifact-1": {"artifactId": "artifact-1", "artifactType": "candidate", "stateVersion": 44}},
             artifact_version_ceiling=43,
         )
 
@@ -228,7 +228,7 @@ def test_output_validator_rejects_an_artifact_beyond_the_confirmed_ceiling() -> 
             turn_output=output,
             current_snapshot=_snapshot(42),
             evidence_ledger={},
-            artifacts={"artifact-1": {"artifactId": "artifact-1", "stateVersion": 43}},
+            artifacts={"artifact-1": {"artifactId": "artifact-1", "artifactType": "candidate", "stateVersion": 43}},
             artifact_version_ceiling=43,
         )
 
@@ -689,7 +689,7 @@ def test_artifact_from_a_previous_thread_is_no_longer_refused() -> None:
         evidence_ledger={},
         artifacts={
             "artifact-1": {
-                "artifactId": "artifact-1",
+                "artifactId": "artifact-1", "artifactType": "candidate", "tenantId": "1",
                 "stateVersion": 42,
                 "sessionId": "900017",
                 "threadId": "thr-old",
@@ -718,7 +718,7 @@ def test_artifact_without_a_thread_stamp_is_not_refused() -> None:
         evidence_ledger={},
         artifacts={
             "artifact-1": {
-                "artifactId": "artifact-1",
+                "artifactId": "artifact-1", "artifactType": "candidate", "tenantId": "1",
                 "stateVersion": 42,
                 "sessionId": "session-1",
             }

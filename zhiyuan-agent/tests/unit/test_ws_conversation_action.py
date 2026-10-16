@@ -89,12 +89,16 @@ def _permissive_access_guard():
 
 
 @pytest.mark.asyncio
-async def test_gateway_websocket_rejects_missing_tenant_before_calling_gateway():
+async def test_gateway_websocket_rejects_missing_authenticated_identity():
     class Socket:
         def __init__(self):
             self.app = SimpleNamespace(state=SimpleNamespace(gateway_tenant_id=""))
             self.sent: list[dict] = []
             self.received = False
+            self.closed = None
+
+        async def close(self, code=1000):
+            self.closed = code
 
         async def receive_json(self):
             if self.received:
@@ -115,8 +119,8 @@ async def test_gateway_websocket_rejects_missing_tenant_before_calling_gateway()
     # 之前的 pytest.raises 只是用来终止循环，不是被测契约的一部分。
     await _handle_gateway_ws_loop(socket, Gateway())
 
-    assert socket.sent[0]["type"] == "recoverable.error"
-    assert "缺少 tenantId" in socket.sent[0]["content"]
+    assert socket.closed == 4403
+    assert socket.sent == []
 
 
 @pytest.mark.asyncio
@@ -131,6 +135,9 @@ async def test_a_heartbeat_ping_is_answered_in_place_and_never_becomes_a_turn():
     class Socket:
         def __init__(self):
             self.app = SimpleNamespace(state=SimpleNamespace(gateway_tenant_id="1"))
+            self.state = SimpleNamespace(identity=TicketIdentity(
+                tenant_id="1", session_id="s1", user_id="u1"
+            ))
             self.sent: list[dict] = []
             self.received = False
 

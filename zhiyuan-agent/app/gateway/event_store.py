@@ -59,6 +59,16 @@ return cjson.encode(ev)
 """
 
 
+_FINISH_REQUEST_LUA = """
+if redis.call('EXISTS', KEYS[1]) == 0 then
+    return 0
+end
+redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[2])
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+return 1
+"""
+
+
 def _tag(key: SessionKey) -> str:
     """hash tag：同一会话的所有键落在同一个槽，Lua 才能原子地操作它们。"""
     tenant = str(key.tenant_id)
@@ -235,7 +245,11 @@ class RedisEventStore:
     async def finish_request(
         self, key: SessionKey, request_id: str, result_ref: str
     ) -> None:
-        await self._redis.set(_result_key(key, request_id), result_ref, ex=self._ttl)
+        await self._redis.eval(
+            _FINISH_REQUEST_LUA, 2,
+            _request_key(key, request_id), _result_key(key, request_id),
+            result_ref, str(self._ttl),
+        )
 
     async def request_result(self, key: SessionKey, request_id: str) -> str | None:
         return await self._redis.get(_result_key(key, request_id))

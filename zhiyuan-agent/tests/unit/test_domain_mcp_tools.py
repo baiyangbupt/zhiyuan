@@ -9,9 +9,15 @@ from pathlib import Path
 import pytest
 
 from app.harness.binding import ThreadBinding
+from app.gateway.artifact_store import SqliteArtifactStore
 from app.mcp_server.response import error, ok
 from app.mcp_server.server import READONLY_TOOL_NAMES, build_sdk_server, build_server
 from app.mcp_server.tools_readonly import InternalClientBackend, ReadonlyDomainTools
+
+
+@pytest.fixture
+def artifact_store(tmp_path):
+    return SqliteArtifactStore(str(tmp_path / "artifact-fixture.sqlite3"))
 
 
 def trusted_context(
@@ -191,7 +197,7 @@ def test_standard_envelope_keeps_state_version_and_evidence() -> None:
 
 @pytest.mark.asyncio
 async def test_recommendation_tool_signs_its_product_with_a_scoped_artifact_ref(
-    monkeypatch,
+    artifact_store, monkeypatch,
 ) -> None:
     """推荐类工具的结果里要有**可引用的产物**，而且章（会话/线程）在签发点盖上。
 
@@ -223,7 +229,7 @@ async def test_recommendation_tool_signs_its_product_with_a_scoped_artifact_ref(
     backend.chat_session_id = "101"
     backend.thread_id = "thr_test"
     backend.current_state_version = 42
-    tools = ReadonlyDomainTools(trusted_context(), backend=backend, current_state_version=42)
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend, current_state_version=42, artifact_store=artifact_store)
 
     result = await tools.call(
         "recommendation.preview_majors",
@@ -247,7 +253,7 @@ async def test_recommendation_tool_signs_its_product_with_a_scoped_artifact_ref(
 
 
 @pytest.mark.asyncio
-async def test_only_successful_product_shaped_results_carry_an_artifact_ref(monkeypatch) -> None:
+async def test_only_successful_product_shaped_results_carry_an_artifact_ref(artifact_store, monkeypatch) -> None:
     """产物引用不是"每个结果都贴一张"：不可用、失败、查询类都不签发。
 
     - `unavailable=true`（画像缺分数）时**没有产物**：发一条"指向空结果"的引用，
@@ -263,7 +269,7 @@ async def test_only_successful_product_shaped_results_carry_an_artifact_ref(monk
     unavailable_backend.chat_session_id = "101"
     unavailable_backend.thread_id = "thr_test"
     unavailable_backend.current_state_version = 42
-    tools = ReadonlyDomainTools(trusted_context(), backend=unavailable_backend)
+    tools = ReadonlyDomainTools(trusted_context(), backend=unavailable_backend, artifact_store=artifact_store)
 
     async def preview_majors_unavailable(chat_session_id, *, top_n=8):
         return {"code": 0, "msg": "session_score_missing", "data": None}
@@ -1230,7 +1236,7 @@ async def test_compare_requires_a_complete_scope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compare_marks_another_year_as_a_scope_mismatch(monkeypatch) -> None:
+async def test_compare_marks_another_year_as_a_scope_mismatch(artifact_store, monkeypatch) -> None:
     """请求年份没有数据时取最新一年，但**口径标记成不一致** → 整列不可比。
 
     悄悄拿另一年的数字顶上，才是真正危险的做法：表里有数，读者不会知道
@@ -1268,7 +1274,7 @@ async def test_compare_marks_another_year_as_a_scope_mismatch(monkeypatch) -> No
     backend.chat_session_id = "900001"
     backend.thread_id = "thr"
     backend.current_state_version = 0
-    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend, artifact_store=artifact_store)
 
     result = await tools.call(
         "admission.compare",
@@ -1289,7 +1295,7 @@ async def test_compare_marks_another_year_as_a_scope_mismatch(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_preview_candidates_uses_trusted_identity_and_declares_sample(monkeypatch) -> None:
+async def test_preview_candidates_uses_trusted_identity_and_declares_sample(artifact_store, monkeypatch) -> None:
     """候选预览只读纵切的三条合同：**受信身份、20 条硬上限、样例边界**。
 
     - 模型塞进来的 tenantId/sessionId 必须被丢掉——否则它能把任何会话的候选
@@ -1335,7 +1341,7 @@ async def test_preview_candidates_uses_trusted_identity_and_declares_sample(monk
     backend.chat_session_id = "900047"
     backend.thread_id = "thr"
     backend.current_state_version = 0
-    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend, artifact_store=artifact_store)
 
     result = await tools.call(
         "recommendation.preview_candidates",
@@ -1374,7 +1380,7 @@ async def test_preview_candidates_uses_trusted_identity_and_declares_sample(monk
 
 @pytest.mark.asyncio
 async def test_preview_majors_uses_trusted_identity_caps_top_n_and_maps_rank_dimensions(
-    monkeypatch,
+    artifact_store, monkeypatch,
 ) -> None:
     """专业方向推荐只读纵切的三条合同：**受信身份、topN 硬上限 8、rank 维度原样映射**。
 
@@ -1419,7 +1425,7 @@ async def test_preview_majors_uses_trusted_identity_caps_top_n_and_maps_rank_dim
     backend.chat_session_id = "900047"
     backend.thread_id = "thr"
     backend.current_state_version = 0
-    tools = ReadonlyDomainTools(trusted_context(), backend=backend)
+    tools = ReadonlyDomainTools(trusted_context(), backend=backend, artifact_store=artifact_store)
 
     result = await tools.call(
         "recommendation.preview_majors",
@@ -1540,7 +1546,7 @@ def _comparable_entity(entity_id: str, batch: str = "17") -> dict:
 
 @pytest.mark.asyncio
 async def test_compare_candidates_uses_trusted_identity_and_returns_read_only_envelope(
-    monkeypatch,
+    artifact_store, monkeypatch,
 ) -> None:
     """候选比较只读纵切的四条合同：**受信身份、真实载入、只读声明、信封形状**。
 
@@ -1589,7 +1595,7 @@ async def test_compare_candidates_uses_trusted_identity_and_returns_read_only_en
 
     monkeypatch.setattr(internal_client, "compare_candidate_pool", compare_candidate_pool)
 
-    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend(), artifact_store=artifact_store)
 
     result = await tools.call(
         "recommendation.compare_candidates",
@@ -1660,7 +1666,7 @@ async def test_compare_candidates_requires_two_to_five_entity_ids(monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_compare_candidates_reports_unwired_dimensions_and_missing_ids(monkeypatch) -> None:
+async def test_compare_candidates_reports_unwired_dimensions_and_missing_ids(artifact_store, monkeypatch) -> None:
     """未接线维度与找不到的 ID 都**如实标注**，不静默丢。
 
     - 名单外的维度（`riskFlags`）进 `unavailable_dimensions` +
@@ -1693,7 +1699,7 @@ async def test_compare_candidates_reports_unwired_dimensions_and_missing_ids(mon
 
     monkeypatch.setattr(internal_client, "compare_candidate_pool", compare_candidate_pool)
 
-    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend(), artifact_store=artifact_store)
 
     result = await tools.call(
         "recommendation.compare_candidates",
@@ -1712,7 +1718,7 @@ async def test_compare_candidates_reports_unwired_dimensions_and_missing_ids(mon
 
 @pytest.mark.asyncio
 async def test_compare_candidates_withholds_numbers_that_violate_the_scope_contract(
-    monkeypatch,
+    artifact_store, monkeypatch,
 ) -> None:
     """口径合同（与 Java 同一份判据）被违反时，**数字不许透给模型**——整列降级不可比。
 
@@ -1749,7 +1755,7 @@ async def test_compare_candidates_withholds_numbers_that_violate_the_scope_contr
 
     monkeypatch.setattr(internal_client, "compare_candidate_pool", compare_candidate_pool)
 
-    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend(), artifact_store=artifact_store)
 
     result = await tools.call(
         "recommendation.compare_candidates",
@@ -1832,7 +1838,7 @@ def _fit_response(**overrides) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_explain_fit_uses_trusted_identity_and_declares_read_only(monkeypatch) -> None:
+async def test_explain_fit_uses_trusted_identity_and_declares_read_only(artifact_store, monkeypatch) -> None:
     """适配性解释的四条合同：**受信身份、值原样带出、概率恒不可用、只读声明**。
 
     - 模型塞进来的 tenantId/sessionId/chatSessionId 必须被丢掉——身份只能来自
@@ -1857,7 +1863,7 @@ async def test_explain_fit_uses_trusted_identity_and_declares_read_only(monkeypa
 
     monkeypatch.setattr(internal_client, "explain_candidate_fit", explain_candidate_fit)
 
-    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend(), artifact_store=artifact_store)
 
     result = await tools.call(
         "recommendation.explain_fit",
@@ -1925,7 +1931,7 @@ async def test_explain_fit_requires_a_single_entity_id_without_calling_backend(
 
 @pytest.mark.asyncio
 async def test_explain_fit_forces_probability_unavailable_and_drops_sourceless_matches(
-    monkeypatch,
+    artifact_store, monkeypatch,
 ) -> None:
     """**概率不可用一律如实说、没有 source 的匹配点不许说**——上游给的别的形状也照样降级。
 
@@ -1950,7 +1956,7 @@ async def test_explain_fit_forces_probability_unavailable_and_drops_sourceless_m
 
     monkeypatch.setattr(internal_client, "explain_candidate_fit", explain_candidate_fit)
 
-    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend(), artifact_store=artifact_store)
 
     result = await tools.call("recommendation.explain_fit", {"entityId": "v1"})
 
@@ -1965,7 +1971,7 @@ async def test_explain_fit_forces_probability_unavailable_and_drops_sourceless_m
 
 
 @pytest.mark.asyncio
-async def test_explain_fit_entity_not_found_is_a_honest_empty_result(monkeypatch) -> None:
+async def test_explain_fit_entity_not_found_is_a_honest_empty_result(artifact_store, monkeypatch) -> None:
     """找不到的 entityId 是**如实空解释**（found=false + limitation），不是错误——"查不到"要能说出口。"""
     from app.util import internal_client
 
@@ -1984,7 +1990,7 @@ async def test_explain_fit_entity_not_found_is_a_honest_empty_result(monkeypatch
 
     monkeypatch.setattr(internal_client, "explain_candidate_fit", explain_candidate_fit)
 
-    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend())
+    tools = ReadonlyDomainTools(trusted_context(), backend=_compare_backend(), artifact_store=artifact_store)
 
     result = await tools.call("recommendation.explain_fit", {"entityId": "v9"})
 

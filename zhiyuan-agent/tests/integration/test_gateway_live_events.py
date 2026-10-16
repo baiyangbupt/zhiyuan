@@ -44,8 +44,8 @@ class _PermissiveAccessGuard:
 
         return TicketIdentity(
             tenant_id=self._tenant_id,
-            session_id="test-session",
-            user_id="test-user",
+            session_id="s-1",
+            user_id="u-1",
             bot_id=self._bot_id,
             origin=origin or "http://127.0.0.1:3201",
         )
@@ -151,9 +151,12 @@ async def test_progress_arrives_while_the_terminal_is_still_gated() -> None:
         await asyncio.wait_for(progress_seen.wait(), timeout=5)
 
         assert not turn.done(), "终态闸门还没开，回合不该已经结束"
-        assert emitted[0]["type"] == "tool.progress"
-        assert emitted[0]["payload"]["status"] in {"started", "completed"}
-        assert emitted[0]["payload"]["label"] == "正在查询历年录取"
+        progress = next(event for event in emitted if event["type"] == "tool.progress")
+        assert progress["payload"]["status"] in {"started", "completed"}
+        assert progress["payload"]["label"] == "正在查询历年录取"
+        assert not {event["type"] for event in emitted}.intersection(
+            {"assistant.completed", "turn.completed", "recoverable.error"}
+        )
         # 参数原文不得随进度外发。
         assert "private" not in str(emitted)
 
@@ -251,6 +254,9 @@ async def test_duplicate_and_conflicting_client_request_ids() -> None:
                 self.seen[request_id] = request_digest
                 return "accepted"
             return "duplicate" if self.seen[request_id] == request_digest else "conflict"
+
+        async def finish_request(self, key, request_id, result_ref):
+            pass
 
     runtime = SessionRuntime(store=_Store())
     key = SessionKey(tenant_id="tenant-1", session_id="42")
@@ -432,6 +438,9 @@ def test_receiver_stays_responsive_while_a_turn_is_running(ws_client, route):
         ws.send_json(payload)
         # 先等到进度帧——它证明回合已经真的开始跑了。
         first = ws.receive_json()
+        if route == "native":
+            assert json.loads(first["content"])["type"] == "turn.started"
+            first = ws.receive_json()
         assert "历年录取" in json.dumps(first, ensure_ascii=False)
 
         # 回合**还没结束**，此时发停止。
@@ -463,7 +472,7 @@ def test_interrupt_for_an_unknown_turn_is_refused_not_acknowledged(ws_client, ro
 
     with ws_client.websocket_connect(path) as ws:
         ws.send_json(
-            {"type": "turnInterrupt", "sessionId": "s-9", "turnId": "turn-9", "content": ""}
+            {"type": "turnInterrupt", "sessionId": "s-1", "turnId": "turn-9", "content": ""}
         )
         frame = ws.receive_json()
 
@@ -554,6 +563,9 @@ def test_clarification_card_reaches_the_frontend_and_the_answer_comes_back(
         ws.send_json(payload)
         assert question_started.wait(timeout=5)
         card = ws.receive_json()
+        if route == "native":
+            assert json.loads(card["content"])["type"] == "turn.started"
+            card = ws.receive_json()
         rendered = json.dumps(card, ensure_ascii=False)
         assert "clarification.requested" in rendered
         request_id = broker.snapshot(

@@ -11,6 +11,7 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 from app.config import CodexAppServerConfig
+from app.gateway.artifact_store import SqliteArtifactStore
 from app.gateway.service import GatewayService
 from app.gateway.user_input import UserInputBroker
 
@@ -67,11 +68,6 @@ def build_codex_command(mode: str, config: CodexAppServerConfig) -> list[str]:
             "mcp_servers.zhiyuan_domain={"
             f"command={json.dumps(config.python_bin)},"
             f"args=[{json.dumps(str(server_path))},\"--binding-registry\",{json.dumps(config.binding_registry_path)}],"
-            # MCP server 是 codex 的子进程，**不自动继承**本进程的环境变量。
-            # 不透传的话 `internal_client` 会落到它的默认地址——而那个默认是
-            # **生产**（https://zhiyuan.ytell.cn），于是本地栈会静默地去生产
-            # 解析绑定，失败信息只说 "binding_resolution_failed"，完全看不出
-            # 它打到了哪里。实测就是这么发生的。
             f"env_vars={json.dumps(MCP_ENV_VARS)}"
             "}"
         )
@@ -106,6 +102,11 @@ async def build_gateway_runtime(
     _warn_on_mode_mismatch(mode)
 
     resolved_config = codex_config or CodexAppServerConfig()
+    artifact_store = None
+    if mode in {"codex_readonly", "codex_write"}:
+        if not resolved_config.binding_registry_path:
+            raise ValueError("CODEX_APP_SERVER_BINDING_REGISTRY_PATH is required for artifact authority")
+        artifact_store = SqliteArtifactStore(resolved_config.binding_registry_path)
     skill_root = resolved_config.skill_root or str(
         Path(__file__).resolve().parents[2] / "skills" / "codex"
     )
@@ -164,6 +165,7 @@ async def build_gateway_runtime(
         session_runtime=None,
         current_binding_loader=current_binding_loader,
         evidence_verifier=evidence_verifier,
+        artifact_store=artifact_store,
     )
     # scope 解析器要等 gateway 建好：它从业务绑定反查身份，是唯一可信的来源。
     broker.set_scope_resolver(gateway.scope_for_thread)

@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from app.gateway.service import GatewayService
+from app.gateway.artifact_store import SqliteArtifactStore
 from app.harness.binding import ThreadBinding
 
 
@@ -24,6 +25,25 @@ class FakeMessageStore:
 
     async def save_agent_message(self, chat_session_id: str, content: str, ws_type: str = "reply") -> int:
         return 2
+
+
+class IssuedPayload(dict):
+    def __init__(self, payload, records):
+        super().__init__(payload)
+        self.issued_artifacts = records
+
+
+class FixtureArtifactStore:
+    def __init__(self):
+        self.records = {}
+
+    def get_many(self, *, tenant_id, session_id, artifact_ids):
+        return {
+            identifier: dict(self.records[identifier]) for identifier in artifact_ids
+            if identifier in self.records
+            and self.records[identifier]["tenantId"] == tenant_id
+            and self.records[identifier]["sessionId"] == session_id
+        }
 
 
 @dataclass
@@ -52,6 +72,7 @@ class CodexHarness:
     def __init__(self, outputs: list[dict]) -> None:
         self.outputs = outputs
         self.turns: list[list] = []
+        self.artifact_store = FixtureArtifactStore()
 
     async def create_thread(self, **kwargs):
         return {"thread": {"id": "thr-p1c2"}}
@@ -69,6 +90,8 @@ class CodexHarness:
     async def start_turn_and_collect(self, thread_id, input_items, output_schema=None, **kwargs):
         self.turns.append(input_items)
         payload = self.outputs[min(len(self.turns) - 1, len(self.outputs) - 1)]
+        for record in getattr(payload, "issued_artifacts", []):
+            self.artifact_store.records[record["artifactId"]] = record
 
         @dataclass
         class Collected:
@@ -179,7 +202,8 @@ def _binding() -> ThreadBinding:
 
 
 def _gateway(
-    codex: CodexHarness, verifier: Verifier | None, snapshot: dict | None = None
+    codex: CodexHarness, verifier: Verifier | None, snapshot: dict | None = None,
+    artifact_store=None,
 ) -> GatewayService:
     return GatewayService(
         mode="codex_readonly",
@@ -189,6 +213,7 @@ def _gateway(
         binding_loader=lambda **kwargs: _binding(),
         snapshot_loader=lambda **kwargs: snapshot or _snapshot(),
         evidence_verifier=verifier,
+        artifact_store=artifact_store if artifact_store is not None else getattr(codex, "artifact_store", None),
     )
 
 
@@ -362,7 +387,7 @@ async def test_snapshot_evidence_cited_by_the_model_does_not_fail_the_turn() -> 
 
 
 @pytest.mark.asyncio
-async def test_tool_issued_artifact_ref_survives_the_normal_chain(monkeypatch) -> None:
+async def test_tool_issued_artifact_ref_survives_the_normal_chain(monkeypatch, tmp_path) -> None:
     """2026-10-08 事故回归：推荐类输出引用的产物，必须是**工具签发**的那条。
 
     线上形态（会话 10041979，13:25）：`recommendation.preview_majors` 只回了一串
@@ -397,7 +422,8 @@ async def test_tool_issued_artifact_ref_survives_the_normal_chain(monkeypatch) -
     backend.chat_session_id = "session-1"
     backend.thread_id = "thr-p1c2"
     backend.current_state_version = 42
-    tools = ReadonlyDomainTools(_binding(), backend=backend, current_state_version=42)
+    store = SqliteArtifactStore(str(tmp_path / "bindings.sqlite3"))
+    tools = ReadonlyDomainTools(_binding(), backend=backend, current_state_version=42, artifact_store=store)
     envelope = await tools.call("recommendation.preview_majors", {"topN": 8})
     artifact_id = envelope["artifacts"][0]["artifactId"]
 
@@ -439,7 +465,7 @@ async def test_tool_issued_artifact_ref_survives_the_normal_chain(monkeypatch) -
         ],
     }
     codex = CodexHarness([payload])
-    gateway = _gateway(codex, None)
+    gateway = _gateway(codex, None, artifact_store=store)
 
     result = await _turn(gateway)
 
@@ -491,7 +517,7 @@ def _candidate_payload(refs: list[tuple[str, dict]], output_refs: list[dict]) ->
         "artifactRefs": output_refs,
         "evidenceRefs": [],
     }
-    return {
+    return IssuedPayload({
         "output": output,
         "events": [
             {
@@ -518,7 +544,7 @@ def _candidate_payload(refs: list[tuple[str, dict]], output_refs: list[dict]) ->
                 },
             },
         ],
-    }
+    }, [record for _, record in refs])
 
 
 @pytest.mark.asyncio
@@ -552,7 +578,7 @@ async def test_mid_turn_version_bump_no_longer_blocks_the_turn() -> None:
         message_store=FakeMessageStore(),
         binding_loader=lambda **kwargs: _binding(),
         snapshot_loader=loader,
-        evidence_verifier=None,
+        evidence_verifier=None, artifact_store=codex.artifact_store,
     )
 
     result = await _turn(gateway)
@@ -583,7 +609,7 @@ async def test_turn_without_a_bump_still_reads_the_snapshot_exactly_once() -> No
         message_store=FakeMessageStore(),
         binding_loader=lambda **kwargs: _binding(),
         snapshot_loader=loader,
-        evidence_verifier=None,
+        evidence_verifier=None, artifact_store=codex.artifact_store,
     )
 
     result = await _turn(gateway)
@@ -620,7 +646,7 @@ async def test_unconfirmable_ceiling_fails_closed_instead_of_letting_new_artifac
         message_store=FakeMessageStore(),
         binding_loader=lambda **kwargs: _binding(),
         snapshot_loader=loader,
-        evidence_verifier=None,
+        evidence_verifier=None, artifact_store=codex.artifact_store,
     )
 
     result = await _turn(gateway)
@@ -654,7 +680,7 @@ async def test_model_claimed_artifact_version_never_raises_the_ceiling() -> None
         message_store=FakeMessageStore(),
         binding_loader=lambda **kwargs: _binding(),
         snapshot_loader=loader,
-        evidence_verifier=None,
+        evidence_verifier=None, artifact_store=codex.artifact_store,
     )
 
     result = await _turn(gateway)
@@ -831,7 +857,7 @@ async def test_cross_session_artifact_is_still_refused_after_the_registry() -> N
 
     result = await _turn(gateway)
 
-    assert str(result.get("error", "")).startswith("artifact_scope_violation:"), result.get("error")
+    assert str(result.get("error", "")).startswith("artifact_not_found:"), result.get("error")
     assert result.get("output") is None
     assert len(codex.turns) == 2, "先给一次修复回合，修不好维持原码硬失败"
 

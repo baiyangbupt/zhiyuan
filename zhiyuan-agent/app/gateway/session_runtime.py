@@ -15,9 +15,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.gateway.ui_events import SessionKey
@@ -31,11 +34,60 @@ DUPLICATE = "duplicate"
 CONFLICT = "conflict"
 
 
+def request_content_digest(*, message_type: str, user_id: str, content: Any, action: Any = None) -> str:
+    canonical = json.dumps(
+        {"type": message_type, "userId": user_id, "content": content, "action": action},
+        sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _request_outcome(result: Any) -> str:
+    if not isinstance(result, Mapping):
+        return "completed"
+    error = result.get("error")
+    if error == "turn_interrupted":
+        return "interrupted"
+    if error:
+        return "failed"
+    output = result.get("output")
+    if isinstance(output, Mapping):
+        execution_status = output.get("executionStatus")
+        if execution_status in {"failed", "interrupted"}:
+            return execution_status
+    action_result = result.get("actionResult")
+    if isinstance(action_result, Mapping) and action_result.get("actionStatus") == "failed":
+        return "failed"
+    return "completed"
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredRequest:
+    key: SessionKey
+    client_request_id: str
+    ui_turn_id: str
+
+
+@dataclass(slots=True)
+class _PendingRequest:
+    ui_turn_id: str
+    request_digest: str
+    task: asyncio.Task[Any]
+
+
+@dataclass(slots=True)
+class AdmissionGate:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
 @dataclass(slots=True)
 class ActiveTurn:
     key: SessionKey
     ui_turn_id: str
     codex_turn_id: str | None = None
+    client_request_id: str = ""
+    request_digest: str = ""
 
 
 class ConnectionChannel:
@@ -184,6 +236,8 @@ class SessionRuntime:
         self._active: dict[SessionKey, ActiveTurn] = {}
         self._channels: dict[SessionKey, ConnectionChannel] = {}
         self._tasks: dict[SessionKey, asyncio.Task[Any]] = {}
+        self._admission_gates: dict[SessionKey, AdmissionGate] = {}
+        self._pending_requests: dict[tuple[SessionKey, str], _PendingRequest] = {}
         # 不随"某一轮/某条连接"走的活儿 ✓（见 `detach_work` ✓）：只保住引用 ✓，不参与回合互斥 ✗。
         self._detached: set[asyncio.Task[Any]] = set()
         self._store = store
@@ -191,8 +245,14 @@ class SessionRuntime:
         self._steer_impl = steer_impl
 
     def detach_work(
-        self, key: SessionKey, work: Callable[[], Awaitable[Any]], *, label: str
-    ) -> None:
+        self,
+        key: SessionKey,
+        work: Callable[[], Awaitable[Any]],
+        *,
+        label: str,
+        client_request_id: str = "",
+        ui_turn_id: str = "",
+    ) -> DeferredRequest:
         """把一段活儿挂到**会话**上，而不是挂到"当前这一轮/这条连接"上 ✓✗。
 
         为什么必须有它 ✗✓（2026-09-27 真栈实测 ✓）：确认（`conversationAction`）那一段
@@ -209,11 +269,21 @@ class SessionRuntime:
         这个是**动作收尾**（不可中断 ✓、不占回合位 ✗）——混进 `submit` 会让"确认"被
         自己那一轮打断（就是上面那条 ✗）。
         """
-        task = asyncio.create_task(work())
+        pending = self._pending_requests.get((key, client_request_id))
+        if not ui_turn_id and pending is not None:
+            ui_turn_id = pending.ui_turn_id
+        task = asyncio.create_task(self._run_request(key, client_request_id, ui_turn_id, work))
+        if client_request_id:
+            self._pending_requests[key, client_request_id] = _PendingRequest(
+                ui_turn_id=ui_turn_id,
+                request_digest=pending.request_digest if pending is not None else ui_turn_id,
+                task=task,
+            )
         self._detached.add(task)
 
         def _done(done: asyncio.Task[Any]) -> None:
             self._detached.discard(done)
+            self._release_request(key, client_request_id, done)
             if done.cancelled():
                 return
             error = done.exception()
@@ -221,6 +291,7 @@ class SessionRuntime:
                 logger.warning("detached %s failed for %s: %r", label, key, error)
 
         task.add_done_callback(_done)
+        return DeferredRequest(key, client_request_id, ui_turn_id)
 
     def attach_connection(self, key: SessionKey, channel: ConnectionChannel) -> None:
         """记住这个会话当前该往哪条连接推事件。
@@ -287,6 +358,76 @@ class SessionRuntime:
             return None
         return turn.ui_turn_id
 
+    @asynccontextmanager
+    async def _admission_gate(self, key: SessionKey):
+        gate = self._admission_gates.setdefault(key, AdmissionGate())
+        gate.users += 1
+        try:
+            async with gate.lock:
+                yield
+        finally:
+            gate.users -= 1
+            if gate.users == 0:
+                self._admission_gates.pop(key, None)
+
+    async def request_status(self, key: SessionKey, client_request_id: str) -> dict[str, Any]:
+        pending = self._pending_requests.get((key, client_request_id))
+        if pending is not None and not pending.task.done():
+            return {"status": "running", "turnId": pending.ui_turn_id}
+        if self._store is not None:
+            stored = await self._store.request_result(key, client_request_id)
+            if stored:
+                try:
+                    status = json.loads(stored)
+                    if isinstance(status, dict) and status.get("status"):
+                        if status["status"] == "running":
+                            status["status"] = "recovery_required"
+                        return status
+                except (TypeError, ValueError):
+                    pass
+        return {"status": "recovery_required"}
+
+    async def _save_request_status(self, key: SessionKey, request_id: str, turn_id: str, status: str) -> None:
+        if self._store is not None and request_id:
+            await self._store.finish_request(
+                key, request_id, json.dumps({"status": status, "turnId": turn_id}),
+            )
+
+    def _release_request(self, key: SessionKey, request_id: str, task: asyncio.Task[Any] | None) -> None:
+        pending = self._pending_requests.get((key, request_id))
+        if pending is not None and pending.task is task:
+            self._pending_requests.pop((key, request_id), None)
+
+    async def _run_request(
+        self,
+        key: SessionKey,
+        request_id: str,
+        turn_id: str,
+        work: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        status = "completed"
+        deferred = False
+        task = asyncio.current_task()
+        try:
+            result = await work()
+            deferred = isinstance(result, DeferredRequest)
+            if not deferred:
+                status = _request_outcome(result)
+            return result
+        except asyncio.CancelledError:
+            status = "interrupted"
+            raise
+        except BaseException:
+            status = "failed"
+            raise
+        finally:
+            pending = self._pending_requests.get((key, request_id))
+            try:
+                if not deferred and pending is not None and pending.task is task:
+                    await self._save_request_status(key, request_id, turn_id, status)
+            finally:
+                self._release_request(key, request_id, task)
+
     async def submit(
         self,
         key: SessionKey,
@@ -294,24 +435,41 @@ class SessionRuntime:
         client_request_id: str,
         ui_turn_id: str,
         work: Callable[[], Awaitable[Any]],
+        request_digest: str | None = None,
     ) -> str:
-        if self._store is not None and client_request_id:
-            verdict = await self._store.admit(key, client_request_id, ui_turn_id)
-            if verdict == "duplicate":
-                # 同 id 同内容 = 重发：回"已收到"，**不**再跑一遍模型。
-                return DUPLICATE
-            if verdict == "conflict":
-                # 同 id 不同内容 = 客户端把两个请求搞混了，不能替它挑一个。
-                return CONFLICT
-        if self.active_turn(key) is not None:
-            return BUSY
-        task = asyncio.create_task(work())
-        self._tasks[key] = task
-        self._active[key] = ActiveTurn(key=key, ui_turn_id=ui_turn_id)
-        task.add_done_callback(lambda done, key=key: self._release(key, done))
-        return ACCEPTED
+        digest = request_digest if request_digest is not None else ui_turn_id
+        async with self._admission_gate(key):
+            pending = self._pending_requests.get((key, client_request_id))
+            if pending is not None and not pending.task.done():
+                return DUPLICATE if pending.request_digest == digest else CONFLICT
+            active = self.active_turn(key)
+            if active is not None:
+                if client_request_id and active.client_request_id == client_request_id:
+                    return DUPLICATE if active.request_digest == digest else CONFLICT
+                return BUSY
+            if self._store is not None and client_request_id:
+                verdict = await self._store.admit(key, client_request_id, digest)
+                if verdict in {DUPLICATE, CONFLICT}:
+                    return verdict
+                if verdict != ACCEPTED:
+                    raise RuntimeError("invalid_request_admission_verdict")
+                await self._save_request_status(key, client_request_id, ui_turn_id, "running")
 
-    def _release(self, key: SessionKey, done: asyncio.Task[Any]) -> None:
+            task = asyncio.create_task(self._run_request(key, client_request_id, ui_turn_id, work))
+            if client_request_id:
+                self._pending_requests[key, client_request_id] = _PendingRequest(
+                    ui_turn_id=ui_turn_id, request_digest=digest, task=task,
+                )
+            self._tasks[key] = task
+            self._active[key] = ActiveTurn(
+                key=key, ui_turn_id=ui_turn_id,
+                client_request_id=client_request_id, request_digest=digest,
+            )
+            task.add_done_callback(lambda done, key=key: self._release(key, done, client_request_id))
+            return ACCEPTED
+
+    def _release(self, key: SessionKey, done: asyncio.Task[Any], request_id: str = "") -> None:
+        self._release_request(key, request_id, done)
         if self._tasks.get(key) is done:
             self._tasks.pop(key, None)
             self._active.pop(key, None)

@@ -23,17 +23,20 @@ class _PermissiveAccessGuard:
     这里不重复验它，只负责让 WS 用例能连上。
     """
 
-    def __init__(self, tenant_id: str = "test-tenant", bot_id: str = "test-bot") -> None:
+    def __init__(self, tenant_id: str = "test-tenant", bot_id: str = "test-bot", *,
+                 session_id: str = "test-session", user_id: str = "test-user") -> None:
         self._tenant_id = tenant_id
         self._bot_id = bot_id
+        self._session_id = session_id
+        self._user_id = user_id
 
     async def verify(self, ticket, origin):
         from app.gateway.access import TicketIdentity
 
         return TicketIdentity(
             tenant_id=self._tenant_id,
-            session_id="test-session",
-            user_id="test-user",
+            session_id=self._session_id,
+            user_id=self._user_id,
             bot_id=self._bot_id,
             origin=origin or "http://127.0.0.1:3201",
         )
@@ -42,6 +45,12 @@ class _PermissiveAccessGuard:
 
 
 _patches = []
+
+
+def _authenticate(client, session_id: str, user_id: str):
+    client.app.state.conversation_access_guard = _PermissiveAccessGuard(
+        session_id=session_id, user_id=user_id,
+    )
 
 
 def _start_patches():
@@ -298,6 +307,7 @@ def test_ping_pong(client):
 
 
 def test_gateway_mode_compat_text_routes_to_gateway(client):
+    _authenticate(client, 'gateway-session', 'gateway-user')
     gateway = MagicMock()
     gateway.handle_turn = AsyncMock(return_value={"reply": "Gateway 已处理", "events": []})
     client.app.state.gateway_service = gateway
@@ -331,6 +341,7 @@ def test_gateway_mode_compat_text_routes_to_gateway(client):
 
 
 def test_gateway_mode_compat_confirmation_maps_to_conversation_action(client):
+    _authenticate(client, 'gateway-session', 'gateway-user')
     gateway = MagicMock()
     # 确认/取消走**权威**快照（缓存优先的 `get_current_snapshot` 会把"刚补录完
     # 就点确认"判成 stale_state ✗——见 `get_authoritative_snapshot` 的注释）。
@@ -372,6 +383,7 @@ def test_gateway_mode_compat_confirmation_maps_to_conversation_action(client):
 
 
 def test_gateway_mode_compat_without_snapshot_fails_closed(client):
+    _authenticate(client, 'missing-session', 'gateway-user')
     gateway = MagicMock()
     gateway.get_authoritative_snapshot = AsyncMock(return_value=None)
     gateway.execute_action_and_refresh = AsyncMock()
@@ -395,6 +407,7 @@ def test_gateway_mode_compat_without_snapshot_fails_closed(client):
 
 
 def test_text_message_returns_plus_format(client):
+    _authenticate(client, 'sess-001', 'user-001')
     mock_service = AsyncMock()
     mock_service.handle_message = AsyncMock(return_value="你好，我是AI助手")
     mock_service.handle_intent_select = AsyncMock()
@@ -420,6 +433,7 @@ def test_text_message_returns_plus_format(client):
 
 
 def test_intent_select_input_serializes_content(client):
+    _authenticate(client, 'sess-002', 'user-002')
     mock_service = AsyncMock()
     mock_service.handle_message = AsyncMock()
     mock_service.handle_intent_select = AsyncMock(return_value="已更新方案")
@@ -452,6 +466,7 @@ def test_intent_select_input_serializes_content(client):
 
 
 def test_popup_response_has_message_id_and_object_content(client):
+    _authenticate(client, 'sess-003', 'user-003')
     popup_data = {
         "title": "报考意向调整确认",
         "items": [{"content": "新增物理", "value": {"major_intents": {}}, "selected": True}],
@@ -489,6 +504,7 @@ def test_popup_response_has_message_id_and_object_content(client):
 
 
 def test_interest_analysis_popup_returns_object_content(client):
+    _authenticate(client, 'sess-interest', 'user-interest')
     popup_data = {
         "title": "我先帮你看一眼",
         "impact": "先结合当前情况做分析。",
@@ -529,6 +545,7 @@ def test_interest_analysis_popup_returns_object_content(client):
 
 
 def test_workspace_action_response_returns_object_content(client):
+    _authenticate(client, 'sess-003a', 'user-003a')
     action_data = {
         "type": "planningWorkspaceAction",
         "title": "意向已更新",
@@ -566,6 +583,7 @@ def test_workspace_action_response_returns_object_content(client):
 
 
 def test_ws_compat_sends_multiple_workspace_followups(client):
+    _authenticate(client, 'sess-followups', 'user-followups')
     mock_service = AsyncMock()
     mock_service.handle_message = AsyncMock(return_value=ChatServiceResponseEnvelope(
         primary="已完成重排并复审。",
@@ -631,6 +649,7 @@ def test_ws_compat_sends_multiple_workspace_followups(client):
 
 
 def test_ws_compat_structured_session_query_state_returns_rich_text_without_workspace_card(client, tmp_path):
+    _authenticate(client, 'sess-structured-query-state', 'user-structured-query-state')
     llm_client = MagicMock()
     llm_client.model = MagicMock()
     llm_client.model_settings = {}
@@ -677,6 +696,7 @@ def test_ws_compat_structured_session_query_state_returns_rich_text_without_work
 
 
 def test_ws_compat_model_driven_intent_popup_roundtrip(client):
+    _authenticate(client, '21', 'user-e2e-intent')
     mock_service = AsyncMock()
     mock_service.handle_intent_select = AsyncMock()
     mock_service.handle_message = AsyncMock(return_value=WSResponse(
@@ -716,6 +736,7 @@ def test_ws_compat_model_driven_intent_popup_roundtrip(client):
 
 
 def test_ws_compat_intent_select_constraint_returns_pending_confirmation_card_not_workspace_action(client):
+    _authenticate(client, '33', 'user-intent-select')
     message_content = {
         "intentMode": "constraint",
         "clickable": True,
@@ -768,6 +789,7 @@ def test_ws_compat_intent_select_constraint_returns_pending_confirmation_card_no
 
 
 def test_v3_ws_intent_select_routes_to_intent_select_handler(client):
+    _authenticate(client, '33', 'user-intent-select')
     card_payload = {
         "type": "pendingConfirmationCard",
         "kind": "intent_change",
@@ -816,6 +838,7 @@ def test_v3_ws_intent_select_routes_to_intent_select_handler(client):
 
 
 def test_ws_compat_intent_select_can_return_pending_confirmation_card(client):
+    _authenticate(client, '33', 'user-intent-select')
     card_payload = {
         "type": "pendingConfirmationCard",
         "kind": "intent_change",
@@ -862,6 +885,7 @@ def test_ws_compat_intent_select_can_return_pending_confirmation_card(client):
 
 
 def test_ws_compat_multi_turn_constraint_preview_card_click_then_plan_query(client):
+    _authenticate(client, '34', 'user-multi-turn')
     message_content = {
         "intentMode": "constraint",
         "clickable": True,
@@ -964,6 +988,7 @@ def test_ws_compat_multi_turn_constraint_preview_card_click_then_plan_query(clie
 
 
 def test_ws_compat_question_style_interest_query_falls_back_to_chat_response(client):
+    _authenticate(client, 'sess-interest-query', 'user-interest-query')
     mock_service = AsyncMock()
     mock_service.handle_message = AsyncMock(return_value="这是普通查询回复")
     mock_service.handle_intent_select = AsyncMock()
@@ -987,6 +1012,7 @@ def test_ws_compat_question_style_interest_query_falls_back_to_chat_response(cli
 
 
 def test_handler_exception_returns_error(client):
+    _authenticate(client, 'sess-005', 'user-005')
     mock_service = AsyncMock()
     mock_service.handle_message = AsyncMock(side_effect=RuntimeError("boom"))
     client.app.state.chat_service = mock_service
@@ -1011,6 +1037,7 @@ def test_handler_exception_returns_error(client):
 
 
 def test_ws_compat_timeout_returns_generic_reply(client):
+    _authenticate(client, 'sess-timeout-none', 'user-timeout-none')
     mock_service = AsyncMock()
     mock_service.handle_message = AsyncMock(side_effect=asyncio.TimeoutError())
     mock_service.handle_intent_select = AsyncMock()

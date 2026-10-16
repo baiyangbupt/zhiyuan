@@ -12,6 +12,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.harness.binding import ThreadBinding
+from app.gateway.artifact_store import SqliteArtifactStore
 from app.mcp_server.context import (
     ThreadBindingRegistry,
     TrustedContextError,
@@ -431,6 +432,7 @@ def build_sdk_server(
     tool_runner: ReadonlyDomainTools | None = None,
     *,
     binding_registry: ThreadBindingRegistry | None = None,
+    artifact_store: Any | None = None,
 ) -> Any:
     """Build the production MCP SDK server around the governed tool runner.
 
@@ -439,6 +441,9 @@ def build_sdk_server(
     """
     if SdkServer is None:  # pragma: no cover - dependency is declared and installed in CI
         raise RuntimeError("mcp SDK is not installed")
+
+    if binding_registry is not None and artifact_store is None:
+        artifact_store = SqliteArtifactStore(str(binding_registry.path))
 
     server = SdkServer(
         "zhiyuan-domain-readonly",
@@ -467,6 +472,7 @@ def build_sdk_server(
             arguments or {},
             metadata=metadata,
             binding_registry=binding_registry,
+            artifact_store=artifact_store,
             fallback_tool_runner=tool_runner,
         )
 
@@ -480,6 +486,7 @@ async def _call_domain_tool(
     metadata: object,
     binding_registry: ThreadBindingRegistry | None,
     fallback_tool_runner: ReadonlyDomainTools | None = None,
+    artifact_store: Any | None = None,
 ) -> dict[str, Any]:
     active_tool_runner = fallback_tool_runner
     if binding_registry is not None:
@@ -535,6 +542,7 @@ async def _call_domain_tool(
                 )
         active_tool_runner = ReadonlyDomainTools(
             binding,
+            artifact_store=artifact_store,
             backend=InternalClientBackend(
                 tenant_id=binding.tenant_id,
                 chat_session_id=binding.session_id,
@@ -602,6 +610,7 @@ def serve(binding_registry_path: str) -> None:
     production transport uses the small, protocol-specific loop below.
     """
     registry = ThreadBindingRegistry(binding_registry_path)
+    artifact_store = SqliteArtifactStore(binding_registry_path)
     for raw_line in sys.stdin:
         try:
             request = json.loads(raw_line)
@@ -627,6 +636,7 @@ def serve(binding_registry_path: str) -> None:
                     dict(params.get("arguments") or {}),
                     metadata=params.get("_meta") or {},
                     binding_registry=registry,
+                    artifact_store=artifact_store,
                 )
             )
             result = {

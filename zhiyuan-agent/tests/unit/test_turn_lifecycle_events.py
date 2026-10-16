@@ -15,6 +15,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi import WebSocketDisconnect
 
+from app.gateway.access import TicketIdentity
+
 from app.gateway.service import (
     DELTA_FLUSH_CHARS,
     DELTA_MAX_CHUNK_CHARS,
@@ -68,7 +70,7 @@ class _InlineRuntime:
         """本替身不做会话域路由 ✓（`publish` 恒 False ✓）→ 收尾退回本连接 ✓。"""
         return None
 
-    async def submit(self, key, *, client_request_id, ui_turn_id, work):
+    async def submit(self, key, *, client_request_id, ui_turn_id, work, request_digest=None):
         self.submitted.append((key, client_request_id, ui_turn_id))
         await work()
         return ACCEPTED
@@ -106,6 +108,9 @@ class _Socket:
 
     def __init__(self, *messages, broker=None) -> None:
         self._messages = list(messages)
+        self.state = SimpleNamespace(identity=TicketIdentity(
+            tenant_id="tenant-1", session_id="900047", user_id="u1"
+        ))
         self.sent: list[str] = []
         self.app = SimpleNamespace(
             state=SimpleNamespace(

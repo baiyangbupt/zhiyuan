@@ -5,14 +5,18 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
 
 from app.domain.career_slots import normalize_career_labels
+from app.gateway.artifact_store import ArtifactStoreError
 from app.gateway.contracts import (
     CareerUpdateRequest,
     ConversationTurnSnapshot,
@@ -23,9 +27,7 @@ from app.gateway.contracts import (
 from app.gateway.event_adapter import adapt_codex_item, adapt_notification
 from app.gateway.output_validation import (
     OutputContractError,
-    merge_artifacts,
     merge_evidence,
-    register_scoped_artifacts,
     validate_turn_output,
 )
 from app.gateway.evidence_verification import Decision, classify
@@ -816,12 +818,14 @@ _REPAIR_HINT_BY_CODE = {
     "admission_evidence_missing": _ADMISSION_EVIDENCE_REPAIR_HINT,
     "admission_mode_mismatch": _ADMISSION_EVIDENCE_REPAIR_HINT,
     "artifact_scope_violation": _ARTIFACT_REF_REPAIR_HINT,
+    "artifact_not_found": _ARTIFACT_REF_REPAIR_HINT,
+    "artifact_mismatch": _ARTIFACT_REF_REPAIR_HINT,
 }
 _REPAIRABLE_CONTRACT_CODES = frozenset(_REPAIR_HINT_BY_CODE)
 # 修复回合**允许重调工具**、修完必须重建账本的码：只有产物引用这一族（重签发的产物
 # 只会进"按最新载荷重建"的账本；证据侧的提示写死了"不要编造/重查走核验回路"，
 # 维持原样不重建，见 `_repair_priority_rule_count` 的同款说明）。
-_LEDGER_REBUILD_REPAIR_CODES = frozenset({"artifact_scope_violation"})
+_LEDGER_REBUILD_REPAIR_CODES = frozenset({"artifact_scope_violation", "artifact_not_found", "artifact_mismatch"})
 
 
 def _agent_message_text(item: Any) -> str | None:
@@ -1138,6 +1142,13 @@ def _progress_emitter(
     return callback
 
 
+@dataclass(frozen=True)
+class _CachedTurn:
+    result: dict[str, Any]
+    input_digest: str
+    expires_at: float
+
+
 class GatewayService:
     """Orchestrate one conversation turn behind a stable Gateway contract."""
 
@@ -1155,6 +1166,10 @@ class GatewayService:
         developer_instructions: str = "",
         current_binding_loader: Callable[..., Any] | None = None,
         evidence_verifier: Callable[..., Any] | None = None,
+        artifact_store: Any | None = None,
+        turn_cache_max_entries: int = 1024,
+        turn_cache_ttl_seconds: float = 3600.0,
+        turn_cache_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         # `codex_write`（P2）：允许写闭环的模式。它与 readonly 的差别**不在模型能调什么**
         # ——写路径由"模型出提案（proposalRequest）→ Java 编译出 pending → 用户确认 →
@@ -1163,6 +1178,14 @@ class GatewayService:
         # 明确"这个实例的确认链是活的"，并与只读实例分开配置。
         if mode not in {"legacy", "codex_shadow", "codex_readonly", "codex_write"}:
             raise ValueError("unsupported gateway mode")
+        if (
+            not isinstance(turn_cache_max_entries, int)
+            or isinstance(turn_cache_max_entries, bool)
+            or turn_cache_max_entries <= 0
+        ):
+            raise ValueError("turn_cache_max_entries must be a positive integer")
+        if not math.isfinite(turn_cache_ttl_seconds) or turn_cache_ttl_seconds <= 0:
+            raise ValueError("turn_cache_ttl_seconds must be positive and finite")
         self.mode = mode
         self.codex = codex
         self.legacy = legacy
@@ -1179,13 +1202,11 @@ class GatewayService:
         self._threads: dict[SessionKey, str] = {}
         self._snapshots: dict[SessionKey, ConversationTurnSnapshot] = {}
         self._working_sets: dict[SessionKey, ConversationWorkingSet] = {}
-        # 会话级产物登记表（2026-10-15 §41）：签发过章的产物留一份，供**跨回合**引用
-        # 时校验（模型凭记忆引用旧产物、本回合一次工具都不调的情形）。只在进程内
-        # ——MCP 签发点是 codex 的子进程（`composition.build_codex_command`），它自己
-        # 的内存网关看不见；重启即失效的残留与后续办法见 `_evidence_inputs` 的说明。
-        self._registered_artifacts: dict[SessionKey, dict[str, dict[str, Any]]] = {}
-        self._turn_cache: dict[tuple[SessionKey, str], dict[str, Any]] = {}
-        self._turn_digests: dict[tuple[SessionKey, str], str] = {}
+        self.artifact_store = artifact_store
+        self._turn_cache_max_entries = turn_cache_max_entries
+        self._turn_cache_ttl_seconds = turn_cache_ttl_seconds
+        self._turn_cache_clock = turn_cache_clock
+        self._turn_cache: OrderedDict[tuple[SessionKey, str], _CachedTurn] = OrderedDict()
         self._session_locks: dict[SessionKey, asyncio.Lock] = {}
         # 用户回合水位（`user_turn_watermark` ✓）与续接台账（`continue_after_action` ✓）——
         # 两样都只为"确认生效后的自动续接"服务（见那里的 docstring ✓）。
@@ -1776,18 +1797,19 @@ class GatewayService:
         self._user_turn_seq[cache_key[0]] = self._user_turn_seq.get(cache_key[0], 0) + 1
         session_lock = self._session_locks.setdefault(cache_key[0], asyncio.Lock())
         async with session_lock:
+            self._prune_turn_cache(self._turn_cache_clock())
             cached = self._turn_cache.get(cache_key)
             if cached is not None:
-                if self._turn_digests.get(cache_key) != input_digest:
+                if cached.input_digest != input_digest:
                     return {
                         "mode": self.mode,
                         "reply": "同一回合编号对应了不同内容，请重新发起本次请求。",
                         "events": [],
-                        "snapshotVersion": cached.get("snapshotVersion"),
+                        "snapshotVersion": cached.result.get("snapshotVersion"),
                         "writeAttempted": False,
                         "error": "turn_id_input_conflict",
                     }
-                return cached
+                return cached.result
             result = await self._handle_uncached(
                 tenant_id=tenant_id,
                 session_id=session_id,
@@ -1796,9 +1818,24 @@ class GatewayService:
                 content=content,
                 emit=emit,
             )
-            self._turn_cache[cache_key] = result
-            self._turn_digests[cache_key] = input_digest
+            now = self._turn_cache_clock()
+            self._turn_cache[cache_key] = _CachedTurn(
+                result=result,
+                input_digest=input_digest,
+                expires_at=now + self._turn_cache_ttl_seconds,
+            )
+            self._prune_turn_cache(now)
             return result
+
+    def _prune_turn_cache(self, now: float) -> None:
+        while self._turn_cache:
+            oldest = next(iter(self._turn_cache.values()))
+            if (
+                len(self._turn_cache) <= self._turn_cache_max_entries
+                and oldest.expires_at > now
+            ):
+                break
+            self._turn_cache.popitem(last=False)
 
     def user_turn_watermark(self, *, tenant_id: str | int, session_id: str | int) -> int:
         """这个会话已经开跑过多少个**用户回合**（续接回合的"别打架"基线 ✓）。
@@ -2603,15 +2640,17 @@ class GatewayService:
                             tenant_id=tenant_id,
                             session_id=session_id,
                         )
-                        # 上限同样重算：修复回合可能按推进后的版本签发（缓存保证
-                        # 权威读数不重复取，见 `_artifact_version_ceiling`）。
-                        artifact_ceiling = await self._artifact_version_ceiling(
-                            artifacts,
-                            snapshot=snapshot,
-                            tenant_id=tenant_id,
-                            session_id=session_id,
-                            cache=artifact_ceiling_cache,
+                    else:
+                        artifacts = self._artifact_inputs(
+                            turn_payload, snapshot, tenant_id=tenant_id, session_id=session_id,
                         )
+                    artifact_ceiling = await self._artifact_version_ceiling(
+                        artifacts,
+                        snapshot=snapshot,
+                        tenant_id=tenant_id,
+                        session_id=session_id,
+                        cache=artifact_ceiling_cache,
+                    )
                     try:
                         return _check(fresh["output"]), True, evidence_ledger, artifacts
                     except OutputContractError as second:
@@ -2724,6 +2763,7 @@ class GatewayService:
                     artifacts=artifacts,
                     tenant_id=tenant_id,
                     artifact_version_ceiling=artifact_ceiling,
+                    artifact_ceiling_cache=artifact_ceiling_cache,
                 )
                 output_repaired = output_repaired or priority_repaired
             events: list[dict[str, Any]] = []
@@ -2984,18 +3024,8 @@ class GatewayService:
         重查（P1c-2）之后要**重建**而不是复用首轮那份：模型第二轮引用的是
         新证据，拿首轮的账本去校验新输出，会把新证据判成 `evidence_not_found`。
 
-        产物侧同理（2026-10-15 §41 事故，会话 10041983）：账本原来**只有**本回合
-        产物，于是"停顿/跟话之后模型引用上一回合签发的产物、本回合零工具调用"必挂
-        ——账本里唯一那条是模型正文的无章转述 → `artifact_scope_violation`。现在
-        产物账本 = **本会话登记过的产物 + 本回合产物**（`merge_artifacts`，登记优先），
-        登记由 `register_scoped_artifacts` 在**每一次建账本时**完成：带完整会话章
-        （tenant + session + stateVersion）的产物入表，别的会话/租户的章一概不收。
-
-        持久性说明：登记表在**进程内**（与 `_threads`/`_snapshots` 同级）。签发点在
-        MCP（codex 的子进程），网关进程看不到它的内存；Java 侧虽有产物库
-        （`ConversationArtifactService`），但 `mcp_art_*` 没有写入口。所以跨重启
-        仍会丢（B 类残留）：重启后第一次引用旧产物照旧 fail-closed——不做持久化
-        只是不做，**不会**把没核过的东西放进来。
+        产物只按当前输出的引用 ID 查询可信签发 store。事件与模型正文均无登记权限；
+        修复和重查后以最新输出重读，跨回合与重启不依赖本进程内存。
         """
         snapshot_evidence = [
             item.model_dump(by_alias=True) if hasattr(item, "model_dump") else item
@@ -3013,31 +3043,39 @@ class GatewayService:
             "evidenceRefs",
             "evidence_refs",
         )
-        artifacts = _by_id(
-            _collect_records(
-                [
-                    turn.get("artifacts", []),
-                    turn.get("events", []),
-                ]
-                if isinstance(turn, Mapping)
-                else [],
-                "artifacts",
-                "artifactRefs",
-                "artifact_refs",
-            ),
-            "artifactId",
-            "artifact_id",
+        return merge_evidence(snapshot_evidence, turn_evidence), self._artifact_inputs(
+            turn, snapshot, tenant_id=tenant_id, session_id=session_id,
         )
-        if tenant_id is not None:
-            scope_session = session_id if session_id is not None else snapshot.session_id
-            registry = self._registered_artifacts.setdefault(
-                _session_key(tenant_id, scope_session), {}
-            )
-            register_scoped_artifacts(
-                registry, artifacts, tenant_id=tenant_id, session_id=scope_session
-            )
-            artifacts = merge_artifacts(registry, artifacts)
-        return merge_evidence(snapshot_evidence, turn_evidence), artifacts
+
+    def _artifact_inputs(
+        self,
+        turn: Any,
+        snapshot: ConversationTurnSnapshot,
+        *,
+        tenant_id: str | int | None = None,
+        session_id: str | int | None = None,
+    ) -> dict[str, Any]:
+        raw_output = turn.get("output") if isinstance(turn, Mapping) else None
+        if raw_output is None and isinstance(turn, Mapping):
+            raw_output = turn.get("turn", {}).get("output")
+        references = (
+            raw_output.get("artifactRefs", raw_output.get("artifact_refs", []))
+            if isinstance(raw_output, Mapping) else []
+        )
+        artifact_ids = list(_by_id(references, "artifactId", "artifact_id"))
+        artifacts: dict[str, Any] = {}
+        if artifact_ids:
+            if self.artifact_store is None or tenant_id is None:
+                raise OutputContractError("artifact_store_unavailable", "artifact authority is not configured")
+            try:
+                artifacts = self.artifact_store.get_many(
+                    tenant_id=str(tenant_id),
+                    session_id=str(session_id if session_id is not None else snapshot.session_id),
+                    artifact_ids=artifact_ids,
+                )
+            except ArtifactStoreError as exc:
+                raise OutputContractError(exc.code, "artifact authority rejected the lookup") from None
+        return artifacts
 
     async def _artifact_version_ceiling(
         self,
@@ -3055,8 +3093,8 @@ class GatewayService:
         相等去卡，模型终态引用 v+1 产物就会在收尾处以**非可修复**的 `stale_state`
         硬失败——"回合不再被挡死"在最后一步落空。上限让这些产物过闸。
 
-        上限**不是**产物自证的版本：产物记录从本回合事件（含模型正文）收集，
-        模型能往里塞任意 `stateVersion`；拿它当上限等于让数据自己给自己发许可。
+        上限**不是**产物自证的版本：产物记录虽来自可信签发 store，仍不能替代
+        Java 对当前工作区版本的权威读数。
         所以这里只在检测到"有产物版本高于回合起始"时，**重新向 Java 读一次**
         权威快照，取它的版本作上限；读不到 → 保持 None（回到严格相等，fail-closed，
         与今天一致）。`cache` 按回合传入：权威读数一个回合只取一次；没触发
@@ -3258,6 +3296,7 @@ class GatewayService:
         artifacts: dict[str, Any],
         tenant_id: str,
         artifact_version_ceiling: int | None = None,
+        artifact_ceiling_cache: dict[str, Any] | None = None,
     ) -> tuple[TurnOutput, bool]:
         """同档前置多条 → 先给**一次**纠错回合；修不成原样返回（不吞、不硬失败）。
 
@@ -3273,8 +3312,8 @@ class GatewayService:
           返回原输出，`False`，后续一切照旧；
         - 修好的候选还要过 `validate_turn_output`（与 `_validate_round` 的 `_check`
           同一套参数）才采纳：替换输出、把修复回合事件并进本回合，返回 `True`。
-          修复提示写死"不要调用新工具"（`_repair_turn_output`），所以不重建账本；
-          候选的引用仍必须全在现有账本里 ✅ 否则整体退回原输出（fail-closed）。
+          不调用新工具也可能改引已签发的其他产物，因此候选引用仍要重查可信 store；
+          不重建证据账本，候选不合格时整体退回原输出。
         """
         if not isinstance(turn, dict):
             return output, False
@@ -3303,6 +3342,16 @@ class GatewayService:
                 # 修复回合不是执行回合：候选若带上可执行的确认/取消动作，一律不采纳
                 # （多规则提案这条路上，原输出今天走不到任何动作执行）。
                 return output, False
+            artifacts = self._artifact_inputs(
+                repaired, snapshot, tenant_id=tenant_id, session_id=snapshot.session_id,
+            )
+            refreshed_ceiling = await self._artifact_version_ceiling(
+                artifacts, snapshot=snapshot, tenant_id=tenant_id,
+                session_id=snapshot.session_id,
+                cache=artifact_ceiling_cache if artifact_ceiling_cache is not None else {},
+            )
+            if refreshed_ceiling is not None:
+                artifact_version_ceiling = refreshed_ceiling
             validate_turn_output(
                 turn_output=candidate,
                 current_snapshot=snapshot,

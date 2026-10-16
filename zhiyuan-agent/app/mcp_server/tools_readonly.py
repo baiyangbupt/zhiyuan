@@ -16,6 +16,7 @@ from app.admission.facts import (
 )
 from app.admission.tool_results import KIND_HISTORY, normalize_history
 from app.harness.binding import BindingError, ThreadBinding
+from app.gateway.artifact_store import ArtifactStoreError
 from app.mcp_server.response import SCHEMA_VERSION, error, ok
 from app.mcp_server.tools_recommendation import comparison_problems
 from app.util import internal_client
@@ -348,9 +349,11 @@ class ReadonlyDomainTools:
         max_calls: int = 8,
         backend_timeout: float = 5.0,
         mode: str = "readonly",
+        artifact_store: Any | None = None,
     ) -> None:
         self.binding = binding
         self.backend = backend
+        self.artifact_store = artifact_store
         self.current_state_version = current_state_version
         # `readonly` / `write`：只影响**写工具被拒时怎么解释**（工具面本身不变——
         # 写路径是提案/确认链，不是给模型一把写枪；P2 报告第三节堵点 2 的结论）。
@@ -410,7 +413,22 @@ class ReadonlyDomainTools:
             ).encode()
         ).hexdigest()
         if cache_key in self._cache:
-            return self._cache[cache_key]
+            cached = self._cache[cache_key]
+            references = cached.get("artifacts", [])
+            if not references:
+                return cached
+            try:
+                if self.artifact_store is None:
+                    raise ArtifactStoreError("artifact_store_unavailable")
+                issued = self.artifact_store.get_many(
+                    tenant_id=str(self.binding.tenant_id), session_id=str(self.binding.session_id),
+                    artifact_ids=[record["artifactId"] for record in references],
+                )
+                if len(issued) == len(references):
+                    return cached
+            except ArtifactStoreError as exc:
+                return _err(name, exc.code, "artifact authority is unavailable", state_version=self.current_state_version)
+            self._cache.pop(cache_key, None)
         if self.calls >= self.max_calls:
             return _err(name, "call_budget_exceeded", "readonly tool call budget exceeded", state_version=self.current_state_version)
         if name == "admission.get_history":
@@ -440,7 +458,10 @@ class ReadonlyDomainTools:
             except Exception as retry_exc:
                 return _err(name, "backend_unavailable", str(retry_exc or exc), state_version=self.current_state_version)
         envelope = self._envelope(name, result)
-        self._attach_artifacts(name, arguments, envelope)
+        try:
+            self._attach_artifacts(name, arguments, envelope)
+        except ArtifactStoreError as exc:
+            return _err(name, exc.code, "artifact issuance failed", state_version=self.current_state_version)
         self._cache[cache_key] = envelope
         return envelope
 
@@ -832,43 +853,15 @@ class ReadonlyDomainTools:
             # 不可用 = **没有产物**。这时候发一条"引用某个空结果"的产物，正是
             # 这些工具如实标注 unavailable 要防的事：把"查不到"包装成"这就是结果"。
             return
-        envelope["artifacts"] = [
-            {
-                "artifactId": self._artifact_id(name, arguments),
-                "artifactType": artifact_type,
-                "stateVersion": self.current_state_version,
-                # 章只盖受信 binding 的值：模型塞的 tenantId/sessionId 在
-                # `_trusted_arguments` 那一步就丢掉了，产物身份不可能来自模型。
-                "tenantId": str(self.binding.tenant_id),
-                "sessionId": str(self.binding.session_id),
-                "threadId": str(self.binding.thread_id),
-            }
-        ]
-
-    def _artifact_id(self, name: str, arguments: Mapping[str, Any]) -> str:
-        """**确定性** id：同会话、同工具、同入参、同工作区版本 → 同一个 id。
-
-        随机 id 也够用（当回合能引用即可），但确定性的价值在补一轮那条路上：
-        模型在补一轮里抄的是**首轮工具结果里那个 id**，同一个 id 在首轮事件里
-        必须查得到——随机 id 会让"同一份产物有两个名字"这件事无声无息地发生。
-        入参先过 `_trusted_arguments`：身份字段不参与，模型塞的值影响不了 id。
-        """
-        digest = hashlib.sha256(
-            json.dumps(
-                [
-                    str(self.binding.tenant_id),
-                    str(self.binding.session_id),
-                    name,
-                    self.current_state_version,
-                    self._trusted_arguments(dict(arguments)),
-                ],
-                sort_keys=True,
-                ensure_ascii=False,
-            ).encode()
-        ).hexdigest()[:20]
-        # 前缀带 `mcp_art_`：与 Java 的 `art_<uuid>` 区分开——这一波产物是
-        # **工具在回合内签发**的，不是 Java 台账里那份（那份还没有写入口）。
-        return f"mcp_art_{name.rpartition('.')[2]}_{digest}"
+        if self.artifact_store is None:
+            raise ArtifactStoreError("artifact_store_unavailable")
+        record = self.artifact_store.issue(
+            tenant_id=str(self.binding.tenant_id), session_id=str(self.binding.session_id),
+            thread_id=str(self.binding.thread_id), artifact_type=artifact_type,
+            state_version=self.current_state_version, tool_name=name,
+            arguments=self._trusted_arguments(dict(arguments)), payload=envelope,
+        )
+        envelope["artifacts"] = [record]
 
 
 class InternalClientBackend:

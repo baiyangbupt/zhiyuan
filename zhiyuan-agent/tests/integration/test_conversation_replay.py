@@ -190,6 +190,51 @@ async def test_finish_request_persists_the_result_reference(store) -> None:
     assert await store.request_result(key, "req-1") == "operation-7"
 
 
+async def test_request_reservation_lives_as_long_as_its_recoverable_result(store) -> None:
+    key = _key()
+    await store.admit(key, "req-1", "digest-a")
+    request_key = f"conv:{{{key.tenant_id}:{key.session_id}}}:req:req-1"
+    await store._redis.pexpire(request_key, 1000)
+    await store.finish_request(key, "req-1", "operation-7")
+    assert await store._redis.pttl(request_key) > 100_000
+    assert await store.admit(key, "req-1", "digest-a") == DUPLICATE
+
+
+async def test_expired_reservation_does_not_create_a_free_standing_result(store) -> None:
+    key = _key()
+    await store.finish_request(key, "never-admitted", "operation-7")
+    assert await store.request_result(key, "never-admitted") is None
+
+
+async def test_runtime_busy_retry_and_receipt_recovery_use_the_real_store(store) -> None:
+    from app.gateway.session_runtime import BUSY, SessionRuntime
+
+    runtime = SessionRuntime(store=store)
+    key = _key()
+    gate = asyncio.Event()
+    calls = []
+
+    async def work():
+        calls.append("retry")
+        return {"reply": "done"}
+
+    assert await runtime.submit(key, client_request_id="first", ui_turn_id="first", work=gate.wait) == ACCEPTED
+    first_task = runtime._tasks[key]
+    assert await runtime.submit(key, client_request_id="retry", ui_turn_id="original", request_digest="content", work=work) == BUSY
+    gate.set()
+    await first_task
+    assert await runtime.submit(key, client_request_id="retry", ui_turn_id="original", request_digest="content", work=work) == ACCEPTED
+    await runtime._tasks[key]
+    second_store = RedisEventStore(REDIS_URL, ttl_seconds=120)
+    try:
+        restarted = SessionRuntime(store=second_store)
+        assert await restarted.submit(key, client_request_id="retry", ui_turn_id="new", request_digest="content", work=work) == DUPLICATE
+        assert await restarted.request_status(key, "retry") == {"status": "completed", "turnId": "original"}
+    finally:
+        await second_store.close()
+    assert calls == ["retry"]
+
+
 async def test_unknown_event_type_is_rejected_before_it_reaches_the_stream(store) -> None:
     key = _key()
 

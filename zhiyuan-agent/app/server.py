@@ -19,7 +19,12 @@ from app.config import CodexAppServerConfig, GatewayConfig, HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_store import message_store
 from app.gateway.composition import build_gateway_runtime, bind_session_runtime
-from app.gateway.access import AccessDenied, ConversationAccessGuard, TicketIdentity
+from app.gateway.access import (
+    AccessDenied,
+    ConversationAccessGuard,
+    TicketIdentity,
+    bind_message_identity,
+)
 from app.util import internal_client
 from app.gateway.session_runtime import (
     ACCEPTED,
@@ -28,6 +33,7 @@ from app.gateway.session_runtime import (
     DUPLICATE,
     ConnectionChannel,
     SessionRuntime,
+    request_content_digest,
 )
 from app.gateway.ui_events import SessionKey, resync_snapshot
 from app.gateway.user_input import UserInputError
@@ -411,6 +417,7 @@ async def lifespan(app: FastAPI):
     app.state.event_store = _build_event_store()
     if gateway_runtime is not None:
         runtime = SessionRuntime(
+            store=app.state.event_store,
             interrupt_impl=gateway_runtime.gateway.interrupt_codex_turn,
             steer_impl=gateway_runtime.gateway.steer_codex_turn,
         )
@@ -451,11 +458,23 @@ async def health_check():
     }
 
 
+async def _scoped_ws_payload(ws: WebSocket, payload: object) -> dict | None:
+    identity = getattr(getattr(ws, "state", None), "identity", None)
+    try:
+        return bind_message_identity(identity, payload)
+    except AccessDenied:
+        await ws.close(code=4403)
+        return None
+
+
 async def _handle_ws_loop(ws: WebSocket, service: ChatService):
     """V3 原生协议的 WebSocket 消息处理循环。"""
     while True:
         try:
             data = await ws.receive_json()
+            data = await _scoped_ws_payload(ws, data)
+            if data is None:
+                return
             msg = WSMessage.model_validate(data)
             logger.info(
                 "Received message: session_id=%s user_id=%s content=%s",
@@ -759,6 +778,9 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
     while True:
         try:
             raw = await ws.receive_json()
+            raw = await _scoped_ws_payload(ws, raw)
+            if raw is None:
+                return
             msg = WSMessage.model_validate(raw)
         except WebSocketDisconnect:
             # 客户端断开是**正常结束**，不是错误：它一天要发生几百次。
@@ -810,6 +832,7 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
             continue
 
         key = SessionKey(tenant_id=tenant_id, session_id=str(msg.session_id))
+        request_id = str(msg.client_request_id or turn_id)
         # **终态与进度都走会话域** ✓✓：一个回合的收尾可能发生在**重连之后** ✓
         #（F10 的刷新 ✓），发到"当初那条连接"上就是永远收不到 ✗（见 `_session_emitter` ✓）。
         emit = _session_emitter(runtime, channel, key, turn_id=turn_id)
@@ -828,7 +851,11 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
                 return None
             return runtime.current_channel(key)
 
-        async def work(msg=msg, turn_id=turn_id, tenant_id=tenant_id) -> None:
+        async def work(
+            msg=msg, turn_id=turn_id, tenant_id=tenant_id, key=key,
+            emit=emit, _make_emit=_make_emit, _current_channel=_current_channel,
+            request_id=request_id,
+        ):
             # **回合开始要有一条 `turn.started`** ✓✓：白名单里有它 ✓、前端 reducer
             # 也在等它 ✓（`conversationSession.mjs:48-52` ✓——回合排序用的 `startedAt`
             # 就来自这条 ✓，而它此前永远为空 ✗，全仓没有任何生产者 ✓✗）。
@@ -846,7 +873,7 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
                 # 挂在回合里的话，掉线判 `turn_interrupted` ✗ 会把执行之后**发结果**的那一步一起带走 ✗，
                 # 事件流里就永远缺一条 `conversationAction.result` ✓，重连后卡片无从恢复 ✗
                 # （实测：工作区照样 0→3 ✓，卡却停在"待确认" ✓）。
-                runtime.detach_work(
+                return runtime.detach_work(
                     key,
                     lambda: _run_action_work(
                         gateway, msg, tenant_id, turn_id, emit, channel,
@@ -854,8 +881,9 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
                         make_emit=_make_emit,
                     ),
                     label="conversation_action",
+                    client_request_id=request_id,
+                    ui_turn_id=turn_id,
                 )
-                return
             result = await _run_native_turn(gateway, msg, tenant_id, turn_id, emit)
             # **水位在收尾前取** ✓（不是回合一开始取 ✗）：本回合自己就是一个用户回合 ✓，
             # 它的 +1 在 `handle_turn` 里已经记过 ✓——此刻取到的值就是"连我在内"的基线 ✓。
@@ -891,6 +919,7 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
                 channel_resolver=_current_channel,
                 watermark=watermark,
             )
+            return result
 
         # 编号事件要写会话与回合号：它们是 envelope 的必填字段。
         channel.bind_session(key)
@@ -900,15 +929,21 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
             runtime.attach_connection(key, channel)
             verdict = await runtime.submit(
                 key,
-                client_request_id=str(raw.get("clientRequestId") or turn_id),
+                client_request_id=request_id,
                 ui_turn_id=turn_id,
+                request_digest=request_content_digest(
+                    message_type=msg.type, user_id=msg.user_id,
+                    content=msg.content, action=msg.conversation_action,
+                ),
                 work=work,
             )
         else:
             verdict = ACCEPTED
             await work()
         if verdict == DUPLICATE:
-            pass
+            await channel.emit_frame(await _duplicate_request_frame(
+                runtime, key, request_id,
+            ))
         elif verdict == BUSY:
             await channel.emit_frame(
                 WSResponse(
@@ -932,6 +967,23 @@ async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None
                 ).model_dump()
             )
         continue
+
+
+async def _duplicate_request_frame(runtime, key: SessionKey, request_id: str, *, compat: bool = False):
+    status = await runtime.request_status(key, request_id)
+    payload = {
+        "type": "recoverable.error", "code": "duplicate_request",
+        "clientRequestId": request_id, "status": status["status"],
+        "originalTurnId": status.get("turnId"), "recovery": "replay_or_resync",
+        "message": "此请求已接收，请恢复原回合结果，不要重复提交。",
+    }
+    frame = WSResponse(
+        type="recoverable.error", session_id=key.session_id,
+        content=json.dumps(payload, ensure_ascii=False),
+    ).model_dump()
+    if compat:
+        frame["end"] = False
+    return frame
 
 
 def _session_emitter(runtime: object, channel, key: SessionKey, *, turn_id: str | None = None):
@@ -1349,7 +1401,7 @@ async def _run_action_work(
     *,
     channel_resolver=None,
     make_emit=None,
-) -> None:
+) -> dict:
     """确认/取消的收尾：执行 + 终态发射 ✓——**独立于回合** ✓（见 `SessionRuntime.detach_work` ✓）。
 
     兜底必须写在这里 ✗：整段被取消时 ✓，外面那层 `except` 根本轮不到 ✓；
@@ -1385,6 +1437,7 @@ async def _run_action_work(
             channel_resolver=channel_resolver,
             watermark=watermark,
         )
+        return result
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -1392,6 +1445,7 @@ async def _run_action_work(
             "conversation action failed: session_id=%s turn_id=%s", msg.session_id, turn_id
         )
         await _emit_action_failure(emit, msg, result=result)
+        return {"error": "action_execution_exception"}
 
 
 async def _emit_action_failure(emit, msg, *, result: Mapping[str, Any] | None = None) -> None:
@@ -1615,6 +1669,11 @@ async def _handle_control_message(ws, raw, runtime, tenant_id, channel) -> bool:
     返回 True 表示这条已处理完，不该再走回合分支。
     """
     message_type = str(raw.get("type") or "")
+    if message_type in {"clarificationAnswer", "turnInterrupt", "turnSteer"}:
+        raw = await _scoped_ws_payload(ws, raw)
+        if raw is None:
+            return True
+        tenant_id = raw["tenantId"]
     if message_type == "clarificationAnswer":
         return await _handle_clarification_answer(ws, raw, runtime, tenant_id, channel)
     if message_type not in {"turnInterrupt", "turnSteer"}:
@@ -1774,6 +1833,9 @@ async def _compat_gateway_loop(ws, gateway, tenant_id: str, runtime, channel) ->
     while True:
         try:
             raw = await ws.receive_json()
+            raw = await _scoped_ws_payload(ws, raw)
+            if raw is None:
+                return
         except WebSocketDisconnect:
             return
         except (json.JSONDecodeError, TypeError):
@@ -1824,7 +1886,10 @@ async def _compat_gateway_loop(ws, gateway, tenant_id: str, runtime, channel) ->
         turn_id = str(raw.get("turnId") or raw.get("turn_id") or uuid.uuid4())
         key = SessionKey(tenant_id=str(tenant_id), session_id=session_id)
 
-        async def work() -> None:
+        async def work(
+            action=action, tenant_id=tenant_id, session_id=session_id,
+            user_id=user_id, turn_id=turn_id, content=content,
+        ) -> dict:
             try:
                 result = await _run_compat_turn(
                     gateway,
@@ -1850,6 +1915,7 @@ async def _compat_gateway_loop(ws, gateway, tenant_id: str, runtime, channel) ->
             # 终态走**同一条队列**：直接写 socket 会和事件抢，
             # 结果就是前端先看到答案、后看到"正在查询"。
             await channel.emit_frame(_compat_reply_frame(result))
+            return result
 
         channel.bind_session(key)
         channel.bind_turn(turn_id)
@@ -1859,14 +1925,19 @@ async def _compat_gateway_loop(ws, gateway, tenant_id: str, runtime, channel) ->
                 key,
                 client_request_id=str(raw.get("clientRequestId") or turn_id),
                 ui_turn_id=turn_id,
+                request_digest=request_content_digest(
+                    message_type=str(raw.get("type") or "chat"), user_id=user_id,
+                    content=raw.get("content", ""), action=action,
+                ),
                 work=work,
             )
         else:
             verdict = ACCEPTED
             await work()
         if verdict == DUPLICATE:
-            # 同 id 同内容是重发：不重跑，也不报错——对方上次多半只是没收到回包。
-            pass
+            await channel.emit_frame(await _duplicate_request_frame(
+                runtime, key, str(raw.get("clientRequestId") or turn_id), compat=True,
+            ))
         elif verdict == BUSY:
             # 不排队、不取消上一轮：用户的诉求不能被后一句话悄悄作废。
             await channel.emit_frame(
@@ -1911,7 +1982,10 @@ async def _run_compat_turn(
         return result
     kwargs = {}
     if channel is not None:
-        kwargs["emit"] = channel.emit
+        async def emit(event):
+            await channel.emit({**event, "turnId": turn_id})
+
+        kwargs["emit"] = emit
     return await gateway.handle_turn(
         tenant_id=str(tenant_id),
         session_id=session_id,
@@ -2019,14 +2093,14 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
         await _handle_gateway_compat_ws_loop(ws, gateway, tenant_id, bot_id)
         return
     service: ChatService = ws.app.state.chat_service
-    registered_session_id = await _compat_connections.register(
-        ws.query_params.get("chatSessionId") or ws.query_params.get("sessionId"),
-        ws,
-    )
+    registered_session_id = await _compat_connections.register(identity.session_id, ws)
     try:
         while True:
             try:
                 raw = await ws.receive_json()
+                raw = await _scoped_ws_payload(ws, raw)
+                if raw is None:
+                    return
             except (json.JSONDecodeError, TypeError) as e:
                 logger.warning("Invalid JSON from compat ws: %s", e)
                 continue

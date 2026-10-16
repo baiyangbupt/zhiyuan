@@ -42,6 +42,29 @@ class AccessDenied(RuntimeError):
         self.reason = reason
 
 
+def bind_message_identity(identity: TicketIdentity | None, payload: Any) -> dict[str, Any]:
+    """Bind an inbound WebSocket message to the identity proven at handshake."""
+    if not isinstance(identity, TicketIdentity) or not all(
+        (identity.tenant_id, identity.session_id, identity.user_id)
+    ):
+        raise AccessDenied(403, "session_forbidden")
+    if not isinstance(payload, dict):
+        raise AccessDenied(403, "session_forbidden")
+
+    scoped = dict(payload)
+    for aliases, expected in (
+        (("tenantId", "tenant_id"), identity.tenant_id),
+        (("sessionId", "session_id"), identity.session_id),
+        (("userId", "user_id"), identity.user_id),
+    ):
+        for alias in aliases:
+            supplied = payload.get(alias)
+            if supplied not in (None, "") and str(supplied) != expected:
+                raise AccessDenied(403, "session_forbidden")
+            scoped[alias] = expected
+    return scoped
+
+
 class ConversationAccessGuard:
     def __init__(
         self,

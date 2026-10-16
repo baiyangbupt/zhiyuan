@@ -71,15 +71,10 @@ def validate_turn_output(
 ) -> TurnOutput:
     """Validate every backend reference before output reaches a user.
 
-    The model can only reference records already issued by the current
-    Gateway turn.  Optional scope fields are checked when present in a ledger
-    entry; absence is not treated as proof of a different scope.
-
-    `artifacts` 是**产物账本**，由 Gateway 用 `merge_artifacts(会话登记, 本回合产物)`
-    并出来（本模块与 `merge_evidence` 同一套快照法）：模型引用的产物要么是本回合
-    工具签发的，要么是**本会话此前签发并登记过**的——跨会话/跨租户的记录进不了
-    登记表，也照旧被 `artifact_scope_violation` 拒。`thread_id` 仍按调用方传入，
-    但已**不参与**产物或证据的准入判定（运行身份不承载安全语义，§41）。
+    `artifacts` 必须来自可信签发 store，而不是模型正文或工具事件里的自报记录。
+    Gateway 按当前输出的引用 ID、租户和会话查询，跨回合及重启沿用同一权威来源。
+    本函数复核租户、会话、类型与版本，不负责根据字段形状证明签发来源。
+    `thread_id` 仅作为审计上下文，不参与归属判定。
 
     `artifact_version_ceiling`：产物的版本上限（闭区间 [回合起始版本, 上限]）。
     默认 `None` ＝ 上限就是回合起始版本（与旧的严格相等逐字一致）。只有 Gateway
@@ -200,7 +195,18 @@ def validate_turn_output(
         entry = artifacts.get(artifact_id)
         if entry is None:
             raise OutputContractError("artifact_not_found", artifact_id)
+        entry_tenant = _scoped_field(entry, "tenantId", "tenant_id")
+        if (
+            (strict_scope and entry_tenant in (None, ""))
+            or (entry_tenant not in (None, "") and str(entry_tenant) != str(tenant_id))
+        ):
+            raise OutputContractError("artifact_scope_violation", artifact_id)
+        entry_type = _field(entry, "artifactType", "artifact_type")
+        if entry_type != reference.artifact_type:
+            raise OutputContractError("artifact_mismatch", artifact_id)
         entry_state = _field(entry, "stateVersion", "state_version")
+        if entry_state in (None, "") or isinstance(entry_state, bool):
+            raise OutputContractError("artifact_invalid", artifact_id)
         if entry_state not in (None, ""):
             try:
                 parsed_state = int(entry_state)
@@ -212,6 +218,8 @@ def validate_turn_output(
                 raise OutputContractError("stale_state", artifact_id)
         if not artifact_version_lower <= reference.state_version <= artifact_version_upper:
             raise OutputContractError("stale_state", artifact_id)
+        if parsed_state != reference.state_version:
+            raise OutputContractError("artifact_mismatch", artifact_id)
         entry_session = _scoped_field(entry, "sessionId", "session_id")
         # 与证据同一处置：值一样、类型不同不能算越权。
         artifact_session_matches = entry_session not in (None, "") and str(entry_session) == str(
