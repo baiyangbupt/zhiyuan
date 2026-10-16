@@ -347,7 +347,8 @@ public class PlanningStateSuggestionMappingTest {
                 .findFirst()
                 .orElse(null);
         assertNotNull(replaceSuggestion);
-        assertEquals(java.util.Arrays.asList("ps1", "ps2"), replaceSuggestion.getAffectedUnitIds());
+        // 收集式梯度（§五-58）：两处断层（20->45、45->80）都要计入，affected 取并集。
+        assertEquals(java.util.Arrays.asList("ps1", "ps2", "ps4"), replaceSuggestion.getAffectedUnitIds());
         assertEquals(java.util.Arrays.asList("ps3"), replaceSuggestion.getCandidateUnitIds());
         assertEquals(1, replaceSuggestion.getRemoveUnitIds().size());
         assertTrue(replaceSuggestion.getReplacementPairs().stream().allMatch(pair ->

@@ -390,6 +390,8 @@ export interface PlanningInitialPlanStrategyReport {
 
 export interface PlanningReviewCheck {
   code?: string;
+  /** 审查 2.0 四级分级：block/action/notice/info；旧数据可能缺省，回退用 level。 */
+  severity?: string;
   level?: string;
   passed?: boolean;
   reasonCode?: string;
@@ -873,6 +875,11 @@ export interface PlanningStateRes {
       passedCount?: number;
       warnCount?: number;
       riskCount?: number;
+      /** 审查 2.0 四级计数（只统计未通过的检查）。 */
+      blockCount?: number;
+      actionCount?: number;
+      noticeCount?: number;
+      infoCount?: number;
     };
     checks?: PlanningReviewCheck[];
     compensationPreview?: PlanningCompensationPreview;

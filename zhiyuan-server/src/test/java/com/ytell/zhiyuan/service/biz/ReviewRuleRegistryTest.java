@@ -72,4 +72,30 @@ public class ReviewRuleRegistryTest {
         assertNotNull(metadata);
         assertEquals("数量校验", metadata.getLabel());
     }
+
+    @Test
+    void shouldExposeFourLevelSeverityDefaults() {
+        // §五-58 校准表：block={safety_guard, admission_limit, group_inner_safety_guard, 官方口径 count 缺口}
+        assertEquals("block", ReviewRuleRegistry.get("safety_guard").getSeverity());
+        assertEquals("block", ReviewRuleRegistry.get("admission_limit").getSeverity());
+        assertEquals("block", ReviewRuleRegistry.get("group_inner_safety_guard").getSeverity());
+        assertEquals("block", ReviewRuleRegistry.get("count_validation").getSeverity());
+        // action={ratio_distribution, probability_gap, high_tuition, cooperative_program,
+        //         special_enrollment, major_group_safety_intent_alignment}
+        assertEquals("action", ReviewRuleRegistry.get("ratio_distribution").getSeverity());
+        assertEquals("action", ReviewRuleRegistry.get("probability_gap").getSeverity());
+        assertEquals("action", ReviewRuleRegistry.get("high_tuition").getSeverity());
+        assertEquals("action", ReviewRuleRegistry.get("cooperative_program").getSeverity());
+        assertEquals("action", ReviewRuleRegistry.get("special_enrollment").getSeverity());
+        assertEquals("action", ReviewRuleRegistry.get("major_group_safety_intent_alignment").getSeverity());
+        // notice={probability_inversion, edge_score}
+        assertEquals("notice", ReviewRuleRegistry.get("probability_inversion").getSeverity());
+        assertEquals("notice", ReviewRuleRegistry.get("edge_score").getSeverity());
+        // info={plan_update_notice, adjustment_notice}
+        assertEquals("info", ReviewRuleRegistry.get("plan_update_notice").getSeverity());
+        assertEquals("info", ReviewRuleRegistry.get("adjustment_notice").getSeverity());
+        // 旧字段保留过渡（不删）。
+        assertEquals("risk", ReviewRuleRegistry.get("safety_guard").getSeverityDefault());
+        assertEquals("warn", ReviewRuleRegistry.get("probability_gap").getSeverityDefault());
+    }
 }

@@ -10650,8 +10650,8 @@ public class PlanningStateService {
         }
         double sprintRatio = sprintCount * 1D / total;
         double protectRatio = protectCount * 1D / total;
-        Integer expectedSprintCount = expectedTierCount(state.getCandidatePoolState(), "冲");
-        Integer expectedProtectCount = expectedTierCount(state.getCandidatePoolState(), "保");
+        Integer expectedSprintCount = expectedTierCount(state, "冲");
+        Integer expectedProtectCount = expectedTierCount(state, "保");
         boolean sprintMeetsExpected = expectedSprintCount != null && sprintCount >= expectedSprintCount;
         boolean protectMeetsExpected = expectedProtectCount != null && protectCount >= expectedProtectCount;
         boolean sprintWithinExpected = expectedSprintCount != null && sprintCount <= expectedSprintCount;
@@ -10694,12 +10694,28 @@ public class PlanningStateService {
         return check;
     }
 
-    private Integer expectedTierCount(CandidatePoolStateDTO candidatePoolState, String tier) {
+    /**
+     * 期望档位数量。数量感知（2026-10-16 review §五-58）：存在方案目标（selectionTargetCount）时，
+     * requiredTierCounts（按官方 requiredCount 推得）按 effectiveTarget/requiredCount 等比缩放，
+     * 避免拿 80 条方案的档位期望卡 15 条方案；四舍五入、缩放后下限 1（防 0 期望把合规方案误判为超限）。
+     */
+    private Integer expectedTierCount(PlanningStateDTO state, String tier) {
+        CandidatePoolStateDTO candidatePoolState = state == null ? null : state.getCandidatePoolState();
         if (candidatePoolState == null || candidatePoolState.getRequiredTierCounts() == null) {
             return null;
         }
         Integer value = candidatePoolState.getRequiredTierCounts().get(tier);
-        return value == null || value <= 0 ? null : value;
+        if (value == null || value <= 0) {
+            return null;
+        }
+        Integer selectionTargetCount = resolveSelectionTargetCount(state);
+        Integer requiredCount = candidatePoolState.getRequiredCount();
+        if (selectionTargetCount == null || requiredCount == null || requiredCount <= 0
+                || selectionTargetCount.equals(requiredCount)) {
+            return value;
+        }
+        double scale = selectionTargetCount * 1D / requiredCount;
+        return Math.max(1, (int) Math.round(value * scale));
     }
 
     private ReviewCheckDTO reviewSafetyGuard(PlanningStateDTO state, List<CandidateItemDTO> candidates) {
@@ -10773,45 +10789,55 @@ public class PlanningStateService {
         check.setPassed(true);
         check.setSummary("当前排序未发现录取概率倒挂");
 
+        // 收集式（2026-10-16 review §五-58）：遍历全部相邻对收集倒挂，不再首命中 return；
+        // detail 逐条列出，affected 取并集。
         if (isMajorGroupMode(state.getCandidatePoolState())) {
             List<OrderedUnitDTO> orderedUnits = defaultOrderedUnits(state.getOrderedPlanState().getUnits());
+            List<String> inversionDetails = Lists.newArrayList();
             for (int i = 1; i < orderedUnits.size(); i++) {
                 OrderedUnitDTO previous = orderedUnits.get(i - 1);
                 OrderedUnitDTO current = orderedUnits.get(i);
                 Double previousRatio = previous.getAdmissionRatio();
                 Double currentRatio = current.getAdmissionRatio();
-                if (previousRatio != null && currentRatio != null && previousRatio > currentRatio) {
-                    check.setPassed(false);
-                    check.setLevel("warn");
-                    check.setSummary("当前排序存在录取概率倒挂");
-                    check.setDetail(String.format("第%d组录取率 %.1f 高于第%d组录取率 %.1f。", i, previousRatio, i + 1, currentRatio));
-                    check.setSuggestedAction("建议检查相邻专业组顺序，确认是否符合真实风险梯度。");
-                    check.getAffectedUnitIds().add(previous.getUnitId());
-                    check.getAffectedUnitIds().add(current.getUnitId());
-                    defaultPlanningUnitMajors(previous.getMajorItems()).stream().map(PlanningUnitMajorDTO::getVolunteerId).forEach(check.getAffectedVolunteerIds()::add);
-                    defaultPlanningUnitMajors(current.getMajorItems()).stream().map(PlanningUnitMajorDTO::getVolunteerId).forEach(check.getAffectedVolunteerIds()::add);
-                    return check;
+                if (previousRatio == null || currentRatio == null || previousRatio <= currentRatio) {
+                    continue;
                 }
+                inversionDetails.add(String.format("第%d组录取率 %.1f 高于第%d组录取率 %.1f", i, previousRatio, i + 1, currentRatio));
+                addAffectedUnitId(check, previous.getUnitId());
+                addAffectedUnitId(check, current.getUnitId());
+                defaultPlanningUnitMajors(previous.getMajorItems()).stream().map(PlanningUnitMajorDTO::getVolunteerId).forEach(check.getAffectedVolunteerIds()::add);
+                defaultPlanningUnitMajors(current.getMajorItems()).stream().map(PlanningUnitMajorDTO::getVolunteerId).forEach(check.getAffectedVolunteerIds()::add);
+            }
+            if (!inversionDetails.isEmpty()) {
+                check.setPassed(false);
+                check.setLevel("warn");
+                check.setSummary(String.format("当前排序存在录取概率倒挂（%d 处）", inversionDetails.size()));
+                check.setDetail(String.join("；", inversionDetails) + "。");
+                check.setSuggestedAction("建议检查相邻专业组顺序，确认是否符合真实风险梯度。");
             }
             return check;
         }
 
         List<OrderedItemDTO> orderedItems = state.getOrderedPlanState().getItems();
+        List<String> inversionDetails = Lists.newArrayList();
         for (int i = 1; i < orderedItems.size(); i++) {
             OrderedItemDTO previous = orderedItems.get(i - 1);
             OrderedItemDTO current = orderedItems.get(i);
             Double previousRatio = admissionRatioOf(candidates, previous.getVolunteerId());
             Double currentRatio = admissionRatioOf(candidates, current.getVolunteerId());
-            if (previousRatio != null && currentRatio != null && previousRatio > currentRatio) {
-                check.setPassed(false);
-                check.setLevel("warn");
-                check.setSummary("当前排序存在录取概率倒挂");
-                check.setDetail(String.format("第%d位录取率 %.1f 高于第%d位录取率 %.1f。", i, previousRatio, i + 1, currentRatio));
-                check.setSuggestedAction("建议检查相邻志愿顺序，确认是否符合个人真实意向。");
-                check.getAffectedVolunteerIds().add(previous.getVolunteerId());
-                check.getAffectedVolunteerIds().add(current.getVolunteerId());
-                return check;
+            if (previousRatio == null || currentRatio == null || previousRatio <= currentRatio) {
+                continue;
             }
+            inversionDetails.add(String.format("第%d位录取率 %.1f 高于第%d位录取率 %.1f", i, previousRatio, i + 1, currentRatio));
+            addAffectedVolunteerId(check, previous.getVolunteerId());
+            addAffectedVolunteerId(check, current.getVolunteerId());
+        }
+        if (!inversionDetails.isEmpty()) {
+            check.setPassed(false);
+            check.setLevel("warn");
+            check.setSummary(String.format("当前排序存在录取概率倒挂（%d 处）", inversionDetails.size()));
+            check.setDetail(String.join("；", inversionDetails) + "。");
+            check.setSuggestedAction("建议检查相邻志愿顺序，确认是否符合个人真实意向。");
         }
         return check;
     }
@@ -10823,6 +10849,8 @@ public class PlanningStateService {
         check.setPassed(true);
         check.setSummary("当前录取概率梯度基本合理");
 
+        // 收集式（2026-10-16 review §五-58）：遍历全部相邻对收集断层，不再首命中 return；
+        // detail 逐条列出并标注档位交界处，affected 取并集。跨档豁免默认关（见常量）。
         if (isMajorGroupMode(state.getCandidatePoolState())) {
             List<OrderedUnitDTO> orderedUnits = defaultOrderedUnits(state.getOrderedPlanState().getUnits());
             if (orderedUnits.size() <= 1) {
@@ -10833,23 +10861,33 @@ public class PlanningStateService {
                 check.setSuggestedAction("建议继续补充志愿，形成合理梯度。");
                 return check;
             }
+            List<String> gapDetails = Lists.newArrayList();
             for (int i = 1; i < orderedUnits.size(); i++) {
                 OrderedUnitDTO previous = orderedUnits.get(i - 1);
                 OrderedUnitDTO current = orderedUnits.get(i);
                 Double previousRatio = previous.getAdmissionRatio();
                 Double currentRatio = current.getAdmissionRatio();
-                if (previousRatio != null && currentRatio != null && Math.abs(currentRatio - previousRatio) > 8D) {
-                    check.setPassed(false);
-                    check.setLevel("warn");
-                    check.setSummary("当前录取概率梯度存在断层");
-                    check.setDetail(String.format("相邻专业组录取率差值超过8：%.1f -> %.1f。", previousRatio, currentRatio));
-                    check.setSuggestedAction("建议补充录取概率位于该区间的专业组，降低梯度断层风险。");
-                    check.getAffectedUnitIds().add(previous.getUnitId());
-                    check.getAffectedUnitIds().add(current.getUnitId());
-                    defaultPlanningUnitMajors(previous.getMajorItems()).stream().map(PlanningUnitMajorDTO::getVolunteerId).forEach(check.getAffectedVolunteerIds()::add);
-                    defaultPlanningUnitMajors(current.getMajorItems()).stream().map(PlanningUnitMajorDTO::getVolunteerId).forEach(check.getAffectedVolunteerIds()::add);
-                    return check;
+                if (previousRatio == null || currentRatio == null || Math.abs(currentRatio - previousRatio) <= 8D) {
+                    continue;
                 }
+                if (PROBABILITY_GAP_CROSS_TIER_EXEMPT
+                        && !Objects.equals(previous.getTier(), current.getTier())) {
+                    continue;
+                }
+                gapDetails.add(String.format("第%d组 -> 第%d组：%.1f -> %.1f%s",
+                        i, i + 1, previousRatio, currentRatio,
+                        buildGapTierBoundaryNote(previous.getTier(), current.getTier())));
+                addAffectedUnitId(check, previous.getUnitId());
+                addAffectedUnitId(check, current.getUnitId());
+                defaultPlanningUnitMajors(previous.getMajorItems()).stream().map(PlanningUnitMajorDTO::getVolunteerId).forEach(check.getAffectedVolunteerIds()::add);
+                defaultPlanningUnitMajors(current.getMajorItems()).stream().map(PlanningUnitMajorDTO::getVolunteerId).forEach(check.getAffectedVolunteerIds()::add);
+            }
+            if (!gapDetails.isEmpty()) {
+                check.setPassed(false);
+                check.setLevel("warn");
+                check.setSummary(String.format("当前录取概率梯度存在断层（%d 处）", gapDetails.size()));
+                check.setDetail(String.format("相邻专业组录取率差值超过8：%s。", String.join("；", gapDetails)));
+                check.setSuggestedAction("建议补充录取概率位于断档区间的专业组，降低梯度断层风险。");
             }
             return check;
         }
@@ -10863,23 +10901,47 @@ public class PlanningStateService {
             check.setSuggestedAction("建议继续补充志愿，形成合理梯度。");
             return check;
         }
+        List<String> gapDetails = Lists.newArrayList();
         for (int i = 1; i < orderedItems.size(); i++) {
             OrderedItemDTO previous = orderedItems.get(i - 1);
             OrderedItemDTO current = orderedItems.get(i);
             Double previousRatio = admissionRatioOf(candidates, previous.getVolunteerId());
             Double currentRatio = admissionRatioOf(candidates, current.getVolunteerId());
-            if (previousRatio != null && currentRatio != null && Math.abs(currentRatio - previousRatio) > 8D) {
-                check.setPassed(false);
-                check.setLevel("warn");
-                check.setSummary("当前录取概率梯度存在断层");
-                check.setDetail(String.format("相邻录取率差值超过8：%.1f -> %.1f。", previousRatio, currentRatio));
-                check.setSuggestedAction("建议补充录取概率位于该区间的志愿，降低梯度断层风险。");
-                check.getAffectedVolunteerIds().add(previous.getVolunteerId());
-                check.getAffectedVolunteerIds().add(current.getVolunteerId());
-                return check;
+            if (previousRatio == null || currentRatio == null || Math.abs(currentRatio - previousRatio) <= 8D) {
+                continue;
             }
+            if (PROBABILITY_GAP_CROSS_TIER_EXEMPT
+                    && !Objects.equals(previous.getTier(), current.getTier())) {
+                continue;
+            }
+            gapDetails.add(String.format("第%d位 -> 第%d位：%.1f -> %.1f%s",
+                    i, i + 1, previousRatio, currentRatio,
+                    buildGapTierBoundaryNote(previous.getTier(), current.getTier())));
+            addAffectedVolunteerId(check, previous.getVolunteerId());
+            addAffectedVolunteerId(check, current.getVolunteerId());
+        }
+        if (!gapDetails.isEmpty()) {
+            check.setPassed(false);
+            check.setLevel("warn");
+            check.setSummary(String.format("当前录取概率梯度存在断层（%d 处）", gapDetails.size()));
+            check.setDetail(String.format("相邻录取率差值超过8：%s。", String.join("；", gapDetails)));
+            check.setSuggestedAction("建议补充录取概率位于断档区间的志愿，降低梯度断层风险。");
         }
         return check;
+    }
+
+    /**
+     * 梯度检查·跨档豁免开关（review §五-58 待拍板 a）：true=档位交界处（如 稳→保）的相邻落差
+     * 不再计入梯度断层；false=全报（现行默认）。
+     */
+    private static final boolean PROBABILITY_GAP_CROSS_TIER_EXEMPT = false;
+
+    private String buildGapTierBoundaryNote(String previousTier, String currentTier) {
+        if (Strings.isNullOrEmpty(previousTier) || Strings.isNullOrEmpty(currentTier)
+                || previousTier.equals(currentTier)) {
+            return "";
+        }
+        return String.format("（%s→%s 档位交界处）", previousTier, currentTier);
     }
 
     private ReviewCheckDTO reviewCountValidation(PlanningStateDTO state, List<CandidateItemDTO> candidates) {
@@ -10889,20 +10951,73 @@ public class PlanningStateService {
         check.setPassed(true);
 
         Integer requiredCount = state.getCandidatePoolState().getRequiredCount();
+        // 数量感知（2026-10-16 review §五-58）：有方案目标（selectionTargetCount）时以目标为准，
+        // 不再拿官方 requiredCount 卡目标数量的方案；无目标时维持现行官方口径。
+        Integer selectionTargetCount = resolveSelectionTargetCount(state);
         int currentCount = state.getOrderedPlanState().getItems().size();
         if (isMajorGroupMode(state.getCandidatePoolState())) {
             currentCount = defaultOrderedUnits(state.getOrderedPlanState().getUnits()).size();
         }
-        if (requiredCount == null || requiredCount <= 0) {
+        if (selectionTargetCount == null && (requiredCount == null || requiredCount <= 0)) {
             check.setLevel("warn");
+            check.setSeverity("notice");
             check.setSummary("缺少官方数量要求，无法完成数量校验");
             check.setDetail("candidatePoolState.requiredCount 为空。");
             check.setSuggestedAction("建议补充省份批次对应的志愿数量要求后重新执行审查。");
             return check;
         }
+        if (selectionTargetCount != null) {
+            boolean hasOfficial = requiredCount != null && requiredCount > 0;
+            if (currentCount < selectionTargetCount) {
+                check.setPassed(false);
+                check.setLevel("warn");
+                check.setSeverity("action");
+                check.setReasonCode("count_below_target");
+                check.setSummary("当前志愿数量少于方案目标");
+                check.setDetail(hasOfficial
+                        ? String.format("当前数量 %d，少于方案目标数量 %d（官方要求 %d）。",
+                        currentCount, selectionTargetCount, requiredCount)
+                        : String.format("当前数量 %d，少于方案目标数量 %d。", currentCount, selectionTargetCount));
+                check.setSuggestedAction("建议通过补偿或手动补选将志愿数量补足到方案目标。");
+                return check;
+            }
+            if (hasOfficial && currentCount > requiredCount) {
+                check.setPassed(false);
+                check.setLevel("warn");
+                check.setSeverity("action");
+                check.setReasonCode("count_over_limit");
+                check.setSummary("当前志愿数量多于官方要求");
+                check.setDetail(String.format("当前数量 %d，大于官方要求数量 %d（方案目标 %d）。",
+                        currentCount, requiredCount, selectionTargetCount));
+                check.setSuggestedAction("建议精简志愿数量，避免最终填报时临时删改。");
+                return check;
+            }
+            if (currentCount > selectionTargetCount) {
+                // 目标数量口径（§五-58）：目标 < 当前 ≤ 官方上限 → info（已达成目标、未触官方上限）。
+                check.setLevel("info");
+                check.setPassed(true);
+                check.setSeverity("info");
+                check.setSummary("当前志愿数量已超过方案目标");
+                check.setDetail(hasOfficial
+                        ? String.format("当前数量 %d，多于方案目标数量 %d，未超过官方要求 %d。",
+                        currentCount, selectionTargetCount, requiredCount)
+                        : String.format("当前数量 %d，多于方案目标数量 %d。", currentCount, selectionTargetCount));
+                return check;
+            }
+            check.setLevel("info");
+            check.setPassed(true);
+            check.setSeverity("info");
+            check.setSummary("当前志愿数量符合方案目标");
+            check.setDetail(hasOfficial
+                    ? String.format("当前数量 %d，符合方案目标数量 %d（官方要求 %d）。",
+                    currentCount, selectionTargetCount, requiredCount)
+                    : String.format("当前数量 %d，符合方案目标数量 %d。", currentCount, selectionTargetCount));
+            return check;
+        }
         if (currentCount < requiredCount) {
             check.setPassed(false);
             check.setLevel("risk");
+            check.setSeverity("block");
             check.setReasonCode("count_missing");
             check.setSummary("当前志愿数量少于官方要求");
             check.setDetail(String.format("当前数量 %d，小于要求数量 %d。", currentCount, requiredCount));
@@ -10912,6 +11027,7 @@ public class PlanningStateService {
         if (currentCount > requiredCount) {
             check.setPassed(false);
             check.setLevel("warn");
+            check.setSeverity("action");
             check.setReasonCode("count_over_limit");
             check.setSummary("当前志愿数量多于官方要求");
             check.setDetail(String.format("当前数量 %d，大于要求数量 %d。", currentCount, requiredCount));
@@ -10919,9 +11035,24 @@ public class PlanningStateService {
             return check;
         }
 
+        check.setSeverity("info");
         check.setSummary("当前志愿数量符合官方要求");
         check.setDetail(String.format("当前数量 %d，满足要求数量 %d。", currentCount, requiredCount));
         return check;
+    }
+
+    /**
+     * 方案目标数量口径（2026-10-16 review §五-58，同 {@link PlanningObjectiveCompiler#base} 第 84-88 行）：
+     * constraintState.hardPlanningObjectives.selectionTargetCount（仅正值生效）优先；无则为 null（走官方口径）。
+     * 不读 summary.targetCount——那是回填值，不可信。
+     */
+    private Integer resolveSelectionTargetCount(PlanningStateDTO state) {
+        if (state == null || state.getConstraintState() == null
+                || state.getConstraintState().getHardPlanningObjectives() == null) {
+            return null;
+        }
+        Integer target = state.getConstraintState().getHardPlanningObjectives().getSelectionTargetCount();
+        return target != null && target > 0 ? target : null;
     }
 
     private ReviewCheckDTO reviewGroupInnerSafetyGuard(PlanningStateDTO state, List<CandidateItemDTO> candidates) {
@@ -11138,6 +11269,23 @@ public class PlanningStateService {
         if (!Strings.isNullOrEmpty(unitId) && !check.getAffectedUnitIds().contains(unitId)) {
             check.getAffectedUnitIds().add(unitId);
         }
+    }
+
+    /** 收集式梯度/倒挂检查用：按 unitId 去重添加。 */
+    private void addAffectedUnitId(ReviewCheckDTO check, String unitId) {
+        if (check == null || Strings.isNullOrEmpty(unitId) || check.getAffectedUnitIds().contains(unitId)) {
+            return;
+        }
+        check.getAffectedUnitIds().add(unitId);
+    }
+
+    /** 收集式梯度/倒挂检查用：按 volunteerId 去重添加。 */
+    private void addAffectedVolunteerId(ReviewCheckDTO check, String volunteerId) {
+        if (check == null || Strings.isNullOrEmpty(volunteerId)
+                || check.getAffectedVolunteerIds().contains(volunteerId)) {
+            return;
+        }
+        check.getAffectedVolunteerIds().add(volunteerId);
     }
 
     private ReviewCheckDTO reviewMajorGroupSafetyIntentAlignment(PlanningStateDTO state) {
@@ -11552,6 +11700,10 @@ public class PlanningStateService {
         check.setLabel(metadata.getLabel());
         check.setCategory(metadata.getCategory());
         check.setSeverityDefault(metadata.getSeverityDefault());
+        // 审查 2.0 四级默认（2026-10-16 review §五-58）：检查自己按口径/结果定过的（如数量校验）不覆盖。
+        if (Strings.isNullOrEmpty(check.getSeverity())) {
+            check.setSeverity(metadata.getSeverity());
+        }
         check.setTargetModes(defaultList(metadata.getTargetModes()));
         check.setScopeKind(metadata.getScopeKind());
         check.setFixability(metadata.getFixability());
@@ -11603,7 +11755,10 @@ public class PlanningStateService {
     private String resolveCountValidationReasonCode(PlanningStateDTO state) {
         CandidatePoolStateDTO candidatePoolState = state == null ? null : state.getCandidatePoolState();
         Integer requiredCount = candidatePoolState == null ? null : candidatePoolState.getRequiredCount();
-        if (requiredCount == null || requiredCount <= 0) {
+        // 数量感知（2026-10-16 review §五-58）：与 reviewCountValidation 同口径。
+        Integer selectionTargetCount = resolveSelectionTargetCount(state);
+        boolean hasOfficial = requiredCount != null && requiredCount > 0;
+        if (!hasOfficial && selectionTargetCount == null) {
             return null;
         }
         int currentCount = isMajorGroupMode(candidatePoolState)
@@ -11611,6 +11766,15 @@ public class PlanningStateService {
                 ? null : state.getOrderedPlanState().getUnits()).size()
                 : defaultOrderedItems(state == null || state.getOrderedPlanState() == null
                 ? null : state.getOrderedPlanState().getItems()).size();
+        if (selectionTargetCount != null) {
+            if (currentCount < selectionTargetCount) {
+                return "count_below_target";
+            }
+            if (hasOfficial && currentCount > requiredCount) {
+                return "count_over_limit";
+            }
+            return null;
+        }
         if (currentCount < requiredCount) {
             return "count_missing";
         }
@@ -11638,8 +11802,8 @@ public class PlanningStateService {
         int protectCount = countOrderedTier(state, "保", majorGroupMode);
         double sprintRatio = sprintCount * 1D / total;
         double protectRatio = protectCount * 1D / total;
-        Integer expectedSprintCount = expectedTierCount(candidatePoolState, "冲");
-        Integer expectedProtectCount = expectedTierCount(candidatePoolState, "保");
+        Integer expectedSprintCount = expectedTierCount(state, "冲");
+        Integer expectedProtectCount = expectedTierCount(state, "保");
         boolean sprintMeetsExpected = expectedSprintCount != null && sprintCount >= expectedSprintCount;
         boolean protectMeetsExpected = expectedProtectCount != null && protectCount >= expectedProtectCount;
         boolean sprintWithinExpected = expectedSprintCount != null && sprintCount <= expectedSprintCount;
@@ -12121,6 +12285,10 @@ public class PlanningStateService {
         int passedCount = 0;
         int warnCount = 0;
         int riskCount = 0;
+        int blockCount = 0;
+        int actionCount = 0;
+        int noticeCount = 0;
+        int infoCount = 0;
         for (ReviewCheckDTO check : reviewState.getChecks()) {
             if (Boolean.TRUE.equals(check.getPassed())) {
                 passedCount++;
@@ -12130,6 +12298,18 @@ public class PlanningStateService {
             }
             if ("risk".equalsIgnoreCase(check.getLevel())) {
                 riskCount++;
+            }
+            // 审查 2.0 四级计数（2026-10-16 review §五-58）：只统计未通过的检查（当前生效的发现）。
+            if (!Boolean.TRUE.equals(check.getPassed())) {
+                if ("block".equalsIgnoreCase(check.getSeverity())) {
+                    blockCount++;
+                } else if ("action".equalsIgnoreCase(check.getSeverity())) {
+                    actionCount++;
+                } else if ("notice".equalsIgnoreCase(check.getSeverity())) {
+                    noticeCount++;
+                } else if ("info".equalsIgnoreCase(check.getSeverity())) {
+                    infoCount++;
+                }
             }
         }
         int totalCount = reviewState.getChecks().size();
@@ -12141,6 +12321,10 @@ public class PlanningStateService {
         reviewState.getSummary().setPassedRuleCount(passedCount);
         reviewState.getSummary().setWarnRuleCount(warnCount);
         reviewState.getSummary().setRiskRuleCount(riskCount);
+        reviewState.getSummary().setBlockCount(blockCount);
+        reviewState.getSummary().setActionCount(actionCount);
+        reviewState.getSummary().setNoticeCount(noticeCount);
+        reviewState.getSummary().setInfoCount(infoCount);
     }
 
     private Double admissionRatioOf(List<CandidateItemDTO> candidates, String volunteerId) {

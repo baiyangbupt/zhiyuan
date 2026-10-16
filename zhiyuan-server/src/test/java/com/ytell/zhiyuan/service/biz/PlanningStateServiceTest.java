@@ -22,6 +22,8 @@ import com.ytell.zhiyuan.model.dto.planning.DataFreshnessCheckReq;
 import com.ytell.zhiyuan.model.dto.planning.DataFreshnessCheckRes;
 import com.ytell.zhiyuan.model.dto.planning.DataFreshnessStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ConstraintDeriveRes;
+import com.ytell.zhiyuan.model.dto.planning.ConstraintStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.HardPlanningObjectivesDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftPlanReorderReq;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
@@ -3238,9 +3240,14 @@ public class PlanningStateServiceTest {
         assertEquals("preview_fixable", probabilityGapCheck.getFixability());
         assertEquals("fill_probability_gap", probabilityGapCheck.getDefaultFixStrategy());
         assertTrue(probabilityGapCheck.getSupportedFixStrategies().contains("fill_probability_gap"));
-        assertEquals(java.util.Arrays.asList("ps1", "ps2"), probabilityGapCheck.getAffectedUnitIds());
+        // 收集式（§五-58）：两处断层都要列出（20->45 与 45->80），affected 取并集。
+        assertTrue(probabilityGapCheck.getSummary().contains("2 处"));
+        assertTrue(probabilityGapCheck.getDetail().contains("档位交界处"));
+        assertEquals(java.util.Arrays.asList("ps1", "ps2", "ps3"), probabilityGapCheck.getAffectedUnitIds());
         assertTrue(probabilityGapCheck.getAffectedVolunteerIds().contains("ps1_m1"));
         assertTrue(probabilityGapCheck.getAffectedVolunteerIds().contains("ps2_m3"));
+        assertTrue(probabilityGapCheck.getAffectedVolunteerIds().contains("ps3_m5"));
+        assertEquals("action", probabilityGapCheck.getSeverity());
     }
 
     @Test
@@ -5236,6 +5243,302 @@ public class PlanningStateServiceTest {
         PlanningStateDTO stored = planningStateService.getPlanningState(1L);
         assertEquals(Integer.valueOf(7), stored.getVersion());
         assertEquals("ready", stored.getPlanAdjustmentState().getStatus());
+    }
+
+    @Test
+    void shouldValidateCountAgainstSelectionTargetCountInsteadOfOfficialRequirement() {
+        bindPlanningStateStore();
+        CandidatePoolStateDTO candidatePoolState = buildReviewCandidatePool(80);
+        candidatePoolState.getItems().add(buildReviewCandidate("ps1_m1", "冲", 70D, "北京"));
+        candidatePoolState.getItems().add(buildReviewCandidate("ps2_m2", "保", 75D, "北京"));
+        saveStateToStore(1L, buildReviewFixtureState(candidatePoolState, java.util.Arrays.asList(
+                buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1),
+                buildOrderedItem("ps2_m2", "学校B", "专业B", "保", 2)), 2));
+
+        ReviewCheckDTO count = findReviewCheck(planningStateService.runReview(1L, 1L), "count_validation");
+
+        assertNotNull(count);
+        assertTrue(count.getPassed());
+        assertEquals("info", count.getLevel());
+        assertEquals("info", count.getSeverity());
+        assertEquals("当前志愿数量符合方案目标", count.getSummary());
+        assertTrue(count.getDetail().contains("方案目标数量 2"));
+        assertTrue(count.getDetail().contains("官方要求 80"));
+    }
+
+    @Test
+    void shouldActionWhenCountBelowSelectionTarget() {
+        bindPlanningStateStore();
+        CandidatePoolStateDTO candidatePoolState = buildReviewCandidatePool(80);
+        candidatePoolState.getItems().add(buildReviewCandidate("ps1_m1", "冲", 70D, "北京"));
+        candidatePoolState.getItems().add(buildReviewCandidate("ps2_m2", "保", 75D, "北京"));
+        candidatePoolState.getItems().add(buildReviewCandidate("ps3_m3", "保", 80D, "北京"));
+        saveStateToStore(1L, buildReviewFixtureState(candidatePoolState, java.util.Arrays.asList(
+                buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1),
+                buildOrderedItem("ps2_m2", "学校B", "专业B", "保", 2),
+                buildOrderedItem("ps3_m3", "学校C", "专业C", "保", 3)), 5));
+
+        ReviewCheckDTO count = findReviewCheck(planningStateService.runReview(1L, 1L), "count_validation");
+
+        assertNotNull(count);
+        assertFalse(count.getPassed());
+        assertEquals("warn", count.getLevel());
+        assertEquals("action", count.getSeverity());
+        assertEquals("count_below_target", count.getReasonCode());
+        assertTrue(count.getDetail().contains("方案目标数量 5"));
+        assertTrue(count.getDetail().contains("官方要求 80"));
+    }
+
+    @Test
+    void shouldReportInfoWhenCountWithinTargetAndOfficialUpperBound() {
+        bindPlanningStateStore();
+        CandidatePoolStateDTO candidatePoolState = buildReviewCandidatePool(4);
+        candidatePoolState.getItems().add(buildReviewCandidate("ps1_m1", "冲", 70D, "北京"));
+        candidatePoolState.getItems().add(buildReviewCandidate("ps2_m2", "稳", 75D, "北京"));
+        candidatePoolState.getItems().add(buildReviewCandidate("ps3_m3", "保", 80D, "北京"));
+        saveStateToStore(1L, buildReviewFixtureState(candidatePoolState, java.util.Arrays.asList(
+                buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1),
+                buildOrderedItem("ps2_m2", "学校B", "专业B", "稳", 2),
+                buildOrderedItem("ps3_m3", "学校C", "专业C", "保", 3)), 2));
+
+        ReviewCheckDTO count = findReviewCheck(planningStateService.runReview(1L, 1L), "count_validation");
+
+        assertNotNull(count);
+        assertTrue(count.getPassed());
+        assertEquals("info", count.getLevel());
+        assertEquals("info", count.getSeverity());
+        assertEquals("当前志愿数量已超过方案目标", count.getSummary());
+        assertTrue(count.getDetail().contains("多于方案目标数量 2"));
+        assertTrue(count.getDetail().contains("未超过官方要求 4"));
+    }
+
+    @Test
+    void shouldKeepOverLimitWarningWhenCountExceedsOfficialRequirementWithTargetSet() {
+        bindPlanningStateStore();
+        CandidatePoolStateDTO candidatePoolState = buildReviewCandidatePool(3);
+        candidatePoolState.getItems().add(buildReviewCandidate("ps1_m1", "冲", 70D, "北京"));
+        candidatePoolState.getItems().add(buildReviewCandidate("ps2_m2", "稳", 75D, "北京"));
+        candidatePoolState.getItems().add(buildReviewCandidate("ps3_m3", "保", 80D, "北京"));
+        candidatePoolState.getItems().add(buildReviewCandidate("ps4_m4", "保", 82D, "北京"));
+        saveStateToStore(1L, buildReviewFixtureState(candidatePoolState, java.util.Arrays.asList(
+                buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1),
+                buildOrderedItem("ps2_m2", "学校B", "专业B", "稳", 2),
+                buildOrderedItem("ps3_m3", "学校C", "专业C", "保", 3),
+                buildOrderedItem("ps4_m4", "学校D", "专业D", "保", 4)), 2));
+
+        ReviewCheckDTO count = findReviewCheck(planningStateService.runReview(1L, 1L), "count_validation");
+
+        assertNotNull(count);
+        assertFalse(count.getPassed());
+        assertEquals("warn", count.getLevel());
+        assertEquals("action", count.getSeverity());
+        assertEquals("count_over_limit", count.getReasonCode());
+        assertTrue(count.getDetail().contains("大于官方要求数量 3"));
+        assertTrue(count.getDetail().contains("方案目标 2"));
+    }
+
+    @Test
+    void shouldScaleRatioExpectationBySelectionTargetCountWhenTargetSet() {
+        bindPlanningStateStore();
+        CandidatePoolStateDTO candidatePoolState = buildReviewCandidatePool(80);
+        candidatePoolState.setRequiredTierCounts(new java.util.HashMap<String, Integer>());
+        candidatePoolState.getRequiredTierCounts().put("冲", 24);
+        candidatePoolState.getRequiredTierCounts().put("稳", 24);
+        candidatePoolState.getRequiredTierCounts().put("保", 32);
+        List<OrderedItemDTO> orderedItems = java.util.Arrays.asList(
+                buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1),
+                buildOrderedItem("ps2_m2", "学校B", "专业B", "冲", 2),
+                buildOrderedItem("ps3_m3", "学校C", "专业C", "冲", 3),
+                buildOrderedItem("ps4_m4", "学校D", "专业D", "冲", 4),
+                buildOrderedItem("ps5_m5", "学校E", "专业E", "冲", 5),
+                buildOrderedItem("ps6_m6", "学校F", "专业F", "冲", 6),
+                buildOrderedItem("ps7_m7", "学校G", "专业G", "冲", 7),
+                buildOrderedItem("ps8_m8", "学校H", "专业H", "稳", 8),
+                buildOrderedItem("ps9_m9", "学校I", "专业I", "稳", 9),
+                buildOrderedItem("ps10_m10", "学校J", "专业J", "稳", 10),
+                buildOrderedItem("ps11_m11", "学校K", "专业K", "稳", 11),
+                buildOrderedItem("ps12_m12", "学校L", "专业L", "保", 12),
+                buildOrderedItem("ps13_m13", "学校M", "专业M", "保", 13),
+                buildOrderedItem("ps14_m14", "学校N", "专业N", "保", 14),
+                buildOrderedItem("ps15_m15", "学校O", "专业O", "保", 15));
+        double[] ratios = new double[]{50, 51, 52, 53, 54, 55, 56, 58, 59, 60, 61, 63, 64, 65, 66};
+        for (int i = 0; i < orderedItems.size(); i++) {
+            candidatePoolState.getItems().add(buildReviewCandidate(
+                    orderedItems.get(i).getVolunteerId(), orderedItems.get(i).getTier(), ratios[i], "北京"));
+        }
+        saveStateToStore(1L, buildReviewFixtureState(candidatePoolState, orderedItems, 15));
+
+        ReviewCheckDTO ratio = findReviewCheck(planningStateService.runReview(1L, 1L), "ratio_distribution");
+
+        assertNotNull(ratio);
+        assertFalse(ratio.getPassed());
+        assertEquals("sprint_tier_over_limit", ratio.getReasonCode());
+        assertEquals("action", ratio.getSeverity());
+    }
+
+    @Test
+    void shouldKeepOfficialRatioExpectationWithoutSelectionTargetCount() {
+        bindPlanningStateStore();
+        CandidatePoolStateDTO candidatePoolState = buildReviewCandidatePool(80);
+        candidatePoolState.setRequiredTierCounts(new java.util.HashMap<String, Integer>());
+        candidatePoolState.getRequiredTierCounts().put("冲", 24);
+        candidatePoolState.getRequiredTierCounts().put("稳", 24);
+        candidatePoolState.getRequiredTierCounts().put("保", 32);
+        List<OrderedItemDTO> orderedItems = java.util.Arrays.asList(
+                buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1),
+                buildOrderedItem("ps2_m2", "学校B", "专业B", "冲", 2),
+                buildOrderedItem("ps3_m3", "学校C", "专业C", "冲", 3),
+                buildOrderedItem("ps4_m4", "学校D", "专业D", "冲", 4),
+                buildOrderedItem("ps5_m5", "学校E", "专业E", "冲", 5),
+                buildOrderedItem("ps6_m6", "学校F", "专业F", "冲", 6),
+                buildOrderedItem("ps7_m7", "学校G", "专业G", "冲", 7),
+                buildOrderedItem("ps8_m8", "学校H", "专业H", "稳", 8),
+                buildOrderedItem("ps9_m9", "学校I", "专业I", "稳", 9),
+                buildOrderedItem("ps10_m10", "学校J", "专业J", "稳", 10),
+                buildOrderedItem("ps11_m11", "学校K", "专业K", "稳", 11),
+                buildOrderedItem("ps12_m12", "学校L", "专业L", "保", 12),
+                buildOrderedItem("ps13_m13", "学校M", "专业M", "保", 13),
+                buildOrderedItem("ps14_m14", "学校N", "专业N", "保", 14),
+                buildOrderedItem("ps15_m15", "学校O", "专业O", "保", 15));
+        double[] ratios = new double[]{50, 51, 52, 53, 54, 55, 56, 58, 59, 60, 61, 63, 64, 65, 66};
+        for (int i = 0; i < orderedItems.size(); i++) {
+            candidatePoolState.getItems().add(buildReviewCandidate(
+                    orderedItems.get(i).getVolunteerId(), orderedItems.get(i).getTier(), ratios[i], "北京"));
+        }
+        saveStateToStore(1L, buildReviewFixtureState(candidatePoolState, orderedItems, null));
+
+        ReviewCheckDTO ratio = findReviewCheck(planningStateService.runReview(1L, 1L), "ratio_distribution");
+
+        assertNotNull(ratio);
+        assertTrue(ratio.getPassed());
+    }
+
+    @Test
+    void shouldCollectAllProbabilityGapsAndInversions() {
+        bindPlanningStateStore();
+        CandidatePoolStateDTO candidatePoolState = buildReviewCandidatePool(null);
+        candidatePoolState.getItems().add(buildReviewCandidate("ps1_m1", "冲", 90D, "北京"));
+        candidatePoolState.getItems().add(buildReviewCandidate("ps2_m2", "稳", 10D, "北京"));
+        candidatePoolState.getItems().add(buildReviewCandidate("ps3_m3", "保", 50D, "北京"));
+        saveStateToStore(1L, buildReviewFixtureState(candidatePoolState, java.util.Arrays.asList(
+                buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1),
+                buildOrderedItem("ps2_m2", "学校B", "专业B", "稳", 2),
+                buildOrderedItem("ps3_m3", "学校C", "专业C", "保", 3)), null));
+
+        ReviewStateDTO reviewState = planningStateService.runReview(1L, 1L);
+        ReviewCheckDTO gap = findReviewCheck(reviewState, "probability_gap");
+        ReviewCheckDTO inversion = findReviewCheck(reviewState, "probability_inversion");
+
+        assertNotNull(gap);
+        assertFalse(gap.getPassed());
+        assertEquals("warn", gap.getLevel());
+        assertEquals("action", gap.getSeverity());
+        assertEquals("当前录取概率梯度存在断层（2 处）", gap.getSummary());
+        assertTrue(gap.getDetail().contains("第1位 -> 第2位：90.0 -> 10.0（冲→稳 档位交界处）"));
+        assertTrue(gap.getDetail().contains("第2位 -> 第3位：10.0 -> 50.0（稳→保 档位交界处）"));
+        assertEquals(java.util.Arrays.asList("ps1_m1", "ps2_m2", "ps3_m3"), gap.getAffectedVolunteerIds());
+
+        assertNotNull(inversion);
+        assertFalse(inversion.getPassed());
+        assertEquals("warn", inversion.getLevel());
+        assertEquals("notice", inversion.getSeverity());
+        assertEquals("当前排序存在录取概率倒挂（1 处）", inversion.getSummary());
+        assertTrue(inversion.getDetail().contains("第1位录取率 90.0 高于第2位录取率 10.0"));
+        assertEquals(java.util.Arrays.asList("ps1_m1", "ps2_m2"), inversion.getAffectedVolunteerIds());
+
+        assertEquals(Integer.valueOf(1), reviewState.getSummary().getActionCount());
+        assertEquals(Integer.valueOf(1), reviewState.getSummary().getNoticeCount());
+    }
+
+    @Test
+    void shouldAssignBlockSeverityAndCountSummaryBySeverity() {
+        bindPlanningStateStore();
+        CandidatePoolStateDTO candidatePoolState = buildReviewCandidatePool(null);
+        candidatePoolState.setUserScore(500);
+        candidatePoolState.setSourceProvinceName("河南");
+        List<OrderedItemDTO> orderedItems = java.util.Arrays.asList(
+                buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1),
+                buildOrderedItem("ps2_m2", "学校B", "专业B", "冲", 2),
+                buildOrderedItem("ps3_m3", "学校C", "专业C", "冲", 3),
+                buildOrderedItem("ps4_m4", "学校D", "专业D", "冲", 4),
+                buildOrderedItem("ps5_m5", "学校E", "专业E", "冲", 5),
+                buildOrderedItem("ps6_m6", "学校F", "专业F", "稳", 6),
+                buildOrderedItem("ps7_m7", "学校G", "专业G", "稳", 7),
+                buildOrderedItem("ps8_m8", "学校H", "专业H", "稳", 8),
+                buildOrderedItem("ps9_m9", "学校I", "专业I", "稳", 9),
+                buildOrderedItem("ps10_m10", "学校J", "专业J", "稳", 10),
+                buildOrderedItem("ps11_m11", "学校K", "专业K", "保", 11),
+                buildOrderedItem("ps12_m12", "学校L", "专业L", "保", 12),
+                buildOrderedItem("ps13_m13", "学校M", "专业M", "保", 13),
+                buildOrderedItem("ps14_m14", "学校N", "专业N", "保", 14),
+                buildOrderedItem("ps15_m15", "学校O", "专业O", "保", 15));
+        for (int i = 0; i < orderedItems.size(); i++) {
+            candidatePoolState.getItems().add(buildReviewCandidate(
+                    orderedItems.get(i).getVolunteerId(), orderedItems.get(i).getTier(),
+                    50D + i, "北京"));
+        }
+        saveStateToStore(1L, buildReviewFixtureState(candidatePoolState, orderedItems, null));
+
+        ReviewStateDTO reviewState = planningStateService.runReview(1L, 1L);
+
+        ReviewCheckDTO safetyGuard = findReviewCheck(reviewState, "safety_guard");
+        assertNotNull(safetyGuard);
+        assertFalse(safetyGuard.getPassed());
+        assertEquals("risk", safetyGuard.getLevel());
+        assertEquals("block", safetyGuard.getSeverity());
+
+        assertEquals(Integer.valueOf(1), reviewState.getSummary().getBlockCount());
+        assertEquals(Integer.valueOf(0), reviewState.getSummary().getActionCount());
+        assertEquals(Integer.valueOf(0), reviewState.getSummary().getNoticeCount());
+        assertEquals(Integer.valueOf(0), reviewState.getSummary().getInfoCount());
+        assertEquals(Integer.valueOf(1), reviewState.getSummary().getRiskCount());
+        assertEquals(Integer.valueOf(13), reviewState.getSummary().getPassedCount());
+    }
+
+    private CandidatePoolStateDTO buildReviewCandidatePool(Integer requiredCount) {
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.major.name());
+        candidatePoolState.setRequiredCount(requiredCount);
+        return candidatePoolState;
+    }
+
+    private PlanningStateDTO buildReviewFixtureState(CandidatePoolStateDTO candidatePoolState,
+                                                     List<OrderedItemDTO> orderedItems,
+                                                     Integer selectionTargetCount) {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(3);
+        state.setCandidatePoolState(candidatePoolState);
+        if (selectionTargetCount != null) {
+            ConstraintStateDTO constraintState = new ConstraintStateDTO();
+            constraintState.setHardPlanningObjectives(new HardPlanningObjectivesDTO());
+            constraintState.getHardPlanningObjectives().setSelectionTargetCount(selectionTargetCount);
+            state.setConstraintState(constraintState);
+        }
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        orderedPlanState.setItems(new java.util.ArrayList<OrderedItemDTO>(orderedItems));
+        state.setOrderedPlanState(orderedPlanState);
+        return state;
+    }
+
+    private CandidateItemDTO buildReviewCandidate(String volunteerId, String tier,
+                                                  Double admissionRatio, String provinceName) {
+        CandidateItemDTO item = buildCandidateItem(volunteerId,
+                volunteerId.substring(0, volunteerId.indexOf('_')),
+                "school-" + volunteerId,
+                "学校" + volunteerId,
+                tier,
+                "专业" + volunteerId,
+                admissionRatio, admissionRatio, admissionRatio, false);
+        item.setProvinceName(provinceName);
+        return item;
+    }
+
+    private ReviewCheckDTO findReviewCheck(ReviewStateDTO reviewState, String code) {
+        return reviewState.getChecks().stream()
+                .filter(check -> code.equals(check.getCode()))
+                .findFirst()
+                .orElse(null);
     }
 
     @Test

@@ -3140,6 +3140,24 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     return normalizePlanActionTextForUser(check.detail || check.summary || '');
   };
 
+  // 审查 2.0 四级分级展示（拦下/建议处理/提示/信息）；severity 缺省时回退旧字段 level。
+  const getReviewSeverityTag = (check: PlanningReviewCheck): { color: string; text: string } => {
+    switch (check.severity) {
+      case 'block':
+        return { color: 'red', text: '拦下' };
+      case 'action':
+        return { color: 'orange', text: '建议处理' };
+      case 'notice':
+        return { color: 'blue', text: '提示' };
+      case 'info':
+        return { color: 'default', text: '信息' };
+      default:
+        return check.level === 'risk'
+          ? { color: 'red', text: '风险' }
+          : { color: 'orange', text: '提醒' };
+    }
+  };
+
   const getFixProposalStrategyLabel = (strategy?: string) => {
     switch (strategy) {
       case 'fill_missing_count':
@@ -4118,6 +4136,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     index: number
   ) => {
     const issueKey = check.code || `${check.summary || 'review'}-${index}`;
+    const severityTag = getReviewSeverityTag(check);
     const proposalsExpanded = expandedReviewIssueKeys.includes(issueKey);
     const hasHandlingAdvice = proposals.length > 0 || Boolean(check.suggestedAction);
     const affectedCount =
@@ -4132,9 +4151,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           <div className={style.reviewIssueTitleBlock}>
             <div className={style.reviewIssueTitle}>{getReviewCheckDisplayLabel(check)}</div>
             <div className={style.reviewIssueTags}>
-              <Tag color={check.level === 'risk' ? 'red' : 'orange'}>
-                {check.level === 'risk' ? '风险' : '提醒'}
-              </Tag>
+              <Tag color={severityTag.color}>{severityTag.text}</Tag>
               {affectedCount > 0 ? <Tag bordered={false}>影响 {affectedCount} 项</Tag> : null}
             </div>
           </div>
