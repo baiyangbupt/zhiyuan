@@ -12,9 +12,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 from pathlib import Path
 from typing import Any
+
+from internal_http import request_json, require_internal_service_token
 
 
 DEFAULT_HOST = os.getenv("ZHIYUAN_PRODUCTION_ASSET_HOST", "")
@@ -23,31 +24,7 @@ DEFAULT_TENANT_ID = os.getenv("ZHIYUAN_PRODUCTION_ASSET_TENANT_ID", "1")
 
 
 def _run_ssh_json_post(host: str, url: str, payload: dict[str, Any], *, timeout: int = 30) -> dict[str, Any]:
-    raw_payload = json.dumps(payload, ensure_ascii=False)
-    remote = (
-        "curl -s --max-time 20 -X POST "
-        "-H 'Content-Type: application/json' "
-        "-H 'Accept: application/json' "
-        "--data-binary "
-        + json.dumps(raw_payload)
-        + " "
-        + json.dumps(url)
-    )
-    proc = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        check=False,
-    )
-    if proc.returncode != 0:
-        return {"code": -1, "msg": proc.stderr.strip(), "data": None}
-    try:
-        parsed = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        return {"code": -1, "msg": f"non-json response: {proc.stdout[:200]}", "data": None}
-    return parsed if isinstance(parsed, dict) else {"code": 0, "data": parsed}
+    return request_json("POST", url, payload, ssh_host=host, timeout_seconds=min(timeout, 20))
 
 
 def _load_json(path: Path) -> Any:
@@ -246,6 +223,8 @@ def main() -> None:
     args = parser.parse_args()
     if not args.skip_production_proposal and not str(args.host or "").strip():
         raise SystemExit("missing --host or ZHIYUAN_PRODUCTION_ASSET_HOST")
+    if not args.skip_production_proposal:
+        require_internal_service_token()
 
     asset_dir = Path(args.asset_dir)
     manifest = _load_json(asset_dir / "manifest.json")

@@ -35,7 +35,8 @@ Usage:
 Environment overrides:
   ZHIYUAN_COMPOSE_FILE, ZHIYUAN_SERVER_SERVICE, ZHIYUAN_SERVER_PORT,
   ZHIYUAN_WEB_PORT, ZHIYUAN_WEB_HEALTH_PATH,
-  ZHIYUAN_AGENT_PORT, ZHIYUAN_RANK_PORT
+  ZHIYUAN_AGENT_PORT, ZHIYUAN_RANK_PORT,
+  INTERNAL_SERVICE_TOKEN (required for backend internal health)
 USAGE
       exit 0
       ;;
@@ -85,6 +86,31 @@ run_check() {
 http_check() {
   local name="$1"
   local url="$2"
+  local scope="${3:-public}"
+  if [ "$scope" = "internal" ]; then
+    local token="${INTERNAL_SERVICE_TOKEN:-}"
+    if [[ -z "${token//[[:space:]]/}" || "$token" == *$'\r'* || "$token" == *$'\n'* ]]; then
+      record "$name" "FAIL" "INTERNAL_SERVICE_TOKEN must be a nonempty single-line credential"
+      return
+    fi
+    if have curl; then
+      local escaped_token="${token//\\/\\\\}"
+      escaped_token="${escaped_token//\"/\\\"}"
+      local http_code
+      if http_code="$(printf 'header = "X-Internal-Service-Token: %s"\n' "$escaped_token" | curl -q --config - --proto '=http,https' -sS -m 8 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)"; then
+        if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+          record "$name" "PASS" "HTTP ${http_code}"
+        else
+          record "$name" "FAIL" "authenticated probe requires HTTP 2xx"
+        fi
+      else
+        record "$name" "FAIL" "authenticated HTTP probe failed"
+      fi
+    else
+      record "$name" "SKIP" "curl not found"
+    fi
+    return
+  fi
   if have curl; then
     run_check "$name" curl -fsS -m 8 -o /dev/null "$url"
   else
@@ -129,7 +155,7 @@ check_local_processes() {
 
 check_local_http() {
   http_check "web local" "http://127.0.0.1:${WEB_PORT}${WEB_HEALTH_PATH}"
-  http_check "server local" "http://127.0.0.1:${SERVER_PORT}/gaotu-assistant-bot/inner/ops/health"
+  http_check "server local" "http://127.0.0.1:${SERVER_PORT}/gaotu-assistant-bot/inner/ops/health" internal
   http_check "server local data" "http://127.0.0.1:${SERVER_PORT}/gaotu-assistant-bot/base-data/province-city"
   http_check "agent local" "http://127.0.0.1:${AGENT_PORT}/health"
   http_check "rank local" "http://127.0.0.1:${RANK_PORT}/health"
@@ -139,7 +165,7 @@ check_remote_http() {
   local base="${BASE_URL%/}"
   http_check "web remote" "${base}/assistant-pc/customer"
   http_check "web v2 remote" "${base}/assistant-pc/sessionDetailV2"
-  http_check "server remote" "${base}/gaotu-assistant-bot/inner/ops/health"
+  http_check "server remote" "${base}/gaotu-assistant-bot/inner/ops/health" internal
   http_check "server remote data" "${base}/gaotu-assistant-bot/base-data/province-city"
   http_check "agent remote" "${base}/gaotu-assistant-agent/health"
   http_check "rank remote" "${base}/gaokao-volunteer-rank/recommend"

@@ -33,6 +33,7 @@ Required:
   --server-config PATH       Private, untracked Spring configuration file.
   --data-source NAME         Must be exactly "private-resettable".
   --codex-home PATH          Isolated CODEX_HOME with the intended model setup.
+  INTERNAL_SERVICE_TOKEN    Export the shared internal-service credential.
 
 Options:
   --backend-port PORT        Default: 18290
@@ -148,6 +149,11 @@ PREFLIGHT_ARGS=(
 [[ "$SKIP_BUILD" == true ]] && PREFLIGHT_ARGS+=(--skip-build)
 bash "$ROOT_DIR/scripts/preflight-codex-local.sh" "${PREFLIGHT_ARGS[@]}"
 
+token="${INTERNAL_SERVICE_TOKEN:-}"
+if [[ -z "${token//[[:space:]]/}" || "$token" == *$'\r'* || "$token" == *$'\n'* ]]; then
+    fail "INTERNAL_SERVICE_TOKEN must be a nonempty single-line credential"
+fi
+
 [[ ! -e "$RUN_DIR" ]] || fail "run directory already exists: $RUN_DIR"
 umask 077
 mkdir -p "$RUN_DIR/logs" "$RUN_DIR/pids"
@@ -189,9 +195,26 @@ start_service() {
 wait_for_http() {
     local name="$1"
     local url="$2"
+    local auth_config=""
+    if [[ "$name" == "backend" ]]; then
+        local token="${INTERNAL_SERVICE_TOKEN:-}"
+        if [[ -z "${token//[[:space:]]/}" || "$token" == *$'\r'* || "$token" == *$'\n'* ]]; then
+            fail "INTERNAL_SERVICE_TOKEN must be a nonempty single-line credential"
+            return 1
+        fi
+        local escaped_token="${token//\\/\\\\}"
+        escaped_token="${escaped_token//\"/\\\"}"
+        auth_config="$(printf 'header = "X-Internal-Service-Token: %s"\n' "$escaped_token")"
+    fi
     local deadline=$((SECONDS + 90))
+    local http_code
     while (( SECONDS < deadline )); do
-        if curl --silent --show-error --fail --max-time 2 "$url" >"$RUN_DIR/$name-health.json" 2>/dev/null; then
+        if [[ "$name" == "backend" ]]; then
+            if http_code="$(printf '%s\n' "$auth_config" | curl -q --config - --proto '=http,https' --silent --show-error --max-time 2 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)" && [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+                printf '%s is healthy: %s\n' "$name" "$url"
+                return
+            fi
+        elif curl --proto '=http,https' --silent --show-error --fail --max-time 2 "$url" >"$RUN_DIR/$name-health.json" 2>/dev/null; then
             printf '%s is healthy: %s\n' "$name" "$url"
             return
         fi

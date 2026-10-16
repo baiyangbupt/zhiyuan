@@ -18,6 +18,7 @@ from app.config import InternalServiceConfig
 # 默认 10s 实测会把**已提交**的补录成绩 execute（23.8s ✓）误报成"未生效" ✗
 # （静默反向分叉 ✓——见 `HttpClient._resolve_timeout` ✓，2026-10-06 实测 ✓）。
 EXECUTE_WAIT_TIMEOUT_SECONDS = 60.0
+INTERNAL_SERVICE_TOKEN_HEADER = "X-Internal-Service-Token"
 
 # 直辖市（省级行政区）→ 下辖区县：出处 = GB/T 2260 行政区划代码里四个直辖市的
 # 市辖区/县（2016 年后名称；重庆含万州/涪陵等全部区县）。取值一律用**数据侧实际
@@ -122,6 +123,17 @@ class HttpClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+        token = getattr(config, "token", None)
+        if token is not None and token.get_secret_value().strip():
+            self.default_headers[INTERNAL_SERVICE_TOKEN_HEADER] = token.get_secret_value()
+
+    def _merge_headers(self, headers: Optional[Dict[str, str]]) -> Dict[str, str]:
+        merged = dict(self.default_headers)
+        merged.update({
+            key: value for key, value in (headers or {}).items()
+            if key.lower() != INTERNAL_SERVICE_TOKEN_HEADER.lower()
+        })
+        return merged
 
     def _resolve_timeout(
         self, timeout_seconds: Optional[float] = None
@@ -161,14 +173,12 @@ class HttpClient:
         """
         base_url = self._get_random_base_url()
         url = f"{base_url}{endpoint}"
-        merged_headers = {**self.default_headers}
-        if headers:
-            merged_headers.update(headers)
+        merged_headers = self._merge_headers(headers)
 
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.get(
-                    url, params=params, headers=merged_headers
+                    url, params=params, headers=merged_headers, allow_redirects=False
                 ) as response:
                     result = await response.json()
                     if response.status != 200:
@@ -203,14 +213,12 @@ class HttpClient:
         """
         base_url = self._get_random_base_url()
         url = f"{base_url}{endpoint}"
-        merged_headers = {**self.default_headers}
-        if headers:
-            merged_headers.update(headers)
+        merged_headers = self._merge_headers(headers)
 
         try:
             async with aiohttp.ClientSession(timeout=self._resolve_timeout(timeout_seconds)) as session:
                 async with session.post(
-                    url, json=json_data, params=params, headers=merged_headers
+                    url, json=json_data, params=params, headers=merged_headers, allow_redirects=False
                 ) as response:
                     result = await response.json()
                     if response.status != 200:
@@ -230,14 +238,12 @@ class HttpClient:
         """发送 DELETE 请求。"""
         base_url = self._get_random_base_url()
         url = f"{base_url}{endpoint}"
-        merged_headers = {**self.default_headers}
-        if headers:
-            merged_headers.update(headers)
+        merged_headers = self._merge_headers(headers)
 
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.delete(
-                    url, params=params, headers=merged_headers
+                    url, params=params, headers=merged_headers, allow_redirects=False
                 ) as response:
                     result = await response.json()
                     if response.status != 200:
@@ -267,14 +273,12 @@ class HttpClient:
         """
         base_url = self._get_random_base_url()
         url = f"{base_url}{endpoint}"
-        merged_headers = {**self.default_headers}
-        if headers:
-            merged_headers.update(headers)
+        merged_headers = self._merge_headers(headers)
 
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.put(
-                    url, json=json_data, headers=merged_headers
+                    url, json=json_data, headers=merged_headers, allow_redirects=False
                 ) as response:
                     result = await response.json()
                     if response.status != 200:
@@ -294,14 +298,12 @@ class HttpClient:
         """发送 PATCH 请求。"""
         base_url = self._get_random_base_url()
         url = f"{base_url}{endpoint}"
-        merged_headers = {**self.default_headers}
-        if headers:
-            merged_headers.update(headers)
+        merged_headers = self._merge_headers(headers)
 
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.patch(
-                    url, json=json_data, headers=merged_headers
+                    url, json=json_data, headers=merged_headers, allow_redirects=False
                 ) as response:
                     result = await response.json()
                     if response.status != 200:

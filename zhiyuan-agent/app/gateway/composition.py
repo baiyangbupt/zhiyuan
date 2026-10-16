@@ -27,7 +27,12 @@ NATIVE_USER_INPUT_FLAGS = (
 # `MCP_MODE` 也在其中：MCP 子进程不继承本进程环境，不声明就等于永远拿不到这个开关
 # （2026-09-24 实测：启动脚本一直在传 `MCP_MODE=readonly`，而它没在这张表里 →
 # MCP 侧读到的是自己的默认值，谁也没发现）。
-MCP_ENV_VARS = ("INTERNAL_SERVICE_URL", "INTERNAL_SERVICE_TIMEOUT_SECONDS", "MCP_MODE")
+MCP_ENV_VARS = (
+    "INTERNAL_SERVICE_URL",
+    "INTERNAL_SERVICE_TOKEN",
+    "INTERNAL_SERVICE_TIMEOUT_SECONDS",
+    "MCP_MODE",
+)
 
 # 源码依据 codex-rs/codex-mcp/src/client_capabilities.rs：只有这四个命名空间被保留。
 NATIVE_USER_INPUT_CAPABILITIES = {

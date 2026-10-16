@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 import sys
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -60,7 +60,8 @@ class InternalServiceConfig(BaseSettings):
         "extra": "ignore",
     }
 
-    url: str = "https://zhiyuan.ytell.cn"
+    url: str = "http://127.0.0.1:8090"
+    token: SecretStr = SecretStr("")
     timeout_seconds: float = 10.0
     # 仅用于 4.0 发布迁移窗口：新 pending 表无记录时读取旧 extra-data。
     # 新写入始终只走独立 pending 资源，完成存量迁移后应删除此开关和兜底。

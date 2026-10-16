@@ -72,6 +72,7 @@ Environment overrides:
   ZHIYUAN_RANK_URL=<optional rank health URL for remote smoke>
   ZHIYUAN_PYTHON=<python with websockets installed if --websocket is used>
   ZHIYUAN_SMOKE_WEBSOCKET=auto|on|off
+  INTERNAL_SERVICE_TOKEN=<required runtime credential for backend internal checks>
 
 Default checks are read-only and do not create sessions or mutate planning state.
 USAGE
@@ -121,8 +122,37 @@ curl_check() {
   local name="$1"
   local url="$2"
   local expected="${3:-}"
+  local scope="${4:-public}"
+  if [ "$scope" = "internal" ]; then
+    local token="${INTERNAL_SERVICE_TOKEN:-}"
+    if [[ -z "${token//[[:space:]]/}" || "$token" == *$'\r'* || "$token" == *$'\n'* ]]; then
+      record "$name" "FAIL" "INTERNAL_SERVICE_TOKEN must be a nonempty single-line credential"
+      return
+    fi
+  fi
   if ! have curl; then
     record "$name" "SKIP" "curl not found"
+    return
+  fi
+
+  if [ "$scope" = "internal" ]; then
+    local escaped_token="${token//\\/\\\\}"
+    escaped_token="${escaped_token//\"/\\\"}"
+    local response
+    if ! response="$(printf 'header = "X-Internal-Service-Token: %s"\n' "$escaped_token" | curl -q --config - --proto '=http,https' -sS -m "$TIMEOUT_SECONDS" -w $'\n%{http_code}' "$url" 2>/dev/null)"; then
+      record "$name" "FAIL" "authenticated HTTP probe failed"
+      return
+    fi
+    local internal_http_code="${response##*$'\n'}"
+    if ! [[ "$internal_http_code" =~ ^2[0-9][0-9]$ ]]; then
+      record "$name" "FAIL" "authenticated probe requires HTTP 2xx"
+      return
+    fi
+    if [ -n "$expected" ] && ! printf '%s' "${response%$'\n'*}" | grep "$expected" >/dev/null; then
+      record "$name" "FAIL" "HTTP ${internal_http_code}, expected '${expected}' not found"
+      return
+    fi
+    record "$name" "PASS" "HTTP ${internal_http_code}"
     return
   fi
 
@@ -254,9 +284,9 @@ if [ "$MODE" = "local" ]; then
   fi
 fi
 
-curl_check "server health" "${SERVER_BASE}/gaotu-assistant-bot/inner/ops/health" '"status"'
+curl_check "server health" "${SERVER_BASE}/gaotu-assistant-bot/inner/ops/health" '"status"' internal
 curl_check "server base data" "${SERVER_BASE}/gaotu-assistant-bot/base-data/province-city" '"data"'
-curl_check "server review rules" "${SERVER_BASE}/gaotu-assistant-bot/inner/planning/${TENANT_ID}/review/rules" '"data"'
+curl_check "server review rules" "${SERVER_BASE}/gaotu-assistant-bot/inner/planning/${TENANT_ID}/review/rules" '"data"' internal
 
 curl_check "agent health" "${AGENT_BASE}/gaotu-assistant-agent/health" '"status"'
 websocket_check "agent websocket" "${WS_BASE}/gaotu-assistant-agent/plus/chat/${TENANT_ID}/bot/${BOT_ID}/do"
@@ -268,9 +298,9 @@ elif [ "$MODE" = "remote" ]; then
 fi
 
 if [ -n "$SESSION_ID" ]; then
-  curl_check "workspace state" "${SERVER_BASE}/gaotu-assistant-bot/inner/planning/${TENANT_ID}/session/workspace-state?chatSessionId=${SESSION_ID}" '"data"'
-  curl_check "data freshness" "${SERVER_BASE}/gaotu-assistant-bot/inner/planning/${TENANT_ID}/session/data-freshness?chatSessionId=${SESSION_ID}" '"data"'
-  curl_check "freshness schedule" "${SERVER_BASE}/gaotu-assistant-bot/inner/planning/${TENANT_ID}/session/data-freshness/schedule?chatSessionId=${SESSION_ID}" '"data"'
+  curl_check "workspace state" "${SERVER_BASE}/gaotu-assistant-bot/inner/planning/${TENANT_ID}/session/workspace-state?chatSessionId=${SESSION_ID}" '"data"' internal
+  curl_check "data freshness" "${SERVER_BASE}/gaotu-assistant-bot/inner/planning/${TENANT_ID}/session/data-freshness?chatSessionId=${SESSION_ID}" '"data"' internal
+  curl_check "freshness schedule" "${SERVER_BASE}/gaotu-assistant-bot/inner/planning/${TENANT_ID}/session/data-freshness/schedule?chatSessionId=${SESSION_ID}" '"data"' internal
 else
   record "workspace state" "SKIP" "set --session-id to validate workspace/data-freshness read APIs"
 fi

@@ -1,0 +1,3 @@
+internal:
+  service:
+    token: ${INTERNAL_SERVICE_TOKEN:}

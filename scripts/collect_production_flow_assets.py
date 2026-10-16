@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from internal_http import request_json, require_internal_service_token
+
 
 DEFAULT_HOST = os.getenv("ZHIYUAN_PRODUCTION_ASSET_HOST", "")
 DEFAULT_BASE_URL = os.getenv("ZHIYUAN_PRODUCTION_ASSET_BASE_URL", "http://127.0.0.1:8090")
@@ -52,12 +54,7 @@ def _run_ssh_bytes(host: str, command: str, *, timeout: int = 120) -> bytes:
 
 
 def _json_from_ssh(host: str, url: str) -> dict[str, Any]:
-    raw = _run_ssh(host, f"curl -s --max-time 15 {json.dumps(url)}", timeout=25)
-    try:
-        value = json.loads(raw or "{}")
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"non-json response for {url}: {raw[:200]}") from exc
-    return value if isinstance(value, dict) else {"data": value}
+    return request_json("GET", url, ssh_host=host)
 
 
 def _message_text(value: Any) -> str:
@@ -191,6 +188,7 @@ def main() -> None:
     args = parser.parse_args()
     if not str(args.host or "").strip():
         raise SystemExit("missing --host or ZHIYUAN_PRODUCTION_ASSET_HOST")
+    require_internal_service_token()
 
     output_dir = Path(args.output_dir or f"assets/production-flow-verification-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
     output_dir.mkdir(parents=True, exist_ok=True)

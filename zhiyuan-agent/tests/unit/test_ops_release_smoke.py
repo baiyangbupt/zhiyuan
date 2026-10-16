@@ -32,10 +32,12 @@ def test_release_smoke_supports_production_and_dev_web_base_paths(
 set -eu
 output=''
 url=''
+write_out=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -m|-w|-o)
       [ "$1" = "-o" ] && output="$2"
+      [ "$1" = "-w" ] && write_out="$2"
       shift 2
       ;;
     -*)
@@ -47,9 +49,14 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-printf '<html><script id="__NEXT_DATA__"></script>{"status":"UP","data":{}}</html>' > "$output"
+body='<html><script id="__NEXT_DATA__"></script>{"status":"UP","data":{}}</html>'
+if [ -n "$output" ]; then
+  printf '%s' "$body" > "$output"
+else
+  printf '%s' "$body"
+fi
 printf '%s\\n' "$url" >> "$FAKE_CURL_LOG"
-printf '200'
+printf '%s' "${write_out//\\%\\{http_code\\}/200}"
 """,
         encoding="utf-8",
     )
@@ -61,6 +68,7 @@ printf '200'
             "PATH": f"{bin_dir}:{env['PATH']}",
             "FAKE_CURL_LOG": str(curl_log),
             "ZHIYUAN_SMOKE_WEBSOCKET": "off",
+            "INTERNAL_SERVICE_TOKEN": "offline-regression-credential",
         }
     )
     if base_path is None:

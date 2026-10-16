@@ -1,6 +1,7 @@
 package com.ytell.zhiyuan.common.config;
 
 import com.ytell.zhiyuan.web.interceptor.ControllerTimingInterceptor;
+import com.ytell.zhiyuan.web.interceptor.InternalServiceAuthInterceptor;
 import com.ytell.zhiyuan.web.interceptor.LoginInterceptor;
 import com.ytell.zhiyuan.web.interceptor.TraceIdInterceptor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,6 +17,8 @@ public class WebConfig implements WebMvcConfigurer {
     private TraceIdInterceptor traceIdInterceptor;
     @Autowired
     private LoginInterceptor loginInterceptor;
+    @Autowired
+    private InternalServiceAuthInterceptor internalServiceAuthInterceptor;
 
     @Override
     public void configureDefaultServletHandling(DefaultServletHandlerConfigurer configurer) {
@@ -32,20 +35,20 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
+        String[] internalPaths = {
+                "/**/admin/**", "/**/inner/**", "/**/debug/**", "/**/internal/**"
+        };
+        registry.addInterceptor(internalServiceAuthInterceptor).addPathPatterns(internalPaths);
         //统计接口响应时间
         registry.addInterceptor(controllerTimingInterceptor).addPathPatterns("/**");
         //traceId
         registry.addInterceptor(traceIdInterceptor).addPathPatterns("/**");
         //需要登录
         registry.addInterceptor(loginInterceptor).addPathPatterns("/**")
+                .excludePathPatterns(internalPaths)
                 .excludePathPatterns(
-                        "/**/admin/**",
-                        "/**/inner/**",
-                        // 证据核验接口（与 /inner 同级：内部调用，靠网络隔离而非登录态保护）
-                        "/internal/evidence/**",
                         "/**/user/login/**",
                         "/**/wx/**",
-                        "/**/debug/**",
                         "/**/base-data/**",
                         // Swagger相关路径 (SpringFox 2.7.0)
                         "/doc.html",

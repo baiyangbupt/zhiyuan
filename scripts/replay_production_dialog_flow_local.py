@@ -24,7 +24,9 @@ import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
-from urllib import error, parse, request
+from urllib import error, parse
+
+from internal_http import request_json, require_internal_service_token
 
 import websockets
 
@@ -105,23 +107,7 @@ def _http_json(
     timeout_seconds: float = 15,
     extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    data = None
-    headers = {"Accept": "application/json"}
-    if extra_headers:
-        headers.update({str(k): str(v) for k, v in extra_headers.items()})
-    if payload is not None:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = request.Request(url, data=data, headers=headers, method=method)
-    with request.urlopen(req, timeout=timeout_seconds) as response:
-        raw = response.read().decode("utf-8")
-        if not raw:
-            return {"status": response.status}
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            parsed.setdefault("_status", response.status)
-            return parsed
-        return {"_status": response.status, "data": parsed}
+    return request_json(method, url, payload, timeout_seconds=timeout_seconds, extra_headers=extra_headers)
 
 
 def _backend_url(base_url: str, path: str, params: dict[str, Any] | None = None) -> str:
@@ -1057,7 +1043,7 @@ async def _run_case(args: argparse.Namespace, case: dict[str, Any], case_index: 
         result["checks"]["beforeMatchCount"] = before_match_count
         if (case.get("requireBeforeMatch") or (case.get("checks") or {}).get("requireBeforeMatch")) and before_match_count <= 0:
             result["failures"].append("no_initial_check_matches")
-    except (OSError, subprocess.CalledProcessError, error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, subprocess.CalledProcessError, error.URLError, TimeoutError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
         detail = f"setup_failed:{type(exc).__name__}:{exc}"
         if isinstance(exc, subprocess.CalledProcessError):
             stderr = str(exc.stderr or "").strip()
@@ -1139,7 +1125,7 @@ async def _run_case(args: argparse.Namespace, case: dict[str, Any], case_index: 
             result["failures"].append("pending_card_missing_pending_id")
             result["status"] = "failed"
             return result
-    except (OSError, asyncio.TimeoutError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, asyncio.TimeoutError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
         result["blockers"].append(f"first_turn_failed:{type(exc).__name__}:{exc}")
         result["status"] = "blocked"
         return result
@@ -1209,7 +1195,7 @@ async def _run_case(args: argparse.Namespace, case: dict[str, Any], case_index: 
             # 会话行不存在时确认必然打不通；这是准备期的问题，不是模型的问题，
             # 单列一条，别让它混在 `pending_not_applied` 里看不清。
             result["failures"].append("confirm_rejected_session_missing")
-    except (OSError, asyncio.TimeoutError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, asyncio.TimeoutError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
         result["blockers"].append(f"confirm_turn_failed:{type(exc).__name__}:{exc}")
         result["status"] = "blocked"
         return result
@@ -1287,6 +1273,7 @@ def main() -> None:
     parser.add_argument("--output", default="assets/production-flow-verification-20260628/local-dialog-flow-replay.json")
     args = parser.parse_args()
 
+    require_internal_service_token()
     result = asyncio.run(_run(args))
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
