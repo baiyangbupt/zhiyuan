@@ -378,13 +378,10 @@ async def lifespan(app: FastAPI):
         把失败当"没有绑定"会把一次后端故障变成一次上下文丢失。
         """
         from app.util.internal_client import get_current_codex_thread_binding
+        from app.gateway.thread_recovery import normalize_current_binding_payload
 
         response = await get_current_codex_thread_binding(tenant_id, session_id)
-        if not isinstance(response, dict):
-            raise RuntimeError("binding_lookup_invalid_response")
-        if response.get("code") not in (None, 0):
-            raise RuntimeError("binding_lookup_failed")
-        return response.get("data")
+        return normalize_current_binding_payload(response, require_envelope=True)
 
     # A7：进程重启后靠它找回这个会话该用的 thread。后端优先；后端行按
     # `expires_at > now` 过滤（登记 TTL 默认 900 秒），重启晚过 TTL 时它只会回

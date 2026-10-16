@@ -370,6 +370,7 @@ async def get_current_codex_thread_binding(
         endpoint=f"/gaotu-assistant-bot/inner/codex/{tenant_id}/thread-binding/current",
         params={"chatSessionId": chat_session_id},
         error_msg="查询 Codex thread binding 失败",
+        require_success=True,
     )
 
 

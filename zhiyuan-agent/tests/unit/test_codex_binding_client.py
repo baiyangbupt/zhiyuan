@@ -118,8 +118,8 @@ async def test_get_current_codex_thread_binding_uses_current_endpoint(monkeypatc
     """
     calls = []
 
-    async def get(*, endpoint, params, error_msg):
-        calls.append((endpoint, params, error_msg))
+    async def get(*, endpoint, params, error_msg, require_success=False):
+        calls.append((endpoint, params, error_msg, require_success))
         return {"code": 0, "data": {"threadId": "thr-1", "chatSessionId": 101}}
 
     monkeypatch.setattr(internal_client.http_client, "get", get)
@@ -132,5 +132,6 @@ async def test_get_current_codex_thread_binding_uses_current_endpoint(monkeypatc
             "/gaotu-assistant-bot/inner/codex/7/thread-binding/current",
             {"chatSessionId": 101},
             "查询 Codex thread binding 失败",
+            True,
         )
     ]

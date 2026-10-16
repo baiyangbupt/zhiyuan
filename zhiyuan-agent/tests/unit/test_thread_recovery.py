@@ -377,7 +377,7 @@ async def test_without_a_local_registry_the_backend_answer_stands() -> None:
 
 @pytest.mark.asyncio
 async def test_a_backend_error_envelope_is_not_masked_by_the_local_registry() -> None:
-    """后端回 `code != 0`（"查不了"）：不许兜底，原样往下走 → 可恢复错误。
+    """后端回 `code != 0`（"查不了"）：查询边界拒绝，不许兜底。
 
     后端故障被一次本地命中盖掉，等于把一次真实故障做成"看起来恢复了"——
     与把故障降级成"没有绑定"是同一类错误，只是方向相反。
@@ -394,8 +394,9 @@ async def test_a_backend_error_envelope_is_not_masked_by_the_local_registry() ->
 
     lookup = compose_current_binding_lookup(backend, _Registry())
 
-    payload = await lookup("1", "42")
-    assert payload == {"code": 500, "msg": "backend down", "data": None}
+    with pytest.raises(ThreadRecoveryError) as err:
+        await lookup("1", "42")
+    assert err.value.code == "binding_lookup_failed"
 
     async def resume(thread_id: str):
         raise AssertionError("不该走到 resume")

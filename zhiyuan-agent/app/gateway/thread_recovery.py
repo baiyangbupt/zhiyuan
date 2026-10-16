@@ -53,6 +53,36 @@ class ThreadRecoveryError(RuntimeError):
         super().__init__(message or code)
 
 
+def normalize_current_binding_payload(
+    payload: Any, *, require_envelope: bool = False,
+) -> Mapping[str, Any] | None:
+    """严格解包远端响应；显式注入的本地查询也可返回裸绑定或 None。"""
+    envelope_keys = {"code", "data", "error", "errors", "success", "failed"}
+    if require_envelope or (
+        isinstance(payload, Mapping) and envelope_keys.intersection(payload)
+    ):
+        if (
+            not isinstance(payload, Mapping)
+            or type(payload.get("code")) is not int
+            or "data" not in payload
+            or "error" in payload
+            or "errors" in payload
+            or ("success" in payload and payload["success"] is not True)
+            or ("failed" in payload and payload["failed"] is not False)
+        ):
+            raise ThreadRecoveryError("binding_lookup_invalid", "invalid binding response envelope")
+        if payload["code"] != 0:
+            raise ThreadRecoveryError(
+                "binding_lookup_failed", f"current binding lookup returned code={payload['code']}",
+            )
+        payload = payload["data"]
+    if payload is not None and not isinstance(payload, Mapping):
+        raise ThreadRecoveryError("binding_lookup_invalid", "invalid binding response data")
+    if isinstance(payload, Mapping) and envelope_keys.intersection(payload):
+        raise ThreadRecoveryError("binding_lookup_invalid", "nested binding response envelope")
+    return payload
+
+
 def compose_current_binding_lookup(
     backend: Callable[[str, str], Any],
     registry: Any | None = None,
@@ -74,13 +104,14 @@ def compose_current_binding_lookup(
 
     纪律与原查询一致：后端查询失败、本地查询失败都**抛**（由调用方判成
     可恢复错误），不许降级成"没有绑定"——那就是拿一次故障换一次上下文丢失。
-    尤其：后端回 `code != 0`（"查不了"）时**不**兜底，原样往下走让
-    `_load_binding` 判成可恢复错误——后端故障不许被一次本地命中盖掉。
+    只有可信的无绑定回答才可兜底；错误和畸形响应在查询边界直接拒绝，
+    后端故障不许被一次本地命中盖掉。
     """
 
     async def lookup(tenant_id: str, session_id: str) -> Any:
         payload = await _maybe_await(backend(tenant_id, session_id))
-        if _answers_with_a_binding(payload) or registry is None:
+        data = normalize_current_binding_payload(payload)
+        if data is not None or registry is None:
             return payload
         try:
             fallback = registry.latest_for_session(str(tenant_id), str(session_id))
@@ -103,28 +134,6 @@ def compose_current_binding_lookup(
         return fallback
 
     return lookup
-
-
-def _answers_with_a_binding(payload: Any) -> bool:
-    """这次后端回答里有没有"一条绑定"。
-
-    认的形状与 `ThreadRecovery._load_binding` 一致：裸 payload，或
-    `{"code": .., "data": ..}` 信封（server.py 已把信封收敛成裸 payload，
-    但测试与旧调用点会直接给信封——两种都得认，不然兜底在两种形状之间
-    行为不一致）。
-
-    信封里 `code != 0`（"查不了"）算"有东西"：那种情况必须原样往下走，
-    由 `_load_binding` 判成可恢复错误——不许在这里吃成本地兜底。
-    """
-    if payload is None:
-        return False
-    if isinstance(payload, Mapping):
-        if "data" in payload:
-            if payload.get("code") not in (None, 0):
-                return True
-            return isinstance(payload.get("data"), Mapping)
-        return True
-    return True
 
 
 # 只有这两类允许落到"重建"分支。依据见模块开头的实测记录：
@@ -202,26 +211,49 @@ class CurrentBinding:
         if not isinstance(payload, Mapping):
             return None
         thread_id = payload.get("threadId")
-        if not thread_id:
+        tenant_id = _binding_scope_id(payload.get("tenantId"))
+        session_id = _binding_scope_id(payload.get("chatSessionId"))
+        if (
+            not isinstance(thread_id, str)
+            or not thread_id
+            or thread_id != thread_id.strip()
+            or tenant_id is None
+            or session_id is None
+        ):
             return None
         capabilities = payload.get("allowedCapabilities") or ()
         if isinstance(capabilities, str):
             capabilities = [item for item in capabilities.split(",") if item]
         return cls(
-            thread_id=str(thread_id),
-            tenant_id=str(payload.get("tenantId") or ""),
-            session_id=str(payload.get("chatSessionId") or ""),
+            thread_id=thread_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
             user_id=str(payload.get("userId") or ""),
             allowed_capabilities=frozenset(str(item) for item in capabilities),
         )
 
     def belongs_to(self, key: SessionKey) -> bool:
-        """归属核验。两边都非空时才比——空值不是"匹配"，是"没这个信息"。"""
-        if self.tenant_id and self.tenant_id != str(key.tenant_id):
-            return False
-        if self.session_id and self.session_id != str(key.session_id):
-            return False
-        return True
+        """归属核验：身份必须完整，且同时匹配租户与会话。"""
+        return (
+            bool(self.tenant_id and self.session_id)
+            and self.tenant_id == str(key.tenant_id)
+            and self.session_id == str(key.session_id)
+        )
+
+
+def _binding_scope_id(value: Any) -> str | None:
+    if type(value) not in (str, int):
+        return None
+    normalized = str(value)
+    if (
+        not normalized.isascii()
+        or not normalized.isdecimal()
+        or normalized.startswith("0")
+        or len(normalized) > 19
+        or (len(normalized) == 19 and normalized > "9223372036854775807")
+    ):
+        return None
+    return normalized
 
 
 class ThreadRecovery:
@@ -344,15 +376,7 @@ class ThreadRecovery:
             raise ThreadRecoveryError(
                 "binding_lookup_failed", f"current binding lookup failed: {exc}"
             ) from exc
-        data = payload
-        if isinstance(payload, Mapping) and "data" in payload:
-            code = payload.get("code")
-            if code not in (None, 0):
-                raise ThreadRecoveryError(
-                    "binding_lookup_failed",
-                    f"current binding lookup returned code={code}",
-                )
-            data = payload.get("data")
+        data = normalize_current_binding_payload(payload)
         if data is None:
             return None
         binding = CurrentBinding.from_payload(data)
@@ -415,4 +439,5 @@ __all__ = [
     "compose_current_binding_lookup",
     "is_lock_conflict",
     "is_not_resumable",
+    "normalize_current_binding_payload",
 ]
