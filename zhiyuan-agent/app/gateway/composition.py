@@ -14,7 +14,10 @@ from app.config import CodexAppServerConfig
 from app.gateway.artifact_store import SqliteArtifactStore
 from app.gateway.service import GatewayService
 from app.gateway.session_lifecycle import SessionLifecycle
+from app.gateway.session_reclaim import SessionReclaimPreflight
+from app.gateway.session_runtime import SessionRuntime
 from app.gateway.user_input import PendingInput, UserInputBroker, UserInputError
+from app.util.internal_client import load_pending_for_reclaim
 
 # A1 探针实测（.runtime/codex-capabilities.json）：原生提问在真实二进制上可用，
 # 但**必须同时满足两件事**——启动时带上这两个特性开关，且 initialize 声明能力。
@@ -185,6 +188,16 @@ async def build_gateway_runtime(
         evidence_verifier=evidence_verifier,
         artifact_store=artifact_store,
         lifecycle=lifecycle,
+    )
+
+    def route_retained(key):
+        sessions = gateway.session_runtime
+        if not isinstance(sessions, SessionRuntime) or sessions.lifecycle is not lifecycle:
+            return None
+        return sessions.current_channel(key) is not None
+
+    gateway.reclaim_preflight = SessionReclaimPreflight(
+        lifecycle, load_pending_for_reclaim, route_retained,
     )
     # scope 解析器要等 gateway 建好：它从业务绑定反查身份，是唯一可信的来源。
     broker.set_scope_resolver(gateway.scope_for_thread)

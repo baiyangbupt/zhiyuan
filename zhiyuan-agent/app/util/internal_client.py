@@ -159,6 +159,8 @@ class HttpClient:
         params: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         error_msg: str = "请求失败",
+        *,
+        require_success: bool = False,
     ) -> Dict[str, Any]:
         """发送 GET 请求。
 
@@ -167,6 +169,7 @@ class HttpClient:
             params: 查询参数
             headers: 请求头（如果提供，将与默认请求头合并）
             error_msg: 错误信息前缀
+            require_success: 非 HTTP 200 时返回失败 envelope，不信任响应体
 
         Returns:
             服务器返回的 JSON 响应。
@@ -180,6 +183,9 @@ class HttpClient:
                 async with session.get(
                     url, params=params, headers=merged_headers, allow_redirects=False
                 ) as response:
+                    if require_success and response.status != 200:
+                        logger.error(f"{error_msg}: HTTP {response.status}")
+                        return {"error": "http_status", "success": False, "status": response.status}
                     result = await response.json()
                     if response.status != 200:
                         logger.error(f"{error_msg}: {response.status}, {result}")
@@ -438,6 +444,33 @@ async def _get_pending_resource(
         endpoint=f"/gaotu-assistant-bot/inner/chat/{tenant_id}/session/pending",
         params={"chatSessionId": chat_session_id},
         error_msg="获取待确认资源失败",
+    )
+
+
+def _pending_long_id(value: Union[str, int]) -> str:
+    if type(value) not in (str, int):
+        raise ValueError("pending lookup requires positive Long identifiers")
+    text = str(value)
+    if (
+        not text or len(text) > 19 or not text.isascii()
+        or not text.isdecimal() or text.startswith("0")
+        or int(text) > 9223372036854775807
+    ):
+        raise ValueError("pending lookup requires positive Long identifiers")
+    return text
+
+
+async def load_pending_for_reclaim(
+    *, tenant_id: Union[str, int], session_id: Union[str, int],
+) -> Dict[str, Any]:
+    """Fresh, strict read of the dedicated pending resource; never a snapshot."""
+    tenant = _pending_long_id(tenant_id)
+    session = _pending_long_id(session_id)
+    return await http_client.get(
+        endpoint=f"/gaotu-assistant-bot/inner/chat/{tenant}/session/pending",
+        params={"chatSessionId": session},
+        error_msg="回收预检读取待确认资源失败",
+        require_success=True,
     )
 
 

@@ -28,6 +28,77 @@ async def _native_runtime_for_lifecycle():
 
 
 @pytest.mark.asyncio
+async def test_reclaim_composition_reads_fresh_resource_not_gateway_snapshot(monkeypatch):
+    from app.gateway.session_runtime import SessionRuntime
+    from app.gateway.snapshot import build_snapshot
+    from app.gateway.ui_events import SessionKey
+    from tests.integration.test_session_reclaim_transport import pending_server
+
+    body = b'{"code":0,"data":{"chatSessionId":101,"pendingId":"p-1","revision":1,"status":"applying"}}'
+    async with pending_server(monkeypatch, body=body) as requests:
+        runtime, _ = await _native_runtime_for_lifecycle()
+        try:
+            gateway = runtime.gateway
+            key = SessionKey("7", "101")
+            gateway.session_runtime = SessionRuntime(lifecycle=gateway.lifecycle)
+            gateway._snapshots[key] = build_snapshot({"sessionId": "101", "activeProposal": None})
+            monkeypatch.setattr(gateway.lifecycle, "_clock", lambda: 0.0)
+            lease = gateway.lifecycle.acquire(key, "action")
+            result = await gateway.reclaim_preflight.check(key, idle_seconds=1, timeout_seconds=1)
+            assert result.reason == "owners_active"
+            assert not requests
+            lease.close()
+            stamp = gateway.lifecycle.inspect(key)
+            for _attempt in range(2):
+                result = await gateway.reclaim_preflight.check(key, idle_seconds=1, timeout_seconds=1)
+                assert result.status == "blocked"
+                assert result.reason == "pending_present"
+            assert len(requests) == 2
+            assert gateway.lifecycle.inspect(key) == stamp
+            assert key in gateway._snapshots
+        finally:
+            await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_kind", ["missing", "untrusted", "retained_closed"])
+async def test_reclaim_composition_fails_closed_for_unavailable_or_retained_routes(monkeypatch, runtime_kind):
+    from app.gateway.session_runtime import ConnectionChannel, SessionRuntime
+    from app.gateway.ui_events import SessionKey
+    from tests.integration.test_session_reclaim_transport import pending_server
+
+    async with pending_server(monkeypatch) as requests:
+        runtime, _ = await _native_runtime_for_lifecycle()
+        try:
+            gateway = runtime.gateway
+            key = SessionKey("7", "101")
+            monkeypatch.setattr(gateway.lifecycle, "_clock", lambda: 0.0)
+            gateway.lifecycle.acquire(key, "turn").close()
+            if runtime_kind == "untrusted":
+                gateway.session_runtime = SimpleNamespace(current_channel=lambda key: None)
+            elif runtime_kind == "retained_closed":
+                sessions = SessionRuntime(lifecycle=gateway.lifecycle)
+                gateway.session_runtime = sessions
+                channel = ConnectionChannel(AsyncMock(return_value=True))
+                sessions.attach_connection(key, channel)
+                await channel.close()
+                assert gateway.lifecycle.inspect(key).total == 0
+                assert sessions.current_channel(key) is channel
+            result = await gateway.reclaim_preflight.check(key, idle_seconds=1, timeout_seconds=1)
+            assert result.status == "blocked"
+            assert result.reason == ("route_retained" if runtime_kind == "retained_closed" else "runtime_unknown")
+            assert not requests
+            if runtime_kind == "retained_closed":
+                assert sessions.current_channel(key) is channel
+                sessions.detach_connection(key, channel)
+                result = await gateway.reclaim_preflight.check(key, idle_seconds=1, timeout_seconds=1)
+                assert result.status == "candidate"
+                assert len(requests) == 1
+        finally:
+            await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_native_ownership_survives_broker_answer_until_response_write_finishes():
     runtime, key = await _native_runtime_for_lifecycle()
     client = runtime.codex.client
