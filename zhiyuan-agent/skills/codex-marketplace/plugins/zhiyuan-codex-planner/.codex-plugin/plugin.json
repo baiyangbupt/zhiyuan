@@ -1,6 +1,6 @@
 {
   "name": "zhiyuan-codex-planner",
-  "version": "1.0.0+codex.20261016053607",
+  "version": "1.0.0+codex.20261016063437",
   "description": "\u667a\u613f\u9ad8\u8003\u5fd7\u613f\u586b\u62a5\u7684\u5bf9\u8bdd\u6280\u80fd\uff1a\u753b\u50cf\u91c7\u96c6\u3001\u9662\u6821\u4e13\u4e1a\u63a2\u7d22\u3001\u5f55\u53d6\u4e8b\u5b9e\u6838\u9a8c\u3001\u5019\u9009\u63a8\u8350\u3001\u65b9\u6848\u6784\u5efa\u4e0e\u7ec8\u5ba1\u3002",
   "author": {
     "name": "zhiyuan"

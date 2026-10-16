@@ -1166,6 +1166,81 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void shouldNameConcreteItemsInFillToCountRemoveAndFillDetails() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO removeTarget = candidate("v1", "伊犁师范大学", "机器人工程", "工学", 90D);
+        removeTarget.setTier("保");
+        CandidateItemDTO fillTarget = candidate("v2", "南京工程学院", "电气工程及其自动化(继电保护)", "工学", 88D);
+        fillTarget.setTier("稳");
+        fillTarget.setProvinceName("江苏");
+        state.getCandidatePoolState().getItems().add(removeTarget);
+        state.getCandidatePoolState().getItems().add(fillTarget);
+        state.getOrderedPlanState().getItems().add(orderedWithTier("v1", "伊犁师范大学", "机器人工程", "保"));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("include", "major", "major", "电气"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(2, proposal.getActions().size());
+        FixProposalActionDTO removeAction = proposal.getActions().get(0);
+        assertEquals("remove_volunteers", removeAction.getActionType());
+        assertTrue(removeAction.getDetail().contains("具体预览：伊犁师范大学-机器人工程（保）"),
+                "移出明细应点名具体条目：" + removeAction.getDetail());
+        FixProposalActionDTO fillAction = proposal.getActions().get(1);
+        assertEquals("fill_total_count", fillAction.getActionType());
+        assertTrue(fillAction.getDetail().contains("南京工程学院-电气工程及其自动化(继电保护)（稳/江苏）"),
+                "补入明细应点名具体条目：" + fillAction.getDetail());
+    }
+
+    @Test
+    void shouldFoldEntryPreviewToHeadThreeWhenMoreThanFiveItems() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO kept = candidate("v0", "北京学校0", "数学", "理学", 95D);
+        kept.setProvinceName("北京");
+        state.getCandidatePoolState().getItems().add(kept);
+        state.getOrderedPlanState().getItems().add(ordered("v0", "北京学校0", "数学", false));
+        for (int index = 1; index <= 6; index++) {
+            CandidateItemDTO other = candidate("v" + index, "其他学校" + index, "专业" + index, "工学",
+                    80D - index);
+            other.setProvinceName("河北");
+            state.getCandidatePoolState().getItems().add(other);
+            state.getOrderedPlanState().getItems().add(
+                    ordered("v" + index, "其他学校" + index, "专业" + index, false));
+        }
+        for (int index = 1; index <= 5; index++) {
+            CandidateItemDTO beijing = candidate("b" + index, "北京学校" + index, "专业B" + index, "工学",
+                    85D - index);
+            beijing.setProvinceName("北京");
+            state.getCandidatePoolState().getItems().add(beijing);
+        }
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(6);
+        req.setSourceVersionGuard(12);
+        req.getRequirements().add(requirement("only_keep", "region", "province", "北京"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        FixProposalActionDTO removeAction = proposal.getActions().get(0);
+        assertTrue(removeAction.getDetail().contains("具体预览：其他学校1-专业1；其他学校2-专业2；其他学校3-专业3"),
+                "移出 6 条应列前 3 条：" + removeAction.getDetail());
+        assertTrue(removeAction.getDetail().contains("另有 3 组未展开"));
+        assertFalse(removeAction.getDetail().contains("其他学校4-专业4"));
+        FixProposalActionDTO fillAction = proposal.getActions().get(1);
+        assertTrue(fillAction.getDetail().contains("北京学校1-专业B1（北京）")
+                        && fillAction.getDetail().contains("北京学校5-专业B5（北京）"),
+                "补入 5 条应全列：" + fillAction.getDetail());
+        assertFalse(fillAction.getDetail().contains("未展开"));
+    }
+
+    @Test
     void shouldPersistAlreadySatisfiedIncludeWithoutRemovingNonMatchingItems() {
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().setVolunteerModel("major");

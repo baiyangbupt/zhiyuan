@@ -66,6 +66,9 @@ final class UserGoalProposalBuilder {
     private static final String REASON_TIER_QUOTA_COMPOSITE_NOT_SUPPORTED = "tier_quota_composite_not_supported";
     private static final String REASON_PRESERVE_COUNT_REQUIRES_INCLUDE = "preserve_count_requires_include";
     private static final String REASON_PRESERVE_COUNT_MISMATCH = "preserve_count_mismatch";
+    /** 明细预览：≤5 条全列；>5 条只列前 3 条并注明余量（2026-10-16 口径）。 */
+    private static final int ENTRY_PREVIEW_FULL_LIST_LIMIT = 5;
+    private static final int ENTRY_PREVIEW_HEAD_COUNT = 3;
     private static final DeterministicPlanSolver PLAN_SOLVER = new OjalgoDeterministicPlanSolver();
     private UserGoalProposalBuilder() {
     }
@@ -435,11 +438,12 @@ final class UserGoalProposalBuilder {
             removeAction.setSummary("移出不满足本轮硬要求的 "
                     + (majorGroupMode ? removeUnitIds.size() + " 个专业组"
                     : removeVolunteerIds.size() + " 个志愿"));
-            removeAction.setDetail(selection.replacementCount() > 0
+            removeAction.setDetail(appendEntryPreviewDetail(selection.replacementCount() > 0
                     ? hasTierQuota
                     ? "其中包含为满足" + tierAllocationLabel(tierQuotaGoal) + "而进行的等量替换。"
                     : "其中包含为满足非排他覆盖要求而进行的等量替换。"
-                    : "这些项目不满足本轮要求。");
+                    : "这些项目不满足本轮要求。",
+                    planEntryLabels(current, majorGroupMode, removeVolunteerIds, removeUnitIds)));
             removeAction.setUnitIds(removeUnitIds);
             removeAction.setRemoveUnitIds(removeUnitIds);
             removeAction.setVolunteerIds(removeVolunteerIds);
@@ -451,11 +455,13 @@ final class UserGoalProposalBuilder {
             action.setActionType(RepairProposalTaxonomy.ActionType.FILL_TOTAL_COUNT);
             action.setLevel(majorGroupMode ? "unit" : "volunteer");
             action.setSummary("从当前候选池补入 " + adjustedGap + (majorGroupMode ? " 个专业组" : " 个志愿"));
-            action.setDetail(selection.replacementCount() > 0
+            action.setDetail(appendEntryPreviewDetail(selection.replacementCount() > 0
                     ? "其中 " + selection.replacementCount() + " 个用于"
                     + (hasTierQuota ? tierAllocationLabel(tierQuotaGoal) : "覆盖要求")
                     + "的等量替换；最终数量精确达到 " + targetCount + "。"
-                    : "补入后方案数量将从 " + retainedCount + " 精确达到 " + targetCount + "。");
+                    : "补入后方案数量将从 " + retainedCount + " 精确达到 " + targetCount + "。",
+                    candidateEntryLabels(poolCandidates, majorGroupMode,
+                            selection.volunteerIds, selection.unitIds)));
             action.setUnitIds(selection.unitIds);
             action.setVolunteerIds(selection.volunteerIds);
             action.setCandidateUnitIds(selection.unitIds);
@@ -1442,7 +1448,9 @@ final class UserGoalProposalBuilder {
         action.setActionType(RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS);
         action.setLevel("volunteer");
         action.setSummary(summary);
-        action.setDetail("预计移出 " + formatEntryCount(countPlanEntries(volunteers, majorGroupMode), majorGroupMode) + "。");
+        action.setDetail(appendEntryPreviewDetail(
+                "预计移出 " + formatEntryCount(countPlanEntries(volunteers, majorGroupMode), majorGroupMode) + "。",
+                planEntryLabels(volunteers, majorGroupMode)));
         action.setUnitIds(volunteers.stream()
                 .map(UserGoalProposalBuilder::planUnitKey)
                 .filter(value -> !Strings.isNullOrEmpty(value))
@@ -1473,7 +1481,9 @@ final class UserGoalProposalBuilder {
         action.setSummary(summary);
         List<CandidateItemDTO> selectedCandidates = majorGroupMode
                 ? candidatesForUnits(eligibleCandidates, candidateUnitIds(candidates)) : candidates;
-        action.setDetail("找到 " + formatEntryCount(countCandidateEntries(selectedCandidates, majorGroupMode), majorGroupMode) + "可参考选择。");
+        action.setDetail(appendEntryPreviewDetail(
+                "找到 " + formatEntryCount(countCandidateEntries(selectedCandidates, majorGroupMode), majorGroupMode) + "可参考选择。",
+                candidateEntryLabels(selectedCandidates, majorGroupMode)));
         action.setVolunteerIds(selectedCandidates.stream()
                 .map(CandidateItemDTO::getVolunteerId)
                 .filter(value -> !Strings.isNullOrEmpty(value))
@@ -1535,16 +1545,19 @@ final class UserGoalProposalBuilder {
     }
 
     private static String buildReplacementActionDetail(List<ReplacementPreviewPair> pairs) {
+        int totalCount = defaultList(pairs).size();
+        int shownLimit = totalCount <= ENTRY_PREVIEW_FULL_LIST_LIMIT
+                ? totalCount : ENTRY_PREVIEW_HEAD_COUNT;
         List<String> previews = defaultList(pairs).stream()
-                .limit(3)
+                .limit(shownLimit)
                 .map(UserGoalProposalBuilder::formatReplacementPreviewPair)
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toList());
-        String base = "预计替换 " + defaultList(pairs).size() + " 组。";
+        String base = "预计替换 " + totalCount + " 组。";
         if (previews.isEmpty()) {
             return base;
         }
-        int remainingCount = defaultList(pairs).size() - previews.size();
+        int remainingCount = totalCount - previews.size();
         String suffix = remainingCount > 0 ? "；另有 " + remainingCount + " 组未展开" : "";
         return base + " 具体预览：" + String.join("；", previews) + suffix + "。";
     }
@@ -1701,6 +1714,197 @@ final class UserGoalProposalBuilder {
         List<String> shown = labels.stream().limit(3).collect(Collectors.toList());
         String text = String.join("、", shown);
         return labels.size() > shown.size() ? text + " 等 " + labels.size() + " 个" : text;
+    }
+
+    /**
+     * 详情里的具体条目预览（2026-10-16 口径）：≤5 条全列；>5 条只列前 3 条并注明
+     * “另有 N−3 组未展开”——沿用替换预览的“具体预览”风格。名字缺失的条目不出现在预览里。
+     */
+    private static String appendEntryPreviewDetail(String baseDetail, List<String> entryLabels) {
+        List<String> labels = defaultList(entryLabels).stream()
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList());
+        if (labels.isEmpty()) {
+            return baseDetail;
+        }
+        int shownCount = labels.size() <= ENTRY_PREVIEW_FULL_LIST_LIMIT
+                ? labels.size() : ENTRY_PREVIEW_HEAD_COUNT;
+        String suffix = labels.size() > shownCount
+                ? "；另有 " + (labels.size() - shownCount) + " 组未展开" : "";
+        return Strings.nullToEmpty(baseDetail).trim() + " 具体预览："
+                + String.join("；", labels.subList(0, shownCount)) + suffix + "。";
+    }
+
+    /** 移出条目标签=「院校-专业（档位）」；拿不到名字时退回 ID（绝不编造）。 */
+    private static String formatPlanVolunteerEntryLabel(PlanVolunteer volunteer) {
+        if (volunteer == null) {
+            return "";
+        }
+        String label = buildSchoolMajorLabel(volunteer.getSchoolName(), volunteer.getMajorName());
+        if (Strings.isNullOrEmpty(label)) {
+            label = firstNonEmpty(volunteer.getUnitId(), volunteer.getVolunteerId());
+        }
+        return label + formatEntryTags(volunteer.getCandidate() == null
+                ? null : volunteer.getCandidate().getTier());
+    }
+
+    /** 补入条目标签=「院校-专业（档位/省）」；拿不到名字时退回 ID（绝不编造）。 */
+    private static String formatCandidateEntryLabel(CandidateItemDTO candidate) {
+        if (candidate == null) {
+            return "";
+        }
+        String label = buildSchoolMajorLabel(candidate.getSchoolName(), candidate.getMajorName());
+        if (Strings.isNullOrEmpty(label)) {
+            label = firstNonEmpty(
+                    RepairCandidateSelector.resolveInitialRecommendationUnitId(candidate),
+                    candidate.getVolunteerId());
+        }
+        return label + formatEntryTags(candidate.getTier(), candidate.getProvinceName());
+    }
+
+    private static String formatEntryTags(String... values) {
+        String tags = Lists.newArrayList(values).stream()
+                .map(value -> Strings.nullToEmpty(value).trim())
+                .filter(value -> !value.isEmpty())
+                .collect(Collectors.joining("/"));
+        return tags.isEmpty() ? "" : "（" + tags + "）";
+    }
+
+    /** 移出明细：按移除 ID 顺序取可读名（组模式按组去重）。 */
+    private static List<String> planEntryLabels(List<PlanVolunteer> current,
+                                                boolean majorGroupMode,
+                                                List<String> removeVolunteerIds,
+                                                List<String> removeUnitIds) {
+        Map<String, PlanVolunteer> byVolunteerId = new LinkedHashMap<String, PlanVolunteer>();
+        Map<String, PlanVolunteer> byUnitId = new LinkedHashMap<String, PlanVolunteer>();
+        for (PlanVolunteer volunteer : defaultList(current)) {
+            if (volunteer == null) {
+                continue;
+            }
+            if (!Strings.isNullOrEmpty(volunteer.getVolunteerId())) {
+                byVolunteerId.putIfAbsent(volunteer.getVolunteerId(), volunteer);
+            }
+            String unitId = planUnitKey(volunteer);
+            if (!Strings.isNullOrEmpty(unitId)) {
+                byUnitId.putIfAbsent(unitId, volunteer);
+            }
+        }
+        List<String> labels = Lists.newArrayList();
+        Set<String> seenKeys = new LinkedHashSet<String>();
+        if (majorGroupMode) {
+            for (String unitId : defaultList(removeUnitIds)) {
+                if (Strings.isNullOrEmpty(unitId) || !seenKeys.add(unitId)) {
+                    continue;
+                }
+                addPlanEntryLabel(labels, byUnitId.get(unitId));
+            }
+        }
+        for (String volunteerId : defaultList(removeVolunteerIds)) {
+            PlanVolunteer volunteer = byVolunteerId.get(volunteerId);
+            String key = majorGroupMode ? planUnitKey(volunteer) : volunteerId;
+            if (Strings.isNullOrEmpty(key) || !seenKeys.add(key)) {
+                continue;
+            }
+            addPlanEntryLabel(labels, volunteer);
+        }
+        if (!majorGroupMode && labels.isEmpty()) {
+            for (String unitId : defaultList(removeUnitIds)) {
+                if (Strings.isNullOrEmpty(unitId) || !seenKeys.add(unitId)) {
+                    continue;
+                }
+                addPlanEntryLabel(labels, byUnitId.get(unitId));
+            }
+        }
+        return labels;
+    }
+
+    /** 移出明细（给定条目列表，组模式按组去重）。 */
+    private static List<String> planEntryLabels(List<PlanVolunteer> volunteers, boolean majorGroupMode) {
+        List<String> labels = Lists.newArrayList();
+        Set<String> seenKeys = new LinkedHashSet<String>();
+        for (PlanVolunteer volunteer : defaultList(volunteers)) {
+            if (volunteer == null) {
+                continue;
+            }
+            String key = majorGroupMode ? planUnitKey(volunteer) : volunteer.getVolunteerId();
+            if (Strings.isNullOrEmpty(key) || !seenKeys.add(key)) {
+                continue;
+            }
+            addPlanEntryLabel(labels, volunteer);
+        }
+        return labels;
+    }
+
+    private static void addPlanEntryLabel(List<String> labels, PlanVolunteer volunteer) {
+        String label = formatPlanVolunteerEntryLabel(volunteer);
+        if (!Strings.isNullOrEmpty(label)) {
+            labels.add(label);
+        }
+    }
+
+    /** 补入明细：按候选 ID 顺序取可读名（组模式按组去重，取该组代表候选）。 */
+    private static List<String> candidateEntryLabels(List<CandidateItemDTO> candidates,
+                                                     boolean majorGroupMode,
+                                                     List<String> candidateVolunteerIds,
+                                                     List<String> candidateUnitIds) {
+        Map<String, CandidateItemDTO> byVolunteerId = new LinkedHashMap<String, CandidateItemDTO>();
+        for (CandidateItemDTO candidate : defaultList(candidates)) {
+            if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
+                byVolunteerId.putIfAbsent(candidate.getVolunteerId(), candidate);
+            }
+        }
+        List<String> labels = Lists.newArrayList();
+        Set<String> seenKeys = new LinkedHashSet<String>();
+        if (majorGroupMode) {
+            for (String unitId : defaultList(candidateUnitIds)) {
+                if (Strings.isNullOrEmpty(unitId) || !seenKeys.add(unitId)) {
+                    continue;
+                }
+                addCandidateEntryLabel(labels, firstCandidateOfUnit(candidates, unitId));
+            }
+        }
+        for (String volunteerId : defaultList(candidateVolunteerIds)) {
+            CandidateItemDTO candidate = byVolunteerId.get(volunteerId);
+            String key = majorGroupMode ? candidateUnitKey(candidate) : volunteerId;
+            if (Strings.isNullOrEmpty(key) || !seenKeys.add(key)) {
+                continue;
+            }
+            addCandidateEntryLabel(labels, candidate);
+        }
+        return labels;
+    }
+
+    /** 补入明细（给定候选列表，组模式按组去重）。 */
+    private static List<String> candidateEntryLabels(List<CandidateItemDTO> candidates, boolean majorGroupMode) {
+        List<String> labels = Lists.newArrayList();
+        Set<String> seenKeys = new LinkedHashSet<String>();
+        for (CandidateItemDTO candidate : defaultList(candidates)) {
+            if (candidate == null) {
+                continue;
+            }
+            String key = majorGroupMode ? candidateUnitKey(candidate) : candidate.getVolunteerId();
+            if (Strings.isNullOrEmpty(key) || !seenKeys.add(key)) {
+                continue;
+            }
+            addCandidateEntryLabel(labels, candidate);
+        }
+        return labels;
+    }
+
+    private static CandidateItemDTO firstCandidateOfUnit(List<CandidateItemDTO> candidates, String unitId) {
+        for (CandidateItemDTO candidate : defaultList(candidates)) {
+            if (candidate != null && unitId.equals(candidateUnitKey(candidate))) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static void addCandidateEntryLabel(List<String> labels, CandidateItemDTO candidate) {
+        String label = formatCandidateEntryLabel(candidate);
+        if (!Strings.isNullOrEmpty(label)) {
+            labels.add(label);
+        }
     }
 
     private static String formatChangeSummary(CandidateItemDTO from, CandidateItemDTO to) {
