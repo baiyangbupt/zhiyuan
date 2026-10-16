@@ -16,6 +16,7 @@ import java.util.Map;
 @Slf4j
 @Service
 public class VolunteerIntervalService {
+    public static final String UNKNOWN_INTERVAL = "未知";
 
     /**
      * 区间划分主方法
@@ -40,6 +41,7 @@ public class VolunteerIntervalService {
      */
     private Map<String, List<VolunteerSchoolGroup>> assignToIntervals(List<VolunteerSchoolGroup> schoolGroups, boolean useNineIntervals) {
         Map<String, List<VolunteerSchoolGroup>> intervals = new HashMap<>();
+        intervals.put(UNKNOWN_INTERVAL, new ArrayList<>());
 
         if (useNineIntervals) {
             // 初始化9个小区间
@@ -51,31 +53,29 @@ public class VolunteerIntervalService {
             // 按院校录取率分配到9个小区间
             for (VolunteerSchoolGroup schoolGroup : schoolGroups) {
                 Double ratio = schoolGroup.getSchoolEnrollRatio();
-                if (ratio == null) {
-                    intervals.get("保3").add(schoolGroup); // 默认放到保3
+                if (ratio == null || !Double.isFinite(ratio) || ratio < 0 || ratio > 100) {
+                    intervals.get(UNKNOWN_INTERVAL).add(schoolGroup);
                     continue;
                 }
 
-                if (ratio >= 1 && ratio <= 10) {
+                if (ratio <= 10) {
                     intervals.get("冲1").add(schoolGroup);
-                } else if (ratio >= 11 && ratio <= 34) {
+                } else if (ratio <= 34) {
                     intervals.get("冲2").add(schoolGroup);
-                } else if (ratio >= 35 && ratio <= 50) {
+                } else if (ratio <= 50) {
                     intervals.get("冲3").add(schoolGroup);
-                } else if (ratio >= 51 && ratio <= 56) {
+                } else if (ratio <= 56) {
                     intervals.get("稳1").add(schoolGroup);
-                } else if (ratio >= 57 && ratio <= 62) {
+                } else if (ratio <= 62) {
                     intervals.get("稳2").add(schoolGroup);
-                } else if (ratio >= 63 && ratio <= 70) {
+                } else if (ratio <= 70) {
                     intervals.get("稳3").add(schoolGroup);
-                } else if (ratio >= 71 && ratio <= 86) {
+                } else if (ratio <= 86) {
                     intervals.get("保1").add(schoolGroup);
-                } else if (ratio >= 87 && ratio <= 98) {
+                } else if (ratio <= 98) {
                     intervals.get("保2").add(schoolGroup);
-                } else if (ratio >= 99 && ratio <= 100) {
-                    intervals.get("保3").add(schoolGroup);
                 } else {
-                    intervals.get("保3").add(schoolGroup); // 默认放到保3
+                    intervals.get("保3").add(schoolGroup);
                 }
             }
         } else {
@@ -88,19 +88,17 @@ public class VolunteerIntervalService {
             // 按院校录取率分配到3个大区间
             for (VolunteerSchoolGroup schoolGroup : schoolGroups) {
                 Double ratio = schoolGroup.getSchoolEnrollRatio();
-                if (ratio == null) {
-                    intervals.get("保").add(schoolGroup); // 默认放到保
+                if (ratio == null || !Double.isFinite(ratio) || ratio < 0 || ratio > 100) {
+                    intervals.get(UNKNOWN_INTERVAL).add(schoolGroup);
                     continue;
                 }
 
-                if (ratio >= 1 && ratio <= 50) {
+                if (ratio <= 50) {
                     intervals.get("冲").add(schoolGroup);
-                } else if (ratio >= 51 && ratio <= 70) {
+                } else if (ratio <= 70) {
                     intervals.get("稳").add(schoolGroup);
-                } else if (ratio >= 71 && ratio <= 100) {
-                    intervals.get("保").add(schoolGroup);
                 } else {
-                    intervals.get("保").add(schoolGroup); // 默认放到保
+                    intervals.get("保").add(schoolGroup);
                 }
             }
         }

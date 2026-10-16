@@ -106,6 +106,7 @@ public class VolunteerSorterAndMerger {
         try {
             // 创建所有请求的CompletableFuture列表
             List<CompletableFuture<Map.Entry<String, List<VolunteerSchoolGroup>>>> futures = intervalResult.entrySet().stream()
+                .filter(entry -> !VolunteerIntervalService.UNKNOWN_INTERVAL.equals(entry.getKey()))
                 .map(entry -> CompletableFuture.<Map.Entry<String, List<VolunteerSchoolGroup>>>supplyAsync(() -> {
                     String intervalType = entry.getKey();
                     List<VolunteerSchoolGroup> subGroups = entry.getValue();
