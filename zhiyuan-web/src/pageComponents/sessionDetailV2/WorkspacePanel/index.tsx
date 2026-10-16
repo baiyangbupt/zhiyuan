@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Collapse, Dropdown, Empty, InputNumber, Modal, Spin, Tag, Tooltip, message } from 'antd';
+import { Alert, Button, Checkbox, Collapse, Dropdown, Empty, InputNumber, Modal, Spin, Tag, Tooltip, message } from 'antd';
 import {
   PlusOutlined,
   VerticalAlignTopOutlined,
@@ -667,6 +667,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [workingPlanActionVolunteerId, setWorkingPlanActionVolunteerId] = useState<string | null>(null);
   const [workingPlanActionGroupKey, setWorkingPlanActionGroupKey] = useState<string | null>(null);
   const [orderedActionKey, setOrderedActionKey] = useState<string | null>(null);
+  // 方案列表批量删除的选中项（只存 volunteerId；渲染时按当前方案过滤，条目变化后自动失效）
+  const [selectedPlanVolunteerIds, setSelectedPlanVolunteerIds] = useState<string[]>([]);
   const [exportLoading, setExportLoading] = useState(false);
   const [activeView, setActiveView] = useState<WorkspaceView>(initialActiveView);
   const [draftExpanded, setDraftExpanded] = useState(false);
@@ -782,6 +784,20 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   );
   const isCandidateSelected = (candidate?: PlanningCandidateItem) =>
     buildCandidateIdentityKeys(candidate).some(key => selectedCandidateIdentitySet.has(key));
+  // 批量删除：按当前方案条目过滤选中项，条目被移除/切换会话后选中态自动失效
+  const orderedVolunteerIds = orderedItems
+    .map(item => item.volunteerId)
+    .filter((volunteerId): volunteerId is string => Boolean(volunteerId));
+  const selectedPlanVolunteerIdSet = useMemo(
+    () => new Set(selectedPlanVolunteerIds),
+    [selectedPlanVolunteerIds]
+  );
+  const selectedPlanVolunteerIdList = orderedVolunteerIds.filter(volunteerId =>
+    selectedPlanVolunteerIdSet.has(volunteerId)
+  );
+  const selectedPlanCount = selectedPlanVolunteerIdList.length;
+  const allPlanSelected = orderedVolunteerIds.length > 0 && selectedPlanCount === orderedVolunteerIds.length;
+  const planSelectionIndeterminate = selectedPlanCount > 0 && !allPlanSelected;
   const volunteerModel = planningState?.candidatePoolState?.volunteerModel || '';
   const candidateTotalPages = Math.max(
     1,
@@ -2066,6 +2082,62 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       setWorkingPlanActionGroupKey(null);
       setActionLoading(null);
     }
+  };
+
+  const togglePlanItemSelected = (volunteerId?: string, checked?: boolean) => {
+    if (!volunteerId) {
+      return;
+    }
+    setSelectedPlanVolunteerIds(prev => {
+      if (checked) {
+        return prev.includes(volunteerId) ? prev : [...prev, volunteerId];
+      }
+      return prev.filter(id => id !== volunteerId);
+    });
+  };
+
+  const toggleSelectAllPlanItems = (checked: boolean) => {
+    setSelectedPlanVolunteerIds(checked ? orderedVolunteerIds : []);
+  };
+
+  // 批量删除：一次 POST 复用 working-plan/remove（volunteerIds 批量），删完清空选中并刷新工作区
+  const handleRemoveSelectedPlanItems = () => {
+    const volunteerIds = selectedPlanVolunteerIdList;
+    if (!volunteerIds.length || actionLoading) {
+      return;
+    }
+    Modal.confirm({
+      title: `确定删除所选 ${volunteerIds.length} 条志愿？`,
+      content: `将删除 ${volunteerIds.length} 条，删除后可在候选区重新添加。`,
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setActionLoading('workingPlan');
+        try {
+          const { data, code } = await removePlanningWorkingPlanItemsApi(
+            routerParams.tenantId,
+            routerParams.chatSessionId,
+            volunteerIds
+          );
+          if (code === 0) {
+            message.success(`已删除 ${volunteerIds.length} 条志愿`);
+            setSelectedPlanVolunteerIds([]);
+            if (data) {
+              applyPlanningState(data);
+            } else {
+              await fetchWorkspaceState();
+            }
+          } else {
+            message.error('批量删除失败');
+          }
+        } catch (error) {
+          message.error('批量删除异常，请稍后重试');
+        } finally {
+          setActionLoading(null);
+        }
+      },
+    });
   };
 
   const applyMoveOrderedItem = async (
@@ -5854,6 +5926,25 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                       >
                         导出
                       </Button>
+                      <Checkbox
+                        className={style.planSelectAllCheckbox}
+                        checked={allPlanSelected}
+                        indeterminate={planSelectionIndeterminate}
+                        disabled={Boolean(actionLoading)}
+                        onChange={event => toggleSelectAllPlanItems(event.target.checked)}
+                      >
+                        全选
+                      </Checkbox>
+                      <Button
+                        className={`${style.reviewActionButton} ${style.planBatchDeleteButton}`}
+                        size="small"
+                        danger
+                        icon={<DeleteOutlined />}
+                        disabled={selectedPlanCount === 0 || Boolean(actionLoading)}
+                        onClick={handleRemoveSelectedPlanItems}
+                      >
+                        {`批量删除（已选 ${selectedPlanCount}）`}
+                      </Button>
                     </div>
                   </div>
                   <div className={style.orderedList}>
@@ -6084,6 +6175,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       {renderOrderedMajorTable(
                                         (
                                           <>
+                                            <Checkbox
+                                              className={style.planRowSelectCheckbox}
+                                              checked={selectedPlanVolunteerIdSet.has(item.volunteerId || '')}
+                                              disabled={!item.volunteerId || Boolean(actionLoading)}
+                                              onChange={event =>
+                                                togglePlanItemSelected(item.volunteerId, event.target.checked)
+                                              }
+                                              aria-label="选择该志愿"
+                                            />
                                             <span className={style.orderedMajorIndex}>#{itemIndex + 1}</span>
                                             {renderMajorName(item.majorName)}
                                           </>
@@ -6208,6 +6308,21 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 <div className={style.positionBadge}>{index + 1}</div>
                                 <div className={style.orderedContent}>
                                   <div className={`${style.cardTitleRow} ${style.groupTitleRow} ${style.orderedTitleRow}`}>
+                                    <span
+                                      className={style.planRowSelectWrapper}
+                                      onClick={event => event.stopPropagation()}
+                                      onKeyDown={event => event.stopPropagation()}
+                                    >
+                                      <Checkbox
+                                        className={style.planRowSelectCheckbox}
+                                        checked={selectedPlanVolunteerIdSet.has(item.volunteerId || '')}
+                                        disabled={!item.volunteerId || Boolean(actionLoading)}
+                                        onChange={event =>
+                                          togglePlanItemSelected(item.volunteerId, event.target.checked)
+                                        }
+                                        aria-label="选择该志愿"
+                                      />
+                                    </span>
                                     <div className={style.cardTitle}>
                                       {index + 1}、{item.schoolName}
                                     </div>

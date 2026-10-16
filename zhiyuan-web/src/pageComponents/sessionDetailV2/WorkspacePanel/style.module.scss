@@ -170,6 +170,17 @@
   gap: 8px;
 }
 
+.planRowSelectWrapper {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.planRowSelectCheckbox {
+  flex: none;
+  margin-inline: 0;
+}
+
 .orderedGroupActions {
   flex-shrink: 0;
 }
@@ -1311,6 +1322,17 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.planSelectAllCheckbox {
+  flex: none;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #7b5d52;
+}
+
+.planBatchDeleteButton {
+  flex: none;
 }
 
 .reviewAlertButton {
@@ -2661,6 +2683,10 @@
       flex: 1 1 0;
       min-width: 0;
       padding-inline: 6px;
+    }
+
+    .planBatchDeleteButton {
+      flex: 1 1 100%;
     }
 
     .orderedMain {
