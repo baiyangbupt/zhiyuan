@@ -34,6 +34,15 @@ public class ChatSessionExtraDataConstants {
     public static final String PLANNING_STATE_KEY = "planningState";
 
     /**
+     * 候选池大文档key（池状态瘦身·切片1，2026-10-16 review §五-54）。
+     *
+     * <p>planningState 行只留"瘦池"（meta+summary，不含 items）+ poolRef{len,md5}；
+     * items 等完整池内容拆到这里（同表新 data_key、零 DDL）。读闸口在
+     * {@code PlanningStateService#loadPlanningState*} 里回填，对外 JSON 与 /session/state 形状不变。</p>
+     */
+    public static final String PLANNING_CANDIDATE_POOL_KEY = "planningCandidatePool";
+
+    /**
      * 对话中暂存的方案编辑意向key
      */
     public static final String PLAN_EDIT_CACHE_KEY = "planEditCache";

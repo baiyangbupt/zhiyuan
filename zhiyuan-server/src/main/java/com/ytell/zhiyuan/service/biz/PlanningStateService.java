@@ -30,9 +30,13 @@ import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -197,6 +201,27 @@ public class PlanningStateService {
 
     @Autowired
     private ConversationProposalRequestService conversationProposalRequestService;
+
+    /**
+     * 候选池瘦身·切片1 开关（2026-10-16 review §五-54）：candidatePoolState 是否拆到独立 data_key。
+     *
+     * <p>true（Spring 运行时默认，{@code planning.candidate-pool.split.enabled}）=拆分写：
+     * 池行 CAS 在前、小行（瘦池+poolRef）在后；false=回内联（回滚位）：整文档单行写，
+     * 与拆分前逐字节同语义。**注意：拆后不可用旧 jar 直退**（旧 jar 读不懂瘦池，会把 items 当空）。</p>
+     *
+     * <p>字段初值 false 是给单测夹具的（不注 Spring 时保持 legacy 单行路径，既有 mock 关卡不失效）；
+     * Spring 环境由 @Value 注入覆盖。</p>
+     */
+    @Value("${planning.candidate-pool.split.enabled:true}")
+    private boolean candidatePoolSplitEnabled = false;
+
+    /**
+     * 事务管理器（拆分写"同事务"兜底）：池行与小行两次 CAS 要么同提交、要么（小行输时）
+     * 池行同事务补偿还原。调用方已开事务（如 {@code removeDraftItems}）就加入；没有就本方法开事务。
+     * 单测用 new 构造（无 Spring）时为 null → 直连执行，由替身存储把关。
+     */
+    @Autowired(required = false)
+    private PlatformTransactionManager transactionManager;
 
     public PlanningStateDTO getPlanningState(Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
@@ -5770,6 +5795,8 @@ public class PlanningStateService {
                 ? new PlanningStateDTO()
                 : JSONObject.parseObject(extraData.getDataValue(), PlanningStateDTO.class);
         normalizePlanningStateDefaults(chatSessionId, state);
+        // 拆分态读闸口：poolRef 存在则从池行回填 items（legacy 内联非空=内联优先，双读）
+        backfillCandidatePoolFromSplitRow(chatSessionId, state);
         // 写路径 CAS 的基线：手里这份就是"读到的那串"（只读入口没有懒导入/补写，不刷新）
         state.setBaselineDataValue(extraData == null ? null : extraData.getDataValue());
         return state;
@@ -5803,6 +5830,9 @@ public class PlanningStateService {
         }
         state.setBaselineDataValue(baselineDataValue);
         normalizePlanningStateDefaults(chatSessionId, state);
+        // 拆分态读闸口（池瘦身切片1）：poolRef 存在则从池行回填 items + 池行基线；
+        // legacy 内联非空=内联优先（双读），拆分交给下一次写路径懒迁移
+        backfillCandidatePoolFromSplitRow(chatSessionId, state);
         backfillLegacyProfileState(chatSessionId, state);
         boolean planEditCacheNoticeAdded = appendPlanEditCacheNotice(chatSessionId, state);
         boolean dataFreshnessBackfilled = backfillDataFreshnessState(chatSessionId, state);
@@ -5813,6 +5843,53 @@ public class PlanningStateService {
             savePlanningStateIfUnchanged(chatSessionId, rowRef, state, "read_backfill");
         }
         return state;
+    }
+
+    /**
+     * 拆分态读闸口（池瘦身切片1，review §五-54）：**poolRef 存在**则把候选池大文档
+     * （{@code planningCandidatePool} 行）里的 items 等完整内容回填进内存态——下游 ≈40 个读点
+     * 零改动，对外 JSON 与 /session/state 形状不变。
+     *
+     * <p>双读语义：**内联 items 非空 = legacy 优先**（旧格式照读；回滚窗口内联写、旧 jar 写回
+     * 均落这里），不读池行、不回填。拆分是懒的：legacy 行直到下一次写路径 save 才迁移。</p>
+     *
+     * <p>回填同时把池行基线（id/version/data_value）带上——写路径"先 CAS 池行再写小行"用它。
+     * 池行缺失（ref 在、行没了）属运维级异常：响亮 WARN 后降级保留瘦池（宁可少 items 也不把
+     * 读接口打挂），修复（人工/迁移）后下次读自愈。</p>
+     */
+    private void backfillCandidatePoolFromSplitRow(Long chatSessionId, PlanningStateDTO state) {
+        if (state == null) {
+            return;
+        }
+        CandidatePoolStateDTO inlinePool = state.getCandidatePoolState();
+        if (inlinePool != null && inlinePool.getItems() != null && !inlinePool.getItems().isEmpty()) {
+            // legacy 内联（含回滚窗口的内联写）：内联优先，双读，不碰池行
+            return;
+        }
+        if (state.getCandidatePoolRef() == null) {
+            // 从未拆分（含空池新会话）：本行就是全部，不必读池行
+            return;
+        }
+        ChatSessionExtraData poolRow = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                chatSessionId, ChatSessionExtraDataConstants.PLANNING_CANDIDATE_POOL_KEY);
+        if (poolRow == null || Strings.isNullOrEmpty(poolRow.getDataValue())) {
+            log.warn("candidatePoolSplit backfill skipped chatSessionId={} reason=pool_row_missing", chatSessionId);
+            return;
+        }
+        CandidatePoolStateDTO fullPool;
+        try {
+            fullPool = JSONObject.parseObject(poolRow.getDataValue(), CandidatePoolStateDTO.class);
+        } catch (Exception ex) {
+            log.warn("candidatePoolSplit backfill parse failed chatSessionId={}", chatSessionId, ex);
+            return;
+        }
+        if (fullPool == null) {
+            return;
+        }
+        state.setCandidatePoolState(fullPool);
+        state.setBaselinePoolRowId(poolRow.getId());
+        state.setBaselinePoolDataVersion(poolRow.getDataVersion());
+        state.setBaselinePoolDataValue(poolRow.getDataValue());
     }
 
     /**
@@ -5899,6 +5976,10 @@ public class PlanningStateService {
 
     /**
      * 读路径补写的 CAS 落盘：库里那行仍是我们读到的快照才整文档写回，否则放弃（不覆盖并发写）。
+     *
+     * <p>池瘦身切片1：拆分态的补写（{@code candidatePoolRef != null}）**CAS 扩到池行**——
+     * 先池行（变更才写）、再小行（瘦池+poolRef）；池行被并发改了就整体不写（补写幂等，下次读重放）。
+     * 读路径不做懒迁移（{@code allowPoolRowCreate=false}：不首建池行，legacy 内联照旧整文档写）。</p>
      */
     private boolean savePlanningStateIfUnchanged(Long chatSessionId,
                                                  ChatSessionExtraData rowRef,
@@ -5908,6 +5989,9 @@ public class PlanningStateService {
             log.warn("planningStateCasSave skipped chatSessionId={} scene={} reason=row_ref_missing",
                     chatSessionId, scene);
             return false;
+        }
+        if (candidatePoolSplitEnabled && state.getCandidatePoolRef() != null) {
+            return savePlanningStateIfUnchangedSplit(chatSessionId, rowRef, state, scene);
         }
         String dataValue = JSONObject.toJSONString(state);
         boolean updated = chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
@@ -5920,6 +6004,44 @@ public class PlanningStateService {
             state.setBaselineDataValue(dataValue);
         }
         return updated;
+    }
+
+    /** 读回填补写的拆分态版：先 CAS 池行、再写小行；小行输则补偿池行（同事务，见 saveSplitPlanningState）。 */
+    private boolean savePlanningStateIfUnchangedSplit(Long chatSessionId,
+                                                      ChatSessionExtraData rowRef,
+                                                      PlanningStateDTO state,
+                                                      String scene) {
+        Boolean updated;
+        if (transactionManager == null || TransactionSynchronizationManager.isActualTransactionActive()) {
+            updated = doSavePlanningStateIfUnchangedSplit(chatSessionId, rowRef, state, scene);
+        } else {
+            updated = new TransactionTemplate(transactionManager)
+                    .execute(status -> doSavePlanningStateIfUnchangedSplit(chatSessionId, rowRef, state, scene));
+        }
+        return Boolean.TRUE.equals(updated);
+    }
+
+    private boolean doSavePlanningStateIfUnchangedSplit(Long chatSessionId,
+                                                        ChatSessionExtraData rowRef,
+                                                        PlanningStateDTO state,
+                                                        String scene) {
+        PoolRowWrite poolWrite = new PoolRowWrite();
+        if (!persistCandidatePoolRowIfChanged(chatSessionId, state, scene, poolWrite, false)) {
+            log.info("planningStateCasSave skipped chatSessionId={} scene={} reason=pool_row_changed_under_us",
+                    chatSessionId, scene);
+            return false;
+        }
+        String dataValue = serializePlanningStateRowValue(state);
+        boolean updated = chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                rowRef, rowRef.getDataValue(), dataValue);
+        if (!updated) {
+            log.info("planningStateCasSave skipped chatSessionId={} scene={} reason=row_changed_under_us",
+                    chatSessionId, scene);
+            rollbackPoolRowWrite(chatSessionId, state, scene, poolWrite);
+            return false;
+        }
+        state.setBaselineDataValue(dataValue);
+        return true;
     }
 
     /** 懒导入落盘结果：row=库里那行（后续 CAS 的基准）；winnerState=并发赢家那份（null=自己写的为准）。 */
@@ -7914,13 +8036,80 @@ public class PlanningStateService {
      * <p>任何情况下都不再"拿内存整文档无条件 updateById 最新行"——那正是 D1⑧ 钉住的丢失并发写
      * 的形状。赢的一方把 {@code baselineDataValue} 刷成刚写进去的那串，后续写接着 CAS。</p>
      *
+     * <p><b>池瘦身切片1（review §五-54）</b>：{@code planning.candidate-pool.split.enabled=true}（默认）时
+     * 走 {@link #saveSplitPlanningState}——同事务先 CAS 池行（{@code planningCandidatePool}，变更才写）、
+     * 再写小行（瘦池+poolRef）；=false 时逐字节回落本方法的旧行为（内联整文档，回滚位）。</p>
+     *
      * @return true=这次落盘成功（我们赢）；false=没落盘（基线过期/无基线且行里有别人的值），
      *         调用方必须按站点策略处置——绝不静默当成功
      */
     private boolean savePlanningState(Long chatSessionId, PlanningStateDTO state, String scene) {
+        if (candidatePoolSplitEnabled) {
+            return saveSplitPlanningState(chatSessionId, state, scene, true);
+        }
+        return savePlanningStateInline(chatSessionId, state, scene);
+    }
+
+    /** legacy 内联落盘（回滚开关 OFF，也是既有单测夹具的默认路径）：整文档（含 items）单行写。 */
+    private boolean savePlanningStateInline(Long chatSessionId, PlanningStateDTO state, String scene) {
         String dataValue = JSONObject.toJSONString(state);
         ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
                 chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        return writePlanningStateRow(chatSessionId, state, extraData, state.getBaselineDataValue(), dataValue, scene);
+    }
+
+    /**
+     * 拆分态落盘（池瘦身切片1）：**同事务先 CAS 池行、再写小行**（瘦池+poolRef{len,md5}）。
+     *
+     * <p>顺序与原子性：池行变更才写（内容与基线逐字节相等就整个跳过——"画像写/加锁/导出不再重写
+     * 38MB"靠它）；池行输=整体不写（小行不动，调用方重读重放）；小行输=把池行**同事务补偿还原**
+     * （还原/删除），不留下"池行变了、小行没变"的错位。两次写用 TransactionTemplate 兜"同事务"：
+     * 调用方（站点 @Transactional，如 removeDraftItems）已有事务就加入，没有就这里开。</p>
+     *
+     * @param allowPoolRowCreate 写路径=true（legacy 内联首次写=懒迁移：建池行）；只读回填路径=false
+     *                           （读不做迁移，拆分推给下一次写）
+     */
+    private boolean saveSplitPlanningState(Long chatSessionId,
+                                           PlanningStateDTO state,
+                                           String scene,
+                                           boolean allowPoolRowCreate) {
+        if (transactionManager == null || TransactionSynchronizationManager.isActualTransactionActive()) {
+            return doSaveSplitPlanningState(chatSessionId, state, scene, allowPoolRowCreate);
+        }
+        Boolean saved = new TransactionTemplate(transactionManager)
+                .execute(status -> doSaveSplitPlanningState(chatSessionId, state, scene, allowPoolRowCreate));
+        return Boolean.TRUE.equals(saved);
+    }
+
+    private boolean doSaveSplitPlanningState(Long chatSessionId,
+                                             PlanningStateDTO state,
+                                             String scene,
+                                             boolean allowPoolRowCreate) {
+        PoolRowWrite poolWrite = new PoolRowWrite();
+        if (!persistCandidatePoolRowIfChanged(chatSessionId, state, scene, poolWrite, allowPoolRowCreate)) {
+            // 池行 CAS/首建输：整体不写（小行不动）——调用方重读重放，重放会以最新池行基线再来
+            return false;
+        }
+        ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        String dataValue = serializePlanningStateRowValue(state);
+        boolean saved = writePlanningStateRow(chatSessionId, state, extraData, state.getBaselineDataValue(), dataValue, scene);
+        if (!saved) {
+            rollbackPoolRowWrite(chatSessionId, state, scene, poolWrite);
+        }
+        return saved;
+    }
+
+    /**
+     * 小行（planningState）落盘三分支（H2 语义原样抽取）：INSERT / 空壳补值 / 有基线 CAS。
+     * 拆分与内联路径共用；{@code dataValue} 由调用方决定是"整文档"还是"瘦池+poolRef"。
+     */
+    private boolean writePlanningStateRow(Long chatSessionId,
+                                          PlanningStateDTO state,
+                                          ChatSessionExtraData extraData,
+                                          String baselineDataValue,
+                                          String dataValue,
+                                          String scene) {
         if (extraData == null) {
             ChatSessionExtraData entity = new ChatSessionExtraData();
             entity.setChatSessionId(chatSessionId);
@@ -7941,7 +8130,6 @@ public class PlanningStateService {
                 return handleInsertRace(chatSessionId, state, dataValue, scene, duplicate);
             }
         }
-        String baselineDataValue = state.getBaselineDataValue();
         if (extraData.getDataValue() == null && baselineDataValue == null) {
             // 空壳行补值（历史行 data_value 为 NULL）：期望值 null → IS NULL 分支，同样是 CAS
             boolean filled = chatSessionExtraDataSharedService.updateDataValueIfUnchanged(extraData, null, dataValue);
@@ -7965,6 +8153,257 @@ public class PlanningStateService {
             logWriteCasSkipped(chatSessionId, scene, "row_changed_under_us");
         }
         return updated;
+    }
+
+    /**
+     * 拆分写第一步：池行（{@code planningCandidatePool}）**变更才写**的 CAS/首建。
+     *
+     * <p>返回 true=可以继续写小行（池行已就位，或本就无需动）；false=池行 CAS/首建输（整体不写）。
+     * 变更判定=当前池序列化串与基线**逐字节相等**（相等则整个跳过：一次 38MB 重写省的正是这里）。</p>
+     *
+     * <p>读闸口保证：{@code candidatePoolRef != null} 的拆分态必有池行基线；基线未知只有两种来路——
+     * ①legacy 内联态首次写（懒迁移，写路径才有；读回填路径 {@code allowPoolRowCreate=false} 不做）；
+     * ②拆分态但池行在加载时缺失（降级，响亮 WARN 后跳过池行处理）。</p>
+     */
+    private boolean persistCandidatePoolRowIfChanged(Long chatSessionId,
+                                                     PlanningStateDTO state,
+                                                     String scene,
+                                                     PoolRowWrite result,
+                                                     boolean allowPoolRowCreate) {
+        result.capture(state);
+        CandidatePoolStateDTO pool = state.getCandidatePoolState();
+        boolean hasItems = pool != null && pool.getItems() != null && !pool.getItems().isEmpty();
+        String newPoolValue = pool == null ? null : JSONObject.toJSONString(pool);
+        String baseline = state.getBaselinePoolDataValue();
+
+        if (state.getCandidatePoolRef() == null) {
+            // 非拆分态两种来路：①空池/新会话（小行本身就是瘦形状，不值得首建池行）；
+            // ②legacy 内联待懒迁移。空池与只读回填路径都保持现状（懒迁移只在写路径发生）。
+            if (!hasItems || !allowPoolRowCreate) {
+                return true;
+            }
+            ChatSessionExtraData poolRow = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                    chatSessionId, ChatSessionExtraDataConstants.PLANNING_CANDIDATE_POOL_KEY);
+            if (poolRow == null) {
+                return insertCandidatePoolRow(chatSessionId, state, scene, result, newPoolValue);
+            }
+            return casCandidatePoolRow(chatSessionId, state, scene, result,
+                    poolRow, poolRow.getDataValue(), newPoolValue);
+        }
+
+        // 拆分态（ref != null）：
+        if (baseline == null) {
+            if (!hasItems) {
+                // 降级（ref 在、池行加载时缺失、手里是瘦池）：写回会把池内容抹掉 → 不碰池行
+                log.warn("candidatePoolSplit pool row skip chatSessionId={} scene={} reason=pool_baseline_missing",
+                        chatSessionId, scene);
+                return true;
+            }
+            // 基线丢了但手里有 items（手工构造/降级窗口）：读一次池行拿基线；拿不到就保持现状
+            ChatSessionExtraData poolRow = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                    chatSessionId, ChatSessionExtraDataConstants.PLANNING_CANDIDATE_POOL_KEY);
+            if (poolRow == null || poolRow.getDataValue() == null) {
+                log.warn("candidatePoolSplit pool row skip chatSessionId={} scene={} reason=pool_row_missing",
+                        chatSessionId, scene);
+                return true;
+            }
+            return casCandidatePoolRow(chatSessionId, state, scene, result,
+                    poolRow, poolRow.getDataValue(), newPoolValue);
+        }
+        if (newPoolValue != null && newPoolValue.equals(baseline)) {
+            // 池真内容没变：整个跳过池行写（这是"其余 15 处写不再重写 38MB"的判定点）
+            return true;
+        }
+        ChatSessionExtraData poolRow = new ChatSessionExtraData();
+        poolRow.setId(state.getBaselinePoolRowId());
+        poolRow.setChatSessionId(chatSessionId);
+        poolRow.setDataKey(ChatSessionExtraDataConstants.PLANNING_CANDIDATE_POOL_KEY);
+        poolRow.setDataVersion(state.getBaselinePoolDataVersion());
+        return casCandidatePoolRow(chatSessionId, state, scene, result, poolRow, baseline, newPoolValue);
+    }
+
+    /** 池行首建（有唯一键兜底：并发首建输的一方不覆盖，整体不写，调用方重放）。 */
+    private boolean insertCandidatePoolRow(Long chatSessionId,
+                                           PlanningStateDTO state,
+                                           String scene,
+                                           PoolRowWrite result,
+                                           String newPoolValue) {
+        ChatSessionExtraData entity = new ChatSessionExtraData();
+        entity.setChatSessionId(chatSessionId);
+        entity.setDataKey(ChatSessionExtraDataConstants.PLANNING_CANDIDATE_POOL_KEY);
+        entity.setDataType(DataType.JSON_OBJECT);
+        entity.setDataVersion(0);
+        entity.setDataValue(newPoolValue);
+        try {
+            chatSessionExtraDataSharedService.save(entity);
+        } catch (DuplicateKeyException duplicate) {
+            logWriteCasSkipped(chatSessionId, scene, "pool_row_written_by_other");
+            return false;
+        }
+        result.recordCreated(entity, newPoolValue);
+        state.setBaselinePoolRowId(entity.getId());
+        state.setBaselinePoolDataVersion(entity.getDataVersion());
+        state.setBaselinePoolDataValue(newPoolValue);
+        state.setCandidatePoolRef(buildCandidatePoolRef(newPoolValue));
+        return true;
+    }
+
+    /** 池行 CAS：库里仍是 {@code previousValue} 才写；赢则刷新基线+poolRef，输返回 false（整体不写）。 */
+    private boolean casCandidatePoolRow(Long chatSessionId,
+                                        PlanningStateDTO state,
+                                        String scene,
+                                        PoolRowWrite result,
+                                        ChatSessionExtraData poolRow,
+                                        String previousValue,
+                                        String newPoolValue) {
+        ChatSessionExtraData rowRef = new ChatSessionExtraData();
+        rowRef.setId(poolRow.getId());
+        rowRef.setChatSessionId(poolRow.getChatSessionId() == null ? chatSessionId : poolRow.getChatSessionId());
+        rowRef.setDataKey(ChatSessionExtraDataConstants.PLANNING_CANDIDATE_POOL_KEY);
+        rowRef.setDataVersion(poolRow.getDataVersion());
+        boolean updated = chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                rowRef, previousValue, newPoolValue);
+        if (!updated) {
+            logWriteCasSkipped(chatSessionId, scene, "pool_row_changed_under_us");
+            return false;
+        }
+        result.recordUpdated(rowRef, previousValue, newPoolValue);
+        state.setBaselinePoolRowId(rowRef.getId());
+        state.setBaselinePoolDataVersion(rowRef.getDataVersion());
+        state.setBaselinePoolDataValue(newPoolValue);
+        state.setCandidatePoolRef(buildCandidatePoolRef(newPoolValue));
+        return true;
+    }
+
+    /**
+     * 池行写补偿（"先池后小"的原子性兜底）：小行 CAS 输时把本次池行改动**原样还原**
+     * （改过的还原成旧值；本次首建的删除），并把内存基线退回写前那份。
+     *
+     * <p>补偿安全性：活动事务内池行只有我们能动（首次写 INSERT / CAS 命中都会加行锁直到提交，
+     * 未提交值对其他读者不可见）；无事务（单测替身/直连）时补偿的期望值=我们刚写的值，
+     * 拿不到说明有人并发动了池行——响亮 WARN（此时小行也没写，调用方重读重放自愈）。</p>
+     */
+    private void rollbackPoolRowWrite(Long chatSessionId,
+                                      PlanningStateDTO state,
+                                      String scene,
+                                      PoolRowWrite write) {
+        if (write == null || !write.active) {
+            return;
+        }
+        if (write.created) {
+            chatSessionExtraDataSharedService.removeById(write.row.getId());
+        } else {
+            boolean restored = chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                    write.row, write.writtenValue, write.previousValue);
+            if (!restored) {
+                log.warn("candidatePoolSplit pool rollback failed chatSessionId={} scene={} reason=pool_row_changed_under_compensation",
+                        chatSessionId, scene);
+            }
+        }
+        log.info("candidatePoolSplit pool rollback chatSessionId={} scene={} created={}", chatSessionId, scene, write.created);
+        state.setCandidatePoolRef(write.previousRef);
+        state.setBaselinePoolRowId(write.previousRowId);
+        state.setBaselinePoolDataVersion(write.previousRowVersion);
+        state.setBaselinePoolDataValue(write.previousBaselineValue);
+    }
+
+    /**
+     * 行内 JSON 序列化（拆分立/落两态一体）：拆分态=瘦池（去 items）+ poolRef 手工拼进行内 JSON
+     * （{@code candidatePoolRef} 的 {@code serialize=false} 同时保证导出等常规 fastjson 序列化不带它）；
+     * 非拆分态=整文档照写（形状与拆分前一致）。序列化期间临时换瘦池、finally 换回**同引用**——
+     * 调用方手上/内存态始终是完整池。
+     */
+    private String serializePlanningStateRowValue(PlanningStateDTO state) {
+        CandidatePoolStateDTO pool = state.getCandidatePoolState();
+        CandidatePoolRefDTO ref = pool == null ? null : state.getCandidatePoolRef();
+        if (ref == null) {
+            return JSONObject.toJSONString(state);
+        }
+        state.setCandidatePoolState(buildSlimCandidatePool(pool));
+        try {
+            String json = JSONObject.toJSONString(state);
+            // ref 只含数字与十六进制串，手工拼接无需转义（单测有回读钉子：parseObject 能拿回 ref）
+            return "{\"candidatePoolRef\":{\"len\":" + ref.getLen()
+                    + ",\"md5\":\"" + ref.getMd5() + "\"}," + json.substring(1);
+        } finally {
+            state.setCandidatePoolState(pool);
+        }
+    }
+
+    /**
+     * 瘦池（PS:419 既有形状）：meta+summary 照抄、items 去掉——items 是 32.9MB 的大头，拆到池行；
+     * planningState 行只留这份 + poolRef{len,md5}。items 置 null（fastjson 默认省略 null 键），
+     * 反解方拿到默认空列表，"内联 items 非空"的 legacy 判定不受影响。
+     */
+    private CandidatePoolStateDTO buildSlimCandidatePool(CandidatePoolStateDTO pool) {
+        if (pool == null) {
+            return null;
+        }
+        CandidatePoolStateDTO slim = new CandidatePoolStateDTO();
+        slim.setGeneratedAt(pool.getGeneratedAt());
+        slim.setSourceVersion(pool.getSourceVersion());
+        slim.setStatusCode(pool.getStatusCode());
+        slim.setStatusMessage(pool.getStatusMessage());
+        slim.setRiskHints(pool.getRiskHints());
+        slim.setRequiredCount(pool.getRequiredCount());
+        slim.setRequiredTierCounts(pool.getRequiredTierCounts());
+        slim.setRequiredUnitCount(pool.getRequiredUnitCount());
+        slim.setRequiredMajorCount(pool.getRequiredMajorCount());
+        slim.setUserScore(pool.getUserScore());
+        slim.setBatchScore(pool.getBatchScore());
+        slim.setSourceProvinceName(pool.getSourceProvinceName());
+        slim.setVolunteerModel(pool.getVolunteerModel());
+        slim.setSourceSummary(pool.getSourceSummary());
+        slim.setSummary(pool.getSummary());
+        slim.setItems(null);
+        return slim;
+    }
+
+    /** poolRef{len,md5}：与 MySQL {@code LENGTH(data_value)}/{@code MD5(data_value)} 同口径（复用 ①② 的字节级实现）。 */
+    private CandidatePoolRefDTO buildCandidatePoolRef(String poolDataValue) {
+        CandidatePoolRefDTO ref = new CandidatePoolRefDTO();
+        byte[] bytes = poolDataValue.getBytes(StandardCharsets.UTF_8);
+        ref.setLen((long) bytes.length);
+        ref.setMd5(ChatSessionExtraDataSharedService.md5Hex(bytes));
+        return ref;
+    }
+
+    /**
+     * 池行写现场：补偿与内存基线还原所需的全部信息。{@link #capture} 在任何池行写之前调用
+     * （非拆分态第一次写也可能"读池行→CAS 到新值"，补偿要能退回"写前"那份）。
+     */
+    private static class PoolRowWrite {
+        private boolean active;
+        private boolean created;
+        private ChatSessionExtraData row;
+        private String previousValue;
+        private String writtenValue;
+        private CandidatePoolRefDTO previousRef;
+        private Long previousRowId;
+        private Integer previousRowVersion;
+        private String previousBaselineValue;
+
+        private void capture(PlanningStateDTO state) {
+            this.previousRef = state.getCandidatePoolRef();
+            this.previousRowId = state.getBaselinePoolRowId();
+            this.previousRowVersion = state.getBaselinePoolDataVersion();
+            this.previousBaselineValue = state.getBaselinePoolDataValue();
+        }
+
+        private void recordCreated(ChatSessionExtraData row, String writtenValue) {
+            this.active = true;
+            this.created = true;
+            this.row = row;
+            this.writtenValue = writtenValue;
+        }
+
+        private void recordUpdated(ChatSessionExtraData row, String previousValue, String writtenValue) {
+            this.active = true;
+            this.created = false;
+            this.row = row;
+            this.previousValue = previousValue;
+            this.writtenValue = writtenValue;
+        }
     }
 
     /**
@@ -8937,8 +9376,15 @@ public class PlanningStateService {
             }
             PlanningStateDTO latest = JSONObject.parseObject(row.getDataValue(), PlanningStateDTO.class);
             normalizePlanningStateDefaults(chatSessionId, latest);
+            latest.setBaselineDataValue(row.getDataValue());
+            // 拆分态：latest 是瘦池，先回填 items + 池行基线（overlay 不改池内容，池行不需要写；
+            // 回填同时保证 copyProperties 回调用方后，后续 saveWorkingPlanState 等不会拿"空池"去 CAS）
+            backfillCandidatePoolFromSplitRow(chatSessionId, latest);
             applyRecommendationOverlay(latest, overlayCandidatePoolState, latest.getVersion());
-            String newDataValue = JSONObject.toJSONString(latest);
+            // 拆分态经 serializePlanningStateRowValue（瘦池+poolRef 拼回），否则会把行写回成整文档
+            String newDataValue = candidatePoolSplitEnabled
+                    ? serializePlanningStateRowValue(latest)
+                    : JSONObject.toJSONString(latest);
             if (chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
                     row, row.getDataValue(), newDataValue)) {
                 // 调用方继续用最新内容（后续 saveWorkingPlanState 等才会带上并发写进来的草案/排序），

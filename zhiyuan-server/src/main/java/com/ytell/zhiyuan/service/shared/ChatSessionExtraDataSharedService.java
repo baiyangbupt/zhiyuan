@@ -132,8 +132,12 @@ public class ChatSessionExtraDataSharedService extends ServiceImpl<ChatSessionEx
         return this.update(patch, updateWrapper);
     }
 
-    /** 与 MySQL {@code MD5()} 对齐的小写十六进制（对列存储字节取摘要，见 {@link #updateDataValueIfUnchanged}）。 */
-    private static String md5Hex(byte[] bytes) {
+    /**
+     * 与 MySQL {@code MD5()} 对齐的小写十六进制（对列存储字节取摘要，见 {@link #updateDataValueIfUnchanged}）。
+     * 公开静态：池瘦身切片1（review §五-54）的 poolRef{len,md5} 复用同一实现，保证"Java 侧摘要 ==
+     * SQL 侧 MD5(data_value)"只有一处口径。
+     */
+    public static String md5Hex(byte[] bytes) {
         try {
             byte[] digest = MessageDigest.getInstance("MD5").digest(bytes);
             char[] hex = new char[digest.length * 2];

@@ -17,6 +17,12 @@ evidence:
     ttl-days: 30
 
 planning:
+  candidate-pool:
+    split:
+      # 池状态瘦身·切片1（2026-10-16 review §五-54）：true=候选池 items 拆到 planningCandidatePool
+      # 行（写路径先 CAS 池行再写瘦 planningState 行；读闸口回填，对外形状不变）。
+      # false=回内联（回滚位：整文档单行写，与拆分前同语义）。注意：拆后不可用旧 jar 直退。
+      enabled: true
   pending-command:
     retention:
       enabled: true

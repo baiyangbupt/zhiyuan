@@ -1,6 +1,7 @@
 package com.ytell.zhiyuan.model.dto.planning;
 
 import com.alibaba.fastjson.annotation.JSONField;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.common.collect.Lists;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -9,7 +10,7 @@ import java.util.List;
 
 @Data
 // 本工程 lombok 1.16.16（2017）：没有 @EqualsAndHashCode.Exclude 嵌套注解，用 exclude 字段名代替
-@EqualsAndHashCode(exclude = {"baselineDataValue"})
+@EqualsAndHashCode(exclude = {"baselineDataValue", "baselinePoolRowId", "baselinePoolDataVersion", "baselinePoolDataValue"})
 public class PlanningStateDTO {
     private Long sessionId;
     private Integer version = 0;
@@ -42,6 +43,36 @@ public class PlanningStateDTO {
      */
     @JSONField(serialize = false, deserialize = false)
     private String baselineDataValue;
+
+    /**
+     * 候选池大文档引用（池状态瘦身·切片1，2026-10-16 review §五-54）：非空=items 不在本行、
+     * 在 {@code planningCandidatePool} 行里（读闸口回填）。行内 JSON 由
+     * {@code PlanningStateService} 落盘时手工带上（{@code serialize=false} 保证任何常规
+     * fastjson 序列化——含导出——都不带它）；{@code deserialize} 照读，回填判定用它。
+     * Jackson {@code @JsonIgnore}：/session/state 对外 JSON 形状不变。
+     */
+    @JSONField(serialize = false, deserialize = true)
+    @JsonIgnore
+    private CandidatePoolRefDTO candidatePoolRef;
+
+    /**
+     * 池行（{@code planningCandidatePool}）写路径 CAS 的基线三件套：与 {@link #baselineDataValue}
+     * 同义，但作用于池行（行 id/data_version/data_value）。同样不参与 JSON（内存态专用）。
+     * 拆分行加载时由读闸口回填；旧内联行（legacy）不带，首次拆分写时按"池行未知"处理（读一次池行）。
+     */
+    // 三个新基线字段同样 @JsonIgnore：/session/state 是 Jackson 序列化，漏一个就会把池行
+    // 整串 data_value（38MB 级）带进 API 响应——对外形状必须与拆分前一致。
+    @JSONField(serialize = false, deserialize = false)
+    @JsonIgnore
+    private Long baselinePoolRowId;
+
+    @JSONField(serialize = false, deserialize = false)
+    @JsonIgnore
+    private Integer baselinePoolDataVersion;
+
+    @JSONField(serialize = false, deserialize = false)
+    @JsonIgnore
+    private String baselinePoolDataValue;
 
     /**
      * Backward-compatible alias for persisted 3.0.x planning state and older agent/frontend callers.
