@@ -807,7 +807,9 @@ _ARTIFACT_REF_REPAIR_HINT = (
     "当前工作区一致的那份，就**原样照抄**它的 artifactId/artifactType/stateVersion；"
     "②手头没有有效引用（例如工作区版本已经推进、旧产物过期）时，**允许调用只读工具重新"
     "获取**，把工具结果里新签发的产物 id 原样填进 artifactRefs（推荐类输出必须带引用，"
-    "不能留空）。仍不确定时，如实向用户说明当前没有可引用的产物，不要编造。"
+    "不能留空）。**关键：引用列表里只要还留着一条旧版本引用，整份输出仍会被拒**——"
+    "先把所有版本与当前工作区不一致的旧引用**删掉**，只保留本回合重新签发的；"
+    "只补新的、不删旧的等于没修。仍不确定时，如实向用户说明当前没有可引用的产物，不要编造。"
 )
 
 # 先给一次修复回合、修不好再维持硬失败的校验码 → 对应的修复提示（一次、不循环）。
@@ -823,12 +825,18 @@ _REPAIR_HINT_BY_CODE = {
     "artifact_scope_violation": _ARTIFACT_REF_REPAIR_HINT,
     "artifact_not_found": _ARTIFACT_REF_REPAIR_HINT,
     "artifact_mismatch": _ARTIFACT_REF_REPAIR_HINT,
+    # 2026-10-17 真事故（10041984 "继续"回合）：模型同时引用了旧产物（v1）和本回合
+    # 新签发的产物（v5）——新引用没能抵消旧引用，整轮被判 stale_state 硬失败。
+    # stale_state 与 artifact_mismatch 是同一族（版本对不上），必须允许重签/删旧。
+    "stale_state": _ARTIFACT_REF_REPAIR_HINT,
 }
 _REPAIRABLE_CONTRACT_CODES = frozenset(_REPAIR_HINT_BY_CODE)
 # 修复回合**允许重调工具**、修完必须重建账本的码：只有产物引用这一族（重签发的产物
 # 只会进"按最新载荷重建"的账本；证据侧的提示写死了"不要编造/重查走核验回路"，
 # 维持原样不重建，见 `_repair_priority_rule_count` 的同款说明）。
-_LEDGER_REBUILD_REPAIR_CODES = frozenset({"artifact_scope_violation", "artifact_not_found", "artifact_mismatch"})
+_LEDGER_REBUILD_REPAIR_CODES = frozenset({
+    "artifact_scope_violation", "artifact_not_found", "artifact_mismatch", "stale_state",
+})
 
 
 def _agent_message_text(item: Any) -> str | None:

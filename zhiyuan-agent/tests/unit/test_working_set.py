@@ -128,6 +128,31 @@ def test_working_set_invalidates_candidates_when_stage_changes() -> None:
     assert working_set.candidate_scope_version == 8
 
 
+def test_working_set_drops_stale_artifact_refs_when_version_advances() -> None:
+    """2026-10-17 真事故：工作集把 v1 旧产物一直摆在模型面前，模型在新回合（v5）
+    里把它和新产物一起抄进 artifactRefs → stale_state。快照版本推进后旧引用应被淘汰。"""
+    working_set = ConversationWorkingSet.from_snapshot(
+        ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")
+    )
+    working_set.artifact_refs = [
+        {"artifactId": "old", "artifactType": "candidate", "stateVersion": 6},
+        {"artifactId": "cur", "artifactType": "candidate", "stateVersion": 7},
+        {"artifactId": "future", "artifactType": "candidate", "stateVersion": 8},
+        {"artifactId": "no-version", "artifactType": "candidate"},
+        {"artifactId": "alias", "artifactType": "candidate", "state_version": 8},
+    ]
+
+    working_set.reconcile_snapshot(
+        ConversationTurnSnapshot(snapshotVersion=8, sessionId="s1")
+    )
+
+    assert [item["artifactId"] for item in working_set.artifact_refs] == [
+        "future",
+        "no-version",
+        "alias",
+    ]
+
+
 def test_working_set_context_text_explicitly_names_candidates_and_ids() -> None:
     working_set = ConversationWorkingSet.from_snapshot(
         ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")

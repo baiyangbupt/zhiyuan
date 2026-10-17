@@ -180,9 +180,11 @@ class RepairHarness(Harness):
         self.outputs = list(outputs)
         self.before_repair = before_repair
         self.calls = 0
+        self.prompts = []
 
-    async def start_turn_and_collect(self, *args, **kwargs):
+    async def start_turn_and_collect(self, thread_id, input_items, *args, **kwargs):
         self.calls += 1
+        self.prompts.append(input_items)
         if self.calls == 2 and self.before_repair is not None:
             self.before_repair()
         return SimpleNamespace(
@@ -217,6 +219,45 @@ async def test_non_artifact_repairs_reload_only_genuinely_issued_new_references(
         assert result.get("output") is None
         assert gateway.message_store.answers == []
     assert gateway.codex.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_artifact_ref_is_repairable_by_dropping_the_old_ref(tmp_path):
+    """2026-10-17 真事故（10041984 "继续"回合）：模型同时引用旧产物（v1）和新产物（v5）。
+
+    新引用不能抵消旧引用——整轮仍被判 `stale_state`。这里钉住修复路径：stale_state
+    可修、修复提示要求**删掉旧引用**、修复后只保留本回合有效的引用。
+    """
+    store = SqliteArtifactStore(str(tmp_path / "shared.sqlite3"))
+    old = store.issue(
+        tenant_id="tenant-1", session_id="session-1", thread_id="thread-before-restart",
+        artifact_type="candidate", state_version=41,
+        tool_name="recommendation.preview_candidates",
+        arguments={"old": 1}, payload={"items": [{"schoolId": "school-old"}]},
+    )
+    fresh = _issue(store)
+
+    def _ref(record):
+        return {key: record[key] for key in ("artifactId", "artifactType", "stateVersion")}
+
+    initial = {
+        "responseType": "recommendation",
+        "message": "候选",
+        "artifactRefs": [_ref(old), _ref(fresh)],
+    }
+    gateway = _gateway(store, initial)
+    gateway.codex = RepairHarness([initial, _citation(fresh)])
+
+    result = await _turn(gateway, "stale-turn")
+
+    assert result.get("error") is None, result
+    assert result["output"]["artifactRefs"] == [_ref(fresh)]
+    assert gateway.codex.calls == 2
+    prompt = "\n".join(
+        str(item.get("text", "")) for item in gateway.codex.prompts[1] if isinstance(item, dict)
+    )
+    assert "删掉" in prompt
+    assert "只补新的、不删旧的等于没修" in prompt
 
 
 @pytest.mark.asyncio

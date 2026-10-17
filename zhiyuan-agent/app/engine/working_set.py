@@ -87,6 +87,17 @@ class ConversationWorkingSet:
         if stage_changed or mode_changed:
             self.candidate_entities = []
             self.candidate_source_turn_id = None
+        # 2026-10-17 真事故（10041984）：工作集把上一回合的旧产物引用（v1）一直
+        # 摆在模型面前，模型在本回合（v5）里把它和新产物一起抄进 artifactRefs，
+        # 收尾被判 stale_state。**产物引用不是对话记忆**：版本推进后旧引用已作废，
+        # 不该继续出现在工作集里。按版本淘汰（只保留 >= 当前快照版本的；缺版本
+        # 的保持 fail-open，交给收尾校验）。
+        kept_artifacts: list[dict[str, Any]] = []
+        for reference in self.artifact_refs:
+            version = _reference_version(reference)
+            if version is None or version >= snapshot.snapshot_version:
+                kept_artifacts.append(reference)
+        self.artifact_refs = kept_artifacts
         self.snapshot_version = snapshot.snapshot_version
         self.snapshot = snapshot.model_dump(by_alias=True)
         self.confirmed_constraints = dict(snapshot.confirmed_constraints)
@@ -195,6 +206,19 @@ class ConversationWorkingSet:
             "结构化状态："
             + json.dumps(self.as_payload(), ensure_ascii=False)
         )
+
+
+def _reference_version(reference: Any) -> int | None:
+    """产物引用的 stateVersion（别名兼容）；缺失/非法返回 None（fail-open）。"""
+    if not isinstance(reference, dict):
+        return None
+    raw = reference.get("stateVersion", reference.get("state_version"))
+    if raw in (None, "") or isinstance(raw, bool):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _walk_mappings(value: Any) -> list[dict[str, Any]]:
