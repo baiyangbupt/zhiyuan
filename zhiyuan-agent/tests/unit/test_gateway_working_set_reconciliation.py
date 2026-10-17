@@ -261,6 +261,10 @@ async def test_fact_refresh_preserves_candidates_and_source_turn_in_model_contex
     assert context["lastResponseType"] == "text"
     assert result["workingSet"]["candidateEntities"] == context["candidateEntities"]
     assert result["workingSet"]["lastTurnId"] == "second"
+    context_text = codex.turns[1][1]["text"]
+    assert "当前候选学校：甲大学（ID=school-1）" in context_text
+    assert "不要说看不到候选" in context_text
+    assert "当前工作集未保留候选对象" not in context_text
 
 
 @pytest.mark.asyncio
@@ -291,3 +295,27 @@ async def test_snapshot_scope_change_still_invalidates_previous_candidates(
     assert context["candidateSet"]["sourceTurnId"] is None
     assert context["candidateSet"]["scopeVersion"] == 8
     assert result["workingSet"]["candidateEntities"] == []
+    context_text = codex.turns[1][1]["text"]
+    assert "不要说看不到候选" not in context_text
+    assert "当前工作集未保留候选对象" in context_text
+    assert "不代表线程历史中从未出现候选" in context_text
+    assert "重新查询不等于恢复上一批候选" in context_text
+
+
+@pytest.mark.asyncio
+async def test_cold_turn_injects_history_aware_missing_candidate_guidance() -> None:
+    codex = RecordingCodex()
+    gateway = _gateway(_workspace(), codex)
+
+    result = await _turn(gateway, "first")
+
+    context_text = codex.turns[0][1]["text"]
+    context = _model_payload(codex, turn_index=0)
+    assert context["candidateEntities"] == []
+    assert context["candidateSet"]["sourceTurnId"] is None
+    assert result["workingSet"]["candidateEntities"] == []
+    assert "不要说看不到候选" not in context_text
+    assert "优先使用可用历史中的明确对象和可靠来源解析指代" in context_text
+    assert "仅当本轮请求依赖候选且仍无法解析时" in context_text
+    assert "澄清缺失条件，或使用已获准的只读查询" in context_text
+    assert "重新查询不等于恢复上一批候选" in context_text

@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from app.engine.working_set import ConversationWorkingSet
 from app.gateway.contracts import ConversationTurnSnapshot, TurnOutput
 
@@ -149,3 +153,124 @@ def test_working_set_context_text_exposes_confirmed_query_scope() -> None:
     )
 
     assert "已确认历史查询参数：areaId=330000, majorId=major-cs" in working_set.as_context_text()
+
+
+def test_empty_candidate_context_does_not_forbid_acknowledging_missing_objects() -> None:
+    working_set = ConversationWorkingSet.from_snapshot(
+        ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")
+    )
+
+    text = working_set.as_context_text()
+
+    assert "不要说看不到候选" not in text
+    assert "当前候选学校：当前工作集未保留候选对象" in text
+    assert "当前没有已确认候选" not in text
+
+
+def test_empty_candidate_context_preserves_available_history_as_a_reference_source() -> None:
+    working_set = ConversationWorkingSet.from_snapshot(
+        ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")
+    )
+
+    text = working_set.as_context_text()
+
+    assert "不代表线程历史中从未出现候选" in text
+    assert "优先使用可用历史中的明确对象和可靠来源解析指代" in text
+    assert "不要编造候选或对象 ID" in text
+
+
+def test_empty_candidate_context_limits_clarification_and_requery_to_unresolved_requests() -> None:
+    working_set = ConversationWorkingSet.from_snapshot(
+        ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")
+    )
+
+    text = working_set.as_context_text()
+
+    assert "仅当本轮请求依赖候选且仍无法解析时" in text
+    assert "澄清缺失条件，或使用已获准的只读查询" in text
+    assert "重新查询不等于恢复上一批候选" in text
+    assert "当前条件下的新结果" in text
+
+
+@pytest.mark.parametrize("has_candidates", [False, True], ids=["empty", "known"])
+def test_candidate_guidance_preserves_query_scope_and_structured_context(
+    has_candidates: bool,
+) -> None:
+    working_set = ConversationWorkingSet.from_snapshot(
+        ConversationTurnSnapshot(
+            snapshotVersion=7,
+            sessionId="s1",
+            planningStage="candidate_exploration",
+            confirmedConstraints={"historyQuery": {"areaId": "330000", "majorId": "major-cs"}},
+        )
+    )
+    if has_candidates:
+        working_set.ingest_payload(
+            {"resolvedEntities": [{"entityId": "school-1", "name": "甲大学"}]},
+            turn_id="turn-1",
+        )
+
+    text = working_set.as_context_text()
+    payload = json.loads(text.split("结构化状态：", 1)[1])
+
+    assert "已确认历史查询参数：areaId=330000, majorId=major-cs" in text
+    assert "仍必须向用户询问缺失的省份、科类、批次、专业等参数" in text
+    assert payload["snapshotVersion"] == 7
+    assert payload["sessionId"] == "s1"
+    assert payload["confirmedConstraints"] == {
+        "historyQuery": {"areaId": "330000", "majorId": "major-cs"}
+    }
+    assert payload["candidateEntities"] == (
+        [{"entityId": "school-1", "name": "甲大学"}] if has_candidates else []
+    )
+    assert payload["candidateSet"] == {
+        "scopeVersion": 7,
+        "planningStage": "candidate_exploration",
+        "sourceTurnId": "turn-1" if has_candidates else None,
+        "items": [{"entityId": "school-1", "name": "甲大学"}] if has_candidates else [],
+    }
+
+
+def test_candidate_context_keeps_rolling_entities_from_multiple_turns() -> None:
+    working_set = ConversationWorkingSet.from_snapshot(
+        ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")
+    )
+    working_set.ingest_payload(
+        {"resolvedEntities": [{"entityId": "school-1", "name": "甲大学"}]},
+        turn_id="turn-1",
+    )
+    working_set.ingest_payload(
+        {"resolvedEntities": [{"entityId": "school-2", "name": "乙大学"}]},
+        turn_id="turn-2",
+    )
+
+    text = working_set.as_context_text()
+    payload = json.loads(text.split("结构化状态：", 1)[1])
+
+    assert "当前候选学校：甲大学（ID=school-1）、乙大学（ID=school-2）" in text
+    assert "不要说看不到候选" in text
+    assert payload["candidateSet"]["items"] == [
+        {"entityId": "school-1", "name": "甲大学"},
+        {"entityId": "school-2", "name": "乙大学"},
+    ]
+    assert payload["candidateSet"]["sourceTurnId"] == "turn-2"
+
+
+@pytest.mark.parametrize("result_key", ["items", "candidates"])
+def test_empty_tool_result_keeps_known_candidate_context_and_source(result_key: str) -> None:
+    working_set = ConversationWorkingSet.from_snapshot(
+        ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")
+    )
+    working_set.ingest_payload(
+        {"resolvedEntities": [{"entityId": "school-1", "name": "甲大学"}]},
+        turn_id="turn-1",
+    )
+
+    working_set.ingest_payload({"data": {result_key: []}}, turn_id="turn-2")
+    text = working_set.as_context_text()
+    payload = json.loads(text.split("结构化状态：", 1)[1])
+
+    assert "当前候选学校：甲大学（ID=school-1）" in text
+    assert "不要说看不到候选" in text
+    assert payload["candidateSet"]["items"] == [{"entityId": "school-1", "name": "甲大学"}]
+    assert payload["candidateSet"]["sourceTurnId"] == "turn-1"

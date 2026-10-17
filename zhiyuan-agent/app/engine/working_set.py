@@ -168,7 +168,16 @@ class ConversationWorkingSet:
         candidate_text = "、".join(
             f"{item.get('name') or item.get('entityId')}（ID={item.get('entityId')}）"
             for item in candidates
-        ) or "当前没有已确认候选"
+        ) or "当前工作集未保留候选对象"
+        candidate_guidance = (
+            "如果用户使用‘那几个学校’‘这几个’等指代，优先从候选集合恢复对象；"
+            "不要说看不到候选，也不要编造候选。\n"
+            if candidates
+            else "当前工作集未保留候选对象，不代表线程历史中从未出现候选；"
+            "优先使用可用历史中的明确对象和可靠来源解析指代，不要编造候选或对象 ID。"
+            "仅当本轮请求依赖候选且仍无法解析时，澄清缺失条件，或使用已获准的只读查询；"
+            "重新查询不等于恢复上一批候选，应说明这是当前条件下的新结果。\n"
+        )
         query_scope = self.confirmed_constraints.get("historyQuery")
         query_scope_text = ""
         if isinstance(query_scope, dict) and query_scope:
@@ -179,9 +188,8 @@ class ConversationWorkingSet:
         return (
             "【志愿填报业务上下文】\n"
             "以下内容是当前会话已确认的业务状态，不是用户新问题。"
-            "如果用户使用‘那几个学校’‘这几个’等指代，优先从候选集合恢复对象；"
-            "不要说看不到候选，也不要编造候选。\n"
-            f"当前候选学校：{candidate_text}\n"
+            + candidate_guidance
+            + f"当前候选学校：{candidate_text}\n"
             + query_scope_text
             + "\n如需查询历史分数，仍必须向用户询问缺失的省份、科类、批次、专业等参数。\n"
             "结构化状态："
