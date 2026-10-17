@@ -28,6 +28,7 @@ import useAuthParams from '@/hooks/useAuthParams';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import {
   createConversationState,
+  orderedSteps,
   pendingClarifications,
   reduceConversation,
 } from '@/utils/conversationSession.mjs';
@@ -1692,7 +1693,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   // 不许认领 ✗，否则历史那条会被它"占位成空" ✗（消息静默消失 ✓ 事故）。
   const renderableTurns = (Object.values(conversationState.turns || {}) as any[]).filter(turn => {
     if (!turn || !turn.id) return false; // 空回合（老信封双发）不渲染，状态照旧保留 ✓
-    const steps = Object.values(turn.steps || {}) as any[];
+    const steps = orderedSteps(turn) as any[];
     const pending = pendingClarifications(turn);
     const streamText = extractStreamMessage(turn.answerStream);
     return (
@@ -1804,7 +1805,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   // `assistant-stream` / `assistant-final` / `turn-error` / `turn-stop` ✓）；现在由统一的
   // `timelineItems` 在各自"位次"上调用 ✓——历史气泡与回合块同屏交替 ✓，回合内取值不受影响 ✓。
   const renderTurnBlock = (turn: any) => {
-    const steps = Object.values(turn.steps || {}) as any[];
+    const steps = orderedSteps(turn) as any[];
     const pending = pendingClarifications(turn);
     // 流式文本**只取 message 字段里的人话** ✓✓（2026-10-07 用户实测：
     // 原始 TurnOutput JSON 碎片直接铺在闪烁卡下面是观感事故 ✗）——
@@ -1855,6 +1856,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                 {steps.map(step => (
                   <div key={step.itemId} data-testid="turn-progress-step" data-status={step.status}>
                     {step.label || step.tool}
+                    {step.count > 1 ? ` ×${step.count}` : ''}
                   </div>
                 ))}
               </div>

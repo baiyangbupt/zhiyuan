@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   createConversationState,
   hasStructuredUnderstanding,
+  orderedSteps,
   pendingClarifications,
   reduceConversation,
 } from './conversationSession.mjs';
@@ -421,4 +422,61 @@ test('失败结果的 code/message 与终态一起留在回合里', () => {
   assert.equal(reduced.turns.t.actionResult.actionStatus, 'failed');
   assert.equal(reduced.turns.t.actionResult.code, '110');
   assert.equal(reduced.turns.t.actionResult.message, '成绩校验未通过：缺少数学');
+});
+
+test('连续的同工具同标签进度合并为一条并带次数', () => {
+  // 2026-10-17 真事故：一个续接回合 15 次「核对选科要求」逐行铺开刷屏。
+  // 合并只发生在**连续**段内；中间夹了别的工具就断开。
+  let state = baseline();
+  const push = (sequence, itemId, label, tool = 'admission.check_eligibility') =>
+    reduceConversation(
+      state,
+      event({
+        sequence,
+        type: 'tool.progress',
+        payload: { itemId, tool, status: 'completed', label },
+      }),
+    );
+
+  state = push(1, 'a', '核对选科要求');
+  state = push(2, 'b', '核对选科要求');
+  state = push(3, 'c', '核对选科要求');
+  state = push(4, 'd', '检索专业', 'catalog.search_majors');
+  state = push(5, 'e', '核对选科要求');
+
+  const steps = orderedSteps(state.turns.t);
+  assert.equal(steps.length, 3);
+  assert.equal(steps[0].label, '核对选科要求');
+  assert.equal(steps[0].count, 3);
+  assert.equal(steps[1].label, '检索专业');
+  assert.equal(steps[1].count, 1);
+  assert.equal(steps[2].count, 1, '夹了别的工具就断开，不跨段合并');
+
+  // 同一 itemId 的 start/completed 在 reducer 里已经归并成一条，这里不会数成两次。
+  state = push(6, 'e', '核对选科要求');
+  assert.equal(orderedSteps(state.turns.t)[2].count, 1);
+});
+
+test('同工具不同标签不合并', () => {
+  let state = baseline();
+  state = reduceConversation(
+    state,
+    event({
+      sequence: 1,
+      type: 'tool.progress',
+      payload: { itemId: 'a', tool: 'admission.check_eligibility', status: 'completed', label: '核对选科要求' },
+    }),
+  );
+  state = reduceConversation(
+    state,
+    event({
+      sequence: 2,
+      type: 'tool.progress',
+      payload: { itemId: 'b', tool: 'admission.check_eligibility', status: 'completed', label: '核对再选科目' },
+    }),
+  );
+
+  const steps = orderedSteps(state.turns.t);
+  assert.equal(steps.length, 2);
+  assert.deepEqual(steps.map(step => step.count), [1, 1]);
 });

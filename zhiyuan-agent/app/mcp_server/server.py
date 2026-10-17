@@ -73,20 +73,25 @@ _COMMON_INPUT_PROPERTIES: dict[str, Any] = {
         "description": "科类编码，按省份口径：3+3 省份（如浙江）用 N；3+1+2 省份（如安徽/江苏）用 WL（物理类）/ LS（历史类）；不得跨省外推",
     },
     "stateVersion": {"type": "integer"},
-    # 同口径并列用：2–5 个**已确认**的实体（歧义要在进入对比之前解决掉）。
-    "entities": {
-        "type": "array",
-        "items": {
-            "type": "object",
-            "properties": {"schoolId": {"type": "string"}, "majorId": {"type": "string"}},
-            "additionalProperties": False,
-        },
-    },
     "dimensions": {"type": "array", "items": {"type": "string"}},
     "prepareType": {"type": "string", "enum": ["VOLUNTEER", "PREDICT"]},
     # 招生单位编号：`admission.get_enrollment_plan` 的必填项，来源是
     # `catalog.list_admission_units`（免分数）。
     "schoolUnitId": {"type": "string"},
+}
+
+# 同口径并列用：2–5 个**已确认**的实体（歧义要在进入对比之前解决掉）。
+# **只属于 `admission.compare`，不进公共属性**：以前它被塞给所有工具，模型据此
+# 对 `admission.check_eligibility` 发批量调用，而 handler 只认单条 `majorId`——
+# 整批报 "majorId is required" 后退化成逐条重试（2026-10-17：一个续接回合
+# 15 次资格核验）。schema 必须与 handler 同形：没有批量入口就别给批量参数。
+_ENTITIES_PROPERTY: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {"schoolId": {"type": "string"}, "majorId": {"type": "string"}},
+        "additionalProperties": False,
+    },
 }
 
 
@@ -224,9 +229,33 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "admission.get_history": _input_schema(
         "areaId", "batch", "schoolId", "year", "subjectType"
     ),
-    "admission.check_eligibility": _input_schema(),
+    # 选科资格：**一次只核一个专业**。handler 只读单条 `majorId`（Java 侧
+    # `majors["level3"]`），没有批量入口——schema 里就不该出现 `entities`，
+    # 否则模型会按"能批量"的想象发调用，失败后再逐条重试，放大成 N+1。
+    # 需要核多个时，先按选科组合去重、只核没核过的新专业（见
+    # `candidate-recommendation` 技能的单轮预算）。
+    "admission.check_eligibility": {
+        "type": "object",
+        "properties": {
+            **_COMMON_INPUT_PROPERTIES,
+            "majorId": {
+                "type": "string",
+                "description": (
+                    "单个专业的 level3 专业 id（一次只核一个，没有批量参数）；"
+                    "多专业先按选科组合去重，只核没有核过的新专业，禁止逐候选循环"
+                ),
+            },
+        },
+        "required": ["majorId"],
+        "additionalProperties": False,
+    },
     # 口径四项全部必填：缺一项就没法判断"能不能并排"，而那正是这个工具存在的理由。
-    "admission.compare": _input_schema("entities", "areaId", "batch", "year", "subjectType"),
+    "admission.compare": {
+        "type": "object",
+        "properties": {**_COMMON_INPUT_PROPERTIES, "entities": _ENTITIES_PROPERTY},
+        "required": ["entities", "areaId", "batch", "year", "subjectType"],
+        "additionalProperties": False,
+    },
     # 批次字典：`batch` 的合法取值只能从这里来（按省份不同）。
     "catalog.list_batches": _input_schema("areaId"),
     # 补录编码表：省份必填（批次码/科目码都是**按省份**的）。`subjectType` 可选，

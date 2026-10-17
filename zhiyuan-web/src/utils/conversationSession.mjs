@@ -54,7 +54,10 @@ const applyToTurn = (state, event) => {
     case 'tool.progress': {
       // 工具进度按 itemId 归并：同一个 item 的 start/completed 是两条事件，
       // 覆盖成一条步骤，而不是在数组里堆两条。
+      // `order` 记**首次出现**的事件序号：展示时靠它判断"连续"，从而把
+      // 同工具同标签的一串调用（如 15 次选科核验）折叠成一条 ×N。
       const itemId = payload.itemId || `step-${event.sequence}`;
+      const priorStep = prior.steps[itemId];
       const steps = {
         ...prior.steps,
         [itemId]: {
@@ -62,6 +65,7 @@ const applyToTurn = (state, event) => {
           tool: payload.tool || 'domain',
           status: payload.status || 'started',
           label: payload.label || '',
+          order: priorStep ? priorStep.order : event.sequence,
         },
       };
       return mergeTurn(state, turnId, { steps });
@@ -240,6 +244,37 @@ export const hasStructuredUnderstanding = payload => {
 
 export const orderedTurns = state =>
   Object.values(state.turns).sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+
+/**
+ * 工具进度**展示序列**：同一工具、同一标签的**连续**步骤合并成一条，带 `count`。
+ *
+ * 2026-10-17 真事故：一个续接回合做了 15 次 `admission.check_eligibility`，
+ * 页面上就是 15 行"核对选科要求"（用户看到的"约 20 次调用"）。这些调用本身
+ * 是合法的（不同专业），但**逐行铺开**只是噪音——合并成一条 `×15` 既保留
+ * "做了多少次"的事实，又不占满屏幕。
+ *
+ * 只合并**连续**的：中间夹了别的工具就断开，顺序信息来自 reducer 记的 `order`
+ * （`steps` 是对象，数字型 itemId 的遍历顺序不可靠）。
+ * 同一 itemId 的 start/completed 仍由 reducer 归并，不会在这里重复计数。
+ */
+export const orderedSteps = turn => {
+  const steps = Object.values((turn && turn.steps) || {})
+    .filter(step => step && typeof step === 'object')
+    .sort((a, b) => (a.order || 0) - (b.order || 0));
+  const merged = [];
+  for (const step of steps) {
+    const tool = step.tool || 'domain';
+    const label = step.label || '';
+    const last = merged[merged.length - 1];
+    if (last && last.tool === tool && last.label === label) {
+      last.count += 1;
+      last.status = step.status;
+      continue;
+    }
+    merged.push({ ...step, tool, label, count: 1 });
+  }
+  return merged;
+};
 
 export const pendingClarifications = turn =>
   Object.values((turn && turn.clarifications) || {}).filter(item => item.status === 'pending');
