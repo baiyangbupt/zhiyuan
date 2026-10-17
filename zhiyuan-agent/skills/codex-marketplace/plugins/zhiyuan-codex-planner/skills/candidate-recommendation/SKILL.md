@@ -24,6 +24,19 @@ version: 1.0.0
 - 存在硬约束冲突、实体歧义、资格未知或数据不可比时，不输出候选。
 - 用户要求直接写入方案时，先输出只读候选并转入 Proposal/CAS，不自行 apply。
 
+## 点名加入 ≠ 覆盖要求（2026-10-17 硬规则）
+
+- 用户点名**具体院校 + 专业**并说“加入 / 加进 / 放进 / 补进方案”，且这些条目还不在当前
+  方案里：这是**加入动作**，交给确认链路的
+  `preview_plan_action(action="add", targets=["学校.专业", ...])`——它会从候选池按名字解析
+  并生成加入预览。
+- **不要**用 `preview_intent_change(constraint_type="must_have")` /
+  `must_include_scope` 做点名加入：该路径只在**方案已有条目**里校验“必须包含”，
+  条目不在方案里会以 `user_goal_target_not_found` 整单退回（2026-10-17 实测：六条
+  点名加入被拒）。
+- 只有“方案里必须保留 / 不能删 / 必须有某类”且**不要求立即加入具体条目**时，才用
+  must_have / must_include_scope。
+
 ## 前置状态
 
 - 已取得当前 Snapshot 和最新 `stateVersion`。

@@ -47,6 +47,16 @@ version: 1.0.0
 
 ## 约束强度映射（意向措辞 → requirement 强度）
 
+**点名加入 ≠ 覆盖要求（2026-10-17 硬规则）**：用户点名**具体院校 + 专业**并说
+“加入 / 加进 / 放进 / 补进方案”，且这些条目还不在当前方案里——这是**加入动作**，
+交给确认链路的 `preview_plan_action(action="add", targets=["学校.专业", ...])`
+（从候选池按名字解析并生成加入预览）。**不要**做成
+`preview_intent_change(constraint_type="must_have")` / `must_include_scope`：
+那条路径只在**方案已有条目**里校验“必须包含”，条目不在方案里会以
+`user_goal_target_not_found` 整单退回（2026-10-17 实测：六条点名加入被拒）。
+只有“方案里必须保留 / 不能删 / 必须有某类”且**不要求立即加入具体条目**时，才用
+must_have / must_include_scope。本技能仍只读，不自行 apply；加入预览属于确认链路。
+
 用户意向的**措辞强度必须落成成比例的 requirement**，不得把"偏好"一律写成 include 的
 `minCount=1`（"≥1 条"）：include 只做覆盖下限、不做池过滤——只保下限时引擎可能从名次最前
 取数，把"为主"的方向几乎挤出去（实拍：目标 15 条、"以电气/自动化为主"被写成 minCount=1
