@@ -164,6 +164,36 @@ async def test_repair_prompt_carries_previous_raw_text_and_the_quote_rule() -> N
 
 
 @pytest.mark.asyncio
+async def test_review_without_artifact_refs_repair_may_call_readonly_tools() -> None:
+    """review 输出缺 `artifactRefs` 时，修复回合必须允许重调只读工具。
+
+    2026-10-17 真事故（10041984 续接回合）：不许调工具的修复回合只能翻出旧产物
+    （stateVersion=1）来填，修完立刻撞 `stale_state`，整轮白修。这里钉住两件事：
+    ① 修复提示带产物引用硬规则；② 提示词允许调用只读工具重新取引用。
+    """
+    review_without_artifacts = {
+        "responseType": "review",
+        "message": "审查完毕。",
+        "evidenceRefs": [],
+    }
+    codex = RepairHarness(
+        [
+            Collected(status="completed", output=review_without_artifacts, events=[]),
+            Collected(status="completed", output=dict(VALID_OUTPUT), events=[]),
+        ]
+    )
+
+    result = await _turn(_gateway(codex))
+
+    assert "error" not in result
+    assert len(codex.turns) == 2, "缺 artifactRefs 仍只修一次"
+    prompt = _prompt_text(codex.turns[1])
+    assert "允许调用只读工具重新获取产物引用" in prompt
+    assert "产物引用（artifactRefs）没有对上产物账本" in prompt
+    assert "推荐类输出必须带引用" in prompt
+
+
+@pytest.mark.asyncio
 async def test_repair_prompt_truncates_a_long_previous_text_at_1500_chars() -> None:
     long_text = '{"responseType": "text", "message": "' + "长" * 3000 + '"}'
     codex = RepairHarness(

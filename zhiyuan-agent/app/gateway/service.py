@@ -2570,6 +2570,17 @@ class GatewayService:
                     return TurnOutput.model_validate(raw_output), False
                 except (OutputContractError, ValidationError) as exc:
                     raw_text = _last_agent_text(turn_payload)
+                    # 2026-10-17 真事故（10041984 续接回合）：模型输出 review 时
+                    # `artifactRefs` 为空 → schema 修复回合**默认不许调工具** →
+                    # 只能从工作区里翻出一份旧产物（stateVersion=1，当前=4）→
+                    # 修完立刻又撞 `stale_state`，整轮白修 ✗。缺 artifactRefs
+                    # 与"产物版本过期"是同一族问题，修复回合必须允许重调只读工具
+                    # 拿一份**本回合签发**的新产物；否则修复提示里那句"允许重新
+                    # 获取"等于空话。修复回合的事件会并回 turn payload，后面
+                    # `_evidence_inputs` 能看见新签发的产物 ✓。
+                    artifact_refs_missing = (
+                        "artifactRefs is required for recommendation/review output" in str(exc)
+                    )
                     logger.warning(
                         "turn output rejected (%s); attempting one repair turn (raw text %s)",
                         exc,
@@ -2577,8 +2588,13 @@ class GatewayService:
                     )
                     repaired = await self._repair_turn_output(
                         thread_id,
-                        str(exc),
+                        (
+                            f"{exc}\n{_ARTIFACT_REF_REPAIR_HINT}"
+                            if artifact_refs_missing
+                            else str(exc)
+                        ),
                         raw_output=raw_text,
+                        allow_tool_calls=artifact_refs_missing,
                     )
                     if repaired is None:
                         raise OutputContractError("output_schema_invalid", str(exc)) from exc
