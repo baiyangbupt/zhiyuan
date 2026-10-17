@@ -51,6 +51,27 @@ export function isSettledProposalStatus(status) {
   return value !== '' && value !== 'applying';
 }
 
+/**
+ * **真正的终态**（"这件事已经结束了" ✓）——与上面的 `isSettledProposalStatus` 是**两套语义** ✗✓：
+ * 那个判的是"服务端已经回过话 / 按钮该收了"，所以 `active`（待处理）也算 ✓；
+ * 这里判的是"结果已定"，`active`/`applying` 都**不算** ✓（它们还要用户处理 ✓）。
+ */
+export const TERMINAL_PROPOSAL_STATUSES = new Set([
+  'applied',
+  'cancelled',
+  'declined',
+  'expired',
+  'failed',
+  'conflict',
+  'stale_state',
+  'not_executable',
+  'blocked',
+]);
+
+export function isTerminalProposalStatus(status) {
+  return TERMINAL_PROPOSAL_STATUSES.has(String(status || ''));
+}
+
 /** 已知状态给中文 ✓；未知状态给"处理结果未知" ✓——**永远不返回原始机器态** ✗。 */
 export function proposalStatusLabel(status) {
   const value = String(status || '');
@@ -475,12 +496,29 @@ export function legacyPendingCardBadgeText(status) {
 export const COLD_FALLBACK_HIDDEN_KINDS = new Set(['career_update']);
 
 /**
+ * **已落定后**不再钉在底部的兜底卡 `kind`（2026-10-17 用户实测：刷新后"更新成绩 已生效"
+ * 又混在最新对话底部 ✗）。
+ *
+ * 成绩单与 career 不同：它有 `scoreSummary`、冷加载能画出一张像样的卡 ✓，所以不能放进
+ * `COLD_FALLBACK_HIDDEN_KINDS`（那会把**待确认**的成绩卡也藏掉 → 用户失去确认入口 ✗）。
+ * 但它一旦 `applied/cancelled/expired`，使命就结束了：结果已经由自动续接的那条助手消息
+ * 说清楚（"成绩已经正式记好了…"），兜底卡再钉在底部只是噪音 ✓。**active/applying 照画** ✓。
+ *
+ * 判据只看 `kind` + 落定状态，**不依赖时间戳** ✓：冷加载时前端拿不到提案与消息的先后
+ * （`LastProposalVo` 没有时间字段、`MessageVo` 只有格式化后的 `displayTime` ✗），
+ * 而"落定后的成绩单不再画"本身就是一个可以独立成立的语义 ✓——不需要知道后面有没有新消息。
+ */
+export const COLD_FALLBACK_SETTLED_HIDDEN_KINDS = new Set(['score_update']);
+
+/**
  * 冷加载兜底卡要不要画 ✓。三条判据（顺序即语义 ✓）：
  *   ① 没有 `proposalRef` → 不画 ✓（旧式判据第一条 ✓，逐字保留）；
  *   ② `alreadyRendered`（同一待确认已在回合卡/legacy 卡上画过 ✓）→ 不画 ✓（去重 ✓）；
  *   ③ 已落定（`liveActionStatus || actionStatus` ✓，与旧实现同一取法 ✓）且会话里已有
  *      回合 → 不画 ✓（旧式判据后半截 ✓，逐字保留：让位给新回合 ✓）；
- *   ④ 明细重建不出来的 `kind` → 不画 ✓（见上 ✓）。
+ *   ④ 明细重建不出来的 `kind` → 不画 ✓（见上 ✓）；
+ *   ⑤ **已落定**的成绩单（`kind=score_update` ✓）→ 不画 ✓（2026-10-17：刷新后它又混在
+ *      最新对话底部 ✗；待确认/确认中的成绩单不受影响 ✓，见 `COLD_FALLBACK_SETTLED_HIDDEN_KINDS` ✓）。
  *
  * @param {{
  *   proposalRef?: string | null,
@@ -502,7 +540,14 @@ export function coldFallbackProposalVisible({
 } = {}) {
   if (!String(proposalRef || '')) return false;
   if (alreadyRendered) return false;
-  if (isSettledProposalStatus(liveActionStatus || actionStatus) && hasTurns) return false;
-  if (COLD_FALLBACK_HIDDEN_KINDS.has(String(kind || ''))) return false;
+  const settled = isSettledProposalStatus(liveActionStatus || actionStatus);
+  if (settled && hasTurns) return false;
+  const kindValue = String(kind || '');
+  // 已**终态**的成绩单不再当"最后一条提案"钉在底部（2026-10-17：冷加载实测混入最新对话 ✗）；
+  // 待处理/确认中的成绩单照画 ✓——冷加载后它是用户唯一的卡面入口 ✓（见上 ⬆）。
+  // 注意用 `isTerminalProposalStatus` 而不是 `settled`：后者把 `active` 也算进去 ✗。
+  if (isTerminalProposalStatus(liveActionStatus || actionStatus)
+    && COLD_FALLBACK_SETTLED_HIDDEN_KINDS.has(kindValue)) return false;
+  if (COLD_FALLBACK_HIDDEN_KINDS.has(kindValue)) return false;
   return true;
 }

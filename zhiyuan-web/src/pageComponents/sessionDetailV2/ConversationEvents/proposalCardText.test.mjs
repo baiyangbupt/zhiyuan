@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   COLD_FALLBACK_HIDDEN_KINDS,
+  COLD_FALLBACK_SETTLED_HIDDEN_KINDS,
   PROPOSAL_STALE_STATE_TEXT,
   UNKNOWN_STATUS_TEXT,
   coldFallbackProposalVisible,
@@ -428,6 +429,56 @@ test('kind 缺失/未知 → fail-open 照旧画（旧数据/旧服务端行为�
       `kind=${String(kind)} 不许拦 ✓（fail-open）`,
     );
   }
+});
+
+test('已落定的成绩单冷加载不画：结果已由续接消息交代；待确认/确认中照画', () => {
+  assert.equal(COLD_FALLBACK_SETTLED_HIDDEN_KINDS.has('score_update'), true);
+  for (const actionStatus of ['applied', 'cancelled', 'declined', 'expired', 'failed']) {
+    assert.equal(
+      coldFallbackProposalVisible({
+        proposalRef: 'score-1',
+        kind: 'score_update',
+        actionStatus,
+        hasTurns: false,
+      }),
+      false,
+      `${actionStatus} 的成绩单不许再钉在底部`,
+    );
+  }
+  // 待确认/确认中：它是冷加载后唯一的卡面入口，照画 ✓。
+  for (const actionStatus of ['active', 'applying']) {
+    assert.equal(
+      coldFallbackProposalVisible({
+        proposalRef: 'score-1',
+        kind: 'score_update',
+        actionStatus,
+        hasTurns: false,
+      }),
+      true,
+      `${actionStatus} 的成绩单要留着 ✓`,
+    );
+  }
+  // 事件流结果优先：详情快照还说 active，但事件已 applied → 不画。
+  assert.equal(
+    coldFallbackProposalVisible({
+      proposalRef: 'score-1',
+      kind: 'score_update',
+      actionStatus: 'active',
+      liveActionStatus: 'applied',
+      hasTurns: false,
+    }),
+    false,
+  );
+  // 方案调整族（非 score_update）的落定旧卡语义不变：仍照画（兜底初衷）。
+  assert.equal(
+    coldFallbackProposalVisible({
+      proposalRef: 'plan-1',
+      kind: 'plan_change_proposal',
+      actionStatus: 'applied',
+      hasTurns: false,
+    }),
+    true,
+  );
 });
 
 test('无 proposalRef → 不画（旧判据第一条逐字保留）；已落定且已有新回合 → 让位', () => {
