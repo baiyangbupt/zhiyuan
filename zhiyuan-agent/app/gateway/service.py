@@ -2280,15 +2280,14 @@ class GatewayService:
             # 进程内存里有、snapshot 里没有的（Java 已判 stale/expired/unknown）
             # 一律丢弃。写成"取交集"的表达式会让这条边界看起来像实现细节，
             # 而它其实是"Java 说失效了就不再作数"本身。
-            working_set.admission_facts = list(previous_working_set.admission_facts)
+            if not snapshot.admission_facts:
+                working_set.admission_facts = list(previous_working_set.admission_facts)
             working_set.artifact_refs = list(previous_working_set.artifact_refs)
             working_set.last_response_type = previous_working_set.last_response_type
             working_set.last_turn_id = previous_working_set.last_turn_id
             working_set.candidate_scope_version = previous_working_set.candidate_scope_version
             working_set.candidate_scope_stage = previous_working_set.candidate_scope_stage
             working_set.candidate_source_turn_id = previous_working_set.candidate_source_turn_id
-            if working_set.active_proposal is None:
-                working_set.active_proposal = previous_working_set.active_proposal
         self._working_sets[key] = working_set
 
         codex_task = asyncio.create_task(
