@@ -13338,6 +13338,8 @@ public class PlanningStateService {
                 WorkingPlanMutationSupport.addWorkingPlanItemIfAllowed(
                         draft, candidate, "refill_by_tier");
             }
+            log.info("refill staged solver applied: session={} target={} current={} added={}",
+                    chatSessionId, target, currentTotal, toAdd.size());
             return true;
         } catch (RuntimeException ex) {
             log.warn("refill staged fallback: session={} error={}",

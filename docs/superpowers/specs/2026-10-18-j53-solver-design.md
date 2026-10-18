@@ -981,8 +981,14 @@ S0b 是行为变更，不能和 S0a 的“不改行为”共用同一个退出�
   均未落盘，验收后路径已关。
 - **refill/scope 代码已接**：refill 用 `REFILL` + lockExisting + 只追加，
   目标为每档 `max(当前,池目标)`；scope 的 `add_units_by_scope` 复用
-  `dryRunAddUnits`，`solver.v2.paths=scope`。真栈 add-by-scope
-  900040 80→82 ready（2 个新增）；refill 真栈待有缺口的会话。
+  `dryRunAddUnits`，`solver.v2.paths=scope`。
+  **真栈收尾（2026-10-18 深夜，最终代码）**：900040 add-by-scope 浙江
+  80→82（`staged dry-run scope ... selected=82 remove=0 add=2`）；
+  900045 42/45 缺口走真实 `apply_constraint_and_regenerate` pending
+  command，refill 到 45（日志 `target=45 current=42 added=16`，
+  version 15→19，postcondition=true），随后恢复 14/44。
+  验收中发现补入安全谓词不能套在 current 项上（会把 lockExisting 的
+  已有条目判死），已修为只约束新增，reducer 同口径。
 - FILL/SCOPE staged 路径启用 `requireCompensationSafe`；单元档位冲突在
   `CandidateSnapshotBuilder` 直接 409 `tier_fact_conflict`。
 - **S0b 冻结链第四轮复审修复（2026-10-18 晚）**：范围类提案优先回放

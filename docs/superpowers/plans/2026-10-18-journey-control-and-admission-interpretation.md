@@ -603,7 +603,14 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
     预览摘要不 hash admissionRatio。真栈：900045 staged fill+freeze
     42→44 apply 通过；900045 `only_keep 浙江` 无 canonical 元数据 apply
     成功；改请求 409 `user_goal_request_changed`；已恢复 900045 14/44、
-    900040 5/80。全量 Java 1231/0/8。
+    900040 5/80。全量 Java 1227/0/0/9（含 golden 默认 skip）。
+    **切流前收尾（2026-10-18 深夜）**：scope 最终代码 900040 80→82
+    （staged dry-run selected=82/remove=0/add=2）；refill 最终代码
+    900045 42/45→45（真实 pending-command，version 15→19，
+    postcondition true，日志 `target=45 current=42 added=16`），
+    随后恢复 14/44；新增 env-gated `StagedSolverGoldenTest`，10 个真实
+    会话全部 ready、两次选择一致（10041983 12,510 候选 239ms）。
+    切流检查单见 `docs/superpowers/reviews/2026-10-18-j53-cutover-readiness.md`。
 - J5.4 后置条件 + 审查：统一 `UnifiedPlanPostconditionValidator`；审查读同一
   `StructureVector`/`PlanEvaluation`；review tierQuotaGoal 与 solver 一致。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；

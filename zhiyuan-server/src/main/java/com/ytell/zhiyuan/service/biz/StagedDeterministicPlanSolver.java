@@ -656,8 +656,12 @@ final class StagedDeterministicPlanSolver {
         if (!Boolean.TRUE.equals(fact.getEligible())) {
             return false;
         }
+        // 补入安全谓词只约束“本次新增”。current 项已经写在方案里，
+        // 即使学费/中外合作等不在补入安全口径内，也不能因此把整个动作判死
+        // （ADD/REFILL 的 lockExisting 会强制选中它们）。
         if (policy != null && Boolean.TRUE.equals(policy.getRequireCompensationSafe())
-                && !Boolean.TRUE.equals(fact.getCompensationSafe())) {
+                && !Boolean.TRUE.equals(fact.getCompensationSafe())
+                && !Boolean.TRUE.equals(fact.getCurrent())) {
             return false;
         }
         HardConstraintsDTO hard = objectives.getEligibilityConstraints();

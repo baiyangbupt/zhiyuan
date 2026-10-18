@@ -142,6 +142,26 @@ class StagedDeterministicPlanSolverTest {
     }
 
     @Test
+    void compensationSafeGateOnlyAppliesToNewAdditions() {
+        CandidateFactDTO current = fact("current", "stable", "浙江", true, false, 10, 0);
+        current.setCompensationSafe(false);
+        CandidateFactDTO unsafeAdd = fact("unsafe-add", "stable", "浙江", false, false, 100, 1);
+        unsafeAdd.setCompensationSafe(false);
+        CandidateFactDTO safeAdd = fact("safe-add", "stable", "浙江", false, false, 50, 2);
+        MutationPolicyDTO policy = policy("ADD", true);
+        policy.setRequireCompensationSafe(true);
+        policy.setFrozenRequiredEntityIds(new LinkedHashSet<String>(Arrays.asList("safe-add")));
+
+        StagedDeterministicPlanSolver.Result result = solver.solve(
+                snapshot(current, unsafeAdd, safeAdd), objectives(2), policy);
+
+        assertEquals("ready", result.solverResult.getStatus(),
+                "diagnostics=" + result.solverResult.getDiagnostics());
+        assertEquals(new LinkedHashSet<String>(Arrays.asList("current", "safe-add")),
+                new LinkedHashSet<String>(result.solverResult.getSelectedEntityIds()));
+    }
+
+    @Test
     void largePoolUsesReducerInsteadOfComplexityBlock() {
         List<CandidateFactDTO> facts = new ArrayList<CandidateFactDTO>();
         for (int index = 0; index < 620; index++) {

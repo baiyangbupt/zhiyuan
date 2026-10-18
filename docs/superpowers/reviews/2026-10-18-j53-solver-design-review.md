@@ -240,3 +240,24 @@ canonicalization。
 - 验收后恢复 900045 version 14/44、900040 version 5/80；运行时已回到
   shadow-only（`solver.v2.paths`/freeze flag 关闭）。
 - 全量 Java 测试：**1231 tests / 0 failures / 0 errors / 8 skipped**。
+
+### 10.4 切流前收尾补验（2026-10-18 深夜）
+
+- **scope（最终代码）**：900040 `add_units_by_scope` 浙江 80→82，
+  `staged dry-run scope: session=900040 status=ready selected=82 remove=0 add=2`。
+  验收中发现 `requireCompensationSafe` 被错误地套到 current 项上：900040
+  有一个 current 单元不在补入安全口径内，导致 ADD 的 lockExisting 强制项
+  被判不合格、整个范围加入被 block。已修为**只约束新增**（current 豁免，
+  reducer 同口径），并补单测 `compensationSafeGateOnlyAppliesToNewAdditions`。
+- **refill（最终代码）**：900045 制造 42/45 缺口后走真实
+  `apply_constraint_and_regenerate` pending command；日志
+  `refill staged solver applied: session=900045 target=45 current=42 added=16`，
+  steps 含 `working_plan_refilled`，postcondition=true，version 15→19，
+  ordered 45；随后恢复 14/44。
+- **golden 回归**：新增 env-gated `StagedSolverGoldenTest`，10 个真实会话
+  （900018/28/38/900040/900045/900016/900047/10041981/10041983/10041984）
+  全部 ready，selected 两次运行一致；10041983（12,510 候选）走
+  `candidate_cap_applied`，239ms。
+- 切流检查单/回滚手册：`docs/superpowers/reviews/2026-10-18-j53-cutover-readiness.md`。
+- 全量 Java：**1227 tests / 0 failures / 0 errors / 9 skipped**（含默认
+  skip 的 env-gated golden）。

@@ -510,8 +510,11 @@ final class CandidatePoolReducer {
         if (!Boolean.TRUE.equals(fact.getEligible())) {
             return false;
         }
+        // 补入安全谓词只约束“本次新增”；current 项已在方案里，不能因
+        // 不安全被剔除（ADD/REFILL 还会 lockExisting 强制保留）。
         if (policy != null && Boolean.TRUE.equals(policy.getRequireCompensationSafe())
-                && !Boolean.TRUE.equals(fact.getCompensationSafe())) {
+                && !Boolean.TRUE.equals(fact.getCompensationSafe())
+                && !Boolean.TRUE.equals(fact.getCurrent())) {
             return false;
         }
         if (objectives == null || objectives.getEligibilityConstraints() == null) {

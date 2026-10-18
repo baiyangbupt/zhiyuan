@@ -33,6 +33,8 @@ import com.ytell.zhiyuan.model.dto.planning.TierQuotaChangeDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalRequestDTO;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeanUtils;
 
 import java.nio.charset.StandardCharsets;
@@ -78,6 +80,7 @@ final class UserGoalProposalBuilder {
     private static final int ENTRY_PREVIEW_HEAD_COUNT = 3;
     private static final DeterministicPlanSolver PLAN_SOLVER = new OjalgoDeterministicPlanSolver();
     private static final StagedDeterministicPlanSolver STAGED_SOLVER = new StagedDeterministicPlanSolver();
+    private static final Logger LOG = LoggerFactory.getLogger(UserGoalProposalBuilder.class);
     private UserGoalProposalBuilder() {
     }
 
@@ -1005,6 +1008,10 @@ final class UserGoalProposalBuilder {
                         CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
                 PlanningObjectiveCompiler.enrichV2(state, solverObjectiveSet, policy);
                 solved = STAGED_SOLVER.solve(snapshot, solverObjectiveSet, policy).solverResult;
+                LOG.info("staged dry-run remove: session={} status={} selected={} remove={}",
+                        state.getSessionId(), solved.getStatus(),
+                        defaultList(solved.getSelectedEntityIds()).size(),
+                        defaultList(solved.getRemoveEntityIds()).size());
             } else {
                 solved = PLAN_SOLVER.solve(buildSolverInput(
                         solverObjectiveSet, retained, Lists.<FillOption>newArrayList(), unitMode, null));
@@ -1505,6 +1512,11 @@ final class UserGoalProposalBuilder {
                         CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
                 PlanningObjectiveCompiler.enrichV2(state, solverObjectiveSet, policy);
                 solved = STAGED_SOLVER.solve(snapshot, solverObjectiveSet, policy).solverResult;
+                LOG.info("staged dry-run {}: session={} status={} selected={} remove={} add={}",
+                        solverPath, state.getSessionId(), solved.getStatus(),
+                        defaultList(solved.getSelectedEntityIds()).size(),
+                        defaultList(solved.getRemoveEntityIds()).size(),
+                        defaultList(solved.getAddEntityIds()).size());
             } else {
                 solved = PLAN_SOLVER.solve(buildSolverInput(
                         solverObjectiveSet, retained, available, unitMode, null));
@@ -1605,6 +1617,11 @@ final class UserGoalProposalBuilder {
                         CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
                 PlanningObjectiveCompiler.enrichV2(state, solverObjectiveSet, policy);
                 solved = STAGED_SOLVER.solve(snapshot, solverObjectiveSet, policy).solverResult;
+                LOG.info("staged dry-run replace: session={} status={} selected={} remove={} add={}",
+                        state.getSessionId(), solved.getStatus(),
+                        defaultList(solved.getSelectedEntityIds()).size(),
+                        defaultList(solved.getRemoveEntityIds()).size(),
+                        defaultList(solved.getAddEntityIds()).size());
             } else {
                 solved = PLAN_SOLVER.solve(buildSolverInput(
                         solverObjectiveSet, retained, available, unitMode, null));
