@@ -622,6 +622,11 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
     comparison 在 legacy ready/staged 不 ready 时失败。全量 Java 1241/0/0/10。
 - J5.4 后置条件 + 审查：统一 `UnifiedPlanPostconditionValidator`；审查读同一
   `StructureVector`/`PlanEvaluation`；review tierQuotaGoal 与 solver 一致。
+  * 首片已落（2026-10-18 深夜）：`ReviewSafetyGuard` 委托
+    `SafetyFloorSupport`，review `safety_guard` 与 solver 的
+    `not_applicable`/minLocalProtect 同源；档位用 canonical key，省名匹配
+    用 `RegionScopeSupport`。仍待 tier 三源、coverage probe、structure
+    阈值（20k/60k）与 safety 硬/软口径。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；
   预览/冻结/后置/回执与普通动作一致；review fix 与 fill 同源。
 - J5.6 清理：解释权重、`rank_in_tier` 语义、重复 filter/eligibility 规则。

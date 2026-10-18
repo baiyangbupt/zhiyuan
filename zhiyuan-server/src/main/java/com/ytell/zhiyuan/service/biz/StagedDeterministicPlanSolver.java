@@ -31,7 +31,6 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -497,9 +496,9 @@ final class StagedDeterministicPlanSolver {
         if (Strings.isNullOrEmpty(candidateProvince) || Strings.isNullOrEmpty(sourceProvince)) {
             return false;
         }
-        String candidate = candidateProvince.trim().toLowerCase(Locale.ROOT);
-        String source = sourceProvince.trim().toLowerCase(Locale.ROOT);
-        return candidate.contains(source) || source.contains(candidate);
+        // 与 review safety_guard 同源：规范化省份身份（"浙江省"＝"浙江"），
+        // 不做双向子串放大。
+        return RegionScopeSupport.sameRegionName(candidateProvince, sourceProvince);
     }
 
     private int localProtectDeficit(List<CandidateFactDTO> facts,

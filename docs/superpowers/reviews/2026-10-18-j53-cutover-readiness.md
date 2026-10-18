@@ -73,6 +73,9 @@ STAGED_SOLVER_GOLDEN_FILES="/path/state.json[|/path/pool.json],..." \
      排除（名字 + ID，ID 优先）。ID 从候选池里同省候选的 `provinceId` 取；
      池里没有同省候选时只走名字判据，不会误判。省名匹配用
      `RegionScopeSupport`（规范化身份 + 大区表，不做双向子串放大）。
+     **J5.4 首片已落**：review 的 `safety_guard` 改为 `ReviewSafetyGuard`
+     委托同一 `SafetyFloorSupport`，`not_applicable` 不再被 review 硬拦；
+     solver 的本省匹配也切到 `RegionScopeSupport.sameRegionName`。
    - Q14：named-add 的纯加入与替换都支持换入已有组；目标总数按
      **新增单元数**（`addedUnitIds - currentUnitIds`）计算，不再把“已有组
      加专业”算成 +1 个单元。`addedUnitCount` 仍展示涉及多少个组。

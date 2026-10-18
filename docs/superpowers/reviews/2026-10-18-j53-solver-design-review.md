@@ -281,3 +281,21 @@ canonicalization。
     要求至少一个可比较会话。
 - 全量 Java：**1241 tests / 0 failures / 0 errors / 10 skipped**（含默认
   skip 的 2 个 env-gated golden 测试）。
+
+### 10.5 J5.4 首片：review safety 与 solver 同源（2026-10-18 深夜）
+
+J5.4 gap 复审确认 Q13 之后存在“solver 放行、review 硬拦”的双口径。
+已落第一片（无 tier/coverage 行为变更）：
+
+- 新增 `ReviewSafetyGuard`，review 的 `safety_guard` 改为委托
+  `SafetyFloorSupport.build(state)`：`not_applicable` 直接通过（生源省
+  已被硬约束排除），`unknown` 保持 warn，`applicable` 按
+  `minLocalProtect` 计数。
+- 档位统一用 `TierAllocationSupport.canonicalTierKey`（“保”→protect）；
+  省名匹配统一用 `RegionScopeSupport.sameRegionName`；solver 的
+  `sameProvince` 同步切换。
+- 新增 `ReviewSafetyGuardTest`（名字/ID 排除、1/2 条保底、580 分、缺省
+  省份）；全量 Java **1247/0/0/10**。
+- 仍待 J5.4 后续：tier 三源统一（review requiredTierCounts 缩放 vs
+  solver constraint/anchor vs postcondition resolution）、coverage probe、
+  structure 阈值（高学费 20k/60k）、safety 是否硬拦 apply。

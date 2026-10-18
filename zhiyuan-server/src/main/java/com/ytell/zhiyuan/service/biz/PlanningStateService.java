@@ -11320,67 +11320,7 @@ public class PlanningStateService {
     }
 
     private ReviewCheckDTO reviewSafetyGuard(PlanningStateDTO state, List<CandidateItemDTO> candidates) {
-        ReviewCheckDTO check = new ReviewCheckDTO();
-        check.setCode("safety_guard");
-        check.setLevel("info");
-        check.setPassed(true);
-
-        CandidatePoolStateDTO candidatePoolState = state.getCandidatePoolState();
-        Integer userScore = candidatePoolState.getUserScore();
-        String sourceProvinceName = candidatePoolState.getSourceProvinceName();
-        List<OrderedItemDTO> orderedItems = state.getOrderedPlanState().getItems();
-
-        if (userScore != null && userScore >= 580) {
-            check.setSummary("当前兜底方案相对安全");
-            check.setDetail("用户分数不低于580，按照当前经验规则视为相对安全。");
-            return check;
-        }
-        if (Strings.isNullOrEmpty(sourceProvinceName)) {
-            check.setLevel("warn");
-            check.setSummary("缺少生源省份信息，无法完成本省保底校验");
-            check.setDetail("candidatePoolState.sourceProvinceName 为空。");
-            check.setSuggestedAction("建议补充用户高考省份后重新执行审查。");
-            return check;
-        }
-
-        int localProtectCount = 0;
-        if (isMajorGroupMode(candidatePoolState)) {
-            for (OrderedUnitDTO unit : defaultOrderedUnits(state.getOrderedPlanState().getUnits())) {
-                if (!"保".equals(unit.getTier())) {
-                    continue;
-                }
-                if (containsIgnoreCase(unit.getProvinceName(), sourceProvinceName)) {
-                    localProtectCount++;
-                    check.getAffectedUnitIds().add(unit.getUnitId());
-                    defaultPlanningUnitMajors(unit.getMajorItems()).stream()
-                            .map(PlanningUnitMajorDTO::getVolunteerId)
-                            .forEach(check.getAffectedVolunteerIds()::add);
-                }
-            }
-        } else {
-            for (OrderedItemDTO orderedItem : orderedItems) {
-                if (!"保".equals(orderedItem.getTier())) {
-                    continue;
-                }
-                CandidateItemDTO candidateItem = findCandidate(candidates, orderedItem.getVolunteerId());
-                if (candidateItem != null && containsIgnoreCase(candidateItem.getProvinceName(), sourceProvinceName)) {
-                    localProtectCount++;
-                    check.getAffectedVolunteerIds().add(orderedItem.getVolunteerId());
-                }
-            }
-        }
-        if (localProtectCount >= 2) {
-            check.setSummary("当前兜底方案相对安全");
-            check.setDetail("保区间中本省院校数量不少于2所。");
-            return check;
-        }
-
-        check.setPassed(false);
-        check.setLevel("risk");
-        check.setSummary("本省保底志愿数量不足");
-        check.setDetail("当前保区间中本省院校数量少于2所。");
-        check.setSuggestedAction("建议优先补充本省保底志愿，降低滑档和退档风险。");
-        return check;
+        return ReviewSafetyGuard.evaluate(state, candidates);
     }
 
     private ReviewCheckDTO reviewProbabilityInversion(PlanningStateDTO state, List<CandidateItemDTO> candidates) {
