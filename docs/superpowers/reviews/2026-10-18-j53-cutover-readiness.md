@@ -173,9 +173,15 @@ fill 契约字段已在此进程生效；agent 18291 的 gateway 透传代码已
 - **frozen 覆盖已验证**：900045 制造缺口后 prepare，pending data_value 同时含
   `frozenProposal`/`frozenSelectionDigest`/`frozenRequestDigest`/
   `hardObjectiveVersion`；apply 成功 44 组，随后恢复 14/44。
-- **legacy apply 删除闸门**：排空与 frozen 覆盖已满足；仅剩 24h soak
-  （墙钟下限 2026-10-19 23:52，且要求期间零 `user_goal_frozen`/
-  `solver_input_stale`/409/apply 失败）。删除前仍保留
-  `isLegacyCanonicalProposal` 与精确版本回退。
+- **legacy apply 已删除（2026-10-19，用户拍板不等 24h）**：
+  - `planning.user-goal.freeze-apply.enabled` 开关移除；预览无条件冻结
+    frozenProposal/selectionDigest/requestDigest，apply 只回放冻结负载。
+  - `applyUserGoalFixProposal` 的“重新生成再应用”回退与
+    `findReadyUserGoalProposalByStrategy` 已删除；缺 pending/冻结负载直接 409。
+  - `isLegacyCanonicalProposal` 仅保留给范围类无 canonical 提案的元数据兼容
+    （不是重新生成路径）；精确 solverVersion 回退保留给旧 pending/旧预览。
+  - 全量 Java **1283/0/0/10**；相关旧测试改为“stale proposalId → 409”。
+  - 回滚注意：回旧 jar 仍可重新生成 apply，但新 pending 的冻结负载不会被
+    旧 jar 使用；跨版本回滚应保留 pending 或重新预览。
 - agent 18291 已于 2026-10-19 重启（pid 914，health 200），
   gateway `hardObjectiveVersion` 透传已激活。

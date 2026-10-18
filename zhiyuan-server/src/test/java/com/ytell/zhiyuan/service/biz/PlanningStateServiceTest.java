@@ -8,6 +8,7 @@ import com.ytell.zhiyuan.manager.MajorExtraDataManager;
 import com.ytell.zhiyuan.manager.SchoolManager;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
+import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerRecommendListResponse;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerSourceDataSnapshot;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolGenerateReq;
@@ -128,6 +129,7 @@ import static org.mockito.Mockito.when;
 public class PlanningStateServiceTest {
 
     private PlanningStateService planningStateService;
+    private PendingConfirmationBizService pendingConfirmationBizService;
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
     private ChatSessionSharedService chatSessionSharedService;
     private PlanningBehaviorEventSharedService planningBehaviorEventSharedService;
@@ -172,6 +174,9 @@ public class PlanningStateServiceTest {
     @BeforeEach
     void setUp() {
         planningStateService = new PlanningStateService();
+        pendingConfirmationBizService = Mockito.mock(PendingConfirmationBizService.class);
+        ReflectionTestUtils.setField(planningStateService, "pendingConfirmationBizService",
+                pendingConfirmationBizService);
         chatSessionExtraDataSharedService = Mockito.mock(ChatSessionExtraDataSharedService.class, DEFAULT_CAS_ANSWER);
         chatSessionSharedService = Mockito.mock(ChatSessionSharedService.class);
         planningBehaviorEventSharedService = Mockito.mock(PlanningBehaviorEventSharedService.class);
@@ -4094,7 +4099,7 @@ public class PlanningStateServiceTest {
     }
 
     @Test
-    void shouldApplyUserGoalProposalByStrategyWhenRegeneratedProposalIdChanges() {
+    void shouldRejectUserGoalApplyWhenProposalIdDoesNotMatchFrozenPending() {
         bindPlanningStateStore();
 
         PlanningStateDTO state = new PlanningStateDTO();
@@ -4103,52 +4108,21 @@ public class PlanningStateServiceTest {
         state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
         state.getCandidatePoolState().getItems().add(buildCandidateItem(
                 "ps1_m1", "ps1", "s1", "学校A", "稳", "临床医学", 55D, 80D, 55D, false));
-        state.getCandidatePoolState().getItems().add(buildCandidateItem(
-                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false));
-        state.getCandidatePoolState().getItems().add(buildCandidateItem(
-                "ps3_m3", "ps3", "s3", "学校C", "稳", "临床医学", 58D, 75D, 58D, false));
         state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "临床医学", "稳", 1));
-        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
         saveStateToStore(1L, state);
 
         UserGoalFixProposalReq req = userGoalReq("only_keep_scope", 9, userGoalScope("major", "临床医学"), false);
-        req.setUserOriginalText("只保留临床医学");
         FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
         FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
         applyReq.setProposalId("ugp-stale-id-from-previous-preview");
         applyReq.setRegenerateOrderedPlan(false);
         applyReq.setRerunReview(false);
 
-        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
-
-        assertEquals("applied", res.getStatus());
-        assertEquals("only_keep_scope", res.getProposal().getStrategy());
-        assertEquals(proposal.getProposalId(), res.getProposal().getProposalId());
-        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
-                .map(DraftItemDTO::getVolunteerId)
-                .collect(Collectors.toSet());
-        assertTrue(draftIds.contains("ps1_m1"));
-        assertTrue(draftIds.contains("ps3_m3"));
-        assertFalse(draftIds.contains("ps2_m2"));
-    }
-
-    @Test
-    void shouldNotUseCanonicalProposalForLegacyStrategyFallback() {
-        FixProposalDTO canonical = new FixProposalDTO();
-        canonical.setProposalId("ugp-canonical");
-        canonical.setProposalSource("user_goal");
-        canonical.setStatus("ready");
-        canonical.setStrategy("fill_missing_count");
-        canonical.setCanonicalObjectiveDigest("objective-digest");
-        canonical.setSolverVersion("ojalgo-48.4.2-m1");
-        canonical.setSolverInputDigest("input-digest");
-        FixProposalStateDTO proposalState = new FixProposalStateDTO();
-        proposalState.getProposals().add(canonical);
-
-        FixProposalDTO selected = ReflectionTestUtils.invokeMethod(planningStateService,
-                "findReadyUserGoalProposalByStrategy", proposalState, "fill_missing_count");
-
-        assertNull(selected);
+        BusinessException error = org.junit.jupiter.api.Assertions.assertThrows(
+                BusinessException.class,
+                () -> planningStateService.applyFixProposal(1L, 1L, applyReq));
+        assertEquals(409, error.getStatus());
+        assertTrue(error.getMessage().contains("user_goal_frozen_proposal_mismatch"));
     }
 
     @Test
@@ -10439,6 +10413,27 @@ public class PlanningStateServiceTest {
         applyReq.setSolverVersion(proposal.getSolverVersion());
         applyReq.setSolverInputDigest(proposal.getSolverInputDigest());
         applyReq.setUserGoalRequest(userGoalRequest);
+        // S4：user-goal apply 只认 pending 冻结负载。测试不经过 prepare，
+        // 这里把当前 proposal 物化成一份等价的 pending（同一 proposalId +
+        // frozenProposal/requestDigest/selectionDigest）。
+        PendingConfirmationRes pending = new PendingConfirmationRes();
+        pending.setPendingId("test-pending");
+        java.util.Map<String, Object> dataValue = new java.util.LinkedHashMap<String, Object>();
+        dataValue.put("proposalId", proposal.getProposalId());
+        dataValue.put("frozenProposal", com.alibaba.fastjson.JSON.parseObject(
+                com.alibaba.fastjson.JSON.toJSONString(proposal)));
+        dataValue.put("frozenRequestDigest", FrozenSelectionDigest.requestDigest(userGoalRequest));
+        try {
+            PlanningStateDTO state = planningStateService.getPlanningState(1L);
+            List<CandidateItemDTO> candidates =
+                    planningStateService.resolveEffectiveCandidatesForProposal(state);
+            dataValue.put("frozenSelectionDigest",
+                    FrozenSelectionDigest.compute(state, candidates, proposal));
+        } catch (RuntimeException ignored) {
+            // 摘要缺失时由 FrozenSelectionGuard 明确报 409；测试本身会暴露。
+        }
+        pending.setDataValue(dataValue);
+        when(pendingConfirmationBizService.getActiveOrApplying(1L, 1L)).thenReturn(pending);
         return applyReq;
     }
 

@@ -226,13 +226,6 @@ public class PlanningStateService {
     private boolean candidatePoolSplitEnabled = false;
 
     /**
-     * S0b：user-goal FILL/PRIORITIZE 预览冻结回放。默认关；开启后 apply 优先
-     * 读取 pending 里的 frozenProposal，不再重新生成/求解。
-     */
-    @Value("${planning.user-goal.freeze-apply.enabled:false}")
-    private boolean userGoalFreezeApplyEnabled = false;
-
-    /**
      * 事务管理器（拆分写"同事务"兜底）：池行与小行两次 CAS 要么同提交、要么（小行输时）
      * 池行同事务补偿还原。调用方已开事务（如 {@code removeDraftItems}）就加入；没有就本方法开事务。
      * 单测用 new 构造（无 Spring）时为 null → 直连执行，由替身存储把关。
@@ -974,19 +967,27 @@ public class PlanningStateService {
                             putIfNotBlank(dataValue, "solverInputDigest", primary.getSolverInputDigest());
                             // S4：可选硬目标契约版本；legacy 提案为空，不落库。
                             putIfNotBlank(dataValue, "hardObjectiveVersion", primary.getHardObjectiveVersion());
-                            if (userGoalFreezeApplyEnabled) {
-                                // S0b：冻结整份 proposal（含 solverResult/actions/
-                                // tierQuotaChange）+ selection-scoped digest。
-                                dataValue.put("frozenSelectionDigest",
-                                        frozenSelectionDigestForPreview(
-                                                tenantId, chatSessionId, primary));
-                                dataValue.put("frozenProposal",
-                                        JSONObject.parseObject(JSONObject.toJSONString(primary)));
-                                // apply 会用请求里的 requirements/scope/target 写会话约束，
-                                // 必须把预览请求也冻进 pending，防止同 proposalId 换请求。
-                                dataValue.put("frozenRequestDigest",
-                                        FrozenSelectionDigest.requestDigest(req));
+                            // S4：user-goal apply 只走冻结回放。预览无条件冻结整份
+                            // proposal（含 solverResult/actions/tierQuotaChange）+
+                            // selection-scoped digest + 请求指纹。
+                            // 摘要失败不能阻断 pending 物化；solver 提案缺摘要会在
+                            // apply 的 FrozenSelectionGuard 明确 409，而不是默默放行。
+                            String frozenSelectionDigest = null;
+                            try {
+                                frozenSelectionDigest = frozenSelectionDigestForPreview(
+                                        tenantId, chatSessionId, primary);
+                            } catch (RuntimeException error) {
+                                log.warn("frozen selection digest unavailable: session={} proposal={} error={}",
+                                        chatSessionId, primary.getProposalId(),
+                                        error.getClass().getSimpleName());
                             }
+                            dataValue.put("frozenSelectionDigest", frozenSelectionDigest);
+                            dataValue.put("frozenProposal",
+                                    JSONObject.parseObject(JSONObject.toJSONString(primary)));
+                            // apply 会用请求里的 requirements/scope/target 写会话约束，
+                            // 必须把预览请求也冻进 pending，防止同 proposalId 换请求。
+                            dataValue.put("frozenRequestDigest",
+                                    FrozenSelectionDigest.requestDigest(req));
                         }
                     }
                     if (planAction && primary != null) {
@@ -1172,45 +1173,37 @@ public class PlanningStateService {
     private FrozenUserGoal frozenUserGoalProposal(Long tenantId, Long chatSessionId,
                                                   FixProposalApplyReq req,
                                                   UserGoalFixProposalReq userGoalRequest) {
-        if (!userGoalFreezeApplyEnabled) {
-            return null;
-        }
-        // 开启 freeze 后不再回退“重新生成再应用”的 legacy 路径：
-        // 缺少 pending/冻结负载一律要求重新预览，保证预览=确认。
+        // S4：user-goal apply 只认 pending 里的冻结负载，不再回退“重新生成再应用”。
         if (req == null || Strings.isNullOrEmpty(req.getProposalId())) {
             throw new BusinessException(409,
                     "user_goal_freeze_required: 请重新生成调整预览后再确认");
         }
         PendingConfirmationRes pending = pendingConfirmationBizService
                 .getActiveOrApplying(tenantId, chatSessionId);
-        if (pending != null && pending.getDataValue() != null) {
-            Object pendingProposalId = pending.getDataValue().get("proposalId");
-            if (!req.getProposalId().equals(pendingProposalId)) {
-                throw new BusinessException(409,
-                        "user_goal_frozen_proposal_mismatch: 预览已变化，请重新生成");
-            }
-            Object frozen = pending.getDataValue().get("frozenProposal");
-            // 只要 pending 里有冻结负载就优先回放：范围类提案（only_keep/exclude/
-            // tuition）本来就没有 canonical 三件套，不能拿它们当“必须重新预览”的判据。
-            if (frozen != null) {
-                verifyFrozenRequestDigest(pending, userGoalRequest);
-                FixProposalDTO proposal = JSON.parseObject(
-                        JSON.toJSONString(frozen), FixProposalDTO.class);
-                if (proposal == null) {
-                    throw new BusinessException(409,
-                            "user_goal_frozen_proposal_invalid: 冻结负载无法解析，请重新生成");
-                }
-                Object selectionDigest = pending.getDataValue().get("frozenSelectionDigest");
-                return new FrozenUserGoal(proposal,
-                        selectionDigest == null ? null : String.valueOf(selectionDigest));
-            }
-        }
-        if (!RepairProposalApplyPolicy.hasCanonicalMetadata(req)) {
+        if (pending == null || pending.getDataValue() == null) {
             throw new BusinessException(409,
-                    "user_goal_freeze_required: 请重新生成调整预览后再确认");
+                    "user_goal_frozen_proposal_missing: 预览已失效，请重新生成");
         }
-        throw new BusinessException(409,
-                "user_goal_frozen_proposal_missing: 预览已失效，请重新生成");
+        Object pendingProposalId = pending.getDataValue().get("proposalId");
+        if (!req.getProposalId().equals(pendingProposalId)) {
+            throw new BusinessException(409,
+                    "user_goal_frozen_proposal_mismatch: 预览已变化，请重新生成");
+        }
+        Object frozen = pending.getDataValue().get("frozenProposal");
+        if (frozen == null) {
+            throw new BusinessException(409,
+                    "user_goal_frozen_proposal_missing: 预览缺少冻结负载，请重新生成");
+        }
+        verifyFrozenRequestDigest(pending, userGoalRequest);
+        FixProposalDTO proposal = JSON.parseObject(
+                JSON.toJSONString(frozen), FixProposalDTO.class);
+        if (proposal == null) {
+            throw new BusinessException(409,
+                    "user_goal_frozen_proposal_invalid: 冻结负载无法解析，请重新生成");
+        }
+        Object selectionDigest = pending.getDataValue().get("frozenSelectionDigest");
+        return new FrozenUserGoal(proposal,
+                selectionDigest == null ? null : String.valueOf(selectionDigest));
     }
 
     private void verifyFrozenRequestDigest(PendingConfirmationRes pending,
@@ -1248,17 +1241,7 @@ public class PlanningStateService {
         userGoalRequest.setSourceVersionGuard(req.getSourceVersionGuard());
         FrozenUserGoal frozen = frozenUserGoalProposal(
                 tenantId, chatSessionId, req, userGoalRequest);
-        FixProposalDTO proposal = frozen == null ? null : frozen.proposal;
-        if (proposal == null) {
-            FixProposalStateDTO proposalState = generateUserGoalFixProposals(chatSessionId, userGoalRequest);
-            proposal = RepairProposalStateBuilder.findProposal(proposalState, req.getProposalId());
-            if (proposal == null && !RepairProposalApplyPolicy.hasCanonicalMetadata(req)) {
-                proposal = findReadyUserGoalProposalByStrategy(proposalState, userGoalRequest.getGoalType());
-            }
-        }
-        if (proposal == null) {
-            throw new BusinessException(404, "调整预览不存在或已失效");
-        }
+        FixProposalDTO proposal = frozen.proposal;
         RepairProposalApplyPolicy.validateProposalForApply(req, proposal);
 
         state = loadPlanningState(chatSessionId);
@@ -1268,10 +1251,8 @@ public class PlanningStateService {
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(
                 tenantId, chatSessionId, state, true);
         ensureWorkingPlanContainsOrderedPlanItems(state);
-        if (userGoalFreezeApplyEnabled) {
-            FrozenSelectionGuard.verify(state, effectiveCandidates, proposal,
-                    frozen == null ? null : frozen.selectionDigest);
-        }
+        FrozenSelectionGuard.verify(state, effectiveCandidates, proposal,
+                frozen.selectionDigest);
         applyUserGoalTargetToPlanningState(state, userGoalRequest, proposal);
         // 学费写在成绩行；先于方案落盘：写不进去就把这次确认判失败，不能方案生效而学费条件丢失。
         persistUserGoalTuitionRange(chatSessionId, resolveUserGoalTuitionRange(userGoalRequest));
@@ -1564,20 +1545,6 @@ public class PlanningStateService {
             }
         }
         throw writeCasConflict("学费更新");
-    }
-
-    private FixProposalDTO findReadyUserGoalProposalByStrategy(FixProposalStateDTO proposalState, String goalType) {
-        if (proposalState == null || proposalState.getProposals() == null || Strings.isNullOrEmpty(goalType)) {
-            return null;
-        }
-        String targetStrategy = RepairProposalTaxonomy.normalizeStrategy(goalType);
-        return proposalState.getProposals().stream()
-                .filter(proposal -> RepairProposalTaxonomy.isUserGoalSource(proposal.getProposalSource()))
-                .filter(proposal -> RepairProposalTaxonomy.isReadyStatus(proposal.getStatus()))
-                .filter(RepairProposalApplyPolicy::isLegacyCanonicalProposal)
-                .filter(proposal -> targetStrategy.equals(RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy())))
-                .findFirst()
-                .orElse(null);
     }
 
     private PlanningStateDTO applySupportedFixProposalStrategy(Long tenantId,
