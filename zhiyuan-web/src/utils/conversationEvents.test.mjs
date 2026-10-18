@@ -381,6 +381,10 @@ test('interpretation.preview 是合法 V1 事件，且只放行有界摘要字�
     safetyCoverage: '有保底档位',
     scenarios: [{ label: 'base' }],
     baseLanding: { label: 'base' },
+    caveatDetails: [
+      { text: '审查：本省保底不足', level: 'hard', code: 'safety_guard' },
+      { text: '结构说明，不是录取概率', level: 'soft' },
+    ],
     // 原生结果里的额外字段不该流到页面。
     path: [{ id: 'u1' }],
     evidenceRefs: ['ev_x'],
@@ -389,6 +393,8 @@ test('interpretation.preview 是合法 V1 事件，且只放行有界摘要字�
   assert.equal(payload.planVersion, 5);
   assert.equal(payload.safetyCoverage, '有保底档位');
   assert.deepEqual(payload.scenarios, [{ label: 'base' }]);
+  assert.equal(payload.caveatDetails[0].level, 'hard');
+  assert.equal(payload.caveatDetails[1].level, 'soft');
   assert.equal(payload.path, undefined);
   assert.equal(payload.evidenceRefs, undefined);
 });

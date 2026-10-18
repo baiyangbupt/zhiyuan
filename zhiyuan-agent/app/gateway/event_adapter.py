@@ -172,6 +172,16 @@ def _interpretation_event(item: Mapping[str, Any]) -> dict[str, Any] | None:
             for caveat in (data.get("caveats") or [])[:6]
             if str(caveat).strip()
         ],
+        # J5.2：带 hard/soft 分组的 bounded caveat；旧生产者没有该字段时前端回退扁平 caveats。
+        "caveatDetails": [
+            {
+                "text": str(item.get("text") or "")[:200],
+                "level": "hard" if str(item.get("level") or "") == "hard" else "soft",
+                "code": str(item.get("code") or "") or None,
+            }
+            for item in (data.get("caveatDetails") or [])[:5]
+            if isinstance(item, Mapping) and str(item.get("text") or "").strip()
+        ],
     }
     return {"type": "interpretation.preview", "payload": payload}
 

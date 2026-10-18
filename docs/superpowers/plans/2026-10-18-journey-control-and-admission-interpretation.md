@@ -508,7 +508,11 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
   `docs/superpowers/reviews/2026-10-18-evaluation-golden-shadow-report.md`。
 - [x] 大池样本（10041983，32MB 候选池）纳入 golden：14→15、无 pass/fail 漂移，
   `safety_guard` 与 `count_missing` 硬失败被正确读成 hardFeasible=false。
-- [ ] `objectiveDelta` 接 ActionCompiler；J5.2 剩余部分（ReviewState 变薄视图）。
+- [x] `objectiveDelta` 接 ActionCompiler（J5.2 完成，真栈 900055/900056）。
+- [ ] ReviewState 变薄视图：`checks` 字段删除**暂缓**。消费者审计结论：不能直接删，
+  需分三段——①Web/Agent 双读 findings、checks 回退；②Java 修复/后验改由
+  finding+Registry+affectedEntryRefs 生成内存 check 视图；③旧会话回填或重跑审查后
+  停写 checks。当前 `checks` 仍是旧会话与修复 builder 的必需回退。
 
 ### J5.2 评价接入（第一/二刀，2026-10-18 完成）
 
@@ -528,7 +532,12 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
 - [x] `checks` 标注兼容字段；`generateFixProposals` 以 findings/delta 为入口
   （同一 sourceCheck 只出一条；旧会话无 findings 回退 checks）。真栈 900056：
   篡改 probability_gap delta 策略后 proposal strategy 随之变化。
-- [ ] 删除 checks 字段（待消费者迁移）；解读卡按 hard/soft 分组展示。
+- [x] 解读卡按 hard/soft 分组展示：Java `AdmissionInterpretationRes` 增
+  `caveatDetails{text,level,code}`（与扁平 caveats 同源）；agent 事件只带
+  最多 5 条 bounded 明细；Web 按“硬性要求/其他提醒”分组，旧 payload 无
+  `caveatDetails` 时回退扁平 `caveats`。
+- [ ] 删除 checks 字段：**暂缓**，消费者审计见 J5.0 条目；需先完成
+  Web/Agent 双读、修复/后验迁移、旧会话回填三段。
 
 ## Phase J5/J6（另立路线图：统一目标/评价/优化，含审查）
 

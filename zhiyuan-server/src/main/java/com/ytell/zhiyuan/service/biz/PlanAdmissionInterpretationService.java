@@ -5,6 +5,7 @@ import com.ytell.zhiyuan.model.dto.planning.AdmissionInterpretationReq;
 import com.ytell.zhiyuan.model.dto.planning.AdmissionInterpretationRes;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationProbeMetadataDTO;
+import com.ytell.zhiyuan.model.dto.planning.InterpretationCaveatDTO;
 import com.ytell.zhiyuan.model.dto.planning.InterpretationEntryDTO;
 import com.ytell.zhiyuan.model.dto.planning.LandingScenarioDTO;
 
@@ -56,8 +57,9 @@ public class PlanAdmissionInterpretationService {
             throw new IllegalArgumentException("plan_version_required");
         }
         List<String> caveats = new ArrayList<String>();
+        List<InterpretationCaveatDTO> caveatDetails = new ArrayList<InterpretationCaveatDTO>();
         List<InterpretationEntryDTO> entries = copy(inputEntries);
-        applyCounterfactual(req, entries, caveats);
+        applyCounterfactual(req, entries, caveats, caveatDetails);
         sortByPosition(entries);
 
         AdmissionInterpretationRes res = new AdmissionInterpretationRes();
@@ -65,6 +67,7 @@ public class PlanAdmissionInterpretationService {
         res.setGeneratedAt(OffsetDateTime.now().toString());
         res.setAdmissionMode(resolveMode(req.getAdmissionMode(), entries));
         res.setCaveats(caveats);
+        res.setCaveatDetails(caveatDetails);
         caveats.add("这是方案结构与条件情景说明，不是录取预测；数据不足不等于风险高或低。");
 
         if (entries.isEmpty()) {
@@ -75,7 +78,8 @@ public class PlanAdmissionInterpretationService {
             res.setDataCompleteness(0.0);
             res.setDataCompletenessBand(AdmissionInterpretationRes.COMPLETENESS_SEVERE);
             res.setOrderAnomaly(false);
-            caveats.add("当前没有可解读的方案条目，请先排出方案。");
+            addCaveat(caveats, caveatDetails,
+                    "当前没有可解读的方案条目，请先排出方案。", "soft", null);
             enrichWithFindings(res, findings);
             return res;
         }
@@ -112,7 +116,7 @@ public class PlanAdmissionInterpretationService {
 
         String safetyCoverage = evaluateSafetyCoverage(tierKnown, safeCount, safeKnownRatio);
         res.setSafetyCoverage(safetyCoverage);
-        addCoverageCaveats(caveats, ratioCoverage, safetyCoverage);
+        addCoverageCaveats(caveats, caveatDetails, ratioCoverage, safetyCoverage);
 
         InterpretationEntryDTO baseEntry = firstStableOrSafe(entries);
         InterpretationEntryDTO upsideEntry = bestReach(entries);
@@ -205,6 +209,11 @@ public class PlanAdmissionInterpretationService {
                 String line = findingLine(finding);
                 if (!Strings.isNullOrEmpty(line) && caveatSeen.add(line) && caveatAdded < 4) {
                     res.getCaveats().add(line);
+                    InterpretationCaveatDTO detail = new InterpretationCaveatDTO();
+                    detail.setText(line);
+                    detail.setLevel("hard".equals(finding.getRuleStrength()) ? "hard" : "soft");
+                    detail.setCode(finding.getCode());
+                    res.getCaveatDetails().add(detail);
                     caveatAdded++;
                 }
             }
@@ -260,7 +269,8 @@ public class PlanAdmissionInterpretationService {
 
     private void applyCounterfactual(AdmissionInterpretationReq req,
                                      List<InterpretationEntryDTO> entries,
-                                     List<String> caveats) {
+                                     List<String> caveats,
+                                     List<InterpretationCaveatDTO> caveatDetails) {
         if (req.getCounterfactual() == null
                 || req.getCounterfactual().getRemoveEntryRefs() == null
                 || req.getCounterfactual().getRemoveEntryRefs().isEmpty()) {
@@ -283,7 +293,8 @@ public class PlanAdmissionInterpretationService {
             }
         }
         if (removed == 0) {
-            caveats.add("反事实删除的条目未找到，已按原方案推演。");
+            addCaveat(caveats, caveatDetails,
+                    "反事实删除的条目未找到，已按原方案推演。", "soft", null);
         }
     }
 
@@ -391,18 +402,40 @@ public class PlanAdmissionInterpretationService {
     }
 
     private void addCoverageCaveats(List<String> caveats,
+                                    List<InterpretationCaveatDTO> caveatDetails,
                                     double ratioCoverage,
                                     String safetyCoverage) {
         if (ratioCoverage < 1.0) {
-            caveats.add("部分条目缺少校线录取率，相关情景只能说明档位结构，不能说明录取把握。");
+            addCaveat(caveats, caveatDetails,
+                    "部分条目缺少校线录取率，相关情景只能说明档位结构，不能说明录取把握。", "soft", null);
         }
         if (AdmissionInterpretationRes.SAFETY_NO_COVER.equals(safetyCoverage)) {
-            caveats.add("方案没有可识别的保底档位，这是结构覆盖问题，不是概率结论。");
+            addCaveat(caveats, caveatDetails,
+                    "方案没有可识别的保底档位，这是结构覆盖问题，不是概率结论。", "soft", "safety_guard");
         } else if (AdmissionInterpretationRes.SAFETY_HAS_COVER_DATA_GAP.equals(safetyCoverage)) {
-            caveats.add("方案有保底档位，但缺少校线录取率，无法确认其有效性。");
+            addCaveat(caveats, caveatDetails,
+                    "方案有保底档位，但缺少校线录取率，无法确认其有效性。", "soft", "safety_guard");
         } else if (AdmissionInterpretationRes.SAFETY_UNKNOWN.equals(safetyCoverage)) {
-            caveats.add("档位数据不足，无法判断保底覆盖。");
+            addCaveat(caveats, caveatDetails,
+                    "档位数据不足，无法判断保底覆盖。", "soft", "safety_guard");
         }
+    }
+
+    /** 扁平 caveats 与 structured details 同源写入；同一句只加一次。 */
+    private void addCaveat(List<String> caveats,
+                           List<InterpretationCaveatDTO> caveatDetails,
+                           String text,
+                           String level,
+                           String code) {
+        if (Strings.isNullOrEmpty(text) || caveats.contains(text)) {
+            return;
+        }
+        caveats.add(text);
+        InterpretationCaveatDTO detail = new InterpretationCaveatDTO();
+        detail.setText(text);
+        detail.setLevel(level);
+        detail.setCode(code);
+        caveatDetails.add(detail);
     }
 
     private LandingScenarioDTO buildScenario(String label,

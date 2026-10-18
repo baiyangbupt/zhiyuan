@@ -35,4 +35,6 @@ public class AdmissionInterpretationRes {
     private String dataCompletenessBand;
     private Boolean orderAnomaly;
     private List<String> caveats = new ArrayList<String>();
+    /** 与 caveats 同序的 structured 版本（旧消费者仍读 caveats）。 */
+    private List<InterpretationCaveatDTO> caveatDetails = new ArrayList<InterpretationCaveatDTO>();
 }

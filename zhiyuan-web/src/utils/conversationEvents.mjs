@@ -52,7 +52,7 @@ const V1_PAYLOAD_WHITELIST = {
   'interpretation.preview': [
     'status', 'planVersion', 'admissionMode', 'safetyCoverage',
     'dataCompletenessBand', 'tierCoverage', 'ratioCoverage', 'dataCompleteness',
-    'orderAnomaly', 'baseLanding', 'scenarios', 'caveats',
+    'orderAnomaly', 'baseLanding', 'scenarios', 'caveats', 'caveatDetails',
   ],
   'assistant.delta': ['chunk', 'itemId'],
   'assistant.completed': ['message', 'responseType', 'executionStatus', 'limitations'],

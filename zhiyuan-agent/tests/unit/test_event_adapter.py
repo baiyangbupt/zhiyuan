@@ -128,7 +128,19 @@ def test_event_adapter_emits_bounded_interpretation_preview() -> None:
                         "orderAnomaly": False,
                         "scenarios": scenarios,
                         "baseLanding": scenarios[0],
-                        "caveats": ["结构说明，不是录取概率"],
+                        "caveats": ["审查：本省保底不足", "结构说明，不是录取概率"],
+                        "caveatDetails": [
+                            {
+                                "text": "审查：本省保底不足",
+                                "level": "hard",
+                                "code": "safety_guard",
+                            },
+                            {
+                                "text": "结构说明，不是录取概率",
+                                "level": "soft",
+                                "code": None,
+                            },
+                        ],
                     },
                 }
             }
@@ -146,6 +158,10 @@ def test_event_adapter_emits_bounded_interpretation_preview() -> None:
     assert "path" not in payload["scenarios"][0]
     assert "evidenceRefs" not in payload["scenarios"][0]
     assert len(payload["scenarios"][0]["drivers"]) <= 3
+    assert payload["caveatDetails"][0]["level"] == "hard"
+    assert payload["caveatDetails"][0]["code"] == "safety_guard"
+    assert payload["caveatDetails"][1]["level"] == "soft"
+    assert "path" not in payload["caveatDetails"][0]
 
 
 def test_event_adapter_accepts_interpretation_text_content_fallback() -> None:

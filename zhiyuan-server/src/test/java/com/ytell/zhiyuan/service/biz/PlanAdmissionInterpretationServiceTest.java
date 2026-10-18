@@ -72,6 +72,9 @@ public class PlanAdmissionInterpretationServiceTest {
         LandingScenarioDTO noSafe = scenario(res, LandingScenarioDTO.LABEL_NO_SAFE);
         assertNotNull(noSafe);
         assertEquals(LandingScenarioDTO.STRUCTURE_NO_SAFE, noSafe.getStructureStatus());
+        assertTrue(res.getCaveatDetails().stream()
+                .anyMatch(detail -> "soft".equals(detail.getLevel())
+                        && detail.getText().contains("没有可识别的保底档位")));
     }
 
     @Test
@@ -303,6 +306,10 @@ public class PlanAdmissionInterpretationServiceTest {
                 .anyMatch(line -> line.contains("审查：本省保底不足")));
         assertFalse(res.getCaveats().stream().anyMatch(line -> line.contains("比例")));
         assertFalse(res.getCaveats().stream().anyMatch(line -> line.contains("概率")));
+        assertTrue(res.getCaveatDetails().stream()
+                .anyMatch(detail -> "hard".equals(detail.getLevel())
+                        && "safety_guard".equals(detail.getCode())
+                        && detail.getText().contains("本省保底不足")));
     }
 
     private AdmissionInterpretationRes interpret(List<InterpretationEntryDTO> entries) {
