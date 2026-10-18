@@ -270,5 +270,14 @@ canonicalization。
 - **指标对比**：`StagedSolverGoldenComparisonTest` 在 5 个 legacy-ready
   会话上五维全部不劣；10041983 同一补偿安全候选宇宙 utility
   staged 4995 vs legacy 4937；另 5 个 legacy no_change 会话指标相同。
-- 全量 Java：**1239 tests / 0 failures / 0 errors / 10 skipped**（含默认
+- **终审复审修复（2026-10-18 深夜）**：
+  - TTL 锚点改为 `update_time`（缺失回退 `create_time`），避免同一行
+    create_time 永不重置导致重新 upsert 后被立即过期；
+  - Q13 同时匹配 `mustExcludeRegionIds`（ID 从池内同省候选取），与
+    eligibility 完全同源；
+  - Q14 legacy 路径在 solver 输入前剔除 retained 的 entityId，避免
+    duplicate entityId 把点名加入/替换 preview 误 block；
+  - golden comparison 在 legacy=ready 而 staged 不 ready 时直接失败，并
+    要求至少一个可比较会话。
+- 全量 Java：**1241 tests / 0 failures / 0 errors / 10 skipped**（含默认
   skip 的 2 个 env-gated golden 测试）。

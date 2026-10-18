@@ -1,12 +1,11 @@
 package com.ytell.zhiyuan.service.biz;
 
 import com.google.common.base.Strings;
+import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
-
-import java.util.List;
 
 /**
  * 本省保底口径的唯一来源。
@@ -31,7 +30,10 @@ final class SafetyFloorSupport {
         HardConstraintsDTO hard = state == null || state.getConstraintState() == null
                 ? null : state.getConstraintState().getHardConstraints();
         // 排除是硬事实：命中即 not_applicable，与分数无关（分数只决定未排除时是否需要保底）。
-        if (!Strings.isNullOrEmpty(sourceProvince) && excludesProvince(hard, sourceProvince)) {
+        // ID 优先：regionPreferenceIds 写入的 mustExcludeRegionIds 只有 ID，没有名字。
+        if (!Strings.isNullOrEmpty(sourceProvince)
+                && RepairCandidateEligibility.isRegionExcluded(
+                hard, sourceProvince, null, sourceProvinceId(pool, sourceProvince), null)) {
             target.setMinLocalProtect(0);
             target.setSafetyFloorMode("not_applicable");
             target.setSafetyFloorReasonCode("province_excluded");
@@ -56,27 +58,21 @@ final class SafetyFloorSupport {
     }
 
     /**
-     * 与 {@link RepairCandidateEligibility} 的区域判据同源（{@link RegionScopeSupport}）：
-     * 大区表 + 规范化身份相等（`"浙江省"`＝`"浙江"`、`"内蒙古自治区"`＝`"内蒙古"`），
-     * 不做双向子串放大。
+     * 生源省 ID 未单独存储；从候选池里取同省的候选省份 ID。
+     * 池里没有同省候选时返回 null，此时只剩名字判据（不会误判成 not_applicable）。
      */
-    private static boolean excludesProvince(HardConstraintsDTO hard, String sourceProvince) {
-        if (hard == null) {
-            return false;
+    private static String sourceProvinceId(CandidatePoolStateDTO pool, String sourceProvince) {
+        if (pool == null || pool.getItems() == null) {
+            return null;
         }
-        List<String> excluded = hard.getMustExcludeRegions();
-        if (excluded == null) {
-            return false;
-        }
-        for (String value : excluded) {
-            if (Strings.isNullOrEmpty(value)) {
+        for (CandidateItemDTO candidate : pool.getItems()) {
+            if (candidate == null || Strings.isNullOrEmpty(candidate.getProvinceId())) {
                 continue;
             }
-            if (RegionScopeSupport.matchesRegionScope(value, sourceProvince, null)
-                    || RegionScopeSupport.sameRegionName(sourceProvince, value)) {
-                return true;
+            if (RegionScopeSupport.sameRegionName(candidate.getProvinceName(), sourceProvince)) {
+                return candidate.getProvinceId();
             }
         }
-        return false;
+        return null;
     }
 }

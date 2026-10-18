@@ -86,6 +86,22 @@ class PendingConfirmationSharedServiceTest {
     }
 
     @Test
+    void recentUpdateTimeKeepsOldCreatedRowActive() {
+        // tenant/session 只有一行；create_time 永不重置。重新 upsert 后应按
+        // 最近状态变化（update_time）放行，不能被旧的 create_time 立即判过期。
+        PendingConfirmationEntity active = entity("active", minutesAgo(25L * 60L));
+        active.setUpdateTime(minutesAgo(5L));
+        InMemorySharedService service = new InMemorySharedService(active);
+        ReflectionTestUtils.setField(service, "pendingTtlMinutes", 1440L);
+
+        PendingConfirmationEntity current = service.getCurrent(1L, 101L);
+
+        assertNotNull(current);
+        assertEquals("active", current.getStatus());
+        assertEquals(0, service.updateCalls);
+    }
+
+    @Test
     void staleActiveShouldExpireAndActiveOrApplyingShouldReturnNull() {
         InMemorySharedService service =
                 new InMemorySharedService(entity("active", minutesAgo(25L * 60L)));

@@ -97,8 +97,11 @@ public class PendingConfirmationSharedService
         if (pendingTtlMinutes <= 0L || current.getRevision() == null) {
             return false;
         }
-        Date anchor = current.getCreateTime() != null
-                ? current.getCreateTime() : current.getUpdateTime();
+        // 用“最近一次状态变化”做锚点：tenant/session 只有一行，create_time 永不重置，
+        // 若按 create_time 计，24h 后重新 upsert 的 active 行会被下一次读立即判过期。
+        // update_time 由 DB on update 维护，claim/upsert 都会刷新。
+        Date anchor = current.getUpdateTime() != null
+                ? current.getUpdateTime() : current.getCreateTime();
         if (anchor == null) {
             return false;
         }

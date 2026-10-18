@@ -39,7 +39,7 @@ staged solver 的灰度/回滚，不改变产品口径。
 | 大池 | golden 10041983（12,510 候选）ready 80，`candidate_cap_applied`，239ms |
 | golden 回归 | 900018/28/38/900040/900045/900016/900047/10041981/10041983/10041984 全部 ready；两次运行 selected 完全一致 |
 | golden 指标对比 | `StagedSolverGoldenComparisonTest`：5 个 legacy-ready 会话五维（coverage/tierDev/churn/protectDef/utility）全部不劣；10041983 同一补偿安全候选宇宙 staged utility 4995 vs legacy 4937；另 5 个 legacy no_change 会话指标逐项相同 |
-| 全量 Java | 1239 tests / 0 failures / 0 errors / 10 skipped（含默认 skip 的 env-gated golden） |
+| 全量 Java | 1241 tests / 0 failures / 0 errors / 10 skipped（含默认 skip 的 env-gated golden） |
 
 golden 回归命令（只读文件，不连库）：
 
@@ -52,7 +52,9 @@ STAGED_SOLVER_GOLDEN_FILES="/path/state.json[|/path/pool.json],..." \
 ## 3. 已知边界（不阻塞灰度，但切默认前需处理或明确接受）
 
 1. **pending TTL 已实现**：`planning.pending.ttl-minutes` 默认 1440（24h），
-   `<=0` 关闭。只过期 `active` 行（锚点 create_time/update_time），CAS 成
+   `<=0` 关闭。只过期 `active` 行，锚点取 **update_time**（缺失回退
+   create_time）——tenant/session 只有一行，create_time 永不重置，按它计
+   会让 24h 后重新 upsert 的 active 行被下一次读立即判过期。CAS 成
    `expired`；`applying` 的 claim 租约完全不碰。读路径
    `getActiveOrApplying` 过期后返回 null，`getCurrent` 返回 expired（upsert
    仍可按 revision 接续），旧 revision 确认会在 CAS 处 40902。
@@ -65,13 +67,17 @@ STAGED_SOLVER_GOLDEN_FILES="/path/state.json[|/path/pool.json],..." \
 3. **单元档位冲突**：无 tier 目标时 snapshot 也 409 `tier_fact_conflict`；
    等 J5.4/数据侧确认后放宽。
 4. **Q13 / Q14 已收口（2026-10-18 深夜）**：
-   - Q13：生源省被 `mustExcludeRegions` 明确排除时，`SafetyFloorSupport`
-     返回 `not_applicable` / `minLocalProtect=0` / `province_excluded`；
-     省名匹配改用与 `RepairCandidateEligibility` 同源的 `RegionScopeSupport`
-     （规范化身份 + 大区表，不做双向子串放大）。
+   - Q13：生源省被 `mustExcludeRegions` / `mustExcludeRegionIds` 明确排除时，
+     `SafetyFloorSupport` 返回 `not_applicable` / `minLocalProtect=0` /
+     `province_excluded`；判据直接复用 `RepairCandidateEligibility` 的区域
+     排除（名字 + ID，ID 优先）。ID 从候选池里同省候选的 `provinceId` 取；
+     池里没有同省候选时只走名字判据，不会误判。省名匹配用
+     `RegionScopeSupport`（规范化身份 + 大区表，不做双向子串放大）。
    - Q14：named-add 的纯加入与替换都支持换入已有组；目标总数按
      **新增单元数**（`addedUnitIds - currentUnitIds`）计算，不再把“已有组
      加专业”算成 +1 个单元。`addedUnitCount` 仍展示涉及多少个组。
+     solver 输入前把已在 retained 里的 entityId 从 available 剔除，避免
+     旧路径 duplicate entityId 把 preview 误 block。
      add-by-scope 继续跳过已有组（不会产生重复 entityId）。
 5. **diversity 未实现**：层序保留位置，默认 off。
 6. **refill 目标口径**：每档 `max(当前, 池目标)`，所以用户目标 44 时池目标

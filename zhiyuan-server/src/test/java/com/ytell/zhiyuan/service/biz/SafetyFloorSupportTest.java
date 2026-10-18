@@ -1,5 +1,6 @@
 package com.ytell.zhiyuan.service.biz;
 
+import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
@@ -66,6 +67,25 @@ class SafetyFloorSupportTest {
     void excludedSourceProvinceIsNotApplicableRegardlessOfScore() {
         PlanningStateDTO state = state(600, "浙江");
         state.getConstraintState().setHardConstraints(hard("浙江"));
+
+        StructureTargetDTO target = SafetyFloorSupport.build(state);
+
+        assertEquals(0, target.getMinLocalProtect());
+        assertEquals("not_applicable", target.getSafetyFloorMode());
+        assertEquals("province_excluded", target.getSafetyFloorReasonCode());
+    }
+
+    @Test
+    void excludedSourceProvinceByIdMakesNotApplicable() {
+        PlanningStateDTO state = state(550, "浙江");
+        HardConstraintsDTO hard = new HardConstraintsDTO();
+        hard.setMustExcludeRegionIds(Arrays.asList("330000"));
+        state.getConstraintState().setHardConstraints(hard);
+        CandidateItemDTO local = new CandidateItemDTO();
+        local.setVolunteerId("v1");
+        local.setProvinceId("330000");
+        local.setProvinceName("浙江");
+        state.getCandidatePoolState().getItems().add(local);
 
         StructureTargetDTO target = SafetyFloorSupport.build(state);
 

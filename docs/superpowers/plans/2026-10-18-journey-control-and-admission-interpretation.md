@@ -617,7 +617,9 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
     `planning.pending.ttl-minutes=1440`（只过期 active，applying 租约
     不动）；`StagedSolverGoldenComparisonTest` 五维不劣
     （10041983 同补偿安全宇宙 utility 4995 vs legacy 4937）。
-    全量 Java 1239/0/0/10。
+    终审复审后再修：TTL 锚点 update_time（防重新 upsert 即过期）、Q13
+    补 mustExcludeRegionIds、Q14 legacy available 剔除 retained entityId、
+    comparison 在 legacy ready/staged 不 ready 时失败。全量 Java 1241/0/0/10。
 - J5.4 后置条件 + 审查：统一 `UnifiedPlanPostconditionValidator`；审查读同一
   `StructureVector`/`PlanEvaluation`；review tierQuotaGoal 与 solver 一致。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；

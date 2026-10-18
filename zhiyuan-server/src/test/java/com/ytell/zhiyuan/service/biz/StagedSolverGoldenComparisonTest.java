@@ -54,6 +54,7 @@ class StagedSolverGoldenComparisonTest {
 
     private final StagedDeterministicPlanSolver stagedSolver = new StagedDeterministicPlanSolver();
     private final DeterministicPlanSolver legacySolver = new OjalgoDeterministicPlanSolver();
+    private int comparedSessions = 0;
 
     @Test
     void stagedSolverIsNotWorseThanLegacyOnGoldenSessions() throws Exception {
@@ -116,6 +117,9 @@ class StagedSolverGoldenComparisonTest {
         }
         Files.write(reportFile.toPath(), report.toString().getBytes(StandardCharsets.UTF_8));
         System.out.println(report);
+        if (comparedSessions == 0) {
+            failures.add("no session was comparable (legacy never ready); the harness proved nothing");
+        }
         if (!failures.isEmpty()) {
             fail("Staged solver golden comparison failed:\n" + String.join("\n", failures));
         }
@@ -198,6 +202,7 @@ class StagedSolverGoldenComparisonTest {
         // 2. 只在旧 solver status=ready 时做五维比较；staged blocked 时比较无意义。
         if ("ready".equals(legacyStatus)) {
             if ("ready".equals(stagedStatus)) {
+                comparedSessions++;
                 List<String> deltas = compare(name, stagedMetrics, legacyMetrics);
                 failures.addAll(deltas);
                 if (!deltas.isEmpty()) {
@@ -208,7 +213,10 @@ class StagedSolverGoldenComparisonTest {
                     note.append("all 5 metrics not worse");
                 }
             } else {
-                note.append("comparison skipped (staged not ready)");
+                // 旧 solver 可行而新 solver 不可行，是切流前必须解释的回归；
+                // 不能只写 note 跳过比较。
+                failures.add(name + ": staged=" + stagedStatus + " while legacy=ready");
+                note.append("FAILED: staged not ready while legacy ready; ");
             }
         } else {
             String legacyReason = legacyResult.getDiagnostics().isEmpty()

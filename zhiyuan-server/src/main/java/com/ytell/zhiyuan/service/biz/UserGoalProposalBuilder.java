@@ -1494,7 +1494,8 @@ final class UserGoalProposalBuilder {
             solverObjectiveSet.setTargetCount(targetAfter);
             List<CoverageEntity> retained = buildRetainedCoverageEntities(
                     current, new FillCurrentProjection(), unitMode);
-            List<FillOption> available = buildAddFillOptions(resolved, unitMode);
+            List<FillOption> available = excludeRetainedOptions(
+                    buildAddFillOptions(resolved, unitMode), retained, unitMode);
             PlanSolverResultDTO solved;
             if (SolverShadowSupport.pathEnabled(solverPath)) {
                 MutationPolicyDTO policy = new MutationPolicyDTO();
@@ -1598,7 +1599,8 @@ final class UserGoalProposalBuilder {
             projection.removeUnitIds.addAll(removal.unitIds);
             projection.removeVolunteerIds.addAll(removal.volunteerIds);
             List<CoverageEntity> retained = buildRetainedCoverageEntities(current, projection, unitMode);
-            List<FillOption> available = buildAddFillOptions(resolved, unitMode);
+            List<FillOption> available = excludeRetainedOptions(
+                    buildAddFillOptions(resolved, unitMode), retained, unitMode);
             PlanSolverResultDTO solved;
             if (SolverShadowSupport.pathEnabled("replace")) {
                 MutationPolicyDTO policy = new MutationPolicyDTO();
@@ -1673,6 +1675,26 @@ final class UserGoalProposalBuilder {
             result.message = "当前环境无法完成替换前的只读校验（dry-run），为避免确认后失败，本次不生成可确认卡。";
             return result;
         }
+    }
+
+    /**
+     * Q14：换入专业落在已有组时，该组已作为 retained 进入 solver；若 available
+     * 再保留同一个 entityId，旧 solver 的 candidate_fact_invalid（重复 id）会把
+     * 整个点名加入/替换 preview 阻断。available 只放真正新增的实体。
+     */
+    private static List<FillOption> excludeRetainedOptions(List<FillOption> options,
+                                                           List<CoverageEntity> retained,
+                                                           boolean unitMode) {
+        Set<String> retainedIds = defaultList(retained).stream()
+                .map(entity -> entity.entityId(unitMode))
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (retainedIds.isEmpty()) {
+            return options;
+        }
+        return defaultList(options).stream()
+                .filter(option -> !retainedIds.contains(option.entityId(unitMode)))
+                .collect(Collectors.toList());
     }
 
     private static List<FillOption> buildAddFillOptions(List<CandidateItemDTO> resolved, boolean unitMode) {

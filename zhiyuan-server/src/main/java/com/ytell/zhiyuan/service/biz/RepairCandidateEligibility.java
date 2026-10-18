@@ -94,6 +94,17 @@ final class RepairCandidateEligibility {
         return false;
     }
 
+    /**
+     * Safety floor 等非候选上下文复用同一区域排除判据（名字 + ID，ID 优先）。
+     * 不能只比名字：`regionPreferenceIds` 写出的 `mustExcludeRegionIds` 是仅 ID 的。
+     */
+    static boolean isRegionExcluded(HardConstraintsDTO hard,
+                                    String provinceName, String cityName,
+                                    String provinceId, String cityId) {
+        return hard != null && regionExcluded(hard.getMustExcludeRegions(),
+                hard.getMustExcludeRegionIds(), provinceName, cityName, provinceId, cityId);
+    }
+
     private static boolean regionExcluded(List<String> excludeNames, List<String> excludeIds,
                                           String provinceName, String cityName,
                                           String provinceId, String cityId) {

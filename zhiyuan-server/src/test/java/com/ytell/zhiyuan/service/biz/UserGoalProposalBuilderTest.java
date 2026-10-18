@@ -2491,6 +2491,7 @@ public class UserGoalProposalBuilderTest {
     void shouldNotIncreaseUnitTargetWhenPureAddJoinsExistingUnit() {
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(1);
         CandidateItemDTO v1 = candidate("v1", "湖南大学第110组", "专业v1", "管理学", 90D);
         v1.setPlanSchoolDataId("u1");
         CandidateItemDTO v2 = candidate("v2", "湖南大学第110组", "专业v2", "管理学", 90D);
@@ -2881,6 +2882,7 @@ public class UserGoalProposalBuilderTest {
     void shouldUseUnitCountForAddUnitsTargetOverrideInMajorGroupMode() {
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(1);
         for (String id : new String[]{"v1", "v2", "v3", "v4"}) {
             CandidateItemDTO item = candidate(id, "湖南大学第110组", "专业" + id, "管理学", 90D);
             item.setPlanSchoolDataId(id.equals("v3") || id.equals("v4") ? "u2" : "u1");
