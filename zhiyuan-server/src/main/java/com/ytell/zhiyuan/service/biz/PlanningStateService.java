@@ -2996,6 +2996,24 @@ public class PlanningStateService {
         throw writeCasConflict("偏好变更");
     }
 
+    /**
+     * J4a：学费区间直接写入 userScoreDetail 后，同步把规划状态标成“约束变更”。
+     *
+     * <p>学费是 effective candidates 的过滤条件，但不属于候选源数据；这里复用
+     * {@link ReviewInvalidationPolicy#markConstraintIntentStale}（推荐/方案/审查重算），
+     * 不把 candidatePool 本身标脏。没有规划状态行（纯建档前会话）时只写学费，不建状态。</p>
+     */
+    public PlanningStateVersionDTO markTuitionRangeUpdated(Long chatSessionId) {
+        if (chatSessionId == null) {
+            return null;
+        }
+        PlanningStateDTO state = loadPlanningStateReadOnly(chatSessionId);
+        if (state == null || state.getBaselineDataValue() == null) {
+            return null;
+        }
+        return touchAndSaveConstraint(chatSessionId, state, s -> { });
+    }
+
     private PlanningStateVersionDTO touchAndSaveConstraint(Long chatSessionId,
                                                            PlanningStateDTO state,
                                                            Consumer<PlanningStateDTO> reapply) {

@@ -213,6 +213,7 @@ public class ChatSessionBizService {
      * @param max           学费上限
      * @return 是否更新成功
      */
+    @Transactional(rollbackFor = Exception.class)
     public Boolean updateTuitionRange(Long tenantId, Long chatSessionId, Integer min, Integer max) {
 
         // 参数基本校验
@@ -241,6 +242,8 @@ public class ChatSessionBizService {
 
         userScoreData.setDataValue(JSONObject.toJSONString(scoreDetail));
         chatSessionExtraDataSharedService.updateById(userScoreData);
+        // J4a：学费过滤条件变了，推荐/方案/审查必须重算；与 scope 约束同一 stale 口径。
+        planningStateService.markTuitionRangeUpdated(chatSessionId);
         return true;
     }
 

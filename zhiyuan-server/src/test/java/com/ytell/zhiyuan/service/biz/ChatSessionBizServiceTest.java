@@ -430,6 +430,26 @@ public class ChatSessionBizServiceTest {
     }
 
     @Test
+    void shouldMarkPlanningStaleAfterDirectTuitionRangeUpdate() {
+        ChatSessionExtraData row = new ChatSessionExtraData();
+        row.setDataKey(ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        row.setDataValue("{\"totalScore\":650,\"tuitionRange\":{\"min\":0,\"max\":10000}}");
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                SESSION_ID, ChatSessionExtraDataConstants.USER_SCORE_KEY)).thenReturn(row);
+        PlanningStateVersionDTO version = new PlanningStateVersionDTO();
+        version.setVersion(8);
+        when(planningStateService.markTuitionRangeUpdated(SESSION_ID)).thenReturn(version);
+
+        Boolean updated = chatSessionBizService.updateTuitionRange(TENANT_ID, SESSION_ID, 0, 20000);
+
+        assertTrue(updated);
+        verify(chatSessionExtraDataSharedService).updateById(row);
+        verify(planningStateService).markTuitionRangeUpdated(SESSION_ID);
+        JSONObject saved = JSONObject.parseObject(row.getDataValue());
+        assertEquals(20000, saved.getJSONObject("tuitionRange").getIntValue("max"));
+    }
+
+    @Test
     void shouldFillScoreDetailIntoEmptySessionAndReportVersionAndReload() {
         login(USER_ID);
         stubSuccessfulScoreUpdateDependencies();
