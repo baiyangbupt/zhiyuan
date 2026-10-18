@@ -179,6 +179,15 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "不是 0，不得凭印象补齐）；结论只能引用 cells 里带 source 的值。"
         + _ARTIFACT_REF_HINT
     ),
+    "planning.interpret_admission": (
+        "当前方案的**结构与条件情景**解读（只读）：按实际志愿顺序给出"
+        "基准（首个稳/保）、向上（冲档最高校线率）、向下（最后保底）和无保底情景，"
+        "并给出安全覆盖、数据完整度与顺序异常。"
+        "**这不是录取预测**：没有录取概率/滑档概率，不得把情景说成概率数字；"
+        "缺数据如实标 unknown/数据缺口，不得估算补齐。"
+        "planVersion 必填（用快照里的方案版本）；版本不符会回 stale_interpretation，"
+        "此时先重新读取状态再解释。反事实只支持 removeEntryRefs（移出若干条目后重看）。"
+    ),
     "recommendation.explain_fit": (
         "解释某个候选为什么匹配/不匹配（只读）；概率不可用一律如实说；"
         "只引用带 source 的条目。"
@@ -379,6 +388,45 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "required": ["entityId"],
         "additionalProperties": False,
     },
+    # 录取解读：planVersion 必填（快照里的方案版本）；身份字段不在这里。
+    # 反事实 MVP 只支持 removeEntryRefs；add/replace/reorder 由 Java 回
+    # unsupported_counterfactual（不在 schema 层假装支持）。
+    "planning.interpret_admission": {
+        "type": "object",
+        "properties": {
+            "planVersion": {
+                "type": "integer",
+                "description": "当前方案版本（快照里的 planVersion/stateVersion）",
+            },
+            "admissionMode": {
+                "type": "string",
+                "enum": ["major", "major_group"],
+                "description": "可省略；省略时由服务端按会话模式判定",
+            },
+            "counterfactual": {
+                "type": "object",
+                "properties": {
+                    "removeEntryRefs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "level": {"type": "string", "enum": ["unit", "volunteer"]},
+                                "id": {"type": "string"},
+                            },
+                            "required": ["level", "id"],
+                            "additionalProperties": False,
+                        },
+                        "description": "移出这些条目后重新解读（MVP 只支持 remove）",
+                    },
+                },
+                "required": ["removeEntryRefs"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["planVersion"],
+        "additionalProperties": False,
+    },
 }
 
 TOOL_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -402,7 +450,7 @@ TOOL_OUTPUT_SCHEMA: dict[str, Any] = {
             "type": "string",
             # `orderedPlan` = 排序后的当前方案（方案读命中 ordered-plan 源时的 kind）；
             # `workingPlan` = 工作台方案/排序方案生成前的工作区。
-            "enum": ["catalog", "history", "probability", "enrollment", "policy", "eligibility", "workingPlan", "orderedPlan", "comparison", "candidate"],
+            "enum": ["catalog", "history", "probability", "enrollment", "policy", "eligibility", "workingPlan", "orderedPlan", "comparison", "candidate", "interpretation"],
         },
         "status": {"type": "string"},
         "data": {},

@@ -449,3 +449,44 @@ def test_projection_passes_through_unrecognizable_non_mapping_fields_loudly() ->
 
     with pytest.raises(ValidationError):
         build_snapshot(payload)
+
+
+def test_projection_passes_journey_block_through() -> None:
+    workspace = fake_backend_workspace()
+    workspace["journey"] = {"hasPlan": True, "planVersion": 42, "planInterpretable": True}
+
+    snapshot = build_snapshot(workspace)
+
+    assert snapshot.journey == workspace["journey"]
+
+
+def test_projection_rejects_non_mapping_journey() -> None:
+    workspace = fake_backend_workspace()
+    workspace["journey"] = ["not-an-object"]
+
+    with pytest.raises(ValueError, match="journey must be an object"):
+        build_snapshot(workspace)
+
+
+def test_diff_includes_journey_when_block_changes() -> None:
+    before_workspace = fake_backend_workspace()
+    before_workspace["journey"] = {"hasPlan": False, "planVersion": 42}
+    after_workspace = fake_backend_workspace()
+    after_workspace["version"] = 43
+    after_workspace["journey"] = {"hasPlan": True, "planVersion": 43}
+
+    patch = diff_snapshots(build_snapshot(before_workspace), build_snapshot(after_workspace))
+
+    assert "journey" in {change["path"] for change in patch.changes}
+
+
+def test_state_patch_accepts_journey_path() -> None:
+    from app.gateway.contracts import StatePatch
+
+    patch = StatePatch(
+        baseVersion=42,
+        targetVersion=43,
+        changes=[{"path": "journey", "oldValue": None, "newValue": {"hasPlan": True}}],
+    )
+
+    assert patch.changes[0]["path"] == "journey"

@@ -16,6 +16,7 @@ SKILL_NAMES = {
     "candidate-recommendation",
     "plan-construction",
     "plan-final-review",
+    "plan-admission-interpretation",
 }
 REQUIRED_SECTIONS = (
     "## 适用条件",

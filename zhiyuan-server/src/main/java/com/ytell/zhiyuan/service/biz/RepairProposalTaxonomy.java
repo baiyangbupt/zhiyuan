@@ -54,6 +54,8 @@ final class RepairProposalTaxonomy {
         static final String MUST_INCLUDE_SCOPE = "must_include_scope";
         static final String EXCLUDE_SCOPE = "exclude_scope";
         static final String TUITION_BUDGET_SCOPE = "tuition_budget_scope";
+        static final String ADD_UNITS = "add_units";
+        static final String ADD_UNITS_BY_SCOPE = "add_units_by_scope";
         static final String NO_OP = "no_op";
         static final String CANNOT_SATISFY = "cannot_satisfy";
 
@@ -280,6 +282,8 @@ final class RepairProposalTaxonomy {
         result.put(Strategy.MUST_INCLUDE_SCOPE, unmodifiableSet(ActionType.ADD_VOLUNTEERS, ActionType.REPLACE_VOLUNTEERS));
         result.put(Strategy.EXCLUDE_SCOPE, unmodifiableSet(ActionType.REMOVE_VOLUNTEERS, ActionType.REPLACE_VOLUNTEERS));
         result.put(Strategy.TUITION_BUDGET_SCOPE, unmodifiableSet(ActionType.REMOVE_VOLUNTEERS, ActionType.REPLACE_VOLUNTEERS));
+        result.put(Strategy.ADD_UNITS, unmodifiableSet(ActionType.ADD_VOLUNTEERS));
+        result.put(Strategy.ADD_UNITS_BY_SCOPE, unmodifiableSet(ActionType.ADD_VOLUNTEERS));
         result.put(Strategy.NO_OP, unmodifiableSet(ActionType.NO_OP));
         result.put(Strategy.CANNOT_SATISFY, unmodifiableSet(ActionType.NO_OP));
         return Collections.unmodifiableMap(result);

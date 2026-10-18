@@ -16,6 +16,7 @@ from app.gateway.service import GatewayService
 from app.gateway.session_lifecycle import SessionLifecycle
 from app.gateway.session_reclaim import SessionReclaimPreflight
 from app.gateway.session_runtime import SessionRuntime
+from app.gateway.task_ledger import RedisTaskLedger
 from app.gateway.user_input import PendingInput, UserInputBroker, UserInputError
 from app.util.internal_client import load_pending_for_reclaim
 
@@ -174,6 +175,8 @@ async def build_gateway_runtime(
     )
     codex.set_server_request_handler(broker.handle_server_request)
     lifecycle = SessionLifecycle()
+    # 任务账本只存 intentDraft/changeSet 元数据；没配 Redis 时显式降级为进程内。
+    task_ledger = RedisTaskLedger.from_settings()
     gateway = GatewayService(
         mode=mode,
         codex=codex,
@@ -187,6 +190,7 @@ async def build_gateway_runtime(
         current_binding_loader=current_binding_loader,
         evidence_verifier=evidence_verifier,
         artifact_store=artifact_store,
+        task_ledger=task_ledger,
         lifecycle=lifecycle,
     )
 

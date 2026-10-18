@@ -22,4 +22,16 @@ public class PendingPlanningCommandRes {
     private List<String> completedSteps = Lists.newArrayList();
     private PlanChangePostconditionReportDTO postconditionReport;
     private PlanningStateDTO planningState;
+    /** add_units 的逐条回执（冻结命令执行后的净变化）。 */
+    private List<String> addedVolunteerIds = Lists.newArrayList();
+    private List<String> addedUnitIds = Lists.newArrayList();
+    private Integer addedVolunteerCount;
+    private Integer addedUnitCount;
+    private Integer removedVolunteerCount;
+    private Integer targetCountBefore;
+    private Integer targetCountAfter;
+    /** 约束执行后的数量缺口（纯学费/替换类）：0 = 总数保持；>0 正常会被 40905 回滚。 */
+    private Integer shortage;
+    /** 紧凑审查回执（summary + top checks）；完整 reviewState 仍在 planningState 里。 */
+    private ReviewStateDTO reviewState;
 }

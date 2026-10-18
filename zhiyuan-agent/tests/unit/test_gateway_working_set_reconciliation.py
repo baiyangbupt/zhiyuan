@@ -104,7 +104,7 @@ async def _turn(gateway: GatewayService, turn_id: str) -> dict[str, Any]:
 
 
 def _model_payload(
-    codex: RecordingCodex, *, turn_index: int = 1, item_index: int = 1
+    codex: RecordingCodex, *, turn_index: int = 1, item_index: int = 2
 ) -> dict[str, Any]:
     text = codex.turns[turn_index][item_index]["text"]
     payload, _remaining = json.JSONDecoder().raw_decode(text[text.index("{") :])
@@ -164,7 +164,7 @@ async def test_null_snapshot_proposal_does_not_revive_previous_proposal(
 
     assert _model_payload(codex)["activeProposal"] is None
     assert result["workingSet"]["activeProposal"] is None
-    assert _model_payload(codex, item_index=2)["taskFamily"] == "unclassified"
+    assert _model_payload(codex, item_index=3)["taskFamily"] == "unclassified"
 
 
 @pytest.mark.asyncio
@@ -180,7 +180,7 @@ async def test_removed_proposal_does_not_mask_current_missing_facts() -> None:
     workspace["studentSummary"] = {"provinceName": "浙江"}
     await _turn(gateway, "second")
 
-    plan = _model_payload(codex, item_index=2)
+    plan = _model_payload(codex, item_index=3)
     assert plan["taskFamily"] == "clarification"
     assert plan["blockedSteps"] == ["score", "rank"]
 
@@ -206,7 +206,7 @@ async def test_new_snapshot_proposal_remains_available_for_confirmation() -> Non
     assert proposal["sourceVersion"] == 8
     assert proposal["requiresConfirmation"] is True
     assert result["workingSet"]["activeProposal"] == proposal
-    assert _model_payload(codex, item_index=2)["taskFamily"] == "confirmation"
+    assert _model_payload(codex, item_index=3)["taskFamily"] == "confirmation"
 
 
 @pytest.mark.asyncio
@@ -261,7 +261,7 @@ async def test_fact_refresh_preserves_candidates_and_source_turn_in_model_contex
     assert context["lastResponseType"] == "text"
     assert result["workingSet"]["candidateEntities"] == context["candidateEntities"]
     assert result["workingSet"]["lastTurnId"] == "second"
-    context_text = codex.turns[1][1]["text"]
+    context_text = codex.turns[1][2]["text"]
     assert "当前候选学校：甲大学（ID=school-1）" in context_text
     assert "不要说看不到候选" in context_text
     assert "当前工作集未保留候选对象" not in context_text
@@ -295,7 +295,7 @@ async def test_snapshot_scope_change_still_invalidates_previous_candidates(
     assert context["candidateSet"]["sourceTurnId"] is None
     assert context["candidateSet"]["scopeVersion"] == 8
     assert result["workingSet"]["candidateEntities"] == []
-    context_text = codex.turns[1][1]["text"]
+    context_text = codex.turns[1][2]["text"]
     assert "不要说看不到候选" not in context_text
     assert "当前工作集未保留候选对象" in context_text
     assert "不代表线程历史中从未出现候选" in context_text
@@ -309,7 +309,7 @@ async def test_cold_turn_injects_history_aware_missing_candidate_guidance() -> N
 
     result = await _turn(gateway, "first")
 
-    context_text = codex.turns[0][1]["text"]
+    context_text = codex.turns[0][2]["text"]
     context = _model_payload(codex, turn_index=0)
     assert context["candidateEntities"] == []
     assert context["candidateSet"]["sourceTurnId"] is None

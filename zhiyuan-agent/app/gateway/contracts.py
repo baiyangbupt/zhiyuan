@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.admission.facts import AdmissionFactError, canonical_admission_mode, derive_risk_tier
 from app.domain.career_slots import CAREER_LABEL_MAP, merge_career_labels, normalize_career_labels
+from app.gateway.intent_draft import IntentDraft
+from app.gateway.rule_fields import ProposalRuleDomain, ProposalRuleKey
 
 
 class _ContractModel(BaseModel):
@@ -207,26 +209,6 @@ _PRIORITY_RULE_KEYS_BY_DOMAIN: dict[str, tuple[str, ...]] = {
     "admission": ("tier",),
 }
 
-ProposalRuleDomain = Literal["region", "major", "school", "admission"]
-ProposalRuleKey = Literal[
-    "province",
-    "city",
-    "area",
-    "region_group",
-    "major",
-    "level1",
-    "level2",
-    "level3",
-    "major_tag",
-    "school",
-    "schools",
-    "school_nature",
-    "program_type",
-    "school_category",
-    "school_level",
-    "school_tag",
-    "tier",
-]
 
 
 def _require_supported_rule_field(domain: str, key: str) -> None:
@@ -298,6 +280,26 @@ class ProposalContext(_ContractModel):
     max_tuition_per_year: int | None = Field(default=None, ge=0)
 
 
+class ExactTarget(_ContractModel):
+    """点名加入的精确目标（仅 add_units 使用）。
+
+    names-only / ID-only / both 三种都合法；both 时 Java 必须交叉校验，名称与 ID
+    对应的学校/专业不一致 -> target_mismatch，不静默以 ID 为准。
+    """
+
+    school_name: str | None = Field(default=None, max_length=80)
+    major_name: str | None = Field(default=None, max_length=120)
+    volunteer_id: str | None = Field(default=None, max_length=128)
+
+    @model_validator(mode="after")
+    def _require_identifier(self) -> "ExactTarget":
+        names = bool((self.school_name or "").strip() and (self.major_name or "").strip())
+        identifier = bool((self.volunteer_id or "").strip())
+        if not names and not identifier:
+            raise ValueError("exactTarget requires schoolName+majorName or volunteerId")
+        return self
+
+
 class ProposalRequest(_ContractModel):
     """Model-produced semantic draft accepted by the Java proposal compiler."""
 
@@ -309,6 +311,8 @@ class ProposalRequest(_ContractModel):
         "tuition_budget_scope",
         "fill_to_count",
         "prioritize_within_tier",
+        "add_units",
+        "add_units_by_scope",
     ]
     user_original_text: str = ""
     confidence: Literal["low", "medium", "high"] = "medium"
@@ -324,6 +328,25 @@ class ProposalRequest(_ContractModel):
         default=True,
         description=(
             "true=按新总数补齐；false=保持当前方案总数（preserve；仅当已有正式方案时有效）。"
+        ),
+    )
+    # 点名加入（add_units）：精确的学校+专业目标，和 targetScopes/requirements 的
+    # 范围 OR 语义分开。模型侧严格 schema 会把它设为 required：非 add_units 也必须
+    # 输出空数组 `[]`（description 写进 schema 让模型看得见）。
+    add_count: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "仅 add_units_by_scope 使用：本次要新增的条数/专业组数（>0）。"
+            "与 target_count（补足到某个总数）不是一回事。"
+        ),
+    )
+    exact_targets: list[ExactTarget] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "仅 add_units 使用：精确的学校+专业目标列表（最多 20 条）；"
+            "不支持 add_units 的提案必须输出 []。不要写进 targetScopes/requirements。"
         ),
     )
     tier_quota_goal: ProposalTierQuota | None = None
@@ -347,6 +370,48 @@ class ProposalRequest(_ContractModel):
     tradeoff_guards: list[str] = Field(default_factory=list)
     source_review_issue_codes: list[str] = Field(default_factory=list)
     context: ProposalContext = Field(default_factory=ProposalContext)
+
+    @model_validator(mode="after")
+    def _validate_exact_targets(self) -> "ProposalRequest":
+        is_add = self.goal_type == "add_units"
+        is_scope_add = self.goal_type == "add_units_by_scope"
+        if is_add and not self.exact_targets:
+            raise ValueError("add_units requires exactTargets")
+        if not is_add and not is_scope_add and self.exact_targets:
+            raise ValueError("exactTargets is only supported for add_units")
+        if is_scope_add:
+            if self.add_count is None or self.add_count <= 0:
+                raise ValueError("add_units_by_scope requires addCount > 0")
+            if self.exact_targets:
+                raise ValueError("add_units_by_scope does not accept exactTargets")
+            if (
+                self.target_count is not None
+                or self.tier_quota_goal is not None
+                or self.requirements
+                or self.priority_rules
+                or self.source_review_issue_codes
+            ):
+                raise ValueError(
+                    "add_units_by_scope only supports scopes/negativeScopes/context/guards"
+                )
+            return self
+        if not is_scope_add and self.add_count is not None:
+            raise ValueError("addCount is only supported for add_units_by_scope")
+        if is_add and (
+            self.target_count is not None
+            or self.tier_quota_goal is not None
+            or self.requirements
+            or self.priority_rules
+            or self.target_scopes
+            or self.negative_scopes
+            or self.quality_guards
+            or self.tradeoff_guards
+            or self.source_review_issue_codes
+        ):
+            raise ValueError(
+                "add_units cannot mix with count/requirements/priority/tier/scopes/guards"
+            )
+        return self
 
 
 class ScoreUpdateProvince(_ContractModel):
@@ -469,6 +534,9 @@ class TurnOutput(_ContractModel):
     score_update_request: ScoreUpdateRequest | None = None
     # 发展方向草稿（career v1）：与上面两个草稿**三者互斥**（同一口径：一次确认只落一个动作）。
     career_update_request: CareerUpdateRequest | None = None
+    # 完整意图草稿（Batch B）：模型把一句话里的所有要求一次说清；不写业务状态。
+    # 可选：旧输出不带它时行为不变。
+    intent_draft: IntentDraft | None = None
     conversation_action: ConversationAction = Field(default_factory=ConversationAction)
 
     @field_validator("response_type", mode="before")
@@ -481,7 +549,13 @@ class TurnOutput(_ContractModel):
         if self.response_type == "fact" and not self.evidence_refs:
             raise ValueError("evidenceRefs is required for fact output")
         if self.response_type in {"recommendation", "review"} and not self.artifact_refs:
-            raise ValueError("artifactRefs is required for recommendation/review output")
+            # 预览回合（有 proposalRequest）不是“推荐结论”，模型常把它的 responseType
+            # 写成 recommendation 但没 artifactRefs；这是标签错误，不是缺证据——
+            # 降级为 text，避免整轮失败；真正的 recommendation/review 仍必须有产物引用。
+            if self.proposal_request is not None:
+                self.response_type = "text"
+            else:
+                raise ValueError("artifactRefs is required for recommendation/review output")
         return self
 
 
@@ -511,6 +585,7 @@ class StatePatch(_ContractModel):
             "missingFacts",
             "allowedCapabilities",
             "admissionMode",
+            "journey",
         }
         for change in changes:
             path = str(change.get("path") or "")
@@ -544,6 +619,9 @@ class ConversationTurnSnapshot(_ContractModel):
     allowed_capabilities: list[str] = Field(default_factory=list)
     evidence: list[EvidenceRef] = Field(default_factory=list)
     admission_facts: list[AdmissionFact] = Field(default_factory=list)
+    # J1：Java 派生的紧凑旅程块。**dict 透传、缺省容忍**，不建严格模型——
+    # Java 先加字段时，extra="forbid" 的严格块会让整个快照解析失败。
+    journey: dict[str, Any] | None = None
 
     @field_validator("admission_mode", mode="before")
     @classmethod

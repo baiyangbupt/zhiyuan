@@ -299,3 +299,113 @@ def test_empty_tool_result_keeps_known_candidate_context_and_source(result_key: 
     assert "不要说看不到候选" in text
     assert payload["candidateSet"]["items"] == [{"entityId": "school-1", "name": "甲大学"}]
     assert payload["candidateSet"]["sourceTurnId"] == "turn-1"
+
+
+def test_working_set_clears_blocked_planned_task_draft() -> None:
+    snapshot = ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")
+    working_set = ConversationWorkingSet.from_snapshot(snapshot)
+    working_set.task_draft = {"stale": True}
+    output = TurnOutput(
+        responseType="text",
+        message="删除动作尚未支持。",
+        intentDraft={
+            "sourceTurnId": "turn-1",
+            "userText": "删掉 B",
+            "goalFamily": "plan_mutation",
+            "action": "remove",
+            "targets": [{"schoolName": "B大学", "majorName": "计算机"}],
+            "validity": "this_adjustment",
+        },
+    )
+
+    working_set.apply_output(output, "turn-1")
+
+    assert working_set.task_draft is None
+    assert working_set.as_payload()["taskDraft"] is None
+    assert working_set.has_open_task() is False
+
+
+def test_working_set_keeps_manual_review_digest() -> None:
+    working_set = ConversationWorkingSet.from_snapshot(
+        ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")
+    )
+
+    working_set.mark_manual_review("digest-v1", 7)
+
+    payload = working_set.as_payload()
+    assert payload["lastManualReviewDigest"] == "digest-v1"
+    assert payload["lastManualReviewVersion"] == 7
+
+
+def test_working_set_keeps_a_bounded_composite_task_draft() -> None:
+    snapshot = ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")
+    working_set = ConversationWorkingSet.from_snapshot(snapshot)
+    output = TurnOutput(
+        responseType="text",
+        message="先确认约束，再预览加入。",
+        intentDraft={
+            "sourceTurnId": "turn-1",
+            "userText": "加 A，学费三万内",
+            "goalFamily": "plan_mutation",
+            "action": "add",
+            "targets": [{"schoolName": "A大学", "majorName": "计算机"}],
+            "scopes": [
+                {"scopeType": "tuition", "name": "30000", "strength": "must"}
+            ],
+            "validity": "unknown",
+        },
+    )
+
+    working_set.apply_output(output, "turn-1")
+    payload = working_set.as_payload()
+
+    task = payload["taskDraft"]
+    assert task["changeSet"]["status"] == "needs_constraints_first"
+    assert task["changeSet"]["operations"][0]["kind"] == "constrain"
+    assert task["intentDraft"]["targets"][0]["schoolName"] == "A大学"
+    assert task["turnId"] == "turn-1"
+
+    working_set.reconcile_snapshot(
+        ConversationTurnSnapshot(snapshotVersion=8, sessionId="s1")
+    )
+    assert working_set.as_payload()["taskDraft"]["changeSet"]["status"] == (
+        "needs_constraints_first"
+    )
+
+
+def test_cancel_proposal_clears_the_task_draft() -> None:
+    snapshot = ConversationTurnSnapshot(snapshotVersion=7, sessionId="s1")
+    working_set = ConversationWorkingSet.from_snapshot(snapshot)
+    working_set.apply_output(
+        TurnOutput(
+            responseType="text",
+            message="先约束再加入。",
+            intentDraft={
+                "sourceTurnId": "turn-1",
+                "userText": "加 A，学费三万内",
+                "goalFamily": "plan_mutation",
+                "action": "add",
+                "targets": [{"schoolName": "A大学", "majorName": "计算机"}],
+                "scopes": [{"scopeType": "tuition", "name": "30000", "strength": "must"}],
+                "validity": "unknown",
+            },
+        ),
+        "turn-1",
+    )
+    assert working_set.task_draft is not None
+
+    working_set.apply_output(
+        TurnOutput(
+            responseType="text",
+            message="已取消。",
+            conversationAction={
+                "actionType": "cancel_proposal",
+                "proposalRef": "pending-1",
+                "intent": "explicit",
+            },
+        ),
+        "turn-2",
+    )
+
+    assert working_set.task_draft is None
+    assert working_set.as_payload()["taskDraft"] is None

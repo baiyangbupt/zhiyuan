@@ -10,6 +10,7 @@ import com.ytell.zhiyuan.model.dto.inner.PlanParamAvailReq;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationResolveReq;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
+import com.ytell.zhiyuan.model.dto.inner.PendingReconcileRes;
 import com.ytell.zhiyuan.model.req.UpdateTuitionRangeReq;
 import com.ytell.zhiyuan.model.dto.volunteer.VolunteerSchoolGroup;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
@@ -105,6 +106,14 @@ public class ChatSessionInnerController {
             @PathVariable("tenantId") Long tenantId,
             @RequestBody PendingConfirmationResolveReq req) {
         return BaseResponse.success(pendingConfirmationBizService.resolve(tenantId, req));
+    }
+
+    @PostMapping("/session/pending/reconcile")
+    @ApiOperation("applying 待确认对账（只读台账+CAS，不重发命令）")
+    public BaseResponse<PendingReconcileRes> reconcilePendingConfirmation(
+            @PathVariable("tenantId") Long tenantId,
+            @RequestParam("chatSessionId") Long chatSessionId) {
+        return BaseResponse.success(pendingConfirmationBizService.reconcile(tenantId, chatSessionId));
     }
 
     @PostMapping("/session/update-tuition-range")

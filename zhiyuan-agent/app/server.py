@@ -1041,6 +1041,9 @@ def _proposal_preview_payload(preview: Mapping[str, Any]) -> dict[str, Any]:
         for key in (
             "title",
             "summary",
+            # 生命周期说明（确认前不动；确认后写入本会话并重新生成/刷新）：
+            # 卡面唯一能说清"确认之后到底发生什么"的字段（Batch A2）。
+            "impact",
             "status",
             "strategy",
             "blockingReason",
@@ -1099,7 +1102,7 @@ def _action_result_payload(result: Mapping[str, Any], action_result: Mapping[str
     }
     if result.get("snapshotVersion") is not None:
         payload["workspaceVersion"] = result["snapshotVersion"]
-    for key in ("code", "message"):
+    for key in ("code", "message", "actualChanges", "reviewState"):
         if action_result.get(key) is not None:
             payload[key] = action_result[key]
     return payload

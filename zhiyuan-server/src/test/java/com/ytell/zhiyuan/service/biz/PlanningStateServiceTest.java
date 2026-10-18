@@ -4737,6 +4737,54 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void fixProposalStrategyComesFromObjectiveDeltaWhenEvaluationExists() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(3);
+        state.getStaleFlags().setReview(false);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(2);
+        CandidateItemDTO low = buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A", 10D, 92D, 10D, false);
+        CandidateItemDTO high = buildCandidateItem("ps2_m2", "ps2", "s2", "学校B", "保", "专业B", 90D, 70D, 90D, false);
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(low, high));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "学校A", "专业A", "冲"));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps2_m2", "学校B", "专业B", "保"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "专业B", "保", 2));
+
+        ReviewStateDTO reviewState = buildFailedReviewState(
+                "probability_gap", "录取率梯度断层", "structure", "structure_risk");
+        reviewState.getChecks().get(0).setAffectedVolunteerIds(
+                java.util.Arrays.asList("ps1_m1", "ps2_m2"));
+        com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO finding =
+                new com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO();
+        finding.setCode("probability_gap");
+        finding.setLayer("structure");
+        finding.setRuleStrength("soft");
+        finding.setResultStatus("fail");
+        finding.setDisplaySeverity("action");
+        com.ytell.zhiyuan.model.dto.planning.ObjectiveDeltaDTO delta =
+                new com.ytell.zhiyuan.model.dto.planning.ObjectiveDeltaDTO();
+        delta.setStrategy("sort_by_probability");
+        delta.setSourceCheck("probability_gap");
+        finding.setObjectiveDelta(delta);
+        reviewState.getFindings().add(finding);
+        state.setReviewState(reviewState);
+        saveStateToStore(1L, state);
+
+        FixProposalStateDTO proposalState = planningStateService.generateFixProposals(1L, 1L);
+
+        FixProposalDTO proposal = proposalState.getProposals().stream()
+                .filter(item -> item.getSourceCheckCodes().contains("probability_gap"))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(proposal);
+        assertEquals("sort_by_probability", proposal.getStrategy());
+    }
+
+    @Test
     void shouldRunReviewWorkflowAndReturnFixProposalsWithWorkspaceStatus() {
         bindPlanningStateStore();
 
@@ -4750,6 +4798,20 @@ public class PlanningStateServiceTest {
         assertEquals(Long.valueOf(1L), res.getSessionId());
         assertNotNull(res.getReviewState());
         assertEquals("completed", res.getReviewState().getStatus());
+        // J5.2a：审查同时产出统一评价（checks 保留兼容）。
+        assertEquals("completed", res.getReviewState().getEvaluationStatus());
+        assertNotNull(res.getReviewState().getEvaluationVersion());
+        assertEquals(Integer.valueOf(15), res.getReviewState().getProbesRun());
+        assertNotNull(res.getReviewState().getHardFeasible());
+        assertEquals(res.getReviewState().getChecks().size() + 1,
+                res.getReviewState().getFindings().size());
+        // summary 改由 findings 派生：总数 = 15（count 拆分），且计数自洽。
+        assertEquals(Integer.valueOf(15), res.getReviewState().getSummary().getTotal());
+        assertEquals(res.getReviewState().getSummary().getTotal().intValue(),
+                res.getReviewState().getSummary().getPassedCount()
+                        + res.getReviewState().getSummary().getWarnCount()
+                        + res.getReviewState().getSummary().getRiskCount()
+                        + res.getReviewState().getSummary().getInfoCount());
         assertNotNull(res.getFixProposalState());
         assertTrue(res.getFixProposalState().getProposals().stream()
                 .anyMatch(item -> "fill_missing_count".equals(item.getStrategy())
@@ -10839,5 +10901,42 @@ public class PlanningStateServiceTest {
 
     private int defaultInt(Integer value) {
         return value == null ? 0 : value;
+    }
+
+    @Test
+    void shouldExposeSelectionCountsWithBusinessHelperParity() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(2);
+        OrderedUnitDTO unit = new OrderedUnitDTO();
+        unit.setUnitId("u1");
+        PlanningUnitMajorDTO first = new PlanningUnitMajorDTO();
+        first.setVolunteerId("v1");
+        PlanningUnitMajorDTO second = new PlanningUnitMajorDTO();
+        second.setVolunteerId("v2");
+        unit.setMajorItems(java.util.Arrays.asList(first, second));
+        state.getOrderedPlanState().getUnits().add(unit);
+
+        PlanningWorkspaceStateRes workspace = planningStateService.buildPlanningWorkspaceStateRes(1L, state);
+
+        // major 模式 ordered items 为空时，业务 helper 回退到 ordered units 的 majorItems 求和。
+        assertEquals(2, workspace.getSelectionCurrentCount().intValue());
+        assertEquals(2, workspace.getSelectionTargetCount().intValue());
+    }
+
+    @Test
+    void shouldResolveSubjectTypeDescThenCode() {
+        CreateSessionReq req = new CreateSessionReq();
+        CreateSessionReq.SubjectType type = new CreateSessionReq.SubjectType();
+        type.setDesc("物理");
+        req.setSubjectType(type);
+        assertEquals("物理", ReflectionTestUtils.invokeMethod(
+                planningStateService, "resolveSubjectType", req));
+
+        type.setDesc("");
+        type.setCode("WL");
+        assertEquals("WL", ReflectionTestUtils.invokeMethod(
+                planningStateService, "resolveSubjectType", req));
     }
 }

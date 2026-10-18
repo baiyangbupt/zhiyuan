@@ -13,6 +13,8 @@ public class ConversationTurnSnapshotDTO {
     private Long sessionId;
     /** 规范化招生类型：major 或 major_group。 */
     private String admissionMode = "major";
+    /** J1 旅程事实块；旧 agent 忽略，新 agent 只读。 */
+    private ConversationJourneyDTO journey;
     private String planningStage = "";
     private Map<String, Object> scoreContext = new LinkedHashMap<String, Object>();
     private Map<String, Object> confirmedConstraints = new LinkedHashMap<String, Object>();

@@ -25,6 +25,9 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "clarification.resolved",
         "proposal.preview",
         "conversationAction.result",
+        # 录取解读卡：只发**有界摘要**（scenarios 不带完整 path，caveats/drivers 截断）；
+        # 完整工具结果留在工具结果/正文，前端不按 artifactRef 取明细。
+        "interpretation.preview",
         # **助手增量文本是"可丢弃的提示"** ✓✓：它只负责降低"首字延迟感知" ✓，
         # 丢一条不影响正确性 ✓——答案的**权威来源**始终是终态 `assistant.completed` ✓
         #（重连不补播增量 ✓，端子文本胜出 ✓）。载荷 `{chunk, itemId?}` ✓。
@@ -69,6 +72,7 @@ TOOL_LABELS: dict[str, str] = {
     # 适配性解释：用户问"为什么推荐它/适合我吗"时，这句话要能对得上
     # （解释的是**单个**候选的匹配点，不是重新推荐）。
     "recommendation.explain_fit": "正在解释候选适配",
+    "planning.interpret_admission": "正在解读当前方案",
 }
 
 

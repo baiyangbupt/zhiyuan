@@ -18,6 +18,33 @@ def scan(node, path="$", bad_any=None, bad_req=None):
     return bad_any, bad_req
 
 
+def scan_propertyless_objects(node, path="$", bad=None):
+    """DeepSeek `/responses` rejects `type: object` nodes without `properties`.
+
+    Free-form dict bags (`list[dict]`) serialize as
+    `{"type": "object", "additionalProperties": true}` and fail at runtime with
+    "An object with no properties is not allowed."; nested drafts must use
+    concrete models instead.
+    """
+    bad = [] if bad is None else bad
+    if isinstance(node, dict):
+        node_type = node.get("type")
+        if node_type == "object" and not node.get("properties"):
+            bad.append(path)
+        if isinstance(node_type, list) and "object" in node_type and not node.get("properties"):
+            bad.append(path)
+        for key, value in node.items():
+            scan_propertyless_objects(value, f"{path}.{key}", bad)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            scan_propertyless_objects(value, f"{path}[{index}]", bad)
+    return bad
+
+
+def test_turn_output_schema_has_no_propertyless_objects() -> None:
+    assert scan_propertyless_objects(TURN_OUTPUT_SCHEMA) == []
+
+
 def test_turn_output_schema_keeps_admission_facts_and_confirmation_fields() -> None:
     properties = TURN_OUTPUT_SCHEMA["properties"]
 
@@ -168,3 +195,59 @@ def test_the_model_facing_schema_pins_the_proposal_rule_domains_and_keys() -> No
     assert requirement["kind"]["enum"] == ["include", "exclude", "only_keep"]
     assert requirement["domain"]["enum"] == ["region", "major", "school", "admission"]
     assert "city" in requirement["key"]["enum"]
+
+
+def test_turn_output_schema_declares_add_units_and_exact_targets() -> None:
+    """点名加入（add_units）必须进模型侧严格 schema。"""
+    proposal_schema = TURN_OUTPUT_SCHEMA["properties"]["proposalRequest"]["anyOf"][0]
+    properties = proposal_schema["properties"]
+    assert "exactTargets" in properties
+    assert "exactTargets" in proposal_schema["required"]
+    assert "add_units" in properties["goalType"]["enum"]
+    node = properties["exactTargets"]
+    assert node["type"] == "array"
+    assert node["maxItems"] == 20
+    target = TURN_OUTPUT_SCHEMA["$defs"]["ExactTarget"]
+    assert target["additionalProperties"] is False
+    assert set(target["required"]) == set(target["properties"]) == {
+        "schoolName", "majorName", "volunteerId",
+    }
+    # 可空字符串统一归一化为类型数组（nullable 归一化之后）
+    for field in ("schoolName", "majorName", "volunteerId"):
+        assert target["properties"][field]["type"] == ["string", "null"]
+    assert target["properties"]["schoolName"]["maxLength"] == 80
+    assert target["properties"]["majorName"]["maxLength"] == 120
+    assert target["properties"]["volunteerId"]["maxLength"] == 128
+    bad_any, bad_req = scan(TURN_OUTPUT_SCHEMA)
+    assert bad_any == []
+    assert bad_req == []
+
+
+def test_turn_output_schema_declares_scoped_add_fields() -> None:
+    proposal = TURN_OUTPUT_SCHEMA["properties"]["proposalRequest"]["anyOf"][0]
+    goal = proposal["properties"]["goalType"]
+    assert "add_units_by_scope" in goal["enum"]
+    assert "addCount" in proposal["properties"]
+    assert "addCount" in proposal["required"]
+
+
+def test_preview_turn_mislabeled_as_recommendation_downgrades_to_text() -> None:
+    from app.gateway.contracts import TurnOutput
+
+    output = TurnOutput(
+        responseType="recommendation",
+        message="按范围加入预览",
+        executionStatus="partial",
+        proposalRequest={
+            "goalType": "add_units_by_scope",
+            "sourceVersionGuard": 5,
+            "addCount": 2,
+            "exactTargets": [],
+            "targetScopes": [
+                {"scopeType": "region", "name": "安徽", "normalizedName": "安徽", "entityType": "region"}
+            ],
+        },
+    )
+
+    # 预览卡不是“推荐结论”：没有 artifactRefs 时降级为 text，而不是整轮失败。
+    assert output.response_type == "text"

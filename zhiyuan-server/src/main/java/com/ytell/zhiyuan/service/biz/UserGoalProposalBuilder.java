@@ -10,9 +10,11 @@ import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalActionDTO;
+import com.ytell.zhiyuan.model.dto.planning.FixProposalAffectedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
+import com.ytell.zhiyuan.model.dto.planning.HardPlanningObjectivesDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
@@ -206,7 +208,609 @@ final class UserGoalProposalBuilder {
         if (RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER.equals(goalType)) {
             return buildPriorityProposal(state, req);
         }
+        if (RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE.equals(goalType)) {
+            return buildAddUnitsByScopeProposal(state, req);
+        }
+        if (RepairProposalTaxonomy.Strategy.ADD_UNITS.equals(goalType)) {
+            return buildAddUnitsProposal(state, req);
+        }
         return buildBlockedProposal(state, req, goalType, REASON_ENGINE_NOT_READY);
+    }
+
+    // ── 按范围加入（add_units_by_scope）：范围/学费筛选 + 固定新增数，纯加入、零删除 ──
+
+    private static final String REASON_ADD_BY_SCOPE_COUNT = "add_units_by_scope_count_invalid";
+    private static final String REASON_ADD_BY_SCOPE_INSUFFICIENT = "add_units_by_scope_insufficient";
+
+    /**
+     * 用户在“再加 N 条，范围内/学费内”这类诉求下，由服务端从候选池确定性选条目：
+     * 筛选条件只作用于**本次新增**，不改写整个方案；解析不出 N 条就如实阻断。
+     */
+    private static FixProposalDTO buildAddUnitsByScopeProposal(PlanningStateDTO state,
+                                                               UserGoalFixProposalReq req) {
+        int addCount = req.getAddCount() == null ? 0 : req.getAddCount();
+        if (addCount <= 0) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE,
+                    REASON_ADD_BY_SCOPE_COUNT, "需要先明确本次要新增几条（数量必须大于 0）。");
+        }
+        List<CandidateItemDTO> pool = candidates(state);
+        boolean majorGroupMode = isMajorGroupMode(state);
+        List<PlanVolunteer> current = currentPlanVolunteers(state, pool);
+        if (current.isEmpty()) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE,
+                    REASON_ADD_UNITS_NO_PLAN, "当前没有正式方案，先补方案再加入；按范围加入只往已有方案里加。");
+        }
+        if (pool.isEmpty()) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE,
+                    REASON_ADD_UNITS_SOURCE_UNAVAILABLE,
+                    "当前会话的候选来源不可用（候选池为空或尚未生成），暂时不能按范围加入。");
+        }
+        HardPlanningObjectivesDTO hard = state.getConstraintState() == null
+                ? null : state.getConstraintState().getHardPlanningObjectives();
+        if (hard != null && hard.getTierQuotaGoal() != null) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE,
+                    REASON_ADD_UNITS_TIER_QUOTA,
+                    "加入会改变已确认的冲稳保配额；请先调整配额或改用替换动作。");
+        }
+        Set<String> poolVolunteerIds = pool.stream()
+                .map(CandidateItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        int stalePlanItems = 0;
+        for (PlanVolunteer volunteer : current) {
+            if (!poolVolunteerIds.contains(volunteer.getVolunteerId())) {
+                stalePlanItems++;
+            }
+        }
+        if (stalePlanItems > 0) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE,
+                    REASON_ADD_UNITS_STALE_PLAN_ITEM,
+                    "当前方案里有 " + stalePlanItems + " 条已不在有效候选池中；先处理这些条目再加入，"
+                            + "否则重生成可能删掉它们。");
+        }
+
+        List<ScopeMatcher> scopes = buildScopeMatchers(defaultList(req.getTargetScopes()));
+        List<ScopeMatcher> negatives = buildScopeMatchers(defaultList(req.getNegativeScopes()));
+        ScopeMatcher ambiguous = scopes.stream().filter(ScopeMatcher::needsClarification)
+                .findFirst().orElse(null);
+        if (ambiguous != null) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE,
+                    REASON_GOAL_UNCLEAR,
+                    "“" + ambiguous.getValue() + "”还没有对应到明确范围，需要先确认后再生成加入预览。");
+        }
+        Set<String> currentVolunteerIds = current.stream()
+                .map(PlanVolunteer::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> currentUnitIds = current.stream()
+                .map(UserGoalProposalBuilder::planUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> banned = state.getWorkingPlanState() == null
+                ? new LinkedHashSet<String>()
+                : new LinkedHashSet<String>(defaultList(state.getWorkingPlanState().getBannedVolunteerIds()));
+        Integer maxTuition = maxTuitionFromRequest(req);
+        Integer minTuition = req.getContext() == null ? null
+                : intFromObject(req.getContext().get("minTuitionPerYear"));
+        List<CandidateItemDTO> filtered = pool.stream()
+                .filter(candidate -> candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId()))
+                .filter(candidate -> !currentVolunteerIds.contains(candidate.getVolunteerId()))
+                .filter(candidate -> !banned.contains(candidate.getVolunteerId()))
+                .filter(RepairCandidateSelector::isCompensationSafeCandidate)
+                .filter(candidate -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
+                .filter(candidate -> scopes.isEmpty() || matchesAny(candidate, scopes))
+                .filter(candidate -> negatives.isEmpty() || !matchesAny(candidate, negatives))
+                .filter(candidate -> {
+                    Integer tuition = tuitionOf(candidate);
+                    if (tuition == null) {
+                        return true;
+                    }
+                    if (maxTuition != null && tuition > maxTuition) {
+                        return false;
+                    }
+                    return minTuition == null || tuition >= minTuition;
+                })
+                .sorted(buildCandidatePreviewComparator())
+                .collect(Collectors.toList());
+
+        List<CandidateItemDTO> resolved = Lists.newArrayList();
+        Set<String> resolvedUnitIds = new LinkedHashSet<String>();
+        for (CandidateItemDTO candidate : filtered) {
+            if (resolved.size() >= addCount) {
+                break;
+            }
+            if (majorGroupMode) {
+                String unitKey = candidateUnitKey(candidate);
+                if (Strings.isNullOrEmpty(unitKey) || currentUnitIds.contains(unitKey)
+                        || !resolvedUnitIds.add(unitKey)) {
+                    continue;
+                }
+            }
+            resolved.add(candidate);
+        }
+        if (resolved.size() < addCount) {
+            String scopeText = scopes.isEmpty() ? "" : "“" + scopeLabel(scopes) + "”内";
+            String tuitionText = maxTuition == null ? "" : "、学费不超过 " + maxTuition + " 元/年";
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE,
+                    REASON_ADD_BY_SCOPE_INSUFFICIENT,
+                    "符合" + scopeText + "条件" + tuitionText + "且可加入的候选只有 "
+                            + resolved.size() + " 个，不够本次要新增的 " + addCount + " 个；"
+                            + "请放宽范围/学费，或点名补充。");
+        }
+
+        int currentCount = majorGroupMode ? currentUnitIds.size() : currentVolunteerIds.size();
+        Integer confirmedTarget = hard == null ? null : hard.getSelectionTargetCount();
+        if (confirmedTarget != null && confirmedTarget != currentCount) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE,
+                    REASON_ADD_UNITS_COUNT_MISMATCH,
+                    "当前方案实际 " + currentCount + (majorGroupMode ? " 个专业组" : " 条")
+                            + "，与已确认目标 " + confirmedTarget + " 不一致；请先补齐/调整目标，再加入。");
+        }
+        int addedEntryCount = resolved.size();
+        Set<String> addedUnitIds = resolved.stream()
+                .map(UserGoalProposalBuilder::candidateUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        int addedUnitCount = addedUnitIds.size();
+        int addedCountForMode = majorGroupMode ? addedUnitCount : addedEntryCount;
+        int targetAfter = currentCount + addedCountForMode;
+        Integer targetCountOverride = confirmedTarget == null ? null : targetAfter;
+
+        AddUnitsDryRun dryRun = dryRunAddUnits(state, current, resolved, targetAfter, majorGroupMode);
+        if (!dryRun.ok) {
+            return buildScopeBlockedProposal(state, req,
+                    RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE,
+                    dryRun.reason, dryRun.message);
+        }
+
+        FixProposalDTO proposal = buildUserGoalPreviewBase(state, req,
+                RepairProposalTaxonomy.Strategy.ADD_UNITS_BY_SCOPE, "按范围加入志愿预览");
+        proposal.setStatus(RepairProposalTaxonomy.Status.READY);
+        proposal.setRequiresConfirmation(true);
+        proposal.setAffectedVolunteerIds(resolved.stream()
+                .map(CandidateItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct().collect(Collectors.toList()));
+        proposal.setAffectedUnitIds(Lists.newArrayList(addedUnitIds));
+        proposal.setAffectedItems(resolved.stream().map(UserGoalProposalBuilder::toAffectedItem)
+                .collect(Collectors.toList()));
+        proposal.setAddedCount(addedEntryCount);
+        proposal.setAddedUnitCount(addedUnitCount);
+        proposal.setRemovedCount(0);
+        proposal.setTargetCountBefore(confirmedTarget == null ? currentCount : confirmedTarget);
+        proposal.setTargetCountAfter(targetAfter);
+        proposal.setTargetCountOverride(targetCountOverride);
+        List<String> labelList = candidateEntryLabels(resolved, majorGroupMode);
+        String labels = String.join("、", labelList);
+        List<String> conditionParts = Lists.newArrayList();
+        if (!scopes.isEmpty()) {
+            conditionParts.add("范围：" + scopeLabel(scopes));
+        }
+        if (!negatives.isEmpty()) {
+            conditionParts.add("避开：" + scopeLabel(negatives));
+        }
+        if (maxTuition != null) {
+            conditionParts.add("学费不超过 " + maxTuition + " 元/年");
+        }
+        String conditions = conditionParts.isEmpty() ? "无额外范围条件" : String.join("；", conditionParts);
+        proposal.setSummary("按范围加入 " + formatEntryCount(addedEntryCount, majorGroupMode)
+                + (labels.isEmpty() ? "" : "：" + labels)
+                + "（" + conditions + "）；总数 " + proposal.getTargetCountBefore() + "→" + targetAfter
+                + "；不删除任何现有条目。");
+        proposal.setImpact("确认后只加入这些条目，不删除/替换现有志愿；范围/学费条件只用于本次筛选，"
+                + "不会改写整个方案。");
+        FixProposalActionDTO action = addExactAction(resolved, majorGroupMode, labelList);
+        action.setSummary("加入符合范围条件的候选");
+        proposal.getActions().add(action);
+        populateFillDryRun(proposal, state, currentCount, targetAfter,
+                addedUnitCount, addedEntryCount, 0, 0, "已生成加入预览，等待确认后再执行。");
+        markReadyIfActionable(proposal);
+        return proposal;
+    }
+
+    // ── 点名加入（add_units）：精确学校+专业，纯加入、零删除 ──────────────────
+
+    private static final String REASON_ADD_UNITS_NO_PLAN = "add_units_no_plan";
+    private static final String REASON_ADD_UNITS_SOURCE_UNAVAILABLE = "add_units_candidate_source_unavailable";
+    private static final String REASON_ADD_UNITS_TARGET_NOT_FOUND = "add_units_target_not_found";
+    private static final String REASON_ADD_UNITS_TARGET_AMBIGUOUS = "add_units_target_ambiguous";
+    private static final String REASON_ADD_UNITS_TARGET_MISMATCH = "add_units_target_mismatch";
+    private static final String REASON_ADD_UNITS_TARGET_BANNED = "add_units_target_banned";
+    private static final String REASON_ADD_UNITS_STALE_PLAN_ITEM = "add_units_stale_working_plan_item";
+    private static final String REASON_ADD_UNITS_COUNT_MISMATCH = "add_units_target_count_mismatch";
+    private static final String REASON_ADD_UNITS_TIER_QUOTA = "add_units_tier_quota_unsupported";
+    private static final String REASON_ADD_UNITS_DRY_RUN = "add_units_dry_run_failed";
+    private static final String REASON_ADD_UNITS_DRY_RUN_UNAVAILABLE = "add_units_dry_run_unavailable";
+
+    private static FixProposalDTO buildAddUnitsProposal(PlanningStateDTO state,
+                                                        UserGoalFixProposalReq req) {
+        List<CandidateItemDTO> pool = candidates(state);
+        boolean majorGroupMode = isMajorGroupMode(state);
+        List<PlanVolunteer> current = currentPlanVolunteers(state, pool);
+        if (current.isEmpty()) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
+                    REASON_ADD_UNITS_NO_PLAN, "当前没有正式方案，先补方案再加入；点名加入只往已有方案里加。");
+        }
+        if (pool.isEmpty()) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
+                    REASON_ADD_UNITS_SOURCE_UNAVAILABLE,
+                    "当前会话的候选来源不可用（候选池为空或尚未生成），暂时不能核验点名的院校/专业。");
+        }
+        HardPlanningObjectivesDTO hard = state == null || state.getConstraintState() == null
+                ? null : state.getConstraintState().getHardPlanningObjectives();
+        if (hard != null && hard.getTierQuotaGoal() != null) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
+                    REASON_ADD_UNITS_TIER_QUOTA,
+                    "加入会改变已确认的冲稳保配额；请先调整配额或改用替换动作，第一期不自动改配额。");
+        }
+
+        Set<String> currentVolunteerIds = current.stream()
+                .map(PlanVolunteer::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> poolVolunteerIds = pool.stream()
+                .map(CandidateItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        // 纯加入的前提：当前方案里的每一条仍在有效候选池里；否则 generateOrderedPlan
+        // 的 sync 可能把它剔除，和“零删除”冲突。prepare 阶段直接阻断，不等到执行。
+        int stalePlanItems = 0;
+        for (PlanVolunteer volunteer : current) {
+            if (!poolVolunteerIds.contains(volunteer.getVolunteerId())) {
+                stalePlanItems++;
+            }
+        }
+        if (stalePlanItems > 0) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
+                    REASON_ADD_UNITS_STALE_PLAN_ITEM,
+                    "当前方案里有 " + stalePlanItems + " 条已不在有效候选池中；先处理这些条目再加入，"
+                            + "否则重生成可能删掉它们。");
+        }
+
+        Set<String> banned = state.getWorkingPlanState() == null
+                ? new LinkedHashSet<String>()
+                : new LinkedHashSet<String>(defaultList(state.getWorkingPlanState().getBannedVolunteerIds()));
+        List<UserGoalFixProposalReq.ExactTargetDTO> targets = defaultList(req == null ? null : req.getExactTargets());
+        if (targets.isEmpty()) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
+                    REASON_ADD_UNITS_TARGET_NOT_FOUND, "没有收到要点名加入的院校+专业。");
+        }
+        List<CandidateItemDTO> resolved = Lists.newArrayList();
+        Set<String> resolvedIds = new LinkedHashSet<String>();
+        int alreadySelected = 0;
+        List<String> problemMessages = Lists.newArrayList();
+        String problemReason = null;
+        for (UserGoalFixProposalReq.ExactTargetDTO target : targets) {
+            ExactTargetResolution resolution = resolveExactTarget(pool, currentVolunteerIds, target);
+            if (resolution.reason != null && !"already_selected".equals(resolution.reason)) {
+                problemReason = resolution.reason;
+                problemMessages.add(resolution.message);
+                continue;
+            }
+            if ("already_selected".equals(resolution.reason)) {
+                alreadySelected++;
+                continue;
+            }
+            if (resolution.candidate != null && !Strings.isNullOrEmpty(resolution.candidate.getVolunteerId())
+                    && resolvedIds.add(resolution.candidate.getVolunteerId())) {
+                if (banned.contains(resolution.candidate.getVolunteerId())) {
+                    problemReason = REASON_ADD_UNITS_TARGET_BANNED;
+                    problemMessages.add(candidateDisplay(resolution.candidate) + " 已被屏蔽，不能加入。");
+                } else {
+                    resolved.add(resolution.candidate);
+                }
+            }
+        }
+        if (problemReason != null) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
+                    problemReason, String.join("；", problemMessages));
+        }
+        if (resolved.isEmpty()) {
+            FixProposalDTO info = buildUserGoalPreviewBase(state, req,
+                    RepairProposalTaxonomy.Strategy.ADD_UNITS, "加入志愿预览");
+            info.setStatus(RepairProposalTaxonomy.Status.INFO);
+            info.setSummary("点名的条目已经在当前方案中，不需要重复加入。");
+            info.setImpact("方案不变；如需调整顺序或替换，请明确新的动作。");
+            info.setRequiresConfirmation(false);
+            info.setRemovedCount(0);
+            info.setAddedCount(0);
+            info.setAddedUnitCount(0);
+            return info;
+        }
+
+        int currentCount = majorGroupMode
+                ? new LinkedHashSet<String>(current.stream().map(UserGoalProposalBuilder::planUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value)).collect(Collectors.toList())).size()
+                : currentVolunteerIds.size();
+        Set<String> addedUnitIds = new LinkedHashSet<String>();
+        for (CandidateItemDTO candidate : resolved) {
+            String unitId = candidateUnitKey(candidate);
+            if (!Strings.isNullOrEmpty(unitId)) {
+                addedUnitIds.add(unitId);
+            }
+        }
+        int addedEntryCount = resolved.size();
+        int addedUnitCount = addedUnitIds.size();
+        int addedCountForMode = majorGroupMode ? addedUnitCount : addedEntryCount;
+        Integer confirmedTarget = hard == null ? null : hard.getSelectionTargetCount();
+        if (confirmedTarget != null && confirmedTarget != currentCount) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
+                    REASON_ADD_UNITS_COUNT_MISMATCH,
+                    "当前方案实际 " + currentCount + (majorGroupMode ? " 个专业组" : " 条")
+                            + "，与已确认目标 " + confirmedTarget + " 不一致；请先补齐/调整目标，再加入。");
+        }
+        int targetAfter = currentCount + addedCountForMode;
+        Integer targetCountOverride = confirmedTarget == null ? null : targetAfter;
+
+        AddUnitsDryRun dryRun = dryRunAddUnits(state, current, resolved, targetAfter, majorGroupMode);
+        if (!dryRun.ok) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
+                    dryRun.reason, dryRun.message);
+        }
+
+        FixProposalDTO proposal = buildUserGoalPreviewBase(state, req,
+                RepairProposalTaxonomy.Strategy.ADD_UNITS, "加入志愿预览");
+        proposal.setStatus(RepairProposalTaxonomy.Status.READY);
+        proposal.setRequiresConfirmation(true);
+        proposal.setAffectedVolunteerIds(resolved.stream()
+                .map(CandidateItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct().collect(Collectors.toList()));
+        proposal.setAffectedUnitIds(Lists.newArrayList(addedUnitIds));
+        proposal.setAffectedItems(resolved.stream().map(UserGoalProposalBuilder::toAffectedItem)
+                .collect(Collectors.toList()));
+        proposal.setAddedCount(addedEntryCount);
+        proposal.setAddedUnitCount(addedUnitCount);
+        proposal.setRemovedCount(0);
+        proposal.setTargetCountBefore(confirmedTarget == null ? currentCount : confirmedTarget);
+        proposal.setTargetCountAfter(targetAfter);
+        proposal.setTargetCountOverride(targetCountOverride);
+        List<String> labelList = candidateEntryLabels(resolved, majorGroupMode);
+        String labels = String.join("、", labelList);
+        proposal.setSummary("将加入 " + formatEntryCount(addedEntryCount, majorGroupMode)
+                + (labels.isEmpty() ? "" : "：" + labels)
+                + "；总数 " + proposal.getTargetCountBefore() + "→" + targetAfter
+                + "；不删除任何现有条目。"
+                + (alreadySelected > 0 ? "另有 " + alreadySelected + " 条已在方案中，不重复加入。" : ""));
+        proposal.setImpact("确认后只加入这些条目，不删除/替换现有志愿；总数按当前方案实际数量 + 新增数量更新。");
+        proposal.getActions().add(addExactAction(resolved, majorGroupMode, labelList));
+        populateFillDryRun(proposal, state, currentCount, targetAfter,
+                addedUnitCount, addedEntryCount, 0, 0,
+                "加入 " + formatEntryCount(addedEntryCount, majorGroupMode) + "；零删除。");
+        if (dryRun.solverResult != null) {
+            attachSolverMetadata(proposal, dryRun.objectiveSet, dryRun.solverResult);
+        }
+        return proposal;
+    }
+
+    private static FixProposalActionDTO addExactAction(List<CandidateItemDTO> resolved,
+                                                       boolean majorGroupMode,
+                                                       List<String> labels) {
+        FixProposalActionDTO action = new FixProposalActionDTO();
+        action.setActionType(RepairProposalTaxonomy.ActionType.ADD_VOLUNTEERS);
+        action.setLevel("volunteer");
+        action.setSummary("加入点名的院校+专业");
+        action.setDetail(appendEntryPreviewDetail(
+                "预计加入 " + formatEntryCount(resolved.size(), majorGroupMode) + "。", labels));
+        List<String> volunteerIds = resolved.stream().map(CandidateItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value)).distinct().collect(Collectors.toList());
+        List<String> unitIds = resolved.stream().map(UserGoalProposalBuilder::candidateUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value)).distinct().collect(Collectors.toList());
+        action.setVolunteerIds(volunteerIds);
+        action.setUnitIds(unitIds);
+        action.setCandidateVolunteerIds(volunteerIds);
+        action.setCandidateUnitIds(unitIds);
+        action.setRemoveVolunteerIds(Lists.newArrayList());
+        action.setRemoveUnitIds(Lists.newArrayList());
+        populateActionTotals(action);
+        return action;
+    }
+
+    private static FixProposalAffectedItemDTO toAffectedItem(CandidateItemDTO candidate) {
+        FixProposalAffectedItemDTO item = new FixProposalAffectedItemDTO();
+        item.setVolunteerId(candidate == null ? null : candidate.getVolunteerId());
+        item.setUnitId(candidate == null ? null : candidateUnitKey(candidate));
+        item.setSchoolName(candidate == null ? null : firstNonEmpty(
+                candidate.getDisplaySchoolName(), candidate.getSchoolName()));
+        item.setMajorName(candidate == null ? null : candidate.getMajorName());
+        item.setTier(candidate == null ? null : candidate.getTier());
+        item.setPlanNum(candidate == null ? null : candidate.getPlanNum());
+        item.setTuitionPerYear(candidate == null ? null : candidate.getTuitionPerYear());
+        return item;
+    }
+
+    private static String candidateDisplay(CandidateItemDTO candidate) {
+        if (candidate == null) {
+            return "该目标";
+        }
+        return firstNonEmpty(candidate.getDisplaySchoolName(), candidate.getSchoolName(), "")
+                + "·" + Strings.nullToEmpty(candidate.getMajorName()).trim();
+    }
+
+    private static ExactTargetResolution resolveExactTarget(List<CandidateItemDTO> pool,
+                                                            Set<String> currentVolunteerIds,
+                                                            UserGoalFixProposalReq.ExactTargetDTO target) {
+        ExactTargetResolution result = new ExactTargetResolution();
+        String targetId = normalizeText(target == null ? null : target.getVolunteerId());
+        String targetSchool = normalizeText(target == null ? null : target.getSchoolName());
+        String targetMajor = normalizeText(target == null ? null : target.getMajorName());
+        if (!Strings.isNullOrEmpty(targetId)) {
+            CandidateItemDTO byId = pool.stream()
+                    .filter(candidate -> targetId.equals(normalizeText(candidate.getVolunteerId())))
+                    .findFirst().orElse(null);
+            if (byId == null) {
+                result.reason = REASON_ADD_UNITS_TARGET_NOT_FOUND;
+                result.message = "候选池里没有找到这个志愿 ID：" + targetId;
+                return result;
+            }
+            if (!targetSchool.isEmpty() && !targetMajor.isEmpty()
+                    && !(schoolNameMatches(byId, targetSchool) && targetMajor.equals(normalizeText(byId.getMajorName())))) {
+                result.reason = REASON_ADD_UNITS_TARGET_MISMATCH;
+                result.message = "名称与志愿 ID 对应的对象不一致；请重新从候选里选择：" + targetId;
+                return result;
+            }
+            result.candidate = byId;
+            if (currentVolunteerIds.contains(byId.getVolunteerId())) {
+                result.reason = "already_selected";
+            }
+            return result;
+        }
+        if (targetSchool.isEmpty() || targetMajor.isEmpty()) {
+            result.reason = REASON_ADD_UNITS_TARGET_NOT_FOUND;
+            result.message = "点名加入需要同时给出学校名和专业名（或志愿 ID）。";
+            return result;
+        }
+        List<CandidateItemDTO> exact = pool.stream()
+                .filter(candidate -> schoolNameMatches(candidate, targetSchool)
+                        && targetMajor.equals(normalizeText(candidate.getMajorName())))
+                .collect(Collectors.toList());
+        if (exact.isEmpty()) {
+            List<CandidateItemDTO> loose = pool.stream()
+                    .filter(candidate -> containsLoose(candidate.getMajorName(), targetMajor)
+                            && (containsLoose(candidate.getSchoolName(), targetSchool)
+                            || containsLoose(candidate.getDisplaySchoolName(), targetSchool)))
+                    .collect(Collectors.toList());
+            if (loose.size() == 1) {
+                exact = loose;
+            } else if (loose.size() > 1) {
+                result.reason = REASON_ADD_UNITS_TARGET_AMBIGUOUS;
+                result.message = "“" + target.getSchoolName() + "·" + target.getMajorName()
+                        + "”匹配到多个候选：" + loose.stream().limit(5)
+                        .map(UserGoalProposalBuilder::candidateDisplay).collect(Collectors.joining("、"))
+                        + "；请写清具体专业（含方向/校区）。";
+                return result;
+            }
+        }
+        if (exact.isEmpty()) {
+            result.reason = REASON_ADD_UNITS_TARGET_NOT_FOUND;
+            result.message = "候选池里没有找到“" + target.getSchoolName() + "·" + target.getMajorName() + "”。";
+            return result;
+        }
+        Set<String> ids = exact.stream().map(CandidateItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value)).collect(Collectors.toCollection(LinkedHashSet::new));
+        if (exact.size() > 1 || ids.size() > 1) {
+            result.reason = REASON_ADD_UNITS_TARGET_AMBIGUOUS;
+            result.message = "“" + target.getSchoolName() + "·" + target.getMajorName()
+                    + "”匹配到多个候选：" + exact.stream().limit(5)
+                    .map(UserGoalProposalBuilder::candidateDisplay).collect(Collectors.joining("、"))
+                    + "；请写清具体专业（含方向/校区）。";
+            return result;
+        }
+        result.candidate = exact.get(0);
+        if (currentVolunteerIds.contains(result.candidate.getVolunteerId())) {
+            result.reason = "already_selected";
+        }
+        return result;
+    }
+
+    private static boolean schoolNameMatches(CandidateItemDTO candidate, String normalizedTarget) {
+        return normalizedTarget.equals(normalizeText(candidate.getSchoolName()))
+                || normalizedTarget.equals(normalizeText(candidate.getDisplaySchoolName()));
+    }
+
+    private static AddUnitsDryRun dryRunAddUnits(PlanningStateDTO state,
+                                                 List<PlanVolunteer> current,
+                                                 List<CandidateItemDTO> resolved,
+                                                 int targetAfter,
+                                                 boolean unitMode) {
+        AddUnitsDryRun result = new AddUnitsDryRun();
+        if (!CanonicalPlanningRuntime.hasSelectionObjectives(state)) {
+            result.ok = true;
+            return result;
+        }
+        try {
+            CanonicalPlanningObjectiveSetDTO objectiveSet = PlanningObjectiveCompiler.compileConfirmed(state);
+            CanonicalPlanningObjectiveSetDTO solverObjectiveSet = new CanonicalPlanningObjectiveSetDTO();
+            BeanUtils.copyProperties(objectiveSet, solverObjectiveSet);
+            solverObjectiveSet.setTargetCount(targetAfter);
+            List<CoverageEntity> retained = buildRetainedCoverageEntities(
+                    current, new FillCurrentProjection(), unitMode);
+            List<FillOption> available = buildAddFillOptions(resolved, unitMode);
+            PlanSolverResultDTO solved = PLAN_SOLVER.solve(buildSolverInput(
+                    solverObjectiveSet, retained, available, unitMode, null));
+            result.objectiveSet = objectiveSet;
+            result.solverResult = solved;
+            if (RepairProposalTaxonomy.Status.BLOCKED.equals(solved.getStatus())) {
+                PlanSolverResultDTO.DiagnosticDTO diagnostic = solved.getDiagnostics().isEmpty()
+                        ? null : solved.getDiagnostics().get(0);
+                result.ok = false;
+                result.reason = REASON_ADD_UNITS_DRY_RUN;
+                result.message = diagnostic == null || Strings.isNullOrEmpty(diagnostic.getMessage())
+                        ? "加入后的方案无法同时满足已确认目标/约束，已在预览阶段阻断。"
+                        : diagnostic.getMessage();
+                return result;
+            }
+            Set<String> selected = new LinkedHashSet<String>(defaultList(solved.getSelectedEntityIds()));
+            Set<String> requiredCurrent = retained.stream().map(entity -> entity.entityId(unitMode))
+                    .filter(value -> !Strings.isNullOrEmpty(value)).collect(Collectors.toCollection(LinkedHashSet::new));
+            Set<String> requiredAdded = available.stream().map(option -> option.entityId(unitMode))
+                    .filter(value -> !Strings.isNullOrEmpty(value)).collect(Collectors.toCollection(LinkedHashSet::new));
+            if (!selected.containsAll(requiredCurrent) || !selected.containsAll(requiredAdded)) {
+                result.ok = false;
+                result.reason = REASON_ADD_UNITS_DRY_RUN;
+                result.message = "加入后的求解结果会删掉/替换现有条目或漏掉新增条目，已在预览阶段阻断。";
+                return result;
+            }
+            Set<String> removed = new LinkedHashSet<String>(defaultList(solved.getRemoveEntityIds()));
+            removed.retainAll(requiredCurrent);
+            if (!removed.isEmpty()) {
+                result.ok = false;
+                result.reason = REASON_ADD_UNITS_DRY_RUN;
+                result.message = "加入后的求解结果会删除 " + removed.size() + " 条现有条目，已在预览阶段阻断。";
+                return result;
+            }
+            if (selected.size() != targetAfter) {
+                result.ok = false;
+                result.reason = REASON_ADD_UNITS_DRY_RUN;
+                result.message = "加入后的求解数量与目标 " + targetAfter + " 不一致，已在预览阶段阻断。";
+                return result;
+            }
+            result.ok = true;
+            return result;
+        } catch (Exception ex) {
+            result.ok = false;
+            result.reason = REASON_ADD_UNITS_DRY_RUN_UNAVAILABLE;
+            result.message = "当前环境无法完成加入前的只读校验（dry-run），为避免确认后失败，本次不生成可确认卡。";
+            return result;
+        }
+    }
+
+    private static List<FillOption> buildAddFillOptions(List<CandidateItemDTO> resolved, boolean unitMode) {
+        if (!unitMode) {
+            return defaultList(resolved).stream().map(FillOption::new).collect(Collectors.toList());
+        }
+        Map<String, List<CandidateItemDTO>> grouped = new LinkedHashMap<String, List<CandidateItemDTO>>();
+        for (CandidateItemDTO candidate : defaultList(resolved)) {
+            String unitId = candidateUnitKey(candidate);
+            if (!Strings.isNullOrEmpty(unitId)) {
+                grouped.computeIfAbsent(unitId, ignored -> Lists.newArrayList()).add(candidate);
+            }
+        }
+        return grouped.entrySet().stream()
+                .map(entry -> new FillOption(entry.getKey(), entry.getValue()))
+                .collect(Collectors.toList());
+    }
+
+    private static final class ExactTargetResolution {
+        private CandidateItemDTO candidate;
+        private String reason;
+        private String message;
+    }
+
+    private static final class AddUnitsDryRun {
+        private boolean ok;
+        private String reason;
+        private String message;
+        private CanonicalPlanningObjectiveSetDTO objectiveSet;
+        private PlanSolverResultDTO solverResult;
     }
 
     private static FixProposalDTO buildFillToCountProposal(PlanningStateDTO state,
@@ -1182,7 +1786,8 @@ final class UserGoalProposalBuilder {
         if (removable.isEmpty()) {
             proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
             proposal.setSummary("当前方案已经都在“" + scopeLabel + "”范围内，本轮不需要为了这个目标调整方案。");
-            proposal.setImpact("如果还想继续提高这个方向的质量，可以再要求我按院校层次、录取率或地域偏好做进一步优化。");
+            proposal.setImpact("如果还想继续提高这个方向的质量，可以再要求我按院校层次、录取率或地域偏好做进一步优化。"
+                    + "这条保留要求尚未写入报考要求，后续重新生成不会自动只保留这个方向。");
             proposal.setRequiresConfirmation(false);
             fillDryRun(proposal, countPlanEntries(current, majorGroupMode), 0, 0, "当前方案已经符合这个保留方向。");
             return proposal;
@@ -1201,8 +1806,10 @@ final class UserGoalProposalBuilder {
                 + formatEntryCount(removableCount, majorGroupMode) + "需要处理。本次能替换 "
                 + formatEntryCount(pairCount, majorGroupMode) + "。");
         proposal.setImpact(remainingRemovable.isEmpty()
-                ? "确认前不会改动当前方案；确认后会按这次预览处理，并同步刷新方案。"
-                : "还有 " + formatEntryCount(remainingCount, majorGroupMode) + "暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽条件或后续再补。");
+                ? "确认前不会改动当前方案；确认后这条范围要求会写入本会话的报考要求，并按它重新生成、刷新方案。"
+                : "确认后这条范围要求会写入本会话的报考要求，并重新生成方案；还有 "
+                + formatEntryCount(remainingCount, majorGroupMode)
+                + "暂时没有合适补位，剩余部分需要放宽条件或后续再补。");
         if (!pairs.isEmpty()) {
             proposal.getActions().add(replaceAction("用保留范围内的候选替换其他志愿",
                     pairs, majorGroupMode, current, candidateMatches));
@@ -1248,7 +1855,7 @@ final class UserGoalProposalBuilder {
         if (overBudget.isEmpty()) {
             proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
             proposal.setSummary("当前方案里没有发现学费超过 " + maxTuition + " 元/年的志愿，本轮不需要为了这个预算调整方案。");
-            proposal.setImpact("这条预算可以作为后续报考参考，后续看候选和方案时会继续留意学费。");
+            proposal.setImpact("当前方案不需要调整；这条学费预算尚未写入报考要求，后续规划不会自动按它过滤。");
             proposal.setRequiresConfirmation(false);
             fillDryRun(proposal, countPlanEntries(current, majorGroupMode), 0, 0, "当前方案没有命中超过预算的志愿。");
             return proposal;
@@ -1278,8 +1885,10 @@ final class UserGoalProposalBuilder {
                 + "学费超过 " + maxTuition + " 元/年；本次能替换 "
                 + formatEntryCount(pairCount, majorGroupMode) + "。");
         proposal.setImpact(remaining.isEmpty()
-                ? "确认前不会改动当前方案；确认后会按这次预览处理，并同步刷新方案。"
-                : "还有 " + formatEntryCount(remainingCount, majorGroupMode) + "暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽预算或后续再补。");
+                ? "确认前不会改动当前方案；确认后学费上限会写入本会话的报考要求，并按它重新生成、刷新方案。"
+                : "确认后学费上限会写入本会话的报考要求，并重新生成方案；还有 "
+                + formatEntryCount(remainingCount, majorGroupMode)
+                + "暂时没有合适补位，剩余部分需要放宽预算或后续再补。");
         if (!pairs.isEmpty()) {
             proposal.getActions().add(replaceAction("用不超过预算的候选替换超预算志愿",
                     pairs, majorGroupMode, current, affordableCandidates));
@@ -1307,7 +1916,8 @@ final class UserGoalProposalBuilder {
             proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
             proposal.setSummary("当前方案里已经有 " + formatEntryCount(countPlanEntries(currentMatches, majorGroupMode), majorGroupMode)
                     + "“" + scopeLabel + "”相关选择，本轮不需要为了这个目标调整方案。");
-            proposal.setImpact("如果还想提高这个方向的优先级，可以继续要求我生成更偏这个方向的调整预览。");
+            proposal.setImpact("如果还想提高这个方向的优先级，可以继续要求我生成更偏这个方向的调整预览。"
+                    + "这条要求尚未写入报考要求，后续重新生成不会自动保留这个方向。");
             proposal.setRequiresConfirmation(false);
             fillDryRun(proposal, countPlanEntries(current, majorGroupMode), 0, 0, "当前方案已覆盖这个方向。");
             return proposal;
@@ -1327,7 +1937,8 @@ final class UserGoalProposalBuilder {
                     RepairProposalTaxonomy.Strategy.MUST_INCLUDE_SCOPE);
             if (!pairs.isEmpty()) {
                 proposal.setSummary("当前方案里还没有“" + scopeLabel + "”；方案数量已满，已先找到 1 组低优先级项替换预览。");
-                proposal.setImpact("确认前不会改动当前方案；确认后会先替换一条低优先级选择，再同步刷新方案。");
+                proposal.setImpact("确认前不会改动当前方案；确认后这条范围要求会写入本会话的报考要求，"
+                        + "并先替换一条低优先级选择、重新生成方案。");
                 proposal.getActions().add(replaceAction("补入这个方向并替换低优先级志愿",
                         pairs, majorGroupMode, current, candidateMatches));
                 markReadyIfActionable(proposal);
@@ -1337,8 +1948,9 @@ final class UserGoalProposalBuilder {
                 return proposal;
             }
         }
-        proposal.setSummary("当前方案里还没有“" + scopeLabel + "”；候选池里找到可参考选择，后续可以生成补入预览。");
-        proposal.setImpact("确认前不会改动当前方案；确认后会把这个方向补入方案，并同步刷新方案。");
+        proposal.setSummary("当前方案里还没有“" + scopeLabel + "”；候选池里找到可补入的参考选择，已生成补入预览。");
+        proposal.setImpact("确认前不会改动当前方案；确认后这条范围要求会写入本会话的报考要求，"
+                + "并把该方向补入方案、重新生成方案。");
         proposal.getActions().add(addAction("候选池中可补入的选择",
                 Lists.newArrayList(candidateMatches.get(0)), majorGroupMode, candidateMatches));
         markReadyIfActionable(proposal);
@@ -1359,7 +1971,7 @@ final class UserGoalProposalBuilder {
         if (currentMatches.isEmpty()) {
             proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
             proposal.setSummary("当前方案里没有发现“" + scopeLabel + "”相关选择，本轮不需要为了这个目标移出志愿。");
-            proposal.setImpact("这条要求仍可作为后续报考参考，后续看候选和方案时会继续避开这个方向。");
+            proposal.setImpact("当前方案不需要调整；这条避开要求尚未写入报考要求，后续规划不会自动按它过滤。");
             proposal.setRequiresConfirmation(false);
             fillDryRun(proposal, countPlanEntries(current, majorGroupMode), 0, 0, "当前方案没有命中需要避开的范围。");
             return proposal;
@@ -1384,8 +1996,10 @@ final class UserGoalProposalBuilder {
                 + "命中“" + scopeLabel + "”；本次能替换 "
                 + formatEntryCount(pairCount, majorGroupMode) + "。");
         proposal.setImpact(remainingRemovable.isEmpty()
-                ? "确认前不会改动当前方案；确认后会按这次预览处理，并同步刷新方案。"
-                : "还有 " + formatEntryCount(remainingCount, majorGroupMode) + "暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽条件或后续再补。");
+                ? "确认前不会改动当前方案；确认后这条避开要求会写入本会话的报考要求，并按它重新生成、刷新方案。"
+                : "确认后这条避开要求会写入本会话的报考要求，并重新生成方案；还有 "
+                + formatEntryCount(remainingCount, majorGroupMode)
+                + "暂时没有合适补位，剩余部分需要放宽条件或后续再补。");
         if (!pairs.isEmpty()) {
             proposal.getActions().add(replaceAction("用其他候选替换需要避开的志愿",
                     pairs, majorGroupMode, current, candidateNonMatches));
@@ -2283,7 +2897,7 @@ final class UserGoalProposalBuilder {
         return currentCount >= requiredCount;
     }
 
-    private static int currentPlanVolunteerCount(PlanningStateDTO state) {
+    static int currentPlanVolunteerCount(PlanningStateDTO state) {
         if (state == null) {
             return 0;
         }
@@ -2306,7 +2920,7 @@ final class UserGoalProposalBuilder {
         return 0;
     }
 
-    private static int currentPlanUnitCount(PlanningStateDTO state) {
+    static int currentPlanUnitCount(PlanningStateDTO state) {
         if (state == null) {
             return 0;
         }
@@ -2346,6 +2960,10 @@ final class UserGoalProposalBuilder {
         if (RepairProposalTaxonomy.Strategy.PRIORITIZE_WITHIN_TIER.equals(
                 RepairProposalTaxonomy.normalizeStrategy(goalType))) {
             return "同档优先靠前的方案调整预览";
+        }
+        if (RepairProposalTaxonomy.Strategy.ADD_UNITS.equals(
+                RepairProposalTaxonomy.normalizeStrategy(goalType))) {
+            return "加入志愿预览";
         }
         if ("only_keep_scope".equals(goalType)) {
             return "只保留范围的方案调整暂不自动执行";

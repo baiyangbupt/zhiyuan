@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.gateway.conversation_actions import execute_conversation_action
+from app.gateway.conversation_actions import _actual_changes, execute_conversation_action
 from app.gateway.service import GatewayService
 from app.gateway.ui_events import SessionKey
 from app.server import _run_native_turn
@@ -20,6 +20,51 @@ def snapshot():
             "revision": 3,
         },
     }
+
+
+def test_constraint_apply_receipt_reports_count_and_shortage():
+    """约束类命令没有逐条 added/removed：回执要给出总数前后与缺口。
+
+    2026-10-18 真栈：学费清理把 51 组换成 36 组，`actualChanges` 仍是 `{}`，
+    卡上只能显示"已生效"，用户看不到缩水。这里钉住合成回执。
+    """
+    changes = _actual_changes({
+        "commandType": "apply_constraint_and_regenerate",
+        "targetCountBefore": 51,
+        "targetCountAfter": 36,
+        "postconditionReport": {
+            "countMode": "unit",
+            "countBefore": 51,
+            "actualCount": 36,
+            "targetCount": 45,
+            "shortage": 15,
+        },
+    })
+
+    assert changes == [{
+        "type": "constraint",
+        "countMode": "unit",
+        "targetCountBefore": 51,
+        "targetCountAfter": 36,
+        "actualCount": 36,
+        "requiredCount": 45,
+        "shortage": 15,
+    }]
+
+
+def test_scope_constraint_receipt_keeps_zero_shortage():
+    """only_keep/exclude 的收缩是预期结果：回执照常报前后数量，但 shortage=0。"""
+    changes = _actual_changes({
+        "commandType": "apply_constraint_and_regenerate",
+        "targetCountBefore": 132,
+        "targetCountAfter": 12,
+        "postconditionReport": {"countMode": "unit", "shortage": 0},
+    })
+
+    assert changes[0]["type"] == "constraint"
+    assert changes[0]["targetCountBefore"] == 132
+    assert changes[0]["targetCountAfter"] == 12
+    assert changes[0]["shortage"] == 0
 
 
 @pytest.mark.asyncio

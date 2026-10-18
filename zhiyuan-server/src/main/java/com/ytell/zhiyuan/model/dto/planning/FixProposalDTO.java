@@ -25,6 +25,15 @@ public class FixProposalDTO {
     private List<String> affectedUnitIds = Lists.newArrayList();
     private List<String> affectedVolunteerIds = Lists.newArrayList();
     private List<FixProposalActionDTO> actions = Lists.newArrayList();
+    // 点名加入（add_units）的逐条明细与数量口径：由 Java 从候选行生成。
+    private List<FixProposalAffectedItemDTO> affectedItems = Lists.newArrayList();
+    private Integer addedCount;
+    private Integer addedUnitCount;
+    private Integer removedCount;
+    private Integer targetCountBefore;
+    private Integer targetCountAfter;
+    /** add_units 需要持久化的新目标数；无已确认目标时为空（自然增长）。 */
+    private Integer targetCountOverride;
     private FixProposalDryRunResultDTO dryRunResult = new FixProposalDryRunResultDTO();
     private String canonicalObjectiveDigest;
     private String solverVersion;

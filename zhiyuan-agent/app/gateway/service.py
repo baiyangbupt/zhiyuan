@@ -21,10 +21,12 @@ from app.gateway.artifact_store import ArtifactStoreError
 from app.gateway.contracts import (
     CareerUpdateRequest,
     ConversationTurnSnapshot,
+    IntentDraft,
     ProposalRequest,
     ScoreUpdateRequest,
     TurnOutput,
 )
+from app.gateway.intent_draft import build_change_set
 from app.gateway.event_adapter import adapt_codex_item, adapt_notification
 from app.gateway.output_validation import (
     OutputContractError,
@@ -39,6 +41,11 @@ from app.gateway.conversation_actions import (
     execute_conversation_action,
 )
 from app.gateway.snapshot import build_snapshot, diff_snapshots
+from app.gateway.journey import (
+    context_text as journey_context_text,
+    from_snapshot as journey_from_snapshot,
+    turn_journey_result,
+)
 from app.gateway.thread_recovery import ThreadRecovery, ThreadRecoveryError
 from app.harness.client import AppServerExited
 from app.gateway.ui_events import SessionKey
@@ -293,6 +300,14 @@ TURN_OUTPUT_SCHEMA["$defs"].update(_career_update_definitions)
 TURN_OUTPUT_SCHEMA["required"].append("careerUpdateRequest")
 TURN_OUTPUT_SCHEMA["properties"]["careerUpdateRequest"] = {
     "anyOf": [_career_update_schema, {"type": "null"}]
+}
+
+# 完整意图草稿（Batch B）：模型把一句话里的所有要求一次说清；不写业务状态。
+_intent_draft_schema, _intent_draft_definitions = _strict_model_schema(IntentDraft)
+TURN_OUTPUT_SCHEMA["$defs"].update(_intent_draft_definitions)
+TURN_OUTPUT_SCHEMA["required"].append("intentDraft")
+TURN_OUTPUT_SCHEMA["properties"]["intentDraft"] = {
+    "anyOf": [_intent_draft_schema, {"type": "null"}]
 }
 
 
@@ -613,6 +628,11 @@ def _continuation_nudge_failed(action_result: Mapping[str, Any]) -> str:
     )
 
 
+# J1：固定错误码的用户文案（不进修复回合）。server.py 的失败分支优先用 `reply`。
+_FIXED_TURN_REPLIES = {
+    "pending_applying": "上一条变更正在生效，请稍候；结果会以回执为准。",
+}
+
 _CONTINUATION_FAILURE_REPLY = (
     "刚才的确认已经生效。接下来这一步我没能自动接上——"
     "你回一句「继续」，我就接着往下做。"
@@ -817,9 +837,17 @@ _ARTIFACT_REF_REPAIR_HINT = (
 # 证据的声明与账本不符"（证据缺失/模式写错）；"产物引用与产物账本不符"（不在账本/
 # 章对不上/版本过期）。其余校验失败（一致性/范围…）保持原样：直接硬失败，不修
 # （它们要么不可修复，要么不属于本回路的处置范围）。
+# 点名加入（add_units）的 sourceVersionGuard 修复提示（2026-10-17）。
+_PROPOSAL_SOURCE_VERSION_REPAIR_HINT = (
+    "你的 proposalRequest.sourceVersionGuard 不是当前快照版本（点名加入 add_units 的版本守门）。"
+    "不要改动用户目标或 exactTargets；重新读取本轮内部状态里的当前版本，把 sourceVersionGuard "
+    "改成该值后重新输出。不要重复提交旧版本，也不要把 goalType 改成别的类型。"
+)
+
 _REPAIR_HINT_BY_CODE = {
     "proposal_reference_mismatch": _PROPOSAL_REFERENCE_REPAIR_HINT,
     "proposal_version_mismatch": _PROPOSAL_REFERENCE_REPAIR_HINT,
+    "proposal_source_version_mismatch": _PROPOSAL_SOURCE_VERSION_REPAIR_HINT,
     "admission_evidence_missing": _ADMISSION_EVIDENCE_REPAIR_HINT,
     "admission_mode_mismatch": _ADMISSION_EVIDENCE_REPAIR_HINT,
     "artifact_scope_violation": _ARTIFACT_REF_REPAIR_HINT,
@@ -1194,6 +1222,7 @@ class GatewayService:
         current_binding_loader: Callable[..., Any] | None = None,
         evidence_verifier: Callable[..., Any] | None = None,
         artifact_store: Any | None = None,
+        task_ledger: Any | None = None,
         turn_cache_max_entries: int = 1024,
         turn_cache_ttl_seconds: float = 3600.0,
         turn_cache_clock: Callable[[], float] = time.monotonic,
@@ -1234,6 +1263,7 @@ class GatewayService:
         self._snapshots: dict[SessionKey, ConversationTurnSnapshot] = {}
         self._working_sets: dict[SessionKey, ConversationWorkingSet] = {}
         self.artifact_store = artifact_store
+        self.task_ledger = task_ledger
         self._turn_cache_max_entries = turn_cache_max_entries
         self._turn_cache_ttl_seconds = turn_cache_ttl_seconds
         self._turn_cache_clock = turn_cache_clock
@@ -1369,6 +1399,44 @@ class GatewayService:
             await self._restart_runtime()
             return await self.thread_recovery.load_or_resume(key, snapshot)
 
+    async def _reconcile_applying_snapshot(
+        self,
+        key: SessionKey,
+        tenant_id: str,
+        session_id: str,
+        snapshot: ConversationTurnSnapshot,
+    ) -> ConversationTurnSnapshot:
+        """applying 的受信对账：只查 Java 台账/CAS，不重发命令。
+
+        失败 fail-safe：保持原快照、按“仍在生效”处理；绝不凭异常判未执行。
+        """
+        raw = getattr(snapshot, "journey", None)
+        if not isinstance(raw, Mapping) or raw.get("pendingStatus") != "applying":
+            return snapshot
+        try:
+            response = await internal_client.reconcile_pending_confirmation(
+                session_id, tenant_id=tenant_id
+            )
+        except Exception as exc:  # noqa: BLE001 —— 对账不可用不等于未执行
+            logger.warning("pending reconcile failed (session=%s): %s", session_id, exc)
+            return snapshot
+        # http_client 返回的是 Java BaseResponse 信封（code/data）；测试/替身也可能
+        # 直接给 data。两种形状都认，避免把“有 data”读成 outcome 缺失。
+        payload = response.get("data") if isinstance(response, Mapping) else None
+        if not isinstance(payload, Mapping):
+            payload = response if isinstance(response, Mapping) else {}
+        outcome = str(payload.get("outcome") or "")
+        if outcome in {"", "still_applying"}:
+            return snapshot
+        try:
+            await self._refresh_snapshot_cache(
+                key, tenant_id=tenant_id, session_id=str(session_id)
+            )
+            return self._snapshots.get(key) or snapshot
+        except Exception as exc:  # noqa: BLE001 —— 对账已成功但刷新失败：保持旧快照
+            logger.warning("pending reconcile refresh failed (session=%s): %s", session_id, exc)
+            return snapshot
+
     async def _refresh_snapshot_cache(self, key: SessionKey, *, tenant_id: str, session_id: str) -> None:
         """重读权威快照并写进缓存（提案/动作这类**状态变更**之后必须做）。
 
@@ -1387,7 +1455,14 @@ class GatewayService:
         # **权威写入** ✓：刚刚那次提案/动作已经把服务端状态改了 ✓，重读回来的这份就是事实 ✓
         # ——哪怕它的版本比缓存里那张小（reset / supersede 之后本来就该小 ✓）。
         self._store_snapshot(key, fresh, authoritative=True)
-        self._working_sets[key] = ConversationWorkingSet.from_snapshot(fresh)
+        previous = self._working_sets.get(key)
+        refreshed = ConversationWorkingSet.from_snapshot(fresh)
+        if previous is not None:
+            # 人工审查摘要与任务草稿都不是 Java 业务状态，重读快照不能把它们抹掉。
+            refreshed.last_manual_review_digest = previous.last_manual_review_digest
+            refreshed.last_manual_review_version = previous.last_manual_review_version
+            refreshed.task_draft = previous.task_draft
+        self._working_sets[key] = refreshed
 
     async def _prepare_score_update_preview(
         self,
@@ -2296,6 +2371,15 @@ class GatewayService:
             working_set.candidate_scope_version = previous_working_set.candidate_scope_version
             working_set.candidate_scope_stage = previous_working_set.candidate_scope_stage
             working_set.candidate_source_turn_id = previous_working_set.candidate_source_turn_id
+            working_set.task_draft = previous_working_set.task_draft
+            working_set.last_manual_review_digest = previous_working_set.last_manual_review_digest
+            working_set.last_manual_review_version = previous_working_set.last_manual_review_version
+        if self.task_ledger is not None:
+            persisted_task = await _maybe_await(
+                self.task_ledger.load(key.tenant_id, key.session_id)
+            )
+            if isinstance(persisted_task, dict):
+                working_set.task_draft = persisted_task
         self._working_sets[key] = working_set
 
         codex_task = asyncio.create_task(
@@ -2441,12 +2525,20 @@ class GatewayService:
     ) -> dict[str, Any]:
         if self.codex is None:
             return {"error": "codex_unavailable", "events": []}
+        # J1：applying 回合先做一次受信对账；状态变了就整份快照重注入
+        # （旧 state_patch 的 baseVersion 已不对，不能继续用）。
+        key = _session_key(tenant_id, session_id)
+        reconciled = await self._reconcile_applying_snapshot(
+            key, tenant_id, session_id, snapshot
+        )
+        if reconciled is not snapshot:
+            snapshot = reconciled
+            state_patch = None
         # 模型在文本回合里发出的确认/取消（执行结果）。在 try **之外**初始化：
         # 异常分支也要能把已经出站的结果原样带回去（见 `_turn_action_payload` ✓）。
         action_result_payload: dict[str, Any] | None = None
         action_snapshot_version: int | None = None
         try:
-            key = _session_key(tenant_id, session_id)
             thread_id = self._threads.get(key)
             if not thread_id:
                 thread_id = await self._ensure_thread(key, snapshot)
@@ -2483,6 +2575,19 @@ class GatewayService:
             }
             working_set = self._working_sets.get(key)
             context_items = [snapshot_item]
+            # 本轮标识：`intentDraft.sourceTurnId` 是模型侧必填字段，但当前回合号
+            # 由网关生成、此前没有进模型上下文——模型只能编或干脆省略整个草稿。
+            # 显式给出唯一可用的值（不得编造），草稿才能稳定落进 TaskDraft。
+            context_items.append(
+                {
+                    "type": "text",
+                    "text": _internal_state_block(
+                        "【本轮标识】\n"
+                        f"turnId: {turn_id}\n"
+                        "intentDraft.sourceTurnId 必须原样使用这个值，不得编造。"
+                    ),
+                }
+            )
             if working_set is not None:
                 context_items.append(
                     {
@@ -2512,6 +2617,18 @@ class GatewayService:
                             "以下约束用于避免不完整查询和重复读取，不是用户新问题。\n"
                             + render_tool_contracts()
                         ),
+                    }
+                )
+            journey_ctx = journey_from_snapshot(
+                snapshot,
+                manual_review_digest=getattr(working_set, "last_manual_review_digest", None),
+                has_open_task=bool(working_set and working_set.has_open_task()),
+            )
+            if journey_ctx is not None:
+                context_items.append(
+                    {
+                        "type": "text",
+                        "text": _internal_state_block(journey_context_text(journey_ctx)),
                     }
                 )
             turn_input = list(context_items)
@@ -2854,6 +2971,43 @@ class GatewayService:
                     "a single turn must not carry more than one of "
                     "proposalRequest / scoreUpdateRequest / careerUpdateRequest",
                 )
+            _action_type = str(
+                getattr(output.conversation_action, "action_type", "") or ""
+            )
+            _intent_draft_present = output.intent_draft is not None
+            if _action_type in {"confirm_proposal", "cancel_proposal"} and (
+                _draft_count > 0 or _intent_draft_present
+            ):
+                # “确认，但预算改成两万”这类纠正不能先执行原卡再补条件；
+                # 模型必须输出新的 proposalRequest（重新预览），不能同轮 confirm + 新草稿。
+                # intentDraft 也算新要求：确认回合应输出 intentDraft=null。
+                raise OutputContractError(
+                    "confirmation_conflicts_with_new_intent",
+                    "confirm/cancel cannot be combined with a new proposal draft or intentDraft",
+                )
+            if output.intent_draft is not None:
+                change_set = build_change_set(output.intent_draft)
+                if (change_set.status != "ready" or not change_set.atomic) and _draft_count > 0:
+                    # 复合要求尚未被服务端支持为原子事务：不许先执行一个
+                    # 可能违反其他硬要求的子动作（例如先加入、下一轮再限学费）。
+                    # **丢掉附带草稿、保留正文**：整轮失败会让用户只看到“引擎暂不可用”，
+                    # 而正文本来就该说明先澄清/先约束（2026-10-18 真栈实测）。
+                    output.proposal_request = None
+                    output.proposal_ref = None
+                    output.score_update_request = None
+                    output.career_update_request = None
+                    _draft_count = 0
+                    output.limitations = [
+                        *list(output.limitations),
+                        "本轮要求尚未收敛为单个可执行动作，附带的提案已取消；请按正文说明分步确认。",
+                    ]
+                    # 正文可能已经写了“这是加入预览/请确认”——草稿被丢后那句话就不成立了。
+                    # 必须当场纠正，不能让用户去找一张根本没生成的卡。
+                    output.message = (
+                        str(output.message).rstrip()
+                        + "\n\n（本轮没有生成可确认的卡片：这条要求还需要先澄清或分步确认，"
+                        "请按上面的说明回复。）"
+                    )
             if output.proposal_request is not None:
                 if output.proposal_request.source_version_guard != snapshot.snapshot_version:
                     raise OutputContractError(
@@ -3008,6 +3162,26 @@ class GatewayService:
             if working_set is not None:
                 working_set.ingest_payload(turn, turn_id=turn_id)
                 working_set.apply_output(output, turn_id)
+                if self.task_ledger is not None:
+                    if working_set.task_draft is not None:
+                        await _maybe_await(
+                            self.task_ledger.save(
+                                key.tenant_id, key.session_id, working_set.task_draft
+                            )
+                        )
+                    elif (
+                        str(getattr(output.conversation_action, "action_type", "") or "")
+                        == "cancel_proposal"
+                        or (
+                            output.intent_draft is not None
+                            and build_change_set(output.intent_draft).status == "blocked"
+                        )
+                    ):
+                        # blocked 草稿不落任务页；旧账本也要清，否则“继续”会捞出
+                        # 一个未实现动作（J1）。
+                        await _maybe_await(
+                            self.task_ledger.clear(key.tenant_id, key.session_id)
+                        )
             trace = build_turn_trace(
                 turn,
                 output,
@@ -3017,6 +3191,19 @@ class GatewayService:
                     if item.get("entityId")
                 ],
             )
+            journey_result = turn_journey_result(
+                snapshot,
+                output,
+                [str(call.get("name") or "") for call in trace.tool_calls],
+            )
+            if journey_result and journey_result.get("taskIntent") == "review":
+                raw_journey = snapshot.journey if isinstance(snapshot.journey, Mapping) else {}
+                current_ws = self._working_sets.get(key) or working_set
+                if current_ws is not None:
+                    current_ws.mark_manual_review(
+                        raw_journey.get("planContentDigest"),
+                        raw_journey.get("planVersion"),
+                    )
             output = synthesize_execution_status(output, trace.batch_report)
             return {
                 "output": output,
@@ -3025,6 +3212,7 @@ class GatewayService:
                 "trace": trace.as_payload(),
                 "recovery": {"outputRepaired": output_repaired},
                 "proposalPreview": dict(proposal_preview) if proposal_preview is not None else None,
+                **({"journey": journey_result} if journey_result is not None else {}),
                 # 模型发起的确认/取消：结果与点卡路径同形 ✓（`_handle_uncached` 把它带进
                 # 回合结果 ✓，`server.py::_emit_turn_terminal` 一见它发
                 # `conversationAction.result` ✓——同一个发射器、同一份载荷合同 ✓）。
@@ -3057,9 +3245,12 @@ class GatewayService:
             # 它由 `_emit_turn_terminal` 在失败分支**先于** `recoverable.error` 发出 ✓，
             # 漏了它，库里已经落地的改动在页面上永远停在"待确认" ✗
             # （与 `execute_action_and_refresh` docstring 同一条不变量 ✓）。
+            code = str(getattr(exc, "code", "") or exc)
+            fixed_reply = _FIXED_TURN_REPLIES.get(code)
             return {
                 "error": str(exc),
                 "events": [],
+                **({"reply": fixed_reply} if fixed_reply else {}),
                 **_turn_action_payload(action_result_payload, action_snapshot_version),
             }
         except Exception as exc:

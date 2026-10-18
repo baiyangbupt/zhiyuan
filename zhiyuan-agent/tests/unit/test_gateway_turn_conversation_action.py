@@ -136,7 +136,11 @@ def _output(action: dict[str, Any], *, message: str = "好的，我这就去确�
     }
 
 
-def _gateway(codex: _CodexHarness, workspace: dict[str, Any]) -> tuple[GatewayService, _SnapshotLoader]:
+def _gateway(
+    codex: _CodexHarness,
+    workspace: dict[str, Any],
+    task_ledger: Any | None = None,
+) -> tuple[GatewayService, _SnapshotLoader]:
     loader = _SnapshotLoader(workspace)
     gateway = GatewayService(
         mode="codex_write",
@@ -151,6 +155,7 @@ def _gateway(codex: _CodexHarness, workspace: dict[str, Any]) -> tuple[GatewaySe
             allowed_capabilities=frozenset({"catalog_read", "admission_read"}),
         ),
         snapshot_loader=loader,
+        task_ledger=task_ledger,
     )
     return gateway, loader
 
@@ -291,3 +296,240 @@ async def test_action_types_without_an_executor_keep_the_old_behaviour():
 
     assert result.get("error") is None
     assert result.get("actionResult") is None, "没有执行器就**不许**凭空产一条结果事件 ✗"
+
+
+@pytest.mark.asyncio
+async def test_add_units_confirm_uses_frozen_command_and_skips_proposal_apply(monkeypatch):
+    """点名加入：网关只发 5 个字段，不构造 proposalApply/canonical；
+    回执 actualChanges/reviewState 透传到 conversationAction.result。"""
+    resolver = _Recorder([
+        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "completed"},
+    ])
+    executor = _Recorder([
+        {
+            "code": 0,
+            "status": "applied",
+            "data": {
+                "stateVersion": 7,
+                "addedVolunteerIds": ["v2"],
+                "addedVolunteerCount": 1,
+                "addedUnitCount": 1,
+                "removedVolunteerCount": 0,
+                "targetCountBefore": 1,
+                "targetCountAfter": 2,
+                "reviewState": {"summary": {"passedCount": 10, "warnCount": 4, "riskCount": 0}},
+            },
+        },
+    ])
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolver)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", executor)
+
+    workspace = _workspace()
+    workspace["activeProposal"] = {
+        "proposalRef": "pending-1",
+        "pendingId": "pending-1",
+        "sourceVersion": 5,
+        "revision": 1,
+        "kind": "plan_action",
+        "data": {
+            "operationId": "op-1",
+            "commandType": "add_units",
+            "sourceVersion": 5,
+        },
+    }
+    codex = _CodexHarness(_output({
+        "actionType": "confirm_proposal",
+        "proposalRef": "pending-1",
+        "expectedSourceVersion": 5,
+        "intent": "explicit",
+    }))
+    gateway, _ = _gateway(codex, workspace)
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result
+    assert result["actionResult"]["actionStatus"] == "applied"
+    assert result["actionResult"]["actualChanges"] == [{
+        "type": "add",
+        "volunteerIds": ["v2"],
+        "addedCount": 1,
+        "addedUnitCount": 1,
+        "removedCount": 0,
+        "targetCountBefore": 1,
+        "targetCountAfter": 2,
+    }]
+    assert result["actionResult"]["reviewState"]["summary"]["warnCount"] == 4
+    _, execute_kwargs = executor.calls[0]
+    assert execute_kwargs["command_type"] == "add_units"
+    assert execute_kwargs["expected_plan_version"] == 5
+    assert "proposal_apply" not in execute_kwargs
+    assert "volunteer_ids" not in execute_kwargs
+
+
+@pytest.mark.asyncio
+async def test_confirm_cannot_be_combined_with_a_new_proposal_draft():
+    """确认 + 新条件 = 纠正，不是原卡确认；契约层直接拒绝同轮 confirm+新草稿。"""
+    output = _output({
+        "actionType": "confirm_proposal",
+        "proposalRef": "pending-1",
+        "expectedSourceVersion": 5,
+        "intent": "explicit",
+    })
+    output["proposalRequest"] = {
+        "goalType": "fill_to_count",
+        "userOriginalText": "确认，但补到 50",
+        "confidence": "high",
+        "sourceVersionGuard": 5,
+        "targetCount": 50,
+    }
+    codex = _CodexHarness(output)
+    gateway, _ = _gateway(codex, _workspace())
+
+    result = await _turn(gateway)
+
+    assert str(result.get("error", "")).startswith(
+        "confirmation_conflicts_with_new_intent"
+    ), result
+
+
+def _composite_intent_draft() -> dict:
+    return {
+        "sourceTurnId": "t-composite",
+        "userText": "加 A，学费三万内",
+        "goalFamily": "plan_mutation",
+        "action": "add",
+        "targets": [{"schoolName": "A大学", "majorName": "计算机"}],
+        "scopes": [
+            {"scopeType": "tuition", "name": "30000", "strength": "must"}
+        ],
+        "validity": "unknown",
+        "intentConfidence": 0.8,
+    }
+
+
+@pytest.mark.asyncio
+async def test_composite_intent_drops_the_partial_add_proposal_but_keeps_the_text():
+    """复合草稿同轮带提案：**丢弃提案、保留正文**，不把整轮判失败。
+
+    2026-10-18 真栈：模型在 `unresolved` 非空时仍附带 add 提案 → 整轮被拒，
+    用户只看到“引擎暂不可用”，正文里的澄清说明反而丢了。守卫的目的只是
+    “不许先执行子动作”，不是“让整轮失败”。
+    """
+    output = _output({"actionType": "none", "intent": "not_applicable"})
+    output["intentDraft"] = _composite_intent_draft()
+    output["proposalRequest"] = {
+        "goalType": "add_units",
+        "userOriginalText": "加 A",
+        "confidence": "high",
+        "sourceVersionGuard": 5,
+        "exactTargets": [{"schoolName": "A大学", "majorName": "计算机"}],
+    }
+    codex = _CodexHarness(output)
+    gateway, _ = _gateway(codex, _workspace())
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result
+    out = result["output"]
+    proposal = out.get("proposalRequest") if isinstance(out, dict) else out.proposal_request
+    proposal_ref = out.get("proposalRef") if isinstance(out, dict) else out.proposal_ref
+    limitations = out.get("limitations") if isinstance(out, dict) else out.limitations
+    assert proposal is None
+    assert proposal_ref is None
+    assert any("附带的提案已取消" in item for item in limitations)
+    message = out.get("message") if isinstance(out, dict) else out.message
+    assert "本轮没有生成可确认的卡片" in message
+
+
+@pytest.mark.asyncio
+async def test_composite_intent_without_partial_proposal_is_allowed_as_text():
+    output = _output({"actionType": "none", "intent": "not_applicable"})
+    output["intentDraft"] = _composite_intent_draft()
+    codex = _CodexHarness(output)
+    gateway, _ = _gateway(codex, _workspace())
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result
+
+
+@pytest.mark.asyncio
+async def test_confirm_old_card_cannot_carry_a_new_intent_draft():
+    """确认旧卡 + 新要求（即使没有 proposalRequest）也必须重新预览。"""
+    output = _output({
+        "actionType": "confirm_proposal",
+        "proposalRef": "pending-1",
+        "expectedSourceVersion": 5,
+        "intent": "explicit",
+    })
+    output["intentDraft"] = _composite_intent_draft()
+    codex = _CodexHarness(output)
+    gateway, _ = _gateway(codex, _workspace())
+
+    result = await _turn(gateway)
+
+    assert str(result.get("error", "")).startswith(
+        "confirmation_conflicts_with_new_intent"
+    ), result
+
+
+class _FakeTaskLedger:
+    def __init__(self) -> None:
+        self.data: dict[tuple[str, str], dict] = {}
+
+    async def load(self, tenant_id: str, session_id: str):
+        return self.data.get((tenant_id, session_id))
+
+    async def save(self, tenant_id: str, session_id: str, task: dict) -> bool:
+        self.data[(tenant_id, session_id)] = task
+        return True
+
+    async def clear(self, tenant_id: str, session_id: str) -> None:
+        self.data.pop((tenant_id, session_id), None)
+
+
+@pytest.mark.asyncio
+async def test_task_draft_is_saved_and_reloaded_across_turns():
+    ledger = _FakeTaskLedger()
+    first_output = _output({"actionType": "none", "intent": "not_applicable"})
+    first_output["intentDraft"] = _composite_intent_draft()
+    first = _CodexHarness(first_output)
+    gateway, _ = _gateway(first, _workspace(), task_ledger=ledger)
+
+    result = await _turn(gateway, "ui-1")
+
+    assert result.get("error") is None, result
+    saved = ledger.data[("tenant-1", "session-1")]
+    assert saved["changeSet"]["status"] == "needs_constraints_first"
+    assert result["workingSet"]["taskDraft"]["turnId"] == "ui-1"
+
+    second = _CodexHarness(_output({"actionType": "none", "intent": "not_applicable"}))
+    gateway2, _ = _gateway(second, _workspace(), task_ledger=ledger)
+    result2 = await _turn(gateway2, "ui-2")
+
+    assert result2.get("error") is None, result2
+    assert result2["workingSet"]["taskDraft"]["changeSet"]["status"] == (
+        "needs_constraints_first"
+    )
+    assert result2["workingSet"]["taskDraft"]["turnId"] == "ui-1"
+
+
+@pytest.mark.asyncio
+async def test_cancel_proposal_clears_persisted_task_draft():
+    ledger = _FakeTaskLedger()
+    first_output = _output({"actionType": "none", "intent": "not_applicable"})
+    first_output["intentDraft"] = _composite_intent_draft()
+    gateway, _ = _gateway(_CodexHarness(first_output), _workspace(), task_ledger=ledger)
+    await _turn(gateway, "ui-1")
+    assert ("tenant-1", "session-1") in ledger.data
+
+    cancel_output = _output({
+        "actionType": "cancel_proposal",
+        "proposalRef": "pending-1",
+        "intent": "explicit",
+    })
+    gateway2, _ = _gateway(_CodexHarness(cancel_output), _workspace(), task_ledger=ledger)
+    await _turn(gateway2, "ui-2")
+
+    assert ("tenant-1", "session-1") not in ledger.data

@@ -482,6 +482,119 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void shouldStatePersistentScopeLifecycleOnOnlyKeepPreview() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "湖南师范大学", "汉语言文学", "文学", 88D));
+        state.getCandidatePoolState().getItems().add(candidate("v3", "南华大学", "临床医学", "医学", 90D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "中南大学", "临床医学", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "湖南师范大学", "汉语言文学", false));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(
+                state, req("only_keep_scope", 12, scope("major", "临床医学"))).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getImpact().contains("写入本会话"));
+        assertTrue(proposal.getImpact().contains("重新生成"));
+    }
+
+    @Test
+    void shouldStatePersistentScopeLifecycleOnExcludePreview() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "南京大学", "金融学", "经济学", 91D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "湖南师范大学", "汉语言文学", "文学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "南京大学", "金融学", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "湖南师范大学", "汉语言文学", false));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(
+                state, req("exclude_scope", 12, negativeScope("major", "金融学"))).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getImpact().contains("写入本会话"));
+        assertTrue(proposal.getImpact().contains("重新生成"));
+    }
+
+    @Test
+    void shouldStatePersistentScopeLifecycleOnMustIncludePreview() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO current = candidate("v1", "湖南师范大学", "汉语言文学", "文学", 88D);
+        CandidateItemDTO candidate = candidate("v2", "南华大学", "临床医学", "医学", 90D);
+        state.getCandidatePoolState().getItems().add(current);
+        state.getCandidatePoolState().getItems().add(candidate);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "湖南师范大学", "汉语言文学", false));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(
+                state, req("must_include_scope", 12, scope("major", "临床医学"))).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getImpact().contains("写入本会话"));
+        assertTrue(proposal.getImpact().contains("重新生成"));
+    }
+
+    @Test
+    void shouldStatePersistentTuitionLifecycleOnReadyPreview() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO expensive = candidate("v1", "学校A", "金融学", "经济学", 91D);
+        expensive.setTuitionPerYear(26000);
+        CandidateItemDTO kept = candidate("v2", "学校B", "汉语言文学", "文学", 88D);
+        kept.setTuitionPerYear(15000);
+        CandidateItemDTO affordable = candidate("v3", "学校C", "法学", "法学", 86D);
+        affordable.setTuitionPerYear(18000);
+        state.getCandidatePoolState().getItems().add(expensive);
+        state.getCandidatePoolState().getItems().add(kept);
+        state.getCandidatePoolState().getItems().add(affordable);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校A", "金融学", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "学校B", "汉语言文学", false));
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("tuition_budget_scope");
+        req.setSourceVersionGuard(12);
+        req.setContext(java.util.Collections.singletonMap("maxTuitionPerYear", 20000));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getImpact().contains("写入本会话"));
+        assertTrue(proposal.getImpact().contains("重新生成"));
+    }
+
+    @Test
+    void shouldNotClaimFutureFilteringWhenTuitionBudgetAlreadySatisfied() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO affordable = candidate("v1", "学校A", "金融学", "经济学", 91D);
+        affordable.setTuitionPerYear(18000);
+        state.getCandidatePoolState().getItems().add(affordable);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校A", "金融学", false));
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("tuition_budget_scope");
+        req.setSourceVersionGuard(12);
+        req.setContext(java.util.Collections.singletonMap("maxTuitionPerYear", 20000));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("info", proposal.getStatus());
+        assertFalse(proposal.getRequiresConfirmation());
+        assertFalse(proposal.getImpact().contains("后续看候选和方案时会继续留意学费"));
+        assertTrue(proposal.getImpact().contains("尚未写入"));
+    }
+
+    @Test
+    void shouldNotClaimFutureFilteringWhenExcludeFindsNoHits() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "湖南师范大学", "汉语言文学", "文学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "湖南师范大学", "汉语言文学", false));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(
+                state, req("exclude_scope", 12, negativeScope("major", "金融学"))).getProposals().get(0);
+
+        assertEquals("info", proposal.getStatus());
+        assertFalse(proposal.getRequiresConfirmation());
+        assertFalse(proposal.getImpact().contains("仍可作为后续报考参考"));
+        assertTrue(proposal.getImpact().contains("尚未写入"));
+    }
+
+    @Test
     void shouldBlockTuitionBudgetWhenMaxTuitionMissing() {
         PlanningStateDTO state = state(12);
         UserGoalFixProposalReq req = new UserGoalFixProposalReq();
@@ -2241,4 +2354,248 @@ public class UserGoalProposalBuilderTest {
         major.setMajorName(majorName);
         return major;
     }
+
+    @Test
+    void shouldBuildReadyAddUnitsPreviewForNamedTargets() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "湖南师范大学", "汉语言文学", "文学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "中南大学", "临床医学", false));
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.getExactTargets().add(exactTarget("湖南师范大学", "汉语言文学", null));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("add_units", proposal.getStrategy());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals(java.util.Arrays.asList("v2"), proposal.getAffectedVolunteerIds());
+        assertEquals(1, proposal.getAddedCount());
+        assertEquals(0, proposal.getRemovedCount());
+        assertEquals(1, proposal.getTargetCountBefore());
+        assertEquals(2, proposal.getTargetCountAfter());
+        assertEquals(null, proposal.getTargetCountOverride());
+        assertTrue(proposal.getSummary().contains("不删除"));
+        assertEquals("add_volunteers", proposal.getActions().get(0).getActionType());
+        assertEquals(java.util.Arrays.asList("v2"), proposal.getActions().get(0).getVolunteerIds());
+    }
+
+    @Test
+    void shouldBlockAddUnitsWhenCurrentCountDoesNotMatchConfirmedTarget() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "湖南师范大学", "汉语言文学", "文学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "中南大学", "临床医学", false));
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(5);
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.getExactTargets().add(exactTarget("湖南师范大学", "汉语言文学", null));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("add_units", proposal.getStrategy());
+        assertFalse(proposal.getRequiresConfirmation());
+        assertTrue(proposal.getBlockingReason().contains("不一致"));
+    }
+
+    @Test
+    void shouldBlockAddUnitsWhenTierQuotaIsConfirmed() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "湖南师范大学", "汉语言文学", "文学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "中南大学", "临床医学", false));
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(quotaGoal(1, 1, 1));
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.getExactTargets().add(exactTarget("湖南师范大学", "汉语言文学", null));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertTrue(proposal.getBlockingReason().contains("冲稳保配额"));
+    }
+
+    @Test
+    void shouldBlockAddUnitsWhenTargetNamesAreAmbiguous() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "湖南师范大学", "汉语言文学", "文学", 88D));
+        state.getCandidatePoolState().getItems().add(candidate("v3", "湖南师范大学", "汉语言文学", "文学", 87D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "中南大学", "临床医学", false));
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.getExactTargets().add(exactTarget("湖南师范大学", "汉语言文学", null));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertTrue(proposal.getBlockingReason().contains("匹配到多个候选"));
+    }
+
+    @Test
+    void shouldBuildInfoWhenAddTargetIsAlreadySelected() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "中南大学", "临床医学", false));
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.getExactTargets().add(exactTarget("中南大学", "临床医学", null));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("info", proposal.getStatus());
+        assertEquals("add_units", proposal.getStrategy());
+        assertFalse(proposal.getRequiresConfirmation());
+        assertTrue(proposal.getSummary().contains("已经在当前方案中"));
+    }
+
+    @Test
+    void shouldAddUnitsByScopeWithRegionAndTuitionFilters() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO current = candidate("v0", "当前大学", "当前专业", "文学", 80D);
+        current.setProvinceName("湖南");
+        current.setTuitionPerYear(5000);
+        CandidateItemDTO anhui1 = candidate("v1", "安徽大学A", "专业1", "文学", 90D);
+        anhui1.setProvinceName("安徽");
+        anhui1.setTuitionPerYear(5000);
+        CandidateItemDTO anhui2 = candidate("v2", "安徽大学B", "专业2", "文学", 88D);
+        anhui2.setProvinceName("安徽");
+        anhui2.setTuitionPerYear(5500);
+        CandidateItemDTO expensive = candidate("v3", "安徽大学C", "专业3", "文学", 92D);
+        expensive.setProvinceName("安徽");
+        expensive.setTuitionPerYear(7000);
+        CandidateItemDTO other = candidate("v4", "湖南大学D", "专业4", "文学", 86D);
+        other.setProvinceName("湖南");
+        other.setTuitionPerYear(5000);
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(current, anhui1, anhui2, expensive, other));
+        state.getOrderedPlanState().getItems().add(ordered("v0", "当前大学", "当前专业", false));
+
+        UserGoalFixProposalReq req = req("add_units_by_scope", 12, scope("region", "安徽"));
+        req.setAddCount(2);
+        req.setContext(java.util.Collections.singletonMap("maxTuitionPerYear", 6000));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("add_units_by_scope", proposal.getStrategy());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals(2, proposal.getAddedCount());
+        assertEquals(0, proposal.getRemovedCount());
+        assertEquals(1, proposal.getTargetCountBefore());
+        assertEquals(3, proposal.getTargetCountAfter());
+        assertTrue(proposal.getAffectedVolunteerIds().containsAll(
+                java.util.Arrays.asList("v1", "v2")));
+        assertFalse(proposal.getAffectedVolunteerIds().contains("v3"));
+        assertFalse(proposal.getAffectedVolunteerIds().contains("v4"));
+        assertTrue(proposal.getSummary().contains("按范围加入"));
+        assertTrue(proposal.getSummary().contains("不删除"));
+        assertTrue(proposal.getImpact().contains("只用于本次筛选"));
+    }
+
+    @Test
+    void shouldBlockAddUnitsByScopeWhenCandidatesAreInsufficient() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO current = candidate("v0", "当前大学", "当前专业", "文学", 80D);
+        current.setProvinceName("湖南");
+        CandidateItemDTO anhui1 = candidate("v1", "安徽大学A", "专业1", "文学", 90D);
+        anhui1.setProvinceName("安徽");
+        CandidateItemDTO expensive = candidate("v2", "安徽大学B", "专业2", "文学", 88D);
+        expensive.setProvinceName("安徽");
+        expensive.setTuitionPerYear(9000);
+        state.getCandidatePoolState().getItems().addAll(
+                java.util.Arrays.asList(current, anhui1, expensive));
+        state.getOrderedPlanState().getItems().add(ordered("v0", "当前大学", "当前专业", false));
+        UserGoalFixProposalReq req = req("add_units_by_scope", 12, scope("region", "安徽"));
+        req.setAddCount(2);
+        req.setContext(java.util.Collections.singletonMap("maxTuitionPerYear", 6000));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("add_units_by_scope_insufficient",
+                proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getBlockingReason().contains("不够本次要新增的 2 个"));
+    }
+
+    private UserGoalFixProposalReq addUnitsRequest() {
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("add_units");
+        req.setSourceVersionGuard(12);
+        return req;
+    }
+
+    private UserGoalFixProposalReq.ExactTargetDTO exactTarget(String schoolName,
+                                                             String majorName,
+                                                             String volunteerId) {
+        UserGoalFixProposalReq.ExactTargetDTO target = new UserGoalFixProposalReq.ExactTargetDTO();
+        target.setSchoolName(schoolName);
+        target.setMajorName(majorName);
+        target.setVolunteerId(volunteerId);
+        return target;
+    }
+
+    @Test
+    void shouldResolveAddUnitByVolunteerIdOnly() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "湖南师范大学", "汉语言文学", "文学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "中南大学", "临床医学", false));
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.getExactTargets().add(exactTarget(null, null, "v2"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(java.util.Arrays.asList("v2"), proposal.getAffectedVolunteerIds());
+    }
+
+    @Test
+    void shouldBlockAddUnitWhenNamesAndVolunteerIdMismatch() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "湖南师范大学", "汉语言文学", "文学", 88D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "中南大学", "临床医学", false));
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.getExactTargets().add(exactTarget("中南大学", "临床医学", "v2"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertTrue(proposal.getBlockingReason().contains("不一致"));
+    }
+
+    @Test
+    void shouldUseUnitCountForAddUnitsTargetOverrideInMajorGroupMode() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        for (String id : new String[]{"v1", "v2", "v3", "v4"}) {
+            CandidateItemDTO item = candidate(id, "湖南大学第110组", "专业" + id, "管理学", 90D);
+            item.setPlanSchoolDataId(id.equals("v3") || id.equals("v4") ? "u2" : "u1");
+            state.getCandidatePoolState().getItems().add(item);
+        }
+        OrderedUnitDTO unit = new OrderedUnitDTO();
+        unit.setUnitId("u1");
+        unit.setSchoolName("湖南大学第110组");
+        unit.getMajorItems().add(unitMajor("v1", "专业v1"));
+        state.getOrderedPlanState().getUnits().add(unit);
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.getExactTargets().add(exactTarget("湖南大学第110组", "专业v2", "v2"));
+        req.getExactTargets().add(exactTarget("湖南大学第110组", "专业v3", "v3"));
+        req.getExactTargets().add(exactTarget("湖南大学第110组", "专业v4", "v4"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(1, proposal.getTargetCountBefore());
+        assertEquals(3, proposal.getTargetCountAfter(), "u1 新增 1 个专业仍在同组，u2 新增 1 组 => 单元数 1+2");
+        assertEquals(3, proposal.getAddedCount());
+        assertEquals(2, proposal.getAddedUnitCount());
+    }
+
 }

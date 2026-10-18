@@ -2804,3 +2804,157 @@ def test_batch_options_description_states_subject_translation_and_default_batch_
     assert listed["catalog.get_batch_options"]["description"] == description
     # 科类字段本身也要在 schema 里说清省份口径（模型按参数学的次数不比按描述少）。
     assert "按省份口径" in listed["catalog.get_batch_options"]["inputSchema"]["properties"]["subjectType"]["description"]
+
+
+def _interpretation_response() -> dict:
+    base = {
+        "scenarioId": "base",
+        "label": "base",
+        "structureStatus": "首个稳/保位置",
+        "condition": "若前序均未满足",
+        "landingEntry": {"level": "unit", "id": "u2", "pathTier": "稳"},
+        "path": [],
+        "drivers": [],
+        "caveats": [],
+        "evidenceRefs": [],
+    }
+    return {
+        "code": 0,
+        "msg": "success",
+        "data": {
+            "status": "completed",
+            "planVersion": 7,
+            "generatedAt": "2026-10-18T14:00:00+08:00",
+            "admissionMode": "major_group",
+            "scenarios": [base],
+            "baseLanding": base,
+            "safetyCoverage": "有保底档位",
+            "tierCoverage": 1.0,
+            "ratioCoverage": 1.0,
+            "dataCompleteness": 1.0,
+            "dataCompletenessBand": "完整",
+            "orderAnomaly": False,
+            "caveats": ["这是方案结构与条件情景说明，不是录取预测。"],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_interpret_admission_uses_trusted_identity_and_passes_through(monkeypatch) -> None:
+    """录取解读：受信身份、planVersion 必填、结果原样透传、明确“不是概率”。"""
+    from app.util import internal_client
+
+    calls: list[dict] = []
+
+    async def interpret_admission(tenant_id, chat_session_id, **kwargs):
+        calls.append(
+            {
+                "tenant_id": tenant_id,
+                "chat_session_id": chat_session_id,
+                **kwargs,
+            }
+        )
+        return _interpretation_response()
+
+    monkeypatch.setattr(internal_client, "interpret_admission", interpret_admission)
+
+    tools = ReadonlyDomainTools(
+        trusted_context("major_group"),
+        backend=InternalClientBackend(
+            tenant_id="1", chat_session_id="900047", current_state_version=42
+        ),
+    )
+
+    result = await tools.call(
+        "planning.interpret_admission",
+        {
+            "planVersion": 7,
+            # 冒充身份：必须被 `_trusted_arguments` 丢掉。
+            "tenantId": "999",
+            "sessionId": "888",
+            "chatSessionId": "777",
+        },
+    )
+
+    assert result["kind"] == "interpretation"
+    assert result["status"] == "ok"
+    assert calls == [
+        {
+            "tenant_id": "1",
+            "chat_session_id": "900047",
+            "plan_version": 7,
+            "admission_mode": None,
+            "counterfactual": None,
+        }
+    ]
+    assert result["data"]["planVersion"] == 7
+    assert result["data"]["baseLanding"]["label"] == "base"
+    assert result["data"]["safetyCoverage"] == "有保底档位"
+    assert result["data"]["state_mutation"] is False
+    assert "interpretation_is_structural_not_admission_probability" in result["limitations"]
+
+
+@pytest.mark.asyncio
+async def test_interpret_admission_requires_plan_version_without_calling_backend(monkeypatch) -> None:
+    from app.util import internal_client
+
+    calls: list = []
+
+    async def interpret_admission(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _interpretation_response()
+
+    monkeypatch.setattr(internal_client, "interpret_admission", interpret_admission)
+    tools = ReadonlyDomainTools(
+        trusted_context("major_group"),
+        backend=InternalClientBackend(
+            tenant_id="1", chat_session_id="900047", current_state_version=42
+        ),
+    )
+
+    result = await tools.call("planning.interpret_admission", {})
+
+    assert result["status"] == "needs_clarification"
+    assert result["data"]["missingFields"] == ["planVersion"]
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_interpret_admission_stale_version_is_explicit(monkeypatch) -> None:
+    from app.util import internal_client
+
+    async def interpret_admission(*args, **kwargs):
+        return {"code": 409, "msg": "stale_interpretation", "data": None}
+
+    monkeypatch.setattr(internal_client, "interpret_admission", interpret_admission)
+    tools = ReadonlyDomainTools(
+        trusted_context("major_group"),
+        backend=InternalClientBackend(
+            tenant_id="1", chat_session_id="900047", current_state_version=42
+        ),
+    )
+
+    result = await tools.call("planning.interpret_admission", {"planVersion": 6})
+
+    assert result["status"] == "stale_interpretation"
+    assert "current state" in result["data"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_interpret_admission_transport_error_is_backend_unavailable(monkeypatch) -> None:
+    from app.util import internal_client
+
+    async def interpret_admission(*args, **kwargs):
+        return {"success": False, "error": "connection reset"}
+
+    monkeypatch.setattr(internal_client, "interpret_admission", interpret_admission)
+    tools = ReadonlyDomainTools(
+        trusted_context("major_group"),
+        backend=InternalClientBackend(
+            tenant_id="1", chat_session_id="900047", current_state_version=42
+        ),
+    )
+
+    result = await tools.call("planning.interpret_admission", {"planVersion": 7})
+
+    assert result["status"] == "backend_unavailable"

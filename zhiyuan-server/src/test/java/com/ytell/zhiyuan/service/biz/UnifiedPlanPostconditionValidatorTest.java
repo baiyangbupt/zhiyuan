@@ -65,6 +65,58 @@ class UnifiedPlanPostconditionValidatorTest {
     }
 
     /**
+     * 纯学费清理是替换语义：执行前 3 组、执行后 2 组 ⇒ 不得报 satisfied
+     * （2026-10-18 真栈：51 组缩到 36 组仍 satisfied=true ✗，回执也看不出缺口）。
+     */
+    @Test
+    void shouldFailCountPreservingConstraintWhenPlanShrinks() {
+        PlanningStateDTO state = constraintState(Lists.newArrayList("临床医学"));
+        state.getOrderedPlanState().getUnits().add(unit("临床医学(五年)", "临床医学类", "医学"));
+        state.getOrderedPlanState().getUnits().add(unit("临床医学(5+3一体化)", "临床医学类", "医学"));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> validator.validateConstraintApply(
+                        "apply_constraint_and_regenerate", state, 3, true));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, error.getStatus());
+        assertTrue(error.getMessage().contains(
+                UnifiedPlanPostconditionValidator.CONSTRAINT_COUNT_SHORTFALL_REASON));
+        assertTrue(error.getMessage().contains("before=3 actual=2 shortage=1"));
+    }
+
+    /** 对照：`only_keep` / `exclude` 的收缩是预期结果——不启用数量判据时照常满足。 */
+    @Test
+    void shouldAllowScopeConstraintToShrinkWhenCountPreservationIsOff() {
+        PlanningStateDTO state = constraintState(Lists.newArrayList("临床医学"));
+        state.getOrderedPlanState().getUnits().add(unit("临床医学(五年)", "临床医学类", "医学"));
+        state.getOrderedPlanState().getUnits().add(unit("临床医学(5+3一体化)", "临床医学类", "医学"));
+
+        PlanChangePostconditionReportDTO report = validator.validateConstraintApply(
+                "apply_constraint_and_regenerate", state, 3, false);
+
+        assertTrue(report.getSatisfied());
+        assertEquals(Integer.valueOf(3), report.getCountBefore());
+        assertEquals(Integer.valueOf(2), report.getActualCount());
+        assertEquals(Integer.valueOf(0), report.getShortage());
+    }
+
+    /** 数量保持住了：回执要能读到 before/after，且 shortage=0。 */
+    @Test
+    void shouldReportCountBeforeAndAfterWhenCountIsPreserved() {
+        PlanningStateDTO state = constraintState(Lists.newArrayList("临床医学"));
+        state.getOrderedPlanState().getUnits().add(unit("临床医学(五年)", "临床医学类", "医学"));
+        state.getOrderedPlanState().getUnits().add(unit("临床医学(5+3一体化)", "临床医学类", "医学"));
+
+        PlanChangePostconditionReportDTO report = validator.validateConstraintApply(
+                "apply_constraint_and_regenerate", state, 2, true);
+
+        assertTrue(report.getSatisfied());
+        assertEquals(Integer.valueOf(2), report.getCountBefore());
+        assertEquals(Integer.valueOf(2), report.getActualCount());
+        assertEquals(Integer.valueOf(0), report.getShortage());
+    }
+
+    /**
      * **空方案上没有"已满足"** ✓（2026-09-26 裁决落地 ✓）：三类约束的共同前提是"得有对象可比"。
      *
      * <p>数违反条目这条路（`validateConstraintApply` ✓）在空方案上是**零违反** ✗ →

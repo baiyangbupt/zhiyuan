@@ -963,3 +963,42 @@ def test_merge_artifacts_collects_newly_signed_artifacts_from_the_turn() -> None
     assert sorted(merged) == ["art-new", "art-old"]
     assert merged["art-old"] is registered["art-old"], "登记的旧产物不被本回合转述覆盖"
     assert merged["art-new"] is turn["art-new"], "本回合新签的照收"
+
+
+def test_add_units_requires_current_source_version() -> None:
+    with pytest.raises(OutputContractError, match="proposal_source_version_mismatch"):
+        validate_turn_output(
+            turn_output={
+                "responseType": "text",
+                "message": "把六条加进方案",
+                "proposalRequest": {
+                    "goalType": "add_units",
+                    "sourceVersionGuard": 41,
+                    "exactTargets": [{"schoolName": "肇庆学院", "majorName": "地理科学"}],
+                },
+            },
+            current_snapshot={"snapshotVersion": 42, "sessionId": "s"},
+            evidence_ledger={},
+            artifacts={},
+            allow_proposal=True,
+        )
+
+
+def test_add_units_accepts_current_source_version() -> None:
+    output = validate_turn_output(
+        turn_output={
+            "responseType": "text",
+            "message": "把六条加进方案",
+            "proposalRequest": {
+                "goalType": "add_units",
+                "sourceVersionGuard": 42,
+                "exactTargets": [{"schoolName": "肇庆学院", "majorName": "地理科学"}],
+            },
+        },
+        current_snapshot={"snapshotVersion": 42, "sessionId": "s"},
+        evidence_ledger={},
+        artifacts={},
+        allow_proposal=True,
+    )
+
+    assert output.proposal_request.goal_type == "add_units"

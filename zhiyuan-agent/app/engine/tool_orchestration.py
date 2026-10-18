@@ -206,6 +206,11 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         (),
         "只读读取当前方案；不得直接修改方案。",
     ),
+    ToolContract(
+        "planning.interpret_admission",
+        ("planVersion",),
+        "只读解读当前方案的结构与条件情景；不是录取概率，缺数据标 unknown。",
+    ),
 )
 
 _CONTRACT_BY_NAME = {contract.name: contract for contract in TOOL_CONTRACTS}

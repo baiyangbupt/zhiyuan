@@ -155,6 +155,10 @@ def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
         allowed = ["catalog_read", "admission_read"]
     allowed = [capability for capability in allowed if capability not in {"plan_apply", "write", "shell"}]
 
+    journey = workspace.get("journey")
+    if journey is not None and not isinstance(journey, Mapping):
+        raise ValueError("workspace journey must be an object")
+
     return ConversationTurnSnapshot(
         snapshot_version=int(_first(workspace, "version", "snapshotVersion", default=0) or 0),
         session_id=str(session_id),
@@ -168,6 +172,7 @@ def build_snapshot(workspace: Mapping[str, Any]) -> ConversationTurnSnapshot:
         allowed_capabilities=allowed,
         evidence=list(workspace.get("evidence") or []),
         admission_facts=list(workspace.get("admissionFacts") or workspace.get("admission_facts") or []),
+        journey=dict(journey) if isinstance(journey, Mapping) else None,
     )
 
 
@@ -187,6 +192,7 @@ def diff_snapshots(
         "missingFacts",
         "allowedCapabilities",
         "admissionMode",
+        "journey",
     }
     changes = [
         {"path": path, "oldValue": before_payload[path], "newValue": after_payload[path]}

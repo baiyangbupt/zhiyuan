@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.gateway.contracts import ConversationTurnSnapshot, TurnOutput
+from app.gateway.intent_draft import build_change_set
 import json
 
 
@@ -62,9 +63,15 @@ class ConversationWorkingSet:
     active_proposal: dict[str, Any] | None = None
     last_response_type: str | None = None
     last_turn_id: str | None = None
+    # Batch B：有界任务记录（只一页；不是第二份方案/pending）。
+    # 当前是进程内工作集；跨重启持久化另接 Redis/Java 会话元数据。
+    task_draft: dict[str, Any] | None = None
     candidate_scope_version: int = 0
     candidate_scope_stage: str = ""
     candidate_source_turn_id: str | None = None
+    # J1：人工审查只看内容指纹，不代表 Java 规则审查已新鲜。
+    last_manual_review_digest: str | None = None
+    last_manual_review_version: int | None = None
 
     @classmethod
     def from_snapshot(cls, snapshot: ConversationTurnSnapshot) -> "ConversationWorkingSet":
@@ -119,8 +126,39 @@ class ConversationWorkingSet:
         )
         if output.proposal_ref:
             self.active_proposal = project_proposal({"proposalRef": output.proposal_ref})
+        action_type = str(getattr(output.conversation_action, "action_type", "") or "")
+        if action_type == "cancel_proposal":
+            # 用户放弃当前提案：任务页也一起清掉，避免下一轮“继续”又把它捞出来。
+            self.task_draft = None
+        elif output.intent_draft is not None:
+            change_set = build_change_set(output.intent_draft)
+            if change_set.status == "blocked":
+                # 未实现动作不落任务页：下一轮上下文不能再把它摆给模型。
+                self.task_draft = None
+            else:
+                self.task_draft = {
+                    "intentDraft": output.intent_draft.model_dump(by_alias=True),
+                    "changeSet": change_set.model_dump(by_alias=True),
+                    "turnId": str(turn_id),
+                }
         self.last_response_type = output.response_type
         self.last_turn_id = str(turn_id)
+
+    def mark_manual_review(self, digest: str | None, version: int | None) -> None:
+        """记录人工审查看过的方案内容；不清 Java reviewStale、不写业务状态。"""
+        if not digest:
+            return
+        self.last_manual_review_digest = str(digest)
+        self.last_manual_review_version = version if isinstance(version, int) else None
+
+    def has_open_task(self) -> bool:
+        """有未完成、非 blocked 的任务草稿时，默认建议让位给“继续任务”。"""
+        if not isinstance(self.task_draft, dict):
+            return False
+        change_set = self.task_draft.get("changeSet")
+        if not isinstance(change_set, dict):
+            return True
+        return str(change_set.get("status") or "") != "blocked"
 
     def ingest_payload(self, payload: Any, *, turn_id: str | None = None) -> None:
         """Project stable entities and tool facts from a Codex payload."""
@@ -169,8 +207,11 @@ class ConversationWorkingSet:
             "artifactRefs": self.artifact_refs,
             "confirmedConstraints": self.confirmed_constraints,
             "activeProposal": self.active_proposal,
+            "taskDraft": self.task_draft,
             "lastResponseType": self.last_response_type,
             "lastTurnId": self.last_turn_id,
+            "lastManualReviewDigest": self.last_manual_review_digest,
+            "lastManualReviewVersion": self.last_manual_review_version,
         }
 
     def as_context_text(self) -> str:

@@ -39,7 +39,7 @@ public class ConversationSnapshotControllerTest {
         snapshot.setSnapshotVersion(42);
         snapshot.setSessionId(101L);
         snapshot.setPlanningStage("candidate_exploration");
-        doReturn(snapshot).when(snapshotService).getTurnSnapshot(eq(7L), eq(101L), eq("candidate-recommendation"));
+        doReturn(snapshot).when(snapshotService).getTurnSnapshot(eq(7L), eq(101L));
 
         mockMvc.perform(get("/gaotu-assistant-bot/inner/planning/7/session/turn-snapshot")
                         .param("chatSessionId", "101")

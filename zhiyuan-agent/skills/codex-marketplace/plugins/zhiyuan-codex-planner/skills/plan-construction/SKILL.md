@@ -21,6 +21,15 @@ version: 1.0.0
 
 ## 前置状态
 
+- 先读注入的【当前旅程】：`candidateFreshness` / `planFreshness` /
+  `planInterpretable` / `refreshRequirement`。
+  - 候选 `stale`：先刷新候选，不要拿旧候选加入或补足；
+  - 方案 `stale`：可以说明旧方案，再按当前条件重算（`fill_to_count` 是重算入口）；
+  - `planInterpretable=false`（working-only）：先补足/生成 ordered 方案，再解读或审查；
+  - 未支持动作（replace/remove/move/regenerate/undo/rollback）如实说尚未支持，
+    不声称已执行，也不写成 ready 的任务草稿。
+  - 还没有正式方案时，用 `fill_to_count` 生成首版（目标数量可调整）；
+    `add_units` 只往已有方案里加，不能拿它当首版生成。
 - 读取最新 Snapshot、候选 Artifact、Evidence Ledger 和 `stateVersion`。
 - 确认每个候选有招生单元 ID、资格结果、风险标签和限制。
 - 方案构建第一阶段明确为 read-only；任何写意图只记录为用户待确认动作。
@@ -49,13 +58,21 @@ version: 1.0.0
 
 **点名加入 ≠ 覆盖要求（2026-10-17 硬规则）**：用户点名**具体院校 + 专业**并说
 “加入 / 加进 / 放进 / 补进方案”，且这些条目还不在当前方案里——这是**加入动作**，
-交给确认链路的 `preview_plan_action(action="add", targets=["学校.专业", ...])`
-（从候选池按名字解析并生成加入预览）。**不要**做成
+交给确认链路的
+`proposalRequest(goalType="add_units", exactTargets=[{schoolName: "...", majorName: "..."}])`
+（先从 `recommendation.preview_candidates` 复制准确名称）。**不要**做成
 `preview_intent_change(constraint_type="must_have")` / `must_include_scope`：
 那条路径只在**方案已有条目**里校验“必须包含”，条目不在方案里会以
 `user_goal_target_not_found` 整单退回（2026-10-17 实测：六条点名加入被拒）。
 只有“方案里必须保留 / 不能删 / 必须有某类”且**不要求立即加入具体条目**时，才用
 must_have / must_include_scope。本技能仍只读，不自行 apply；加入预览属于确认链路。
+**默认语义是 EXPAND（扩总数、零删除）**，卡面写明总数变化；用户明确说“总数不变 /
+必须有这几条 / 换掉几条”时不要用 add_units 静默扩总数，先问一次“扩总数还是保持总数
+替换”。
+**按范围加 N 条**（不点名具体院校/专业）→
+`proposalRequest(goalType="add_units_by_scope", addCount=N, targetScopes=[...],
+context={"maxTuitionPerYear":...})`；筛选条件只作用于本次新增。不要把范围条件塞进
+`add_units`（它只接受点名目标）。
 
 用户意向的**措辞强度必须落成成比例的 requirement**，不得把"偏好"一律写成 include 的
 `minCount=1`（"≥1 条"）：include 只做覆盖下限、不做池过滤——只保下限时引擎可能从名次最前

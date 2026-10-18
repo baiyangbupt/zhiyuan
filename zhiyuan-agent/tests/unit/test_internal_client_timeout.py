@@ -82,3 +82,30 @@ async def test_execute_pending_command_relaxes_the_wait(monkeypatch) -> None:
     assert calls[0]["timeout_seconds"] == EXECUTE_WAIT_TIMEOUT_SECONDS
     assert calls[0]["json_data"]["commandType"] == "update_score_detail"
 
+
+
+@pytest.mark.asyncio
+async def test_execute_timeout_is_unknown_in_progress_not_failed(monkeypatch) -> None:
+    """超时≠未执行：必须返回 applying，不能把已提交的命令显示成失败。"""
+    import asyncio
+
+    async def fake_post(**kwargs):
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(internal_client.http_client, "post", fake_post)
+
+    result = await internal_client.execute_pending_planning_command(
+        "1",
+        "900032",
+        operation_id="op-timeout-1",
+        pending_id="pending-timeout-1",
+        claim_token="claim-token",
+        expected_plan_version=1,
+        command_type="fill_to_count",
+        regenerate_ordered_plan=True,
+        proposal_apply={"targetCount": 50},
+    )
+
+    assert result["status"] == "applying"
+    assert result["code"] == 0
+    assert "稍后重试" in result["data"]["message"]

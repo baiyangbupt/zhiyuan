@@ -202,6 +202,10 @@ public class PlanningStateService {
     @Autowired
     private ConversationProposalRequestService conversationProposalRequestService;
 
+    /** J5.2：审查结果同时产出统一评价（checks 暂保留兼容）。 */
+    private final ReviewEvaluationMapper reviewEvaluationMapper = new ReviewEvaluationMapper();
+    private final EvaluationContextBuilder evaluationContextBuilder = new EvaluationContextBuilder();
+
     /**
      * 候选池瘦身·切片1 开关（2026-10-16 review §五-54）：candidatePoolState 是否拆到独立 data_key。
      *
@@ -267,6 +271,12 @@ public class PlanningStateService {
         res.setPhase(state.getPhase());
         res.setStaleFlags(state.getStaleFlags());
         res.setStudentSummary(buildStudentPlanningSummary(state));
+        HardPlanningObjectivesDTO hardObjectives = state.getConstraintState() == null
+                ? null : state.getConstraintState().getHardPlanningObjectives();
+        res.setSelectionTargetCount(hardObjectives == null ? null : hardObjectives.getSelectionTargetCount());
+        res.setSelectionCurrentCount(isMajorGroupMode(state.getCandidatePoolState())
+                ? UserGoalProposalBuilder.currentPlanUnitCount(state)
+                : UserGoalProposalBuilder.currentPlanVolunteerCount(state));
         res.setProfileState(state.getProfileState());
         res.setConstraintState(state.getConstraintState());
         res.setDataFreshnessState(mergeScheduleDataFreshnessState(tenantId, state));
@@ -308,9 +318,21 @@ public class PlanningStateService {
         if (scoreDetail.getProvince() != null) {
             summary.setProvinceName(defaultString(scoreDetail.getProvince().getName()));
         }
+        summary.setSubjectType(resolveSubjectType(scoreDetail));
         summary.setSubjects(resolveSubjectNames(scoreDetail.getSubjectList()));
         summary.setStrengthSubjects(resolveStrengthSubjects(state, scoreDetail));
         return summary;
+    }
+
+    /** 科类展示名：desc 优先，空时回落 code（WL/LS/N）。 */
+    private String resolveSubjectType(CreateSessionReq scoreDetail) {
+        if (scoreDetail == null || scoreDetail.getSubjectType() == null) {
+            return null;
+        }
+        String desc = defaultString(scoreDetail.getSubjectType().getDesc());
+        return Strings.isNullOrEmpty(desc)
+                ? defaultString(scoreDetail.getSubjectType().getCode())
+                : desc;
     }
 
     private String formatSex(CreateSessionReq.Sex sex) {
@@ -846,8 +868,26 @@ public class PlanningStateService {
 
     public FixProposalStateDTO generateUserGoalFixProposals(Long chatSessionId, UserGoalFixProposalReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
-        state.getCandidatePoolState().setItems(resolveCandidateFactsForProposalAnalysis(state));
+        // 点名加入（add_units）必须与 execute 的 selectWorkingPlanItems 用**同一份**
+        // effective candidates（含已确认硬约束/学费过滤，refresh=false）；其余 user-goal
+        // 路径保持原来的 raw 候选事实，不改变既有语义。
+        if (req != null && "add_units".equalsIgnoreCase(Strings.nullToEmpty(req.getGoalType()).trim())) {
+            state.getCandidatePoolState().setItems(resolveEffectiveCandidatesForProposal(state));
+        } else {
+            state.getCandidatePoolState().setItems(resolveCandidateFactsForProposalAnalysis(state));
+        }
         return UserGoalProposalBuilder.build(state, req);
+    }
+
+    /**
+     * add_units 专用：与 execute 的 select 同池（refresh=false）。
+     * 包内可见，供 UserGoalProposalBuilder / prepare 路径使用；不改变 fill/priority/scope 的路径。
+     */
+    List<CandidateItemDTO> resolveEffectiveCandidatesForProposal(PlanningStateDTO state) {
+        if (state == null) {
+            return new java.util.ArrayList<CandidateItemDTO>();
+        }
+        return resolveEffectiveCandidates(null, state.getSessionId(), state, false);
     }
 
     /**
@@ -882,6 +922,9 @@ public class PlanningStateService {
                         return new ConversationProposalRequestService.PrepareOutcome(null, null, preview);
                     }
                     String operationId = UUID.randomUUID().toString().replace("-", "");
+                    String goalType = req == null ? "" : Strings.nullToEmpty(req.getGoalType()).trim();
+                    boolean addUnits = "add_units".equalsIgnoreCase(goalType)
+                            || "add_units_by_scope".equalsIgnoreCase(goalType);
                     Map<String, Object> dataValue = new LinkedHashMap<String, Object>();
                     dataValue.put("operationId", operationId);
                     dataValue.put("proposalSource", "user_goal");
@@ -901,9 +944,35 @@ public class PlanningStateService {
                         // 不落的话确认那一刻必然 `409 canonical Proposal 元数据缺失`，
                         // 卡上只显示"未生效"，看起来像写链坏了
                         // （2026-09-27 真栈实测）。空值不落：网关按"非空才透传"读。
-                        putIfNotBlank(dataValue, "canonicalObjectiveDigest", primary.getCanonicalObjectiveDigest());
-                        putIfNotBlank(dataValue, "solverVersion", primary.getSolverVersion());
-                        putIfNotBlank(dataValue, "solverInputDigest", primary.getSolverInputDigest());
+                        // add_units 不走 apply_plan_change_proposal，不需要 canonical 三件套。
+                        if (!addUnits) {
+                            putIfNotBlank(dataValue, "canonicalObjectiveDigest", primary.getCanonicalObjectiveDigest());
+                            putIfNotBlank(dataValue, "solverVersion", primary.getSolverVersion());
+                            putIfNotBlank(dataValue, "solverInputDigest", primary.getSolverInputDigest());
+                        }
+                    }
+                    if (addUnits && primary != null) {
+                        // 点名加入的**冻结命令**：执行时必须以此为准，调用方传的命令字段
+                        // 只能用来比对（40908），不能改写它。digest 覆盖命令内容，含 operationId。
+                        dataValue.put("kind", "plan_action");
+                        dataValue.put("goalType", "add_units");
+                        dataValue.put("commandType", "add_units");
+                        dataValue.put("volunteerIds", defaultList(primary.getAffectedVolunteerIds()));
+                        dataValue.put("targetCountOverride", primary.getTargetCountOverride());
+                        dataValue.put("rerunReview", true);
+                        dataValue.put("summary", primary.getSummary());
+                        dataValue.put("affectedItems", primary.getAffectedItems());
+                        Map<String, Object> frozenCommand = new LinkedHashMap<String, Object>();
+                        frozenCommand.put("commandType", "add_units");
+                        frozenCommand.put("operationId", operationId);
+                        frozenCommand.put("volunteerIds", defaultList(primary.getAffectedVolunteerIds()));
+                        frozenCommand.put("targetCountOverride", primary.getTargetCountOverride());
+                        frozenCommand.put("tierQuotaOverride", null);
+                        frozenCommand.put("rerunReview", true);
+                        frozenCommand.put("sourceVersion", preview == null ? null : preview.getSourceVersion());
+                        dataValue.put("frozenCommand", frozenCommand);
+                        dataValue.put("commandDigest",
+                                buildFullSha256(JSONObject.toJSONString(frozenCommand)));
                     }
                     PendingConfirmationUpsertReq upsert = new PendingConfirmationUpsertReq();
                     upsert.setChatSessionId(chatSessionId);
@@ -911,8 +980,8 @@ public class PlanningStateService {
                     // 取值与 legacy 同一约定：uuid。同一个 requestId 重放时 work 不会再跑
                     // （prepareOnce 直接回放已存的结果），所以不会造出第二个 pending ✓。
                     upsert.setPendingId(UUID.randomUUID().toString());
-                    upsert.setKind("plan_change_proposal");
-                    upsert.setActionFamily("apply_plan_change_proposal");
+                    upsert.setKind(addUnits ? "plan_action" : "plan_change_proposal");
+                    upsert.setActionFamily(addUnits ? "add_units" : "apply_plan_change_proposal");
                     upsert.setDataValue(dataValue);
                     // **CAS 修订号**（2026-10-07 F09 实测）：已有 pending 行时按修订号**替换**
                     // ——与补录成绩路径（`ChatSessionBizService#prepareScoreUpdateProposal`）同口径。
@@ -1353,6 +1422,30 @@ public class PlanningStateService {
      * {@code intentMode != "constraint"}（含缺省 "preference"）的**软偏好写分支已无现网调用者**，
      * 仅为兼容旧会话保留：**不删字段、不删读分支；勿在此分支新增逻辑**。
      */
+    /**
+     * add_units 专用：把用户在卡上确认过的总数变化写成**永久目标**（同一事务，
+     * 失败/40905/40907 会随事务回滚）。只改 selectionTargetCount 与候选池 requiredCount，
+     * 不动其他约束；legacy add_units 不走这里。
+     */
+    public PlanningStateVersionDTO updateSelectionTargetCount(Long chatSessionId, Integer targetCount) {
+        if (targetCount == null || targetCount <= 0) {
+            throw new BusinessException(400, "加入后的目标数量必须是大于 0 的整数");
+        }
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        return touchAndSaveConstraint(chatSessionId, state, latest -> {
+            if (latest.getConstraintState() == null) {
+                latest.setConstraintState(new ConstraintStateDTO());
+            }
+            if (latest.getConstraintState().getHardPlanningObjectives() == null) {
+                latest.getConstraintState().setHardPlanningObjectives(new HardPlanningObjectivesDTO());
+            }
+            latest.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(targetCount);
+            if (latest.getCandidatePoolState() != null) {
+                latest.getCandidatePoolState().setRequiredCount(targetCount);
+            }
+        });
+    }
+
     public PlanningStateVersionDTO updateConstraintState(Long chatSessionId, UpdateConstraintStateReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         boolean hardMode = applyConstraintStateUpdate(state, req);
@@ -2828,6 +2921,8 @@ public class PlanningStateService {
         attachCompensationsToReviewChecks(reviewState, compensationPreview);
         enrichReviewMetadata(reviewState);
         normalizeReviewReasonCodes(structuralState, reviewState);
+        // 先产出 findings，再由它派生 summary（J5.2a）；评价失败时回退旧 checks 统计。
+        attachPlanEvaluation(state, effectiveCandidates, reviewState);
         recalculateReviewSummary(reviewState);
 
         state.setReviewState(reviewState);
@@ -2836,6 +2931,37 @@ public class PlanningStateService {
         state.setPhase("reviewed");
         state.getStaleFlags().setReview(false);
         return reviewState;
+    }
+
+    /**
+     * 把本次审查结果同时投影成统一评价（J5.2a）。
+     *
+     * <p>checks 仍是权威输出；findings 是同一份检查结果的四字段表达。评价失败
+     * **不能**把审查整条打挂：降级为 `unavailable`，checks 原样保留。</p>
+     */
+    private void attachPlanEvaluation(PlanningStateDTO state,
+                                      List<CandidateItemDTO> candidates,
+                                      ReviewStateDTO reviewState) {
+        try {
+            EvaluationContextDTO context =
+                    evaluationContextBuilder.build(state, candidates, reviewState);
+            PlanEvaluationDTO evaluation =
+                    reviewEvaluationMapper.map(reviewState, context);
+            reviewState.setEvaluationVersion(evaluation.getEvaluationVersion());
+            reviewState.setObjectiveModelVersion(evaluation.getObjectiveModelVersion());
+            reviewState.setEvaluatedStateVersion(evaluation.getEvaluatedStateVersion());
+            reviewState.setEvaluationStatus(evaluation.getStatus());
+            reviewState.setProbesRun(evaluation.getProbesRun());
+            reviewState.setHardFeasible(evaluation.getHardFeasible());
+            reviewState.setFindings(evaluation.getFindings());
+        } catch (RuntimeException error) {
+            log.warn("plan evaluation attach failed: session={} error={}",
+                    state == null ? null : state.getSessionId(), error.toString());
+            reviewState.setEvaluationStatus("unavailable");
+            reviewState.setProbesRun(0);
+            reviewState.setHardFeasible(false);
+            reviewState.setFindings(Lists.newArrayList());
+        }
     }
 
     /**
@@ -8845,6 +8971,25 @@ public class PlanningStateService {
         return values == null ? new HashMap<String, Integer>() : values;
     }
 
+    /** 完整 SHA-256（64 hex）：add_units 的 frozenCommand 摘要用。 */
+    private String buildFullSha256(String payloadJson) {
+        if (payloadJson == null) {
+            return null;
+        }
+        try {
+            MessageDigest messageDigest = MessageDigest.getInstance("SHA-256");
+            byte[] digest = messageDigest.digest(payloadJson.getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder();
+            for (byte value : digest) {
+                builder.append(String.format("%02x", value));
+            }
+            return builder.toString();
+        } catch (Exception ex) {
+            log.warn("build command digest failed", ex);
+            return String.valueOf(payloadJson.hashCode());
+        }
+    }
+
     private String buildPayloadDigest(String payloadJson) {
         if (payloadJson == null) {
             return null;
@@ -11914,16 +12059,18 @@ public class PlanningStateService {
         List<ReviewCheckDTO> checks = reviewState == null || reviewState.getChecks() == null
                 ? Lists.newArrayList()
                 : reviewState.getChecks();
-        for (ReviewCheckDTO check : checks) {
-            if (!Boolean.FALSE.equals(check.getPassed())) {
-                continue;
-            }
+        // J5.2：有统一评价时，**findings/objectiveDelta 是修复入口**（策略以 delta 为准）；
+        // 旧会话没有 findings 时退回 checks 循环，行为不变。
+        List<ReviewFixCandidate> candidates = resolveReviewFixCandidates(reviewState, checks);
+        for (ReviewFixCandidate candidate : candidates) {
+            ReviewCheckDTO check = candidate.check;
             enrichReviewMetadata(check);
             FixProposalDTO proposal = buildFixProposalForReviewCheck(
                     state,
                     check,
                     compensationByCheck.get(check.getCode()),
-                    reviewState.getSourceVersion());
+                    reviewState.getSourceVersion(),
+                    candidate.strategy);
             if (proposal != null) {
                 proposalState.getProposals().add(proposal);
             }
@@ -11933,14 +12080,86 @@ public class PlanningStateService {
         return proposalState;
     }
 
+    /**
+     * 修复候选：有 findings 时以 delta 的 strategy 为准（同一 check 只出一条）；
+     * 没有 findings 时退回旧的“未通过 check”列表。
+     */
+    private List<ReviewFixCandidate> resolveReviewFixCandidates(ReviewStateDTO reviewState,
+                                                                List<ReviewCheckDTO> checks) {
+        List<ReviewFixCandidate> candidates = Lists.newArrayList();
+        List<EvaluationFindingDTO> findings = reviewState == null
+                ? null : reviewState.getFindings();
+        if (findings == null || findings.isEmpty()) {
+            for (ReviewCheckDTO check : checks) {
+                if (Boolean.FALSE.equals(check.getPassed())) {
+                    candidates.add(new ReviewFixCandidate(check, null));
+                }
+            }
+            return candidates;
+        }
+        Map<String, ReviewCheckDTO> byCode = new LinkedHashMap<String, ReviewCheckDTO>();
+        for (ReviewCheckDTO check : checks) {
+            if (check != null && !Strings.isNullOrEmpty(check.getCode())) {
+                byCode.put(check.getCode(), check);
+            }
+        }
+        Set<String> seen = new LinkedHashSet<String>();
+        for (EvaluationFindingDTO finding : findings) {
+            if (finding == null || "pass".equals(finding.getResultStatus())
+                    || "not_applicable".equals(finding.getResultStatus())) {
+                continue;
+            }
+            ObjectiveDeltaDTO delta = finding.getObjectiveDelta();
+            String strategy = delta == null ? null : delta.getStrategy();
+            if (Strings.isNullOrEmpty(strategy)) {
+                continue;
+            }
+            String sourceCheck = delta.getSourceCheck();
+            if (Strings.isNullOrEmpty(sourceCheck)) {
+                sourceCheck = finding.getCode();
+            }
+            if (sourceCheck.startsWith("count_validation")) {
+                sourceCheck = "count_validation";
+            }
+            ReviewCheckDTO check = byCode.get(sourceCheck);
+            if (check == null || !Boolean.FALSE.equals(check.getPassed())) {
+                continue;
+            }
+            if (!seen.add(sourceCheck)) {
+                continue;
+            }
+            candidates.add(new ReviewFixCandidate(check, strategy));
+        }
+        return candidates;
+    }
+
+    private static final class ReviewFixCandidate {
+        private final ReviewCheckDTO check;
+        private final String strategy;
+
+        private ReviewFixCandidate(ReviewCheckDTO check, String strategy) {
+            this.check = check;
+            this.strategy = strategy;
+        }
+    }
+
     private FixProposalDTO buildFixProposalForReviewCheck(PlanningStateDTO state,
                                                           ReviewCheckDTO check,
                                                           List<CompensationActionDTO> compensationActions,
                                                           Integer sourceReviewVersion) {
+        return buildFixProposalForReviewCheck(state, check, compensationActions, sourceReviewVersion, null);
+    }
+
+    private FixProposalDTO buildFixProposalForReviewCheck(PlanningStateDTO state,
+                                                          ReviewCheckDTO check,
+                                                          List<CompensationActionDTO> compensationActions,
+                                                          Integer sourceReviewVersion,
+                                                          String strategyOverride) {
         if (check == null || Strings.isNullOrEmpty(check.getCode())) {
             return null;
         }
-        FixProposalDTO proposal = RepairProposalStateBuilder.buildBaseProposal(state, check, compensationActions, sourceReviewVersion);
+        FixProposalDTO proposal = RepairProposalStateBuilder.buildBaseProposal(
+                state, check, compensationActions, sourceReviewVersion, strategyOverride);
         if (proposal == null) {
             return null;
         }
@@ -12282,6 +12501,12 @@ public class PlanningStateService {
     }
 
     private void recalculateReviewSummary(ReviewStateDTO reviewState) {
+        // J5.2a：有统一评价时 summary 由 findings 派生（15 个 probe，含 count 拆分）；
+        // 评价不可用/旧会话没有 findings 时回退 checks 统计，行为与旧版一致。
+        if (reviewState.getFindings() != null && !reviewState.getFindings().isEmpty()) {
+            recalculateReviewSummaryFromFindings(reviewState);
+            return;
+        }
         int passedCount = 0;
         int warnCount = 0;
         int riskCount = 0;
@@ -12313,6 +12538,57 @@ public class PlanningStateService {
             }
         }
         int totalCount = reviewState.getChecks().size();
+        reviewState.getSummary().setTotal(totalCount);
+        reviewState.getSummary().setPassedCount(passedCount);
+        reviewState.getSummary().setWarnCount(warnCount);
+        reviewState.getSummary().setRiskCount(riskCount);
+        reviewState.getSummary().setTotalRuleCount(totalCount);
+        reviewState.getSummary().setPassedRuleCount(passedCount);
+        reviewState.getSummary().setWarnRuleCount(warnCount);
+        reviewState.getSummary().setRiskRuleCount(riskCount);
+        reviewState.getSummary().setBlockCount(blockCount);
+        reviewState.getSummary().setActionCount(actionCount);
+        reviewState.getSummary().setNoticeCount(noticeCount);
+        reviewState.getSummary().setInfoCount(infoCount);
+    }
+
+    /**
+     * findings → summary 的派生口径：
+     * pass/not_applicable 计“通过”（没东西要改）；block 计 risk；
+     * action/notice 计 warn；info 单独计。总数 = 实际跑过的 probe 数（含 count 拆分）。
+     */
+    private void recalculateReviewSummaryFromFindings(ReviewStateDTO reviewState) {
+        int passedCount = 0;
+        int warnCount = 0;
+        int riskCount = 0;
+        int blockCount = 0;
+        int actionCount = 0;
+        int noticeCount = 0;
+        int infoCount = 0;
+        for (EvaluationFindingDTO finding : reviewState.getFindings()) {
+            if (finding == null) {
+                continue;
+            }
+            String status = finding.getResultStatus();
+            boolean passed = "pass".equals(status) || "not_applicable".equals(status);
+            if (passed) {
+                passedCount++;
+                continue;
+            }
+            String severity = finding.getDisplaySeverity();
+            if ("block".equalsIgnoreCase(severity)) {
+                blockCount++;
+            } else if ("action".equalsIgnoreCase(severity)) {
+                actionCount++;
+            } else if ("notice".equalsIgnoreCase(severity)) {
+                noticeCount++;
+            } else if ("info".equalsIgnoreCase(severity)) {
+                infoCount++;
+            }
+        }
+        riskCount = blockCount;
+        warnCount = actionCount + noticeCount;
+        int totalCount = reviewState.getFindings().size();
         reviewState.getSummary().setTotal(totalCount);
         reviewState.getSummary().setPassedCount(passedCount);
         reviewState.getSummary().setWarnCount(warnCount);

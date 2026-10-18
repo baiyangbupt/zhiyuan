@@ -22,8 +22,15 @@ public class PlanChangePostconditionReportDTO {
     private Integer addedVolunteerCount = 0;
     private Integer removedVolunteerCount = 0;
     private String countMode;
+    /** 命令执行前的方案规模（unit 模式=专业组数，volunteer 模式=条目数）。 */
+    private Integer countBefore;
     private Integer targetCount;
     private Integer actualCount;
+    /**
+     * 数量缺口（`max(0, countBefore - actualCount)`，只对**应保持总数**的约束计算）：
+     * 纯学费清理把 51 组换成 36 组时，这里必须是 15，而不是靠调用方再读一遍方案才发现。
+     */
+    private Integer shortage = 0;
     private Integer requirementCount = 0;
     private Integer satisfiedRequirementCount = 0;
     private List<RequirementResultDTO> requirementResults = Lists.newArrayList();

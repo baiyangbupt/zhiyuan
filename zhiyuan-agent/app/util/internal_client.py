@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 import uuid
 from typing import Any, Dict, List, Optional, Union
@@ -445,6 +446,22 @@ async def _get_pending_resource(
         endpoint=f"/gaotu-assistant-bot/inner/chat/{tenant_id}/session/pending",
         params={"chatSessionId": chat_session_id},
         error_msg="获取待确认资源失败",
+    )
+
+
+async def reconcile_pending_confirmation(
+    chat_session_id: Union[str, int],
+    *,
+    tenant_id: Union[str, int] = 1,
+) -> Dict[str, Any]:
+    """J1：applying 对账。Java 只读 operation 台账 + CAS，不重发命令。"""
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/chat/{tenant_id}/session/pending/reconcile"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data={},
+        error_msg="待确认对账失败",
     )
 
 
@@ -1851,10 +1868,13 @@ async def execute_pending_planning_command(
         "claimToken": claim_token,
         "expectedPlanVersion": expected_plan_version,
         "commandType": command_type,
-        "regenerateOrderedPlan": regenerate_ordered_plan,
-        "unitIds": unit_ids or [],
-        "volunteerIds": volunteer_ids or [],
     }
+    # add_units 新链路只发 5 个字段：命令内容以 pending 的 frozenCommand 为准，
+    # 不把空 volunteerIds/命令字段发过去（Java 会允许空，但契约上应以 frozen 为准）。
+    if command_type != "add_units":
+        payload["regenerateOrderedPlan"] = regenerate_ordered_plan
+        payload["unitIds"] = unit_ids or []
+        payload["volunteerIds"] = volunteer_ids or []
     if constraint_update:
         payload["constraintUpdate"] = constraint_update
     if min_tuition_per_year is not None:
@@ -1868,15 +1888,29 @@ async def execute_pending_planning_command(
     # **execute 是"同步等命令跑完"** ✓（Java `PendingPlanningCommandBizService.execute` 单事务
     # 同步返回 ✓）：补录成绩这条会同步重拉全量志愿数据再落盘 ✓——2026-10-06 实测整段 **23.8s** ✓，
     # 默认 10s 会在**写已提交**之后超时 ✗（卡上误显"未生效" ✗——成功被显示成失败的静默反向分叉 ✗）。
-    return await http_client.post(
-        endpoint=(
-            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/pending-command/execute"
-            f"?chatSessionId={chat_session_id}"
-        ),
-        json_data=payload,
-        error_msg="执行幂等待确认规划命令失败",
-        timeout_seconds=EXECUTE_WAIT_TIMEOUT_SECONDS,
-    )
+    try:
+        return await http_client.post(
+            endpoint=(
+                f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/pending-command/execute"
+                f"?chatSessionId={chat_session_id}"
+            ),
+            json_data=payload,
+            error_msg="执行幂等待确认规划命令失败",
+            timeout_seconds=EXECUTE_WAIT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        # 超时 ≠ 未执行：命令可能已经在 Java 事务里提交。按“处理中”返回，
+        # 让用户稍后重试/重连；不能把成功显示成失败，也不能再生成另一版执行。
+        logger.warning(
+            "pending command execute timed out (operation=%s pending=%s); outcome unknown",
+            operation_id,
+            pending_id,
+        )
+        return {
+            "status": "applying",
+            "code": 0,
+            "data": {"message": "执行结果暂未返回，请稍后重试确认。"},
+        }
 
 
 async def query_planning_candidate_pool(
@@ -1993,6 +2027,35 @@ async def preview_majors(
         endpoint="/gaotu-assistant-bot/inner/gaotu/catalog/major-recommend",
         json_data=payload,
         error_msg="专业方向推荐失败",
+    )
+
+
+async def interpret_admission(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    *,
+    plan_version: int,
+    admission_mode: Optional[str] = None,
+    counterfactual: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """录取解读（只读）：当前方案的结构与条件情景。
+
+    返回 `{code, msg, data}`；`data` 是 `AdmissionInterpretationRes` 原样：
+    scenarios/baseLanding/safetyCoverage/dataCompletenessBand/orderAnomaly/caveats。
+    **不是录取概率**：没有 likelihood/slipRisk；缺数据是 unknown/数据缺口。
+    """
+    payload: Dict[str, Any] = {"planVersion": plan_version}
+    if admission_mode:
+        payload["admissionMode"] = admission_mode
+    if counterfactual:
+        payload["counterfactual"] = counterfactual
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/plan/admission-interpretation"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data=payload,
+        error_msg="录取解读失败",
     )
 
 

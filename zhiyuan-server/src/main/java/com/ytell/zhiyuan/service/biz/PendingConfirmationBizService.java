@@ -6,9 +6,14 @@ import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationResolveReq;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
+import com.ytell.zhiyuan.model.dto.inner.PendingReconcileRes;
+import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes;
 import com.ytell.zhiyuan.model.entity.biz.PendingConfirmationEntity;
+import com.ytell.zhiyuan.model.entity.biz.PlanningPendingCommandEntity;
 import com.ytell.zhiyuan.service.shared.PendingConfirmationSharedService;
+import com.ytell.zhiyuan.service.shared.PlanningPendingCommandSharedService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,13 +29,35 @@ public class PendingConfirmationBizService {
     public static final int INVALID_PENDING_REQUEST_CODE = 40001;
     private static final long CLAIM_LEASE_MILLIS = 5L * 60L * 1000L;
 
+    private static final String KIND_CAREER_UPDATE = "career_update";
+    private static final String ACTION_FAMILY_UPDATE_CAREER = "update_career_types";
+    private static final String RECONCILE_RESOLVED_ACTION = "reconcile";
+
     @Autowired
     private PendingConfirmationSharedService pendingConfirmationSharedService;
+
+    @Autowired
+    private PlanningPendingCommandSharedService pendingCommandSharedService;
+
+    /** 命令 running 且租约过期后，再等多久才判结果未知（默认 10 分钟）。 */
+    @Value("${planning.pending.reconcile.operation-stale-ms:600000}")
+    private long operationStaleMillis = 600000L;
+
+    /** 无 operation 行时可判“未送出”的证明窗口（默认 24 小时，远小于 retention 30 天）。 */
+    @Value("${planning.pending.reconcile.no-operation-proof-window-ms:86400000}")
+    private long noOperationProofWindowMillis = 86400000L;
 
     public PendingConfirmationRes getCurrent(Long tenantId, Long chatSessionId) {
         requirePositive(tenantId, "tenantId");
         requirePositive(chatSessionId, "chatSessionId");
         return toResponse(pendingConfirmationSharedService.getCurrent(tenantId, chatSessionId), false);
+    }
+
+    /** J1 旅程只读：只返回 active/applying（无则 null），不动 getCurrent 的写路径语义。 */
+    public PendingConfirmationRes getActiveOrApplying(Long tenantId, Long chatSessionId) {
+        requirePositive(tenantId, "tenantId");
+        requirePositive(chatSessionId, "chatSessionId");
+        return toResponse(pendingConfirmationSharedService.getActiveOrApplying(tenantId, chatSessionId), false);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -53,6 +80,12 @@ public class PendingConfirmationBizService {
         }
         if (isSameActiveSnapshot(current, req, serialized)) {
             return toResponse(current, false);
+        }
+        // J1：applying 的最终保护在 Java 写入口。快照检查只能提前反馈；另一请求
+        // 可以在取快照后 claim，而发展方向路径会重新读取最新 revision——若这里
+        // 只比 revision，CAS 会把 applying 行覆盖成新的 active。
+        if ("applying".equals(current.getStatus())) {
+            throw new BusinessException(409, "pending_applying");
         }
         if (current.getRevision() == null || current.getRevision() != expectedRevision) {
             throw conflict("pending revision conflict: current=" + current.getRevision() + " expected=" + expectedRevision);
@@ -213,6 +246,224 @@ public class PendingConfirmationBizService {
         incoming.remove("revision");
         incoming.put("status", "active");
         return existing.equals(incoming);
+    }
+
+    /**
+     * J1：applying 的受信对账。只读台账 + CAS 迁移状态；绝不调用 execute/重发命令。
+     *
+     * <p>为什么需要它：claim 后 Agent 重启、执行成功但 complete 回写失败、租约过期，
+     * 都会让 pending 永远停在 applying。超时不等于未执行，所以这里先查 operation
+     * 台账，再决定 applied / expired / still_applying。</p>
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public PendingReconcileRes reconcile(Long tenantId, Long chatSessionId) {
+        requirePositive(tenantId, "tenantId");
+        requirePositive(chatSessionId, "chatSessionId");
+        PendingConfirmationEntity current =
+                pendingConfirmationSharedService.lockCurrent(tenantId, chatSessionId);
+        if (current == null) {
+            PendingReconcileRes response = reconcileResponse(null);
+            response.setOutcome(PendingReconcileRes.OUTCOME_NO_PENDING);
+            return response;
+        }
+        PendingReconcileRes response = reconcileResponse(current);
+        if (!"applying".equals(current.getStatus())) {
+            response.setOutcome(PendingReconcileRes.OUTCOME_NOT_APPLYING);
+            return response;
+        }
+        if (current.getRevision() == null) {
+            return stillApplying(response, "applying",
+                    "pending revision is missing; cannot reconcile");
+        }
+
+        boolean claimExpired = isClaimExpired(current);
+        if (isGatewayExecutedKind(current)) {
+            // 发展方向由网关执行，不写 Java command 台账；无论有没有行都不能判 applied，
+            // 也不能判“没送出”。只能等待或结果未知。
+            return claimExpired
+                    ? expire(response, current,
+                    PendingReconcileRes.RESULT_OPERATION_UNKNOWN,
+                    "该变更由网关执行，无法用 operation 台账证明结果，请刷新方案核对版本。")
+                    : stillApplying(response, "unknown", null);
+        }
+
+        String operationId = operationId(current);
+        PlanningPendingCommandEntity command = operationId == null
+                ? null : pendingCommandSharedService.getByOperationId(operationId);
+        String operationStatus = command == null ? "missing" : command.getStatus();
+
+        if (command != null && !commandMatches(current, command)) {
+            return expire(response, current,
+                    PendingReconcileRes.RESULT_OPERATION_UNKNOWN,
+                    "operation 台账与当前 pending 不匹配，结果未知，请刷新方案核对版本。");
+        }
+
+        if (command == null) {
+            if (!claimExpired) {
+                return stillApplying(response, operationStatus, null);
+            }
+            if (withinNoOperationProofWindow(current)) {
+                return expire(response, current,
+                        PendingReconcileRes.RESULT_NO_OPERATION_SUBMITTED,
+                        "没有找到 operation 记录，且仍在可证明窗口内：命令未送出。");
+            }
+            return expire(response, current,
+                    PendingReconcileRes.RESULT_OPERATION_UNKNOWN,
+                    "operation 台账可能已清理，无法证明命令是否送出，请刷新方案核对版本。");
+        }
+
+        if ("succeeded".equals(command.getStatus())) {
+            PendingReconcileRes applied = reconcileResponse(current);
+            applied.setOutcome(PendingReconcileRes.OUTCOME_APPLIED);
+            applied.setOperationStatus("succeeded");
+            applied.setResultPlanVersion(resultPlanVersion(command));
+            applied.setReceiptAvailable(!Strings.isNullOrEmpty(command.getResultJson()));
+            boolean updated = pendingConfirmationSharedService.compareAndSet(
+                    copyForReconcile(current, "applied", null),
+                    current.getRevision(), current.getPendingId(), "applying");
+            if (!updated) {
+                return latestAfterReconcile(tenantId, chatSessionId);
+            }
+            applied.setPendingStatus("applied");
+            applied.setRevision(current.getRevision() + 1L);
+            return applied;
+        }
+
+        if ("running".equals(command.getStatus())) {
+            if (!claimExpired) {
+                return stillApplying(response, operationStatus, null);
+            }
+            if (commandStale(command)) {
+                return expire(response, current,
+                        PendingReconcileRes.RESULT_OPERATION_UNKNOWN,
+                        "命令仍在运行且已超过宽限，结果未知；请刷新方案核对版本，不自动重试。");
+            }
+            return stillApplying(response, operationStatus, null);
+        }
+
+        return expire(response, current,
+                PendingReconcileRes.RESULT_OPERATION_UNKNOWN,
+                "未知的 operation 状态，请刷新方案核对版本。");
+    }
+
+    private PendingReconcileRes stillApplying(PendingReconcileRes response, String operationStatus,
+                                              String message) {
+        response.setOutcome(PendingReconcileRes.OUTCOME_STILL_APPLYING);
+        response.setOperationStatus(operationStatus);
+        response.setMessage(message);
+        return response;
+    }
+
+    private PendingReconcileRes expire(PendingReconcileRes response, PendingConfirmationEntity current,
+                                       String resultCode, String message) {
+        PendingConfirmationEntity next = copyForReconcile(current, "expired", resultCode);
+        boolean updated = pendingConfirmationSharedService.compareAndSet(
+                next, current.getRevision(), current.getPendingId(), "applying");
+        if (!updated) {
+            PendingReconcileRes latest = latestAfterReconcile(
+                    current.getTenantId(), current.getChatSessionId());
+            if (latest.getMessage() == null) {
+                latest.setMessage(message);
+            }
+            return latest;
+        }
+        response.setOutcome(PendingReconcileRes.OUTCOME_EXPIRED);
+        response.setPendingStatus("expired");
+        response.setResultCode(resultCode);
+        response.setRevision(current.getRevision() + 1L);
+        response.setMessage(message);
+        return response;
+    }
+
+    private PendingReconcileRes latestAfterReconcile(Long tenantId, Long chatSessionId) {
+        PendingConfirmationEntity latest =
+                pendingConfirmationSharedService.getCurrent(tenantId, chatSessionId);
+        PendingReconcileRes response = reconcileResponse(latest);
+        response.setOutcome(latest == null
+                ? PendingReconcileRes.OUTCOME_NO_PENDING
+                : PendingReconcileRes.OUTCOME_NOT_APPLYING);
+        return response;
+    }
+
+    private PendingReconcileRes reconcileResponse(PendingConfirmationEntity entity) {
+        PendingReconcileRes response = new PendingReconcileRes();
+        if (entity == null) {
+            return response;
+        }
+        response.setPendingId(entity.getPendingId());
+        response.setRevision(entity.getRevision());
+        response.setPendingStatus(entity.getStatus());
+        response.setClaimExpiresAt(entity.getClaimExpiresAt());
+        return response;
+    }
+
+    private PendingConfirmationEntity copyForReconcile(PendingConfirmationEntity current,
+                                                       String targetStatus, String resultCode) {
+        PendingConfirmationEntity next = new PendingConfirmationEntity();
+        next.setId(current.getId());
+        next.setTenantId(current.getTenantId());
+        next.setChatSessionId(current.getChatSessionId());
+        next.setPendingId(current.getPendingId());
+        next.setRevision(current.getRevision() + 1L);
+        next.setKind(current.getKind());
+        next.setActionFamily(current.getActionFamily());
+        next.setStatus(targetStatus);
+        next.setClaimToken(current.getClaimToken());
+        next.setClaimExpiresAt(null);
+        next.setDataValue(current.getDataValue());
+        next.setResultCode(resultCode);
+        next.setResolvedAction(RECONCILE_RESOLVED_ACTION);
+        return next;
+    }
+
+    private String operationId(PendingConfirmationEntity current) {
+        Map<String, Object> data = parsePayload(current.getDataValue());
+        Object value = data.get("operationId");
+        return value == null ? null : String.valueOf(value).trim();
+    }
+
+    private boolean isGatewayExecutedKind(PendingConfirmationEntity current) {
+        return KIND_CAREER_UPDATE.equalsIgnoreCase(current.getKind())
+                || ACTION_FAMILY_UPDATE_CAREER.equalsIgnoreCase(current.getActionFamily());
+    }
+
+    private boolean commandMatches(PendingConfirmationEntity pending,
+                                   PlanningPendingCommandEntity command) {
+        return pending.getPendingId() != null
+                && pending.getPendingId().equals(command.getPendingId())
+                && pending.getTenantId() != null
+                && pending.getTenantId().equals(command.getTenantId())
+                && pending.getChatSessionId() != null
+                && pending.getChatSessionId().equals(command.getChatSessionId());
+    }
+
+    private boolean withinNoOperationProofWindow(PendingConfirmationEntity current) {
+        if (current.getCreateTime() == null) {
+            return false;
+        }
+        return System.currentTimeMillis() - current.getCreateTime().getTime()
+                <= noOperationProofWindowMillis;
+    }
+
+    private boolean commandStale(PlanningPendingCommandEntity command) {
+        if (command.getUpdateTime() == null) {
+            return true;
+        }
+        return System.currentTimeMillis() - command.getUpdateTime().getTime()
+                > operationStaleMillis;
+    }
+
+    private Integer resultPlanVersion(PlanningPendingCommandEntity command) {
+        if (Strings.isNullOrEmpty(command.getResultJson())) {
+            return null;
+        }
+        try {
+            PendingPlanningCommandRes result = JSONObject.parseObject(
+                    command.getResultJson(), PendingPlanningCommandRes.class);
+            return result == null ? null : result.getResultPlanVersion();
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private PendingConfirmationRes toResponse(PendingConfirmationEntity entity, boolean transitionApplied) {

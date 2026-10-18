@@ -234,6 +234,28 @@ def test_the_mapped_ref_wins_over_the_compiler_id() -> None:
     assert payload["proposalRef"] == "00f9bf22-pending"
 
 
+def test_the_plan_lifecycle_impact_rides_inside_the_diff() -> None:
+    """方案调整卡的 `impact`（确认前不动、确认后写入本会话并重新生成）要进 `diff` ✓。
+
+    它是卡面**唯一**说明"确认后到底发生什么"的字段（summary 只说本次替换/移出多少 ✗）；
+    白名单漏了它 → 卡上没有任何生命周期说明 ✓（A2 卡面文案等于没落地）。
+    """
+    payload = _proposal_preview_payload(
+        {
+            "proposalRef": "pending-scope-1",
+            "sourceVersion": 24,
+            "title": "只保留“安徽”的调整预览",
+            "summary": "当前方案中有 2 个专业组符合“安徽”……",
+            "status": "ready",
+            "requiresConfirmation": True,
+            "impact": "确认前不会改动当前方案；确认后这条范围要求会写入本会话的报考要求，并按它重新生成、刷新方案。",
+        }
+    )
+
+    assert payload["diff"]["impact"].startswith("确认前不会改动当前方案")
+    assert "写入本会话" in payload["diff"]["impact"]
+
+
 def test_the_score_update_summary_rides_inside_the_diff() -> None:
     """补录卡的结构化那份（`scoreUpdate`）要进 `diff` ✓✓：它是**卡片渲染明细行**的输入
     （省份/科类/批次/各科/总分/位次 ✓），来源是 Java 按合并后成绩算的 `scoreSummary` ✓。
@@ -348,10 +370,21 @@ async def test_a_conversation_action_result_is_emitted() -> None:
         "turn.completed",
     ]
     payload = events[0]["payload"]
-    assert set(payload) <= {"proposalRef", "actionStatus", "newStateVersion", "workspaceVersion"}
+    assert set(payload) <= {
+        "proposalRef",
+        "actionStatus",
+        "newStateVersion",
+        "workspaceVersion",
+        "code",
+        "message",
+        "actualChanges",
+        "reviewState",
+    }
     assert payload["actionStatus"] == "cancelled"
     assert payload["workspaceVersion"] == 3
-    assert "actualChanges" not in payload  # 白名单没它的位置 ✓，不带 ✓
+    # 回执字段（actualChanges/reviewState）已进白名单：卡要能展示真实变更，
+    # 不能只给 actionStatus（2026-10-17/18 add_units 回执链）。
+    assert payload["actualChanges"] == {}
 
 
 @pytest.mark.asyncio

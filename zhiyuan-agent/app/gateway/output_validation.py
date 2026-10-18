@@ -28,6 +28,18 @@ def _field(value: Any, *names: str) -> Any:
     return None
 
 
+def _has_write_intent(output: TurnOutput) -> bool:
+    if any(
+        getattr(output, name, None) is not None
+        for name in ("proposal_request", "score_update_request", "career_update_request")
+    ):
+        return True
+    return str(getattr(output.conversation_action, "action_type", "") or "") in {
+        "confirm_proposal",
+        "cancel_proposal",
+    }
+
+
 def _as_output(value: TurnOutput | Mapping[str, Any]) -> TurnOutput:
     if isinstance(value, TurnOutput):
         return value
@@ -94,6 +106,15 @@ def validate_turn_output(
                 )
     output = _as_output(turn_output)
     snapshot = _as_snapshot(current_snapshot)
+    # J1：applying 的提前反馈。必须排在 confirm 校验之前——applying 时快照没有
+    # activeProposal，旧检查会先报 proposal_reference_mismatch，用户看不到“正在生效”。
+    # 最终保护在 Java pending 写入口；这里只减少无意义的重试与误导文案。
+    journey = snapshot.journey if isinstance(snapshot.journey, Mapping) else {}
+    if str(journey.get("pendingStatus") or "") == "applying" and _has_write_intent(output):
+        raise OutputContractError(
+            "pending_applying",
+            "上一条变更正在生效，请稍候；结果会以回执为准。",
+        )
     artifact_version_lower = int(snapshot.snapshot_version)
     artifact_version_upper = artifact_version_lower
     if artifact_version_ceiling is not None:
@@ -113,6 +134,15 @@ def validate_turn_output(
 
     if output.proposal_ref and not allow_proposal:
         raise OutputContractError("proposal_forbidden", "proposal output is disabled in readonly mode")
+    proposal_request = output.proposal_request
+    if proposal_request is not None and proposal_request.goal_type == "add_units":
+        if proposal_request.source_version_guard != snapshot.snapshot_version:
+            # 点名加入的版本守卫放在这里（而不是 prepare 前），才能命中可修复码：
+            # 模型收到当前版本后可以只改 sourceVersionGuard 重发，不必整轮硬失败。
+            raise OutputContractError(
+                "proposal_source_version_mismatch",
+                "add_units proposal source version does not match the current snapshot",
+            )
     action = output.conversation_action
     if action.action_type in {"confirm_proposal", "cancel_proposal"}:
         active = snapshot.active_proposal or {}

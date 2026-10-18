@@ -20,6 +20,23 @@ public class PendingConfirmationSharedService
         return this.getOne(query);
     }
 
+    /**
+     * J1 只读旅程用：只取真正的未决行（active/applying），按 revision 倒序。
+     *
+     * <p>不改 {@link #getCurrent}：写路径（upsert/resolve）需要看到已解决行来维持
+     * revision/CAS 语义；把状态过滤塞进 getCurrent 会改变写侧行为。</p>
+     */
+    public PendingConfirmationEntity getActiveOrApplying(Long tenantId, Long chatSessionId) {
+        QueryWrapper<PendingConfirmationEntity> query = new QueryWrapper<PendingConfirmationEntity>();
+        query.lambda()
+                .eq(PendingConfirmationEntity::getTenantId, tenantId)
+                .eq(PendingConfirmationEntity::getChatSessionId, chatSessionId)
+                .in(PendingConfirmationEntity::getStatus, "active", "applying")
+                .orderByDesc(PendingConfirmationEntity::getRevision)
+                .last("limit 1");
+        return this.getOne(query);
+    }
+
     public PendingConfirmationEntity lockCurrent(Long tenantId, Long chatSessionId) {
         QueryWrapper<PendingConfirmationEntity> query = new QueryWrapper<PendingConfirmationEntity>();
         query.lambda()

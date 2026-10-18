@@ -28,18 +28,26 @@ version: 1.0.0
 
 - 用户点名**具体院校 + 专业**并说“加入 / 加进 / 放进 / 补进方案”，且这些条目还不在当前
   方案里：这是**加入动作**，交给确认链路的
-  `preview_plan_action(action="add", targets=["学校.专业", ...])`——它会从候选池按名字解析
-  并生成加入预览。
+  `proposalRequest(goalType="add_units", exactTargets=[{schoolName: "...", majorName: "..."}])`
+  ——先从 `recommendation.preview_candidates` 复制准确名称。
 - **不要**用 `preview_intent_change(constraint_type="must_have")` /
   `must_include_scope` 做点名加入：该路径只在**方案已有条目**里校验“必须包含”，
   条目不在方案里会以 `user_goal_target_not_found` 整单退回（2026-10-17 实测：六条
   点名加入被拒）。
 - 只有“方案里必须保留 / 不能删 / 必须有某类”且**不要求立即加入具体条目**时，才用
   must_have / must_include_scope。
+- **默认语义是 EXPAND（扩总数、零删除）**，卡面写明总数变化；用户明确说“总数不变 /
+  必须有这几条 / 换掉几条”时不要用 add_units 静默扩总数，先问一次“扩总数还是保持总数
+  替换”。
+- **按范围加 N 条**（不点名具体院校/专业）→
+  `proposalRequest(goalType="add_units_by_scope", addCount=N, targetScopes=[...], context={"maxTuitionPerYear":...})`；
+  筛选条件只作用于本次新增。不要把范围条件塞进 `add_units`（它只接受点名目标）。
 
 ## 前置状态
 
 - 已取得当前 Snapshot 和最新 `stateVersion`。
+- 先看注入的【当前旅程】：`candidateFreshness=stale`（如刚补录成绩）时先刷新/重取候选，
+  不把旧候选当当前结果；`planFreshness=stale` 时推荐候选仍可做，但说明方案需重算。
 - 目标院校/专业/招生单元已由 `entity.resolve` 解析为标准 ID。
 - 读取用户确认的偏好与排除项；tentative 偏好只能影响解释，不能当硬约束。
 - 已确认的发展方向（快照 `preferences.careerTypes`，四类中文标签）是**弱偏好**：

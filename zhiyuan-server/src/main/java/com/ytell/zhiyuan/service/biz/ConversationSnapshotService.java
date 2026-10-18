@@ -1,13 +1,25 @@
 package com.ytell.zhiyuan.service.biz;
 
+import com.alibaba.fastjson.JSON;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
+import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ConversationEvidenceDTO;
+import com.ytell.zhiyuan.model.dto.planning.ConversationJourneyDTO;
 import com.ytell.zhiyuan.model.dto.planning.ConversationTurnSnapshotDTO;
+import com.ytell.zhiyuan.model.dto.planning.DataFreshnessStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.DraftPlanStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.ExplicitProfileDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedPlanStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningWorkspaceStateRes;
 import com.ytell.zhiyuan.model.dto.planning.ProfileStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.SoftPreferencesDTO;
+import com.ytell.zhiyuan.model.dto.planning.StaleFlagsDTO;
 import com.ytell.zhiyuan.model.dto.planning.StudentPlanningSummaryDTO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -30,7 +42,7 @@ public class ConversationSnapshotService {
     @Autowired
     private EvidenceLedgerService evidenceLedgerService;
 
-    public ConversationTurnSnapshotDTO getTurnSnapshot(Long tenantId, Long chatSessionId, String skill) {
+    public ConversationTurnSnapshotDTO getTurnSnapshot(Long tenantId, Long chatSessionId) {
         if (tenantId == null || chatSessionId == null) {
             throw new IllegalArgumentException("tenantId and chatSessionId are required");
         }
@@ -47,8 +59,13 @@ public class ConversationSnapshotService {
         fillScoreContext(snapshot.getScoreContext(), workspace.getStudentSummary());
         fillProfileAndConstraints(snapshot, workspace);
         fillMissingFacts(snapshot.getMissingFacts(), workspace.getStudentSummary());
-        fillActiveProposal(snapshot, tenantId, chatSessionId);
-        fillCapabilities(snapshot.getAllowedCapabilities(), skill);
+        // 同一次只读记录同时提供给 activeProposal 与 journey.pendingStatus：
+        // 避免同一快照一边展示 active 卡、一边声称 applying。
+        PendingConfirmationRes pending =
+                pendingConfirmationBizService.getActiveOrApplying(tenantId, chatSessionId);
+        fillActiveProposal(snapshot, pending);
+        fillJourney(snapshot, workspace, pending);
+        fillCapabilities(snapshot.getAllowedCapabilities());
         fillEvidence(snapshot.getEvidence(), tenantId, chatSessionId);
         return snapshot;
     }
@@ -122,6 +139,21 @@ public class ConversationSnapshotService {
         if (workspace.getReviewState() != null && workspace.getReviewState().getSummary() != null) {
             snapshot.getPreferences().put("reviewSummary", workspace.getReviewState().getSummary());
         }
+        if (workspace.getReviewState() != null) {
+            // J5.2：统一评价的几个紧凑信号。只给派生值，不把 15 条 findings 塞进快照。
+            if (workspace.getReviewState().getEvaluationStatus() != null) {
+                snapshot.getPreferences().put("reviewEvaluationStatus",
+                        workspace.getReviewState().getEvaluationStatus());
+            }
+            if (workspace.getReviewState().getEvaluationVersion() != null) {
+                snapshot.getPreferences().put("reviewEvaluationVersion",
+                        workspace.getReviewState().getEvaluationVersion());
+            }
+            if (workspace.getReviewState().getHardFeasible() != null) {
+                snapshot.getPreferences().put("reviewHardFeasible",
+                        workspace.getReviewState().getHardFeasible());
+            }
+        }
         if (workspace.getWorkflowStatus() != null) {
             snapshot.getPreferences().put("workflow", workspace.getWorkflowStatus());
         }
@@ -139,8 +171,7 @@ public class ConversationSnapshotService {
         }
     }
 
-    private void fillActiveProposal(ConversationTurnSnapshotDTO snapshot, Long tenantId, Long chatSessionId) {
-        PendingConfirmationRes pending = pendingConfirmationBizService.getCurrent(tenantId, chatSessionId);
+    private void fillActiveProposal(ConversationTurnSnapshotDTO snapshot, PendingConfirmationRes pending) {
         if (pending == null || !"active".equals(pending.getStatus())) {
             return;
         }
@@ -168,6 +199,265 @@ public class ConversationSnapshotService {
         snapshot.setActiveProposal(proposal);
     }
 
+    // ── J1 旅程块：只读派生，不落库 ──────────────────────────────────────────
+
+    private void fillJourney(ConversationTurnSnapshotDTO snapshot,
+                             PlanningWorkspaceStateRes workspace,
+                             PendingConfirmationRes pending) {
+        ConversationJourneyDTO journey = new ConversationJourneyDTO();
+        StudentPlanningSummaryDTO summary = workspace.getStudentSummary();
+        List<String> profileMissing = new ArrayList<String>();
+        journey.setHasProfile(hasProfile(summary, profileMissing));
+        journey.setProfileMissing(profileMissing);
+
+        CandidatePoolStateDTO pool = workspace.getCandidatePoolState();
+        int poolTotal = pool == null || pool.getSummary() == null
+                ? 0 : valueOrZero(pool.getSummary().getTotal());
+        int poolUnitTotal = pool == null || pool.getSummary() == null
+                ? 0 : valueOrZero(pool.getSummary().getUnitTotal());
+        boolean hasCandidates = poolTotal > 0 || poolUnitTotal > 0;
+        boolean groupMode = "major_group".equalsIgnoreCase(snapshot.getAdmissionMode());
+        journey.setHasCandidates(hasCandidates);
+        journey.setCandidateEntryCount(groupMode ? poolUnitTotal : poolTotal);
+        journey.setCandidateSourceVersion(pool == null ? null : pool.getSourceVersion());
+        OrderedPlanStateDTO ordered = workspace.getOrderedPlanState();
+        DraftPlanStateDTO working = workspace.getWorkingPlanState();
+        boolean hasPlan = hasAnyOrderedEntry(ordered) || hasAnyWorkingEntry(working);
+        journey.setHasPlan(hasPlan);
+        journey.setPlanEntryCount(planEntryCount(ordered, working, groupMode));
+        int orderedEntryCount = groupMode
+                ? nonNullSize(orderedUnits(ordered))
+                : nonNullSize(orderedItems(ordered));
+        journey.setOrderedEntryCount(orderedEntryCount);
+        journey.setPlanInterpretable(orderedEntryCount > 0);
+        journey.setSelectionTargetCount(workspace.getSelectionTargetCount());
+        journey.setSelectionCurrentCount(workspace.getSelectionCurrentCount());
+        journey.setPlanVersion(snapshot.getSnapshotVersion());
+        journey.setPlanContentDigest(planContentDigest(ordered, working));
+        journey.setReviewSourceVersion(workspace.getReviewState() == null
+                ? null : workspace.getReviewState().getSourceVersion());
+        journey.setTierQuotaGoal(hasTierQuotaGoal(workspace));
+        journey.setPendingStatus(pendingStatus(pending));
+
+        StaleFlagsDTO flags = workspace.getStaleFlags();
+        journey.setStale(isStale(flags));
+        journey.setStaleReasonCode(flags == null ? null : blankToNull(flags.getReasonCode()));
+        journey.setStaleMessage(truncate(flags == null ? null : blankToNull(flags.getMessage()), 200));
+        journey.setReviewStale(flags != null && Boolean.TRUE.equals(flags.getReview()));
+        journey.setPlanAdjustmentStale(flags != null && Boolean.TRUE.equals(flags.getPlanAdjustment()));
+
+        String candidateFreshness = candidateFreshness(
+                hasCandidates, flags, workspace.getDataFreshnessState());
+        String planFreshness = planFreshness(hasPlan, flags);
+        String reviewFreshness = reviewFreshness(workspace.getReviewState(), flags);
+        journey.setCandidateFreshness(candidateFreshness);
+        journey.setPlanFreshness(planFreshness);
+        journey.setReviewFreshness(reviewFreshness);
+        journey.setRefreshRequirement(refreshRequirement(
+                candidateFreshness, planFreshness, reviewFreshness));
+
+        snapshot.setJourney(journey);
+    }
+
+    private boolean hasProfile(StudentPlanningSummaryDTO summary, List<String> missing) {
+        boolean province = summary != null && !isBlank(summary.getProvinceName());
+        boolean examYear = summary != null && summary.getExamYear() != null;
+        boolean batch = summary != null && !isBlank(summary.getBatchName());
+        boolean subjectType = summary != null && !isBlank(summary.getSubjectType());
+        boolean scoreOrRank = summary != null
+                && (summary.getScore() != null || summary.getRank() != null);
+        if (!province) {
+            missing.add("province");
+        }
+        if (!examYear) {
+            missing.add("examYear");
+        }
+        if (!batch) {
+            missing.add("batch");
+        }
+        if (!subjectType) {
+            missing.add("subjectType");
+        }
+        if (!scoreOrRank) {
+            missing.add("scoreOrRank");
+        }
+        return province && examYear && batch && subjectType && scoreOrRank;
+    }
+
+    private boolean hasAnyOrderedEntry(OrderedPlanStateDTO ordered) {
+        return ordered != null
+                && (!defaultList(ordered.getItems()).isEmpty()
+                || !defaultList(ordered.getUnits()).isEmpty());
+    }
+
+    private boolean hasAnyWorkingEntry(DraftPlanStateDTO working) {
+        return working != null
+                && (!defaultList(working.getItems()).isEmpty()
+                || !defaultList(working.getUnits()).isEmpty());
+    }
+
+    /**
+     * 展示用条目数：先取在用的方案（ordered 任一非空 → ordered，否则 working），
+     * 再按 mode 优先对应形状、另一形状兜底。
+     */
+    private int planEntryCount(OrderedPlanStateDTO ordered,
+                               DraftPlanStateDTO working,
+                               boolean groupMode) {
+        List<OrderedItemDTO> orderedItems = defaultList(orderedItems(ordered));
+        List<OrderedUnitDTO> orderedUnits = defaultList(orderedUnits(ordered));
+        List<DraftItemDTO> workingItems = defaultList(workingItems(working));
+        List<DraftUnitDTO> workingUnits = defaultList(workingUnits(working));
+        boolean useOrdered = hasAnyOrderedEntry(ordered);
+        if (groupMode) {
+            if (useOrdered) {
+                return !orderedUnits.isEmpty() ? nonNullSize(orderedUnits) : nonNullSize(orderedItems);
+            }
+            return !workingUnits.isEmpty() ? nonNullSize(workingUnits) : nonNullSize(workingItems);
+        }
+        if (useOrdered) {
+            return !orderedItems.isEmpty() ? nonNullSize(orderedItems) : nonNullSize(orderedUnits);
+        }
+        return !workingItems.isEmpty() ? nonNullSize(workingItems) : nonNullSize(workingUnits);
+    }
+
+    /**
+     * 内容指纹：ordered 非空时与 EvaluationContextBuilder 同算法/同输入；
+     * working 回退加 "working|" 前缀，避免与评价 digest 混用。
+     */
+    private String planContentDigest(OrderedPlanStateDTO ordered, DraftPlanStateDTO working) {
+        if (hasAnyOrderedEntry(ordered)) {
+            return EvaluationVersion.sha256(JSON.toJSONString(ordered));
+        }
+        if (hasAnyWorkingEntry(working)) {
+            return EvaluationVersion.sha256("working|" + JSON.toJSONString(working));
+        }
+        return null;
+    }
+
+    private String candidateFreshness(boolean hasCandidates,
+                                      StaleFlagsDTO flags,
+                                      DataFreshnessStateDTO freshness) {
+        if (!hasCandidates) {
+            return "absent";
+        }
+        boolean stale = flags != null
+                && (Boolean.TRUE.equals(flags.getCandidatePool())
+                || Boolean.TRUE.equals(flags.getRecommendationOverlay())
+                || Boolean.TRUE.equals(flags.getInitialRecommendation()));
+        if (!stale && freshness != null
+                && Boolean.TRUE.equals(freshness.getRequiresCandidateRefresh())) {
+            stale = true;
+        }
+        return stale ? "stale" : "fresh";
+    }
+
+    private String planFreshness(boolean hasPlan, StaleFlagsDTO flags) {
+        if (!hasPlan) {
+            return "absent";
+        }
+        // planAdjustment 每次写方案都会置位且 runReview 不清；它不能代表“方案内容
+        // 基于旧数据”。只看 orderedPlan；planAdjustment 另给独立信号。
+        boolean stale = flags != null && Boolean.TRUE.equals(flags.getOrderedPlan());
+        return stale ? "stale" : "fresh";
+    }
+
+    private String reviewFreshness(ReviewStateDTO review, StaleFlagsDTO flags) {
+        if (review == null || review.getSourceVersion() == null
+                || "idle".equalsIgnoreCase(String.valueOf(review.getStatus()))) {
+            return "absent";
+        }
+        boolean stale = flags != null && Boolean.TRUE.equals(flags.getReview());
+        return stale ? "stale" : "fresh";
+    }
+
+    private String refreshRequirement(String candidateFreshness,
+                                      String planFreshness,
+                                      String reviewFreshness) {
+        if (!"fresh".equals(candidateFreshness)) {
+            return "candidates";
+        }
+        if (!"fresh".equals(planFreshness)) {
+            return "plan";
+        }
+        if (!"fresh".equals(reviewFreshness)) {
+            return "review";
+        }
+        return "none";
+    }
+
+    private boolean hasTierQuotaGoal(PlanningWorkspaceStateRes workspace) {
+        return workspace.getConstraintState() != null
+                && workspace.getConstraintState().getHardPlanningObjectives() != null
+                && workspace.getConstraintState().getHardPlanningObjectives().getTierQuotaGoal() != null;
+    }
+
+    private boolean isStale(StaleFlagsDTO flags) {
+        if (flags == null) {
+            return false;
+        }
+        return Boolean.TRUE.equals(flags.getCandidatePool())
+                || Boolean.TRUE.equals(flags.getRecommendationOverlay())
+                || Boolean.TRUE.equals(flags.getInitialRecommendation())
+                || Boolean.TRUE.equals(flags.getOrderedPlan())
+                || Boolean.TRUE.equals(flags.getPlanAdjustment())
+                || Boolean.TRUE.equals(flags.getReview())
+                || !isBlank(flags.getReasonCode())
+                || !isBlank(flags.getMessage());
+    }
+
+    private String pendingStatus(PendingConfirmationRes pending) {
+        if (pending == null) {
+            return null;
+        }
+        String status = pending.getStatus();
+        return "active".equals(status) || "applying".equals(status) ? status : null;
+    }
+
+    private List<OrderedItemDTO> orderedItems(OrderedPlanStateDTO ordered) {
+        return ordered == null ? null : ordered.getItems();
+    }
+
+    private List<OrderedUnitDTO> orderedUnits(OrderedPlanStateDTO ordered) {
+        return ordered == null ? null : ordered.getUnits();
+    }
+
+    private List<DraftItemDTO> workingItems(DraftPlanStateDTO working) {
+        return working == null ? null : working.getItems();
+    }
+
+    private List<DraftUnitDTO> workingUnits(DraftPlanStateDTO working) {
+        return working == null ? null : working.getUnits();
+    }
+
+    private <T> List<T> defaultList(List<T> values) {
+        return values == null ? new ArrayList<T>() : values;
+    }
+
+    private int nonNullSize(List<?> values) {
+        int count = 0;
+        for (Object value : defaultList(values)) {
+            if (value != null) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int valueOrZero(Integer value) {
+        return value == null ? 0 : value;
+    }
+
+    private String blankToNull(String value) {
+        return isBlank(value) ? null : value;
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
+    }
+
     private Object firstPresent(Object... values) {
         for (Object value : values) {
             if (value != null) {
@@ -177,12 +467,11 @@ public class ConversationSnapshotService {
         return null;
     }
 
-    private void fillCapabilities(List<String> capabilities, String skill) {
+    private void fillCapabilities(List<String> capabilities) {
         capabilities.add("catalog_read");
         capabilities.add("admission_read");
-        if (skill != null && skill.contains("review")) {
-            capabilities.add("review_read");
-        }
+        // review_read 没有消费者（仅签发、无工具挂载），已删除；需要读评价时
+        // 另加有真实消费者的能力/工具，见 2026-10-18 语义权威审查。
     }
 
     /**

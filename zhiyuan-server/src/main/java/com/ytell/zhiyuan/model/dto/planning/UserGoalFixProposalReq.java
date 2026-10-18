@@ -14,12 +14,16 @@ public class UserGoalFixProposalReq {
     private String confidence = "medium";
     private Integer sourceVersionGuard;
     private Integer targetCount;
+    /** 按范围加入（add_units_by_scope）：本次要新增的条数/单元数（>0）。 */
+    private Integer addCount;
     private Boolean persistTargetCount = true;
     private TierQuotaGoalRequestDTO tierQuotaGoal;
     private List<RequirementDTO> requirements = Lists.newArrayList();
     private List<PriorityRuleDTO> priorityRules = Lists.newArrayList();
     private List<ScopeDTO> targetScopes = Lists.newArrayList();
     private List<ScopeDTO> negativeScopes = Lists.newArrayList();
+    /** 点名加入（add_units）：精确的学校+专业目标；非 add_units 必须为空。 */
+    private List<ExactTargetDTO> exactTargets = Lists.newArrayList();
     private List<String> qualityGuards = Lists.newArrayList();
     private List<String> tradeoffGuards = Lists.newArrayList();
     private List<String> sourceReviewIssueCodes = Lists.newArrayList();
@@ -33,6 +37,13 @@ public class UserGoalFixProposalReq {
         private List<String> values = Lists.newArrayList();
         private Integer minCount = 1;
         private String rawText;
+    }
+
+    @Data
+    public static class ExactTargetDTO {
+        private String schoolName;
+        private String majorName;
+        private String volunteerId;
     }
 
     @Data

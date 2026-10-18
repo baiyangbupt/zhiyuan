@@ -11,9 +11,12 @@ import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyRes;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanGenerateReq;
+import com.ytell.zhiyuan.model.dto.planning.OrderedPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanChangePostconditionReportDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanningStateVersionDTO;
+import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandReq;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes;
@@ -40,6 +43,9 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Arrays;
 import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -913,6 +919,160 @@ public class PendingPlanningCommandBizServiceTest {
 
         assertEquals(40001, error.getStatus());
         verify(pendingSharedService, never()).lockCurrent(any(), any());
+    }
+
+    @Test
+    void shouldExecuteFrozenAddUnitsWithPostconditionAndReview() {
+        PendingPlanningCommandReq req = baseReq();
+        req.setOperationId("pending:p-1:add_units");
+        req.setCommandType(PendingPlanningCommandBizService.ADD_UNITS);
+        // 新链路只带 5 个字段：volunteerIds 由 frozenCommand 提供。
+        req.setVolunteerIds(Arrays.asList());
+        PendingConfirmationEntity pending = applyingPending();
+        pending.setDataValue(frozenData(Arrays.asList("v-new"), 2, true, 12));
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+        PlanningStateDTO before = addState(12, "v-old");
+        PlanningStateDTO after = addState(13, "v-old", "v-new");
+        PlanningStateDTO reviewed = addState(14, "v-old", "v-new");
+        when(planningStateService.getPlanningState(101L)).thenReturn(before, before, after, reviewed);
+        when(planningStateService.updateSelectionTargetCount(101L, 2))
+                .thenReturn(new PlanningStateVersionDTO());
+        CandidateItemDTO oldCandidate = addCandidate("v-old");
+        CandidateItemDTO newCandidate = addCandidate("v-new");
+        when(planningStateService.resolveEffectiveCandidatesForProposal(any()))
+                .thenReturn(Arrays.asList(oldCandidate, newCandidate));
+        when(planningStateService.generateOrderedPlan(eq(1L), eq(101L), any(OrderedPlanGenerateReq.class)))
+                .thenReturn(after);
+        when(planningStateService.runReview(1L, 101L)).thenReturn(new ReviewStateDTO());
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+
+        PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+        assertEquals("applied", response.getStatus());
+        assertEquals(Arrays.asList("v-new"), response.getAddedVolunteerIds());
+        assertEquals(Integer.valueOf(1), response.getAddedVolunteerCount());
+        assertEquals(Integer.valueOf(2), response.getTargetCountAfter());
+        assertEquals(Integer.valueOf(0), response.getRemovedVolunteerCount());
+        assertTrue(response.getCompletedSteps().contains("selection_target_updated"));
+        assertTrue(response.getCompletedSteps().contains("review_rerun"));
+        assertTrue(response.getPostconditionReport().getSatisfied());
+        assertEquals(Integer.valueOf(14), response.getResultPlanVersion());
+        verify(planningStateService).updateSelectionTargetCount(101L, 2);
+        verify(planningStateService).runReview(1L, 101L);
+    }
+
+    @Test
+    void shouldRejectTamperedFrozenAddUnitsBeforeReplay() {
+        PendingPlanningCommandReq req = addReq();
+        req.setVolunteerIds(Arrays.asList("v-evil"));
+        PendingConfirmationEntity pending = applyingPending();
+        pending.setDataValue(frozenData(Arrays.asList("v-new"), 2, true, 12));
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(PendingPlanningCommandBizService.COMMAND_CONTENT_MISMATCH_CODE, error.getStatus());
+        verify(commandSharedService, never()).save(any());
+        verify(planningStateService, never()).selectWorkingPlanItems(any(), any());
+    }
+
+    @Test
+    void shouldRollbackFrozenAddUnitsWhenReviewFails() {
+        PendingPlanningCommandReq req = baseReq();
+        req.setOperationId("pending:p-1:add_units");
+        req.setCommandType(PendingPlanningCommandBizService.ADD_UNITS);
+        req.setVolunteerIds(Arrays.asList());
+        PendingConfirmationEntity pending = applyingPending();
+        pending.setDataValue(frozenData(Arrays.asList("v-new"), 2, true, 12));
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+        PlanningStateDTO before = addState(12, "v-old");
+        PlanningStateDTO after = addState(13, "v-old", "v-new");
+        when(planningStateService.getPlanningState(101L)).thenReturn(before, before, after);
+        when(planningStateService.updateSelectionTargetCount(101L, 2))
+                .thenReturn(new PlanningStateVersionDTO());
+        when(planningStateService.resolveEffectiveCandidatesForProposal(any()))
+                .thenReturn(Arrays.asList(addCandidate("v-old"), addCandidate("v-new")));
+        when(planningStateService.generateOrderedPlan(eq(1L), eq(101L), any(OrderedPlanGenerateReq.class)))
+                .thenReturn(after);
+        when(planningStateService.runReview(1L, 101L)).thenThrow(new IllegalStateException("review boom"));
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(PendingPlanningCommandBizService.REVIEW_FAILED_CODE, error.getStatus());
+        assertTrue(error.getMessage().contains("review_failed"));
+    }
+
+    @Test
+    void shouldRollbackFrozenAddUnitsWhenExistingItemWouldBeRemoved() {
+        PendingPlanningCommandReq req = baseReq();
+        req.setOperationId("pending:p-1:add_units");
+        req.setCommandType(PendingPlanningCommandBizService.ADD_UNITS);
+        req.setVolunteerIds(Arrays.asList());
+        PendingConfirmationEntity pending = applyingPending();
+        pending.setDataValue(frozenData(Arrays.asList("v-new"), 2, false, 12));
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+        PlanningStateDTO before = addState(12, "v-old");
+        PlanningStateDTO after = addState(13, "v-new");
+        when(planningStateService.getPlanningState(101L)).thenReturn(before, before, after);
+        when(planningStateService.resolveEffectiveCandidatesForProposal(any()))
+                .thenReturn(Arrays.asList(addCandidate("v-old"), addCandidate("v-new")));
+        when(planningStateService.generateOrderedPlan(eq(1L), eq(101L), any(OrderedPlanGenerateReq.class)))
+                .thenReturn(after);
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, error.getStatus());
+        assertTrue(error.getMessage().contains("existing item missing")
+                || error.getMessage().contains("existing items removed"));
+    }
+
+    private String frozenData(List<String> volunteerIds, Integer targetCountOverride,
+                              boolean rerunReview, int sourceVersion) {
+        Map<String, Object> frozen = new LinkedHashMap<String, Object>();
+        frozen.put("commandType", "add_units");
+        frozen.put("operationId", "op-add");
+        frozen.put("volunteerIds", volunteerIds);
+        frozen.put("targetCountOverride", targetCountOverride);
+        frozen.put("tierQuotaOverride", null);
+        frozen.put("rerunReview", rerunReview);
+        frozen.put("sourceVersion", sourceVersion);
+        Map<String, Object> data = new LinkedHashMap<String, Object>();
+        data.put("kind", "plan_action");
+        data.put("commandType", "add_units");
+        data.put("frozenCommand", frozen);
+        return JSONObject.toJSONString(data);
+    }
+
+    private PlanningStateDTO addState(int version, String... volunteerIds) {
+        PlanningStateDTO state = state(version);
+        DraftPlanStateDTO draft = new DraftPlanStateDTO();
+        OrderedPlanStateDTO ordered = new OrderedPlanStateDTO();
+        for (String volunteerId : volunteerIds) {
+            DraftItemDTO item = new DraftItemDTO();
+            item.setVolunteerId(volunteerId);
+            item.setSchoolName("测试大学");
+            draft.getItems().add(item);
+            OrderedItemDTO orderedItem = new OrderedItemDTO();
+            orderedItem.setVolunteerId(volunteerId);
+            orderedItem.setSchoolName("测试大学");
+            ordered.getItems().add(orderedItem);
+        }
+        state.setDraftPlanState(draft);
+        state.setOrderedPlanState(ordered);
+        return state;
+    }
+
+    private CandidateItemDTO addCandidate(String volunteerId) {
+        CandidateItemDTO candidate = new CandidateItemDTO();
+        candidate.setVolunteerId(volunteerId);
+        candidate.setSchoolName("测试大学");
+        candidate.setMajorName("测试专业");
+        return candidate;
     }
 
     private PendingPlanningCommandReq replaceReq() {

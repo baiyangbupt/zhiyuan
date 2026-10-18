@@ -180,7 +180,7 @@ async def test_machine_blocks_are_tagged_and_contents_are_byte_identical() -> No
     assert result.get("error") is None, result
 
     items = codex.turns[0]
-    assert len(items) == 5
+    assert len(items) == 6
     # 用户原话是最后一条，**也**带显式边界（内部状态标签仍只给机器块）：
     # 正文逐字不变，两端是用户消息标记。
     assert items[-1] == {
@@ -195,8 +195,13 @@ async def test_machine_blocks_are_tagged_and_contents_are_byte_identical() -> No
     )
     assert _unwrap(items[0]["text"]) == expected_state
 
+    assert _unwrap(items[1]["text"]) == (
+        "【本轮标识】\nturnId: ui-1\n"
+        "intentDraft.sourceTurnId 必须原样使用这个值，不得编造。"
+    )
+
     working_set = ConversationWorkingSet.from_snapshot(snapshot)
-    assert _unwrap(items[1]["text"]) == working_set.as_context_text()
+    assert _unwrap(items[2]["text"]) == working_set.as_context_text()
 
     expected_plan = (
         "【本轮执行计划骨架】\n"
@@ -204,17 +209,17 @@ async def test_machine_blocks_are_tagged_and_contents_are_byte_identical() -> No
         "Codex 仍需根据用户原话确定任务类型、工具和最终步骤。\n"
         + json.dumps(build_execution_plan(snapshot, working_set).as_payload(), ensure_ascii=False)
     )
-    assert _unwrap(items[2]["text"]) == expected_plan
+    assert _unwrap(items[3]["text"]) == expected_plan
 
     expected_contracts = (
         "【工具编排约束】\n"
         "以下约束用于避免不完整查询和重复读取，不是用户新问题。\n"
         + render_tool_contracts()
     )
-    assert _unwrap(items[3]["text"]) == expected_contracts
+    assert _unwrap(items[4]["text"]) == expected_contracts
 
     # 每个机器块恰好一组标签 + 一句提醒；标签与提醒的措辞本身也不许被改弱。
-    for item in items[:4]:
+    for item in items[:5]:
         assert item["text"].count(INTERNAL_STATE_OPEN_TAG) == 1
         assert item["text"].count(INTERNAL_STATE_CLOSE_TAG) == 1
         assert item["text"].endswith(INTERNAL_STATE_REMINDER)
@@ -245,7 +250,7 @@ async def test_state_patch_block_is_tagged_with_content_untouched() -> None:
     assert change["newValue"] == expected_context
     assert change["newValue"]["score"] == 650
     # 计划骨架块也仍带着新真值（标签没有把内容吃掉）。
-    plan_body = _unwrap(codex.turns[1][2]["text"])
+    plan_body = _unwrap(codex.turns[1][3]["text"])
     assert '"taskFamily": "unclassified"' in plan_body
 
 
@@ -264,9 +269,9 @@ async def test_a_short_user_message_keeps_its_own_delimited_slot_after_four_mach
     await _turn(gateway, turn_id="ui-1", content="1")
 
     items = codex.turns[0]
-    assert len(items) == 5
-    # 4 块机器文本一一带着内部状态标签——两侧边界并存，互不串。
-    for item in items[:4]:
+    assert len(items) == 6
+    # 5 块机器文本一一带着内部状态标签——两侧边界并存，互不串。
+    for item in items[:5]:
         assert item["text"].startswith(INTERNAL_STATE_OPEN_TAG)
     last = items[-1]
     assert INTERNAL_STATE_OPEN_TAG not in last["text"]

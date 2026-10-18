@@ -282,6 +282,8 @@ def test_the_model_facing_schema_exposes_every_contract_enum() -> None:
     free_form_paths = {
         "$.properties.evidenceRefs.items.properties.scope",
         "$.properties.evidenceRefs.items.properties.scope.properties.kind",
+        # additionalMutations 是数组：enum 在 items.enum，不在数组节点本身。
+        "$.properties.intentDraft.anyOf[0].properties.additionalMutations",
     }
 
     missing: list[str] = []
@@ -293,7 +295,13 @@ def test_the_model_facing_schema_exposes_every_contract_enum() -> None:
                 for prop, spec in properties.items():
                     child = f"{path}.properties.{prop}"
                     if isinstance(spec, dict):
-                        if child not in free_form_paths:
+                        items = spec.get("items")
+                        array_enum = (
+                            spec.get("type") == "array"
+                            and isinstance(items, dict)
+                            and ("enum" in items or "const" in items)
+                        )
+                        if child not in free_form_paths and not array_enum:
                             for snake, allowed in literals.items():
                                 if (
                                     camel(snake) == prop
@@ -493,3 +501,81 @@ def test_proposal_requirement_kind_domain_key_follow_the_java_whitelist() -> Non
         ProposalRequirement(kind="exclude", domain="admission", key="tier", values=["冲"])
     with pytest.raises(ValidationError, match="school_nature"):
         ProposalRequirement(kind="include", domain="region", key="school_nature", values=["985"])
+
+
+# ── 点名加入（add_units + exactTargets）契约 ────────────────────────────────
+
+def _add_proposal(targets, **overrides):
+    from app.gateway.contracts import ProposalRequest
+
+    return ProposalRequest(
+        goal_type="add_units",
+        source_version_guard=1,
+        exact_targets=targets,
+        **overrides,
+    )
+
+
+def test_add_units_accepts_names_only_id_only_and_both() -> None:
+    names = _add_proposal([{"schoolName": "肇庆学院", "majorName": "地理科学"}])
+    assert names.exact_targets[0].school_name == "肇庆学院"
+
+    id_only = _add_proposal([{"volunteerId": "44020271003614_44020272012541"}])
+    assert id_only.exact_targets[0].volunteer_id.startswith("4402")
+
+    both = _add_proposal([{
+        "schoolName": "肇庆学院", "majorName": "地理科学",
+        "volunteerId": "44020271003614_44020272012541",
+    }])
+    assert both.exact_targets[0].volunteer_id
+
+
+def test_add_units_rejects_empty_targets() -> None:
+    from app.gateway.contracts import ProposalRequest
+
+    with pytest.raises(ValidationError, match="exactTargets"):
+        ProposalRequest(goal_type="add_units", source_version_guard=1, exact_targets=[])
+
+
+def test_non_add_units_rejects_exact_targets() -> None:
+    from app.gateway.contracts import ProposalRequest
+
+    with pytest.raises(ValidationError, match="exactTargets"):
+        ProposalRequest(
+            goal_type="fill_to_count",
+            source_version_guard=1,
+            target_count=10,
+            exact_targets=[{"schoolName": "肇庆学院", "majorName": "地理科学"}],
+        )
+
+
+def test_exact_target_requires_names_or_id() -> None:
+    from app.gateway.contracts import ExactTarget
+
+    with pytest.raises(ValidationError, match="exactTarget"):
+        ExactTarget()
+    with pytest.raises(ValidationError, match="exactTarget"):
+        ExactTarget(school_name="肇庆学院")  # 只有学校不够
+
+
+def test_add_units_rejects_mixed_goal_fields() -> None:
+    from app.gateway.contracts import ProposalRequest
+
+    targets = [{"schoolName": "肇庆学院", "majorName": "地理科学"}]
+    for field, value in (
+        ("target_count", 10),
+        ("requirements", [{"kind": "include", "domain": "region", "key": "province", "values": ["广东"]}]),
+        ("priority_rules", [{"domain": "region", "key": "province", "values": ["广东"]}]),
+        ("target_scopes", [{"scope_type": "region", "name": "广东"}]),
+        ("negative_scopes", [{"scope_type": "region", "name": "北方"}]),
+        ("quality_guards", ["no_private"]),
+        ("tradeoff_guards", ["tuition"]),
+        ("source_review_issue_codes", ["high_tuition"]),
+    ):
+        with pytest.raises(ValidationError, match="cannot mix"):
+            ProposalRequest(
+                goal_type="add_units",
+                source_version_guard=1,
+                exact_targets=targets,
+                **{field: value},
+            )

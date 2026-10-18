@@ -82,6 +82,9 @@ CAPABILITIES = {
     # `admission_read` 的理由与预览/比较相同（见上）：新造能力名会被 Java
     # 的能力签发全部拒绝。解释属"志愿/录取"域，同一归属。
     "recommendation.explain_fit": "admission_read",
+    # 录取解读：只读方案结构与条件情景（不是录取概率）。挂 admission_read 的
+    # 理由与候选链相同：新能力名会被 Java 的能力签发全部拒绝。
+    "planning.interpret_admission": "admission_read",
 }
 WRITE_TOOL_NAMES = frozenset(
     {
@@ -131,6 +134,8 @@ TOOL_KINDS = {
     # 不新造 kind：新 kind 要在 `TOOL_OUTPUT_SCHEMA` 与下游消费两端同时放行，
     # 而这里的数据本就与候选同域。
     "recommendation.explain_fit": "candidate",
+    # 解读是"结构/条件情景"形状：新 kind，下游按它区分"这是解释"而不是事实/概率。
+    "planning.interpret_admission": "interpretation",
 }
 
 
@@ -519,6 +524,9 @@ class ReadonlyDomainTools:
             # 只收 entityId；会话身份只能来自受信 binding（模型塞的
             # chatSessionId/tenantId/sessionId 一律丢掉）——不能让它去解释别人的会话。
             return await self.backend.explain_fit(**self._trusted_arguments(arguments))
+        if name == "planning.interpret_admission":
+            # 只收 planVersion/counterfactual；会话身份只能来自受信 binding。
+            return await self.backend.interpret_admission(**self._trusted_arguments(arguments))
         method = {
             "entity.resolve": "resolve",
             "catalog.get_school": "get_school",
@@ -1749,6 +1757,83 @@ class InternalClientBackend:
                 "hot_index": item.get("hot_index"),
             },
         }
+
+    async def interpret_admission(self, **arguments: Any) -> Any:
+        """录取解读（只读）：当前方案的**结构与条件情景**，不是录取预测。
+
+        - `planVersion` 必填：版本不符 Java 回 `stale_interpretation`，工具入口
+          转成同码错误，不拿旧方案解释新状态；
+        - 身份只从受信 binding 取（模型塞的 tenant/session 会被丢掉）；
+        - 结果原样透传，不做算术、不补值；只加
+          `interpretation_is_structural_not_admission_probability` 这条限制，
+          提醒模型**不得**把情景说成录取概率。
+        """
+        plan_version = _as_int(arguments.get("planVersion", arguments.get("plan_version")))
+        if plan_version is None:
+            result = _err(
+                "planning.interpret_admission",
+                "needs_clarification",
+                "planVersion is required",
+                state_version=self.current_state_version,
+            )
+            result["data"]["missingFields"] = ["planVersion"]
+            return result
+        counterfactual = arguments.get("counterfactual")
+        if counterfactual is not None and not isinstance(counterfactual, dict):
+            return _err(
+                "planning.interpret_admission",
+                "invalid_argument",
+                "counterfactual must be an object",
+                state_version=self.current_state_version,
+            )
+
+        response = await internal_client.interpret_admission(
+            self.tenant_id,
+            self.chat_session_id,
+            plan_version=plan_version,
+            admission_mode=arguments.get("admissionMode") or arguments.get("admission_mode"),
+            counterfactual=counterfactual,
+        )
+        if not isinstance(response, dict):
+            raise RuntimeError(f"interpret_admission returned non-dict: {response!r}")
+        if response.get("success") is False:
+            raise RuntimeError(
+                f"interpret_admission transport error: {response.get('error')}"
+            )
+        code = response.get("code")
+        message = str(response.get("msg") or response.get("message") or "")
+        if code not in (None, 0):
+            if "stale_interpretation" in message:
+                return _err(
+                    "planning.interpret_admission",
+                    "stale_interpretation",
+                    "planVersion no longer matches the current state",
+                    state_version=self.current_state_version,
+                )
+            if "plan_version_required" in message:
+                return _err(
+                    "planning.interpret_admission",
+                    "needs_clarification",
+                    "planVersion is required",
+                    state_version=self.current_state_version,
+                )
+
+        payload = self._preserve_envelope(response)
+        if not isinstance(payload, dict):
+            return payload
+        data = payload.get("data")
+        if isinstance(data, dict):
+            data["state_mutation"] = False
+        else:
+            # 不编空情景：没有可读结果就如实标 unavailable。
+            payload["data"] = {"status": "unavailable", "state_mutation": False}
+        limitations = list(payload.get("limitations") or [])
+        _unique_append(
+            limitations,
+            ["interpretation_is_structural_not_admission_probability"],
+        )
+        payload["limitations"] = limitations
+        return payload
 
     async def preview_majors(self, **arguments: Any) -> Any:
         """专业方向推荐（只读）：基于会话画像在 rank 服务做**专业级打分**，取 topN。

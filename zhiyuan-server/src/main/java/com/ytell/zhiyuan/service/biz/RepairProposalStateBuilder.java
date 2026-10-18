@@ -97,10 +97,24 @@ final class RepairProposalStateBuilder {
                                             ReviewCheckDTO check,
                                             List<CompensationActionDTO> compensationActions,
                                             Integer sourceReviewVersion) {
+        return buildBaseProposal(state, check, compensationActions, sourceReviewVersion, null);
+    }
+
+    /**
+     * J5.2：策略可由统一评价的 objectiveDelta 覆盖（ findings 是权威）；
+     * override 为空时退回 check 自身解析，旧行为不变。
+     */
+    static FixProposalDTO buildBaseProposal(PlanningStateDTO state,
+                                            ReviewCheckDTO check,
+                                            List<CompensationActionDTO> compensationActions,
+                                            Integer sourceReviewVersion,
+                                            String strategyOverride) {
         if (check == null || Strings.isNullOrEmpty(check.getCode())) {
             return null;
         }
-        String strategy = resolveStrategy(check, compensationActions);
+        String strategy = Strings.isNullOrEmpty(strategyOverride)
+                ? resolveStrategy(check, compensationActions)
+                : RepairProposalTaxonomy.normalizeStrategy(strategyOverride);
         FixProposalDTO proposal = new FixProposalDTO();
         proposal.setProposalId(buildProposalId(state, check, strategy));
         proposal.setProposalSource(RepairProposalTaxonomy.ProposalSource.REVIEW_CHECK);

@@ -43,6 +43,8 @@ class UnifiedPlanPostconditionValidator {
      * 而满足度报告是**长期可读的证据** ✓，口径不一致时排查的人会先信它 ✗。
      */
     static final String EMPTY_PLAN_VACUOUS_REASON = "plan_empty_vacuous";
+    /** 应保持总数的约束（纯学费/替换类）执行后规模缩水：回执与台账必须能读出缺口。 */
+    static final String CONSTRAINT_COUNT_SHORTFALL_REASON = "constraint_count_shortfall";
 
     PlanChangePostconditionReportDTO validate(PendingPlanningCommandReq req,
                                               PlanningStateDTO state,
@@ -116,8 +118,23 @@ class UnifiedPlanPostconditionValidator {
      * 与"筛选时怎么算合格"逐字一致，避免出现"筛的时候合格、验的时候不合格"这种自相矛盾 ✓。
      */
     PlanChangePostconditionReportDTO validateConstraintApply(String commandType, PlanningStateDTO state) {
-        boolean majorGroupMode = state != null && state.getCandidatePoolState() != null
-                && "majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel());
+        return validateConstraintApply(commandType, state, null, false);
+    }
+
+    /**
+     * 带数量保持语义的约束满足度。
+     *
+     * <p>纯学费清理是**替换**语义：超预算条目移出后应补足，总数不该缩水。旧实现只看
+     * "没有条目违反硬约束" → 51 组缩到 36 组仍 `satisfied=true`（2026-10-18 真栈实测 ✗）。
+     * `countBefore` 取命令执行前规模；`enforceCountPreserved=true` 时短缺即判不满足并回滚。
+     *
+     * <p>**不能对所有约束都套数量判据**：`only_keep_scope` / `exclude_scope` 的语义就是
+     * "移出不想要的"，数量下降是预期结果；只在调用方明确传入保持语义时启用。
+     */
+    PlanChangePostconditionReportDTO validateConstraintApply(String commandType, PlanningStateDTO state,
+                                                             Integer countBefore,
+                                                             boolean enforceCountPreserved) {
+        boolean majorGroupMode = isMajorGroupMode(state);
         List<OrderedUnitDTO> units = state == null || state.getOrderedPlanState() == null
                 ? new ArrayList<OrderedUnitDTO>() : defaultList(state.getOrderedPlanState().getUnits());
         List<CandidateItemDTO> planCandidates = postconditionPlanCandidates(state, majorGroupMode);
@@ -137,25 +154,42 @@ class UnifiedPlanPostconditionValidator {
                 }
             }
         }
+        int actualCount = actualCount(state, majorGroupMode);
+        int shortage = enforceCountPreserved && countBefore != null
+                ? Math.max(0, countBefore - actualCount) : 0;
         PlanChangePostconditionReportDTO report = new PlanChangePostconditionReportDTO();
         report.setGoalType(commandType);
         report.setCountMode(majorGroupMode ? "unit" : "volunteer");
+        report.setCountBefore(countBefore);
         report.setTargetCount(state == null || state.getCandidatePoolState() == null
                 ? null : state.getCandidatePoolState().getRequiredCount());
-        report.setActualCount(actualCount(state, majorGroupMode));
+        report.setActualCount(actualCount);
+        report.setShortage(shortage);
         // 空方案 = **零违反** ✗，但那是"没有可比对象" ✗，不是"约束满足" ✓——
         // 只有**已确认约束**存在时才这么判 ✓（没有约束时"零违反"本来就是对的 ✓）。
         boolean vacuousEmpty = total == 0 && RepairCandidateEligibility.hasConfirmedHardConstraints(state);
-        report.setSatisfied(violating == 0 && !vacuousEmpty);
+        boolean countSatisfied = shortage == 0;
+        report.setSatisfied(violating == 0 && !vacuousEmpty && countSatisfied);
         if (!Boolean.TRUE.equals(report.getSatisfied())) {
-            report.setReasonCode(vacuousEmpty ? EMPTY_PLAN_VACUOUS_REASON : null);
+            String reason = vacuousEmpty ? EMPTY_PLAN_VACUOUS_REASON
+                    : !countSatisfied ? CONSTRAINT_COUNT_SHORTFALL_REASON : null;
+            report.setReasonCode(reason);
             throw new BusinessException(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE,
                     vacuousEmpty
                             ? "constraint apply postcondition failed: " + EMPTY_PLAN_VACUOUS_REASON
                             + "（方案里没有可比对象（0 条），不算满足）"
+                            : !countSatisfied
+                            ? "constraint apply postcondition failed: " + CONSTRAINT_COUNT_SHORTFALL_REASON
+                            + " (before=" + countBefore + " actual=" + actualCount
+                            + " shortage=" + shortage + ")"
                             : "constraint apply postcondition failed: violating=" + violating + "/" + total);
         }
         return report;
+    }
+
+    static boolean isMajorGroupMode(PlanningStateDTO state) {
+        return state != null && state.getCandidatePoolState() != null
+                && "majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel());
     }
 
     private PlanningUnitDTO asPlanningUnit(OrderedUnitDTO unit) {
@@ -179,19 +213,23 @@ class UnifiedPlanPostconditionValidator {
         return result;
     }
 
-    private int actualCount(PlanningStateDTO state, boolean majorGroupMode) {
+    static int actualCount(PlanningStateDTO state, boolean majorGroupMode) {
         if (majorGroupMode) {
             return state != null && state.getOrderedPlanState() != null
-                    && !defaultList(state.getOrderedPlanState().getUnits()).isEmpty()
+                    && !listOrEmpty(state.getOrderedPlanState().getUnits()).isEmpty()
                     ? state.getOrderedPlanState().getUnits().size()
                     : state != null && state.getWorkingPlanState() != null
-                    ? defaultList(state.getWorkingPlanState().getUnits()).size() : 0;
+                    ? listOrEmpty(state.getWorkingPlanState().getUnits()).size() : 0;
         }
         return state != null && state.getOrderedPlanState() != null
-                && !defaultList(state.getOrderedPlanState().getItems()).isEmpty()
+                && !listOrEmpty(state.getOrderedPlanState().getItems()).isEmpty()
                 ? state.getOrderedPlanState().getItems().size()
                 : state != null && state.getWorkingPlanState() != null
-                ? defaultList(state.getWorkingPlanState().getItems()).size() : 0;
+                ? listOrEmpty(state.getWorkingPlanState().getItems()).size() : 0;
+    }
+
+    private static <T> List<T> listOrEmpty(List<T> value) {
+        return value == null ? new ArrayList<T>() : value;
     }
 
     private int populateRequirements(PlanChangePostconditionReportDTO report,

@@ -37,6 +37,7 @@ public class PlanningStateServicePrepareProposalTest {
 
     private PlanningStateService service;
     private final List<Map<String, Object>> upsertedValues = new ArrayList<>();
+    private final List<PendingConfirmationUpsertReq> upsertedRequests = new ArrayList<>();
     private PendingConfirmationBizService recordingPendingService;
 
     @BeforeEach
@@ -51,6 +52,7 @@ public class PlanningStateServicePrepareProposalTest {
             @Override
             public PendingConfirmationRes upsert(Long tenantId, PendingConfirmationUpsertReq req) {
                 upsertedValues.add(req.getDataValue());
+                upsertedRequests.add(req);
                 PendingConfirmationRes res = new PendingConfirmationRes();
                 res.setPendingId(req.getPendingId());
                 res.setRevision(1L);
@@ -118,6 +120,49 @@ public class PlanningStateServicePrepareProposalTest {
         assertNull(dto.getPendingId(), "不物化就没有 pendingId");
         assertNull(dto.getOperationId(), "不物化就没有 operationId");
         assertNotNull(dto.getResult(), "预览本身照常返回，网关照常渲染 blocked 卡");
+    }
+
+    @Test
+    void prepareAddUnitsFreezesCommandAndUsesPlanActionKind() {
+        FixProposalStateDTO preview = new FixProposalStateDTO();
+        preview.setSourceVersion(7);
+        FixProposalDTO ready = new FixProposalDTO();
+        ready.setProposalId("ugp_add");
+        ready.setStatus("ready");
+        ready.setRequiresConfirmation(true);
+        ready.setAffectedVolunteerIds(Lists.newArrayList("v2", "v3"));
+        ready.setTargetCountOverride(9);
+        ready.setSummary("加入 2 条");
+        preview.setProposals(Lists.newArrayList(ready));
+        PlanningStateService addService = serviceWithPreview(preview);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("add_units");
+        UserGoalFixProposalReq.ExactTargetDTO target = new UserGoalFixProposalReq.ExactTargetDTO();
+        target.setSchoolName("湖南师范大学");
+        target.setMajorName("汉语言文学");
+        req.getExactTargets().add(target);
+
+        PrepareResultDTO dto = addService.prepareUserGoalProposal(1L, 2L, "req-add", "digest-add", req);
+
+        assertNotNull(dto.getPendingId());
+        Map<String, Object> data = upsertedValues.get(0);
+        assertEquals("plan_action", data.get("kind"));
+        assertEquals("add_units", data.get("commandType"));
+        assertEquals("add_units", data.get("goalType"));
+        assertEquals(Lists.newArrayList("v2", "v3"), data.get("volunteerIds"));
+        assertEquals(9, data.get("targetCountOverride"));
+        assertEquals(Boolean.TRUE, data.get("rerunReview"));
+        assertNotNull(data.get("frozenCommand"));
+        assertEquals(64, String.valueOf(data.get("commandDigest")).length());
+        PendingConfirmationUpsertReq upsert = upsertedRequests.get(0);
+        assertEquals("plan_action", upsert.getKind());
+        assertEquals("add_units", upsert.getActionFamily());
+        Map frozen = (Map) data.get("frozenCommand");
+        assertEquals(dto.getOperationId(), frozen.get("operationId"));
+        assertEquals(9, frozen.get("targetCountOverride"));
+        assertEquals(Boolean.TRUE, frozen.get("rerunReview"));
+        assertEquals(7, frozen.get("sourceVersion"));
     }
 
     private PlanningStateService serviceWithPreview(final FixProposalStateDTO preview) {

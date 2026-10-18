@@ -1,0 +1,83 @@
+[
+  {
+    "id": "composite_add_scope_tuition",
+    "draft": {
+      "source_turn_id": "t-001",
+      "user_text": "把这六条加进去，太远的不要，学费三万内，稳妥点",
+      "goal_family": "plan_mutation",
+      "action": "add",
+      "targets": [
+        {"school_name": "A大学", "major_name": "计算机"},
+        {"school_name": "B大学", "major_name": "电子信息"}
+      ],
+      "scopes": [
+        {"scope_type": "region", "name": "太远", "strength": "exclude", "raw_text": "太远的不要"},
+        {"scope_type": "tuition", "name": "30000", "strength": "must", "raw_text": "学费三万内"}
+      ],
+      "risk_posture": "steady",
+      "validity": "unknown",
+      "intentConfidence": 0.8
+    }
+  },
+  {
+    "id": "pure_add",
+    "draft": {
+      "source_turn_id": "t-002",
+      "user_text": "把 A 大学计算机加进去",
+      "goal_family": "plan_mutation",
+      "action": "add",
+      "targets": [{"school_name": "A大学", "major_name": "计算机"}],
+      "validity": "this_adjustment",
+      "intentConfidence": 0.95
+    }
+  },
+  {
+    "id": "scope_only",
+    "draft": {
+      "source_turn_id": "t-003",
+      "user_text": "只看省内",
+      "goal_family": "preference",
+      "action": "constrain",
+      "scopes": [{"scope_type": "region", "name": "省内", "strength": "only"}],
+      "validity": "session_future",
+      "intentConfidence": 0.9
+    }
+  },
+  {
+    "id": "ambiguous_scope",
+    "draft": {
+      "source_turn_id": "t-004",
+      "user_text": "太远的不要",
+      "goal_family": "plan_mutation",
+      "action": "add",
+      "targets": [{"school_name": "A大学", "major_name": "计算机"}],
+      "unresolved": ["scope:太远指哪些地区"],
+      "validity": "unknown",
+      "intentConfidence": 0.5
+    }
+  },
+  {
+    "id": "add_and_remove",
+    "draft": {
+      "source_turn_id": "t-005",
+      "user_text": "加入 A，删掉 B",
+      "goal_family": "plan_mutation",
+      "action": "add",
+      "additional_mutations": ["remove"],
+      "targets": [{"school_name": "A大学", "major_name": "计算机"}],
+      "validity": "this_adjustment",
+      "intentConfidence": 0.8
+    }
+  },
+  {
+    "id": "readonly_query",
+    "draft": {
+      "source_turn_id": "t-006",
+      "user_text": "我现在方案多少条",
+      "goal_family": "query",
+      "action": "query_plan",
+      "validity": "unknown",
+      "intentConfidence": 0.99
+    }
+  }
+]

@@ -4,8 +4,11 @@ import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationResolveReq;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
+import com.ytell.zhiyuan.model.dto.inner.PendingReconcileRes;
 import com.ytell.zhiyuan.model.entity.biz.PendingConfirmationEntity;
+import com.ytell.zhiyuan.model.entity.biz.PlanningPendingCommandEntity;
 import com.ytell.zhiyuan.service.shared.PendingConfirmationSharedService;
+import com.ytell.zhiyuan.service.shared.PlanningPendingCommandSharedService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -22,7 +25,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -30,12 +35,15 @@ public class PendingConfirmationBizServiceTest {
 
     private PendingConfirmationBizService service;
     private PendingConfirmationSharedService sharedService;
+    private PlanningPendingCommandSharedService commandSharedService;
 
     @BeforeEach
     void setUp() {
         service = new PendingConfirmationBizService();
         sharedService = mock(PendingConfirmationSharedService.class);
+        commandSharedService = mock(PlanningPendingCommandSharedService.class);
         ReflectionTestUtils.setField(service, "pendingConfirmationSharedService", sharedService);
+        ReflectionTestUtils.setField(service, "pendingCommandSharedService", commandSharedService);
     }
 
     @Test
@@ -76,6 +84,22 @@ public class PendingConfirmationBizServiceTest {
                 () -> service.upsert(1L, upsert(101L, "p-new", 3L)));
 
         assertEquals(PendingConfirmationBizService.CAS_CONFLICT_CODE, error.getStatus());
+    }
+
+    @Test
+    void shouldRejectUpsertWhenCurrentIsApplying() {
+        // 交错形状：回合开始时快照不是 applying，随后另一请求 claim 成 applying；
+        // 发展方向路径重新读到的就是这一行（revision 也是最新的）。只比 revision 的
+        // CAS 会成功覆盖，所以写入口必须直接拒绝。
+        PendingConfirmationEntity current = entity(101L, "p-1", 5L, "applying");
+        when(sharedService.getCurrent(1L, 101L)).thenReturn(current);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.upsert(1L, upsert(101L, "p-new", 5L)));
+
+        assertEquals(409, error.getStatus());
+        verify(sharedService, never()).compareAndSet(any(PendingConfirmationEntity.class),
+                anyLong(), anyString(), anyString());
     }
 
     @Test
@@ -173,6 +197,170 @@ public class PendingConfirmationBizServiceTest {
         BusinessException error = assertThrows(BusinessException.class, () -> service.resolve(1L, req));
 
         assertEquals(PendingConfirmationBizService.PENDING_MISMATCH_CODE, error.getStatus());
+    }
+
+    @Test
+    void shouldReconcileSucceededCommandToApplied() {
+        PendingConfirmationEntity current = entity(101L, "p-1", 5L, "applying");
+        current.setDataValue("{\"operationId\":\"op-1\"}");
+        when(sharedService.lockCurrent(1L, 101L)).thenReturn(current);
+        PlanningPendingCommandEntity command = new PlanningPendingCommandEntity();
+        command.setOperationId("op-1");
+        command.setPendingId("p-1");
+        command.setTenantId(1L);
+        command.setChatSessionId(101L);
+        command.setStatus("succeeded");
+        command.setResultJson("{\"resultPlanVersion\":87}");
+        when(commandSharedService.getByOperationId("op-1")).thenReturn(command);
+        when(sharedService.compareAndSet(any(PendingConfirmationEntity.class),
+                eq(5L), eq("p-1"), eq("applying"))).thenReturn(true);
+
+        PendingReconcileRes response = service.reconcile(1L, 101L);
+
+        assertEquals(PendingReconcileRes.OUTCOME_APPLIED, response.getOutcome());
+        assertEquals("applied", response.getPendingStatus());
+        assertEquals(Integer.valueOf(87), response.getResultPlanVersion());
+        assertTrue(response.getReceiptAvailable());
+        ArgumentCaptor<PendingConfirmationEntity> captor =
+                ArgumentCaptor.forClass(PendingConfirmationEntity.class);
+        verify(sharedService).compareAndSet(captor.capture(),
+                eq(5L), eq("p-1"), eq("applying"));
+        assertEquals("applied", captor.getValue().getStatus());
+        assertEquals("reconcile", captor.getValue().getResolvedAction());
+    }
+
+    @Test
+    void shouldExpireMissingOperationWithinProofWindow() {
+        PendingConfirmationEntity current = entity(101L, "p-1", 5L, "applying");
+        current.setDataValue("{\"operationId\":\"op-missing\"}");
+        current.setClaimExpiresAt(new Date(System.currentTimeMillis() - 1000L));
+        current.setCreateTime(new Date());
+        when(sharedService.lockCurrent(1L, 101L)).thenReturn(current);
+        when(commandSharedService.getByOperationId("op-missing")).thenReturn(null);
+        when(sharedService.compareAndSet(any(PendingConfirmationEntity.class),
+                eq(5L), eq("p-1"), eq("applying"))).thenReturn(true);
+
+        PendingReconcileRes response = service.reconcile(1L, 101L);
+
+        assertEquals(PendingReconcileRes.OUTCOME_EXPIRED, response.getOutcome());
+        assertEquals(PendingReconcileRes.RESULT_NO_OPERATION_SUBMITTED, response.getResultCode());
+        assertEquals("expired", response.getPendingStatus());
+    }
+
+    @Test
+    void shouldNotClaimNoOperationForGatewayExecutedCareerUpdate() {
+        PendingConfirmationEntity current = entity(101L, "p-1", 5L, "applying");
+        current.setKind("career_update");
+        current.setActionFamily("update_career_types");
+        current.setClaimExpiresAt(new Date(System.currentTimeMillis() - 1000L));
+        current.setCreateTime(new Date());
+        when(sharedService.lockCurrent(1L, 101L)).thenReturn(current);
+        when(commandSharedService.getByOperationId(anyString())).thenReturn(null);
+        when(sharedService.compareAndSet(any(PendingConfirmationEntity.class),
+                eq(5L), eq("p-1"), eq("applying"))).thenReturn(true);
+
+        PendingReconcileRes response = service.reconcile(1L, 101L);
+
+        assertEquals(PendingReconcileRes.OUTCOME_EXPIRED, response.getOutcome());
+        assertEquals(PendingReconcileRes.RESULT_OPERATION_UNKNOWN, response.getResultCode());
+    }
+
+    @Test
+    void shouldNotApplyGatewayExecutedKindFromPlanCommandLedger() {
+        PendingConfirmationEntity current = entity(101L, "p-1", 5L, "applying");
+        current.setKind("career_update");
+        current.setActionFamily("update_career_types");
+        current.setDataValue("{\"operationId\":\"op-career\"}");
+        when(sharedService.lockCurrent(1L, 101L)).thenReturn(current);
+        PlanningPendingCommandEntity command = new PlanningPendingCommandEntity();
+        command.setOperationId("op-career");
+        command.setPendingId("p-1");
+        command.setTenantId(1L);
+        command.setChatSessionId(101L);
+        command.setStatus("succeeded");
+        when(commandSharedService.getByOperationId("op-career")).thenReturn(command);
+
+        PendingReconcileRes response = service.reconcile(1L, 101L);
+
+        assertTrue(PendingReconcileRes.OUTCOME_STILL_APPLYING.equals(response.getOutcome())
+                || PendingReconcileRes.OUTCOME_EXPIRED.equals(response.getOutcome()));
+        verify(sharedService, never()).compareAndSet(any(PendingConfirmationEntity.class),
+                anyLong(), anyString(), anyString());
+    }
+
+    @Test
+    void shouldNotClaimNoOperationOutsideProofWindow() {
+        PendingConfirmationEntity current = entity(101L, "p-1", 5L, "applying");
+        current.setDataValue("{\"operationId\":\"op-missing\"}");
+        current.setClaimExpiresAt(new Date(System.currentTimeMillis() - 1000L));
+        current.setCreateTime(new Date(System.currentTimeMillis() - 2L * 24L * 60L * 60L * 1000L));
+        when(sharedService.lockCurrent(1L, 101L)).thenReturn(current);
+        when(commandSharedService.getByOperationId("op-missing")).thenReturn(null);
+        when(sharedService.compareAndSet(any(PendingConfirmationEntity.class),
+                eq(5L), eq("p-1"), eq("applying"))).thenReturn(true);
+
+        PendingReconcileRes response = service.reconcile(1L, 101L);
+
+        assertEquals(PendingReconcileRes.OUTCOME_EXPIRED, response.getOutcome());
+        assertEquals(PendingReconcileRes.RESULT_OPERATION_UNKNOWN, response.getResultCode());
+    }
+
+    @Test
+    void shouldWaitForRunningCommandWhileClaimIsAlive() {
+        PendingConfirmationEntity current = entity(101L, "p-1", 5L, "applying");
+        current.setDataValue("{\"operationId\":\"op-running\"}");
+        when(sharedService.lockCurrent(1L, 101L)).thenReturn(current);
+        PlanningPendingCommandEntity command = new PlanningPendingCommandEntity();
+        command.setOperationId("op-running");
+        command.setPendingId("p-1");
+        command.setTenantId(1L);
+        command.setChatSessionId(101L);
+        command.setStatus("running");
+        command.setUpdateTime(new Date());
+        when(commandSharedService.getByOperationId("op-running")).thenReturn(command);
+
+        PendingReconcileRes response = service.reconcile(1L, 101L);
+
+        assertEquals(PendingReconcileRes.OUTCOME_STILL_APPLYING, response.getOutcome());
+        assertEquals("running", response.getOperationStatus());
+        verify(sharedService, never()).compareAndSet(any(PendingConfirmationEntity.class),
+                anyLong(), anyString(), anyString());
+    }
+
+    @Test
+    void shouldExpireRunningCommandAfterGrace() {
+        PendingConfirmationEntity current = entity(101L, "p-1", 5L, "applying");
+        current.setDataValue("{\"operationId\":\"op-running\"}");
+        current.setClaimExpiresAt(new Date(System.currentTimeMillis() - 1000L));
+        when(sharedService.lockCurrent(1L, 101L)).thenReturn(current);
+        PlanningPendingCommandEntity command = new PlanningPendingCommandEntity();
+        command.setOperationId("op-running");
+        command.setPendingId("p-1");
+        command.setTenantId(1L);
+        command.setChatSessionId(101L);
+        command.setStatus("running");
+        command.setUpdateTime(new Date(System.currentTimeMillis() - 11L * 60L * 1000L));
+        when(commandSharedService.getByOperationId("op-running")).thenReturn(command);
+        when(sharedService.compareAndSet(any(PendingConfirmationEntity.class),
+                eq(5L), eq("p-1"), eq("applying"))).thenReturn(true);
+
+        PendingReconcileRes response = service.reconcile(1L, 101L);
+
+        assertEquals(PendingReconcileRes.OUTCOME_EXPIRED, response.getOutcome());
+        assertEquals(PendingReconcileRes.RESULT_OPERATION_UNKNOWN, response.getResultCode());
+    }
+
+    @Test
+    void shouldBeIdempotentWhenPendingIsNotApplying() {
+        PendingConfirmationEntity current = entity(101L, "p-1", 5L, "active");
+        when(sharedService.lockCurrent(1L, 101L)).thenReturn(current);
+
+        PendingReconcileRes response = service.reconcile(1L, 101L);
+
+        assertEquals(PendingReconcileRes.OUTCOME_NOT_APPLYING, response.getOutcome());
+        assertEquals("active", response.getPendingStatus());
+        verify(sharedService, never()).compareAndSet(any(PendingConfirmationEntity.class),
+                anyLong(), anyString(), anyString());
     }
 
     private PendingConfirmationUpsertReq upsert(Long sessionId, String pendingId, Long revision) {

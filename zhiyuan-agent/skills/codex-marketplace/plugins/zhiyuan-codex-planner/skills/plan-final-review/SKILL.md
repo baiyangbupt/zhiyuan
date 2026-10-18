@@ -25,6 +25,16 @@ version: 1.0.0
 - `stateVersion` 与最新 Snapshot 一致；旧 Snapshot 不得覆盖新 Snapshot。
 - 已确认用户的硬约束、风险偏好和目标省份/年份。
 
+## 审查生命周期（J1）
+
+- 本技能是**人工只读审查**，不等于 Java 的规则审查；不声称会清 `reviewStale`、
+  不更新 `reviewSourceVersion`、不写业务状态。
+- 注入块里的 `规则审查` 新鲜度只表示后端规则结果；`本版人工审查=已看过` 且与当前
+  方案内容一致时，**不要重复推荐同一次人工审查**，也不要把规则 stale 当成人工没做。
+- 方案 `planFreshness=stale`：仍可审查，但正文说明“这是旧条件下的一版”；
+  需要新结论时先刷新候选/重算方案，不能靠人工审查替代。
+- `planInterpretable=false`（working-only）：先补足/生成 ordered 方案，再审查。
+
 ## 允许能力
 
 - 仅允许目录和招生只读工具进行事实复核。

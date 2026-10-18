@@ -17,6 +17,11 @@ public class PendingPlanningCommandReq {
     private Integer minTuitionPerYear;
     private Integer maxTuitionPerYear;
     private Boolean regenerateOrderedPlan = false;
+    /**
+     * add_units 新链路：执行后是否重跑审查。默认 null＝调用方未提供（由 frozenCommand 决定）；
+     * legacy 默认不提供（保持旧行为）。显式提供时才与 frozen 比对。
+     */
+    private Boolean rerunReview;
     private List<String> unitIds = Lists.newArrayList();
     private List<String> volunteerIds = Lists.newArrayList();
     private FixProposalApplyReq proposalApply;

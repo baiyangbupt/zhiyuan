@@ -11,6 +11,7 @@ import com.ytell.zhiyuan.service.biz.CandidatePreviewService;
 import com.ytell.zhiyuan.service.biz.ChatSessionBizService;
 import com.ytell.zhiyuan.service.biz.ConversationSnapshotService;
 import com.ytell.zhiyuan.service.biz.PendingPlanningCommandBizService;
+import com.ytell.zhiyuan.service.biz.PlanAdmissionInterpretationFacade;
 import com.ytell.zhiyuan.service.biz.PlanningStateService;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
@@ -53,6 +54,8 @@ public class PlanningStateController {
     private CandidateFitExplainService candidateFitExplainService;
     @Autowired
     private ChatSessionBizService chatSessionBizService;
+    @Autowired
+    private PlanAdmissionInterpretationFacade planAdmissionInterpretationFacade;
 
     /**
      * 同口径并列 2–5 个实体。
@@ -144,10 +147,9 @@ public class PlanningStateController {
     @ApiOperation("获取 Codex turn 快照")
     public BaseResponse<ConversationTurnSnapshotDTO> getTurnSnapshot(
             @PathVariable("tenantId") Long tenantId,
-            @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-            @RequestParam(value = "skill", required = false) String skill) {
-        log.info("getTurnSnapshot: tenantId={}, chatSessionId={}, skill={}", tenantId, chatSessionId, skill);
-        return BaseResponse.success(conversationSnapshotService.getTurnSnapshot(tenantId, chatSessionId, skill));
+            @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
+        log.info("getTurnSnapshot: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(conversationSnapshotService.getTurnSnapshot(tenantId, chatSessionId));
     }
 
     @GetMapping("/session/summary")
@@ -394,6 +396,24 @@ public class PlanningStateController {
                                                   @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
         log.info("getReviewState: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
         return BaseResponse.success(planningStateService.getReviewState(chatSessionId));
+    }
+
+    /**
+     * 录取解读（只读）：当前方案的结构与条件情景，不是录取预测。
+     *
+     * <p>`chatSessionId` 只从受信参数取（agent 从 binding 注入）；模型侧工具不接受
+     * 会话身份。版本不符返回 `stale_interpretation`，不拿旧方案解释新状态。</p>
+     */
+    @PostMapping("/session/plan/admission-interpretation")
+    @ApiOperation("当前方案的结构与条件情景说明（只读）")
+    public BaseResponse<AdmissionInterpretationRes> interpretAdmission(
+            @PathVariable("tenantId") Long tenantId,
+            @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+            @RequestBody AdmissionInterpretationReq req) {
+        log.info("interpretAdmission: tenantId={}, chatSessionId={}, planVersion={}", tenantId,
+                chatSessionId, req == null ? null : req.getPlanVersion());
+        return BaseResponse.success(
+                planAdmissionInterpretationFacade.interpret(tenantId, chatSessionId, req));
     }
 
     @GetMapping("/review/rules")
