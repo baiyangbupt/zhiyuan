@@ -133,12 +133,18 @@ STAGED_SOLVER_GOLDEN_FILES="/path/state.json[|/path/pool.json],..." \
 ```
 -Dsolver.v2.shadow=true
 -Dsolver.v2.paths=fill,initial,add,remove,replace,scope,refill
--Dplanning.user-goal.freeze-apply.enabled=true
+# solver.v2.diversity 默认关；freeze-apply flag 已删除（预览无条件冻结）
 ```
 
-（Java pid 27011；health 200；启动日志 0 ERROR。S4 版本兼容/20k 学费/
-fill 契约字段已在此进程生效；agent 18291 的 gateway 透传代码已提交，
-待其下次重启激活。）
+（Java pid 29133；health 200；启动日志 0 ERROR。S4 版本兼容/20k 学费/
+fill 契约字段/派生 findings/diversity 开关均已生效；agent 18291 pid 914
+已重启并激活 gateway 透传。）
+
+**真实 WS 冒烟（2026-10-19）**：会话 900380（owner 900001，`tk=codex-local-test-token`，
+Origin `http://127.0.0.1:3201`）经 18290 取票 → `ws://127.0.0.1:18291/ws/chat`
+收到 `turn.started → turn.phase → tool.progress → assistant.completed →
+turn.completed`，`executionStatus=completed`、`runtimeStatus=native`。只读问题，
+未改方案。
 
 | 档位 | 验收 | 结果 |
 |---|---|---|
