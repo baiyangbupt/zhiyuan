@@ -151,3 +151,24 @@ fill 契约字段已在此进程生效；agent 18291 的 gateway 透传代码已
 注意：`overwriteExistingDraft=true` 会按 80 个选中条目重建为 44 个专业组
 （每条目=专业、组内可多专业），这是 initial 重建语义，不是 staged solver
 差异；灰度验收使用 `overwriteExistingDraft=false` 保持原 80 组。
+
+## 8. 清理就绪盘点（2026-10-19）
+
+- pending 表共 82 行：active 16、applying 3、applied 45、cancelled 6、
+  expired 12。active/applying 中 plan_change 14/2、score_update 1/1、
+  career_update 1。**19 行 active/applying 全部没有 frozenProposal /
+  frozenSelectionDigest / frozenRequestDigest / hardObjectiveVersion**；
+  freeze flag 开启后没有新的 frozen pending 产生（灰度期间无真实确认）。
+- 3 条 applying 的 claim 已过期 265–583 小时；TTL 按设计不碰 applying，
+  需要 reconcile 而不是 TTL。
+- `assistant_planning_pending_command` 67 行全部 succeeded：
+  apply_constraint_and_regenerate 24、update_score_detail 25、
+  apply_plan_change_proposal 12、move 3、add/remove/replace 各 1；
+  0 running/stale。
+- 当前 Java 日志：0 次 `user_goal_frozen` / `solver_input_stale` / 409。
+- **legacy apply 删除闸门**：24h soak 的墙钟下限是 2026-10-19 23:52，
+  但 active=0、applying=0、至少一次 frozen pending 端到端 三项均未满足；
+  现实最早 2026-10-20 之后。删除前必须先处理 19 条旧 pending（reconcile/
+  expire/人工确认），并保留 `isLegacyCanonicalProposal` 与精确版本回退。
+- agent 18291 已于 2026-10-19 重启（pid 914，health 200），
+  gateway `hardObjectiveVersion` 透传已激活。

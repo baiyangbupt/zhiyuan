@@ -7,6 +7,8 @@ import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanEvaluationDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -106,19 +108,128 @@ class ReviewEvaluationMapperTest {
     }
 
     @Test
-    void missingProvinceIsUnknownNotPass() {
+    void missingProvinceIsExplicitUnknownAndBlocks() {
         ReviewStateDTO review = new ReviewStateDTO();
         List<ReviewCheckDTO> checks = defaultChecks();
-        replace(checks, check("safety_guard", true, "warn", "block", null,
-                "缺少生源省份信息，无法完成本省保底校验"));
+        replace(checks, check("safety_guard", false, "risk", "block", null,
+                "旧检查的本省保底失败"));
         review.setChecks(checks);
+        EvaluationContextDTO context = context(45);
+        context.setSafetyFloorMode("unknown");
+        context.setSafetyMinLocalProtect(0);
+        context.setSafetyReasonCode("province_missing");
+        context.setSourceProvince(null);
 
-        PlanEvaluationDTO evaluation = mapper.map(review, context(45));
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
 
         EvaluationFindingDTO safety = find(evaluation, "safety_guard");
         assertEquals("unknown", safety.getResultStatus());
         assertEquals("block", safety.getDisplaySeverity());
+        assertEquals("safety_unknown", safety.getReasonCode());
+        assertTrue(safety.getSummary().contains("无法完成本省保底校验"));
         assertFalse(evaluation.getHardFeasible());
+    }
+
+    @Test
+    void derivedSafetyPassesWhenProvinceExcludedEvenWithZeroProtect() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        List<ReviewCheckDTO> checks = defaultChecks();
+        replace(checks, check("safety_guard", false, "risk", "block", null,
+                "旧检查的本省保底失败"));
+        review.setChecks(checks);
+        EvaluationContextDTO context = context(45);
+        context.setSafetyFloorMode("not_applicable");
+        context.setSafetyMinLocalProtect(0);
+        context.setSafetyReasonCode("province_excluded");
+        context.getEntries().clear();
+        context.getEntries().add(entry("unit", "u1", 1, "冲", 45D, null));
+        context.getEntries().add(entry("unit", "u2", 2, "稳", 65D, null));
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO safety = find(evaluation, "safety_guard");
+        assertEquals("pass", safety.getResultStatus());
+        assertEquals("info", safety.getDisplaySeverity());
+        assertNull(safety.getReasonCode());
+        assertTrue(safety.getSummary().contains("不适用"));
+        assertTrue(evaluation.getHardFeasible());
+    }
+
+    @Test
+    void derivedSafetyFailsHardWhenApplicableFloorNotMet() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        List<ReviewCheckDTO> checks = defaultChecks();
+        review.setChecks(checks);
+        EvaluationContextDTO context = context(45);
+        context.setSafetyFloorMode("applicable");
+        context.setSafetyMinLocalProtect(2);
+        context.setSafetyReasonCode("local_protect_floor");
+        context.getEntries().clear();
+        context.getEntries().add(entry("unit", "u1", 1, "冲", 45D, null));
+        // 外省保底不计入本省保底。
+        EvaluationEntryRefDTO otherProvince = entry("unit", "u2", 2, "保", 75D, null);
+        otherProvince.setProvinceName("湖南");
+        context.getEntries().add(otherProvince);
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO safety = find(evaluation, "safety_guard");
+        assertEquals("fail", safety.getResultStatus());
+        assertEquals("block", safety.getDisplaySeverity());
+        assertEquals("safety_shortfall", safety.getReasonCode());
+        assertTrue(safety.getAffectedEntryRefs().isEmpty());
+        assertEquals(0, safety.getThreshold().get("actual"));
+        assertEquals(2, safety.getThreshold().get("required"));
+        assertFalse(evaluation.getHardFeasible());
+    }
+
+    @Test
+    void derivedRatioPassesExplicitTenSprintDespiteSoftBand() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        List<ReviewCheckDTO> checks = defaultChecks();
+        replace(checks, check("ratio_distribution", false, "risk", "action",
+                "protect_tier_missing", "旧检查认为冲区占比过高且保区过低"));
+        review.setChecks(checks);
+        EvaluationContextDTO context = context(10);
+        context.setTierConstraint(tierConstraint(10, 0, 0));
+        context.getEntries().clear();
+        for (int index = 1; index <= 10; index++) {
+            context.getEntries().add(entry("unit", "u" + index, index, "冲", 30D, null));
+        }
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO ratio = find(evaluation, "ratio_distribution");
+        assertEquals("pass", ratio.getResultStatus());
+        assertEquals("info", ratio.getDisplaySeverity());
+        assertNull(ratio.getReasonCode());
+        assertEquals(10, ratio.getThreshold().get("sprintActual"));
+        assertEquals(0, ratio.getThreshold().get("protectActual"));
+        assertEquals(15, evaluation.getProbesRun());
+        assertEquals(15, evaluation.getFindings().size());
+        assertTrue(evaluation.getHardFeasible());
+    }
+
+    @Test
+    void derivedRatioFailsWithDirectionalReasonCode() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        review.setChecks(defaultChecks());
+        EvaluationContextDTO context = context(10);
+        context.setTierConstraint(tierConstraint(5, 5, 0));
+        context.getEntries().clear();
+        for (int index = 1; index <= 10; index++) {
+            context.getEntries().add(entry("unit", "u" + index, index, "冲", 30D, null));
+        }
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO ratio = find(evaluation, "ratio_distribution");
+        assertEquals("fail", ratio.getResultStatus());
+        assertEquals("action", ratio.getDisplaySeverity());
+        assertEquals("sprint_tier_over_limit", ratio.getReasonCode());
+        assertEquals(10, ratio.getThreshold().get("sprintActual"));
+        assertEquals(5, ratio.getThreshold().get("sprintMax"));
+        assertEquals(10, ratio.getAffectedEntryRefs().size());
     }
 
     @Test
@@ -208,6 +319,26 @@ class ReviewEvaluationMapperTest {
                 check("major_group_safety_intent_alignment", true, "info", "action", null, "托底符合意向"),
                 check("plan_update_notice", true, "info", "info", null, "招生计划可能更新"),
                 check("adjustment_notice", true, "info", "info", null, "调剂风险提示"));
+    }
+
+    private TierAllocationConstraintDTO tierConstraint(int sprint, int stable, int protect) {
+        TierAllocationConstraintDTO constraint = new TierAllocationConstraintDTO();
+        constraint.setType("exact_counts");
+        constraint.setSourceType("exact_counts");
+        constraint.setSprintCount(sprint);
+        constraint.setStableCount(stable);
+        constraint.setProtectCount(protect);
+        constraint.setSprint(range(sprint));
+        constraint.setStable(range(stable));
+        constraint.setProtect(range(protect));
+        return constraint;
+    }
+
+    private TierCountRangeDTO range(int value) {
+        TierCountRangeDTO range = new TierCountRangeDTO();
+        range.setMinCount(value);
+        range.setMaxCount(value);
+        return range;
     }
 
     private EvaluationContextDTO context(int selectionTargetCount) {

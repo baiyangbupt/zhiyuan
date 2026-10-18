@@ -13,6 +13,8 @@ import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
 
 import java.util.List;
 import java.util.Map;
@@ -54,6 +56,12 @@ public class EvaluationContextBuilder {
             context.setCandidateSourceVersion(state.getCandidatePoolState().getSourceVersion());
         }
         context.setSelectionTargetCount(selectionTargetCount(state));
+        StructureTargetDTO safety = SafetyFloorSupport.build(state);
+        context.setSafetyFloorMode(safety.getSafetyFloorMode());
+        context.setSafetyMinLocalProtect(safety.getMinLocalProtect());
+        context.setSafetyReasonCode(safety.getSafetyFloorReasonCode());
+        context.setTierConstraint(tierConstraint(state, context.getSelectionTargetCount(),
+                context.getRequiredCount()));
         context.setEvaluatedStateVersion(reviewState != null && reviewState.getSourceVersion() != null
                 ? reviewState.getSourceVersion() : state.getVersion());
         context.setPlanContentDigest(EvaluationVersion.sha256(
@@ -128,6 +136,10 @@ public class EvaluationContextBuilder {
             entry.setMajorName(item.getMajorName());
             entry.setPathTier(item.getTier());
             if (candidate != null) {
+                if (Strings.isNullOrEmpty(entry.getPathTier())) {
+                    // 与 ReviewSafetyGuard 一致：条目未标档位时回退候选档位。
+                    entry.setPathTier(candidate.getTier());
+                }
                 entry.setProvinceName(candidate.getProvinceName());
                 entry.setSchoolRatio(candidate.getSchoolEnrollRatio());
                 entry.setMajorRatio(candidate.getAdmissionRatio());
@@ -154,6 +166,29 @@ public class EvaluationContextBuilder {
             }
         }
         return result;
+    }
+
+    /**
+     * 只有“已确认目标 + 有效总数”同时存在时才编译配额边界；配额本身不合法
+     * （例如精确数合计与目标不符）时视为没有可用边界，不打断评价。
+     */
+    private TierAllocationConstraintDTO tierConstraint(PlanningStateDTO state,
+                                                       Integer selectionTargetCount,
+                                                       Integer requiredCount) {
+        if (TierAllocationSupport.confirmedGoal(state) == null) {
+            return null;
+        }
+        Integer target = selectionTargetCount != null && selectionTargetCount > 0
+                ? selectionTargetCount
+                : requiredCount != null && requiredCount > 0 ? requiredCount : null;
+        if (target == null) {
+            return null;
+        }
+        try {
+            return TierAllocationSupport.compileConfirmed(state, target).getConstraint();
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     private Integer selectionTargetCount(PlanningStateDTO state) {

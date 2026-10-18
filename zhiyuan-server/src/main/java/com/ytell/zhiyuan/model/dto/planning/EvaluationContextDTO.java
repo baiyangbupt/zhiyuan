@@ -23,6 +23,12 @@ public class EvaluationContextDTO {
     /** 候选池/摘要目标（requiredCount）。 */
     private Integer requiredCount;
     private Map<String, Integer> requiredTierCounts = Maps.newLinkedHashMap();
+    /** 本省保底口径：applicable | not_applicable | unknown。 */
+    private String safetyFloorMode;
+    private Integer safetyMinLocalProtect;
+    private String safetyReasonCode;
+    /** 已确认冲稳保配额的有效边界；无确认目标或目标数无效时为 null。 */
+    private TierAllocationConstraintDTO tierConstraint;
     private String admissionMode;
     private String sourceProvince;
     private Integer userScore;

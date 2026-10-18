@@ -8,10 +8,13 @@ import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 class EvaluationContextBuilderTest {
 
@@ -63,6 +66,55 @@ class EvaluationContextBuilderTest {
         assertEquals(Integer.valueOf(8), context.getEvaluatedStateVersion());
         assertEquals("data-v1", context.getDataVersion());
         assertNotNull(context.getPlanContentDigest());
+        assertEquals("applicable", context.getSafetyFloorMode());
+        assertEquals(Integer.valueOf(0), context.getSafetyMinLocalProtect());
+        assertEquals("score_ge_580", context.getSafetyReasonCode());
+        assertNull(context.getTierConstraint());
+    }
+
+    @Test
+    void carriesSafetyFloorAndConfirmedTierConstraint() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setSourceProvinceName("广东");
+        state.getCandidatePoolState().setUserScore(600);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(3);
+        TierQuotaGoalDTO goal = new TierQuotaGoalDTO();
+        goal.setType("exact_counts");
+        goal.setSprintCount(1);
+        goal.setStableCount(1);
+        goal.setProtectCount(1);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(goal);
+
+        EvaluationContextDTO context = builder.build(state, null, new ReviewStateDTO());
+
+        assertEquals("applicable", context.getSafetyFloorMode());
+        assertEquals(Integer.valueOf(0), context.getSafetyMinLocalProtect());
+        assertEquals("score_ge_580", context.getSafetyReasonCode());
+        TierAllocationConstraintDTO constraint = context.getTierConstraint();
+        assertNotNull(constraint);
+        assertEquals("exact_counts", constraint.getType());
+        assertEquals("exact_counts", constraint.getSourceType());
+        assertEquals(Integer.valueOf(1), constraint.getSprint().getMinCount());
+        assertEquals(Integer.valueOf(1), constraint.getSprint().getMaxCount());
+        assertEquals(Integer.valueOf(1), constraint.getProtect().getMinCount());
+    }
+
+    @Test
+    void fallsBackToRequiredCountForTierConstraint() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setRequiredCount(3);
+        TierQuotaGoalDTO goal = new TierQuotaGoalDTO();
+        goal.setType("exact_counts");
+        goal.setSprintCount(1);
+        goal.setStableCount(1);
+        goal.setProtectCount(1);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(goal);
+
+        EvaluationContextDTO context = builder.build(state, null, new ReviewStateDTO());
+
+        assertNotNull(context.getTierConstraint());
+        assertEquals(Integer.valueOf(1), context.getTierConstraint().getStable().getMaxCount());
     }
 
     @Test

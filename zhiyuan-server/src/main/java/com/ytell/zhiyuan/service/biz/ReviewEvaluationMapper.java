@@ -14,9 +14,13 @@ import com.ytell.zhiyuan.model.dto.planning.ReviewRuleMetadataDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureVectorDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 旧 review check → 新 PlanEvaluation 的**影子映射**（J5.0）。
@@ -60,6 +64,15 @@ public class ReviewEvaluationMapper {
             if (check == null || Strings.isNullOrEmpty(check.getCode())) {
                 continue;
             }
+            if ("safety_guard".equals(check.getCode())) {
+                // J5.4：safety 由 context 的保底口径派生，不再翻译旧 review check。
+                continue;
+            }
+            if ("ratio_distribution".equals(check.getCode())
+                    && safeContext.getTierConstraint() != null) {
+                // 有显式配额时，配比以配额边界为准；软带 check 不再参与。
+                continue;
+            }
             if ("count_validation".equals(check.getCode())) {
                 findings.add(mapCountHard(check, safeContext));
                 findings.add(mapCountTarget(check, safeContext));
@@ -71,6 +84,14 @@ public class ReviewEvaluationMapper {
             }
         }
         findings.addAll(mapCoverage(safeContext));
+        EvaluationFindingDTO safety = mapSafety(safeContext);
+        if (safety != null) {
+            findings.add(safety);
+        }
+        EvaluationFindingDTO ratio = mapTierRatio(safeContext);
+        if (ratio != null) {
+            findings.add(ratio);
+        }
         evaluation.setFindings(findings);
         evaluation.setProbesRun(findings.size());
         evaluation.setStatus("completed");
@@ -136,6 +157,169 @@ public class ReviewEvaluationMapper {
         return Strings.nullToEmpty(requirement.getDomain()) + "/"
                 + Strings.nullToEmpty(requirement.getKey()) + " "
                 + String.join("、", safeList(requirement.getValues()));
+    }
+
+    /**
+     * J5.4：本省保底 finding 由 context 的 SafetyFloorSupport 口径派生。
+     * not_applicable/unknown 只解释不阻断；applicable 时 actual &lt; required 才 fail/block。
+     */
+    private EvaluationFindingDTO mapSafety(EvaluationContextDTO context) {
+        EvaluationProbeMetadataDTO metadata = EvaluationProbeRegistry.get("safety_guard");
+        if (metadata == null) {
+            return null;
+        }
+        int required = context.getSafetyMinLocalProtect() == null
+                ? 0 : context.getSafetyMinLocalProtect();
+        String mode = context.getSafetyFloorMode();
+        List<EvaluationEntryRefDTO> matched = Lists.newArrayList();
+        for (EvaluationEntryRefDTO entry : safeList(context.getEntries())) {
+            if (entry != null
+                    && "protect".equals(TierAllocationSupport.canonicalTierKey(entry.getPathTier()))
+                    && RegionScopeSupport.sameRegionName(entry.getProvinceName(),
+                    context.getSourceProvince())) {
+                matched.add(entry);
+            }
+        }
+        EvaluationFindingDTO finding = derivedFinding(metadata);
+        finding.setAffectedEntryRefs(matched);
+        Map<String, Object> threshold = Maps.newLinkedHashMap();
+        threshold.put("required", required);
+        threshold.put("actual", matched.size());
+        threshold.put("mode", mode);
+        threshold.put("safetyReasonCode", context.getSafetyReasonCode());
+        finding.setThreshold(threshold);
+        if ("not_applicable".equals(mode)) {
+            pass(finding, "生源省已被明确排除，本省保底不适用");
+        } else if ("unknown".equals(mode)) {
+            // 缺输入不能冒充 pass：hard probe 的 unknown 必须是 block。
+            finding.setResultStatus("unknown");
+            finding.setDisplaySeverity("block");
+            finding.setReasonCode("safety_unknown");
+            finding.setSummary("缺少生源省份信息，无法完成本省保底校验");
+        } else if (required <= 0 || matched.size() >= required) {
+            pass(finding, "本省保底志愿数量满足要求（" + matched.size() + "/" + required + "）");
+        } else {
+            finding.setResultStatus("fail");
+            finding.setDisplaySeverity("block");
+            finding.setReasonCode("safety_shortfall");
+            finding.setSummary("本省保底志愿数量不足（" + matched.size() + "/" + required + "）");
+        }
+        validateCombination(finding, metadata);
+        return finding;
+    }
+
+    /**
+     * J5.4：有显式冲稳保配额时，配比 finding 由 context.tierConstraint 与条目档位
+     * 计数派生；边界全部满足才 pass，否则按方向给 reasonCode。
+     */
+    private EvaluationFindingDTO mapTierRatio(EvaluationContextDTO context) {
+        TierAllocationConstraintDTO constraint = context.getTierConstraint();
+        EvaluationProbeMetadataDTO metadata = EvaluationProbeRegistry.get("ratio_distribution");
+        if (constraint == null || metadata == null) {
+            return null;
+        }
+        Map<String, Integer> counts = Maps.newLinkedHashMap();
+        counts.put("sprint", 0);
+        counts.put("stable", 0);
+        counts.put("protect", 0);
+        for (EvaluationEntryRefDTO entry : safeList(context.getEntries())) {
+            String tier = entry == null
+                    ? "" : TierAllocationSupport.canonicalTierKey(entry.getPathTier());
+            if (counts.containsKey(tier)) {
+                counts.put(tier, counts.get(tier) + 1);
+            }
+        }
+        int sprint = counts.get("sprint");
+        int stable = counts.get("stable");
+        int protect = counts.get("protect");
+        Set<String> outOfBounds = new LinkedHashSet<String>();
+        if (!within(constraint.getSprint(), sprint)) {
+            outOfBounds.add("sprint");
+        }
+        if (!within(constraint.getStable(), stable)) {
+            outOfBounds.add("stable");
+        }
+        if (!within(constraint.getProtect(), protect)) {
+            outOfBounds.add("protect");
+        }
+        List<EvaluationEntryRefDTO> affected = Lists.newArrayList();
+        for (EvaluationEntryRefDTO entry : safeList(context.getEntries())) {
+            if (entry != null && outOfBounds.contains(
+                    TierAllocationSupport.canonicalTierKey(entry.getPathTier()))) {
+                affected.add(entry);
+            }
+        }
+        EvaluationFindingDTO finding = derivedFinding(metadata);
+        finding.setAffectedEntryRefs(affected);
+        Map<String, Object> threshold = Maps.newLinkedHashMap();
+        threshold.put("sourceType", constraint.getSourceType());
+        addTierThreshold(threshold, "sprint", constraint.getSprint(), sprint);
+        addTierThreshold(threshold, "stable", constraint.getStable(), stable);
+        addTierThreshold(threshold, "protect", constraint.getProtect(), protect);
+        finding.setThreshold(threshold);
+        if (outOfBounds.isEmpty()) {
+            pass(finding, "冲稳保数量与已确认配额一致");
+        } else {
+            String reasonCode = ratioReasonCode(constraint, sprint, protect);
+            finding.setResultStatus("fail");
+            finding.setDisplaySeverity("action");
+            finding.setReasonCode(reasonCode);
+            finding.setSummary(TierQuotaResolver.summary(reasonCode));
+        }
+        validateCombination(finding, metadata);
+        return finding;
+    }
+
+    private String ratioReasonCode(TierAllocationConstraintDTO constraint, int sprint, int protect) {
+        if (below(constraint.getProtect(), protect)) {
+            return "protect_tier_missing";
+        }
+        if (above(constraint.getSprint(), sprint)) {
+            return "sprint_tier_over_limit";
+        }
+        if (below(constraint.getSprint(), sprint)) {
+            return "sprint_tier_missing";
+        }
+        return "tier_quota_mismatch";
+    }
+
+    private void addTierThreshold(Map<String, Object> threshold, String tier,
+                                  TierCountRangeDTO bound, int actual) {
+        threshold.put(tier + "Actual", actual);
+        threshold.put(tier + "Min", bound == null ? null : bound.getMinCount());
+        threshold.put(tier + "Max", bound == null ? null : bound.getMaxCount());
+    }
+
+    private boolean within(TierCountRangeDTO bound, int actual) {
+        if (bound == null) {
+            return true;
+        }
+        return (bound.getMinCount() == null || actual >= bound.getMinCount())
+                && (bound.getMaxCount() == null || actual <= bound.getMaxCount());
+    }
+
+    private boolean below(TierCountRangeDTO bound, int actual) {
+        return bound != null && bound.getMinCount() != null && actual < bound.getMinCount();
+    }
+
+    private boolean above(TierCountRangeDTO bound, int actual) {
+        return bound != null && bound.getMaxCount() != null && actual > bound.getMaxCount();
+    }
+
+    private EvaluationFindingDTO derivedFinding(EvaluationProbeMetadataDTO metadata) {
+        EvaluationFindingDTO finding = new EvaluationFindingDTO();
+        finding.setCode(metadata.getCode());
+        finding.setLayer(metadata.getLayer());
+        finding.setRuleStrength(metadata.getRuleStrength());
+        finding.setFixability(metadata.getFixability());
+        finding.setMetric(metadata.getMetric());
+        return finding;
+    }
+
+    private void pass(EvaluationFindingDTO finding, String summary) {
+        finding.setResultStatus("pass");
+        finding.setDisplaySeverity("info");
+        finding.setSummary(summary);
     }
 
     private EvaluationFindingDTO mapOne(ReviewCheckDTO check, EvaluationContextDTO context) {

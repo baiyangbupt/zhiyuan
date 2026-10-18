@@ -638,7 +638,10 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
     请求/pending/gateway 带可选 `hardObjectiveVersion`，两侧都有时按
     major + objective digest 判，缺失回退旧精确三件套。fill 提案补齐
     target before/after/added/removed 与 action totals（只读 soak 发现）。
-    仍待 findings 完全由 PlanEvaluation 反向驱动。
+    safety/ratio 派生已落：context 带 safetyFloor 与显式 tierConstraint，
+    mapper 对 safety_guard 与显式配额下的 ratio_distribution 直接派生
+    finding（unknown 仍 block）；coverage/safety/ratio 三类已反向驱动。
+    其余 probes 仍由 checks 翻译。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；
   预览/冻结/后置/回执与普通动作一致；review fix 与 fill 同源。
 - J5.6 清理：解释权重、`rank_in_tier` 语义、重复 filter/eligibility 规则。

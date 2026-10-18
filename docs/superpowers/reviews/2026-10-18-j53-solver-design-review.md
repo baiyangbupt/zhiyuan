@@ -327,6 +327,10 @@ J5.4 gap 复审确认 Q13 之后存在“solver 放行、review 硬拦”的双�
   已补齐（summary 保持不变）。
 - 只读 soak（10 次 fill/scope 预览）：10/10 ready、0 blocked/ERROR/timeout，
   p50=179ms、p95=845ms（首调冷启动），proposalId 可复现，会话版本不变。
-- 全量 Java：**1263/0/0/10**；gateway Python：**345 passed / 32 skipped**。
-- 仍待 J5.4 后续：review findings 完全由 PlanEvaluation 反向驱动（当前
-  coverage 已是派生，其余仍由 checks 翻译）。
+- S5b safety/ratio 派生：`EvaluationContext` 带 safetyFloor 字段与显式
+  `tierConstraint`；mapper 在 review 有 `safety_guard` / 有显式配额时不再
+  翻译旧 check，直接由条目派生 finding（safety unknown 保持 unknown/block；
+  item 档位空时回退候选档位）。coverage/safety/ratio 三类 finding 均已派生。
+- 全量 Java：**1269/0/0/10**；gateway Python：**345 passed / 32 skipped**。
+- 仍待 J5.4 后续：其余 probes 仍由 checks 翻译；`group_inner_safety_guard`
+  仍归 review。
