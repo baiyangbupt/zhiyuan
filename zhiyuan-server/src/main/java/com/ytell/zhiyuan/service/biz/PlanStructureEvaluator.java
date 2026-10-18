@@ -52,7 +52,8 @@ final class PlanStructureEvaluator {
                     && unit) {
                 localSafety++;
             }
-            if (entry.getTuitionPerYear() != null && entry.getTuitionPerYear() > 60000) {
+            if (entry.getTuitionPerYear() != null
+                    && entry.getTuitionPerYear() > TuitionThresholds.HIGH_TUITION_RISK_PER_YEAR) {
                 highTuition++;
             }
             List<String> flags = safeList(entry.getRiskFlags());

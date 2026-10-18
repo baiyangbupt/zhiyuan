@@ -102,6 +102,8 @@ final class UserGoalProposalBuilder {
         proposal.setCanonicalObjectiveDigest(objectiveSet.getObjectiveDigest());
         proposal.setSolverVersion(solverResult.getSolverVersion());
         proposal.setSolverInputDigest(solverResult.getInputDigest());
+        // S4：从冻结求解结果透传硬目标契约版本；legacy solver 为 null。
+        proposal.setHardObjectiveVersion(solverResult.getHardObjectiveVersion());
         proposal.setSolverResult(solverResult);
     }
 
@@ -1965,6 +1967,7 @@ final class UserGoalProposalBuilder {
             removeAction.setRemoveUnitIds(removeUnitIds);
             removeAction.setVolunteerIds(removeVolunteerIds);
             removeAction.setRemoveVolunteerIds(removeVolunteerIds);
+            populateActionTotals(removeAction);
             proposal.getActions().add(removeAction);
         }
         if (adjustedGap > 0) {
@@ -1983,6 +1986,7 @@ final class UserGoalProposalBuilder {
             action.setVolunteerIds(selection.volunteerIds);
             action.setCandidateUnitIds(selection.unitIds);
             action.setCandidateVolunteerIds(selection.volunteerIds);
+            populateActionTotals(action);
             proposal.getActions().add(action);
         }
         if (priorityAnalysis != null && priorityAnalysis.getInversionCount() > 0) {
@@ -1999,6 +2003,7 @@ final class UserGoalProposalBuilder {
             } else {
                 action.setVolunteerIds(priorityAnalysis.getMatchedIds());
             }
+            populateActionTotals(action);
             proposal.getActions().add(action);
         }
         boolean planChanged = selection.solverResult != null
@@ -2009,6 +2014,11 @@ final class UserGoalProposalBuilder {
             proposal.setRequiresConfirmation(false);
             proposal.setSummary("当前方案和已确认冲稳保目标都已满足，本轮无需更新。");
             proposal.setImpact("方案项目和已确认硬目标均保持不变。");
+            proposal.setAddedCount(0);
+            proposal.setAddedUnitCount(0);
+            proposal.setRemovedCount(0);
+            proposal.setTargetCountBefore(currentCount);
+            proposal.setTargetCountAfter(currentCount);
             populateFillDryRun(proposal, state, currentCount, currentCount,
                     0, 0, 0, 0, "当前方案和冲稳保目标均无变化。");
             populateTierQuotaDryRun(proposal, current, majorGroupMode, selection.solverResult);
@@ -2017,6 +2027,11 @@ final class UserGoalProposalBuilder {
         proposal.setStatus(RepairProposalTaxonomy.Status.READY);
         int removeCount = majorGroupMode
                 ? removeUnitIds.size() : removeVolunteerIds.size();
+        proposal.setAddedCount(selection.volunteerIds.size());
+        proposal.setAddedUnitCount(selection.unitIds.size());
+        proposal.setRemovedCount(removeCount);
+        proposal.setTargetCountBefore(currentCount);
+        proposal.setTargetCountAfter(targetCount);
         String prioritySummary = priorityAnalysis == null ? ""
                 : priorityAnalysis.getInversionCount() == 0
                 ? "；同档前置目标当前已满足，确认后会保存并持续执行这条规则"

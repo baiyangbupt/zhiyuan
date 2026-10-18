@@ -314,6 +314,19 @@ J5.4 gap 复审确认 Q13 之后存在“solver 放行、review 硬拦”的双�
   `ReviewEvaluationMapper` 为每个要求生成 `coverage:index` finding
   （pass info / fail action + `coverage_shortfall`），旧 review checks 不变。
   新增 mapper/builder/registry 测试。
-- 全量 Java：**1255/0/0/10**。
-- 仍待 J5.4 后续：structure 阈值（高学费 20k/60k）、review findings 完全
-  由 PlanEvaluation 反向驱动（当前 coverage 已是派生，其余仍由 checks 翻译）。
+- S6 高学费统一：新增 `TuitionThresholds.HIGH_TUITION_RISK_PER_YEAR=20000`，
+  review 与 `PlanStructureEvaluator.highTuitionCount` 同用 20k；结构向量旧的
+  60k 统计口径退役。`group_inner_safety_guard` 仍归 review，不迁入 evaluation。
+- S4 版本兼容：`PlanSolverResultDTO`/`FixProposalDTO`/`FixProposalApplyReq`/
+  pending dataValue/gateway 增加可选 `hardObjectiveVersion`（staged solver 写，
+  legacy 为 null）。两侧都非空时：major 相同 + canonicalObjectiveDigest 相同 +
+  proposal↔solverResult 的 solverVersion/inputDigest 绑定；请求侧 solverVersion
+  不再精确相等。任一侧缺失保持旧精确三件套。postcondition 用同一判据。
+- 走查补漏：fill 提案的结构化字段 `targetCountBefore/After`、`addedCount`、
+  `removedCount`、`action.totalUnitCount/totalVolunteerCount` 之前为 null，
+  已补齐（summary 保持不变）。
+- 只读 soak（10 次 fill/scope 预览）：10/10 ready、0 blocked/ERROR/timeout，
+  p50=179ms、p95=845ms（首调冷启动），proposalId 可复现，会话版本不变。
+- 全量 Java：**1263/0/0/10**；gateway Python：**345 passed / 32 skipped**。
+- 仍待 J5.4 后续：review findings 完全由 PlanEvaluation 反向驱动（当前
+  coverage 已是派生，其余仍由 checks 翻译）。

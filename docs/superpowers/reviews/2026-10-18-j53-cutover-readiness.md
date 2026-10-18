@@ -58,12 +58,11 @@ STAGED_SOLVER_GOLDEN_FILES="/path/state.json[|/path/pool.json],..." \
    `expired`；`applying` 的 claim 租约完全不碰。读路径
    `getActiveOrApplying` 过期后返回 null，`getCurrent` 返回 expired（upsert
    仍可按 revision 接续），旧 revision 确认会在 CAS 处 40902。
-2. **`solverVersion` 精确相等**：freeze 模式请求与 proposal 同源，部署/回滚
-   不打断已冻结 pending；非 freeze 旧预览失败即要求重预览（fail-closed）。
-   **决定：S4 前保持精确相等**。`FixProposalApplyReq` 目前不携带
-   `hardObjectiveVersion`，只带 objective/solver/input 三个 digest；改成
-   major+digest 需要同时改网关契约与 pending 回放字段，单独放宽 Java 侧
-   会失去“预览时求解口径”的绑定。S4 与 legacy apply 清理一起做。
+2. **`solverVersion` 兼容（S4 已落）**：结果/提案/请求/pending/gateway 带
+   可选 `hardObjectiveVersion`（staged 写，legacy null）。两侧都非空时按
+   major + canonicalObjectiveDigest + proposal↔solverResult 绑定判断，请求侧
+   solverVersion 不再精确相等；任一侧缺失回退旧精确三件套，旧 pending 不受
+   影响。部署/回滚跨版本冻结回放因此不再必 409。
 3. **单元档位冲突**：无 tier 目标时 snapshot 也 409 `tier_fact_conflict`；
    等 J5.4/数据侧确认后放宽。
 4. **Q13 / Q14 已收口（2026-10-18 深夜）**：

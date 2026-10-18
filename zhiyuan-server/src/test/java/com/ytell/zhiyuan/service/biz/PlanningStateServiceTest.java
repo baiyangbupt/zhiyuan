@@ -5540,6 +5540,28 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldUseUserFacingHighTuitionThresholdInReview() {
+        bindPlanningStateStore();
+        CandidatePoolStateDTO candidatePoolState = buildReviewCandidatePool(2);
+        CandidateItemDTO boundary = buildReviewCandidate("ps1_m1", "稳", 70D, "北京");
+        boundary.setTuitionPerYear(TuitionThresholds.HIGH_TUITION_RISK_PER_YEAR);
+        CandidateItemDTO above = buildReviewCandidate("ps2_m2", "保", 80D, "北京");
+        above.setTuitionPerYear(TuitionThresholds.HIGH_TUITION_RISK_PER_YEAR + 1);
+        candidatePoolState.getItems().add(boundary);
+        candidatePoolState.getItems().add(above);
+        saveStateToStore(1L, buildReviewFixtureState(candidatePoolState, java.util.Arrays.asList(
+                buildOrderedItem("ps1_m1", "学校A", "专业A", "稳", 1),
+                buildOrderedItem("ps2_m2", "学校B", "专业B", "保", 2)), 2));
+
+        ReviewCheckDTO highTuition = findReviewCheck(planningStateService.runReview(1L, 1L), "high_tuition");
+
+        assertNotNull(highTuition);
+        assertFalse(highTuition.getPassed());
+        assertTrue(highTuition.getAffectedVolunteerIds().contains("ps2_m2"));
+        assertFalse(highTuition.getAffectedVolunteerIds().contains("ps1_m1"));
+    }
+
+    @Test
     void shouldKeepOfficialRatioExpectationWithoutSelectionTargetCount() {
         bindPlanningStateStore();
         CandidatePoolStateDTO candidatePoolState = buildReviewCandidatePool(80);

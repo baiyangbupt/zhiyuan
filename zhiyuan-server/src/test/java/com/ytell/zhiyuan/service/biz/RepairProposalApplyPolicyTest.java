@@ -26,17 +26,84 @@ class RepairProposalApplyPolicyTest {
     }
 
     @Test
-    void shouldRejectSolverVersionAndInputDigestMismatchForNewPending() {
+    void shouldRejectSolverVersionAndInputDigestMismatchWhenHardObjectiveVersionIsMissing() {
+        // 任一侧缺 hardObjectiveVersion → 维持旧的精确三件套比对（fail-closed）。
         FixProposalDTO rebuilt = readyProposal();
+        rebuilt.setHardObjectiveVersion(null);
         FixProposalApplyReq versionMismatch = applyRequest();
+        versionMismatch.setHardObjectiveVersion(null);
         versionMismatch.setSolverVersion("other-solver");
         assertEquals(409, assertThrows(BusinessException.class,
                 () -> RepairProposalApplyPolicy.validateProposalForApply(versionMismatch, rebuilt)).getStatus());
 
         FixProposalApplyReq inputMismatch = applyRequest();
+        inputMismatch.setHardObjectiveVersion(null);
         inputMismatch.setSolverInputDigest("other-input");
         assertEquals(409, assertThrows(BusinessException.class,
                 () -> RepairProposalApplyPolicy.validateProposalForApply(inputMismatch, rebuilt)).getStatus());
+    }
+
+    @Test
+    void shouldAllowSolverVersionDriftWhenHardObjectiveMajorAndObjectiveDigestMatch() {
+        // S4：部署/回滚导致请求侧 solverVersion 与 inputDigest 不同，但 major 与
+        // objective digest 相同、提案仍与冻结 solverResult 绑定 → 放行。
+        FixProposalDTO rebuilt = readyProposal();
+        rebuilt.setHardObjectiveVersion("solver-hard-objective-v1.2");
+        rebuilt.setSolverVersion("ojalgo-48.4.2-m2");
+        rebuilt.getSolverResult().setSolverVersion("ojalgo-48.4.2-m2");
+
+        FixProposalApplyReq request = applyRequest();
+        request.setHardObjectiveVersion("solver-hard-objective-v1.9");
+        request.setSolverVersion("ojalgo-48.4.2-m1");
+        request.setSolverInputDigest("input-digest-from-another-deploy");
+
+        assertDoesNotThrow(() -> RepairProposalApplyPolicy.validateProposalForApply(request, rebuilt));
+    }
+
+    @Test
+    void shouldRejectDifferentHardObjectiveMajor() {
+        FixProposalDTO rebuilt = readyProposal();
+        rebuilt.setHardObjectiveVersion("solver-hard-objective-v1.2");
+        FixProposalApplyReq request = applyRequest();
+        request.setHardObjectiveVersion("solver-hard-objective-v2.0");
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> RepairProposalApplyPolicy.validateProposalForApply(request, rebuilt));
+
+        assertEquals(409, error.getStatus());
+    }
+
+    @Test
+    void shouldKeepExactSolverVersionCheckWhenHardObjectiveVersionIsMissingOnEitherSide() {
+        // 提案侧缺失
+        FixProposalDTO proposalWithoutVersion = readyProposal();
+        proposalWithoutVersion.setHardObjectiveVersion(null);
+        FixProposalApplyReq requestWithVersion = applyRequest();
+        requestWithVersion.setHardObjectiveVersion("solver-hard-objective-v1");
+        requestWithVersion.setSolverVersion("other-solver");
+        assertEquals(409, assertThrows(BusinessException.class,
+                () -> RepairProposalApplyPolicy.validateProposalForApply(
+                        requestWithVersion, proposalWithoutVersion)).getStatus());
+
+        // 请求侧缺失
+        FixProposalApplyReq requestWithoutVersion = applyRequest();
+        requestWithoutVersion.setHardObjectiveVersion(null);
+        requestWithoutVersion.setSolverVersion("other-solver");
+        assertEquals(409, assertThrows(BusinessException.class,
+                () -> RepairProposalApplyPolicy.validateProposalForApply(
+                        requestWithoutVersion, readyProposal())).getStatus());
+    }
+
+    @Test
+    void shouldRejectBrokenProposalSolverResultBindingEvenWithCompatibleHardObjective() {
+        FixProposalDTO rebuilt = readyProposal();
+        rebuilt.setHardObjectiveVersion("solver-hard-objective-v1.2");
+        rebuilt.setSolverVersion("drifted-from-frozen-result");
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> RepairProposalApplyPolicy.validateProposalForApply(applyRequest(), rebuilt));
+
+        assertEquals(409, error.getStatus());
     }
 
     @Test
@@ -54,11 +121,13 @@ class RepairProposalApplyPolicyTest {
         rebuilt.setCanonicalObjectiveDigest(null);
         rebuilt.setSolverVersion(null);
         rebuilt.setSolverInputDigest(null);
+        rebuilt.setHardObjectiveVersion(null);
         rebuilt.setSolverResult(null);
         FixProposalApplyReq request = applyRequest();
         request.setCanonicalObjectiveDigest(null);
         request.setSolverVersion(null);
         request.setSolverInputDigest(null);
+        request.setHardObjectiveVersion(null);
 
         assertDoesNotThrow(() -> RepairProposalApplyPolicy.validateProposalForApply(request, rebuilt));
     }
@@ -112,6 +181,7 @@ class RepairProposalApplyPolicyTest {
         proposal.setCanonicalObjectiveDigest("objective-digest");
         proposal.setSolverVersion("ojalgo-48.4.2-m1");
         proposal.setSolverInputDigest("input-digest");
+        proposal.setHardObjectiveVersion("solver-hard-objective-v1.2");
         PlanSolverResultDTO solverResult = new PlanSolverResultDTO();
         solverResult.setSolverVersion("ojalgo-48.4.2-m1");
         solverResult.setInputDigest("input-digest");
@@ -127,6 +197,7 @@ class RepairProposalApplyPolicyTest {
         request.setCanonicalObjectiveDigest("objective-digest");
         request.setSolverVersion("ojalgo-48.4.2-m1");
         request.setSolverInputDigest("input-digest");
+        request.setHardObjectiveVersion("solver-hard-objective-v1.2");
         UserGoalFixProposalReq userGoal = new UserGoalFixProposalReq();
         userGoal.setGoalType("fill_to_count");
         userGoal.setTargetCount(4);

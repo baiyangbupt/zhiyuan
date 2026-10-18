@@ -67,6 +67,7 @@ public class PlanningStateServicePrepareProposalTest {
         FixProposalDTO ready = new FixProposalDTO();
         ready.setProposalId("ugp_test_1");
         ready.setStatus("ready");
+        ready.setHardObjectiveVersion("solver-hard-objective-v1");
         FixProposalDTO draft = new FixProposalDTO();
         draft.setProposalId("ugp_draft");
         draft.setStatus("preview_only");
@@ -98,6 +99,9 @@ public class PlanningStateServicePrepareProposalTest {
         // apply 那条路要求 user_goal 提案带原始目标（"user_goal proposal requires userGoalRequest"）。
         assertTrue(data.get("userGoalRequest") instanceof Map,
                 "userGoalRequest 必须落库：apply 时要用它，缺了会被 40001 拒");
+        // S4：可选硬目标契约版本随 pending 落库（legacy 提案为空时不落）。
+        assertEquals("solver-hard-objective-v1", data.get("hardObjectiveVersion"),
+                "hardObjectiveVersion 必须随 pending 落库，确认时网关才能原样透传");
     }
 
     @Test

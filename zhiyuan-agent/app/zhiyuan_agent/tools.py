@@ -10011,6 +10011,10 @@ async def preview_plan_change(
     solver_input_digest = str(
         proposal.get("solverInputDigest") or proposal.get("solver_input_digest") or ""
     ).strip()
+    # S4 可选字段：仅透传，**不计入**下面的三件套硬门禁。
+    hard_objective_version = str(
+        proposal.get("hardObjectiveVersion") or proposal.get("hard_objective_version") or ""
+    ).strip()
     canonical_metadata_count = sum(
         bool(value) for value in (canonical_objective_digest, solver_version, solver_input_digest)
     )
@@ -10051,6 +10055,7 @@ async def preview_plan_change(
         "canonical_objective_digest": canonical_objective_digest,
         "solver_version": solver_version,
         "solver_input_digest": solver_input_digest,
+        "hard_objective_version": hard_objective_version,
         "dry_run": dry_run,
         "candidate_shortages": proposal.get("candidateShortages") or [],
         "tier_quota_change": tier_quota_change,
@@ -10110,6 +10115,9 @@ async def preview_plan_change(
                 "solverInputDigest": solver_input_digest,
             }
         )
+        # S4：硬门禁仍是上面三件套；hardObjectiveVersion 有则透传、无则不带。
+        if hard_objective_version:
+            proposal_apply["hardObjectiveVersion"] = hard_objective_version
     frozen_spec: dict[str, Any] = {
         "requirements": normalized_requirements,
         "priority_rules": normalized_priority_rules,

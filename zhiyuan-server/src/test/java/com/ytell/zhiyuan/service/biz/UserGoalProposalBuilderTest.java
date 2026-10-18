@@ -792,6 +792,11 @@ public class UserGoalProposalBuilderTest {
         assertEquals("fill_total_count", action.getActionType());
         assertEquals(2, action.getVolunteerIds().size());
         assertEquals("v3", action.getVolunteerIds().get(0));
+        assertEquals(Integer.valueOf(2), action.getTotalVolunteerCount());
+        assertEquals(Integer.valueOf(2), proposal.getAddedCount());
+        assertEquals(Integer.valueOf(0), proposal.getRemovedCount());
+        assertEquals(Integer.valueOf(2), proposal.getTargetCountBefore());
+        assertEquals(Integer.valueOf(4), proposal.getTargetCountAfter());
         assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getBeforeVolunteerTotal());
         assertEquals(Integer.valueOf(4), proposal.getDryRunResult().getAfterVolunteerTotal());
         assertTrue(proposal.getCanonicalObjectiveDigest().matches("[0-9a-f]{64}"));
@@ -799,6 +804,43 @@ public class UserGoalProposalBuilderTest {
         assertTrue(proposal.getSolverInputDigest().matches("[0-9a-f]{64}"));
         assertEquals(java.util.Arrays.asList("v1", "v2", "v3", "v4"),
                 proposal.getSolverResult().getSelectedEntityIds());
+        // legacy solver 不写硬目标契约版本（S4 兼容判据此时回退精确比对）。
+        assertEquals(null, proposal.getHardObjectiveVersion());
+    }
+
+    @Test
+    void shouldAttachHardObjectiveVersionFromStagedSolverResult() {
+        String previousPaths = System.getProperty("solver.v2.paths");
+        System.setProperty("solver.v2.paths", "fill");
+        try {
+            PlanningStateDTO state = state(12);
+            state.getCandidatePoolState().setVolunteerModel("major");
+            state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "专业1", "类别1", 80D));
+            state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "专业2", "类别2", 81D));
+            state.getCandidatePoolState().getItems().add(candidate("v3", "学校3", "专业3", "类别3", 95D));
+            state.getCandidatePoolState().getItems().add(candidate("v4", "学校4", "专业4", "类别4", 90D));
+            state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "专业1", false));
+            state.getOrderedPlanState().getItems().add(ordered("v2", "学校2", "专业2", false));
+            UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+            req.setGoalType("fill_to_count");
+            req.setTargetCount(4);
+            req.setSourceVersionGuard(12);
+
+            FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+            assertEquals("ready", proposal.getStatus());
+            assertEquals(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION,
+                    proposal.getSolverResult().getHardObjectiveVersion());
+            assertEquals(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION,
+                    proposal.getHardObjectiveVersion(),
+                    "attachSolverMetadata 必须把硬目标契约版本从 solverResult 透传到提案");
+        } finally {
+            if (previousPaths == null) {
+                System.clearProperty("solver.v2.paths");
+            } else {
+                System.setProperty("solver.v2.paths", previousPaths);
+            }
+        }
     }
 
     @Test

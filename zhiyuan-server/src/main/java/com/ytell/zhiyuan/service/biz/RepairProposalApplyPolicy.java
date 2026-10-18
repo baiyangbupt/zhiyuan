@@ -104,6 +104,31 @@ final class RepairProposalApplyPolicy {
                 || Strings.isNullOrEmpty(req.getSolverInputDigest())) {
             throw new BusinessException(409, "canonical Proposal 元数据不完整，请重新生成调整预览");
         }
+        // S4：两侧都带 hardObjectiveVersion 时，允许跨部署/回滚造成的 solverVersion 差异。
+        // 判据 = 硬目标契约 major 相同 + objective digest 相同 + 提案仍与冻结 solverResult 绑定；
+        // 请求侧 solverVersion/solverInputDigest 不再逐一相等（solverInputDigest 只保留在
+        // proposal 与 solverResult 之间，防止请求来自不同部署快照时误杀）。
+        // major 定义：版本串不含 '.' 时取整串；含 '.' 时取第一个 '.' 之前的前缀
+        // （如 "solver-hard-objective-v1.2" 的 major 为 "solver-hard-objective-v1"）。
+        // 任一侧缺失 hardObjectiveVersion 时走下面的旧精确三件套比对，语义不变。
+        if (!Strings.isNullOrEmpty(req.getHardObjectiveVersion())
+                && !Strings.isNullOrEmpty(proposal.getHardObjectiveVersion())) {
+            if (!hardObjectiveMajor(req.getHardObjectiveVersion())
+                    .equals(hardObjectiveMajor(proposal.getHardObjectiveVersion()))) {
+                throw new BusinessException(409, "canonical Proposal 硬目标契约不兼容，请重新生成调整预览");
+            }
+            if (!req.getCanonicalObjectiveDigest().equals(proposal.getCanonicalObjectiveDigest())) {
+                throw new BusinessException(409, "canonical Proposal 已变化，请重新生成调整预览");
+            }
+            if (proposal.getSolverResult() == null
+                    || Strings.isNullOrEmpty(proposal.getSolverVersion())
+                    || Strings.isNullOrEmpty(proposal.getSolverInputDigest())
+                    || !proposal.getSolverVersion().equals(proposal.getSolverResult().getSolverVersion())
+                    || !proposal.getSolverInputDigest().equals(proposal.getSolverResult().getInputDigest())) {
+                throw new BusinessException(409, "canonical Proposal 缺少冻结求解结果，请重新生成调整预览");
+            }
+            return;
+        }
         if (!req.getCanonicalObjectiveDigest().equals(proposal.getCanonicalObjectiveDigest())
                 || !req.getSolverVersion().equals(proposal.getSolverVersion())
                 || !req.getSolverInputDigest().equals(proposal.getSolverInputDigest())) {
@@ -114,6 +139,15 @@ final class RepairProposalApplyPolicy {
                 || !proposal.getSolverInputDigest().equals(proposal.getSolverResult().getInputDigest())) {
             throw new BusinessException(409, "canonical Proposal 缺少冻结求解结果，请重新生成调整预览");
         }
+    }
+
+    /**
+     * 硬目标契约 major：无 '.' 时整串即 major，否则取第一个 '.' 之前的前缀。
+     * 包可见，供 apply 后置校验（`UnifiedPlanPostconditionValidator`）复用同一判据。
+     */
+    static String hardObjectiveMajor(String version) {
+        int dot = version.indexOf('.');
+        return dot < 0 ? version : version.substring(0, dot);
     }
 
     static boolean isSupportedStrategy(String strategy) {

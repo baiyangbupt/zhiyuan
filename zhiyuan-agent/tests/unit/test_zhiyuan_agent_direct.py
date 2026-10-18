@@ -258,6 +258,88 @@ async def test_preview_plan_change_creates_one_backend_proposal_pending(mocker):
     assert pending["executionPayload"]["postconditions"]["target_count"] == 50
 
 
+async def test_preview_plan_change_passes_through_optional_hard_objective_version(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-50",
+                            "proposalSource": "user_goal",
+                            "sourceVersionGuard": 12,
+                            **_CANONICAL_PROPOSAL_METADATA,
+                            "hardObjectiveVersion": "solver-hard-objective-v1.2",
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "补齐到50个。",
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0, "data": {"revision": 1}}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={"selection_goal": {"type": "fill_to_count", "target_count": 50}},
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    proposal_apply = save_mock.await_args.args[1]["executionPayload"]["proposal_apply"]
+    assert proposal_apply["hardObjectiveVersion"] == "solver-hard-objective-v1.2"
+    # 三件套硬门禁不受影响。
+    assert proposal_apply["canonicalObjectiveDigest"] == "objective-digest"
+    assert proposal_apply["solverVersion"] == "ojalgo-48.4.2-m1"
+    assert proposal_apply["solverInputDigest"] == "input-digest"
+
+
+async def test_hard_objective_version_alone_does_not_satisfy_the_canonical_gate(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "proposals": [
+                        {
+                            "proposalId": "ugp-fill-only-hard-version",
+                            "sourceVersionGuard": 12,
+                            "hardObjectiveVersion": "solver-hard-objective-v1.2",
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "summary": "补齐到50个。",
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={"selection_goal": {"type": "fill_to_count", "target_count": 50}},
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["reason"] == "plan_change_proposal_contract_mismatch"
+    save_mock.assert_not_awaited()
+
+
 async def test_preview_plan_change_rejects_new_ready_proposal_without_canonical_metadata(mocker):
     mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.generate_user_goal_planning_fix_proposals",

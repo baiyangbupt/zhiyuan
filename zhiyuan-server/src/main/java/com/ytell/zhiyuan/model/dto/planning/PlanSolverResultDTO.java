@@ -15,6 +15,11 @@ public class PlanSolverResultDTO {
     private List<ObjectiveResultDTO> objectiveResults = Lists.newArrayList();
     private List<DiagnosticDTO> diagnostics = Lists.newArrayList();
     private String solverVersion;
+    /**
+     * 硬目标契约版本：staged solver 写 {@code HARD_OBJECTIVE_VERSION}；
+     * legacy solver 不写，保持 null（S4 兼容判据只在两侧都非空时启用）。
+     */
+    private String hardObjectiveVersion;
     private String solverState;
     private String inputDigest;
     private Long durationMs = 0L;

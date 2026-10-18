@@ -26,10 +26,23 @@ class PlanStructureEvaluatorTest {
         assertEquals(Integer.valueOf(2), structure.getUnitTierCounts().get("保"));
         assertEquals(Integer.valueOf(1), structure.getTierCounts().get("稳"));
         assertEquals(1, structure.getLocalSafetyUnitCount());
-        assertEquals(1, structure.getHighTuitionCount());
+        // 统一用户可见 20k 口径后，65000/30000 均计入。
+        assertEquals(3, structure.getHighTuitionCount());
         assertEquals(1, structure.getCooperativeCount());
         assertEquals(1, structure.getSpecialEnrollmentCount());
         assertEquals(0.2D, structure.getAdjacentRatioDeltaMax(), 1e-9D);
+    }
+
+    @Test
+    void countsHighTuitionOnlyAboveUserFacingThreshold() {
+        EvaluationContextDTO context = new EvaluationContextDTO();
+        context.setEntries(Lists.newArrayList(
+                entry("unit", "稳", "浙江", 20000, Lists.newArrayList(), 0.5D),
+                entry("unit", "稳", "浙江", 20001, Lists.newArrayList(), 0.6D)));
+
+        StructureVectorDTO structure = PlanStructureEvaluator.build(context);
+
+        assertEquals(1, structure.getHighTuitionCount());
     }
 
     private EvaluationEntryRefDTO entry(String level, String tier, String province,

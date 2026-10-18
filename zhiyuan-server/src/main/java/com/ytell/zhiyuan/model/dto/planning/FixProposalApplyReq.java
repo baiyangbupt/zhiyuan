@@ -12,5 +12,7 @@ public class FixProposalApplyReq {
     private String canonicalObjectiveDigest;
     private String solverVersion;
     private String solverInputDigest;
+    /** 硬目标契约版本；可选。与提案侧都非空时按 major 兼容，否则回退旧的精确比对。 */
+    private String hardObjectiveVersion;
     private UserGoalFixProposalReq userGoalRequest;
 }

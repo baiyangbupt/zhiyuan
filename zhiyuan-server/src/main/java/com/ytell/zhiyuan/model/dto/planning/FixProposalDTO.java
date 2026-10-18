@@ -43,6 +43,8 @@ public class FixProposalDTO {
     private String canonicalObjectiveDigest;
     private String solverVersion;
     private String solverInputDigest;
+    /** 硬目标契约版本（来自 solverResult；legacy 路径为 null）。 */
+    private String hardObjectiveVersion;
     private PlanSolverResultDTO solverResult;
     private TierQuotaChangeDTO tierQuotaChange;
 }

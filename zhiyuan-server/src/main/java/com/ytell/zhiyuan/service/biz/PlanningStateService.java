@@ -972,6 +972,8 @@ public class PlanningStateService {
                             putIfNotBlank(dataValue, "canonicalObjectiveDigest", primary.getCanonicalObjectiveDigest());
                             putIfNotBlank(dataValue, "solverVersion", primary.getSolverVersion());
                             putIfNotBlank(dataValue, "solverInputDigest", primary.getSolverInputDigest());
+                            // S4：可选硬目标契约版本；legacy 提案为空，不落库。
+                            putIfNotBlank(dataValue, "hardObjectiveVersion", primary.getHardObjectiveVersion());
                             if (userGoalFreezeApplyEnabled) {
                                 // S0b：冻结整份 proposal（含 solverResult/actions/
                                 // tierQuotaChange）+ selection-scoped digest。
@@ -11682,7 +11684,8 @@ public class PlanningStateService {
 
         List<CandidateItemDTO> highTuitionItems = state.getOrderedPlanState().getItems().stream()
                 .map(item -> findCandidate(candidates, item.getVolunteerId()))
-                .filter(item -> item != null && item.getTuitionPerYear() != null && item.getTuitionPerYear() > 20000)
+                .filter(item -> item != null && item.getTuitionPerYear() != null
+                        && item.getTuitionPerYear() > TuitionThresholds.HIGH_TUITION_RISK_PER_YEAR)
                 .collect(Collectors.toList());
         if (highTuitionItems.isEmpty()) {
             return check;

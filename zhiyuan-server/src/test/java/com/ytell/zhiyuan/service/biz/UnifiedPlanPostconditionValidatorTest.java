@@ -305,6 +305,62 @@ class UnifiedPlanPostconditionValidatorTest {
     }
 
     /**
+     * S4：后置校验与 apply 前策略同判据——两侧都有 hardObjectiveVersion 时，
+     * solverVersion/solverInputDigest 的跨部署漂移不应把已应用的结果判失败。
+     */
+    @Test
+    void shouldAcceptSolverVersionDriftWhenHardObjectiveMajorMatches() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(2);
+        state.getCandidatePoolState().getItems().add(candidate("a", "浙江"));
+        state.getCandidatePoolState().getItems().add(candidate("b", "浙江"));
+        state.getOrderedPlanState().getItems().add(orderedItem("a", "稳"));
+        state.getOrderedPlanState().getItems().add(orderedItem("b", "稳"));
+
+        UserGoalFixProposalReq userGoal = new UserGoalFixProposalReq();
+        userGoal.setGoalType("fill_to_count");
+        userGoal.setTargetCount(2);
+        String digest = PlanningObjectiveCompiler.compileConfirmed(state).getObjectiveDigest();
+        FixProposalApplyReq applyReq = new FixProposalApplyReq();
+        applyReq.setProposalId("ugp-s4");
+        applyReq.setProposalSource("user_goal");
+        applyReq.setUserGoalRequest(userGoal);
+        applyReq.setCanonicalObjectiveDigest(digest);
+        applyReq.setSolverVersion("solver-from-previous-deploy");
+        applyReq.setSolverInputDigest("input-from-previous-deploy");
+        applyReq.setHardObjectiveVersion("solver-hard-objective-v1.9");
+
+        PlanSolverResultDTO frozen = new PlanSolverResultDTO();
+        frozen.setStatus("ready");
+        frozen.setSolverVersion("solver-from-current-deploy");
+        frozen.setInputDigest("input-from-current-deploy");
+        frozen.setSelectedEntityIds(Lists.newArrayList("a", "b"));
+        frozen.setOrderedEntityIds(Lists.newArrayList("a", "b"));
+
+        FixProposalDTO proposal = new FixProposalDTO();
+        proposal.setProposalId("ugp-s4");
+        proposal.setProposalSource("user_goal");
+        proposal.setCanonicalObjectiveDigest(digest);
+        proposal.setSolverVersion("solver-from-current-deploy");
+        proposal.setSolverInputDigest("input-from-current-deploy");
+        proposal.setHardObjectiveVersion("solver-hard-objective-v1.2");
+        proposal.setSolverResult(frozen);
+
+        PendingPlanningCommandReq request = new PendingPlanningCommandReq();
+        request.setCommandType(PendingPlanningCommandBizService.APPLY_PLAN_CHANGE_PROPOSAL);
+        request.setProposalApply(applyReq);
+        FixProposalApplyRes applyRes = new FixProposalApplyRes();
+        applyRes.setStatus("applied");
+        applyRes.setProposal(proposal);
+
+        PlanChangePostconditionReportDTO report = validator.validate(request, state, applyRes);
+
+        assertTrue(report.getSatisfied());
+        assertEquals("solver-from-current-deploy", report.getSolverVersion());
+    }
+
+    /**
      * J5.4 拍板：safety 只报告、不因缺口回滚。方案数量/要求都满足，但本省
      * 保底为 0 时，satisfied 仍为 true，safetyResult 明确记缺口。
      */

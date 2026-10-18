@@ -510,6 +510,40 @@ async def test_counting_goal_still_uses_the_plan_change_command() -> None:
 
 
 @pytest.mark.asyncio
+async def test_counting_goal_omits_hard_objective_version_when_pending_has_none() -> None:
+    """S4 向后兼容：旧 pending 没有 hardObjectiveVersion 时，网关不得凭空补字段。"""
+    _, calls = await _claim_then_execute(None, {"goalType": "fill_to_count", "targetCount": 80})
+
+    assert "hardObjectiveVersion" not in calls[0]["proposal_apply"]
+
+
+@pytest.mark.asyncio
+async def test_counting_goal_passes_through_optional_hard_objective_version() -> None:
+    """S4：pending 带了 hardObjectiveVersion 就原样透传；三件套硬门禁不变。"""
+    execute_calls = []
+
+    async def resolver(*args, **kwargs):
+        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+
+    async def executor(*args, **kwargs):
+        execute_calls.append(kwargs)
+        return {"code": 0, "data": {"status": "applied", "stateVersion": 9}}
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending({
+            "userGoalRequest": {"goalType": "fill_to_count", "targetCount": 80},
+            "hardObjectiveVersion": "solver-hard-objective-v1.2",
+        }),
+        resolver=resolver, executor=executor,
+    )
+
+    assert result.action_status == "applied"
+    assert execute_calls[0]["proposal_apply"]["hardObjectiveVersion"] == "solver-hard-objective-v1.2"
+
+
+@pytest.mark.asyncio
 async def test_stale_revision_on_claim_refuses_and_never_executes():
     """异常 1（陈旧 revision）：claim 被判 stale → 拒绝执行、如实回话。"""
     async def resolver(*args, **kwargs):

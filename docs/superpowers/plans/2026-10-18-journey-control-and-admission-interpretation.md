@@ -632,8 +632,13 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
     `safetyResult` 已落：与 review 共用 `countLocalProtect`，只报告不因
     safety 回滚。S5 coverage probe 已落：context 带已确认覆盖要求与
     `matchedCoverageIds`，evaluation 生成 `coverage:index` finding，旧
-    review checks 不变（registry v2）。仍待 structure 阈值（20k/60k）与
-    findings 完全由 PlanEvaluation 反向驱动。
+    review checks 不变（registry v2）。S6 学费阈值已统一为用户可见 20k
+    （`TuitionThresholds`，旧 60k 口径退役）；`group_inner_safety_guard`
+    仍由 review 持有，本批不迁入 evaluation。S4 版本兼容已落：结果/提案/
+    请求/pending/gateway 带可选 `hardObjectiveVersion`，两侧都有时按
+    major + objective digest 判，缺失回退旧精确三件套。fill 提案补齐
+    target before/after/added/removed 与 action totals（只读 soak 发现）。
+    仍待 findings 完全由 PlanEvaluation 反向驱动。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；
   预览/冻结/后置/回执与普通动作一致；review fix 与 fill 同源。
 - J5.6 清理：解释权重、`rank_in_tier` 语义、重复 filter/eligibility 规则。

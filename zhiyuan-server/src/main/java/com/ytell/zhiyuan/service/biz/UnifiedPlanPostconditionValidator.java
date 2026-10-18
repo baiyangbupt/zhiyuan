@@ -521,10 +521,30 @@ class UnifiedPlanPostconditionValidator {
             return null;
         }
         PlanSolverResultDTO frozen = proposal == null ? null : proposal.getSolverResult();
+        // S4：与 apply 前的 `RepairProposalApplyPolicy.validateCanonicalMetadata` 同判据——
+        // 两侧都有 hardObjectiveVersion 时只要求 major 相同 + objective digest 相同；
+        // solverInputDigest/solverVersion 只保留在提案与冻结 solverResult 之间。
+        // 任一侧缺失则回退旧的精确三件套比对。
+        boolean hardObjectivePresent = proposal != null
+                && !Strings.isNullOrEmpty(applyReq.getHardObjectiveVersion())
+                && !Strings.isNullOrEmpty(proposal.getHardObjectiveVersion());
+        boolean requestMetadataMatches;
+        if (hardObjectivePresent) {
+            requestMetadataMatches = RepairProposalApplyPolicy.hardObjectiveMajor(
+                    applyReq.getHardObjectiveVersion()).equals(
+                    RepairProposalApplyPolicy.hardObjectiveMajor(proposal.getHardObjectiveVersion()))
+                    && Objects.equals(applyReq.getCanonicalObjectiveDigest(),
+                    proposal.getCanonicalObjectiveDigest());
+        } else {
+            requestMetadataMatches = Objects.equals(applyReq.getCanonicalObjectiveDigest(),
+                    proposal == null ? null : proposal.getCanonicalObjectiveDigest())
+                    && Objects.equals(applyReq.getSolverVersion(),
+                    proposal == null ? null : proposal.getSolverVersion())
+                    && Objects.equals(applyReq.getSolverInputDigest(),
+                    proposal == null ? null : proposal.getSolverInputDigest());
+        }
         boolean metadataMatches = proposal != null && frozen != null
-                && Objects.equals(applyReq.getCanonicalObjectiveDigest(), proposal.getCanonicalObjectiveDigest())
-                && Objects.equals(applyReq.getSolverVersion(), proposal.getSolverVersion())
-                && Objects.equals(applyReq.getSolverInputDigest(), proposal.getSolverInputDigest())
+                && requestMetadataMatches
                 && Objects.equals(proposal.getSolverVersion(), frozen.getSolverVersion())
                 && Objects.equals(proposal.getSolverInputDigest(), frozen.getInputDigest());
         if (!metadataMatches) {

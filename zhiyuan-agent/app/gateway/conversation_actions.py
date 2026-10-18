@@ -379,10 +379,18 @@ def _first_int(*values: Any) -> int | None:
 
 
 # canonical 三件套：Java `FixProposalApplyReq` 的驼峰字段名 ✓ + 各链自己的 snake 别名 ✓。
+# **硬门禁只看这三个**：`_canonical_metadata_from_producer` 的触发条件与
+# `tools.py` 的 `canonical_metadata_count == 3` 都依赖本元组，不得把可选字段并进来。
 CANONICAL_METADATA_FIELDS = (
     ("canonicalObjectiveDigest", "canonical_objective_digest"),
     ("solverVersion", "solver_version"),
     ("solverInputDigest", "solver_input_digest"),
+)
+
+# S4 可选字段：只做透传，不参与任何计数/硬门禁。Java 侧两侧都有时才启用
+# hardObjectiveVersion major 兼容判据；缺失时回退旧的精确比对（保持向后兼容）。
+OPTIONAL_METADATA_FIELDS = (
+    ("hardObjectiveVersion", "hard_objective_version"),
 )
 
 
@@ -426,7 +434,7 @@ def _proposal_apply_payload(
     # `activeProposal` 只有 9 个键 ✓）——所以由 `_canonical_metadata_from_producer` 在 execute 时
     # **回生产者现取一次** ✓（只读 ✓）后并进来 ✓；这里保留"带上就用"的分支 ✓
     # （生产者哪天把它写进 `dataValue`/`activeProposal` ✓，这条就不必再远程取 ✓）。
-    for camel, snake in CANONICAL_METADATA_FIELDS:
+    for camel, snake in CANONICAL_METADATA_FIELDS + OPTIONAL_METADATA_FIELDS:
         value = active.get(camel) or active_data.get(camel) or active.get(snake) or active_data.get(snake)
         if isinstance(value, str) and value.strip():
             payload[camel] = value.strip()
@@ -493,7 +501,7 @@ async def _canonical_metadata_from_producer(
         return {}
     metadata = {
         camel: str(value).strip()
-        for camel, snake in CANONICAL_METADATA_FIELDS
+        for camel, snake in CANONICAL_METADATA_FIELDS + OPTIONAL_METADATA_FIELDS
         for value in (match.get(camel) or match.get(snake),)
         if isinstance(value, str) and value.strip()
     }

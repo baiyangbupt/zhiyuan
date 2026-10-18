@@ -807,6 +807,7 @@ final class StagedDeterministicPlanSolver {
                                            CandidateSnapshotDTO snapshot) {
         PlanSolverResultDTO result = new PlanSolverResultDTO();
         result.setSolverVersion(SOLVER_VERSION);
+        result.setHardObjectiveVersion(HARD_OBJECTIVE_VERSION);
         result.setCandidateCount(snapshot == null || snapshot.getFacts() == null
                 ? 0 : snapshot.getFacts().size());
         result.setConstraintCount(1 + defaultList(objectives.getCoverageConstraints()).size()
