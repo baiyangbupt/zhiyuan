@@ -19,6 +19,8 @@ import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -33,6 +35,7 @@ final class CanonicalPlanningRuntime {
 
     private static final DeterministicPlanSolver SOLVER = new OjalgoDeterministicPlanSolver();
     private static final StagedDeterministicPlanSolver STAGED_SOLVER = new StagedDeterministicPlanSolver();
+    private static final Logger LOG = LoggerFactory.getLogger(CanonicalPlanningRuntime.class);
 
     private CanonicalPlanningRuntime() {
     }
@@ -87,6 +90,12 @@ final class CanonicalPlanningRuntime {
                     JSON.toJSONString(objectives), CanonicalPlanningObjectiveSetDTO.class);
             PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
             solved = STAGED_SOLVER.solve(snapshot, stagedObjectives, policy).solverResult;
+            LOG.info("staged initial selection: session={} status={} selected={} remove={} add={} candidates={}",
+                    state.getSessionId(), solved.getStatus(),
+                    defaultList(solved.getSelectedEntityIds()).size(),
+                    defaultList(solved.getRemoveEntityIds()).size(),
+                    defaultList(solved.getAddEntityIds()).size(),
+                    solved.getCandidateCount());
         } else {
             solved = SOLVER.solve(input(objectives, current, available));
             SolverShadowSupport.shadowSelection(state, effectiveCandidates, objectives, solved);

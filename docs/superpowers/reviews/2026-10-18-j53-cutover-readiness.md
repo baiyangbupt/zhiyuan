@@ -120,3 +120,28 @@ STAGED_SOLVER_GOLDEN_FILES="/path/state.json[|/path/pool.json],..." \
 - 900045：42/45 缺口 → refill 到 45（version 19）→ 恢复 14/44。
 - 900040：仅只读预览（fill INFO、scope 80→82），未落盘；保持 5/80。
 - 临时 pending 行（refill 验收）已随恢复删除。
+
+## 7. 灰度上线记录（2026-10-18 深夜，localtest）
+
+按 §1 顺序逐档重启并验收，最终运行时：
+
+```
+-Dsolver.v2.shadow=true
+-Dsolver.v2.paths=fill,initial,add,remove,replace,scope,refill
+-Dplanning.user-goal.freeze-apply.enabled=true
+```
+
+（Java pid 2944；health 200；启动日志 0 ERROR。）
+
+| 档位 | 验收 | 结果 |
+|---|---|---|
+| fill | 900045 移 2 组制造缺口 → fill 44 | staged `selected=44 remove=0 add=2`，apply 后 44 组、version 18；恢复 14/44 |
+| initial | 900040 `forceRegenerate=true, overwriteExistingDraft=false` | staged `selected=80 candidates=120`，80 组/336 条保持；恢复 5/80 |
+| add | 900040 点名加入西安工程大学第506组 | staged `selected=81 remove=0 add=1`，80→81 |
+| scope | 900040 add-by-scope 浙江 2 | staged `selected=82 remove=0 add=2`，80→82 |
+| refill | 900045 42/45 缺口走真实 pending command | staged `target=45 current=42 added=16`，version 19，postcondition=true；恢复 14/44 |
+| freeze-apply | 900045 only_keep 浙江（无 canonical 三件套） | READY → apply 成功 44→4 组，version 17；恢复 14/44 |
+
+注意：`overwriteExistingDraft=true` 会按 80 个选中条目重建为 44 个专业组
+（每条目=专业、组内可多专业），这是 initial 重建语义，不是 staged solver
+差异；灰度验收使用 `overwriteExistingDraft=false` 保持原 80 组。
