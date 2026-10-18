@@ -1084,6 +1084,8 @@ public class PlanningStateService {
         ReviewSummaryDTO beforeReviewSummary = state.getReviewState() == null ? null : state.getReviewState().getSummary();
         ensureWorkingPlanContainsOrderedPlanItems(state);
         applyUserGoalTargetToPlanningState(state, userGoalRequest, proposal);
+        // 学费写在成绩行；先于方案落盘：写不进去就把这次确认判失败，不能方案生效而学费条件丢失。
+        persistUserGoalTuitionRange(chatSessionId, resolveUserGoalTuitionRange(userGoalRequest));
         state = applySupportedFixProposalStrategy(tenantId, chatSessionId, req, proposal, state);
 
         FixProposalApplyRes res = new FixProposalApplyRes();
@@ -1103,6 +1105,9 @@ public class PlanningStateService {
         }
         ProjectedHardRequirementSupport.persist(state, userGoalRequest.getRequirements());
         PriorityRuleSupport.persist(state, userGoalRequest.getPriorityRules());
+        // J4a：旧修复应用链也必须把 scope 写成会话级硬约束，不能只改当前方案；
+        // 否则下一次重生成会把排除/保留条件丢掉。
+        persistUserGoalScopes(state, userGoalRequest);
         if (proposal.getTierQuotaChange() != null
                 && Boolean.TRUE.equals(proposal.getTierQuotaChange().getStateChanged())) {
             TierAllocationSupport.persist(state,
@@ -1131,6 +1136,240 @@ public class PlanningStateService {
             throw new BusinessException(400, "当前候选池不可用，不能应用补齐目标");
         }
         state.getCandidatePoolState().setRequiredCount(targetCount);
+    }
+
+    /**
+     * J4a：把“范围类目标”从**一次性方案动作**升级为**会话级硬约束**。
+     *
+     * <p>only_keep/must_include 的范围写进 include 侧，exclude 写进 exclude 侧；写入口径与
+     * {@link #updateConstraintState} 的 constraint 模式完全一致（add-unique/互斥/ID 同规矩），
+     * 这样下一次重生成不会把用户刚确认的保留/排除条件丢掉。</p>
+     *
+     * <p>add_units_by_scope 是“在范围内加 N 条”的一次性选条动作，不是长期约束，故不在此持久化。
+     * 未解析/歧义的范围也不落库——它们本应在预览阶段被拦下。</p>
+     */
+    private void persistUserGoalScopes(PlanningStateDTO state, UserGoalFixProposalReq request) {
+        if (state == null || request == null) {
+            return;
+        }
+        String goalType = RepairProposalTaxonomy.normalizeStrategy(request.getGoalType());
+        boolean excludeGoal = RepairProposalTaxonomy.Strategy.EXCLUDE_SCOPE.equals(goalType);
+        boolean persistable = excludeGoal
+                || RepairProposalTaxonomy.Strategy.ONLY_KEEP_SCOPE.equals(goalType)
+                || RepairProposalTaxonomy.Strategy.MUST_INCLUDE_SCOPE.equals(goalType)
+                || RepairProposalTaxonomy.Strategy.TUITION_BUDGET_SCOPE.equals(goalType);
+        if (!persistable) {
+            return;
+        }
+        List<UserGoalFixProposalReq.ScopeDTO> targetScopes = request.getTargetScopes() == null
+                ? Lists.<UserGoalFixProposalReq.ScopeDTO>newArrayList() : request.getTargetScopes();
+        List<UserGoalFixProposalReq.ScopeDTO> positives = excludeGoal
+                ? Lists.<UserGoalFixProposalReq.ScopeDTO>newArrayList() : targetScopes;
+        List<UserGoalFixProposalReq.ScopeDTO> negatives = request.getNegativeScopes() == null
+                ? Lists.<UserGoalFixProposalReq.ScopeDTO>newArrayList() : request.getNegativeScopes();
+        if (excludeGoal && negatives.isEmpty()) {
+            // 与 UserGoalProposalBuilder.scopesForGoal 同口径：exclude 目标可能只下发 targetScopes。
+            negatives = targetScopes;
+        }
+
+        UpdateConstraintStateReq req = new UpdateConstraintStateReq();
+        req.setIntentMode("constraint");
+        UpdateConstraintStateReq.PreferenceGroup majors = emptyPreferenceGroup();
+        UpdateConstraintStateReq.PreferenceGroup schools = emptyPreferenceGroup();
+        UpdateConstraintStateReq.PreferenceGroup regions = emptyPreferenceGroup();
+        boolean any = false;
+        for (UserGoalFixProposalReq.ScopeDTO scope : positives) {
+            any |= addUserGoalScopeValue(majors, schools, regions, scope, true);
+        }
+        for (UserGoalFixProposalReq.ScopeDTO scope : negatives) {
+            any |= addUserGoalScopeValue(majors, schools, regions, scope, false);
+        }
+        if (!any) {
+            return;
+        }
+        req.setMajorPreferences(majors);
+        req.setSchoolPreferences(schools);
+        req.setRegionPreferences(regions);
+        applyConstraintStateUpdate(state, req);
+        // 与 updateConstraintState(constraint) 同一失效面：推荐/方案/审查都要按新约束重算。
+        ReviewInvalidationPolicy.markConstraintIntentStale(state);
+    }
+
+    private UpdateConstraintStateReq.PreferenceGroup emptyPreferenceGroup() {
+        UpdateConstraintStateReq.PreferenceGroup group = new UpdateConstraintStateReq.PreferenceGroup();
+        group.setPositive(Lists.newArrayList());
+        group.setNegative(Lists.newArrayList());
+        return group;
+    }
+
+    private boolean addUserGoalScopeValue(UpdateConstraintStateReq.PreferenceGroup majors,
+                                          UpdateConstraintStateReq.PreferenceGroup schools,
+                                          UpdateConstraintStateReq.PreferenceGroup regions,
+                                          UserGoalFixProposalReq.ScopeDTO scope,
+                                          boolean positive) {
+        String entityType = userGoalScopeEntityType(scope);
+        String value = userGoalScopeValue(scope);
+        if (entityType == null || value == null || !isResolvedUserGoalScope(scope)) {
+            return false;
+        }
+        UpdateConstraintStateReq.PreferenceGroup group;
+        if ("major".equals(entityType)) {
+            group = majors;
+        } else if ("school".equals(entityType)) {
+            group = schools;
+        } else {
+            group = regions;
+        }
+        (positive ? group.getPositive() : group.getNegative()).add(value);
+        return true;
+    }
+
+    private String userGoalScopeEntityType(UserGoalFixProposalReq.ScopeDTO scope) {
+        if (scope == null) {
+            return null;
+        }
+        String type = firstNonEmpty(scope.getEntityType(), scope.getScopeType());
+        if (Strings.isNullOrEmpty(type)) {
+            return null;
+        }
+        switch (type.trim().toLowerCase(Locale.ROOT)) {
+            case "region":
+            case "province":
+            case "city":
+            case "area":
+            case "province_keyword":
+                return "region";
+            case "major":
+            case "major_keyword":
+            case "source_major":
+            case "source_major_name":
+                return "major";
+            case "school":
+            case "school_keyword":
+                return "school";
+            default:
+                return null;
+        }
+    }
+
+    private String userGoalScopeValue(UserGoalFixProposalReq.ScopeDTO scope) {
+        if (scope == null) {
+            return null;
+        }
+        String value = firstNonEmpty(scope.getNormalizedName(), scope.getName(), scope.getRawText());
+        if (Strings.isNullOrEmpty(value)) {
+            return null;
+        }
+        return value.trim();
+    }
+
+    private boolean isResolvedUserGoalScope(UserGoalFixProposalReq.ScopeDTO scope) {
+        String status = Strings.nullToEmpty(scope.getResolutionStatus()).trim().toLowerCase(Locale.ROOT);
+        return !("unknown".equals(status) || "ambiguous".equals(status) || "multiple_match".equals(status)
+                || "needs_clarification".equals(status) || "unresolved".equals(status));
+    }
+
+    /**
+     * 学费区间与 {@code UserGoalProposalBuilder.maxTuitionFromRequest} 同源：先 context，再 scope evidence。
+     * 返回 null 表示这次目标没有改学费。
+     */
+    private CreateSessionReq.TuitionRange resolveUserGoalTuitionRange(UserGoalFixProposalReq request) {
+        if (request == null) {
+            return null;
+        }
+        Integer min = userGoalTuitionValue(request, "minTuitionPerYear");
+        Integer max = userGoalTuitionValue(request, "maxTuitionPerYear");
+        if (min == null && max == null) {
+            return null;
+        }
+        if (min != null && max != null && min > max) {
+            throw new BusinessException(110, "学费下限不能大于上限");
+        }
+        CreateSessionReq.TuitionRange range = new CreateSessionReq.TuitionRange();
+        range.setMin(min);
+        range.setMax(max);
+        return range;
+    }
+
+    private Integer userGoalTuitionValue(UserGoalFixProposalReq request, String key) {
+        Integer value = tuitionIntValue(request.getContext() == null ? null : request.getContext().get(key));
+        if (value != null) {
+            return value;
+        }
+        for (UserGoalFixProposalReq.ScopeDTO scope : request.getTargetScopes() == null
+                ? Lists.<UserGoalFixProposalReq.ScopeDTO>newArrayList() : request.getTargetScopes()) {
+            if (scope == null || scope.getEvidence() == null) {
+                continue;
+            }
+            value = tuitionIntValue(scope.getEvidence().get(key));
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private Integer tuitionIntValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        String digits = String.valueOf(value).replaceAll("[^0-9]", "");
+        if (Strings.isNullOrEmpty(digits)) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(digits);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    /**
+     * 学费写在会话成绩行（单一 owner）。用 CAS + 重读重放，避免把并发写入的成绩/位次冲掉；
+     * 写不进去就抛冲突，让这次确认整体失败（调用点在方案落盘之前）。
+     * 会话还没有成绩行时只告警——纯建档前会话没有可写的学费载体。
+     */
+    private void persistUserGoalTuitionRange(Long chatSessionId, CreateSessionReq.TuitionRange range) {
+        if (chatSessionId == null || range == null) {
+            return;
+        }
+        for (int attempt = 0; attempt < WRITE_CAS_ATTEMPTS; attempt++) {
+            ChatSessionExtraData scoreRow = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                    chatSessionId, ChatSessionExtraDataConstants.USER_SCORE_KEY);
+            if (scoreRow == null || Strings.isNullOrEmpty(scoreRow.getDataValue())) {
+                log.warn("persistUserGoalTuitionRange skipped: no score detail, chatSessionId={}", chatSessionId);
+                return;
+            }
+            CreateSessionReq scoreDetail;
+            try {
+                scoreDetail = JSONObject.parseObject(scoreRow.getDataValue(), CreateSessionReq.class);
+            } catch (Exception ex) {
+                throw new BusinessException(400, "会话成绩信息异常，无法更新学费区间");
+            }
+            if (scoreDetail == null) {
+                throw new BusinessException(400, "会话成绩信息异常，无法更新学费区间");
+            }
+            CreateSessionReq.TuitionRange target = scoreDetail.getTuitionRange();
+            if (target == null) {
+                target = new CreateSessionReq.TuitionRange();
+            }
+            if (range.getMin() != null) {
+                target.setMin(range.getMin());
+            }
+            if (range.getMax() != null) {
+                target.setMax(range.getMax());
+            }
+            scoreDetail.setTuitionRange(target);
+            String updated = JSONObject.toJSONString(scoreDetail);
+            if (chatSessionExtraDataSharedService.updateDataValueIfUnchanged(
+                    scoreRow, scoreRow.getDataValue(), updated)) {
+                return;
+            }
+        }
+        throw writeCasConflict("学费更新");
     }
 
     private FixProposalDTO findReadyUserGoalProposalByStrategy(FixProposalStateDTO proposalState, String goalType) {

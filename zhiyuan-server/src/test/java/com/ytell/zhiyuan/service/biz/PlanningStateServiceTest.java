@@ -3399,6 +3399,9 @@ public class PlanningStateServiceTest {
         assertTrue(draftIds.contains("ps1_m1"));
         assertTrue(draftIds.contains("ps3_m3"));
         assertFalse(draftIds.contains("ps2_m2"));
+        // J4a：只保留范围必须升级为会话级硬约束，重生成时才不会丢。
+        assertTrue(res.getState().getConstraintState().getHardConstraints()
+                .getMustIncludeMajors().contains("临床医学"));
         assertTrue(res.getState().getOperationLogs().stream()
                 .anyMatch(log -> "user_goal_apply".equals(log.getType())));
     }
@@ -4221,11 +4224,20 @@ public class PlanningStateServiceTest {
         assertTrue(draftIds.contains("ps3_m3"));
         assertEquals(Integer.valueOf(1), res.getRepairReport().getRemovedVolunteerCount());
         assertEquals(Integer.valueOf(1), res.getRepairReport().getAddedVolunteerCount());
+        // J4a：排除范围同样升级为会话级硬约束。
+        assertTrue(res.getState().getConstraintState().getHardConstraints()
+                .getMustExcludeMajors().contains("金融学"));
     }
 
     @Test
     void shouldApplyUserGoalTuitionBudgetProposal() {
         bindPlanningStateStore();
+        ChatSessionExtraData scoreRow = bindUserScoreDetailWithTuitionRange(1L, null, null);
+        when(chatSessionExtraDataSharedService.updateDataValueIfUnchanged(eq(scoreRow), any(), any()))
+                .thenAnswer(invocation -> {
+                    scoreRow.setDataValue(invocation.getArgument(2));
+                    return true;
+                });
 
         PlanningStateDTO state = new PlanningStateDTO();
         state.setSessionId(1L);
@@ -4270,6 +4282,10 @@ public class PlanningStateServiceTest {
         assertFalse(draftIds.contains("ps1_m1"));
         assertTrue(draftIds.contains("ps2_m2"));
         assertTrue(draftIds.contains("ps3_m3"));
+        // J4a：学费区间要落到会话成绩行，下一次重生成仍然生效。
+        CreateSessionReq persistedScore = JSONObject.parseObject(scoreRow.getDataValue(), CreateSessionReq.class);
+        assertEquals(Integer.valueOf(20000), persistedScore.getTuitionRange().getMax());
+        assertNull(persistedScore.getTuitionRange().getMin());
     }
 
     @Test
@@ -10593,7 +10609,7 @@ public class PlanningStateServiceTest {
         return planningStateRef;
     }
 
-    private void bindUserScoreDetailWithTuitionRange(Long chatSessionId, Integer min, Integer max) {
+    private ChatSessionExtraData bindUserScoreDetailWithTuitionRange(Long chatSessionId, Integer min, Integer max) {
         CreateSessionReq scoreDetail = buildScoreDetail();
         scoreDetail.setTuitionRange(new CreateSessionReq.TuitionRange(min, max));
         ChatSessionExtraData scoreData = new ChatSessionExtraData();
@@ -10602,6 +10618,7 @@ public class PlanningStateServiceTest {
         scoreData.setDataValue(JSONObject.toJSONString(scoreDetail));
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(chatSessionId), eq(ChatSessionExtraDataConstants.USER_SCORE_KEY)))
                 .thenReturn(scoreData);
+        return scoreData;
     }
 
     private void saveStateToStore(Long chatSessionId, PlanningStateDTO state) {
