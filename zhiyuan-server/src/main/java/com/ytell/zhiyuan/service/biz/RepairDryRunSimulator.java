@@ -219,12 +219,42 @@ final class RepairDryRunSimulator {
             return;
         }
         addDryRunWarning(dryRun, validation.message);
-        if (RepairProposalTaxonomy.isReadyStatus(proposal.getStatus())
-                && RepairProposalTaxonomy.isReadyStatus(dryRun.getStatus())) {
-            RepairProposalStateBuilder.markBlocked(proposal, validation.message, "objective_validation_not_improved");
+        boolean ready = RepairProposalTaxonomy.isReadyStatus(proposal.getStatus())
+                && RepairProposalTaxonomy.isReadyStatus(dryRun.getStatus());
+        String checkCode = check == null ? null : check.getCode();
+        // J5.2 收口：数量/配比/断层/保底这类目标校验失败，根因通常是候选不足
+        // 或已确认硬约束过滤；归因要落到检查项对应的具体 reason，不能统一压成
+        // objective_validation_not_improved（那会把“报考条件过滤后不足”盖掉）。
+        String reasonCode = objectiveValidationReasonCode(check);
+        if (ready) {
+            RepairProposalStateBuilder.markBlocked(proposal, validation.message, reasonCode);
             dryRun.setStatus(RepairProposalTaxonomy.Status.BLOCKED);
             dryRun.setMessage(validation.message);
+            return;
         }
+        // preview_only 是“可看方向、不可自动应用”的既有语义（例如配比/断层
+        // 的部分替换）。校验失败时保留 preview_only + warning，但补上检查项
+        // 对应的 shortage reason，避免修复卡丢掉“硬约束过滤后不足”的归因。
+        boolean structurePreview = RepairProposalTaxonomy.isPreviewOnlyStatus(proposal.getStatus())
+                && RepairProposalTaxonomy.isPreviewOnlyStatus(dryRun.getStatus())
+                && ("count_validation".equals(checkCode)
+                || "ratio_distribution".equals(checkCode)
+                || "probability_gap".equals(checkCode));
+        if (structurePreview) {
+            RepairProposalStateBuilder.addBlockingReasonCode(proposal, reasonCode);
+        }
+    }
+
+    private static String objectiveValidationReasonCode(ReviewCheckDTO check) {
+        String code = check == null ? null : check.getCode();
+        if ("count_validation".equals(code)
+                || "ratio_distribution".equals(code)
+                || "probability_gap".equals(code)
+                || "safety_guard".equals(code)
+                || "edge_score".equals(code)) {
+            return RepairProposalStateBuilder.resolveBlockingReasonCode(check);
+        }
+        return "objective_validation_not_improved";
     }
 
     private static ObjectiveValidation validateObjectiveImprovement(PlanningStateDTO state,

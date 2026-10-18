@@ -33,9 +33,15 @@ final class RepairRiskActionBuilder {
                 .distinct()
                 .collect(Collectors.toList());
         if (affectedVolunteerIds.isEmpty()) {
+            // count_over_limit 是方案级“精简”，不是条目级风险；不能报 risk_item_unresolved。
+            boolean countOverLimit = check != null
+                    && "count_validation".equals(check.getCode())
+                    && "count_over_limit".equals(check.getReasonCode());
             RepairProposalStateBuilder.markBlocked(proposal,
-                    "当前风险缺少可移除的志愿明细。",
-                    "risk_item_unresolved");
+                    countOverLimit
+                            ? "当前方案数量多于官方要求，需要先精简再重新审查。"
+                            : "当前风险缺少可移除的志愿明细。",
+                    countOverLimit ? "count_over_limit" : "risk_item_unresolved");
             return;
         }
         FixProposalActionDTO removeAction = new FixProposalActionDTO();

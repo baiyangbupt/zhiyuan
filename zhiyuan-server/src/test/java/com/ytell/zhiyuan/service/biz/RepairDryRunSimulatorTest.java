@@ -249,13 +249,14 @@ public class RepairDryRunSimulatorTest {
         assertEquals("blocked", proposal.getStatus());
         assertEquals("blocked", proposal.getDryRunResult().getStatus());
         assertTrue(proposal.getDryRunResult().getMessage().contains("数量更接近官方要求"));
-        assertEquals(Lists.newArrayList("objective_validation_not_improved"), proposal.getBlockingReasonCodes());
+        // J5.2：数量校验失败归因到“候选池不足”，不再压成 objective_validation。
+        assertEquals(Lists.newArrayList("candidate_pool_insufficient"), proposal.getBlockingReasonCodes());
 
         RepairProposalStateBuilder.populateCandidateShortages(state, check, proposal);
 
         assertEquals(1, proposal.getCandidateShortages().size());
-        assertEquals("objective_validation", proposal.getCandidateShortages().get(0).getScope());
-        assertEquals("objective_validation_not_improved", proposal.getCandidateShortages().get(0).getReasonCode());
+        assertEquals("candidate_pool", proposal.getCandidateShortages().get(0).getScope());
+        assertEquals("candidate_pool_insufficient", proposal.getCandidateShortages().get(0).getReasonCode());
     }
 
     @Test

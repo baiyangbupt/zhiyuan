@@ -3301,12 +3301,14 @@ public class PlanningStateServiceTest {
                 .findFirst()
                 .orElse(null);
         assertNotNull(proposal);
-        assertEquals("cannot_satisfy", proposal.getStrategy());
+        // J5.2：delta 的策略是“补足”，候选不足时由状态/reason 表达 blocked，
+        // 不再把策略改写成笼统的 cannot_satisfy。
+        assertEquals("fill_missing_count", proposal.getStrategy());
         assertEquals("blocked", proposal.getStatus());
         assertEquals("blocked", proposal.getDryRunResult().getStatus());
         assertFalse(proposal.getRequiresConfirmation());
         assertTrue(proposal.getActions().isEmpty());
-        assertTrue(proposal.getBlockingReason().contains("无法补齐目标志愿数量"));
+        assertTrue(proposal.getBlockingReason().contains("修复预览没有让志愿数量更接近官方要求"));
         assertEquals(java.util.Collections.singletonList("candidate_pool_insufficient"), proposal.getBlockingReasonCodes());
         assertEquals(1, proposal.getCandidateShortages().size());
         assertEquals("candidate_pool", proposal.getCandidateShortages().get(0).getScope());
@@ -3314,7 +3316,7 @@ public class PlanningStateServiceTest {
         assertEquals(Integer.valueOf(2), proposal.getCandidateShortages().get(0).getRequiredCount());
         assertEquals(Integer.valueOf(1), proposal.getCandidateShortages().get(0).getCurrentCount());
         assertEquals(Integer.valueOf(1), proposal.getCandidateShortages().get(0).getShortageCount());
-        assertTrue(proposal.getDryRunResult().getMessage().contains("无法补齐目标志愿数量"));
+        assertTrue(proposal.getDryRunResult().getMessage().contains("修复预览没有让志愿数量更接近官方要求"));
     }
 
     @Test
@@ -4465,7 +4467,8 @@ public class PlanningStateServiceTest {
                 .findFirst()
                 .orElse(null);
         assertNotNull(proposal);
-        assertEquals("cannot_satisfy", proposal.getStrategy());
+        // J5.2：数量超上限的默认策略是“移除风险项/精简”，不再落到笼统的 cannot_satisfy。
+        assertEquals("remove_risk_items", proposal.getStrategy());
         assertEquals("blocked", proposal.getStatus());
         assertEquals(java.util.Collections.singletonList("count_over_limit"), proposal.getBlockingReasonCodes());
         assertEquals(1, proposal.getCandidateShortages().size());
@@ -4594,7 +4597,9 @@ public class PlanningStateServiceTest {
                 .findFirst()
                 .orElse(null);
         assertNotNull(proposal);
-        assertEquals("blocked", proposal.getStatus());
+        // J5.2：配比修复是 preview_only（可看方向、不可自动应用）；候选不足的
+        // 归因仍通过 blockingReasonCodes/shortage 保留。
+        assertEquals("preview_only", proposal.getStatus());
         assertEquals(java.util.Collections.singletonList("tier_candidate_insufficient"), proposal.getBlockingReasonCodes());
         assertEquals(1, proposal.getCandidateShortages().size());
         assertEquals("hard_constraints", proposal.getCandidateShortages().get(0).getScope());
@@ -4634,7 +4639,8 @@ public class PlanningStateServiceTest {
                 .findFirst()
                 .orElse(null);
         assertNotNull(proposal);
-        assertEquals("blocked", proposal.getStatus());
+        // 同 ratio：断层修复保留 preview_only，但 shortage 归因不丢。
+        assertEquals("preview_only", proposal.getStatus());
         assertEquals(java.util.Collections.singletonList("probability_gap_candidate_insufficient"), proposal.getBlockingReasonCodes());
         assertEquals(1, proposal.getCandidateShortages().size());
         assertEquals("hard_constraints", proposal.getCandidateShortages().get(0).getScope());
@@ -5549,11 +5555,13 @@ public class PlanningStateServiceTest {
         assertEquals("risk", safetyGuard.getLevel());
         assertEquals("block", safetyGuard.getSeverity());
 
-        assertEquals(Integer.valueOf(1), reviewState.getSummary().getBlockCount());
+        // J5.2：count_validation 拆出 official probe；没有官方数量要求时它是
+        // unknown/block（硬判据无法确认），与 safety_guard 一起计 2 个 block。
+        assertEquals(Integer.valueOf(2), reviewState.getSummary().getBlockCount());
         assertEquals(Integer.valueOf(0), reviewState.getSummary().getActionCount());
         assertEquals(Integer.valueOf(0), reviewState.getSummary().getNoticeCount());
         assertEquals(Integer.valueOf(0), reviewState.getSummary().getInfoCount());
-        assertEquals(Integer.valueOf(1), reviewState.getSummary().getRiskCount());
+        assertEquals(Integer.valueOf(2), reviewState.getSummary().getRiskCount());
         assertEquals(Integer.valueOf(13), reviewState.getSummary().getPassedCount());
     }
 
@@ -5650,7 +5658,9 @@ public class PlanningStateServiceTest {
         assertEquals("sort_by_probability", res.getRepairReport().getStrategy());
         assertEquals(proposal.getProposalId(), res.getRepairReport().getProposalId());
         assertTrue(Boolean.TRUE.equals(res.getRepairReport().getPostValidationPassed()));
-        assertEquals(Integer.valueOf(0), res.getRepairReport().getAfterRiskCount());
+        // J5.2：排序修好了倒挂，但这个 fixture 没有省份/本地保底证据，safety_guard
+        // 仍是 unknown；hard probe 把 unknown 计为 block/risk。排序目标本身已通过。
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getAfterRiskCount());
         assertTrue(res.getRepairReport().getMessages().stream().anyMatch(message -> message.contains("录取率")));
         assertEquals(java.util.Arrays.asList("ps2_m2", "ps1_m1", "ps3_m3"),
                 res.getState().getOrderedPlanState().getItems().stream()
@@ -8930,7 +8940,9 @@ public class PlanningStateServiceTest {
         ReviewStateDTO reviewState = planningStateService.runReview(1L, 1L);
 
         assertEquals("completed", reviewState.getStatus());
-        assertEquals(Integer.valueOf(14), reviewState.getSummary().getTotal());
+        // J5.2：count_validation 拆成 official + target 两个 probe，summary 由 15 条
+        // findings 派生；兼容 checks 仍是 14 条。
+        assertEquals(Integer.valueOf(15), reviewState.getSummary().getTotal());
         assertTrue(reviewState.getChecks().stream().anyMatch(check -> "group_inner_safety_guard".equals(check.getCode()) && check.getPassed()));
         assertTrue(reviewState.getChecks().stream().anyMatch(check -> "count_validation".equals(check.getCode()) && !check.getPassed()));
         assertTrue(reviewState.getChecks().stream().anyMatch(check -> "safety_guard".equals(check.getCode()) && !check.getPassed()));

@@ -44,6 +44,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.RejectedExecutionException;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -422,7 +423,9 @@ public class ChatSessionBizServiceTest {
         PlanningStateVersionDTO versionDTO = new PlanningStateVersionDTO();
         versionDTO.setVersion(5);
         versionDTO.setStaleFlags(new StaleFlagsDTO());
-        when(planningStateService.applyScoreDetailUpdate(eq(SESSION_ID), any(CreateSessionReq.class), any(), eq(false)))
+        // 选科/优势学科由 subjectScoreList 派生后，preferenceChanged 可能为 true；
+        // 这个 stub 只关心版本回传，不对该布尔值设限。
+        when(planningStateService.applyScoreDetailUpdate(eq(SESSION_ID), any(CreateSessionReq.class), any(), anyBoolean()))
                 .thenReturn(versionDTO);
     }
 
@@ -444,8 +447,12 @@ public class ChatSessionBizServiceTest {
         assertEquals("2026-10-06T10:00:00+08:00", res.getVolunteerSourceDataFetchedAt());
 
         ArgumentCaptor<ChatSessionExtraData> captor = ArgumentCaptor.forClass(ChatSessionExtraData.class);
-        verify(chatSessionExtraDataSharedService).save(captor.capture());
-        ChatSessionExtraData saved = captor.getValue();
+        // 选科/优势学科派生会额外触发两条画像 upsert；这里只取成绩行。
+        verify(chatSessionExtraDataSharedService, Mockito.atLeastOnce()).save(captor.capture());
+        ChatSessionExtraData saved = captor.getAllValues().stream()
+                .filter(row -> ChatSessionExtraDataConstants.USER_SCORE_KEY.equals(row.getDataKey()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("补录必须落 userScoreDetail"));
         assertEquals(ChatSessionExtraDataConstants.USER_SCORE_KEY, saved.getDataKey());
         JSONObject dataValue = JSONObject.parseObject(saved.getDataValue());
         assertEquals(650, dataValue.getIntValue("totalScore"));
@@ -460,7 +467,7 @@ public class ChatSessionBizServiceTest {
         InOrder inOrder = inOrder(chatSessionExtraDataSharedService, volunteerSourceDataSyncService, planningStateService);
         inOrder.verify(chatSessionExtraDataSharedService).save(any(ChatSessionExtraData.class));
         inOrder.verify(volunteerSourceDataSyncService).fetchLatestSourceData(TENANT_ID, SESSION_ID, true);
-        inOrder.verify(planningStateService).applyScoreDetailUpdate(eq(SESSION_ID), any(CreateSessionReq.class), any(), eq(false));
+        inOrder.verify(planningStateService).applyScoreDetailUpdate(eq(SESSION_ID), any(CreateSessionReq.class), any(), anyBoolean());
         UserInfoThreadLocalUtil.remove();
     }
 

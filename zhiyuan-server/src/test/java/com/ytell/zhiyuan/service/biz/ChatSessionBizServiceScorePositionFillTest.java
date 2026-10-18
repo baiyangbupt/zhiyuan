@@ -73,6 +73,7 @@ public class ChatSessionBizServiceScorePositionFillTest {
     private PlanningStateService planningStateService;
     private ChatSessionSharedService chatSessionSharedService;
     private UserBizService userBizService;
+    private VolunteerDataProvider volunteerDataProvider;
 
     @BeforeEach
     void setUp() {
@@ -83,8 +84,12 @@ public class ChatSessionBizServiceScorePositionFillTest {
         gaotuService = mock(GaotuService.class);
         chatSessionSharedService = mock(ChatSessionSharedService.class);
         userBizService = mock(UserBizService.class);
+        // 选科/优势学科会从 subjectScoreList 派生，从而触发画像同步；这里补上画像 provider，
+        // 否则 syncUserProfileForScoreUpdate 会在未注入的字段上 NPE。
+        volunteerDataProvider = mock(VolunteerDataProvider.class);
 
         ReflectionTestUtils.setField(service, "chatSessionExtraDataSharedService", chatSessionExtraDataSharedService);
+        ReflectionTestUtils.setField(service, "volunteerDataProvider", volunteerDataProvider);
         ReflectionTestUtils.setField(service, "planningStateService", planningStateService);
         ReflectionTestUtils.setField(service, "volunteerSourceDataSyncService", volunteerSourceDataSyncService);
         ReflectionTestUtils.setField(service, "gaotuService", gaotuService);
