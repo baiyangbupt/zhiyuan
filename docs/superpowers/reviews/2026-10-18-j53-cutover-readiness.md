@@ -135,7 +135,9 @@ STAGED_SOLVER_GOLDEN_FILES="/path/state.json[|/path/pool.json],..." \
 -Dplanning.user-goal.freeze-apply.enabled=true
 ```
 
-（Java pid 2944；health 200；启动日志 0 ERROR。）
+（Java pid 27011；health 200；启动日志 0 ERROR。S4 版本兼容/20k 学费/
+fill 契约字段已在此进程生效；agent 18291 的 gateway 透传代码已提交，
+待其下次重启激活。）
 
 | 档位 | 验收 | 结果 |
 |---|---|---|
