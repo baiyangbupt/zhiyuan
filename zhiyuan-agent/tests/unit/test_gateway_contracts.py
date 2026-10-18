@@ -553,6 +553,73 @@ def test_replace_policy_is_rejected_for_non_add_units() -> None:
         )
 
 
+def test_remove_units_requires_targets_and_rejects_mixed_fields() -> None:
+    from app.gateway.contracts import ProposalRequest
+
+    request = ProposalRequest(
+        goal_type="remove_units",
+        source_version_guard=1,
+        exact_targets=[{"schoolName": "肇庆学院", "majorName": "地理科学"}],
+    )
+    assert request.goal_type == "remove_units"
+
+    with pytest.raises(ValidationError, match="remove_units requires exactTargets"):
+        ProposalRequest(goal_type="remove_units", source_version_guard=1, exact_targets=[])
+    with pytest.raises(ValidationError, match="cannot mix"):
+        ProposalRequest(
+            goal_type="remove_units",
+            source_version_guard=1,
+            exact_targets=[{"schoolName": "肇庆学院", "majorName": "地理科学"}],
+            target_scopes=[{"scope_type": "region", "name": "广东"}],
+        )
+
+
+def test_move_units_requires_one_target_and_position() -> None:
+    from app.gateway.contracts import ProposalRequest
+
+    target = [{"schoolName": "肇庆学院", "majorName": "地理科学"}]
+    top = ProposalRequest(
+        goal_type="move_units",
+        source_version_guard=1,
+        exact_targets=target,
+        move_position="top",
+    )
+    assert top.move_position == "top"
+
+    before = ProposalRequest(
+        goal_type="move_units",
+        source_version_guard=1,
+        exact_targets=target,
+        move_position="before",
+        move_anchor={"volunteerId": "v-anchor"},
+    )
+    assert before.move_anchor.volunteer_id == "v-anchor"
+
+    with pytest.raises(ValidationError, match="exactly one exactTarget"):
+        ProposalRequest(
+            goal_type="move_units",
+            source_version_guard=1,
+            exact_targets=target + [{"volunteerId": "v2"}],
+            move_position="top",
+        )
+    with pytest.raises(ValidationError, match="requires movePosition"):
+        ProposalRequest(goal_type="move_units", source_version_guard=1, exact_targets=target)
+    with pytest.raises(ValidationError, match="requires moveAnchor"):
+        ProposalRequest(
+            goal_type="move_units",
+            source_version_guard=1,
+            exact_targets=target,
+            move_position="before",
+        )
+    with pytest.raises(ValidationError, match="only supported for move_units"):
+        ProposalRequest(
+            goal_type="add_units",
+            source_version_guard=1,
+            exact_targets=target,
+            move_position="top",
+        )
+
+
 def test_add_units_rejects_empty_targets() -> None:
     from app.gateway.contracts import ProposalRequest
 

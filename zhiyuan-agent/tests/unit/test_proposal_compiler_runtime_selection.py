@@ -24,10 +24,11 @@ def _latest_result(*proposals, selected_proposal_id: str = ""):
     return result
 
 
-def test_current_plan_mutation_anchor_includes_unsupported_pin_lock_actions():
-    assert proposal_compiler.content_has_current_plan_mutation_anchor("把第一个志愿锁定在第一位") is True
-    assert proposal_compiler.content_has_current_plan_mutation_anchor("冲档第一位固定不要动") is True
+def test_current_plan_mutation_anchor_is_not_triggered_by_plain_questions():
+    assert proposal_compiler.content_has_current_plan_mutation_anchor("把第一个志愿移动到第一位") is True
+    assert proposal_compiler.content_has_current_plan_mutation_anchor("把第3个删除") is True
     assert proposal_compiler.content_has_current_plan_mutation_anchor("以后想考公但也怕太卷，先看看") is False
+    assert proposal_compiler.content_has_current_plan_mutation_anchor("这个方案先别动") is False
 
 
 def test_compile_no_plan_atomic_action_boundary_uses_structured_action_family():

@@ -286,12 +286,12 @@
     "utterance": "把最后两条删了",
     "goalFamily": "plan_mutation",
     "expectedAction": "remove_units",
-    "status": "planned",
-    "carrier": "remove_units（待实现）",
+    "status": "implemented",
+    "carrier": "proposalRequest(goalType=remove_units, exactTargets=[...])",
     "write": true,
     "slots": ["targets"],
     "ambiguity": null,
-    "failureBehavior": "该动作尚未支持；如实说明并给只读预览或分步建议，不假装已删除"
+    "failureBehavior": "移除目标无法解析或目标已锁定时在预览阶段阻断，如实说明；只移出确认条目，其他不动"
   },
   {
     "id": "T25",
@@ -310,24 +310,12 @@
     "utterance": "把 A 放到第一",
     "goalFamily": "plan_mutation",
     "expectedAction": "move_units",
-    "status": "planned",
-    "carrier": "move_units（待实现）",
+    "status": "implemented",
+    "carrier": "proposalRequest(goalType=move_units, exactTargets=[...], movePosition=...)",
     "write": true,
-    "slots": ["targets"],
+    "slots": ["targets", "position"],
     "ambiguity": null,
-    "failureBehavior": "该动作尚未支持；给只读顺序建议，不声称已改顺序"
-  },
-  {
-    "id": "T27",
-    "utterance": "这条锁死",
-    "goalFamily": "plan_mutation",
-    "expectedAction": "move_units",
-    "status": "planned",
-    "carrier": "move_units / pin（待实现）",
-    "write": true,
-    "slots": ["targets"],
-    "ambiguity": null,
-    "failureBehavior": "锁定尚未支持；说明当前只能给建议，不写业务状态"
+    "failureBehavior": "移动目标/位置/锚点无法解析时在预览阶段阻断，如实说明；只改顺序，不增删条目"
   },
   {
     "id": "T28",

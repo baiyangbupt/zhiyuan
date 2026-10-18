@@ -286,7 +286,7 @@ def summarize_unit_items(items: Any, *, sample_size: int) -> dict[str, Any]:
         if index < sample_size:
             sample = pick(
                 redact_value(unit),
-                ITEM_KEEP_KEYS + ["source", "locked", "pinned", "orderedBy", "orderReason", "schoolEnrollRatio"],
+                ITEM_KEEP_KEYS + ["source", "locked", "orderedBy", "orderReason", "schoolEnrollRatio"],
             )
             sample["majorItems"] = [pick(redact_value(m), ITEM_KEEP_KEYS) for m in majors[:3] if isinstance(m, dict)]
             sample["majorItemTotal"] = len(majors)

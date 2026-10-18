@@ -15,7 +15,9 @@ import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyRes;
+import com.ytell.zhiyuan.model.dto.planning.OrderedMoveReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanGenerateReq;
+import com.ytell.zhiyuan.model.dto.planning.OrderedUnitMoveReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitRemoveReq;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandReq;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes;
@@ -58,6 +60,8 @@ public class PendingPlanningCommandBizService {
     public static final String APPLY_CONSTRAINT_AND_REGENERATE = "apply_constraint_and_regenerate";
     public static final String ADD_UNITS = "add_units";
     public static final String REPLACE_UNITS = "replace_units";
+    public static final String REMOVE_UNITS = "remove_units";
+    public static final String MOVE_UNITS = "move_units";
     public static final String APPLY_PLAN_CHANGE_PROPOSAL = "apply_plan_change_proposal";
     /** 补录成绩（score_update 动作族）：执行体与表单补录同一条核心（`ChatSessionBizService`）。 */
     public static final String UPDATE_SCORE_DETAIL = "update_score_detail";
@@ -169,6 +173,10 @@ public class PendingPlanningCommandBizService {
         List<String> addUnitsAddedUnitIds = new ArrayList<String>();
         List<String> planActionRemovedVolunteerIds = new ArrayList<String>();
         List<String> planActionRemovedUnitIds = new ArrayList<String>();
+        List<String> planActionMovedVolunteerIds = new ArrayList<String>();
+        List<String> planActionMovedUnitIds = new ArrayList<String>();
+        Integer planActionFromPosition = null;
+        Integer planActionToPosition = null;
         Integer addUnitsAddedVolunteerCount = null;
         Integer addUnitsAddedUnitCount = null;
         Integer addUnitsRemovedCount = null;
@@ -210,7 +218,10 @@ public class PendingPlanningCommandBizService {
             } else {
                 state = planningStateService.getPlanningState(chatSessionId);
             }
-        } else if (ADD_UNITS.equals(req.getCommandType()) || REPLACE_UNITS.equals(req.getCommandType())) {
+        } else if (ADD_UNITS.equals(req.getCommandType())
+                || REPLACE_UNITS.equals(req.getCommandType())
+                || REMOVE_UNITS.equals(req.getCommandType())
+                || MOVE_UNITS.equals(req.getCommandType())) {
             if (REPLACE_UNITS.equals(req.getCommandType()) && frozenCommand != null) {
                 // 新链路：替换只认 pending 冻结的“换入 + 换出”集合；请求层字段只做比对。
                 ReplaceUnitsExecution execution = executeReplaceUnitsWithFrozen(
@@ -228,7 +239,41 @@ public class PendingPlanningCommandBizService {
                 addUnitsReviewState = execution.reviewState;
                 addUnitsPostcondition = execution.postconditionReport;
                 explicitStatus = "applied";
+            } else if (REMOVE_UNITS.equals(req.getCommandType()) && frozenCommand != null) {
+                RemoveUnitsExecution execution = executeRemoveUnitsWithFrozen(
+                        tenantId, chatSessionId, frozenCommand, steps);
+                state = execution.state;
+                planActionRemovedVolunteerIds = execution.removedVolunteerIds;
+                planActionRemovedUnitIds = execution.removedUnitIds;
+                addUnitsAddedVolunteerCount = 0;
+                addUnitsAddedUnitCount = 0;
+                addUnitsRemovedCount = execution.removedVolunteerCount;
+                addUnitsTargetBefore = execution.targetCountBefore;
+                addUnitsTargetAfter = execution.targetCountAfter;
+                addUnitsReviewState = execution.reviewState;
+                addUnitsPostcondition = execution.postconditionReport;
+                explicitStatus = "applied";
+            } else if (MOVE_UNITS.equals(req.getCommandType()) && frozenCommand != null) {
+                MoveUnitsExecution execution = executeMoveUnitsWithFrozen(
+                        tenantId, chatSessionId, frozenCommand, steps);
+                state = execution.state;
+                planActionMovedVolunteerIds = execution.movedVolunteerIds;
+                planActionMovedUnitIds = execution.movedUnitIds;
+                planActionFromPosition = execution.fromPosition;
+                planActionToPosition = execution.toPosition;
+                addUnitsAddedVolunteerCount = 0;
+                addUnitsAddedUnitCount = 0;
+                addUnitsRemovedCount = 0;
+                addUnitsTargetBefore = execution.targetCountBefore;
+                addUnitsTargetAfter = execution.targetCountAfter;
+                addUnitsReviewState = execution.reviewState;
+                addUnitsPostcondition = execution.postconditionReport;
+                explicitStatus = "applied";
             } else {
+                if (REMOVE_UNITS.equals(req.getCommandType()) || MOVE_UNITS.equals(req.getCommandType())) {
+                    throw new BusinessException(40001,
+                            req.getCommandType() + " requires frozenCommand");
+                }
                 if (REPLACE_UNITS.equals(req.getCommandType())) {
                     // legacy（无冻结命令）替换仍按请求字段执行；冻结命令缺失时不允许空动作静默成功。
                     if ((req.getUnitIds() == null || req.getUnitIds().isEmpty())
@@ -323,6 +368,10 @@ public class PendingPlanningCommandBizService {
             result.setTargetCountAfter(addUnitsTargetAfter);
             result.setReviewState(addUnitsReviewState);
         }
+        result.setMovedVolunteerIds(planActionMovedVolunteerIds);
+        result.setMovedUnitIds(planActionMovedUnitIds);
+        result.setFromPosition(planActionFromPosition);
+        result.setToPosition(planActionToPosition);
         if (APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())) {
             result.setPostconditionReport(postconditionValidator.validate(req, state, proposalApplyRes));
             steps.add("postcondition_verified");
@@ -419,6 +468,36 @@ public class PendingPlanningCommandBizService {
                     && !requestedRemoved.equals(new LinkedHashSet<String>(frozenRemoved))) {
                 throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
                         "command content mismatch: removedUnitIds");
+            }
+        } else if (REMOVE_UNITS.equals(req.getCommandType())) {
+            Set<String> requestedRemoved = new LinkedHashSet<String>(stringList(req.getVolunteerIds()));
+            if (!requestedRemoved.isEmpty()
+                    && !requestedRemoved.equals(new LinkedHashSet<String>(
+                    stringList(frozen.get("removedVolunteerIds"))))) {
+                throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
+                        "command content mismatch: removedVolunteerIds");
+            }
+            Set<String> requestedRemovedUnits = new LinkedHashSet<String>(stringList(req.getUnitIds()));
+            if (!requestedRemovedUnits.isEmpty()
+                    && !requestedRemovedUnits.equals(new LinkedHashSet<String>(
+                    stringList(frozen.get("removedUnitIds"))))) {
+                throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
+                        "command content mismatch: removedUnitIds");
+            }
+        } else if (MOVE_UNITS.equals(req.getCommandType())) {
+            String frozenTargetVolunteer = stringValue(frozen.get("targetVolunteerId"));
+            Set<String> requestedMoved = new LinkedHashSet<String>(stringList(req.getVolunteerIds()));
+            if (!requestedMoved.isEmpty()
+                    && !(requestedMoved.size() == 1 && requestedMoved.contains(frozenTargetVolunteer))) {
+                throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
+                        "command content mismatch: targetVolunteerId");
+            }
+            String frozenTargetUnit = stringValue(frozen.get("targetUnitId"));
+            Set<String> requestedMovedUnits = new LinkedHashSet<String>(stringList(req.getUnitIds()));
+            if (!requestedMovedUnits.isEmpty()
+                    && !(requestedMovedUnits.size() == 1 && requestedMovedUnits.contains(frozenTargetUnit))) {
+                throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
+                        "command content mismatch: targetUnitId");
             }
         } else {
             return;
@@ -715,6 +794,319 @@ public class PendingPlanningCommandBizService {
         return execution;
     }
 
+    private RemoveUnitsExecution executeRemoveUnitsWithFrozen(Long tenantId, Long chatSessionId,
+                                                              Map<String, Object> frozen,
+                                                              List<String> steps) {
+        List<String> removedVolunteerIds = stringList(frozen.get("removedVolunteerIds"));
+        List<String> removedUnitIds = stringList(frozen.get("removedUnitIds"));
+        if (removedVolunteerIds.isEmpty() && removedUnitIds.isEmpty()) {
+            throw new BusinessException(40001, "remove_units requires frozen remove sets");
+        }
+        Integer override = intValue(frozen.get("targetCountOverride"));
+        boolean rerunReview = Boolean.TRUE.equals(frozen.get("rerunReview"));
+
+        PlanningStateDTO before = planningStateService.getPlanningState(chatSessionId);
+        boolean unitMode = isUnitMode(before);
+        Set<String> beforeVolunteerIds = workingVolunteerIds(before);
+        Set<String> beforeUnitIds = workingUnitIds(before);
+        int beforeCount = unitMode ? beforeUnitIds.size() : beforeVolunteerIds.size();
+        if (unitMode) {
+            if (removedUnitIds.isEmpty()) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "remove_units frozen remove unit set is empty");
+            }
+            for (String unitId : removedUnitIds) {
+                if (!beforeUnitIds.contains(unitId)) {
+                    throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                            "remove_units postcondition failed: remove unit missing " + unitId);
+                }
+            }
+        } else {
+            if (removedVolunteerIds.isEmpty()) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "remove_units frozen remove item set is empty");
+            }
+            for (String volunteerId : removedVolunteerIds) {
+                if (!beforeVolunteerIds.contains(volunteerId)) {
+                    throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                            "remove_units postcondition failed: remove item missing " + volunteerId);
+                }
+            }
+        }
+
+        if (override != null) {
+            planningStateService.updateSelectionTargetCount(chatSessionId, override);
+            steps.add("selection_target_updated");
+        }
+        if (unitMode) {
+            OrderedUnitRemoveReq removeReq = new OrderedUnitRemoveReq();
+            removeReq.setUnitIds(removedUnitIds);
+            planningStateService.removeOrderedUnits(chatSessionId, removeReq);
+            steps.add("ordered_units_removed");
+        } else {
+            DraftRemoveReq removeReq = new DraftRemoveReq();
+            removeReq.setVolunteerIds(removedVolunteerIds);
+            planningStateService.removeWorkingPlanItems(chatSessionId, removeReq);
+            steps.add("working_plan_items_removed");
+        }
+        PlanningStateDTO state = planningStateService.generateOrderedPlan(
+                tenantId, chatSessionId, forceOrderedRegenerate());
+        steps.add("ordered_plan_regenerated");
+
+        Set<String> afterVolunteerIds = workingVolunteerIds(state);
+        Set<String> afterUnitIds = workingUnitIds(state);
+        Set<String> orderedVolunteerIds = orderedVolunteerIds(state);
+        Set<String> orderedUnitIds = orderedUnitIds(state);
+        for (String volunteerId : removedVolunteerIds) {
+            if (afterVolunteerIds.contains(volunteerId) || orderedVolunteerIds.contains(volunteerId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "remove_units postcondition failed: removed item still present " + volunteerId);
+            }
+        }
+        for (String unitId : removedUnitIds) {
+            if (afterUnitIds.contains(unitId) || orderedUnitIds.contains(unitId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "remove_units postcondition failed: removed unit still present " + unitId);
+            }
+        }
+        Set<String> untouchedVolunteerIds = new LinkedHashSet<String>(beforeVolunteerIds);
+        untouchedVolunteerIds.removeAll(new LinkedHashSet<String>(removedVolunteerIds));
+        for (String volunteerId : untouchedVolunteerIds) {
+            if (!afterVolunteerIds.contains(volunteerId) || !orderedVolunteerIds.contains(volunteerId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "remove_units postcondition failed: untouched item missing " + volunteerId);
+            }
+        }
+        if (!beforeVolunteerIds.containsAll(afterVolunteerIds)) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "remove_units postcondition failed: unexpected additions");
+        }
+        int removedCountMode = unitMode ? removedUnitIds.size() : removedVolunteerIds.size();
+        int afterCount = unitMode ? afterUnitIds.size() : afterVolunteerIds.size();
+        int expectedCount = override != null ? override : beforeCount - removedCountMode;
+        if (afterCount != expectedCount) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "remove_units postcondition failed: target=" + expectedCount + " actual=" + afterCount);
+        }
+
+        ReviewStateDTO reviewState = null;
+        if (rerunReview) {
+            try {
+                reviewState = planningStateService.runReview(tenantId, chatSessionId);
+            } catch (Exception ex) {
+                throw new BusinessException(REVIEW_FAILED_CODE,
+                        "review_failed: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
+            }
+            state = planningStateService.getPlanningState(chatSessionId);
+            steps.add("review_rerun");
+        }
+
+        RemoveUnitsExecution execution = new RemoveUnitsExecution();
+        execution.state = state;
+        execution.removedVolunteerIds = new ArrayList<String>(removedVolunteerIds);
+        execution.removedUnitIds = new ArrayList<String>(removedUnitIds);
+        execution.removedVolunteerCount = removedCountMode;
+        execution.targetCountBefore = beforeCount;
+        execution.targetCountAfter = afterCount;
+        execution.reviewState = reviewState;
+
+        PlanChangePostconditionReportDTO report = new PlanChangePostconditionReportDTO();
+        report.setGoalType("remove_units");
+        report.setCountMode(unitMode ? "unit" : "volunteer");
+        report.setTargetCount(expectedCount);
+        report.setActualCount(afterCount);
+        report.setAddedVolunteerCount(0);
+        report.setAffectedUnitCount(0);
+        report.setRemovedVolunteerCount(removedCountMode);
+        report.setSatisfied(true);
+        execution.postconditionReport = report;
+        return execution;
+    }
+
+    private MoveUnitsExecution executeMoveUnitsWithFrozen(Long tenantId, Long chatSessionId,
+                                                          Map<String, Object> frozen,
+                                                          List<String> steps) {
+        String targetVolunteerId = stringValue(frozen.get("targetVolunteerId"));
+        String targetUnitId = stringValue(frozen.get("targetUnitId"));
+        Integer targetPosition = intValue(frozen.get("targetPosition"));
+        Integer fromPosition = intValue(frozen.get("fromPosition"));
+        if (targetPosition == null || targetPosition <= 0) {
+            throw new BusinessException(40001, "move_units requires targetPosition");
+        }
+        boolean rerunReview = Boolean.TRUE.equals(frozen.get("rerunReview"));
+
+        PlanningStateDTO before = planningStateService.getPlanningState(chatSessionId);
+        boolean unitMode = isUnitMode(before);
+        String targetKey = unitMode ? targetUnitId : targetVolunteerId;
+        if (Strings.isNullOrEmpty(targetKey)) {
+            throw new BusinessException(40001,
+                    unitMode ? "move_units requires targetUnitId" : "move_units requires targetVolunteerId");
+        }
+        List<String> beforeSequence = orderedSequence(before, unitMode);
+        int beforeIndex = beforeSequence.indexOf(targetKey);
+        if (beforeIndex < 0) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "move_units postcondition failed: target not in ordered plan " + targetKey);
+        }
+        Set<String> beforeVolunteerIds = workingVolunteerIds(before);
+        int beforeCount = beforeSequence.size();
+
+        PlanningStateDTO state;
+        if (unitMode) {
+            OrderedUnitMoveReq moveReq = new OrderedUnitMoveReq();
+            moveReq.setUnitId(targetKey);
+            moveReq.setTargetPosition(targetPosition);
+            state = planningStateService.moveOrderedUnit(chatSessionId, moveReq);
+            steps.add("ordered_unit_moved");
+        } else {
+            OrderedMoveReq moveReq = new OrderedMoveReq();
+            moveReq.setVolunteerId(targetKey);
+            moveReq.setTargetPosition(targetPosition);
+            state = planningStateService.moveOrderedItem(chatSessionId, moveReq);
+            steps.add("ordered_item_moved");
+        }
+
+        List<String> afterSequence = orderedSequence(state, unitMode);
+        if (afterSequence.size() != beforeSequence.size()) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "move_units postcondition failed: plan size changed");
+        }
+        int afterIndex = afterSequence.indexOf(targetKey);
+        if (afterIndex < 0) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "move_units postcondition failed: target missing after move");
+        }
+        if (afterIndex + 1 != targetPosition) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "move_units postcondition failed: target position=" + (afterIndex + 1)
+                            + " expected=" + targetPosition);
+        }
+        List<String> beforeWithout = new ArrayList<String>(beforeSequence);
+        beforeWithout.remove(targetKey);
+        List<String> afterWithout = new ArrayList<String>(afterSequence);
+        afterWithout.remove(targetKey);
+        if (!beforeWithout.equals(afterWithout)) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "move_units postcondition failed: other items reordered");
+        }
+        Set<String> afterVolunteerIds = workingVolunteerIds(state);
+        if (!beforeVolunteerIds.equals(afterVolunteerIds)) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "move_units postcondition failed: item set changed");
+        }
+
+        ReviewStateDTO reviewState = null;
+        if (rerunReview) {
+            try {
+                reviewState = planningStateService.runReview(tenantId, chatSessionId);
+            } catch (Exception ex) {
+                throw new BusinessException(REVIEW_FAILED_CODE,
+                        "review_failed: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
+            }
+            state = planningStateService.getPlanningState(chatSessionId);
+            steps.add("review_rerun");
+        }
+
+        MoveUnitsExecution execution = new MoveUnitsExecution();
+        execution.state = state;
+        execution.movedUnitIds = new ArrayList<String>();
+        execution.movedVolunteerIds = new ArrayList<String>();
+        if (unitMode) {
+            execution.movedUnitIds.add(targetKey);
+            execution.movedVolunteerIds.addAll(movedVolunteersInUnit(state, targetKey));
+        } else {
+            execution.movedVolunteerIds.add(targetKey);
+        }
+        execution.fromPosition = fromPosition != null ? fromPosition : beforeIndex + 1;
+        execution.toPosition = targetPosition;
+        execution.targetCountBefore = beforeCount;
+        execution.targetCountAfter = afterSequence.size();
+        execution.reviewState = reviewState;
+
+        PlanChangePostconditionReportDTO report = new PlanChangePostconditionReportDTO();
+        report.setGoalType("move_units");
+        report.setCountMode(unitMode ? "unit" : "volunteer");
+        report.setTargetCount(afterSequence.size());
+        report.setActualCount(afterSequence.size());
+        report.setAddedVolunteerCount(0);
+        report.setAffectedUnitCount(unitMode ? 1 : 0);
+        report.setRemovedVolunteerCount(0);
+        report.setSatisfied(true);
+        execution.postconditionReport = report;
+        return execution;
+    }
+
+    private static List<String> orderedSequence(PlanningStateDTO state, boolean unitMode) {
+        List<String> result = new ArrayList<String>();
+        if (state == null || state.getOrderedPlanState() == null) {
+            return result;
+        }
+        if (unitMode) {
+            for (OrderedUnitDTO unit : defaultList(state.getOrderedPlanState().getUnits())) {
+                if (unit != null && !Strings.isNullOrEmpty(unit.getUnitId())
+                        && !result.contains(unit.getUnitId())) {
+                    result.add(unit.getUnitId());
+                }
+            }
+            if (!result.isEmpty()) {
+                return result;
+            }
+            for (OrderedItemDTO item : defaultList(state.getOrderedPlanState().getItems())) {
+                if (item == null || Strings.isNullOrEmpty(item.getVolunteerId())) {
+                    continue;
+                }
+                int separator = item.getVolunteerId().indexOf('_');
+                String unitId = separator > 0 ? item.getVolunteerId().substring(0, separator) : item.getVolunteerId();
+                if (!result.contains(unitId)) {
+                    result.add(unitId);
+                }
+            }
+            return result;
+        }
+        for (OrderedItemDTO item : defaultList(state.getOrderedPlanState().getItems())) {
+            if (item != null && !Strings.isNullOrEmpty(item.getVolunteerId())
+                    && !result.contains(item.getVolunteerId())) {
+                result.add(item.getVolunteerId());
+            }
+        }
+        return result;
+    }
+
+    private static List<String> movedVolunteersInUnit(PlanningStateDTO state, String unitId) {
+        List<String> result = new ArrayList<String>();
+        if (state == null || state.getOrderedPlanState() == null) {
+            return result;
+        }
+        for (OrderedUnitDTO unit : defaultList(state.getOrderedPlanState().getUnits())) {
+            if (unit == null || !unitId.equals(unit.getUnitId())) {
+                continue;
+            }
+            for (PlanningUnitMajorDTO major : defaultList(unit.getMajorItems())) {
+                if (major != null && !Strings.isNullOrEmpty(major.getVolunteerId())
+                        && !result.contains(major.getVolunteerId())) {
+                    result.add(major.getVolunteerId());
+                }
+            }
+        }
+        if (!result.isEmpty()) {
+            return result;
+        }
+        for (OrderedItemDTO item : defaultList(state.getOrderedPlanState().getItems())) {
+            if (item == null || Strings.isNullOrEmpty(item.getVolunteerId())) {
+                continue;
+            }
+            String itemUnit = item.getVolunteerId();
+            int separator = itemUnit.indexOf('_');
+            if (separator > 0) {
+                itemUnit = itemUnit.substring(0, separator);
+            }
+            if (unitId.equals(itemUnit) && !result.contains(item.getVolunteerId())) {
+                result.add(item.getVolunteerId());
+            }
+        }
+        return result;
+    }
+
     private static boolean isUnitMode(PlanningStateDTO state) {
         return state != null && state.getCandidatePoolState() != null
                 && "majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel());
@@ -798,6 +1190,14 @@ public class PendingPlanningCommandBizService {
         return result;
     }
 
+    private static String stringValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return Strings.isNullOrEmpty(text) ? null : text;
+    }
+
     private static Integer intValue(Object value) {
         if (value instanceof Number) {
             return ((Number) value).intValue();
@@ -838,6 +1238,29 @@ public class PendingPlanningCommandBizService {
         private Integer addedVolunteerCount;
         private Integer addedUnitCount;
         private Integer removedVolunteerCount;
+        private Integer targetCountBefore;
+        private Integer targetCountAfter;
+        private ReviewStateDTO reviewState;
+        private PlanChangePostconditionReportDTO postconditionReport;
+    }
+
+    private static final class RemoveUnitsExecution {
+        private PlanningStateDTO state;
+        private List<String> removedVolunteerIds = new ArrayList<String>();
+        private List<String> removedUnitIds = new ArrayList<String>();
+        private Integer removedVolunteerCount;
+        private Integer targetCountBefore;
+        private Integer targetCountAfter;
+        private ReviewStateDTO reviewState;
+        private PlanChangePostconditionReportDTO postconditionReport;
+    }
+
+    private static final class MoveUnitsExecution {
+        private PlanningStateDTO state;
+        private List<String> movedVolunteerIds = new ArrayList<String>();
+        private List<String> movedUnitIds = new ArrayList<String>();
+        private Integer fromPosition;
+        private Integer toPosition;
         private Integer targetCountBefore;
         private Integer targetCountAfter;
         private ReviewStateDTO reviewState;
@@ -892,6 +1315,10 @@ public class PendingPlanningCommandBizService {
         compact.setAddedUnitIds(new ArrayList<String>(source.getAddedUnitIds()));
         compact.setRemovedVolunteerIds(new ArrayList<String>(source.getRemovedVolunteerIds()));
         compact.setRemovedUnitIds(new ArrayList<String>(source.getRemovedUnitIds()));
+        compact.setMovedVolunteerIds(new ArrayList<String>(source.getMovedVolunteerIds()));
+        compact.setMovedUnitIds(new ArrayList<String>(source.getMovedUnitIds()));
+        compact.setFromPosition(source.getFromPosition());
+        compact.setToPosition(source.getToPosition());
         compact.setAddedVolunteerCount(source.getAddedVolunteerCount());
         compact.setAddedUnitCount(source.getAddedUnitCount());
         compact.setRemovedVolunteerCount(source.getRemovedVolunteerCount());
@@ -968,6 +1395,8 @@ public class PendingPlanningCommandBizService {
         if (!APPLY_CONSTRAINT_AND_REGENERATE.equals(req.getCommandType())
                 && !ADD_UNITS.equals(req.getCommandType())
                 && !REPLACE_UNITS.equals(req.getCommandType())
+                && !REMOVE_UNITS.equals(req.getCommandType())
+                && !MOVE_UNITS.equals(req.getCommandType())
                 && !APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())
                 && !UPDATE_SCORE_DETAIL.equals(req.getCommandType())) {
             throw new BusinessException(40001, "unsupported commandType: " + req.getCommandType());

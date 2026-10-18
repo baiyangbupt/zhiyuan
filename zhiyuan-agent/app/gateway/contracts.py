@@ -313,6 +313,8 @@ class ProposalRequest(_ContractModel):
         "prioritize_within_tier",
         "add_units",
         "add_units_by_scope",
+        "remove_units",
+        "move_units",
     ]
     user_original_text: str = ""
     confidence: Literal["low", "medium", "high"] = "medium"
@@ -357,6 +359,20 @@ class ProposalRequest(_ContractModel):
             "用户明确说“总数不变 / 换掉 / 替换”时才用 replace；其余提案保持 expand。"
         ),
     )
+    move_position: Literal["top", "bottom", "before", "after"] | None = Field(
+        default=None,
+        description=(
+            "仅 move_units 使用：移到 top/bottom，或锚点条目的 before/after。"
+            "一次只移动一条（专业组模式下按组移动），不增删条目。"
+        ),
+    )
+    move_anchor: ExactTarget | None = Field(
+        default=None,
+        description=(
+            "仅 move_units 且 movePosition=before/after 时使用：锚点条目"
+            "（schoolName+majorName 或 volunteerId）。"
+        ),
+    )
     tier_quota_goal: ProposalTierQuota | None = None
     requirements: list[ProposalRequirement] = Field(default_factory=list)
     # 同档前置"只支持一条"（2026-10-13 实测，会话 10041981）在 **Java 侧**是硬约束
@@ -383,12 +399,19 @@ class ProposalRequest(_ContractModel):
     def _validate_exact_targets(self) -> "ProposalRequest":
         is_add = self.goal_type == "add_units"
         is_scope_add = self.goal_type == "add_units_by_scope"
+        is_remove = self.goal_type == "remove_units"
+        is_move = self.goal_type == "move_units"
+        is_exact_action = is_add or is_remove or is_move
         if self.add_policy == "replace" and not is_add:
             raise ValueError("addPolicy=replace is only supported for add_units")
         if is_add and not self.exact_targets:
             raise ValueError("add_units requires exactTargets")
-        if not is_add and not is_scope_add and self.exact_targets:
-            raise ValueError("exactTargets is only supported for add_units")
+        if is_remove and not self.exact_targets:
+            raise ValueError("remove_units requires exactTargets")
+        if is_move and len(self.exact_targets) != 1:
+            raise ValueError("move_units requires exactly one exactTarget")
+        if not is_exact_action and self.exact_targets:
+            raise ValueError("exactTargets is only supported for add/remove/move units")
         if is_scope_add:
             if self.add_count is None or self.add_count <= 0:
                 raise ValueError("add_units_by_scope requires addCount > 0")
@@ -404,10 +427,21 @@ class ProposalRequest(_ContractModel):
                 raise ValueError(
                     "add_units_by_scope only supports scopes/negativeScopes/context/guards"
                 )
+            if self.move_position is not None or self.move_anchor is not None:
+                raise ValueError("movePosition/moveAnchor are only supported for move_units")
             return self
+        if is_move:
+            if self.move_position is None:
+                raise ValueError("move_units requires movePosition")
+            if self.move_position in {"before", "after"} and self.move_anchor is None:
+                raise ValueError("movePosition=before/after requires moveAnchor")
+            if self.move_position in {"top", "bottom"} and self.move_anchor is not None:
+                raise ValueError("moveAnchor is only allowed for movePosition=before/after")
+        elif self.move_position is not None or self.move_anchor is not None:
+            raise ValueError("movePosition/moveAnchor are only supported for move_units")
         if not is_scope_add and self.add_count is not None:
             raise ValueError("addCount is only supported for add_units_by_scope")
-        if is_add and (
+        if is_exact_action and (
             self.target_count is not None
             or self.tier_quota_goal is not None
             or self.requirements
@@ -419,7 +453,7 @@ class ProposalRequest(_ContractModel):
             or self.source_review_issue_codes
         ):
             raise ValueError(
-                "add_units cannot mix with count/requirements/priority/tier/scopes/guards"
+                f"{self.goal_type} cannot mix with count/requirements/priority/tier/scopes/guards"
             )
         return self
 

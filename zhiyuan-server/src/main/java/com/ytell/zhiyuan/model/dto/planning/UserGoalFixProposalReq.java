@@ -27,8 +27,12 @@ public class UserGoalFixProposalReq {
     private List<PriorityRuleDTO> priorityRules = Lists.newArrayList();
     private List<ScopeDTO> targetScopes = Lists.newArrayList();
     private List<ScopeDTO> negativeScopes = Lists.newArrayList();
-    /** 点名加入（add_units）：精确的学校+专业目标；非 add_units 必须为空。 */
+    /** 点名加入/移除（add_units / remove_units）：精确的学校+专业目标；move_units 只取一个目标。 */
     private List<ExactTargetDTO> exactTargets = Lists.newArrayList();
+    /** 仅 move_units：top / bottom / before / after。 */
+    private String movePosition;
+    /** 仅 move_units 且 position=before/after：锚点条目（学校+专业或 volunteerId）。 */
+    private ExactTargetDTO moveAnchor;
     private List<String> qualityGuards = Lists.newArrayList();
     private List<String> tradeoffGuards = Lists.newArrayList();
     private List<String> sourceReviewIssueCodes = Lists.newArrayList();

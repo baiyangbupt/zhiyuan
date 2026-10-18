@@ -136,6 +136,9 @@ export function proposalCardStatusTagText({ status, actionStatus, pendingText } 
 export function proposalNeedsConfirmation({ status, actionStatus, requiresConfirmation } = {}) {
   const statusValue = String(status || '');
   if (DIFF_STATUS_NON_CONFIRMABLE.has(statusValue)) return false;
+  // applying 已在执行：只展示"确认中…"，不能再给确认/取消按钮。
+  // Java 只允许取消 active；把 applying 的取消画出来等于给一条走不通的路。
+  if (String(actionStatus || '') === 'applying') return false;
   if (isSettledProposalStatus(actionStatus)) return false;
   if (requiresConfirmation === false) return false;
   return statusValue !== '';
@@ -152,6 +155,9 @@ const FAILURE_TEXT_BY_CODE = {
   proposal_version_invalid: '这张卡的版本信息无法识别，请重新生成预览后再确认。',
   pending_revision_missing: '这条待确认已经结束或被取代，请重新生成预览后再确认。',
   action_not_executable: '这个动作当前不可执行，请按对话提示重新发起。',
+  // 执行后置条件不满足（Java 40905）：事务已整体回滚，方案保持原样。
+  // 典型：纯学费清理要替换的条目补不齐、数量会缩水 → 宁可不生效，也不静默减条。
+  '40905': '这次调整没有完全落实，系统已自动回滚，方案保持原样；请放宽条件或分段调整后再试。',
   // 整轮契约失败（`recoverable.error` 的复合串形态 ✓）：模型这轮引用的录取数据
   // 凭证没对上账本 → 网关先给过一次自动修复回合、修不好才把整轮作废 ✓
   //（2026-10-13 会话 10041981 实测：模型把两个招生单元拼成一个复合单元号 ✗）。
@@ -233,6 +239,9 @@ export const PROPOSAL_STRATEGY_TEXT = {
   only_keep_scope: '只保留目标范围',
   must_include_scope: '至少保留目标范围',
   exclude_scope: '避开目标范围',
+  add_units: '加入志愿',
+  remove_units: '移除志愿',
+  move_units: '调整顺序',
   prioritize_within_tier: '同档内优先',
   no_op: '仅需关注',
   cannot_satisfy: '暂不处理',

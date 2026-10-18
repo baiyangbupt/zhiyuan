@@ -867,8 +867,6 @@ ORDERED_PLAN_PAYLOAD: dict = {
             "majorName": "计算机科学与技术",
             "unitId": "unit-1",
             "locked": False,
-            "pinned": True,
-            "pinnedPosition": 1,
             "orderedBy": "manual",
             "orderReason": "用户指定",
             "source": "candidate",

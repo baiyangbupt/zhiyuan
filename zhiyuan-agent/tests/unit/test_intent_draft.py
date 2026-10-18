@@ -73,7 +73,7 @@ def test_multiple_mutations_need_negotiation_not_silent_composite():
     assert change_set.status == "needs_negotiation"
     assert {op.kind for op in change_set.operations} == {"add", "remove"}
     assert change_set.atomic is False
-    assert change_set.unsupported_actions == ["remove"]
+    assert change_set.unsupported_actions == []
 
 
 def test_readonly_action_does_not_create_write_change_set():
@@ -227,7 +227,7 @@ def test_constrain_with_additional_mutation_is_staged_not_ready():
     assert change_set.atomic is False
     assert [op.kind for op in change_set.operations] == ["constrain", "remove"]
     assert change_set.operations[1].targets[0].school_name == "B大学"
-    assert change_set.unsupported_actions == ["remove"]
+    assert change_set.unsupported_actions == []
 
 
 def test_tuition_constraint_with_replace_fill_mechanics_is_ready_atomic():
@@ -325,7 +325,7 @@ def test_add_units_by_scope_without_count_asks_for_clarification():
     assert "新增数量" in change_set.unresolved[0]
 
 
-def test_standalone_planned_action_is_blocked() -> None:
+def test_standalone_remove_is_supported() -> None:
     draft = IntentDraft(
         source_turn_id="t-remove-standalone",
         user_text="删掉 B",
@@ -337,14 +337,31 @@ def test_standalone_planned_action_is_blocked() -> None:
 
     change_set = build_change_set(draft)
 
-    assert change_set.status == "blocked"
-    assert change_set.atomic is False
-    assert change_set.unsupported_actions == ["remove"]
+    assert change_set.status == "ready"
+    assert change_set.atomic is True
+    assert change_set.unsupported_actions == []
     assert [op.kind for op in change_set.operations] == ["remove"]
-    assert "该动作尚未支持" in change_set.unresolved
 
 
-@pytest.mark.parametrize("action", ["move_units", "undo", "rollback"])
+def test_move_units_is_a_supported_structural_operation() -> None:
+    draft = IntentDraft(
+        source_turn_id="t-move",
+        user_text="把 B 放到第一",
+        goal_family="plan_mutation",
+        action="move_units",
+        targets=[{"school_name": "B大学", "major_name": "计算机"}],
+        validity="this_adjustment",
+    )
+
+    change_set = build_change_set(draft)
+
+    assert change_set.status == "ready"
+    assert change_set.atomic is True
+    assert change_set.unsupported_actions == []
+    assert [op.kind for op in change_set.operations] == ["move"]
+
+
+@pytest.mark.parametrize("action", ["undo", "rollback"])
 def test_raw_planned_action_names_do_not_fall_into_readonly_ready(action: str) -> None:
     draft = IntentDraft(
         source_turn_id=f"t-{action}",
@@ -413,7 +430,7 @@ def test_remove_primary_with_constraints_keeps_staged_constraint_step() -> None:
     assert change_set.status == "needs_constraints_first"
     assert change_set.atomic is False
     assert [op.kind for op in change_set.operations] == ["constrain", "remove"]
-    assert change_set.unsupported_actions == ["remove"]
+    assert change_set.unsupported_actions == []
 
 
 def test_prioritize_within_tier_is_implemented_not_planned_reorder() -> None:

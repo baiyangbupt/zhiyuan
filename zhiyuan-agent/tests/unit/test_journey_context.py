@@ -290,6 +290,40 @@ def test_context_text_prioritizes_component_freshness_over_compat_stale_flags() 
     assert "规则审查=fresh" in text
 
 
+def test_remove_and_move_are_available_with_a_plan() -> None:
+    context = from_snapshot(snapshot(journey_block()))
+    assert context is not None
+    assert "remove_units" in context.available_actions
+    assert "move_units" in context.available_actions
+
+
+def test_remove_survives_stale_data_but_move_needs_ordered_plan() -> None:
+    stale = from_snapshot(snapshot(journey_block(
+        candidateFreshness="stale",
+        planFreshness="stale",
+    )))
+    assert stale is not None
+    assert "remove_units" in stale.available_actions
+    assert "move_units" in stale.available_actions
+
+    working_only = from_snapshot(snapshot(journey_block(
+        planInterpretable=False,
+        orderedEntryCount=0,
+    )))
+    assert working_only is not None
+    assert "remove_units" in working_only.available_actions
+    assert "move_units" not in working_only.available_actions
+
+
+def test_tier_quota_blocks_remove_but_not_move() -> None:
+    context = from_snapshot(snapshot(journey_block(tierQuotaGoal=True)))
+    assert context is not None
+    assert "remove_units" not in context.available_actions
+    assert "move_units" in context.available_actions
+    reasons = {item.action: item.reason_code for item in blocked_actions(context)}
+    assert reasons["remove_units"] == "tier_quota_goal"
+
+
 def test_context_text_is_bounded_and_carries_plan_version() -> None:
     context = from_snapshot(snapshot(journey_block()))
     assert context is not None

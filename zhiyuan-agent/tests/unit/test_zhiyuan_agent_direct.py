@@ -7700,29 +7700,6 @@ async def test_preview_plan_action_move_recovers_source_position_from_raw_user_t
     assert atomic["target_position"] == 1
 
 
-async def test_preview_plan_action_pin_lock_is_unsupported_without_pending(mocker):
-    save_mock = mocker.patch(
-        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
-        AsyncMock(return_value={"code": 0}),
-    )
-
-    result = _load(
-        await preview_plan_action(
-            make_run_context(request_context=_direct_context()),
-            action="pin_lock",
-            targets=["第1个和第2个冲档"],
-            raw_user_text="帮我把方案里第1个和第2个冲档锁定 位置不要动",
-        )
-    )
-
-    assert result["next_step"] == "respond"
-    assert result["data"]["action_family"] == "pin_or_lock_unit"
-    assert result["data"]["unit_ids"] == ["unit-hnlg"]
-    assert result["data"]["requires_confirmation"] is False
-    assert "不会创建确认卡" in result["message"]
-    save_mock.assert_not_awaited()
-
-
 async def test_preview_plan_action_move_supports_tier_local_reorder_filters(mocker):
     save_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
@@ -11652,14 +11629,6 @@ class TestZhiyuanAgentLLMSelection:
         assert _contains_text(args.get("positive"), "清华")
         assert _contains_text(args.get("positive"), "北大") or _contains_text(args.get("positive"), "北京大学")
         assert _contains_text(args.get("positive"), "复旦")
-
-    async def test_plan_pin_lock_is_unsupported_plan_action(self):
-        _, calls, _ = await self._run_case("帮我把方案里第1个和第2个冲档锁定 位置不要动")
-        assert calls
-        assert calls[0].tool_name == "preview_plan_action"
-        args = _tool_args(calls[0])
-        assert args.get("action") == "pin_lock"
-        assert _contains_text(args.get("targets"), "冲")
 
     async def test_remove_specific_position_is_plan_action(self):
         _, calls, _ = await self._run_case("第3个不要了")

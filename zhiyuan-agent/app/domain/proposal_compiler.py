@@ -890,11 +890,6 @@ _CURRENT_PLAN_MUTATION_MARKERS = (
     "排一排",
     "移动",
     "挪到",
-    "锁定",
-    "固定",
-    "保护不动",
-    "不要动",
-    "别动",
 )
 
 _CURRENT_PLAN_ADD_MUTATION_MARKERS = (
@@ -929,16 +924,6 @@ def _content_is_pre_score_adjustment_policy_question(compact: str) -> bool:
         marker in compact for marker in ("后面咋调整", "后面怎么调整", "出分后咋调整", "出分后怎么调整")
     )
     return has_pre_score_context and has_future_adjustment_question
-
-
-_UNSUPPORTED_PIN_LOCK_ACTION_MARKERS = (
-    "锁定",
-    "固定",
-    "保护不动",
-    "位置不要动",
-    "不要动",
-    "别动",
-)
 
 
 def content_has_current_plan_mutation_anchor(content: str | None) -> bool:

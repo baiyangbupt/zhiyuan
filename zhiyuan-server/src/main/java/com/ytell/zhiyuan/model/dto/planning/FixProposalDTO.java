@@ -32,8 +32,13 @@ public class FixProposalDTO {
     private Integer removedCount;
     private Integer targetCountBefore;
     private Integer targetCountAfter;
-    /** add_units 需要持久化的新目标数；无已确认目标时为空（自然增长）。 */
+    /** add_units / remove_units 需要持久化的新目标数；无已确认目标时为空（自然变化）。 */
     private Integer targetCountOverride;
+    /** move_units 的移动目标与前后位置（1-based）；其他策略为空。 */
+    private String moveTargetVolunteerId;
+    private String moveTargetUnitId;
+    private Integer moveFromPosition;
+    private Integer moveToPosition;
     private FixProposalDryRunResultDTO dryRunResult = new FixProposalDryRunResultDTO();
     private String canonicalObjectiveDigest;
     private String solverVersion;

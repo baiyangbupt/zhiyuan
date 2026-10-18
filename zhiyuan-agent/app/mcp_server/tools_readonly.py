@@ -273,13 +273,13 @@ def _pick_comparison_row(rows: list[Any], year: int) -> dict[str, Any] | None:
 # 逐字透出：不改名、不补默认值、不合成——上游没给的键就不出现在结果里。
 _PLAN_ITEM_FIELDS = (
     "position", "volunteerId", "tier", "schoolName", "majorName",
-    "unitId", "cityName", "locked", "pinned",
+    "unitId", "cityName", "locked",
 )
 _PLAN_UNIT_FIELDS = (
     "position", "unitId", "planSchoolDataId", "schoolId", "schoolUnitCode",
     "tier", "schoolName", "provinceName", "cityName", "schoolNature",
     "admissionRatio", "finalScore", "schoolEnrollRatio", "totalMajorCount",
-    "locked", "pinned", "majorItems",
+    "locked", "majorItems",
 )
 _PLAN_MAJOR_FIELDS = (
     "volunteerId", "majorId", "majorName", "majorCode", "tier",

@@ -242,13 +242,25 @@ def _actual_changes(data: Mapping[str, Any]) -> list[dict[str, Any]]:
         return [item for item in changes if isinstance(item, dict)]
     added = data.get("addedVolunteerIds")
     removed = data.get("removedVolunteerIds")
-    if (isinstance(added, list) and added) or (isinstance(removed, list) and removed):
-        is_replace = (
-            str(data.get("commandType") or "") == "replace_units"
-            or (isinstance(removed, list) and bool(removed))
-        )
+    moved = data.get("movedVolunteerIds")
+    if (
+        (isinstance(added, list) and added)
+        or (isinstance(removed, list) and removed)
+        or (isinstance(moved, list) and moved)
+    ):
+        command = str(data.get("commandType") or "")
+        if command == "remove_units":
+            change_type = "remove"
+        elif command == "move_units":
+            change_type = "move"
+        elif command == "replace_units" or (
+            isinstance(added, list) and added and isinstance(removed, list) and removed
+        ):
+            change_type = "replace"
+        else:
+            change_type = "add"
         change = {
-            "type": "replace" if is_replace else "add",
+            "type": change_type,
             "volunteerIds": added if isinstance(added, list) else [],
             "addedCount": data.get("addedVolunteerCount"),
             "addedUnitCount": data.get("addedUnitCount"),
@@ -256,11 +268,18 @@ def _actual_changes(data: Mapping[str, Any]) -> list[dict[str, Any]]:
             "targetCountBefore": data.get("targetCountBefore"),
             "targetCountAfter": data.get("targetCountAfter"),
         }
-        if is_replace:
+        if change_type in {"replace", "remove"}:
             change["removedVolunteerIds"] = removed if isinstance(removed, list) else []
             change["removedUnitIds"] = (
                 data.get("removedUnitIds") if isinstance(data.get("removedUnitIds"), list) else []
             )
+        if change_type == "move":
+            change["movedVolunteerIds"] = moved if isinstance(moved, list) else []
+            change["movedUnitIds"] = (
+                data.get("movedUnitIds") if isinstance(data.get("movedUnitIds"), list) else []
+            )
+            change["fromPosition"] = data.get("fromPosition")
+            change["toPosition"] = data.get("toPosition")
         return [change]
     # 约束类命令没有逐条 added/removed；回执至少要能说"总数前后 + 缺口"。
     # 没有它，卡上只能显示"已生效"，而方案可能已经从 51 组缩到 36 组（2026-10-18 真栈）。
@@ -925,10 +944,12 @@ async def _execute_claimed_command(
     elif str(active_data.get("commandType") or active.get("commandType") or "").strip() in {
         "add_units",
         "replace_units",
+        "remove_units",
+        "move_units",
     }:
-        # 点名加入/等量替换：命令内容以 pending 的 frozenCommand 为准；网关只发 5 个字段，
-        # 跳过 proposalApply/canonical/region/major 解析。换入/换出集合、targetCountOverride、
-        # rerunReview 都由 Java 从 frozen 读取。
+        # 方案原子动作（加入/替换/移除/移动）：命令内容以 pending 的 frozenCommand 为准；
+        # 网关只发 5 个字段，跳过 proposalApply/canonical/region/major 解析。
+        # 换入/换出/移动目标、targetCountOverride、rerunReview 都由 Java 从 frozen 读取。
         command_type = str(
             active_data.get("commandType") or active.get("commandType") or ""
         ).strip()

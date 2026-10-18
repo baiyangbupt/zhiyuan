@@ -562,8 +562,6 @@ export interface PlanningOrderedItem {
   schoolName?: string;
   majorName?: string;
   locked?: boolean;
-  pinned?: boolean;
-  pinnedPosition?: number;
   orderedBy?: string;
   orderReason?: string;
   source?: string;
@@ -621,8 +619,6 @@ export interface PlanningOrderedUnit {
   schoolName?: string;
   source?: string;
   locked?: boolean;
-  pinned?: boolean;
-  pinnedPosition?: number;
   orderedBy?: string;
   orderReason?: string;
   position?: number;

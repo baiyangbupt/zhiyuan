@@ -105,33 +105,6 @@
       ]
     },
     {
-      "name": "400-g16-plan-local-pin-or-lock-action",
-      "sessionId": "9904216",
-      "cloneBackendStateFromSessionId": "26",
-      "coverage": [
-        "G16",
-        "plan_action",
-        "unsupported_pin_lock",
-        "no_pending"
-      ],
-      "prompts": [
-        {
-          "profileCaseId": "G16-plan-local-pin-or-lock-action",
-          "prompt": "帮我把方案里第1个和第2个冲档锁定 位置不要动",
-          "assertContainsAny": [
-            "锁定",
-            "位置",
-            "暂不支持",
-            "不能"
-          ],
-          "assertNoFollowups": true,
-          "expectedToolNames": [
-            "preview_plan_action"
-          ]
-        }
-      ]
-    },
-    {
       "name": "400-g17-tier-local-reorder",
       "sessionId": "9904217",
       "cloneBackendStateFromSessionId": "26",

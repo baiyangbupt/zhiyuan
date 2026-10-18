@@ -53,7 +53,7 @@ def test_release_410_m0_manifest_matches_quality_gate_and_case_steps():
     for name, expected_steps in {**final_files, **live_files}.items():
         assert _case_step_count(EXAMPLES / name) == expected_steps, name
 
-    assert sum(final_files.values()) == manifest["finalActionGate"]["expectedStepCount"] == 178
+    assert sum(final_files.values()) == manifest["finalActionGate"]["expectedStepCount"] == 177
     assert sum(live_files.values()) == manifest["liveGate"]["expectedStepCount"] == 231
 
 

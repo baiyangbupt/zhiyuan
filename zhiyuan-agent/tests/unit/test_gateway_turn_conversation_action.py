@@ -438,6 +438,132 @@ async def test_replace_units_confirm_uses_frozen_command_and_skips_proposal_appl
 
 
 @pytest.mark.asyncio
+async def test_remove_units_confirm_uses_frozen_command_and_reports_removed(monkeypatch):
+    resolver = _Recorder([
+        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "completed"},
+    ])
+    executor = _Recorder([
+        {
+            "code": 0,
+            "status": "applied",
+            "data": {
+                "stateVersion": 7,
+                "commandType": "remove_units",
+                "addedVolunteerCount": 0,
+                "addedUnitCount": 0,
+                "removedVolunteerIds": ["v2"],
+                "removedUnitIds": ["u2"],
+                "removedVolunteerCount": 1,
+                "targetCountBefore": 2,
+                "targetCountAfter": 1,
+            },
+        },
+    ])
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolver)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", executor)
+
+    workspace = _workspace()
+    workspace["activeProposal"] = {
+        "proposalRef": "pending-3",
+        "pendingId": "pending-3",
+        "sourceVersion": 5,
+        "revision": 1,
+        "kind": "plan_action",
+        "data": {
+            "operationId": "op-3",
+            "commandType": "remove_units",
+            "sourceVersion": 5,
+        },
+    }
+    codex = _CodexHarness(_output({
+        "actionType": "confirm_proposal",
+        "proposalRef": "pending-3",
+        "expectedSourceVersion": 5,
+        "intent": "explicit",
+    }))
+    gateway, _ = _gateway(codex, workspace)
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result
+    assert result["actionResult"]["actionStatus"] == "applied"
+    change = result["actionResult"]["actualChanges"][0]
+    assert change["type"] == "remove"
+    assert change["removedVolunteerIds"] == ["v2"]
+    assert change["removedUnitIds"] == ["u2"]
+    assert change["removedCount"] == 1
+    assert change["targetCountBefore"] == 2
+    assert change["targetCountAfter"] == 1
+    _, execute_kwargs = executor.calls[0]
+    assert execute_kwargs["command_type"] == "remove_units"
+    assert "proposal_apply" not in execute_kwargs
+    assert "volunteer_ids" not in execute_kwargs
+    assert "unit_ids" not in execute_kwargs
+
+
+@pytest.mark.asyncio
+async def test_move_units_confirm_uses_frozen_command_and_reports_positions(monkeypatch):
+    resolver = _Recorder([
+        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "completed"},
+    ])
+    executor = _Recorder([
+        {
+            "code": 0,
+            "status": "applied",
+            "data": {
+                "stateVersion": 7,
+                "commandType": "move_units",
+                "movedVolunteerIds": ["v2"],
+                "movedUnitIds": [],
+                "fromPosition": 2,
+                "toPosition": 1,
+                "targetCountBefore": 2,
+                "targetCountAfter": 2,
+            },
+        },
+    ])
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolver)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", executor)
+
+    workspace = _workspace()
+    workspace["activeProposal"] = {
+        "proposalRef": "pending-4",
+        "pendingId": "pending-4",
+        "sourceVersion": 5,
+        "revision": 1,
+        "kind": "plan_action",
+        "data": {
+            "operationId": "op-4",
+            "commandType": "move_units",
+            "sourceVersion": 5,
+        },
+    }
+    codex = _CodexHarness(_output({
+        "actionType": "confirm_proposal",
+        "proposalRef": "pending-4",
+        "expectedSourceVersion": 5,
+        "intent": "explicit",
+    }))
+    gateway, _ = _gateway(codex, workspace)
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result
+    assert result["actionResult"]["actionStatus"] == "applied"
+    change = result["actionResult"]["actualChanges"][0]
+    assert change["type"] == "move"
+    assert change["movedVolunteerIds"] == ["v2"]
+    assert change["fromPosition"] == 2
+    assert change["toPosition"] == 1
+    _, execute_kwargs = executor.calls[0]
+    assert execute_kwargs["command_type"] == "move_units"
+    assert "proposal_apply" not in execute_kwargs
+    assert "volunteer_ids" not in execute_kwargs
+
+
+@pytest.mark.asyncio
 async def test_confirm_cannot_be_combined_with_a_new_proposal_draft():
     """确认 + 新条件 = 纠正，不是原卡确认；契约层直接拒绝同轮 confirm+新草稿。"""
     output = _output({

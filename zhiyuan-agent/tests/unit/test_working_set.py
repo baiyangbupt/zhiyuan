@@ -307,12 +307,12 @@ def test_working_set_clears_blocked_planned_task_draft() -> None:
     working_set.task_draft = {"stale": True}
     output = TurnOutput(
         responseType="text",
-        message="删除动作尚未支持。",
+        message="回退动作尚未支持。",
         intentDraft={
             "sourceTurnId": "turn-1",
-            "userText": "删掉 B",
+            "userText": "把上一步撤销",
             "goalFamily": "plan_mutation",
-            "action": "remove",
+            "action": "undo",
             "targets": [{"schoolName": "B大学", "majorName": "计算机"}],
             "validity": "this_adjustment",
         },

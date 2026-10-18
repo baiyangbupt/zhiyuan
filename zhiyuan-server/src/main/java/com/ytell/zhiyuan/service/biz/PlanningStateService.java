@@ -928,7 +928,12 @@ public class PlanningStateService {
                     boolean replaceUnits = addUnits && "add_units".equalsIgnoreCase(goalType)
                             && "replace".equalsIgnoreCase(
                                     Strings.nullToEmpty(req == null ? null : req.getAddPolicy()).trim());
-                    String planActionCommand = replaceUnits ? "replace_units" : "add_units";
+                    boolean removeUnits = "remove_units".equalsIgnoreCase(goalType);
+                    boolean moveUnits = "move_units".equalsIgnoreCase(goalType);
+                    boolean planAction = addUnits || removeUnits || moveUnits;
+                    String planActionCommand = replaceUnits ? "replace_units"
+                            : removeUnits ? "remove_units"
+                            : moveUnits ? "move_units" : "add_units";
                     Map<String, Object> dataValue = new LinkedHashMap<String, Object>();
                     dataValue.put("operationId", operationId);
                     dataValue.put("proposalSource", "user_goal");
@@ -948,15 +953,16 @@ public class PlanningStateService {
                         // 不落的话确认那一刻必然 `409 canonical Proposal 元数据缺失`，
                         // 卡上只显示"未生效"，看起来像写链坏了
                         // （2026-09-27 真栈实测）。空值不落：网关按"非空才透传"读。
-                        // add_units 不走 apply_plan_change_proposal，不需要 canonical 三件套。
-                        if (!addUnits) {
+                        // 方案原子动作（add/replace/remove/move）不走 apply_plan_change_proposal，
+                        // 不需要 canonical 三件套。
+                        if (!planAction) {
                             putIfNotBlank(dataValue, "canonicalObjectiveDigest", primary.getCanonicalObjectiveDigest());
                             putIfNotBlank(dataValue, "solverVersion", primary.getSolverVersion());
                             putIfNotBlank(dataValue, "solverInputDigest", primary.getSolverInputDigest());
                         }
                     }
-                    if (addUnits && primary != null) {
-                        // 点名加入/替换的**冻结命令**：执行时必须以此为准，调用方传的命令字段
+                    if (planAction && primary != null) {
+                        // 方案原子动作的**冻结命令**：执行时必须以此为准，调用方传的命令字段
                         // 只能用来比对（40908），不能改写它。digest 覆盖命令内容，含 operationId。
                         List<String> addedVolunteerIds = defaultList(primary.getAffectedVolunteerIds());
                         List<String> addedUnitIds = defaultList(primary.getAffectedUnitIds());
@@ -979,19 +985,32 @@ public class PlanningStateService {
                             removedUnitIds = removedUnitIds.stream()
                                     .filter(value -> !Strings.isNullOrEmpty(value)).distinct()
                                     .collect(Collectors.toList());
+                        } else if (removeUnits) {
+                            // remove 的 affected 集合就是待移出集合；换入集合为空。
+                            removedVolunteerIds = addedVolunteerIds;
+                            removedUnitIds = addedUnitIds;
+                            addedVolunteerIds = Lists.newArrayList();
+                            addedUnitIds = Lists.newArrayList();
                         }
                         dataValue.put("kind", "plan_action");
-                        dataValue.put("goalType", "add_units");
+                        dataValue.put("goalType", addUnits ? "add_units" : goalType.toLowerCase(Locale.ROOT));
                         dataValue.put("commandType", planActionCommand);
                         dataValue.put("volunteerIds", addedVolunteerIds);
                         dataValue.put("targetCountOverride", primary.getTargetCountOverride());
                         dataValue.put("rerunReview", true);
                         dataValue.put("summary", primary.getSummary());
                         dataValue.put("affectedItems", primary.getAffectedItems());
-                        if (replaceUnits) {
+                        if (replaceUnits || removeUnits) {
                             dataValue.put("addedUnitIds", addedUnitIds);
                             dataValue.put("removedVolunteerIds", removedVolunteerIds);
                             dataValue.put("removedUnitIds", removedUnitIds);
+                        }
+                        if (moveUnits) {
+                            dataValue.put("moveTargetVolunteerId", primary.getMoveTargetVolunteerId());
+                            dataValue.put("moveTargetUnitId", primary.getMoveTargetUnitId());
+                            dataValue.put("fromPosition", primary.getMoveFromPosition());
+                            dataValue.put("toPosition", primary.getMoveToPosition());
+                            dataValue.put("targetPosition", primary.getMoveToPosition());
                         }
                         Map<String, Object> frozenCommand = new LinkedHashMap<String, Object>();
                         frozenCommand.put("commandType", planActionCommand);
@@ -1001,6 +1020,14 @@ public class PlanningStateService {
                             frozenCommand.put("removedVolunteerIds", removedVolunteerIds);
                             frozenCommand.put("addedUnitIds", addedUnitIds);
                             frozenCommand.put("removedUnitIds", removedUnitIds);
+                        } else if (removeUnits) {
+                            frozenCommand.put("removedVolunteerIds", removedVolunteerIds);
+                            frozenCommand.put("removedUnitIds", removedUnitIds);
+                        } else if (moveUnits) {
+                            frozenCommand.put("targetVolunteerId", primary.getMoveTargetVolunteerId());
+                            frozenCommand.put("targetUnitId", primary.getMoveTargetUnitId());
+                            frozenCommand.put("targetPosition", primary.getMoveToPosition());
+                            frozenCommand.put("fromPosition", primary.getMoveFromPosition());
                         } else {
                             frozenCommand.put("volunteerIds", addedVolunteerIds);
                         }
@@ -1018,8 +1045,8 @@ public class PlanningStateService {
                     // 取值与 legacy 同一约定：uuid。同一个 requestId 重放时 work 不会再跑
                     // （prepareOnce 直接回放已存的结果），所以不会造出第二个 pending ✓。
                     upsert.setPendingId(UUID.randomUUID().toString());
-                    upsert.setKind(addUnits ? "plan_action" : "plan_change_proposal");
-                    upsert.setActionFamily(addUnits ? planActionCommand : "apply_plan_change_proposal");
+                    upsert.setKind(planAction ? "plan_action" : "plan_change_proposal");
+                    upsert.setActionFamily(planAction ? planActionCommand : "apply_plan_change_proposal");
                     upsert.setDataValue(dataValue);
                     // **CAS 修订号**（2026-10-07 F09 实测）：已有 pending 行时按修订号**替换**
                     // ——与补录成绩路径（`ChatSessionBizService#prepareScoreUpdateProposal`）同口径。
@@ -1453,6 +1480,13 @@ public class PlanningStateService {
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
             RepairApplyMutationBuilder.MutationResult result =
                     RepairApplyMutationBuilder.applyReplaceVolunteers(state, effectiveCandidates, proposal);
+            ensureFixMutationApplied(result);
+            return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
+        }
+        if (RepairProposalTaxonomy.Strategy.REMOVE_UNITS.equals(strategy)) {
+            List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+            RepairApplyMutationBuilder.MutationResult result =
+                    RepairApplyMutationBuilder.applyUserGoalActions(state, effectiveCandidates, proposal);
             ensureFixMutationApplied(result);
             return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
         }

@@ -5,12 +5,12 @@
   "productionBehaviorChanged": false,
   "finalActionGate": {
     "expectedFileCount": 24,
-    "expectedStepCount": 178,
+    "expectedStepCount": 177,
     "lastFullResult": {"passed": 178, "failed": 0, "warnings": 0},
     "metricsDirectory": "/private/tmp/zhiyuan_410_m0_final_action_gate_clean_13",
     "caseFiles": {
       "dialog_regression_400_direct_confirm_execution_cases.json": 4,
-      "dialog_regression_400_g1_g32_direct_cases.json": 23,
+      "dialog_regression_400_g1_g32_direct_cases.json": 22,
       "dialog_regression_400_realistic_user_cases.json": 14,
       "dialog_regression_400_v143_constraint_apply_cases.json": 2,
       "dialog_regression_400_v150_candidate_view_cases.json": 2,

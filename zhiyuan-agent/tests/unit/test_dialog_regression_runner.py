@@ -584,19 +584,19 @@ def test_case_session_ids_deduplicates_in_order():
 def test_runtime_observation_preserves_unsupported_local_action_route():
     observation = runner._build_runtime_observation(
         {
-            "name": "pin-lock",
+            "name": "undo-action",
             "sessionId": "26",
             "planningStateProfile": {"formalPlanPresent": True, "pendingExists": False},
         },
         {
-            "profileCaseId": "G16-plan-local-pin-or-lock-action",
-            "prompt": "帮我把方案里第1个和第2个冲档锁定 位置不要动",
+            "profileCaseId": "G16-plan-local-undo-action",
+            "prompt": "帮我把方案回退一步",
         },
         {
-            "case": "pin-lock",
+            "case": "undo-action",
             "stepIndex": 1,
             "sessionId": "26",
-            "prompt": "帮我把方案里第1个和第2个冲档锁定 位置不要动",
+            "prompt": "帮我把方案回退一步",
             "elapsedMs": 5000,
             "turnObservability": {
                 "routingPath": "direct_local_plan_action_unsupported",
@@ -607,8 +607,8 @@ def test_runtime_observation_preserves_unsupported_local_action_route():
                 "routeDecision": {
                     "route": "local_plan_action_unsupported",
                     "sideEffect": "plan_preview_or_clarification",
-                    "actionFamily": "pin_or_lock_unit",
-                    "unsupportedAction": "pin_or_lock_unit",
+                    "actionFamily": "undo",
+                    "unsupportedAction": "undo",
                 },
             },
         },
@@ -631,7 +631,7 @@ def test_runtime_observation_preserves_unsupported_local_action_route():
     assert runtime["outputType"] == "plan_mutation_or_unsupported"
     assert runtime["pendingType"] == "none"
     assert runtime["displayPayload"]["presentation"] == "conditional_options"
-    assert runtime["replyFocus"] == ["pin_or_lock_unit"]
+    assert runtime["replyFocus"] == ["undo"]
     assert runtime["workspaceRefreshTargets"] == ["ordered"]
     assert runtime["executionPayload"]["kind"] == "conditional_plan_mutation"
 

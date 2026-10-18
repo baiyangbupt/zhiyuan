@@ -93,6 +93,7 @@ test('每个网关自产的拒绝码都有中文映射（proposal_reference_mism
     'pending_revision_missing',
     'action_not_executable',
     'admission_evidence_missing',
+    '40905',
   ]) {
     const text = proposalFailureText({ code, message: 'internal english message' });
     assert.match(text, new RegExp(`^\\[${code}\\] `), `${code} 要带锚点`);
@@ -337,6 +338,17 @@ test('ready 卡行为不变：仍"待确认"、仍配确认按钮（唯一的等
   assert.equal(proposalNeedsConfirmation({ status: 'ready', requiresConfirmation: true }), true);
 });
 
+test('applying 不再给确认/取消按钮：Java 只允许取消 active', () => {
+  assert.equal(
+    proposalNeedsConfirmation({ status: 'ready', actionStatus: 'applying', requiresConfirmation: true }),
+    false,
+  );
+  assert.equal(
+    proposalNeedsConfirmation({ status: 'ready', requiresConfirmation: true }),
+    true,
+  );
+});
+
 test("动作结果（actionStatus）行为不变：'active' → '待处理'，且优先于提案状态表", () => {
   assert.equal(proposalCardStatusTagText({ actionStatus: 'active' }), '待处理');
   assert.equal(proposalCardStatusTagText({ status: 'ready', actionStatus: 'active' }), '待处理');
@@ -503,4 +515,9 @@ test('无 proposalRef → 不画（旧判据第一条逐字保留）；已落定
     coldFallbackProposalVisible({ proposalRef: 'p', actionStatus: 'applied', hasTurns: false }),
     true,
   );
+});
+
+test('J4b 新增动作有中文 strategy 名', () => {
+  assert.equal(proposalStrategyLabel('remove_units'), '移除志愿');
+  assert.equal(proposalStrategyLabel('move_units'), '调整顺序');
 });

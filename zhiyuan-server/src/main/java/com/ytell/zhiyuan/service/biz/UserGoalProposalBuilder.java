@@ -16,6 +16,7 @@ import com.ytell.zhiyuan.model.dto.planning.FixProposalStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardPlanningObjectivesDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
@@ -215,6 +216,12 @@ final class UserGoalProposalBuilder {
         }
         if (RepairProposalTaxonomy.Strategy.ADD_UNITS.equals(goalType)) {
             return buildAddUnitsProposal(state, req);
+        }
+        if (RepairProposalTaxonomy.Strategy.REMOVE_UNITS.equals(goalType)) {
+            return buildRemoveUnitsProposal(state, req);
+        }
+        if (RepairProposalTaxonomy.Strategy.MOVE_UNITS.equals(goalType)) {
+            return buildMoveUnitsProposal(state, req);
         }
         return buildBlockedProposal(state, req, goalType, REASON_ENGINE_NOT_READY);
     }
@@ -432,6 +439,19 @@ final class UserGoalProposalBuilder {
     private static final String REASON_ADD_UNITS_DRY_RUN = "add_units_dry_run_failed";
     private static final String REASON_ADD_UNITS_DRY_RUN_UNAVAILABLE = "add_units_dry_run_unavailable";
     private static final String REASON_REPLACE_UNITS_INSUFFICIENT = "replace_units_insufficient_removable";
+    private static final String REASON_REMOVE_UNITS_NO_PLAN = "remove_units_no_plan";
+    private static final String REASON_REMOVE_UNITS_TARGET_NOT_FOUND = "remove_units_target_not_found";
+    private static final String REASON_REMOVE_UNITS_TARGET_AMBIGUOUS = "remove_units_target_ambiguous";
+    private static final String REASON_REMOVE_UNITS_TARGET_LOCKED = "remove_units_target_locked";
+    private static final String REASON_REMOVE_UNITS_COUNT_MISMATCH = "remove_units_target_count_mismatch";
+    private static final String REASON_REMOVE_UNITS_TIER_QUOTA = "remove_units_tier_quota_unsupported";
+    private static final String REASON_REMOVE_UNITS_DRY_RUN = "remove_units_dry_run_failed";
+    private static final String REASON_REMOVE_UNITS_DRY_RUN_UNAVAILABLE = "remove_units_dry_run_unavailable";
+    private static final String REASON_REMOVE_UNITS_WOULD_EMPTY = "remove_units_would_empty_plan";
+    private static final String REASON_MOVE_UNITS_NO_ORDERED = "move_units_no_ordered_plan";
+    private static final String REASON_MOVE_UNITS_TARGET = "move_units_target_invalid";
+    private static final String REASON_MOVE_UNITS_POSITION = "move_units_position_invalid";
+    private static final String REASON_MOVE_UNITS_ANCHOR = "move_units_anchor_invalid";
 
     private static FixProposalDTO buildAddUnitsProposal(PlanningStateDTO state,
                                                         UserGoalFixProposalReq req) {
@@ -791,6 +811,520 @@ final class UserGoalProposalBuilder {
         private int countInMode(boolean majorGroupMode) {
             return majorGroupMode ? unitIds.size() : volunteerIds.size();
         }
+    }
+
+    // ── 移除（remove_units）：精确移除集合，其他条目不动 ─────────────────────
+
+    private static FixProposalDTO buildRemoveUnitsProposal(PlanningStateDTO state,
+                                                           UserGoalFixProposalReq req) {
+        boolean unitMode = isMajorGroupMode(state);
+        List<PlanVolunteer> current = currentPlanVolunteers(state, candidates(state));
+        if (current.isEmpty()) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.REMOVE_UNITS,
+                    REASON_REMOVE_UNITS_NO_PLAN, "当前没有正式方案，没有可移除的条目。");
+        }
+        HardPlanningObjectivesDTO hard = state == null || state.getConstraintState() == null
+                ? null : state.getConstraintState().getHardPlanningObjectives();
+        if (hard != null && hard.getTierQuotaGoal() != null) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.REMOVE_UNITS,
+                    REASON_REMOVE_UNITS_TIER_QUOTA,
+                    "移除会改变已确认的冲稳保配额；请先调整配额，再生成移除预览。");
+        }
+        Set<String> currentVolunteerIds = current.stream().map(PlanVolunteer::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> currentUnitIds = current.stream().map(UserGoalProposalBuilder::planUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        int currentCount = unitMode ? currentUnitIds.size() : currentVolunteerIds.size();
+        List<UserGoalFixProposalReq.ExactTargetDTO> targets =
+                defaultList(req == null ? null : req.getExactTargets());
+        if (targets.isEmpty()) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.REMOVE_UNITS,
+                    REASON_REMOVE_UNITS_TARGET_NOT_FOUND, "没有收到要移除的院校+专业。");
+        }
+        ReplaceRemoval removal = new ReplaceRemoval();
+        String problemReason = null;
+        String problemMessage = null;
+        for (UserGoalFixProposalReq.ExactTargetDTO target : targets) {
+            PlanTargetResolution resolution = resolvePlanTarget(current, target);
+            if (resolution.reason != null) {
+                problemReason = resolution.reason;
+                problemMessage = resolution.message;
+                break;
+            }
+            PlanVolunteer matched = resolution.volunteer;
+            if (unitMode) {
+                String unitId = planUnitKey(matched);
+                if (Strings.isNullOrEmpty(unitId)) {
+                    problemReason = REASON_REMOVE_UNITS_TARGET_NOT_FOUND;
+                    problemMessage = "这条志愿没有可识别的专业组，暂时不能整组移除。";
+                    break;
+                }
+                if (!removal.unitIds.add(unitId)) {
+                    continue;
+                }
+                for (PlanVolunteer member : current) {
+                    if (!unitId.equals(planUnitKey(member))) {
+                        continue;
+                    }
+                    if (member.isLocked()) {
+                        problemReason = REASON_REMOVE_UNITS_TARGET_LOCKED;
+                        problemMessage = "“" + member.getSchoolName() + "·" + member.getMajorName()
+                                + "”已锁定；请先解锁再移除。";
+                        break;
+                    }
+                    removal.volunteers.add(member);
+                    if (!Strings.isNullOrEmpty(member.getVolunteerId())) {
+                        removal.volunteerIds.add(member.getVolunteerId());
+                    }
+                }
+                if (problemReason != null) {
+                    break;
+                }
+            } else {
+                if (matched.isLocked()) {
+                    problemReason = REASON_REMOVE_UNITS_TARGET_LOCKED;
+                    problemMessage = "“" + matched.getSchoolName() + "·" + matched.getMajorName()
+                            + "”已锁定；请先解锁再移除。";
+                    break;
+                }
+                if (removal.volunteerIds.add(matched.getVolunteerId())) {
+                    removal.volunteers.add(matched);
+                }
+            }
+        }
+        if (problemReason != null) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.REMOVE_UNITS,
+                    problemReason, problemMessage);
+        }
+        int removedCountMode = removal.countInMode(unitMode);
+        if (removedCountMode <= 0) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.REMOVE_UNITS,
+                    REASON_REMOVE_UNITS_TARGET_NOT_FOUND, "没有解析出可移除的条目。");
+        }
+        int targetAfter = currentCount - removedCountMode;
+        if (targetAfter <= 0) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.REMOVE_UNITS,
+                    REASON_REMOVE_UNITS_WOULD_EMPTY, "这次会移除全部方案条目；请保留至少一条，或改用重新生成。");
+        }
+        Integer confirmedTarget = hard == null ? null : hard.getSelectionTargetCount();
+        if (confirmedTarget != null && confirmedTarget != currentCount) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.REMOVE_UNITS,
+                    REASON_REMOVE_UNITS_COUNT_MISMATCH,
+                    "当前方案实际 " + currentCount + (unitMode ? " 个专业组" : " 条")
+                            + "，与已确认目标 " + confirmedTarget + " 不一致；请先补齐/调整目标，再移除。");
+        }
+        Integer targetCountOverride = confirmedTarget == null ? null : targetAfter;
+        AddUnitsDryRun dryRun = dryRunRemoveUnits(state, current, removal, targetAfter, unitMode);
+        if (!dryRun.ok) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.REMOVE_UNITS,
+                    dryRun.reason, dryRun.message);
+        }
+
+        FixProposalDTO proposal = buildUserGoalPreviewBase(state, req,
+                RepairProposalTaxonomy.Strategy.REMOVE_UNITS, "移除志愿预览");
+        proposal.setStatus(RepairProposalTaxonomy.Status.READY);
+        proposal.setRequiresConfirmation(true);
+        proposal.setAffectedVolunteerIds(Lists.newArrayList(removal.volunteerIds));
+        proposal.setAffectedUnitIds(Lists.newArrayList(removal.unitIds));
+        proposal.setAffectedItems(removal.volunteers.stream()
+                .map(UserGoalProposalBuilder::toAffectedItem).collect(Collectors.toList()));
+        proposal.setAddedCount(0);
+        proposal.setAddedUnitCount(0);
+        proposal.setRemovedCount(removedCountMode);
+        proposal.setTargetCountBefore(confirmedTarget == null ? currentCount : confirmedTarget);
+        proposal.setTargetCountAfter(targetAfter);
+        proposal.setTargetCountOverride(targetCountOverride);
+        List<String> labels = planEntryLabels(removal.volunteers, unitMode);
+        proposal.setSummary("将移除 " + formatEntryCount(removedCountMode, unitMode)
+                + (labels.isEmpty() ? "" : "：" + String.join("、", labels))
+                + "；总数 " + proposal.getTargetCountBefore() + "→" + targetAfter
+                + "；其他条目不动。");
+        proposal.setImpact("确认后只移出这些条目，其他志愿不动；总数按移除后的实际数量更新。");
+        proposal.getActions().add(removeExactAction(removal, unitMode, labels));
+        populateFillDryRun(proposal, state, currentCount, targetAfter,
+                0, 0, removal.unitIds.size(), removal.volunteerIds.size(),
+                "移除 " + formatEntryCount(removedCountMode, unitMode) + "；其他条目不动。");
+        if (dryRun.solverResult != null) {
+            attachSolverMetadata(proposal, dryRun.objectiveSet, dryRun.solverResult);
+        }
+        return proposal;
+    }
+
+    private static FixProposalActionDTO removeExactAction(ReplaceRemoval removal,
+                                                          boolean unitMode,
+                                                          List<String> labels) {
+        FixProposalActionDTO action = new FixProposalActionDTO();
+        action.setActionType(RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS);
+        action.setLevel("volunteer");
+        action.setSummary("移除点名的院校+专业");
+        action.setDetail(appendEntryPreviewDetail(
+                "预计移出 " + formatEntryCount(removal.countInMode(unitMode), unitMode) + "。", labels));
+        action.setVolunteerIds(Lists.newArrayList(removal.volunteerIds));
+        action.setUnitIds(Lists.newArrayList(removal.unitIds));
+        action.setRemoveVolunteerIds(Lists.newArrayList(removal.volunteerIds));
+        action.setRemoveUnitIds(Lists.newArrayList(removal.unitIds));
+        action.setCandidateVolunteerIds(Lists.newArrayList());
+        action.setCandidateUnitIds(Lists.newArrayList());
+        populateActionTotals(action);
+        return action;
+    }
+
+    private static AddUnitsDryRun dryRunRemoveUnits(PlanningStateDTO state,
+                                                    List<PlanVolunteer> current,
+                                                    ReplaceRemoval removal,
+                                                    int targetAfter,
+                                                    boolean unitMode) {
+        AddUnitsDryRun result = new AddUnitsDryRun();
+        if (!CanonicalPlanningRuntime.hasSelectionObjectives(state)) {
+            result.ok = true;
+            return result;
+        }
+        try {
+            CanonicalPlanningObjectiveSetDTO objectiveSet = PlanningObjectiveCompiler.compileConfirmed(state);
+            CanonicalPlanningObjectiveSetDTO solverObjectiveSet = new CanonicalPlanningObjectiveSetDTO();
+            BeanUtils.copyProperties(objectiveSet, solverObjectiveSet);
+            solverObjectiveSet.setTargetCount(targetAfter);
+            FillCurrentProjection projection = new FillCurrentProjection();
+            projection.removeUnitIds.addAll(removal.unitIds);
+            projection.removeVolunteerIds.addAll(removal.volunteerIds);
+            List<CoverageEntity> retained = buildRetainedCoverageEntities(current, projection, unitMode);
+            PlanSolverResultDTO solved = PLAN_SOLVER.solve(buildSolverInput(
+                    solverObjectiveSet, retained, Lists.<FillOption>newArrayList(), unitMode, null));
+            result.objectiveSet = objectiveSet;
+            result.solverResult = solved;
+            if (RepairProposalTaxonomy.Status.BLOCKED.equals(solved.getStatus())) {
+                PlanSolverResultDTO.DiagnosticDTO diagnostic = solved.getDiagnostics().isEmpty()
+                        ? null : solved.getDiagnostics().get(0);
+                result.ok = false;
+                result.reason = REASON_REMOVE_UNITS_DRY_RUN;
+                result.message = diagnostic == null || Strings.isNullOrEmpty(diagnostic.getMessage())
+                        ? "移除后的方案无法同时满足已确认目标/约束，已在预览阶段阻断。"
+                        : diagnostic.getMessage();
+                return result;
+            }
+            Set<String> selected = new LinkedHashSet<String>(defaultList(solved.getSelectedEntityIds()));
+            Set<String> retainedIds = retained.stream().map(entity -> entity.entityId(unitMode))
+                    .filter(value -> !Strings.isNullOrEmpty(value)).collect(Collectors.toCollection(LinkedHashSet::new));
+            if (!selected.containsAll(retainedIds)) {
+                result.ok = false;
+                result.reason = REASON_REMOVE_UNITS_DRY_RUN;
+                result.message = "移除后的求解结果会顺带删掉未确认的条目，已在预览阶段阻断。";
+                return result;
+            }
+            Set<String> plannedRemoved = unitMode
+                    ? new LinkedHashSet<String>(removal.unitIds)
+                    : new LinkedHashSet<String>(removal.volunteerIds);
+            if (selected.stream().anyMatch(plannedRemoved::contains)) {
+                result.ok = false;
+                result.reason = REASON_REMOVE_UNITS_DRY_RUN;
+                result.message = "移除后的求解结果仍会保留这次要移出的条目，已在预览阶段阻断。";
+                return result;
+            }
+            if (selected.size() != targetAfter) {
+                result.ok = false;
+                result.reason = REASON_REMOVE_UNITS_DRY_RUN;
+                result.message = "移除后的求解数量与目标 " + targetAfter + " 不一致，已在预览阶段阻断。";
+                return result;
+            }
+            result.ok = true;
+            return result;
+        } catch (Exception ex) {
+            result.ok = false;
+            result.reason = REASON_REMOVE_UNITS_DRY_RUN_UNAVAILABLE;
+            result.message = "当前环境无法完成移除前的只读校验（dry-run），为避免确认后失败，本次不生成可确认卡。";
+            return result;
+        }
+    }
+
+    // ── 移动（move_units）：只改单条/单组位置，集合不变 ───────────────────────
+
+    private static FixProposalDTO buildMoveUnitsProposal(PlanningStateDTO state,
+                                                         UserGoalFixProposalReq req) {
+        boolean unitMode = isMajorGroupMode(state);
+        List<PlanVolunteer> current = currentPlanVolunteers(state, candidates(state));
+        List<String> sequence = orderedSequence(state, unitMode);
+        if (current.isEmpty() || sequence.isEmpty()) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.MOVE_UNITS,
+                    REASON_MOVE_UNITS_NO_ORDERED, "当前还没有正式排序方案；先排出一版 ordered 方案，再调整顺序。");
+        }
+        List<UserGoalFixProposalReq.ExactTargetDTO> targets =
+                defaultList(req == null ? null : req.getExactTargets());
+        if (targets.size() != 1) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.MOVE_UNITS,
+                    REASON_MOVE_UNITS_TARGET, "一次只能移动一条志愿（或一个专业组）；请指定唯一目标。");
+        }
+        PlanTargetResolution targetResolution = resolvePlanTarget(current, targets.get(0));
+        if (targetResolution.reason != null) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.MOVE_UNITS,
+                    REASON_MOVE_UNITS_TARGET, targetResolution.message);
+        }
+        PlanVolunteer target = targetResolution.volunteer;
+        String targetKey = unitMode ? planUnitKey(target) : target.getVolunteerId();
+        if (Strings.isNullOrEmpty(targetKey)) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.MOVE_UNITS,
+                    REASON_MOVE_UNITS_TARGET, "这条志愿没有可识别的移动单元。");
+        }
+        int fromIndex = sequence.indexOf(targetKey);
+        if (fromIndex < 0) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.MOVE_UNITS,
+                    REASON_MOVE_UNITS_NO_ORDERED, "目标不在当前 ordered 方案中，请先重生成正式方案。");
+        }
+        String position = normalizeMovePosition(req == null ? null : req.getMovePosition());
+        if (position == null) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.MOVE_UNITS,
+                    REASON_MOVE_UNITS_POSITION, "请说明要移到哪里（置顶 / 置底 / 某条之前 / 某条之后）。");
+        }
+        PlanVolunteer anchor = null;
+        if ("before".equals(position) || "after".equals(position)) {
+            if (req == null || req.getMoveAnchor() == null) {
+                return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.MOVE_UNITS,
+                        REASON_MOVE_UNITS_ANCHOR, "移到某条之前/之后需要给出锚点条目。");
+            }
+            PlanTargetResolution anchorResolution = resolvePlanTarget(current, req.getMoveAnchor());
+            if (anchorResolution.reason != null) {
+                return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.MOVE_UNITS,
+                        REASON_MOVE_UNITS_ANCHOR, anchorResolution.message);
+            }
+            anchor = anchorResolution.volunteer;
+        }
+        List<String> reduced = new ArrayList<String>(sequence);
+        reduced.remove(targetKey);
+        int insertIndex;
+        if ("top".equals(position)) {
+            insertIndex = 0;
+        } else if ("bottom".equals(position)) {
+            insertIndex = reduced.size();
+        } else {
+            String anchorKey = unitMode ? planUnitKey(anchor) : anchor.getVolunteerId();
+            int anchorIndex = reduced.indexOf(anchorKey);
+            if (anchorIndex < 0) {
+                return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.MOVE_UNITS,
+                        REASON_MOVE_UNITS_ANCHOR, "锚点不在当前 ordered 方案中，请先重生成正式方案。");
+            }
+            insertIndex = "before".equals(position) ? anchorIndex : anchorIndex + 1;
+        }
+        int toPosition = insertIndex + 1;
+        int fromPosition = fromIndex + 1;
+        if (toPosition == fromPosition) {
+            FixProposalDTO info = buildUserGoalPreviewBase(state, req,
+                    RepairProposalTaxonomy.Strategy.MOVE_UNITS, "移动志愿预览");
+            info.setStatus(RepairProposalTaxonomy.Status.INFO);
+            info.setSummary("这条志愿已经在目标位置，不需要移动。");
+            info.setImpact("方案不变。");
+            info.setRequiresConfirmation(false);
+            info.setRemovedCount(0);
+            info.setAddedCount(0);
+            info.setAddedUnitCount(0);
+            return info;
+        }
+
+        List<String> labels = planEntryLabels(Lists.newArrayList(target), unitMode);
+        String label = labels.isEmpty() ? "目标志愿" : labels.get(0);
+        FixProposalDTO proposal = buildUserGoalPreviewBase(state, req,
+                RepairProposalTaxonomy.Strategy.MOVE_UNITS, "移动志愿预览");
+        proposal.setStatus(RepairProposalTaxonomy.Status.READY);
+        proposal.setRequiresConfirmation(true);
+        proposal.setAffectedVolunteerIds(unitMode
+                ? current.stream().filter(member -> targetKey.equals(planUnitKey(member)))
+                .map(PlanVolunteer::getVolunteerId).filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList())
+                : Lists.newArrayList(target.getVolunteerId()));
+        proposal.setAffectedUnitIds(unitMode ? Lists.newArrayList(targetKey) : Lists.newArrayList());
+        proposal.setAffectedItems(Lists.newArrayList(toAffectedItem(target)));
+        proposal.setAddedCount(0);
+        proposal.setAddedUnitCount(0);
+        proposal.setRemovedCount(0);
+        int currentCount = sequence.size();
+        proposal.setTargetCountBefore(currentCount);
+        proposal.setTargetCountAfter(currentCount);
+        proposal.setMoveTargetVolunteerId(unitMode ? null : target.getVolunteerId());
+        proposal.setMoveTargetUnitId(unitMode ? targetKey : null);
+        proposal.setMoveFromPosition(fromPosition);
+        proposal.setMoveToPosition(toPosition);
+        proposal.setSummary("将「" + label + "」从第 " + fromPosition + " 位移到第 "
+                + toPosition + " 位；其他条目顺序不变。");
+        proposal.setImpact("确认后只调整这一条的位置，不增删任何志愿。");
+        proposal.getActions().add(moveExactAction(target, unitMode, fromPosition, toPosition, label));
+        populateFillDryRun(proposal, state, currentCount, currentCount, 0, 0, 0, 0,
+                "仅调整顺序；条目集合不变。");
+        return proposal;
+    }
+
+    private static FixProposalActionDTO moveExactAction(PlanVolunteer target,
+                                                        boolean unitMode,
+                                                        int fromPosition,
+                                                        int toPosition,
+                                                        String label) {
+        FixProposalActionDTO action = new FixProposalActionDTO();
+        action.setActionType(RepairProposalTaxonomy.ActionType.REORDER_VOLUNTEERS);
+        action.setLevel("volunteer");
+        action.setSummary("调整志愿顺序");
+        action.setDetail("将「" + label + "」从第 " + fromPosition + " 位移到第 " + toPosition + " 位。");
+        List<String> volunteerIds = unitMode ? Lists.newArrayList() : Lists.newArrayList(target.getVolunteerId());
+        List<String> unitIds = unitMode ? Lists.newArrayList(planUnitKey(target)) : Lists.newArrayList();
+        action.setVolunteerIds(volunteerIds);
+        action.setUnitIds(unitIds);
+        action.setCandidateVolunteerIds(Lists.newArrayList());
+        action.setCandidateUnitIds(Lists.newArrayList());
+        populateActionTotals(action);
+        return action;
+    }
+
+    private static String normalizeMovePosition(String value) {
+        String text = Strings.nullToEmpty(value).trim().toLowerCase(Locale.ROOT);
+        if ("top".equals(text) || "first".equals(text) || "start".equals(text)) {
+            return "top";
+        }
+        if ("bottom".equals(text) || "last".equals(text) || "end".equals(text)) {
+            return "bottom";
+        }
+        if ("before".equals(text)) {
+            return "before";
+        }
+        if ("after".equals(text)) {
+            return "after";
+        }
+        return null;
+    }
+
+    private static List<String> orderedSequence(PlanningStateDTO state, boolean unitMode) {
+        List<String> result = Lists.newArrayList();
+        OrderedPlanStateDTO ordered = state == null ? null : state.getOrderedPlanState();
+        if (ordered == null) {
+            return result;
+        }
+        if (unitMode) {
+            for (OrderedUnitDTO unit : defaultList(ordered.getUnits())) {
+                if (unit != null && !Strings.isNullOrEmpty(unit.getUnitId())
+                        && !result.contains(unit.getUnitId())) {
+                    result.add(unit.getUnitId());
+                }
+            }
+            if (!result.isEmpty()) {
+                return result;
+            }
+            List<CandidateItemDTO> pool = candidates(state);
+            for (OrderedItemDTO item : defaultList(ordered.getItems())) {
+                String unitId = item == null ? null
+                        : RepairCandidateSelector.resolveUnitId(item.getVolunteerId(), pool);
+                if (!Strings.isNullOrEmpty(unitId) && !result.contains(unitId)) {
+                    result.add(unitId);
+                }
+            }
+            return result;
+        }
+        for (OrderedItemDTO item : defaultList(ordered.getItems())) {
+            if (item != null && !Strings.isNullOrEmpty(item.getVolunteerId())
+                    && !result.contains(item.getVolunteerId())) {
+                result.add(item.getVolunteerId());
+            }
+        }
+        return result;
+    }
+
+    private static PlanTargetResolution resolvePlanTarget(List<PlanVolunteer> current,
+                                                          UserGoalFixProposalReq.ExactTargetDTO target) {
+        PlanTargetResolution result = new PlanTargetResolution();
+        if (target == null) {
+            result.reason = REASON_REMOVE_UNITS_TARGET_NOT_FOUND;
+            result.message = "缺少目标志愿。";
+            return result;
+        }
+        String targetId = normalizeText(target.getVolunteerId());
+        if (!Strings.isNullOrEmpty(targetId)) {
+            for (PlanVolunteer volunteer : defaultList(current)) {
+                if (!targetId.equals(normalizeText(volunteer.getVolunteerId()))) {
+                    continue;
+                }
+                String targetSchool = normalizeText(target.getSchoolName());
+                String targetMajor = normalizeText(target.getMajorName());
+                if ((!targetSchool.isEmpty() && !planSchoolMatches(volunteer, targetSchool))
+                        || (!targetMajor.isEmpty()
+                        && !targetMajor.equals(normalizeText(volunteer.getMajorName())))) {
+                    result.reason = REASON_REMOVE_UNITS_TARGET_NOT_FOUND;
+                    result.message = "名称与志愿 ID 对应的对象不一致；请重新从方案里选择。";
+                    return result;
+                }
+                result.volunteer = volunteer;
+                return result;
+            }
+            result.reason = REASON_REMOVE_UNITS_TARGET_NOT_FOUND;
+            result.message = "当前方案里没有这个志愿：" + targetId;
+            return result;
+        }
+        String targetSchool = normalizeText(target.getSchoolName());
+        String targetMajor = normalizeText(target.getMajorName());
+        if (targetSchool.isEmpty() || targetMajor.isEmpty()) {
+            result.reason = REASON_REMOVE_UNITS_TARGET_NOT_FOUND;
+            result.message = "请同时给出学校名和专业名（或志愿 ID）。";
+            return result;
+        }
+        List<PlanVolunteer> exact = defaultList(current).stream()
+                .filter(volunteer -> planSchoolMatches(volunteer, targetSchool)
+                        && targetMajor.equals(normalizeText(volunteer.getMajorName())))
+                .collect(Collectors.toList());
+        if (exact.isEmpty()) {
+            List<PlanVolunteer> loose = defaultList(current).stream()
+                    .filter(volunteer -> planSchoolMatchesLoose(volunteer, targetSchool)
+                            && containsLoose(volunteer.getMajorName(), targetMajor))
+                    .collect(Collectors.toList());
+            if (loose.size() == 1) {
+                exact = loose;
+            } else if (loose.size() > 1) {
+                result.reason = REASON_REMOVE_UNITS_TARGET_AMBIGUOUS;
+                result.message = "“" + target.getSchoolName() + "·" + target.getMajorName()
+                        + "”在当前方案里匹配到多条，请写清具体专业/方向。";
+                return result;
+            }
+        }
+        if (exact.isEmpty()) {
+            result.reason = REASON_REMOVE_UNITS_TARGET_NOT_FOUND;
+            result.message = "当前方案里没有“" + target.getSchoolName() + "·" + target.getMajorName() + "”。";
+            return result;
+        }
+        if (exact.size() > 1) {
+            result.reason = REASON_REMOVE_UNITS_TARGET_AMBIGUOUS;
+            result.message = "“" + target.getSchoolName() + "·" + target.getMajorName()
+                    + "”在当前方案里匹配到多条，请写清具体专业/方向。";
+            return result;
+        }
+        result.volunteer = exact.get(0);
+        return result;
+    }
+
+    private static boolean planSchoolMatches(PlanVolunteer volunteer, String normalizedTarget) {
+        return volunteer != null && normalizedTarget.equals(normalizeText(volunteer.getSchoolName()));
+    }
+
+    private static boolean planSchoolMatchesLoose(PlanVolunteer volunteer, String target) {
+        return volunteer != null && (containsLoose(volunteer.getSchoolName(), target)
+                || containsLoose(target, volunteer.getSchoolName()));
+    }
+
+    private static FixProposalAffectedItemDTO toAffectedItem(PlanVolunteer volunteer) {
+        FixProposalAffectedItemDTO item = new FixProposalAffectedItemDTO();
+        if (volunteer == null) {
+            return item;
+        }
+        item.setVolunteerId(volunteer.getVolunteerId());
+        item.setUnitId(volunteer.getUnitId());
+        item.setSchoolName(volunteer.getSchoolName());
+        item.setMajorName(volunteer.getMajorName());
+        CandidateItemDTO candidate = volunteer.getCandidate();
+        if (candidate != null) {
+            item.setTier(candidate.getTier());
+            item.setPlanNum(candidate.getPlanNum());
+            item.setTuitionPerYear(candidate.getTuitionPerYear());
+        }
+        return item;
+    }
+
+    private static final class PlanTargetResolution {
+        private PlanVolunteer volunteer;
+        private String reason;
+        private String message;
     }
 
     private static FixProposalActionDTO addExactAction(List<CandidateItemDTO> resolved,

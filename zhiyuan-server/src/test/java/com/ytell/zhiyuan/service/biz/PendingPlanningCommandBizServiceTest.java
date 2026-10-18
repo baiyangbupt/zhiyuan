@@ -11,8 +11,10 @@ import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyRes;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedMoveReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedUnitMoveReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanChangePostconditionReportDTO;
@@ -1192,6 +1194,236 @@ public class PendingPlanningCommandBizServiceTest {
                 () -> service.execute(1L, 101L, req));
 
         assertEquals(PendingPlanningCommandBizService.REVIEW_FAILED_CODE, error.getStatus());
+    }
+
+    @Test
+    void shouldExecuteFrozenRemoveUnitsWithPostconditionAndReview() {
+        PendingPlanningCommandReq req = baseReq();
+        req.setOperationId("pending:p-1:remove_units");
+        req.setCommandType(PendingPlanningCommandBizService.REMOVE_UNITS);
+        req.setVolunteerIds(Arrays.asList());
+        req.setUnitIds(Arrays.asList());
+        PendingConfirmationEntity pending = applyingPending();
+        pending.setDataValue(frozenRemoveData(
+                Arrays.asList("v-old"), Arrays.asList(), 1, true, 12));
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+        PlanningStateDTO before = addState(12, "v-old", "v-keep");
+        PlanningStateDTO after = addState(15, "v-keep");
+        PlanningStateDTO reviewed = addState(16, "v-keep");
+        when(planningStateService.getPlanningState(101L)).thenReturn(before, before, reviewed);
+        when(planningStateService.updateSelectionTargetCount(101L, 1))
+                .thenReturn(new PlanningStateVersionDTO());
+        when(planningStateService.generateOrderedPlan(eq(1L), eq(101L), any(OrderedPlanGenerateReq.class)))
+                .thenReturn(after);
+        when(planningStateService.runReview(1L, 101L)).thenReturn(new ReviewStateDTO());
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+
+        PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+        assertEquals("applied", response.getStatus());
+        assertEquals(Arrays.asList("v-old"), response.getRemovedVolunteerIds());
+        assertEquals(Integer.valueOf(1), response.getRemovedVolunteerCount());
+        assertEquals(Integer.valueOf(2), response.getTargetCountBefore());
+        assertEquals(Integer.valueOf(1), response.getTargetCountAfter());
+        assertTrue(response.getCompletedSteps().contains("selection_target_updated"));
+        assertTrue(response.getCompletedSteps().contains("working_plan_items_removed"));
+        assertTrue(response.getCompletedSteps().contains("review_rerun"));
+        assertEquals("remove_units", response.getPostconditionReport().getGoalType());
+        verify(planningStateService).removeWorkingPlanItems(eq(101L), any());
+        verify(planningStateService, never()).removeOrderedUnits(any(), any());
+    }
+
+    @Test
+    void shouldExecuteFrozenRemoveUnitsInMajorGroupMode() {
+        PendingPlanningCommandReq req = baseReq();
+        req.setOperationId("pending:p-1:remove_units");
+        req.setCommandType(PendingPlanningCommandBizService.REMOVE_UNITS);
+        req.setVolunteerIds(Arrays.asList());
+        req.setUnitIds(Arrays.asList());
+        PendingConfirmationEntity pending = applyingPending();
+        pending.setDataValue(frozenRemoveData(
+                Arrays.asList("v1", "v2"), Arrays.asList("u1"), 1, false, 12));
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+        Map<String, List<String>> beforeUnits = new LinkedHashMap<String, List<String>>();
+        beforeUnits.put("u1", Arrays.asList("v1", "v2"));
+        beforeUnits.put("u2", Arrays.asList("v3"));
+        Map<String, List<String>> afterUnits = new LinkedHashMap<String, List<String>>();
+        afterUnits.put("u2", Arrays.asList("v3"));
+        PlanningStateDTO before = unitState(12, beforeUnits);
+        PlanningStateDTO after = unitState(15, afterUnits);
+        when(planningStateService.getPlanningState(101L)).thenReturn(before, before);
+        when(planningStateService.updateSelectionTargetCount(101L, 1))
+                .thenReturn(new PlanningStateVersionDTO());
+        when(planningStateService.generateOrderedPlan(eq(1L), eq(101L), any(OrderedPlanGenerateReq.class)))
+                .thenReturn(after);
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+
+        PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+        assertEquals("applied", response.getStatus());
+        assertEquals(Arrays.asList("u1"), response.getRemovedUnitIds());
+        assertEquals(Integer.valueOf(2), response.getTargetCountBefore());
+        assertEquals(Integer.valueOf(1), response.getTargetCountAfter());
+        assertEquals("unit", response.getPostconditionReport().getCountMode());
+        verify(planningStateService).removeOrderedUnits(eq(101L), any());
+        verify(planningStateService, never()).removeWorkingPlanItems(any(), any());
+    }
+
+    @Test
+    void shouldExecuteFrozenMoveUnitsToPosition() {
+        PendingPlanningCommandReq req = baseReq();
+        req.setOperationId("pending:p-1:move_units");
+        req.setCommandType(PendingPlanningCommandBizService.MOVE_UNITS);
+        req.setVolunteerIds(Arrays.asList());
+        req.setUnitIds(Arrays.asList());
+        PendingConfirmationEntity pending = applyingPending();
+        pending.setDataValue(frozenMoveData(
+                "v3", null, 1, 3, true, 12));
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+        PlanningStateDTO before = addState(12, "v1", "v2", "v3");
+        PlanningStateDTO after = addState(15, "v3", "v1", "v2");
+        PlanningStateDTO reviewed = addState(16, "v3", "v1", "v2");
+        when(planningStateService.getPlanningState(101L)).thenReturn(before, before, reviewed);
+        when(planningStateService.moveOrderedItem(eq(101L), any(OrderedMoveReq.class)))
+                .thenReturn(after);
+        when(planningStateService.runReview(1L, 101L)).thenReturn(new ReviewStateDTO());
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+
+        PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+        assertEquals("applied", response.getStatus());
+        assertEquals(Arrays.asList("v3"), response.getMovedVolunteerIds());
+        assertEquals(Integer.valueOf(3), response.getFromPosition());
+        assertEquals(Integer.valueOf(1), response.getToPosition());
+        assertEquals(Integer.valueOf(3), response.getTargetCountBefore());
+        assertEquals(Integer.valueOf(3), response.getTargetCountAfter());
+        assertTrue(response.getCompletedSteps().contains("ordered_item_moved"));
+        assertTrue(response.getCompletedSteps().contains("review_rerun"));
+        assertEquals("move_units", response.getPostconditionReport().getGoalType());
+        verify(planningStateService).moveOrderedItem(eq(101L), any(OrderedMoveReq.class));
+    }
+
+    @Test
+    void shouldExecuteFrozenMoveUnitsInMajorGroupMode() {
+        PendingPlanningCommandReq req = baseReq();
+        req.setOperationId("pending:p-1:move_units");
+        req.setCommandType(PendingPlanningCommandBizService.MOVE_UNITS);
+        req.setVolunteerIds(Arrays.asList());
+        req.setUnitIds(Arrays.asList());
+        PendingConfirmationEntity pending = applyingPending();
+        pending.setDataValue(frozenMoveData(
+                null, "u2", 1, 2, false, 12));
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+        Map<String, List<String>> beforeUnits = new LinkedHashMap<String, List<String>>();
+        beforeUnits.put("u1", Arrays.asList("v1"));
+        beforeUnits.put("u2", Arrays.asList("v2"));
+        Map<String, List<String>> afterUnits = new LinkedHashMap<String, List<String>>();
+        afterUnits.put("u2", Arrays.asList("v2"));
+        afterUnits.put("u1", Arrays.asList("v1"));
+        PlanningStateDTO before = unitState(12, beforeUnits);
+        PlanningStateDTO after = unitState(15, afterUnits);
+        when(planningStateService.getPlanningState(101L)).thenReturn(before, before);
+        when(planningStateService.moveOrderedUnit(eq(101L), any(OrderedUnitMoveReq.class)))
+                .thenReturn(after);
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+
+        PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+        assertEquals("applied", response.getStatus());
+        assertEquals(Arrays.asList("u2"), response.getMovedUnitIds());
+        assertEquals(Arrays.asList("v2"), response.getMovedVolunteerIds());
+        assertEquals(Integer.valueOf(1), response.getToPosition());
+        assertEquals("unit", response.getPostconditionReport().getCountMode());
+        verify(planningStateService).moveOrderedUnit(eq(101L), any(OrderedUnitMoveReq.class));
+    }
+
+    @Test
+    void shouldRejectTamperedFrozenRemoveBeforeReplay() {
+        PendingPlanningCommandReq req = baseReq();
+        req.setOperationId("pending:p-1:remove_units");
+        req.setCommandType(PendingPlanningCommandBizService.REMOVE_UNITS);
+        req.setVolunteerIds(Arrays.asList("v-evil"));
+        PendingConfirmationEntity pending = applyingPending();
+        pending.setDataValue(frozenRemoveData(
+                Arrays.asList("v-old"), Arrays.asList(), 1, true, 12));
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(PendingPlanningCommandBizService.COMMAND_CONTENT_MISMATCH_CODE, error.getStatus());
+        verify(commandSharedService, never()).save(any());
+        verify(planningStateService, never()).removeWorkingPlanItems(any(), any());
+    }
+
+    @Test
+    void shouldRollbackFrozenMoveWhenOtherItemsWereReordered() {
+        PendingPlanningCommandReq req = baseReq();
+        req.setOperationId("pending:p-1:move_units");
+        req.setCommandType(PendingPlanningCommandBizService.MOVE_UNITS);
+        req.setVolunteerIds(Arrays.asList());
+        req.setUnitIds(Arrays.asList());
+        PendingConfirmationEntity pending = applyingPending();
+        pending.setDataValue(frozenMoveData(
+                "v3", null, 1, 3, false, 12));
+        when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+        PlanningStateDTO before = addState(12, "v1", "v2", "v3");
+        PlanningStateDTO after = addState(15, "v3", "v2", "v1");
+        when(planningStateService.getPlanningState(101L)).thenReturn(before, before);
+        when(planningStateService.moveOrderedItem(eq(101L), any(OrderedMoveReq.class)))
+                .thenReturn(after);
+        when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, req));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, error.getStatus());
+        assertTrue(error.getMessage().contains("other items reordered"));
+    }
+
+    private String frozenRemoveData(List<String> removedVolunteerIds,
+                                    List<String> removedUnitIds,
+                                    Integer targetCountOverride,
+                                    boolean rerunReview,
+                                    int sourceVersion) {
+        Map<String, Object> frozen = new LinkedHashMap<String, Object>();
+        frozen.put("commandType", "remove_units");
+        frozen.put("operationId", "op-remove");
+        frozen.put("removedVolunteerIds", removedVolunteerIds);
+        frozen.put("removedUnitIds", removedUnitIds);
+        frozen.put("targetCountOverride", targetCountOverride);
+        frozen.put("tierQuotaOverride", null);
+        frozen.put("rerunReview", rerunReview);
+        frozen.put("sourceVersion", sourceVersion);
+        Map<String, Object> data = new LinkedHashMap<String, Object>();
+        data.put("kind", "plan_action");
+        data.put("commandType", "remove_units");
+        data.put("frozenCommand", frozen);
+        return JSONObject.toJSONString(data);
+    }
+
+    private String frozenMoveData(String targetVolunteerId,
+                                  String targetUnitId,
+                                  Integer targetPosition,
+                                  Integer fromPosition,
+                                  boolean rerunReview,
+                                  int sourceVersion) {
+        Map<String, Object> frozen = new LinkedHashMap<String, Object>();
+        frozen.put("commandType", "move_units");
+        frozen.put("operationId", "op-move");
+        frozen.put("targetVolunteerId", targetVolunteerId);
+        frozen.put("targetUnitId", targetUnitId);
+        frozen.put("targetPosition", targetPosition);
+        frozen.put("fromPosition", fromPosition);
+        frozen.put("targetCountOverride", null);
+        frozen.put("tierQuotaOverride", null);
+        frozen.put("rerunReview", rerunReview);
+        frozen.put("sourceVersion", sourceVersion);
+        Map<String, Object> data = new LinkedHashMap<String, Object>();
+        data.put("kind", "plan_action");
+        data.put("commandType", "move_units");
+        data.put("frozenCommand", frozen);
+        return JSONObject.toJSONString(data);
     }
 
     private String frozenReplaceData(List<String> addedVolunteerIds,

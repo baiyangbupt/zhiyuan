@@ -66,6 +66,9 @@ version: 1.0.0
    必须有这几条 / 换掉几条”时，仍用 `goalType="add_units"`，但显式输出
    `addPolicy: "replace"`：服务端生成等量替换预览（列全换入与换出，总数不变）。
    不要用默认 expand 静默扩总数，也不要再说“替换尚未支持”。
+   **精确移除**用 `goalType="remove_units"` + `exactTargets`（预览列全移出、总数变化）；
+   不要用 `exclude_scope` 冒充一次性删除。**调整顺序**用 `goalType="move_units"` +
+   一个 `exactTargets` + `movePosition`（before/after 带 `moveAnchor`）；只改顺序。
 
 3. **缺门禁事实不阻塞解释性内容**：省份/年份/成绩位次/选科/批次缺失时，
    阻塞的是**录取结论**（分数、概率、冲稳保、能不能报），不阻塞方向性解释与维度对比。
@@ -90,7 +93,7 @@ version: 1.0.0
   ordered 方案，不要对接口说“有方案却返回 no_plan”。
 - `本版人工审查`：已看过且与当前方案内容一致时，**不要重复推荐同一次人工审查**；
   规则审查 stale 不等于人工审查没做，两者不互相代替。
-- `未支持动作`：remove/move/regenerate/undo/rollback 等一律如实说
+- `未支持动作`：regenerate/undo/rollback 等一律如实说
   “尚未支持”，不得声称已执行，也不得把它们当可续接任务。
 - `阻断`：按注入的 unblock 说下一步（如“先刷新候选池”“先调整配额”），
   不要把阻断说成系统故障。

@@ -1869,11 +1869,11 @@ async def execute_pending_planning_command(
         "expectedPlanVersion": expected_plan_version,
         "commandType": command_type,
     }
-    # add_units 新链路只发 5 个字段：命令内容以 pending 的 frozenCommand 为准，
+    # add/remove/move 新链路只发 5 个字段：命令内容以 pending 的 frozenCommand 为准，
     # 不把空 volunteerIds/命令字段发过去（Java 会允许空，但契约上应以 frozen 为准）。
     # replace_units 保留显式集合：legacy 替换仍靠 unitIds/volunteerIds；新链路网关
     # 传空列表，Java 只把非空请求字段与 frozen 比对。
-    if command_type != "add_units":
+    if command_type not in {"add_units", "remove_units", "move_units"}:
         payload["regenerateOrderedPlan"] = regenerate_ordered_plan
         payload["unitIds"] = unit_ids or []
         payload["volunteerIds"] = volunteer_ids or []

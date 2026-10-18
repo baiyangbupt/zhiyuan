@@ -32,6 +32,11 @@ public class PendingPlanningCommandRes {
     private Integer removedVolunteerCount;
     private Integer targetCountBefore;
     private Integer targetCountAfter;
+    /** move_units 的逐条回执。 */
+    private List<String> movedVolunteerIds = Lists.newArrayList();
+    private List<String> movedUnitIds = Lists.newArrayList();
+    private Integer fromPosition;
+    private Integer toPosition;
     /** 约束执行后的数量缺口（纯学费/替换类）：0 = 总数保持；>0 正常会被 40905 回滚。 */
     private Integer shortage;
     /** 紧凑审查回执（summary + top checks）；完整 reviewState 仍在 planningState 里。 */

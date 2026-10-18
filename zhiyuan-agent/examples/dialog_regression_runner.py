@@ -2088,13 +2088,6 @@ def _runtime_side_effect_and_output(
                 "none",
                 "conditional_plan_mutation",
             )
-        if route_action_family == "pin_or_lock_unit" and route_decision.get("unsupportedAction"):
-            return (
-                "plan_preview_or_clarification",
-                "plan_mutation_or_unsupported",
-                "none",
-                "conditional_plan_mutation",
-            )
         if route_side_effect == "readonly_or_plan_preview":
             return (
                 "readonly_or_plan_preview",

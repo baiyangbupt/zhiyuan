@@ -83,7 +83,7 @@ ConstraintType = Literal["exclude", "only_keep", "must_have"]
 PlanScope = Literal["plan", "candidates"]
 PendingAction = Literal["confirm", "cancel"]
 PendingResolution = Literal["none", "replace_active_pending", "append_to_active_pending", "hold_new_request"]
-PlanAction = Literal["add", "remove", "move", "replace", "sort", "generate", "regenerate_order", "pin_lock"]
+PlanAction = Literal["add", "remove", "move", "replace", "sort", "generate", "regenerate_order"]
 ReviewIssueCode = Literal[
     "high_tuition",
     "cooperative_program",
@@ -208,7 +208,7 @@ class PlanChangeSpec(TypedDict, total=False):
 
 
 _DEFAULT_PLAN_QUERY_LIMIT = 5
-_ALLOWED_PLAN_ACTIONS = ["add", "remove", "move", "replace", "sort", "generate", "regenerate_order", "pin_lock"]
+_ALLOWED_PLAN_ACTIONS = ["add", "remove", "move", "replace", "sort", "generate", "regenerate_order"]
 _PLAN_SORT_FIELDS = {
     "admission_ratio": "admissionRatio",
     "admission_probability": "admissionRatio",
@@ -590,7 +590,7 @@ def _plan_action_requires_explicit_action_payload(
             "请基于本轮用户原话重新判断方案动作，并重新调用 preview_plan_action，"
             "显式传 action。若原话确实没有说明动作，再向用户追问。"
             if current_user_text
-            else "需要说明是加入、移出、移动、替换、排序、生成方案，还是锁定位置。"
+            else "需要说明是加入、移出、移动、替换、排序，还是生成方案。"
         ),
     }
 
@@ -5737,7 +5737,7 @@ def _post_query_instruction(raw_user_text: str) -> dict[str, str]:
         "current_user_text": str(raw_user_text or "").strip(),
         "post_query_instruction": (
             "只读查询已经完成。请重新检查 current_user_text：如果本轮原话同时表达了替换、换成、移出、去掉、"
-            "删除、排序、重排、重新调整、锁定、固定位置等当前方案动作，继续调用 preview_plan_action 生成待确认预览；"
+            "删除、排序、重排、重新调整等当前方案动作，继续调用 preview_plan_action 生成待确认预览；"
             "如果只是查询事实，再直接回答查询结果。不要把委婉的“能不能换成/可不可以换成/帮我换成”"
             "回复成“是否需要我预览”。"
         ),
@@ -7110,8 +7110,6 @@ def _review_issue_target_meta(issue: dict[str, Any]) -> dict[str, Any]:
 
 
 def _plan_action_family(action: str) -> tuple[str, str]:
-    if action == "pin_lock":
-        return "plan_mutation", "pin_or_lock_unit"
     if action == "add":
         return "plan_mutation", "add_units"
     if action == "remove":
@@ -7138,7 +7136,6 @@ def _action_label(action: str) -> str:
         "sort": "重新排序",
         "generate": "生成方案",
         "regenerate_order": "重新生成排序方案",
-        "pin_lock": "锁定方案位置",
     }.get(action, "调整方案")
 
 
@@ -10321,33 +10318,6 @@ async def preview_plan_action(
     affected_scope = ""
     count = 0
     review_issue_meta: dict[str, Any] | None = None
-
-    if normalized_action == "pin_lock":
-        if not has_plan:
-            return _json(
-                {
-                    "data": {"action": "pin_lock", "has_plan": False, "reason": "no_plan"},
-                    "next_step": "respond",
-                    "message": "当前还没有正式方案，不能锁定方案位置。可以先生成方案。",
-                }
-            )
-        resolved, missing, reason = await _resolve_plan_targets(ctx, targets, source="plan")
-        return _json(
-            {
-                "data": {
-                    "action": "pin_lock",
-                    "action_family": "pin_or_lock_unit",
-                    "targets": targets or [],
-                    "unit_ids": [_item_unit_id(item) for item in resolved if _item_unit_id(item)],
-                    "missing_targets": missing,
-                    "reason": "unsupported_action" if reason == "ok" and resolved else reason,
-                    "requires_confirmation": False,
-                    "pending_created": False,
-                },
-                "next_step": "respond",
-                "message": "这次是锁定/固定当前方案位置的动作。当前新工具还没有可执行的锁定接口，所以不会创建确认卡，也不会改动方案。可以先查看这些位置，或改用已支持的移动、移出、替换、重排。",
-            }
-        )
 
     if normalized_action in {"remove", "move"}:
         if not has_plan:

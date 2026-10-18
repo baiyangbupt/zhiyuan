@@ -4230,6 +4230,47 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldApplyUserGoalRemoveProposal() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(6);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "金融学", 55D, 80D, 55D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "金融学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("remove_units");
+        req.setSourceVersionGuard(6);
+        UserGoalFixProposalReq.ExactTargetDTO target = new UserGoalFixProposalReq.ExactTargetDTO();
+        target.setSchoolName("学校A");
+        target.setMajorName("金融学");
+        req.getExactTargets().add(target);
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("remove_units", proposal.getStrategy());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals("applied", res.getStatus());
+        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertFalse(draftIds.contains("ps1_m1"));
+        assertTrue(draftIds.contains("ps2_m2"));
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getRemovedVolunteerCount());
+    }
+
+    @Test
     void shouldPersistExcludeScopeEvenWhenOverlayRefreshRewritesState() {
         bindPlanningStateStore();
 

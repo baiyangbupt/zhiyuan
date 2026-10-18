@@ -222,6 +222,99 @@ public class PlanningStateServicePrepareProposalTest {
         assertEquals(64, String.valueOf(data.get("commandDigest")).length());
     }
 
+    @Test
+    void prepareRemoveUnitsFreezesTheRemoveSet() {
+        FixProposalStateDTO preview = new FixProposalStateDTO();
+        preview.setSourceVersion(7);
+        FixProposalDTO ready = new FixProposalDTO();
+        ready.setProposalId("ugp_remove");
+        ready.setStatus("ready");
+        ready.setRequiresConfirmation(true);
+        ready.setAffectedVolunteerIds(Lists.newArrayList("v-old"));
+        ready.setAffectedUnitIds(Lists.newArrayList("u-old"));
+        ready.setRemovedCount(1);
+        ready.setTargetCountOverride(1);
+        ready.setSummary("移除 1 条；总数 2→1");
+        preview.setProposals(Lists.newArrayList(ready));
+        PlanningStateService removeService = serviceWithPreview(preview);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("remove_units");
+        req.setSourceVersionGuard(1);
+        UserGoalFixProposalReq.ExactTargetDTO target = new UserGoalFixProposalReq.ExactTargetDTO();
+        target.setSchoolName("中南大学");
+        target.setMajorName("临床医学");
+        req.getExactTargets().add(target);
+
+        PrepareResultDTO dto = removeService.prepareUserGoalProposal(
+                1L, 2L, "req-remove", "digest-remove", req);
+
+        assertNotNull(dto.getPendingId());
+        Map<String, Object> data = upsertedValues.get(0);
+        assertEquals("plan_action", data.get("kind"));
+        assertEquals("remove_units", data.get("commandType"));
+        assertEquals("remove_units", data.get("goalType"));
+        assertEquals(Lists.newArrayList("v-old"), data.get("removedVolunteerIds"));
+        assertEquals(Lists.newArrayList("u-old"), data.get("removedUnitIds"));
+        assertEquals(1, data.get("targetCountOverride"));
+        PendingConfirmationUpsertReq upsert = upsertedRequests.get(0);
+        assertEquals("plan_action", upsert.getKind());
+        assertEquals("remove_units", upsert.getActionFamily());
+        Map frozen = (Map) data.get("frozenCommand");
+        assertEquals("remove_units", frozen.get("commandType"));
+        assertEquals(Lists.newArrayList("v-old"), frozen.get("removedVolunteerIds"));
+        assertEquals(Lists.newArrayList("u-old"), frozen.get("removedUnitIds"));
+        assertEquals(1, frozen.get("targetCountOverride"));
+        assertEquals(Boolean.TRUE, frozen.get("rerunReview"));
+        assertEquals(7, frozen.get("sourceVersion"));
+    }
+
+    @Test
+    void prepareMoveUnitsFreezesTargetAndPosition() {
+        FixProposalStateDTO preview = new FixProposalStateDTO();
+        preview.setSourceVersion(7);
+        FixProposalDTO ready = new FixProposalDTO();
+        ready.setProposalId("ugp_move");
+        ready.setStatus("ready");
+        ready.setRequiresConfirmation(true);
+        ready.setAffectedVolunteerIds(Lists.newArrayList("v-target"));
+        ready.setMoveTargetVolunteerId("v-target");
+        ready.setMoveFromPosition(3);
+        ready.setMoveToPosition(1);
+        ready.setSummary("从第 3 位移到第 1 位");
+        preview.setProposals(Lists.newArrayList(ready));
+        PlanningStateService moveService = serviceWithPreview(preview);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("move_units");
+        req.setSourceVersionGuard(1);
+        req.setMovePosition("top");
+        UserGoalFixProposalReq.ExactTargetDTO target = new UserGoalFixProposalReq.ExactTargetDTO();
+        target.setVolunteerId("v-target");
+        req.getExactTargets().add(target);
+
+        PrepareResultDTO dto = moveService.prepareUserGoalProposal(
+                1L, 2L, "req-move", "digest-move", req);
+
+        assertNotNull(dto.getPendingId());
+        Map<String, Object> data = upsertedValues.get(0);
+        assertEquals("plan_action", data.get("kind"));
+        assertEquals("move_units", data.get("commandType"));
+        assertEquals("move_units", data.get("goalType"));
+        assertEquals("v-target", data.get("moveTargetVolunteerId"));
+        assertEquals(3, data.get("fromPosition"));
+        assertEquals(1, data.get("toPosition"));
+        PendingConfirmationUpsertReq upsert = upsertedRequests.get(0);
+        assertEquals("move_units", upsert.getActionFamily());
+        Map frozen = (Map) data.get("frozenCommand");
+        assertEquals("move_units", frozen.get("commandType"));
+        assertEquals("v-target", frozen.get("targetVolunteerId"));
+        assertEquals(1, frozen.get("targetPosition"));
+        assertEquals(3, frozen.get("fromPosition"));
+        assertEquals(Boolean.TRUE, frozen.get("rerunReview"));
+        assertEquals(7, frozen.get("sourceVersion"));
+    }
+
     private PlanningStateService serviceWithPreview(final FixProposalStateDTO preview) {
         PlanningStateService result = new PlanningStateService() {
             @Override

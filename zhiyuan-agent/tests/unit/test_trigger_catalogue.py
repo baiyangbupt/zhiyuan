@@ -51,10 +51,10 @@ def standard_context():
     )
 
 
-def test_catalogue_has_forty_unique_entries() -> None:
+def test_catalogue_has_thirty_nine_unique_entries() -> None:
     rows = entries()
-    assert len(rows) == 40
-    assert len({row["id"] for row in rows}) == 40
+    assert len(rows) == 39
+    assert len({row["id"] for row in rows}) == 39
 
 
 def test_goal_families_and_actions_are_known() -> None:
@@ -129,7 +129,7 @@ def test_catalogue_covers_each_goal_family() -> None:
     assert counts.get("query", 0) >= 6
     assert counts.get("candidate", 0) >= 5
     assert counts.get("preference", 0) >= 6
-    assert counts.get("plan_mutation", 0) >= 9
+    assert counts.get("plan_mutation", 0) >= 8
     assert counts.get("review", 0) >= 3
     assert counts.get("interpret", 0) >= 3
     assert counts.get("meta", 0) >= 5

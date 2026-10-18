@@ -137,16 +137,18 @@ _ACTION_ALIASES = {
     "add_units_by_scope": "add_by_scope",
     # J4a：替换走 add_units + addPolicy=replace（等量替换、总数不变）。
     "replace_units": "replace",
+    # J4b：精确移除 / 单条（单组）移动。
+    "remove_units": "remove",
+    "move_units": "move",
 }
 
 # planned 动作：归一化名与原样名都要拦；reorder/generate 是 ChangeOperation 的 kind。
-# J4a 起 replace 已由 add_units(addPolicy=replace) 承接，不再列为 planned。
+# J4a 起 replace 由 add_units(addPolicy=replace) 承接；J4b 起 remove/move 已实现。
 _PLANNED_ACTIONS = {
-    "remove", "move", "reorder", "generate",
-    "remove_units", "move_units", "regenerate",
+    "reorder", "generate", "regenerate",
     "undo", "rollback",
 }
-_PLANNED_KINDS = {"remove", "move", "reorder", "generate"}
+_PLANNED_KINDS = {"reorder", "generate"}
 
 _CONSTRAINT_ACTION_HINTS = (
     "over_budget",
@@ -336,6 +338,22 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
             operations=[],
             unresolved=["replace 缺少明确的换入目标（院校+专业或 volunteerId）"],
             reason="替换动作缺少具体目标。",
+            atomic=False,
+        )
+    if action == "remove" and not has_targets:
+        return ChangeSet(
+            status="needs_clarification",
+            operations=[],
+            unresolved=["remove 缺少明确的移除目标（院校+专业或 volunteerId）"],
+            reason="移除动作缺少具体目标。",
+            atomic=False,
+        )
+    if action == "move" and not has_targets:
+        return ChangeSet(
+            status="needs_clarification",
+            operations=[],
+            unresolved=["move 缺少明确的移动目标（院校+专业或 volunteerId）"],
+            reason="移动动作缺少具体目标。",
             atomic=False,
         )
 

@@ -10,9 +10,10 @@
   本版人工审查、可用/未支持动作、阻断与建议下一步、方案版本。选路按它，不凭对话记忆猜。
 - `pending=applying`：只提示“上一条变更正在生效，请稍候；结果会以回执为准”，
   不确认、不取消、不生成新写；`pending=active` 才引导确认/取消。
-- `未支持动作`（remove_units/move_units/regenerate/undo/rollback）：
+- `未支持动作`（regenerate/undo/rollback）：
   如实说“尚未支持”，不得声称已执行，也不得为它们写 ready 的 `intentDraft`。
-  替换已支持：`add_units` + `addPolicy: "replace"`。
+  替换/移除/移动已支持：`add_units` + `addPolicy: "replace"`、`remove_units`、
+  `move_units`。
 - `刷新要求=candidates`：先刷新候选（补录成绩后旧候选不能直接用）；
   `=plan`：可用 `fill_to_count` 重算正式方案；`=review` 且本版人工审查已看过时，
   不要重复推荐同一次审查，但要说清“后端规则结果已过期”，两种审查不互相代替。
@@ -71,6 +72,14 @@
   但显式输出 `addPolicy: "replace"`：服务端会生成等量替换预览（列全换入与换出条目，
   总数不变），确认后只移出卡上列出的条目。**不要**用默认 expand 静默扩总数，
   也不要在正文里说“替换尚未支持”。
+- **精确移除**（“删掉这几条 / 把 X 从方案里去掉”）：用
+  `goalType="remove_units"`，`exactTargets=[{schoolName: "...", majorName: "..."}]`
+  （或 volunteerId）。预览会列全移出条目并写明总数变化；确认后只移出这些条目，
+  其他不动。**不要**用 `exclude_scope` 冒充一次性删除：那是写入会话的长期约束。
+- **调整顺序**（“把 A 放第一 / 挪到 B 前面”）：用 `goalType="move_units"`，
+  `exactTargets=[一个目标]`，`movePosition="top|bottom|before|after"`；
+  `before/after` 必须带 `moveAnchor`（锚点条目）。专业组模式按组移动；只改顺序，
+  不增删条目，预览会写清从第几位到第几位。
 - **按范围加入**（“再加六条安徽的院校，学费不超过 6000”这类）：用
   `goalType="add_units_by_scope"`，`addCount=6`，范围写 `targetScopes`/
   `negativeScopes`，学费写 `context.maxTuitionPerYear`，`exactTargets: []`。

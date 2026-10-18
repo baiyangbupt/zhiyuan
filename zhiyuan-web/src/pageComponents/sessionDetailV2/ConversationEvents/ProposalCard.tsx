@@ -111,6 +111,10 @@ type Props = {
       volunteerIds?: string[];
       removedVolunteerIds?: string[];
       removedUnitIds?: string[];
+      movedVolunteerIds?: string[];
+      movedUnitIds?: string[];
+      fromPosition?: number;
+      toPosition?: number;
       addedCount?: number;
       addedUnitCount?: number;
       removedCount?: number;
@@ -426,6 +430,26 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
                   方案调整已生效
                   {before != null && after != null ? `；总数 ${before} → ${after}` : ''}
                   {Number(change.shortage || 0) > 0 ? `；还差 ${change.shortage}` : ''}
+                </div>
+              );
+            }
+            if (change.type === 'remove') {
+              return (
+                <div key={index} data-testid="proposal-remove-receipt">
+                  实际移除 {Number(change.removedCount || 0)} 条
+                  {before != null && after != null ? `；总数 ${before} → ${after}` : ''}
+                  ；未新增条目
+                </div>
+              );
+            }
+            if (change.type === 'move') {
+              return (
+                <div key={index} data-testid="proposal-move-receipt">
+                  已调整顺序
+                  {change.fromPosition != null && change.toPosition != null
+                    ? `：第 ${change.fromPosition} 位 → 第 ${change.toPosition} 位`
+                    : ''}
+                  ；条目集合不变
                 </div>
               );
             }
