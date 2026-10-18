@@ -6,6 +6,7 @@ import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
+import com.ytell.zhiyuan.model.dto.planning.DiversityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
 import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
@@ -100,6 +101,13 @@ final class PlanningObjectiveCompiler {
         source.setStructureTarget(structureTarget);
         source.setUtilityModel(new UtilityModelDTO());
         source.setMutationPolicy(policy);
+        // P4 灰度：仅在显式开启时写入 soft 策略；默认保持 null（off）。
+        // diversityPolicy 不在 digest 白名单内，冻结值不受影响。
+        if (SolverShadowSupport.diversityEnabled()) {
+            DiversityPolicyDTO diversity = new DiversityPolicyDTO();
+            diversity.setMode("soft");
+            source.setDiversityPolicy(diversity);
+        }
         source.setHardObjectiveVersion(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION);
         source.setSolverObjectiveVersion(SOLVER_OBJECTIVE_VERSION);
         freezeDigest(source);

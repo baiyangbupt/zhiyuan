@@ -15,7 +15,8 @@ staged solver 的灰度/回滚，不改变产品口径。
 |---|---|---|
 | `solver.v2.shadow` | 关 | 旧 solver 生效，新 solver 只记录差异；异常吞掉 |
 | `solver.v2.paths` | 空 | 逗号列表：`fill,initial,add,remove,replace,scope,refill` |
-| `planning.user-goal.freeze-apply.enabled` | 关 | 预览冻结 proposal + 请求指纹，apply 优先回放 |
+| `solver.v2.diversity` | 关 | P4 多样性 soft 阶段；默认 off，不影响 digest |
+| ~~`planning.user-goal.freeze-apply.enabled`~~ | 已删除 | 现在预览无条件冻结、apply 只回放 |
 
 当前运行时：`-Dsolver.v2.shadow=true`，`solver.v2.paths` 与 freeze 均关闭
 （Java pid 12938，2026-10-18 23:00）。

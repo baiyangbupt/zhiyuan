@@ -19,6 +19,7 @@ import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -288,6 +289,44 @@ class PlanningObjectiveCompilerTest {
                 objectives.getHardObjectiveVersion());
         assertEquals(64, objectives.getObjectiveDigest().length());
         assertTrue(!legacyDigest.equals(objectives.getObjectiveDigest()));
+    }
+
+    @Test
+    void enrichV2AddsSoftDiversityPolicyOnlyWhenEnabled() {
+        String previous = System.getProperty("solver.v2.diversity");
+        try {
+            PlanningStateDTO state = state("major", 12, 45);
+            state.getCandidatePoolState().setUserScore(550);
+            state.getCandidatePoolState().setSourceProvinceName("浙江");
+            MutationPolicyDTO policy = new MutationPolicyDTO();
+            policy.setAction("FILL");
+            policy.setLockExisting(false);
+            policy.setCountAsChurn(true);
+
+            System.setProperty("solver.v2.diversity", "false");
+            CanonicalPlanningObjectiveSetDTO off = PlanningObjectiveCompiler.compileConfirmed(state);
+            PlanningObjectiveCompiler.enrichV2(state, off, policy);
+            assertNull(off.getDiversityPolicy());
+
+            System.setProperty("solver.v2.diversity", "true");
+            CanonicalPlanningObjectiveSetDTO on = PlanningObjectiveCompiler.compileConfirmed(state);
+            PlanningObjectiveCompiler.enrichV2(state, on, policy);
+
+            assertNotNull(on.getDiversityPolicy());
+            assertEquals("soft", on.getDiversityPolicy().getMode());
+            assertEquals(0.4D, on.getDiversityPolicy().getRegionShare(), 0.0001D);
+            assertEquals(0.4D, on.getDiversityPolicy().getMajorCategoryShare(), 0.0001D);
+            assertEquals(0.6D, on.getDiversityPolicy().getSchoolLevelShare(), 0.0001D);
+            assertEquals(Integer.valueOf(32), on.getDiversityPolicy().getMaxGroups());
+            // diversityPolicy 不在 digest 白名单内：开关不改变冻结值。
+            assertEquals(off.getObjectiveDigest(), on.getObjectiveDigest());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("solver.v2.diversity");
+            } else {
+                System.setProperty("solver.v2.diversity", previous);
+            }
+        }
     }
 
     private PlanningStateDTO state(String volunteerModel, int version, int requiredCount) {

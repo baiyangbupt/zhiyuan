@@ -36,6 +36,18 @@ final class SolverShadowSupport {
         return "true".equalsIgnoreCase(value) || "1".equals(value);
     }
 
+    /**
+     * P4 灰度：`-Dsolver.v2.diversity=true` 或环境变量
+     * `SOLVER_V2_DIVERSITY=true` 时，enrichV2 写入 soft 多样性策略；默认关闭。
+     */
+    static boolean diversityEnabled() {
+        String value = System.getProperty("solver.v2.diversity");
+        if (value == null) {
+            value = System.getenv("SOLVER_V2_DIVERSITY");
+        }
+        return "true".equalsIgnoreCase(value) || "1".equals(value);
+    }
+
     /** S1 灰度：`solver.v2.paths=fill,initial` 的逗号列表；默认空=旧路径。 */
     static boolean pathEnabled(String path) {
         String value = System.getProperty("solver.v2.paths");

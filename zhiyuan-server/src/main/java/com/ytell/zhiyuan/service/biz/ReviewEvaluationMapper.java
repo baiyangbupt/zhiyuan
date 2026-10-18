@@ -89,6 +89,12 @@ public class ReviewEvaluationMapper {
                 // J5.4：context 有学费数据时，高收费由条目学费派生。
                 continue;
             }
+            if ("edge_score".equals(check.getCode())
+                    && safeContext.getUserScore() != null
+                    && safeContext.getBatchScore() != null) {
+                // J5.4：分数/批次线都在 context 时，边缘分由同一判据派生。
+                continue;
+            }
             if (("admission_limit".equals(check.getCode())
                     || "special_enrollment".equals(check.getCode())
                     || "cooperative_program".equals(check.getCode()))
@@ -128,6 +134,9 @@ public class ReviewEvaluationMapper {
                     "当前方案未发现特殊类型招生标签", "当前方案包含特殊类型招生志愿"));
             addIfPresent(findings, mapRiskFlag(safeContext, "cooperative_program",
                     "当前方案未发现中外合作办学项目", "当前方案包含中外合作办学项目"));
+        }
+        if (safeContext.getUserScore() != null && safeContext.getBatchScore() != null) {
+            addIfPresent(findings, mapEdgeScore(safeContext));
         }
         evaluation.setFindings(findings);
         evaluation.setProbesRun(findings.size());
@@ -506,6 +515,31 @@ public class ReviewEvaluationMapper {
             }
         }
         return false;
+    }
+
+    /** 与 reviewEdgeScore 同判据：分数距批次线 ≤30 判边缘分。 */
+    private EvaluationFindingDTO mapEdgeScore(EvaluationContextDTO context) {
+        EvaluationProbeMetadataDTO metadata = EvaluationProbeRegistry.get("edge_score");
+        if (metadata == null) {
+            return null;
+        }
+        int delta = context.getUserScore() - context.getBatchScore();
+        EvaluationFindingDTO finding = derivedFinding(metadata);
+        Map<String, Object> threshold = Maps.newLinkedHashMap();
+        threshold.put("userScore", context.getUserScore());
+        threshold.put("batchScore", context.getBatchScore());
+        threshold.put("delta", delta);
+        finding.setThreshold(threshold);
+        if (delta > 30) {
+            pass(finding, "当前分数不属于边缘分数区间");
+        } else {
+            finding.setResultStatus("fail");
+            finding.setDisplaySeverity("notice");
+            finding.setReasonCode("edge_score");
+            finding.setSummary("当前分数属于边缘分数区间（距批次线 " + delta + " 分）");
+        }
+        validateCombination(finding, metadata);
+        return finding;
     }
 
     private void addIfPresent(List<EvaluationFindingDTO> findings, EvaluationFindingDTO finding) {

@@ -646,7 +646,8 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
     check。P4 diversity 已实现（默认 off，utility→diversity→stable，
     32 组截断诊断）。count/edge/notice 类仍 checks 翻译。
     S4 legacy apply 已删除（用户拍板不等 24h）：预览无条件冻结，apply 只回放；
-    重新生成回退与策略兜底方法已删；全量 Java 1283/0/0/10。
+    重新生成回退与策略兜底方法已删；edge_score 也已派生；
+    `solver.v2.diversity` 运行时开关已接（默认 off）。全量 Java 1287/0/0/10。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；
   预览/冻结/后置/回执与普通动作一致；review fix 与 fill 同源。
 - J5.6 清理：解释权重、`rank_in_tier` 语义、重复 filter/eligibility 规则。

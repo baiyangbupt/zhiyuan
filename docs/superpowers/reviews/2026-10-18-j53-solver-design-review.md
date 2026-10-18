@@ -342,6 +342,9 @@ J5.4 gap 复审确认 Q13 之后存在“solver 放行、review 硬拦”的双�
 - S4 legacy apply 删除：移除 freeze 开关、预览无条件冻结、apply 只回放；
   删除重新生成回退与 `findReadyUserGoalProposalByStrategy`；旧测试改为
   stale proposalId → 409。`isLegacyCanonicalProposal` 仅保留范围类元数据兼容。
-- 全量 Java：**1283/0/0/10**；gateway Python：**345 passed / 32 skipped**。
-- 仍待 J5.4 后续：`group_inner_safety_guard` 仍归 review；count/edge/notice
+- S5d 收尾：`edge_score` 也由 context 派生（userScore/batchScore，delta≤30
+  判边缘分）；`solver.v2.diversity` 运行时开关已接（默认 off，开启时
+  enrichV2 写 soft DiversityPolicy，objectiveDigest 不变）。
+- 全量 Java：**1287/0/0/10**；gateway Python：**345 passed / 32 skipped**。
+- 仍待 J5.4 后续：`group_inner_safety_guard` 仍归 review；count/notice
   类保持 checks 翻译。

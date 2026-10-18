@@ -86,6 +86,29 @@ class ReviewEvaluationMapperTest {
     }
 
     @Test
+    void derivesEdgeScoreFromUserAndBatchScore() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        List<ReviewCheckDTO> checks = defaultChecks();
+        replace(checks, check("edge_score", true, "info", "notice", null,
+                "旧检查认为不边缘"));
+        review.setChecks(checks);
+        EvaluationContextDTO context = context(45);
+        context.setUserScore(620);
+        context.setBatchScore(600);
+
+        EvaluationFindingDTO edge = find(mapper.map(review, context), "edge_score");
+        assertEquals("fail", edge.getResultStatus());
+        assertEquals("notice", edge.getDisplaySeverity());
+        assertEquals("edge_score", edge.getReasonCode());
+        assertEquals(20, edge.getThreshold().get("delta"));
+
+        context.setUserScore(650);
+        EvaluationFindingDTO safe = find(mapper.map(review, context), "edge_score");
+        assertEquals("pass", safe.getResultStatus());
+        assertEquals("info", safe.getDisplaySeverity());
+    }
+
+    @Test
     void hardFailuresMakeHardFeasibilityFalse() {
         ReviewStateDTO review = new ReviewStateDTO();
         List<ReviewCheckDTO> checks = defaultChecks();

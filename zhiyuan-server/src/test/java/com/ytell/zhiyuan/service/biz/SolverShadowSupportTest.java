@@ -12,6 +12,8 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SolverShadowSupportTest {
 
@@ -45,6 +47,42 @@ class SolverShadowSupportTest {
             } else {
                 System.setProperty("solver.v2.shadow", previous);
             }
+        }
+    }
+
+    @Test
+    void diversityEnabledParsesPropertyTrue() {
+        String previous = System.getProperty("solver.v2.diversity");
+        try {
+            System.setProperty("solver.v2.diversity", "true");
+            assertTrue(SolverShadowSupport.diversityEnabled());
+            System.setProperty("solver.v2.diversity", "1");
+            assertTrue(SolverShadowSupport.diversityEnabled());
+            System.setProperty("solver.v2.diversity", "TRUE");
+            assertTrue(SolverShadowSupport.diversityEnabled());
+        } finally {
+            restoreDiversityProperty(previous);
+        }
+    }
+
+    @Test
+    void diversityEnabledParsesPropertyFalseOrOther() {
+        String previous = System.getProperty("solver.v2.diversity");
+        try {
+            System.setProperty("solver.v2.diversity", "false");
+            assertFalse(SolverShadowSupport.diversityEnabled());
+            System.setProperty("solver.v2.diversity", "0");
+            assertFalse(SolverShadowSupport.diversityEnabled());
+        } finally {
+            restoreDiversityProperty(previous);
+        }
+    }
+
+    private void restoreDiversityProperty(String previous) {
+        if (previous == null) {
+            System.clearProperty("solver.v2.diversity");
+        } else {
+            System.setProperty("solver.v2.diversity", previous);
         }
     }
 

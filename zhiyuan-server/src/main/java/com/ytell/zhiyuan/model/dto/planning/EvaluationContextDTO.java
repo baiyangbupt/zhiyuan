@@ -32,6 +32,8 @@ public class EvaluationContextDTO {
     private String admissionMode;
     private String sourceProvince;
     private Integer userScore;
+    /** 批次线；edge_score 派生用。 */
+    private Integer batchScore;
     private Integer candidateSourceVersion;
     /** 评价时的 stateVersion（= ReviewStateDTO.sourceVersion）。 */
     private Integer evaluatedStateVersion;

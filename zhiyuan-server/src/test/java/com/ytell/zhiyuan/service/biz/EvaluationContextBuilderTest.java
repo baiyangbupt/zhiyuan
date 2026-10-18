@@ -29,6 +29,7 @@ class EvaluationContextBuilderTest {
         state.getCandidatePoolState().setSourceVersion(7);
         state.getCandidatePoolState().setSourceProvinceName("广东");
         state.getCandidatePoolState().setUserScore(600);
+        state.getCandidatePoolState().setBatchScore(520);
         state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(50);
         state.getDataFreshnessState().setDataVersion("data-v1");
 
@@ -62,6 +63,7 @@ class EvaluationContextBuilderTest {
                 context.getEntries().get(0).getRiskFlags());
         assertEquals(Integer.valueOf(50), context.getSelectionTargetCount());
         assertEquals(Integer.valueOf(45), context.getRequiredCount());
+        assertEquals(Integer.valueOf(520), context.getBatchScore());
         assertEquals("major", context.getAdmissionMode());
         assertEquals(Integer.valueOf(8), context.getEvaluatedStateVersion());
         assertEquals("data-v1", context.getDataVersion());

@@ -24,7 +24,7 @@ public class CanonicalPlanningObjectiveSetDTO {
     private StructureTargetDTO structureTarget;
     private UtilityModelDTO utilityModel;
     private MutationPolicyDTO mutationPolicy;
-    /** J5.3 P4：默认 null（等同 off）；enrichV2 不填写，测试/调用方可显式设置。 */
+    /** J5.3 P4：默认 null（等同 off）；solver.v2.diversity 开启时 enrichV2 写入 soft。 */
     private DiversityPolicyDTO diversityPolicy;
     private String hardObjectiveVersion;
     private String solverObjectiveVersion;

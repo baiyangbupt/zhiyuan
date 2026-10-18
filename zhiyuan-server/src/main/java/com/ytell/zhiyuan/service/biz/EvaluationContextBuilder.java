@@ -53,6 +53,7 @@ public class EvaluationContextBuilder {
             context.setRequiredTierCounts(state.getCandidatePoolState().getRequiredTierCounts());
             context.setSourceProvince(state.getCandidatePoolState().getSourceProvinceName());
             context.setUserScore(state.getCandidatePoolState().getUserScore());
+            context.setBatchScore(state.getCandidatePoolState().getBatchScore());
             context.setCandidateSourceVersion(state.getCandidatePoolState().getSourceVersion());
         }
         context.setSelectionTargetCount(selectionTargetCount(state));
