@@ -625,7 +625,8 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
   * 首片已落（2026-10-18 深夜）：`ReviewSafetyGuard` 委托
     `SafetyFloorSupport`，review `safety_guard` 与 solver 的
     `not_applicable`/minLocalProtect 同源；档位用 canonical key，省名匹配
-    用 `RegionScopeSupport`。仍待 tier 三源、coverage probe、structure
+    用 `RegionScopeSupport`。S1 结构评估器已抽到 `PlanStructureEvaluator`
+    （纯搬移 + 直测）。仍待 tier 三源、coverage probe、structure
     阈值（20k/60k）与 safety 硬/软口径。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；
   预览/冻结/后置/回执与普通动作一致；review fix 与 fill 同源。

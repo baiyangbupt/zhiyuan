@@ -296,6 +296,10 @@ J5.4 gap 复审确认 Q13 之后存在“solver 放行、review 硬拦”的双�
   `sameProvince` 同步切换。
 - 新增 `ReviewSafetyGuardTest`（名字/ID 排除、1/2 条保底、580 分、缺省
   省份）；全量 Java **1247/0/0/10**。
+- S1 结构评估器抽取：`ReviewEvaluationMapper.buildStructure` 搬到
+  `PlanStructureEvaluator`（纯搬移，输出逐字不变），新增
+  `PlanStructureEvaluatorTest` 锁 unit/item/tier/safety/学费/flags/ratio。
 - 仍待 J5.4 后续：tier 三源统一（review requiredTierCounts 缩放 vs
   solver constraint/anchor vs postcondition resolution）、coverage probe、
   structure 阈值（高学费 20k/60k）、safety 是否硬拦 apply。
+- 全量 Java：**1248/0/0/10**。
