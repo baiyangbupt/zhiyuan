@@ -111,7 +111,8 @@ pytest、JUnit、Node test runner。
   （`UserGoalProposalBuilder` +6 tests，`developer_instructions.write.md`）。
   `impact` 已进 `proposal.preview` 白名单并由 `ProposalCard` 渲染；真栈预览
   事件已读到新文案（见 B3 验收记录）。
-- [ ] 目标态：一个 owner；学费不重复存储；未确认草稿不成为有效约束。
+- [x] 目标态：学费只写 `userScoreDetail` 一个 owner；scope/requirements 只写规划状态；
+  草稿仅存在 workingSet/ChangeSet，确认前不进入有效约束（J4a 真栈 900016 验证）。
 - [x] 源码核对 5 个待验证项并回填（`2026-10-18-constraint-lifecycle-truth-table.md`）；
   仅“重排时序”留真栈验证。
 
@@ -347,17 +348,17 @@ pendingStatus`。
 snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；另算
 `planContentDigest`；`hasPlan` = ordered/working 的 items ∪ units 非空；不新增表。
 
-- [ ] 写失败测试：无画像/画像齐/有候选无方案/有方案/补录成绩后 plan 仍在
+- [x] 写失败测试：无画像/画像齐/有候选无方案/有方案/补录成绩后 plan 仍在
   （phase 可回 profile_ready，但 `hasPlan=true`）/stale。
-- [ ] 实现 Java 快照投影；不每轮拉 workspace。
-- [ ] `stale = any(flag=true) || reasonCode/message 非空`（不能按 `staleFlags`
+- [x] 实现 Java 快照投影；不每轮拉 workspace（J1，提交 `f66b78a`）。
+- [x] `stale = any(flag=true) || reasonCode/message 非空`（不能按 `staleFlags`
   非空）；`pendingStatus` 用 `status ∈ {active, applying}` + revision 倒序取最新
   （不要沿用 `getCurrent` 的 `last("limit 1")`）；`hasPlan` 用 items ∪ units。
-- [ ] `journey` 不再重复 `admissionMode`；用顶层字段。
-- [ ] agent `contracts.py` 增加 `journey`；`snapshot.py` 透传并进 `diff_snapshots`；
+- [x] `journey` 不再重复 `admissionMode`；用顶层字段。
+- [x] agent `contracts.py` 增加 `journey`；`snapshot.py` 透传并进 `diff_snapshots`；
   `StatePatch` 白名单允许 `journey`；`service.py` 注入紧凑 JourneyContext
   （含 `plan_version`，不注入全量）。
-- [ ] 跑定向 JUnit + `pytest tests/unit/test_gateway_snapshot.py`（或新增）。
+- [x] 跑定向 JUnit + `pytest tests/unit/test_gateway_snapshot.py`（或新增）。
 
 ### Task J1a-T2：agent JourneyContext 派生
 
@@ -365,12 +366,12 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
 - Create `zhiyuan-agent/app/gateway/journey.py`
 - Create `zhiyuan-agent/tests/unit/test_journey_context.py`
 
-- [ ] 写失败测试：从 journey 块派生 statePhase；taskIntent 按映射
+- [x] 写失败测试：从 journey 块派生 statePhase；taskIntent 按映射
   （responseType=fact→verify、review→review、调用 interpret 工具→interpret、
   解读后明确改→adjust）；无 last_action；blocked_actions 含 add_units 已知阻断。
-- [ ] 实现 dataclass/派生函数；不落库。`taskIntent` 没有现成字段，先写映射，
+- [x] 实现 dataclass/派生函数；不落库。`taskIntent` 没有现成字段，先写映射，
   不假设模型输出 `taskIntent`。
-- [ ] 跑定向 pytest。
+- [x] 跑定向 pytest。
 
 ### Task J1b-T1：触发目录契约与提示词
 
@@ -379,12 +380,12 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
 - Create `zhiyuan-agent/tests/unit/test_trigger_catalogue.py`
 - Modify prompt/skills as spec §5.
 
-- [ ] 写 40 条 fixture，带 `carrier/status/failure_behavior`；planned 动作不得
-  在 `available` 集合。
-- [ ] 契约校验器单测：动作/载体/槽位/状态合法；不冒充模型路由。
-- [ ] 提示词只列可用动作；planned 动作明确说“待支持”；“必须有”写满方案只替换
-  1 组；scope/学费未持久化前写“仅本次”。
-- [ ] 跑定向 pytest。
+- [x] 写 fixture，带 `carrier/status/failure_behavior`；planned 动作不得
+  在 `available` 集合。pin 退役后为 39 条。
+- [x] 契约校验器单测：动作/载体/槽位/状态合法；不冒充模型路由。
+- [x] 提示词只列可用动作；planned 动作明确说“待支持”；“必须有”写满方案只替换
+  1 组；scope/学费持久化后按 J4a 口径写“写入本会话报考要求”。
+- [x] 跑定向 pytest。
 
 ### Task J1c-T1：网关硬不变量校验
 
@@ -392,10 +393,10 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
 - Modify `zhiyuan-agent/app/gateway/service.py`
 - Create `zhiyuan-agent/tests/unit/test_gateway_journey_invariants.py`
 
-- [ ] 写失败测试：一轮一个写；有 pending 才能 confirm；applying 拒绝新写；
+- [x] 写失败测试：一轮一个写；有 pending 才能 confirm；applying 拒绝新写；
   版本守卫；已知阻断给固定文案，不 repair。
-- [ ] 实现轻量校验；不做 8 状态机。
-- [ ] 跑定向 pytest。
+- [x] 实现轻量校验；不做 8 状态机。
+- [x] 跑定向 pytest。
 
 ## Phase J2c：解读卡（事件/reducer/MessageList）
 
@@ -450,7 +451,8 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
   prepare 与 add_units 同路冻结。
 - [x] 真栈：900058 加三条安徽、学费≤6000 → ready 预览列明 3 组，确认后
   45→48 组、111→114 条、零删除。
-- [ ] 后续：每组多专业粒度、replace/move/remove/fill 规划器、严格“先约束→再加入”
+- [ ] 后续：每组多专业粒度、fill 规划器、严格“先约束→再加入”
+  （replace/remove/move 已在 J4a/J4b 落地）
   分步链。
 
 ## Phase J4a：scope/学费持久化 + REPLACE（后续）
