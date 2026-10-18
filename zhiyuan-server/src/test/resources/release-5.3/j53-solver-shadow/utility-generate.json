@@ -1,0 +1,66 @@
+{
+  "name": "utility-generate",
+  "snapshot": {
+    "snapshotVersion": "candidate-snapshot-v1",
+    "countMode": "volunteer",
+    "sourceProvince": "浙江",
+    "facts": [
+      {
+        "entityId": "a",
+        "volunteerIds": ["a"],
+        "tier": "stable",
+        "provinceName": "浙江",
+        "eligible": true,
+        "current": false,
+        "locked": false,
+        "pinned": false,
+        "utilityScore": 30,
+        "utilityCoverage": 100,
+        "stableOrder": 0
+      },
+      {
+        "entityId": "b",
+        "volunteerIds": ["b"],
+        "tier": "stable",
+        "provinceName": "浙江",
+        "eligible": true,
+        "current": false,
+        "locked": false,
+        "pinned": false,
+        "utilityScore": 90,
+        "utilityCoverage": 100,
+        "stableOrder": 1
+      },
+      {
+        "entityId": "c",
+        "volunteerIds": ["c"],
+        "tier": "stable",
+        "provinceName": "浙江",
+        "eligible": true,
+        "current": false,
+        "locked": false,
+        "pinned": false,
+        "utilityScore": 60,
+        "utilityCoverage": 100,
+        "stableOrder": 2
+      }
+    ]
+  },
+  "objectives": {
+    "targetCount": 2,
+    "countMode": "volunteer",
+    "objectiveDigest": "fixture-utility-generate"
+  },
+  "policy": {
+    "action": "GENERATE",
+    "lockExisting": false,
+    "countAsChurn": true
+  },
+  "expected": {
+    "selectedEntityIds": ["b", "c"],
+    "levels": {
+      "churn": 0,
+      "utility": 150
+    }
+  }
+}

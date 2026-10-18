@@ -1,0 +1,84 @@
+{
+  "name": "safety-before-churn",
+  "snapshot": {
+    "snapshotVersion": "candidate-snapshot-v1",
+    "countMode": "volunteer",
+    "sourceProvince": "浙江",
+    "facts": [
+      {
+        "entityId": "a-current-protect",
+        "volunteerIds": ["a-current-protect"],
+        "tier": "protect",
+        "provinceName": "江苏",
+        "eligible": true,
+        "current": true,
+        "locked": false,
+        "pinned": false,
+        "utilityScore": 90,
+        "utilityCoverage": 100,
+        "stableOrder": 0
+      },
+      {
+        "entityId": "b-current-stable",
+        "volunteerIds": ["b-current-stable"],
+        "tier": "stable",
+        "provinceName": "浙江",
+        "eligible": true,
+        "current": true,
+        "locked": false,
+        "pinned": false,
+        "utilityScore": 90,
+        "utilityCoverage": 100,
+        "stableOrder": 1
+      },
+      {
+        "entityId": "c-local-protect",
+        "volunteerIds": ["c-local-protect"],
+        "tier": "protect",
+        "provinceName": "浙江",
+        "eligible": true,
+        "current": false,
+        "locked": false,
+        "pinned": false,
+        "utilityScore": 10,
+        "utilityCoverage": 100,
+        "stableOrder": 2
+      },
+      {
+        "entityId": "d-stable",
+        "volunteerIds": ["d-stable"],
+        "tier": "stable",
+        "provinceName": "浙江",
+        "eligible": true,
+        "current": false,
+        "locked": false,
+        "pinned": false,
+        "utilityScore": 10,
+        "utilityCoverage": 100,
+        "stableOrder": 3
+      }
+    ]
+  },
+  "objectives": {
+    "targetCount": 2,
+    "countMode": "volunteer",
+    "objectiveDigest": "fixture-safety-before-churn",
+    "structureTarget": {
+      "minLocalProtect": 1,
+      "safetyFloorMode": "applicable"
+    }
+  },
+  "policy": {
+    "action": "FILL",
+    "lockExisting": false,
+    "countAsChurn": true
+  },
+  "expected": {
+    "selectedEntityIds": ["a-current-protect", "c-local-protect"],
+    "levels": {
+      "safety": 0,
+      "churn": 1,
+      "utility": 100
+    }
+  }
+}

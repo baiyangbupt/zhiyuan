@@ -7,8 +7,11 @@ import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
+import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
+import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
+import com.ytell.zhiyuan.model.dto.planning.UtilityModelDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierAllocationResolutionDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
@@ -28,6 +31,8 @@ import java.util.Set;
 final class PlanningObjectiveCompiler {
 
     static final String SCHEMA_VERSION = "4.1.0-m2";
+    static final String SCHEMA_VERSION_V2 = "4.2.0-j53";
+    static final String SOLVER_OBJECTIVE_VERSION = "solver-objective-v1";
     private static final String FILL_TO_COUNT = "fill_to_count";
     private static final String PRIORITIZE_WITHIN_TIER = "prioritize_within_tier";
 
@@ -72,6 +77,26 @@ final class PlanningObjectiveCompiler {
         result.setOrderingConstraints(canonicalPriorityRules(PriorityRuleSupport.confirmedRules(state)));
         freezeDigest(result);
         return result;
+    }
+
+    /**
+     * J5.3：在已编译的硬目标上补 StructureTarget/UtilityModel/MutationPolicy，
+     * 并重新冻结 digest。旧路径不调用此方法，digest 不变。
+     */
+    static CanonicalPlanningObjectiveSetDTO enrichV2(PlanningStateDTO state,
+                                                     CanonicalPlanningObjectiveSetDTO source,
+                                                     MutationPolicyDTO policy) {
+        if (source == null) {
+            return null;
+        }
+        source.setSchemaVersion(SCHEMA_VERSION_V2);
+        source.setStructureTarget(SafetyFloorSupport.build(state));
+        source.setUtilityModel(new UtilityModelDTO());
+        source.setMutationPolicy(policy);
+        source.setHardObjectiveVersion(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION);
+        source.setSolverObjectiveVersion(SOLVER_OBJECTIVE_VERSION);
+        freezeDigest(source);
+        return source;
     }
 
     private static CanonicalPlanningObjectiveSetDTO base(PlanningStateDTO state) {
@@ -263,6 +288,21 @@ final class PlanningObjectiveCompiler {
         payload.put("tierAllocationResolution", canonicalResolution(
                 objectiveSet.getTierAllocationResolution()));
         payload.put("orderingConstraints", objectiveSet.getOrderingConstraints());
+        // 旧路径字段为 null，不写入，保证旧 objectiveDigest 不变。
+        if (objectiveSet.getStructureTarget() != null) {
+            payload.put("structureTarget", objectiveSet.getStructureTarget());
+        }
+        if (objectiveSet.getMutationPolicy() != null) {
+            payload.put("mutationPolicy", objectiveSet.getMutationPolicy());
+        }
+        if (!Strings.isNullOrEmpty(objectiveSet.getHardObjectiveVersion())) {
+            payload.put("hardObjectiveVersion", objectiveSet.getHardObjectiveVersion());
+        }
+        // 求解目标契约版本参与冻结：solverObjectiveVersion 变化意味着
+        // utility/policy 的解释方式变了，旧 pending 不应继续确认。
+        if (!Strings.isNullOrEmpty(objectiveSet.getSolverObjectiveVersion())) {
+            payload.put("solverObjectiveVersion", objectiveSet.getSolverObjectiveVersion());
+        }
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             return toHex(digest.digest(JSON.toJSONString(payload).getBytes(StandardCharsets.UTF_8)));

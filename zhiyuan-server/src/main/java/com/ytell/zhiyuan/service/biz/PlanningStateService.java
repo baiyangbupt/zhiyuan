@@ -1,5 +1,6 @@
 package com.ytell.zhiyuan.service.biz;
 
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
@@ -43,6 +44,7 @@ import java.time.ZoneId;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -61,6 +63,10 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class PlanningStateService {
+
+    private static final List<String> TIERS = Arrays.asList("sprint", "stable", "protect");
+    private static final StagedDeterministicPlanSolver STAGED_REFILL_SOLVER =
+            new StagedDeterministicPlanSolver();
 
     private static final String OTHER_MAJOR_FILTER_LABEL = "其他专业";
     private static final int DEFAULT_INITIAL_PLAN_TARGET_COUNT = 45;
@@ -218,6 +224,13 @@ public class PlanningStateService {
      */
     @Value("${planning.candidate-pool.split.enabled:true}")
     private boolean candidatePoolSplitEnabled = false;
+
+    /**
+     * S0b：user-goal FILL/PRIORITIZE 预览冻结回放。默认关；开启后 apply 优先
+     * 读取 pending 里的 frozenProposal，不再重新生成/求解。
+     */
+    @Value("${planning.user-goal.freeze-apply.enabled:false}")
+    private boolean userGoalFreezeApplyEnabled = false;
 
     /**
      * 事务管理器（拆分写"同事务"兜底）：池行与小行两次 CAS 要么同提交、要么（小行输时）
@@ -959,6 +972,19 @@ public class PlanningStateService {
                             putIfNotBlank(dataValue, "canonicalObjectiveDigest", primary.getCanonicalObjectiveDigest());
                             putIfNotBlank(dataValue, "solverVersion", primary.getSolverVersion());
                             putIfNotBlank(dataValue, "solverInputDigest", primary.getSolverInputDigest());
+                            if (userGoalFreezeApplyEnabled) {
+                                // S0b：冻结整份 proposal（含 solverResult/actions/
+                                // tierQuotaChange）+ selection-scoped digest。
+                                dataValue.put("frozenSelectionDigest",
+                                        frozenSelectionDigestForPreview(
+                                                tenantId, chatSessionId, primary));
+                                dataValue.put("frozenProposal",
+                                        JSONObject.parseObject(JSONObject.toJSONString(primary)));
+                                // apply 会用请求里的 requirements/scope/target 写会话约束，
+                                // 必须把预览请求也冻进 pending，防止同 proposalId 换请求。
+                                dataValue.put("frozenRequestDigest",
+                                        FrozenSelectionDigest.requestDigest(req));
+                            }
                         }
                     }
                     if (planAction && primary != null) {
@@ -1127,6 +1153,89 @@ public class PlanningStateService {
         return res;
     }
 
+    /**
+     * S0b：读预览时冻结在 pending 里的完整 proposal。只认 proposalId 匹配、
+     * 且带 solverResult 的 FILL/PRIORITIZE；其余返回 null 走旧的重新生成路径。
+     */
+    private String frozenSelectionDigestForPreview(Long tenantId, Long chatSessionId,
+                                                   FixProposalDTO proposal) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        // apply 会在刷新 overlay 后重建摘要；预览也必须先刷新，否则一次普通数据
+        // 刷新就会把本来一致的 pending 判成 solver_input_stale。
+        List<CandidateItemDTO> candidates = resolveEffectiveCandidates(
+                tenantId, chatSessionId, state, true);
+        return FrozenSelectionDigest.compute(state, candidates, proposal);
+    }
+
+    private FrozenUserGoal frozenUserGoalProposal(Long tenantId, Long chatSessionId,
+                                                  FixProposalApplyReq req,
+                                                  UserGoalFixProposalReq userGoalRequest) {
+        if (!userGoalFreezeApplyEnabled) {
+            return null;
+        }
+        // 开启 freeze 后不再回退“重新生成再应用”的 legacy 路径：
+        // 缺少 pending/冻结负载一律要求重新预览，保证预览=确认。
+        if (req == null || Strings.isNullOrEmpty(req.getProposalId())) {
+            throw new BusinessException(409,
+                    "user_goal_freeze_required: 请重新生成调整预览后再确认");
+        }
+        PendingConfirmationRes pending = pendingConfirmationBizService
+                .getActiveOrApplying(tenantId, chatSessionId);
+        if (pending != null && pending.getDataValue() != null) {
+            Object pendingProposalId = pending.getDataValue().get("proposalId");
+            if (!req.getProposalId().equals(pendingProposalId)) {
+                throw new BusinessException(409,
+                        "user_goal_frozen_proposal_mismatch: 预览已变化，请重新生成");
+            }
+            Object frozen = pending.getDataValue().get("frozenProposal");
+            // 只要 pending 里有冻结负载就优先回放：范围类提案（only_keep/exclude/
+            // tuition）本来就没有 canonical 三件套，不能拿它们当“必须重新预览”的判据。
+            if (frozen != null) {
+                verifyFrozenRequestDigest(pending, userGoalRequest);
+                FixProposalDTO proposal = JSON.parseObject(
+                        JSON.toJSONString(frozen), FixProposalDTO.class);
+                if (proposal == null) {
+                    throw new BusinessException(409,
+                            "user_goal_frozen_proposal_invalid: 冻结负载无法解析，请重新生成");
+                }
+                Object selectionDigest = pending.getDataValue().get("frozenSelectionDigest");
+                return new FrozenUserGoal(proposal,
+                        selectionDigest == null ? null : String.valueOf(selectionDigest));
+            }
+        }
+        if (!RepairProposalApplyPolicy.hasCanonicalMetadata(req)) {
+            throw new BusinessException(409,
+                    "user_goal_freeze_required: 请重新生成调整预览后再确认");
+        }
+        throw new BusinessException(409,
+                "user_goal_frozen_proposal_missing: 预览已失效，请重新生成");
+    }
+
+    private void verifyFrozenRequestDigest(PendingConfirmationRes pending,
+                                           UserGoalFixProposalReq userGoalRequest) {
+        Object expected = pending.getDataValue().get("frozenRequestDigest");
+        if (expected == null) {
+            // 冻结 flag 打开前落下的 pending 没有请求指纹，必须重新预览。
+            throw new BusinessException(409,
+                    "user_goal_frozen_request_missing: 预览缺少请求摘要，请重新生成");
+        }
+        String actual = FrozenSelectionDigest.requestDigest(userGoalRequest);
+        if (!String.valueOf(expected).equals(actual)) {
+            throw new BusinessException(409,
+                    "user_goal_request_changed: 确认请求与预览不一致，请重新预览");
+        }
+    }
+
+    private static final class FrozenUserGoal {
+        private final FixProposalDTO proposal;
+        private final String selectionDigest;
+
+        private FrozenUserGoal(FixProposalDTO proposal, String selectionDigest) {
+            this.proposal = proposal;
+            this.selectionDigest = selectionDigest;
+        }
+    }
+
     private FixProposalApplyRes applyUserGoalFixProposal(Long tenantId, Long chatSessionId, FixProposalApplyReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         RepairProposalApplyPolicy.validateStateVersionGuard(req, state);
@@ -1135,10 +1244,15 @@ public class PlanningStateService {
             throw new BusinessException(400, "缺少用户目标调整请求");
         }
         userGoalRequest.setSourceVersionGuard(req.getSourceVersionGuard());
-        FixProposalStateDTO proposalState = generateUserGoalFixProposals(chatSessionId, userGoalRequest);
-        FixProposalDTO proposal = RepairProposalStateBuilder.findProposal(proposalState, req.getProposalId());
-        if (proposal == null && !RepairProposalApplyPolicy.hasCanonicalMetadata(req)) {
-            proposal = findReadyUserGoalProposalByStrategy(proposalState, userGoalRequest.getGoalType());
+        FrozenUserGoal frozen = frozenUserGoalProposal(
+                tenantId, chatSessionId, req, userGoalRequest);
+        FixProposalDTO proposal = frozen == null ? null : frozen.proposal;
+        if (proposal == null) {
+            FixProposalStateDTO proposalState = generateUserGoalFixProposals(chatSessionId, userGoalRequest);
+            proposal = RepairProposalStateBuilder.findProposal(proposalState, req.getProposalId());
+            if (proposal == null && !RepairProposalApplyPolicy.hasCanonicalMetadata(req)) {
+                proposal = findReadyUserGoalProposalByStrategy(proposalState, userGoalRequest.getGoalType());
+            }
         }
         if (proposal == null) {
             throw new BusinessException(404, "调整预览不存在或已失效");
@@ -1149,8 +1263,13 @@ public class PlanningStateService {
         ReviewSummaryDTO beforeReviewSummary = state.getReviewState() == null ? null : state.getReviewState().getSummary();
         // 先跑推荐 overlay 刷新：它会用库里的最新行回填 state（persistRecommendationOverlay）。
         // 必须发生在补工作草案和写本轮约束之前，否则尚未落盘的草案/scope 会被回填覆盖。
-        resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+        List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(
+                tenantId, chatSessionId, state, true);
         ensureWorkingPlanContainsOrderedPlanItems(state);
+        if (userGoalFreezeApplyEnabled) {
+            FrozenSelectionGuard.verify(state, effectiveCandidates, proposal,
+                    frozen == null ? null : frozen.selectionDigest);
+        }
         applyUserGoalTargetToPlanningState(state, userGoalRequest, proposal);
         // 学费写在成绩行；先于方案落盘：写不进去就把这次确认判失败，不能方案生效而学费条件丢失。
         persistUserGoalTuitionRange(chatSessionId, resolveUserGoalTuitionRange(userGoalRequest));
@@ -13125,9 +13244,195 @@ public class PlanningStateService {
             return;
         }
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+        if (SolverShadowSupport.pathEnabled("refill")
+                && refillWithStagedSolver(state, tenantId, chatSessionId,
+                effectiveCandidates, pool)) {
+            syncWorkingPlanUnitsWithItems(draft, effectiveCandidates, pool);
+            recalculateWorkingPlanSummary(draft, pool);
+            return;
+        }
         refillWorkingPlanByTier(draft, effectiveCandidates, pool.getRequiredTierCounts());
         syncWorkingPlanUnitsWithItems(draft, effectiveCandidates, pool);
         recalculateWorkingPlanSummary(draft, pool);
+    }
+
+    /**
+     * S3 refill：只追加、零删除。目标 = 每个档位 max(当前, 池目标) 之和；
+     * 失败/无缺口返回 false，回退旧的按档位贪心补足。
+     */
+    boolean refillWithStagedSolver(PlanningStateDTO state,
+                                           Long tenantId,
+                                           Long chatSessionId,
+                                           List<CandidateItemDTO> effectiveCandidates,
+                                           CandidatePoolStateDTO pool) {
+        DraftPlanStateDTO draft = state == null ? null : state.getDraftPlanState();
+        if (draft == null || pool == null || pool.getRequiredTierCounts() == null
+                || pool.getRequiredTierCounts().isEmpty() || effectiveCandidates == null
+                || effectiveCandidates.isEmpty()) {
+            return false;
+        }
+        Map<String, Integer> desired = new LinkedHashMap<String, Integer>();
+        int target = 0;
+        int currentTotal = currentDraftEntityCount(state, draft, effectiveCandidates);
+        for (String tier : TIERS) {
+            int currentTier = currentDraftTierCount(state, draft, effectiveCandidates, tier);
+            int targetTier = tierTarget(pool.getRequiredTierCounts(), tier);
+            int resolved = Math.max(currentTier, targetTier);
+            desired.put(tier, resolved);
+            target += resolved;
+        }
+        if (target <= currentTotal) {
+            return false;
+        }
+        try {
+            CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(state, effectiveCandidates,
+                    CandidateSnapshotBuilder.CurrentSource.WORKING);
+            MutationPolicyDTO policy = new MutationPolicyDTO();
+            policy.setAction("REFILL");
+            policy.setLockExisting(true);
+            policy.setCountAsChurn(false);
+            CanonicalPlanningObjectiveSetDTO objectives = PlanningObjectiveCompiler.compileConfirmed(state);
+            CanonicalPlanningObjectiveSetDTO stagedObjectives = JSON.parseObject(
+                    JSON.toJSONString(objectives), CanonicalPlanningObjectiveSetDTO.class);
+            stagedObjectives.setTargetCount(target);
+            stagedObjectives.setTierAllocationConstraint(exactTierConstraint(desired));
+            PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
+            PlanSolverResultDTO solved = STAGED_REFILL_SOLVER.solve(
+                    snapshot, stagedObjectives, policy).solverResult;
+            if (!RepairProposalTaxonomy.Status.READY.equals(solved.getStatus())
+                    || solved.getSelectedEntityIds() == null
+                    || solved.getSelectedEntityIds().size() != target
+                    || !solved.getRemoveEntityIds().isEmpty()) {
+                return false;
+            }
+            Map<String, CandidateFactDTO> facts = new LinkedHashMap<String, CandidateFactDTO>();
+            for (CandidateFactDTO fact : snapshot.getFacts()) {
+                facts.put(fact.getEntityId(), fact);
+            }
+            Set<String> currentIds = new LinkedHashSet<String>();
+            for (CandidateFactDTO fact : snapshot.getFacts()) {
+                if (Boolean.TRUE.equals(fact.getCurrent())) {
+                    currentIds.add(fact.getEntityId());
+                }
+            }
+            if (!solved.getSelectedEntityIds().containsAll(currentIds)) {
+                return false;
+            }
+            List<CandidateItemDTO> toAdd = new ArrayList<CandidateItemDTO>();
+            for (String id : solved.getSelectedEntityIds()) {
+                if (currentIds.contains(id)) {
+                    continue;
+                }
+                CandidateFactDTO fact = facts.get(id);
+                if (fact == null || fact.getRawCandidates() == null
+                        || fact.getRawCandidates().isEmpty()) {
+                    return false;
+                }
+                toAdd.addAll(fact.getRawCandidates());
+            }
+            for (CandidateItemDTO candidate : toAdd) {
+                if (WorkingPlanMutationSupport.containsWorkingPlanItem(draft, candidate.getVolunteerId())
+                        || defaultList(draft.getBannedVolunteerIds()).contains(candidate.getVolunteerId())) {
+                    continue;
+                }
+                WorkingPlanMutationSupport.addWorkingPlanItemIfAllowed(
+                        draft, candidate, "refill_by_tier");
+            }
+            return true;
+        } catch (RuntimeException ex) {
+            log.warn("refill staged fallback: session={} error={}",
+                    chatSessionId, ex.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private int currentDraftEntityCount(PlanningStateDTO state,
+                                        DraftPlanStateDTO draft,
+                                        List<CandidateItemDTO> candidates) {
+        List<DraftItemDTO> items = draft.getItems() == null
+                ? Lists.<DraftItemDTO>newArrayList() : draft.getItems();
+        if (isMajorGroupMode(state.getCandidatePoolState())) {
+            return (int) items.stream()
+                    .filter(item -> item != null && !Strings.isNullOrEmpty(
+                            RepairCandidateSelector.resolveInitialRecommendationUnitId(
+                                    findRefillCandidate(candidates, item.getVolunteerId()))))
+                    .map(item -> RepairCandidateSelector.resolveInitialRecommendationUnitId(
+                            findRefillCandidate(candidates, item.getVolunteerId())))
+                    .distinct().count();
+        }
+        return (int) items.stream()
+                .filter(item -> item != null && !Strings.isNullOrEmpty(item.getVolunteerId()))
+                .map(DraftItemDTO::getVolunteerId).distinct().count();
+    }
+
+    private int currentDraftTierCount(PlanningStateDTO state,
+                                      DraftPlanStateDTO draft,
+                                      List<CandidateItemDTO> candidates,
+                                      String tier) {
+        List<DraftItemDTO> items = draft.getItems() == null
+                ? Lists.<DraftItemDTO>newArrayList() : draft.getItems();
+        if (isMajorGroupMode(state.getCandidatePoolState())) {
+            Set<String> units = new LinkedHashSet<String>();
+            for (DraftItemDTO item : items) {
+                CandidateItemDTO candidate = findRefillCandidate(candidates, item.getVolunteerId());
+                String unitId = candidate == null ? null
+                        : RepairCandidateSelector.resolveInitialRecommendationUnitId(candidate);
+                if (!Strings.isNullOrEmpty(unitId)
+                        && tier.equals(TierAllocationSupport.canonicalTierKey(
+                        candidate.getTier()))) {
+                    units.add(unitId);
+                }
+            }
+            return units.size();
+        }
+        int count = 0;
+        for (DraftItemDTO item : items) {
+            CandidateItemDTO candidate = findRefillCandidate(candidates, item.getVolunteerId());
+            if (candidate != null && tier.equals(
+                    TierAllocationSupport.canonicalTierKey(candidate.getTier()))) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private CandidateItemDTO findRefillCandidate(List<CandidateItemDTO> candidates, String volunteerId) {
+        List<CandidateItemDTO> safe = candidates == null
+                ? Lists.<CandidateItemDTO>newArrayList() : candidates;
+        for (CandidateItemDTO candidate : safe) {
+            if (candidate != null && volunteerId != null
+                    && volunteerId.equals(candidate.getVolunteerId())) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private int tierTarget(Map<String, Integer> targets, String tier) {
+        for (Map.Entry<String, Integer> entry : targets.entrySet()) {
+            if (tier.equals(TierAllocationSupport.canonicalTierKey(entry.getKey()))) {
+                return entry.getValue() == null ? 0 : Math.max(0, entry.getValue());
+            }
+        }
+        return 0;
+    }
+
+    private TierAllocationConstraintDTO exactTierConstraint(Map<String, Integer> desired) {
+        TierAllocationConstraintDTO result = new TierAllocationConstraintDTO();
+        result.setType("exact_counts");
+        result.setSourceType("exact_counts");
+        result.setSprint(range(desired.get("sprint")));
+        result.setStable(range(desired.get("stable")));
+        result.setProtect(range(desired.get("protect")));
+        return result;
+    }
+
+    private TierCountRangeDTO range(Integer count) {
+        TierCountRangeDTO result = new TierCountRangeDTO();
+        int value = count == null ? 0 : Math.max(0, count);
+        result.setMinCount(value);
+        result.setMaxCount(value);
+        return result;
     }
 
     /**

@@ -6,6 +6,7 @@ import com.ytell.zhiyuan.model.dto.planning.ConstraintStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardPlanningObjectivesDTO;
+import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
@@ -264,6 +265,29 @@ class PlanningObjectiveCompilerTest {
                 () -> PlanningObjectiveCompiler.compile(state, request));
 
         assertEquals("tier_exact_total_mismatch", error.getReasonCode());
+    }
+
+    @Test
+    void enrichV2AddsStructureAndMutationPolicyWithoutTouchingLegacyDigest() {
+        PlanningStateDTO state = state("major", 12, 45);
+        state.getCandidatePoolState().setUserScore(550);
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        CanonicalPlanningObjectiveSetDTO objectives = PlanningObjectiveCompiler.compileConfirmed(state);
+        String legacyDigest = objectives.getObjectiveDigest();
+        MutationPolicyDTO policy = new MutationPolicyDTO();
+        policy.setAction("FILL");
+        policy.setLockExisting(false);
+        policy.setCountAsChurn(true);
+
+        PlanningObjectiveCompiler.enrichV2(state, objectives, policy);
+
+        assertEquals("4.2.0-j53", objectives.getSchemaVersion());
+        assertEquals(2, objectives.getStructureTarget().getMinLocalProtect());
+        assertEquals("FILL", objectives.getMutationPolicy().getAction());
+        assertEquals(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION,
+                objectives.getHardObjectiveVersion());
+        assertEquals(64, objectives.getObjectiveDigest().length());
+        assertTrue(!legacyDigest.equals(objectives.getObjectiveDigest()));
     }
 
     private PlanningStateDTO state(String volunteerModel, int version, int requiredCount) {

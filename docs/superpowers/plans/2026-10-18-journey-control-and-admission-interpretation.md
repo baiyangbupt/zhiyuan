@@ -560,6 +560,50 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
 - J5.2 目标 + 评价：`ObjectiveCompiler` + `PlanEvaluator`（hard/structure/soft
   三层）；现有 `ReviewStateDTO.checks` 改造成 probe，不另写规则链。
 - J5.3 Solver：同一目标下的搜索；软效用/多样性/候选帽；churn/结构偏差优先。
+  * 设计 + 四路独立评审已完成（2026-10-18）：
+    `docs/superpowers/specs/2026-10-18-j53-solver-design.md`、
+    `docs/superpowers/reviews/2026-10-18-j53-solver-design-review.md`。
+    评审后层序为 safety → churn → tierAnchor → utility → diversity →
+    stable；FILL/PRIORITIZE 冻结、selection-scoped digest、候选帽
+    witness、Ojalgo mip_gap/全局预算为 P0 前置。第三轮复核 4 个 P1
+    已收口：S0 拆 S0a/S0b、快照复用与 pending 失效双判据、
+    候选帽 mandatory+witness+剩余预算、稳定性契约限定为固定部署内
+    确定。**S0a 代码切片已落**：`CandidateSnapshot`/`CandidateUtilityScorer`/
+    `StagedDeterministicPlanSolver`（safety→churn/tier→utility）/
+    `CandidatePoolReducer`/仓库内 fixture/shadow 测试；
+    `SolverShadowSupport` 已接 `CanonicalPlanningRuntime.enforceSelection`
+    与 fill 的 `selectFillCandidates`（`solver.v2.shadow` 默认关，只记录
+    差异，不改变旧结果）；`PlanningObjectiveCompiler.enrichV2` 统一补
+    StructureTarget/UtilityModel/MutationPolicy 并重冻 digest（旧路径
+    digest 不变）；FILL/SCOPE staged 加 `requireCompensationSafe`，
+    单元档位冲突直接 409；refill 与 add-by-scope 的 staged 分支已接，
+    待真栈验收；
+    **S0b 第一刀已落（`planning.user-goal.freeze-apply.enabled` 默认关）**：
+    预览落 `frozenProposal`，apply 优先回放；**flag 开启时不再回退
+    legacy 重新生成路径**（缺 pending/冻结负载直接 409），并用
+    `FrozenSelectionGuard` 校验选中实体仍在/仍合格；预览落
+    `frozenSelectionDigest`（选中/当前实体硬事实 + 硬目标/策略），
+    apply 重建比对。**真栈 S0b 首验通过（2026-10-18）**：900040
+    fill 80→85，预览 selected/ordered 与 apply 后 85 组完全一致；
+    验收后已恢复 900040 到 version 5/80 组。shadow 同场无差异
+    （enforceSelection 80/80，fill 85/85）。另有覆盖场景
+    `fill 80 + 浙江≥3`：80/80，仅 1 换位（legacy 保留
+    `36020261002343`，staged 保留 `36020261005731`；两者同冲档）。
+    已核对：覆盖要求浙江≥3 强制换入一个浙江单元，两个旧单元只能留一个；
+    legacy 留 finalScore 0、staged 留 finalScore 43，差异由 utility 次级
+    选择解释，不是 snapshot current 来源错误。另在 900018/900028/900038
+    跑 enforceSelection shadow：各 80/80，onlyLegacy=0/onlyStaged=0；
+    验收后三会话均已恢复 version 4/80。
+    **未切流，freeze flag 默认仍关；运行时已回 shadow-only（pid 25095，
+    `solver.v2.paths`/freeze flag 关闭）。** 第四轮实现复审（路径正确性 +
+    迁移/legacy 两路）修复见 review §十：范围类提案可回放 frozenProposal、
+    `frozenRequestDigest` 防换请求、staged 精确配额报 `tier_exact`、
+    postcondition 按 confirmed coverage 回落、initial snapshot 与
+    available 同源、reducer 保留 current 行、enrichV2 深拷贝、
+    预览摘要不 hash admissionRatio。真栈：900045 staged fill+freeze
+    42→44 apply 通过；900045 `only_keep 浙江` 无 canonical 元数据 apply
+    成功；改请求 409 `user_goal_request_changed`；已恢复 900045 14/44、
+    900040 5/80。全量 Java 1231/0/8。
 - J5.4 后置条件 + 审查：统一 `UnifiedPlanPostconditionValidator`；审查读同一
   `StructureVector`/`PlanEvaluation`；review tierQuotaGoal 与 solver 一致。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；

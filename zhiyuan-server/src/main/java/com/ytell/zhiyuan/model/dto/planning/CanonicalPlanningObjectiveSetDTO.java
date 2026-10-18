@@ -19,4 +19,11 @@ public class CanonicalPlanningObjectiveSetDTO {
     private Boolean tierAllocationStateChanged = false;
     private List<PriorityRuleDTO> orderingConstraints = Lists.newArrayList();
     private String objectiveDigest;
+
+    // J5.3（v2 编译时写入；旧路径保持 null）
+    private StructureTargetDTO structureTarget;
+    private UtilityModelDTO utilityModel;
+    private MutationPolicyDTO mutationPolicy;
+    private String hardObjectiveVersion;
+    private String solverObjectiveVersion;
 }

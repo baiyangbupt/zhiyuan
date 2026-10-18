@@ -1,10 +1,14 @@
 package com.ytell.zhiyuan.service.biz;
 
+import com.alibaba.fastjson.JSON;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.model.dto.planning.CandidateFactDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CandidateSnapshotDTO;
 import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
+import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftPlanStateDTO;
@@ -28,6 +32,7 @@ import java.util.stream.Collectors;
 final class CanonicalPlanningRuntime {
 
     private static final DeterministicPlanSolver SOLVER = new OjalgoDeterministicPlanSolver();
+    private static final StagedDeterministicPlanSolver STAGED_SOLVER = new StagedDeterministicPlanSolver();
 
     private CanonicalPlanningRuntime() {
     }
@@ -56,7 +61,36 @@ final class CanonicalPlanningRuntime {
                 && concat(current, available).stream().anyMatch(Entity::hasConflictingTier)) {
             throw new BusinessException(409, "tier_fact_conflict: 同一专业组存在多个冲稳保档位");
         }
-        PlanSolverResultDTO solved = SOLVER.solve(input(objectives, current, available));
+        PlanSolverResultDTO solved;
+        if (SolverShadowSupport.pathEnabled("initial")) {
+            // 快照必须与 applySelection 的可加入集合同源：apply 只从 available 里解读
+            // addEntityIds，且 available 已过滤 banned/compensation-safe。否则 solver
+            // 可能选中 apply 解析不到的实体，直接 409 solver_candidate_missing。
+            CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                    state, candidateFacts, CandidateSnapshotBuilder.CurrentSource.WORKING);
+            MutationPolicyDTO policy = new MutationPolicyDTO();
+            policy.setAction("INITIAL");
+            policy.setLockExisting(false);
+            policy.setCountAsChurn(true);
+            policy.setRequireCompensationSafe(true);
+            Set<String> availableIds = available.stream()
+                    .map(entity -> entity.entityId)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            for (CandidateFactDTO fact : snapshot.getFacts()) {
+                if (!Boolean.TRUE.equals(fact.getCurrent())
+                        && !availableIds.contains(fact.getEntityId())) {
+                    fact.setEligible(false);
+                }
+            }
+            // 用副本 enrich，保留原 objectives 的旧 digest 供后置校验/旧口径使用。
+            CanonicalPlanningObjectiveSetDTO stagedObjectives = JSON.parseObject(
+                    JSON.toJSONString(objectives), CanonicalPlanningObjectiveSetDTO.class);
+            PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
+            solved = STAGED_SOLVER.solve(snapshot, stagedObjectives, policy).solverResult;
+        } else {
+            solved = SOLVER.solve(input(objectives, current, available));
+            SolverShadowSupport.shadowSelection(state, effectiveCandidates, objectives, solved);
+        }
         ensureReady(solved);
         applySelection(state, effectiveCandidates, current, available, solved);
         return solved;
@@ -74,7 +108,11 @@ final class CanonicalPlanningRuntime {
         if (confirmedTarget != null && confirmedTarget > 0) {
             return confirmedTarget;
         }
-        return current.isEmpty() ? Math.max(0, objectives.getTargetCount()) : current.size();
+        if (!current.isEmpty()) {
+            return current.size();
+        }
+        Integer target = objectives == null ? null : objectives.getTargetCount();
+        return target == null ? 0 : Math.max(0, target);
     }
 
     static PlanSolverResultDTO enforceOrdering(PlanningStateDTO state,

@@ -2,9 +2,11 @@ package com.ytell.zhiyuan.service.biz;
 
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyRes;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
@@ -228,6 +230,78 @@ class UnifiedPlanPostconditionValidatorTest {
         assertTrue(report.getPriorityRuleResults().get(0).getPersisted());
         assertEquals("priority:0", report.getObjectiveResults().get(1).getObjectiveId());
         assertTrue(report.getObjectiveResults().get(1).getSatisfied());
+    }
+
+    /**
+     * 覆盖约束同理：生成侧 `mergedCoverage(state, request)` 总会带上已确认覆盖，
+     * 报告侧只遍历请求就会漏掉 `coverage:0` → 40905。请求没重复浙江≥2 时也要报。
+     */
+    @Test
+    void shouldReportPersistedCoverageRequirementWhenRequestOmitsRequirements() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(2);
+        state.getCandidatePoolState().getItems().add(candidate("a", "浙江"));
+        state.getCandidatePoolState().getItems().add(candidate("b", "浙江"));
+        state.getOrderedPlanState().getItems().add(orderedItem("a", "稳"));
+        state.getOrderedPlanState().getItems().add(orderedItem("b", "稳"));
+        CoverageRequirementDTO coverage = new CoverageRequirementDTO();
+        coverage.setDomain("region");
+        coverage.setKey("province");
+        coverage.setValues(Lists.newArrayList("浙江"));
+        coverage.setMinCount(2);
+        state.getConstraintState().getHardPlanningObjectives()
+                .setCoverageRequirements(Lists.newArrayList(coverage));
+
+        UserGoalFixProposalReq userGoal = new UserGoalFixProposalReq();
+        userGoal.setGoalType("fill_to_count");
+        userGoal.setTargetCount(2);
+        FixProposalApplyReq applyReq = new FixProposalApplyReq();
+        applyReq.setProposalId("ugp-coverage");
+        applyReq.setProposalSource("user_goal");
+        applyReq.setUserGoalRequest(userGoal);
+        String digest = PlanningObjectiveCompiler.compileConfirmed(state).getObjectiveDigest();
+        applyReq.setCanonicalObjectiveDigest(digest);
+        applyReq.setSolverVersion("sv");
+        applyReq.setSolverInputDigest("sid");
+
+        PlanSolverResultDTO frozen = new PlanSolverResultDTO();
+        frozen.setStatus("ready");
+        frozen.setSolverVersion("sv");
+        frozen.setInputDigest("sid");
+        frozen.setSelectedEntityIds(Lists.newArrayList("a", "b"));
+        frozen.setOrderedEntityIds(Lists.newArrayList("a", "b"));
+        PlanSolverResultDTO.ObjectiveResultDTO coverageResult =
+                new PlanSolverResultDTO.ObjectiveResultDTO();
+        coverageResult.setObjectiveId("coverage:0");
+        coverageResult.setObjectiveType("coverage");
+        coverageResult.setRequiredMin(2);
+        coverageResult.setActualCount(2);
+        coverageResult.setSatisfied(true);
+        frozen.getObjectiveResults().add(coverageResult);
+
+        FixProposalDTO proposal = new FixProposalDTO();
+        proposal.setProposalId("ugp-coverage");
+        proposal.setProposalSource("user_goal");
+        proposal.setCanonicalObjectiveDigest(digest);
+        proposal.setSolverVersion("sv");
+        proposal.setSolverInputDigest("sid");
+        proposal.setSolverResult(frozen);
+        PendingPlanningCommandReq request = new PendingPlanningCommandReq();
+        request.setCommandType(PendingPlanningCommandBizService.APPLY_PLAN_CHANGE_PROPOSAL);
+        request.setProposalApply(applyReq);
+        FixProposalApplyRes applyRes = new FixProposalApplyRes();
+        applyRes.setStatus("applied");
+        applyRes.setProposal(proposal);
+
+        PlanChangePostconditionReportDTO report = validator.validate(request, state, applyRes);
+
+        assertTrue(report.getSatisfied());
+        assertEquals(Integer.valueOf(1), report.getRequirementCount());
+        // validateCanonicalObjectiveResults 通过后用 frozen 列表回填报告，
+        // 所以这里只剩冻结结果本身（coverage:0）。
+        assertEquals("coverage:0", report.getObjectiveResults().get(0).getObjectiveId());
+        assertTrue(report.getObjectiveResults().get(0).getSatisfied());
     }
 
     /** 反向对照 ✓：请求与 state 都没有优先规则时照旧通过，且不许凭空造出一条规则 ✗。 */

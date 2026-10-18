@@ -4,6 +4,7 @@ import com.google.common.base.Strings;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyRes;
@@ -28,8 +29,14 @@ import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 @Component
 class UnifiedPlanPostconditionValidator {
@@ -238,7 +245,7 @@ class UnifiedPlanPostconditionValidator {
                                      List<CandidateItemDTO> planCandidates,
                                      boolean majorGroupMode) {
         int satisfiedRequirements = 0;
-        for (UserGoalFixProposalReq.RequirementDTO requirement : defaultList(userGoal.getRequirements())) {
+        for (UserGoalFixProposalReq.RequirementDTO requirement : effectiveRequirements(state, userGoal)) {
             PlanChangePostconditionReportDTO.RequirementResultDTO result =
                     new PlanChangePostconditionReportDTO.RequirementResultDTO();
             result.setKind(requirement.getKind());
@@ -282,6 +289,85 @@ class UnifiedPlanPostconditionValidator {
         report.setRequirementCount(report.getRequirementResults().size());
         report.setSatisfiedRequirementCount(satisfiedRequirements);
         return satisfiedRequirements;
+    }
+
+    /**
+     * 报告侧要求集合必须与生成侧同源：`PlanningObjectiveCompiler.compile` 用
+     * `mergedCoverage(state, request)`（已确认覆盖 + 本轮 include，按覆盖身份排序），
+     * 而报告以前只遍历请求。请求没重复“浙江≥3”时，冻结目标里有 coverage:0、
+     * 报告里没有 → 40905。这里按同一规则重建，并把 include 顺序对齐为排序后的
+     * 身份序，避免 coverage:index 错位。
+     */
+    private List<UserGoalFixProposalReq.RequirementDTO> effectiveRequirements(
+            PlanningStateDTO state, UserGoalFixProposalReq userGoal) {
+        List<UserGoalFixProposalReq.RequirementDTO> others =
+                new ArrayList<UserGoalFixProposalReq.RequirementDTO>();
+        Map<String, UserGoalFixProposalReq.RequirementDTO> includes =
+                new LinkedHashMap<String, UserGoalFixProposalReq.RequirementDTO>();
+        for (CoverageRequirementDTO confirmed
+                : defaultList(CoverageRequirementSupport.confirmedRequirements(state))) {
+            UserGoalFixProposalReq.RequirementDTO requirement = toRequirement(confirmed);
+            includes.put(requirementIdentity(requirement), requirement);
+        }
+        for (UserGoalFixProposalReq.RequirementDTO requirement
+                : defaultList(userGoal.getRequirements())) {
+            if (requirement == null) {
+                continue;
+            }
+            if (!ProjectedHardRequirementSupport.KIND_INCLUDE.equalsIgnoreCase(requirement.getKind())) {
+                others.add(requirement);
+                continue;
+            }
+            UserGoalFixProposalReq.RequirementDTO canonical =
+                    toRequirement(CoverageRequirementSupport.canonicalize(requirement));
+            String identity = requirementIdentity(canonical);
+            UserGoalFixProposalReq.RequirementDTO existing = includes.get(identity);
+            if (existing == null) {
+                includes.put(identity, canonical);
+            } else {
+                existing.setMinCount(Math.max(CoverageRequirementSupport.minCount(existing),
+                        CoverageRequirementSupport.minCount(canonical)));
+            }
+        }
+        List<UserGoalFixProposalReq.RequirementDTO> ordered =
+                new ArrayList<UserGoalFixProposalReq.RequirementDTO>(includes.values());
+        ordered.sort(Comparator.comparing(this::requirementIdentity));
+        ordered.addAll(others);
+        return ordered;
+    }
+
+    private UserGoalFixProposalReq.RequirementDTO toRequirement(CoverageRequirementDTO source) {
+        UserGoalFixProposalReq.RequirementDTO result = new UserGoalFixProposalReq.RequirementDTO();
+        result.setKind(ProjectedHardRequirementSupport.KIND_INCLUDE);
+        result.setDomain(source == null ? null : source.getDomain());
+        result.setKey(source == null ? null : source.getKey());
+        result.setValues(source == null || source.getValues() == null
+                ? new ArrayList<String>() : new ArrayList<String>(source.getValues()));
+        result.setMinCount(CoverageRequirementSupport.minCount(source));
+        return result;
+    }
+
+    private String requirementIdentity(UserGoalFixProposalReq.RequirementDTO requirement) {
+        return normalized(requirement == null ? null : requirement.getDomain()) + "|"
+                + normalized(requirement == null ? null : requirement.getKey()) + "|"
+                + String.join("\u001f", sortedValues(requirement == null ? null : requirement.getValues()));
+    }
+
+    private static String normalized(String value) {
+        return Strings.nullToEmpty(value).trim().toLowerCase(Locale.ROOT);
+    }
+
+    private List<String> sortedValues(List<String> values) {
+        Set<String> normalizedValues = new LinkedHashSet<String>();
+        for (String value : defaultList(values)) {
+            String text = Strings.nullToEmpty(value).trim();
+            if (!text.isEmpty()) {
+                normalizedValues.add(text);
+            }
+        }
+        List<String> result = new ArrayList<String>(normalizedValues);
+        result.sort(String::compareTo);
+        return result;
     }
 
     /**

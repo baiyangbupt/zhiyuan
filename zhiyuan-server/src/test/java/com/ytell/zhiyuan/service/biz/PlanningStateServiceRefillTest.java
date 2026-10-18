@@ -3,8 +3,10 @@ package com.ytell.zhiyuan.service.biz;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftPlanStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -69,6 +71,29 @@ public class PlanningStateServiceRefillTest {
                 Maps.newHashMap());
 
         assertEquals(1, draft.getItems().size());
+    }
+
+    @Test
+    void stagedRefillAppendsOnlyMissingTierItems() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        CandidatePoolStateDTO pool = state.getCandidatePoolState();
+        pool.setVolunteerModel("major");
+        pool.setRequiredCount(2);
+        pool.setRequiredTierCounts(Maps.newHashMap());
+        pool.getRequiredTierCounts().put("冲", 2);
+        CandidateItemDTO existing = candidate("v-existing", "冲");
+        CandidateItemDTO missing = candidate("v-new", "冲");
+        pool.setItems(Lists.newArrayList(existing, missing));
+        DraftItemDTO draftItem = item("v-existing", "冲");
+        state.getWorkingPlanState().getItems().add(draftItem);
+
+        boolean applied = service.refillWithStagedSolver(
+                state, 1L, 1L, Lists.newArrayList(existing, missing), pool);
+
+        assertTrue(applied, "staged refill should apply");
+        assertEquals(2, state.getDraftPlanState().getItems().size());
+        assertTrue(state.getDraftPlanState().getItems().stream()
+                .anyMatch(row -> "v-new".equals(row.getVolunteerId())));
     }
 
     private static int countTier(DraftPlanStateDTO draft, String tier) {
