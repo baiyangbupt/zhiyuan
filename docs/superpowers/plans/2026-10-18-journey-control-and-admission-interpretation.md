@@ -457,9 +457,22 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
 - [x] `updateTuitionRange` 标记约束/规划 stale（`9616633`）：与
   `resolveEffectiveCandidates` 同口径，只标 recommendation/plan/review，不把候选源
   数据本身标脏；目标链在方案写入前以 CAS 落学费。
-- [ ] 真栈验收：卡片写“本次/以后都生效”；重新生成后 scope 不丢；学费过滤在
-  fill/scope/initial 一致。
-- [ ] REPLACE 按 v6 frozen/预览/后置骨架实现；预览列全新增/移出；零静默删除。
+- [x] 真栈验收（900016）：`exclude_scope=经济学` 应用后
+  `mustExcludeMajors=["经济学"]`；强制重生成仍 45 组且经济学 0 条。
+  学费 100000→6000 落 `userScoreDetail`，规划状态 6→7 并置
+  `constraint_intent_changed` stale（candidatePool 不动）。卡片文案沿用 A2 的
+  “确认后写入本会话报考要求并重新生成”。
+- [x] REPLACE 按 v6 frozen/预览/后置骨架实现（`f1fb209`）：`add_units` 增
+  `addPolicy=expand|replace`；replace 预览列全换入/换出（专业组模式按组原子），
+  prepare 冻结 added/removed volunteer+unit 集合，execute 只认冻结命令。
+  真栈 900045：45→45 组，移出江西水利电力大学第501组（5 专业）、换入
+  安徽师范大学第503组（计算机），未触碰条目全保留，后置条件 satisfied，
+  审查重跑；pending complete=applied。
+- [x] 真栈抓出并修复 overlay 覆盖未落盘 scope 的顺序缺陷（`a0efb36`）：
+  apply 前先刷新推荐 overlay，之后重建工作草案；写 scope 时不再把
+  `recommendationOverlay` 标脏，避免 apply 中途再次回填覆盖。
+- 备注：900040 验收前快照已备份并从 `state-before.json` 恢复（588 候选/80 组）；
+  900045/900016 保留为验收现场。
 
 ## Phase J4b：remove/move/pin（后续）
 
