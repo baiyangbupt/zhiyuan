@@ -216,6 +216,30 @@ def build_change_set(draft: IntentDraft) -> ChangeSet:
     return change_set
 
 
+def _scope_restates_targets(scopes: list[IntentScope], targets: list[IntentTarget]) -> bool:
+    """模型常把 remove/move 的点目标也写进 scopes（实测：school_level）。
+
+    这些 scope 若只是复述 targets，就不构成“先约束后动作”的复合要求；
+    真正的额外约束/覆盖/优先仍保留，继续走分步收口。
+    """
+    if not scopes:
+        return True
+    if not targets:
+        return False
+    target_text = " ".join(
+        str(getattr(target, "school_name", "") or "")
+        + str(getattr(target, "major_name", "") or "")
+        + str(getattr(target, "volunteer_id", "") or "")
+        for target in targets
+    )
+    for scope in scopes:
+        values = [scope.name, *(scope.values or [])]
+        texts = [str(value).strip() for value in values if str(value or "").strip()]
+        if not texts or not any(text in target_text for text in texts):
+            return False
+    return True
+
+
 def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
     """把完整意图草稿归一成一个待确认变更集（不执行、不写状态）。
 
@@ -277,7 +301,10 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
     }
     is_plan_mutation = action in mutation_kinds
     is_constraint_action = action in {"constrain", "prioritize"}
-    has_constraints = bool(draft.scopes or draft.requirements or draft.priority_rules)
+    gate_scopes = draft.scopes
+    if action in {"remove", "move"} and _scope_restates_targets(draft.scopes, draft.targets):
+        gate_scopes = []
+    has_constraints = bool(gate_scopes or draft.requirements or draft.priority_rules)
     has_targets = bool(draft.targets)
 
     if not is_plan_mutation and not is_constraint_action:
@@ -297,7 +324,11 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
             atomic=True,
         )
 
-    structural = ([action] if is_plan_mutation else []) + list(draft.additional_mutations)
+    # 模型常把主动作本身也写进 additionalMutations（实测：move_units + ["move"]）：
+    # 这不是额外变更，不能因此判成复合动作。
+    structural = ([action] if is_plan_mutation else []) + [
+        kind for kind in draft.additional_mutations if kind != action
+    ]
     # 约束动作本来就由 `apply_constraint_and_regenerate` 负责“移出 + 补足”
     # （学费清理/范围筛选都是这样执行的）。`replace/fill/remove` 在这里是执行机制，
     # 不是同一句话里的第二个结构变更；把它们当独立操作会把受支持的原子动作误判成
@@ -313,7 +344,7 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
                 ChangeOperation(
                     kind=kind,
                     targets=draft.targets,
-                    scopes=draft.scopes,
+                    scopes=gate_scopes,
                     count=draft.count,
                     requirements=draft.requirements,
                     priority_rules=draft.priority_rules,
@@ -364,7 +395,7 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
         operations = [
             ChangeOperation(
                 kind="constrain",
-                scopes=draft.scopes,
+                scopes=gate_scopes,
                 requirements=draft.requirements,
                 priority_rules=draft.priority_rules,
                 note="先确认约束/覆盖/优先条件，再执行结构动作。",
@@ -375,7 +406,7 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
                 ChangeOperation(
                     kind=kind,
                     targets=draft.targets,
-                    scopes=draft.scopes,
+                    scopes=gate_scopes,
                     count=draft.count,
                     requirements=draft.requirements,
                     priority_rules=draft.priority_rules,
@@ -394,7 +425,7 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
         operations = [
             ChangeOperation(
                 kind="constrain",
-                scopes=draft.scopes,
+                scopes=gate_scopes,
                 requirements=draft.requirements,
                 priority_rules=draft.priority_rules,
             )
@@ -404,7 +435,7 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
             ChangeOperation(
                 kind=structural[0],
                 targets=draft.targets,
-                scopes=draft.scopes,
+                scopes=gate_scopes,
                 count=draft.count,
                 requirements=draft.requirements,
                 priority_rules=draft.priority_rules,

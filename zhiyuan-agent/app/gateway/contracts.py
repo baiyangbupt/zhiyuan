@@ -347,8 +347,10 @@ class ProposalRequest(_ContractModel):
         default_factory=list,
         max_length=20,
         description=(
-            "仅 add_units 使用：精确的学校+专业目标列表（最多 20 条）；"
-            "不支持 add_units 的提案必须输出 []。不要写进 targetScopes/requirements。"
+            "精确的学校+专业目标列表（最多 20 条）。add_units 必填；"
+            "remove_units 用它列要移除的条目；move_units 必须恰好 1 条。"
+            "remove/move 的目标只能写这里，**不要写进 targetScopes/requirements**；"
+            "其余提案输出 []。"
         ),
     )
     add_policy: Literal["expand", "replace"] = Field(
@@ -388,12 +390,57 @@ class ProposalRequest(_ContractModel):
             "或先向用户确认先后顺序，其余分步推进。"
         ),
     )
-    target_scopes: list[ProposalScope] = Field(default_factory=list)
+    target_scopes: list[ProposalScope] = Field(
+        default_factory=list,
+        description=(
+            "范围约束（only_keep/exclude/tuition/add_units_by_scope）。"
+            "remove_units/move_units 不使用 targetScopes；它们的点目标必须写 exactTargets。"
+        ),
+    )
     negative_scopes: list[ProposalScope] = Field(default_factory=list)
     quality_guards: list[str] = Field(default_factory=list)
     tradeoff_guards: list[str] = Field(default_factory=list)
     source_review_issue_codes: list[str] = Field(default_factory=list)
     context: ProposalContext = Field(default_factory=ProposalContext)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_scope_restatements_for_atomic_actions(cls, data: Any) -> Any:
+        """remove/move 的目标常被模型重复写进 targetScopes（实测 school_level）。
+
+        scope 只是复述点目标时不构成额外约束，丢掉它让原子动作通过；
+        真正的额外范围仍保留，由 `_validate_exact_targets` 拒绝并要求拆步。
+        """
+        if not isinstance(data, dict):
+            return data
+        goal = str(data.get("goalType") or data.get("goal_type") or "").strip()
+        if goal not in {"remove_units", "move_units"}:
+            return data
+        targets = data.get("exactTargets") or data.get("exact_targets") or []
+        scopes = data.get("targetScopes") or data.get("target_scopes") or []
+        if not scopes or not targets:
+            return data
+        target_text = " ".join(
+            str(target.get("schoolName") or target.get("school_name") or "")
+            + str(target.get("majorName") or target.get("major_name") or "")
+            + str(target.get("volunteerId") or target.get("volunteer_id") or "")
+            for target in targets
+            if isinstance(target, dict)
+        )
+
+        def restates(scope: Any) -> bool:
+            if not isinstance(scope, dict):
+                return False
+            values = [scope.get("name"), *(scope.get("values") or [])]
+            texts = [str(value).strip() for value in values if str(value or "").strip()]
+            return bool(texts) and any(text in target_text for text in texts)
+
+        if all(restates(scope) for scope in scopes):
+            data = dict(data)
+            data.pop("targetScopes", None)
+            data.pop("target_scopes", None)
+            data["targetScopes"] = []
+        return data
 
     @model_validator(mode="after")
     def _validate_exact_targets(self) -> "ProposalRequest":

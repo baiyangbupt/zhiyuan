@@ -361,6 +361,42 @@ def test_move_units_is_a_supported_structural_operation() -> None:
     assert [op.kind for op in change_set.operations] == ["move"]
 
 
+def test_move_with_redundant_scope_and_duplicate_mutation_is_ready() -> None:
+    draft = IntentDraft(
+        source_turn_id="t-move-scope",
+        user_text="把安徽师范大学第503组放到第一",
+        goal_family="plan_mutation",
+        action="move_units",
+        additional_mutations=["move"],
+        targets=[{"schoolName": "安徽师范大学第503组", "majorName": "计算机科学与技术"}],
+        scopes=[{"scope_type": "school_level", "name": "安徽师范大学第503组"}],
+        validity="this_adjustment",
+    )
+
+    change_set = build_change_set(draft)
+
+    assert change_set.status == "ready"
+    assert [op.kind for op in change_set.operations] == ["move"]
+    assert change_set.operations[0].scopes == []
+
+
+def test_move_with_extra_scope_still_needs_constraints_first() -> None:
+    draft = IntentDraft(
+        source_turn_id="t-move-extra-scope",
+        user_text="把安徽师范大学第503组放到第一，只看北京",
+        goal_family="plan_mutation",
+        action="move_units",
+        targets=[{"schoolName": "安徽师范大学第503组", "majorName": "计算机科学与技术"}],
+        scopes=[{"scope_type": "region", "name": "北京"}],
+        validity="this_adjustment",
+    )
+
+    change_set = build_change_set(draft)
+
+    assert change_set.status == "needs_constraints_first"
+    assert [op.kind for op in change_set.operations] == ["constrain", "move"]
+
+
 @pytest.mark.parametrize("action", ["undo", "rollback"])
 def test_raw_planned_action_names_do_not_fall_into_readonly_ready(action: str) -> None:
     draft = IntentDraft(

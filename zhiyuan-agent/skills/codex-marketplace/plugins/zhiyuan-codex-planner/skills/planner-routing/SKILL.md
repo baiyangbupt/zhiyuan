@@ -69,6 +69,7 @@ version: 1.0.0
    **精确移除**用 `goalType="remove_units"` + `exactTargets`（预览列全移出、总数变化）；
    不要用 `exclude_scope` 冒充一次性删除。**调整顺序**用 `goalType="move_units"` +
    一个 `exactTargets` + `movePosition`（before/after 带 `moveAnchor`）；只改顺序。
+   移除/移动的目标只能写 `exactTargets`，**不要写进 targetScopes**（模型实测会误放）。
 
 3. **缺门禁事实不阻塞解释性内容**：省份/年份/成绩位次/选科/批次缺失时，
    阻塞的是**录取结论**（分数、概率、冲稳保、能不能报），不阻塞方向性解释与维度对比。

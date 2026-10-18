@@ -69,6 +69,7 @@ must_have / must_include_scope。用户明确要求“总数不变 / 换掉这�
 `goalType="add_units"` + `addPolicy="replace"`（等量替换，预览列全换入与换出）。
 **精确移除**用 `goalType="remove_units"` + `exactTargets`；“调整顺序”用
 `goalType="move_units"` + 一个目标 + `movePosition`（before/after 带锚点）。
+移除/移动的目标只能写 `exactTargets`，不要写进 `targetScopes`。
 本技能仍只读，不自行 apply；加入/替换/移除/移动预览属于确认链路。
 **默认语义是 EXPAND（扩总数、零删除）**，卡面写明总数变化；用户明确说“总数不变 /
 必须有这几条 / 换掉几条”时不要用 add_units 静默扩总数，先问一次“扩总数还是保持总数

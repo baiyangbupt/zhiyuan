@@ -474,9 +474,22 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
 - 备注：900040 验收前快照已备份并从 `state-before.json` 恢复（588 候选/80 组）；
   900045/900016 保留为验收现场。
 
-## Phase J4b：remove/move/pin（后续）
+## Phase J4b：remove/move（pin 已移除）
 
-- [ ] 每个动作独立 frozen command、预览 DTO、后置条件；一轮一个写；可回滚。
+- [x] `remove_units` / `move_units` 各自冻结命令、预览与后置条件（提交 `910dcd8`）：
+  remove 冻结移出集合与总数变化，执行后要求移出集合消失、未确认条目全在、
+  零新增、总数一致；move 冻结唯一目标与最终 1-based 位置，要求集合不变、
+  只有目标移动、其他相对顺序不变。两项都重跑审查，失败 40907/40905 整笔回滚。
+- [x] 真栈验收（900045）：move 45→45 组，目标组从第 44 位移到第 1 位，
+  集合不变、仅目标移动、审查重跑；remove 45→44 组，只移出目标组、
+  零新增、其余 44 组全保留、审查重跑。WS 卡片确认走网关 `move_units` 早分支，
+  回执 `actualChanges.type=move` 带 from/to 与 44→44。
+- [x] pin 对外清理：legacy `pin_lock` 动作、prompt 示例、触发目录 T27、
+  回归样例、只读投影与 Web 类型全部移除；Java 内部 `pinned` 仍被优先规则/
+  求解器用于保护条目，作为兼容字段保留；`lock` 不变。
+- [x] 真栈抓到的模型口径问题：模型把 move/remove 的点目标重复写进
+  `targetScopes`。ChangeSet 对“仅复述 targets”的 scope 不作为约束，
+  ProposalRequest 前置归一；真正的额外范围仍拒绝并要求拆步。
 
 ### J5.0 影子基线（2026-10-18 完成，未切换）
 

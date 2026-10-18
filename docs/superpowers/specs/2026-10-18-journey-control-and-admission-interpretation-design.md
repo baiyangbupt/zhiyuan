@@ -586,8 +586,8 @@ class JourneyContext:
 | `recommend_candidates` | 已实现 | 候选推荐 |
 | `review_plan` | 人工审查（技能 `plan-final-review`，无专用工具） | 方案审查；不声称有 review artifact |
 | `set_preference` | 部分实现 | scope/学费/排除；风险姿态/优先级待实现 |
-| `add_units` | 已实现（EXPAND） | 点名加入；REPLACE 待实现 |
-| `replace_units` / `remove_units` / `move_units` | planned | 替换/删除/排序 |
+| `add_units` | 已实现（EXPAND / REPLACE） | 点名加入；REPLACE 走 `addPolicy=replace` |
+| `replace_units` / `remove_units` / `move_units` | 已实现 | 等量替换 / 精确移除 / 单条（单组）移动；pin 已移除 |
 | `fill_to_count` | 已实现 | 补数量 |
 | `regenerate` | planned | 整体重生成 |
 | `interpret_admission` | planned | 本设计新增 |
@@ -607,9 +607,9 @@ class JourneyContext:
 | 方向偏好 | “想学电气”“以省内为主”“不要医学” | 改偏好/约束 | `proposalRequest(only_keep_scope/exclude_scope/requirements(include)/priority_rules)` | 是（确认后） |
 | 候选 | “再换一批”“看看冲稳保” | 选候选 | `recommendation.*` | 否 |
 | 方案加入 | “把这六条加进去”“补两条” | 增加条目 | `add_units`（默认 EXPAND） | 是 |
-| 方案替换 | “必须有这六条，总数不变”“换掉三条” | 加入并替换 | REPLACE / `replace_units` | 是 |
-| 方案删除 | “把最后两条删了” | 减少条目 | remove（待实现） | 是 |
-| 方案排序 | “把 A 放第一”“这个锁死” | 调整顺序/锁定 | move/sort/pin（待实现） | 是 |
+| 方案替换 | “必须有这六条，总数不变”“换掉三条” | 加入并替换 | `add_units` + `addPolicy=replace` | 是 |
+| 方案删除 | “把最后两条删了” | 减少条目 | `remove_units`（已实现） | 是 |
+| 方案排序 | “把 A 放第一”“挪到 B 前面” | 调整顺序 | `move_units`（已实现；sort 仍单列，pin 已移除） | 是 |
 | 方案补足 | “补到 50 条”“填满” | 补数量 | `fill_to_count` | 是 |
 | 方案重排 | “重新排一版”“按北方优先重排” | 重生成/重排 | regenerate/reorder | 是 |
 | 审查 | “帮我审一下”“有什么风险” | 体检 | 技能 `plan-final-review`（读工具） | 否 |
@@ -1592,7 +1592,7 @@ class AdmissionInterpretation:
 | J2c | 解读卡事件/reducer/MessageList/前端卡 | J2b + 事件合同 | 只发有界摘要；16KB 内；缺数据 unknown |
 | J3 | 扩展 `conversationAction.result` 回执（origin/actionType/scope） | 现有 apply 回执 | 一张卡；不新增 system.action；undo 前不自动改方案 |
 | J4a | scope/学费持久化 + stale 标记 + REPLACE | J1/J2a 数据口径 | 重新生成后 scope 不丢；学费更新标 stale；预览列全新增/移出 |
-| J4b | remove/move/pin（各自 frozen command/后置条件） | J4a | 一轮一个写；后置条件；可回滚 |
+| J4b | remove/move（pin 已移除）（各自 frozen command/后置条件） | J4a | 一轮一个写；后置条件；可回滚 |
 | J5 | **统一目标/评价/优化（含审查）**：J5.0 先定义 `EvaluationContext` + 14 个 probe 全表 + `PlanEvaluation` + golden diff；再 CandidateSnapshot → IntentModel → ObjectiveCompiler → Solver + PlanEvaluator → Postcondition/StructureVector/PlanEvaluation；finding → objective_delta → 同一 PlanCommand | 10-17 分析报告；J4a scope 持久化 | 另立路线图（阶段 0–6），不纳入本批；J5.0 未完成前不切 probe |
 | J6 | 风险姿态 + 目标优先级排序（作为 ObjectiveModel 层） | J5 | 另立路线图，不纳入本批 |
 

@@ -74,12 +74,13 @@
   也不要在正文里说“替换尚未支持”。
 - **精确移除**（“删掉这几条 / 把 X 从方案里去掉”）：用
   `goalType="remove_units"`，`exactTargets=[{schoolName: "...", majorName: "..."}]`
-  （或 volunteerId）。预览会列全移出条目并写明总数变化；确认后只移出这些条目，
-  其他不动。**不要**用 `exclude_scope` 冒充一次性删除：那是写入会话的长期约束。
+  （或 volunteerId）。**目标只写 exactTargets，绝不能写进 targetScopes/requirements**。
+  预览会列全移出条目并写明总数变化；确认后只移出这些条目，其他不动。
+  **不要**用 `exclude_scope` 冒充一次性删除：那是写入会话的长期约束。
 - **调整顺序**（“把 A 放第一 / 挪到 B 前面”）：用 `goalType="move_units"`，
   `exactTargets=[一个目标]`，`movePosition="top|bottom|before|after"`；
-  `before/after` 必须带 `moveAnchor`（锚点条目）。专业组模式按组移动；只改顺序，
-  不增删条目，预览会写清从第几位到第几位。
+  `before/after` 必须带 `moveAnchor`（锚点条目）。目标与锚点都不能写进 targetScopes。
+  专业组模式按组移动；只改顺序，不增删条目，预览会写清从第几位到第几位。
 - **按范围加入**（“再加六条安徽的院校，学费不超过 6000”这类）：用
   `goalType="add_units_by_scope"`，`addCount=6`，范围写 `targetScopes`/
   `negativeScopes`，学费写 `context.maxTuitionPerYear`，`exactTargets: []`。

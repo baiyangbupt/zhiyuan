@@ -620,6 +620,40 @@ def test_move_units_requires_one_target_and_position() -> None:
         )
 
 
+def test_move_units_drops_scope_that_only_restates_target() -> None:
+    from app.gateway.contracts import ProposalRequest
+
+    request = ProposalRequest(
+        goal_type="move_units",
+        source_version_guard=1,
+        exact_targets=[{"schoolName": "安徽师范大学第503组", "majorName": "计算机科学与技术"}],
+        target_scopes=[
+            {
+                "scope_type": "school",
+                "name": "安徽师范大学第503组",
+                "normalized_name": "安徽师范大学第503组",
+                "entity_type": "school",
+            }
+        ],
+        move_position="top",
+    )
+
+    assert request.target_scopes == []
+
+
+def test_move_units_still_rejects_extra_scope() -> None:
+    from app.gateway.contracts import ProposalRequest
+
+    with pytest.raises(ValidationError, match="cannot mix"):
+        ProposalRequest(
+            goal_type="move_units",
+            source_version_guard=1,
+            exact_targets=[{"schoolName": "安徽师范大学第503组", "majorName": "计算机科学与技术"}],
+            target_scopes=[{"scope_type": "region", "name": "北京"}],
+            move_position="top",
+        )
+
+
 def test_add_units_rejects_empty_targets() -> None:
     from app.gateway.contracts import ProposalRequest
 
