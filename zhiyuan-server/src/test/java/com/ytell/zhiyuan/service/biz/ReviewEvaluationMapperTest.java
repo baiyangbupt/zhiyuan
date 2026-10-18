@@ -303,6 +303,206 @@ class ReviewEvaluationMapperTest {
         assertEquals("remove_risk_items", hard.getObjectiveDelta().getStrategy());
     }
 
+    @Test
+    void derivedHighTuitionFailsWhenEntryExceedsThreshold() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        review.setChecks(defaultChecks());
+        EvaluationContextDTO context = context(45);
+        context.getEntries().get(0)
+                .setTuitionPerYear(TuitionThresholds.HIGH_TUITION_RISK_PER_YEAR + 1);
+        // 恰好等于阈值不算高收费。
+        context.getEntries().get(1)
+                .setTuitionPerYear(TuitionThresholds.HIGH_TUITION_RISK_PER_YEAR);
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO finding = find(evaluation, "high_tuition");
+        assertEquals("fail", finding.getResultStatus());
+        assertEquals("action", finding.getDisplaySeverity());
+        assertEquals("high_tuition", finding.getReasonCode());
+        assertEquals(1, finding.getAffectedEntryRefs().size());
+        assertEquals("u1", finding.getAffectedEntryRefs().get(0).getId());
+        assertNull(finding.getObjectiveDelta());
+        assertTrue(evaluation.getHardFeasible());
+    }
+
+    @Test
+    void derivedHighTuitionPassesBelowThresholdEvenIfLegacyCheckFails() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        List<ReviewCheckDTO> checks = defaultChecks();
+        replace(checks, check("high_tuition", false, "warn", "action", null,
+                "旧检查认为存在高收费"));
+        review.setChecks(checks);
+        EvaluationContextDTO context = context(45);
+        context.getEntries().get(0).setTuitionPerYear(12000);
+        context.getEntries().get(1)
+                .setTuitionPerYear(TuitionThresholds.HIGH_TUITION_RISK_PER_YEAR);
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO finding = find(evaluation, "high_tuition");
+        assertEquals("pass", finding.getResultStatus());
+        assertEquals("info", finding.getDisplaySeverity());
+        assertNull(finding.getReasonCode());
+        assertTrue(finding.getAffectedEntryRefs().isEmpty());
+    }
+
+    @Test
+    void derivedCooperativeProgramFailsOnRiskFlag() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        review.setChecks(defaultChecks());
+        EvaluationContextDTO context = context(45);
+        context.getEntries().get(1).setRiskFlags(Lists.newArrayList("cooperative_program"));
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO finding = find(evaluation, "cooperative_program");
+        assertEquals("fail", finding.getResultStatus());
+        assertEquals("action", finding.getDisplaySeverity());
+        assertEquals("cooperative_program", finding.getReasonCode());
+        assertEquals(1, finding.getAffectedEntryRefs().size());
+        assertEquals("u2", finding.getAffectedEntryRefs().get(0).getId());
+        assertTrue(evaluation.getHardFeasible());
+    }
+
+    @Test
+    void derivedCooperativeProgramPassesWithoutFlagEvenIfLegacyCheckFails() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        List<ReviewCheckDTO> checks = defaultChecks();
+        replace(checks, check("cooperative_program", false, "warn", "action", null,
+                "旧检查认为存在中外合作"));
+        review.setChecks(checks);
+        EvaluationContextDTO context = context(45);
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO finding = find(evaluation, "cooperative_program");
+        assertEquals("pass", finding.getResultStatus());
+        assertEquals("info", finding.getDisplaySeverity());
+        assertNull(finding.getReasonCode());
+        assertTrue(finding.getAffectedEntryRefs().isEmpty());
+    }
+
+    @Test
+    void derivedSpecialEnrollmentFailsOnRiskFlag() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        review.setChecks(defaultChecks());
+        EvaluationContextDTO context = context(45);
+        context.getEntries().get(0).setRiskFlags(Lists.newArrayList("special_enrollment"));
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO finding = find(evaluation, "special_enrollment");
+        assertEquals("fail", finding.getResultStatus());
+        assertEquals("action", finding.getDisplaySeverity());
+        assertEquals("special_enrollment", finding.getReasonCode());
+        assertEquals(1, finding.getAffectedEntryRefs().size());
+        assertEquals("u1", finding.getAffectedEntryRefs().get(0).getId());
+    }
+
+    @Test
+    void derivedSpecialEnrollmentPassesWithoutFlagEvenIfLegacyCheckFails() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        List<ReviewCheckDTO> checks = defaultChecks();
+        replace(checks, check("special_enrollment", false, "warn", "action", null,
+                "旧检查认为存在特殊类型"));
+        review.setChecks(checks);
+        EvaluationContextDTO context = context(45);
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO finding = find(evaluation, "special_enrollment");
+        assertEquals("pass", finding.getResultStatus());
+        assertEquals("info", finding.getDisplaySeverity());
+        assertNull(finding.getReasonCode());
+        assertTrue(finding.getAffectedEntryRefs().isEmpty());
+    }
+
+    @Test
+    void derivedAdmissionLimitFailsAsHardBlock() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        review.setChecks(defaultChecks());
+        EvaluationContextDTO context = context(45);
+        context.getEntries().get(1).setRiskFlags(Lists.newArrayList("admission_limit"));
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO finding = find(evaluation, "admission_limit");
+        assertEquals("fail", finding.getResultStatus());
+        assertEquals("block", finding.getDisplaySeverity());
+        assertEquals("hard", finding.getRuleStrength());
+        assertEquals("admission_limit", finding.getReasonCode());
+        assertEquals(1, finding.getAffectedEntryRefs().size());
+        assertEquals("u2", finding.getAffectedEntryRefs().get(0).getId());
+        assertFalse(evaluation.getHardFeasible());
+    }
+
+    @Test
+    void derivedAdmissionLimitPassesWithoutFlagEvenIfLegacyCheckFails() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        List<ReviewCheckDTO> checks = defaultChecks();
+        replace(checks, check("admission_limit", false, "risk", "block", null,
+                "旧检查认为存在限报"));
+        review.setChecks(checks);
+        EvaluationContextDTO context = context(45);
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO finding = find(evaluation, "admission_limit");
+        assertEquals("pass", finding.getResultStatus());
+        assertEquals("info", finding.getDisplaySeverity());
+        assertNull(finding.getReasonCode());
+        assertTrue(finding.getAffectedEntryRefs().isEmpty());
+        assertTrue(evaluation.getHardFeasible());
+    }
+
+    @Test
+    void derivedProbabilityInversionPassesForIncreasingRatiosEvenIfLegacyCheckFails() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        List<ReviewCheckDTO> checks = defaultChecks();
+        replace(checks, check("probability_inversion", false, "warn", "notice", null,
+                "旧检查认为存在倒挂"));
+        review.setChecks(checks);
+        EvaluationContextDTO context = context(45);
+        // majorRatio 优先；schoolRatio 的反向值不参与判定。
+        context.getEntries().get(0).setMajorRatio(45D);
+        context.getEntries().get(0).setSchoolRatio(90D);
+        context.getEntries().get(1).setMajorRatio(75D);
+        context.getEntries().get(1).setSchoolRatio(10D);
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO finding = find(evaluation, "probability_inversion");
+        assertEquals("pass", finding.getResultStatus());
+        assertEquals("info", finding.getDisplaySeverity());
+        assertNull(finding.getReasonCode());
+        assertTrue(finding.getAffectedEntryRefs().isEmpty());
+        assertEquals(0, finding.getThreshold().get("inversionCount"));
+    }
+
+    @Test
+    void derivedProbabilityInversionFailsForDecreasingRatiosByPosition() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        review.setChecks(defaultChecks());
+        EvaluationContextDTO context = context(45);
+        context.getEntries().clear();
+        // 列表顺序与 position 相反；无 majorRatio 时回退 schoolRatio。
+        context.getEntries().add(entry("unit", "u2", 2, "保", 40D, null));
+        context.getEntries().add(entry("unit", "u1", 1, "冲", 80D, null));
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        EvaluationFindingDTO finding = find(evaluation, "probability_inversion");
+        assertEquals("fail", finding.getResultStatus());
+        assertEquals("notice", finding.getDisplaySeverity());
+        assertEquals("probability_inversion", finding.getReasonCode());
+        assertEquals(1, finding.getThreshold().get("inversionCount"));
+        assertEquals(2, finding.getAffectedEntryRefs().size());
+        assertEquals("u1", finding.getAffectedEntryRefs().get(0).getId());
+        assertEquals("u2", finding.getAffectedEntryRefs().get(1).getId());
+        assertTrue(evaluation.getHardFeasible());
+    }
+
     private List<ReviewCheckDTO> defaultChecks() {
         return Lists.newArrayList(
                 check("ratio_distribution", true, "info", "action", null, "配比正常"),

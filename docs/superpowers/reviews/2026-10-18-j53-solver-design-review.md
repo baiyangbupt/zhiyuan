@@ -331,6 +331,14 @@ J5.4 gap 复审确认 Q13 之后存在“solver 放行、review 硬拦”的双�
   `tierConstraint`；mapper 在 review 有 `safety_guard` / 有显式配额时不再
   翻译旧 check，直接由条目派生 finding（safety unknown 保持 unknown/block；
   item 档位空时回退候选档位）。coverage/safety/ratio 三类 finding 均已派生。
-- 全量 Java：**1269/0/0/10**；gateway Python：**345 passed / 32 skipped**。
-- 仍待 J5.4 后续：其余 probes 仍由 checks 翻译；`group_inner_safety_guard`
-  仍归 review。
+- S5c 其余可派生 probes：high_tuition、cooperative_program、special_enrollment、
+  admission_limit、probability_inversion 也改为 context 派生；context 条目新增
+  `riskTags`（reasonCodes+riskFlags+mustSubjects 并集），与 review 的中文标签
+  判据同源，同时兼容 exact risk flag 代码。派生 finding 无 delta 时，
+  `resolveReviewFixCandidates` 回退同 code 的旧 check，修复入口不再被吞。
+- P4 diversity 已实现（默认 off）：`DiversityPolicyDTO`；utility 后再跑
+  diversity+stable 两阶段，cap=max(1,ceil(share*target))，超 32 组截断并报
+  `diversity_group_truncated`；off 路径零新增代码、golden/性能不变。
+- 全量 Java：**1284/0/0/10**；gateway Python：**345 passed / 32 skipped**。
+- 仍待 J5.4 后续：`group_inner_safety_guard` 仍归 review；count/edge/notice
+  类保持 checks 翻译。

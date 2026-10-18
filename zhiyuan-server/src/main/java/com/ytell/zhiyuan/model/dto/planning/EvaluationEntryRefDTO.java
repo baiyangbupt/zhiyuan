@@ -24,6 +24,8 @@ public class EvaluationEntryRefDTO {
     private Integer tuitionPerYear;
     private String provinceName;
     private List<String> riskFlags = Lists.newArrayList();
+    /** reasonCodes + riskFlags + mustSubjects 的并集（review 限报/专项判据同源）。 */
+    private List<String> riskTags = Lists.newArrayList();
     /** 该条目命中的覆盖要求 id：coverage:0、coverage:1…… */
     private List<String> matchedCoverageIds = Lists.newArrayList();
 }

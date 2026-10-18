@@ -9,6 +9,7 @@ import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateSnapshotDTO;
 import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
 import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
+import com.ytell.zhiyuan.model.dto.planning.DiversityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
 import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
@@ -27,7 +28,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -49,6 +52,11 @@ final class StagedDeterministicPlanSolver {
     private static final int ITERATION_BUDGET = 100_000;
     private static final int MAX_CANDIDATES = 600;
     private static final List<String> TIERS = Arrays.asList("sprint", "stable", "protect");
+    // 分组截断顺序：(candidateCount ↓, key ↑)，保证同输入同保留集合。
+    private static final Comparator<DiversityGroup> DIVERSITY_GROUP_ORDER =
+            Comparator.comparingInt((DiversityGroup group) -> group.factIndexes.size())
+                    .reversed()
+                    .thenComparing(group -> group.key);
 
     Result solve(CandidateSnapshotDTO snapshot,
                  CanonicalPlanningObjectiveSetDTO objectives,
@@ -297,7 +305,84 @@ final class StagedDeterministicPlanSolver {
         utilityObjective.weight(0);
         stableObjective.weight(0);
 
-        List<CandidateFactDTO> selected = selectedFacts(facts, variables, utilitySolved);
+        Optimisation.Result finalSolved = utilitySolved;
+        DiversityPolicyDTO diversity = safeObjectives.getDiversityPolicy();
+        if (diversity != null && "soft".equalsIgnoreCase(
+                Strings.nullToEmpty(diversity.getMode()).trim())) {
+            // P3 只固定纯 utility 表达式；stable 留到 P4 做次级交换。
+            Expression fixUtility = model.addExpression("fix_utility").level(utilityValue);
+            for (int index = 0; index < facts.size(); index++) {
+                int utility = facts.get(index).getUtilityScore() == null
+                        ? 0 : facts.get(index).getUtilityScore();
+                fixUtility.set(variables.get(index), BigDecimal.valueOf(utility));
+            }
+            Set<CandidateFactDTO> eligibleFacts = Collections.newSetFromMap(
+                    new IdentityHashMap<CandidateFactDTO, Boolean>());
+            eligibleFacts.addAll(eligible);
+            List<DiversityGroup> groups = diversityGroups(facts, eligibleFacts, safePolicy);
+            int maxGroups = diversity.getMaxGroups() == null
+                    ? 32 : Math.max(0, diversity.getMaxGroups());
+            if (groups.size() > maxGroups) {
+                groups.sort(DIVERSITY_GROUP_ORDER);
+                int originalGroups = groups.size();
+                groups = new ArrayList<DiversityGroup>(groups.subList(0, maxGroups));
+                PlanSolverResultDTO.DiagnosticDTO truncated = new PlanSolverResultDTO.DiagnosticDTO();
+                truncated.setReasonCode("diversity_group_truncated");
+                truncated.setObjectiveId("diversity");
+                truncated.setMessage("groups=" + originalGroups + ", retained=" + maxGroups
+                        + ", dropped=" + (originalGroups - maxGroups));
+                result.getDiagnostics().add(truncated);
+            }
+            if (groups.isEmpty()) {
+                levels.add(new ObjectiveLevel("diversity", 0L, 0L, "excess_count"));
+            } else {
+                Expression diversityObjective = model.addExpression("diversity_objective")
+                        .weight(BigDecimal.valueOf(utilityWeight));
+                List<Variable> excessVariables = new ArrayList<Variable>();
+                for (int index = 0; index < groups.size(); index++) {
+                    DiversityGroup group = groups.get(index);
+                    group.cap = diversityCap(group.dimension, diversity, targetCount);
+                    Variable excess = Variable.make("diversity_excess_" + index)
+                            .integer(true).lower(0).upper(targetCount);
+                    model.addVariable(excess);
+                    excessVariables.add(excess);
+                    Expression capExpression = model.addExpression("diversity_cap:" + index)
+                            .upper(group.cap);
+                    for (Integer factIndex : group.factIndexes) {
+                        capExpression.set(variables.get(factIndex), 1);
+                    }
+                    capExpression.set(excess, -1);
+                    diversityObjective.set(excess, BigDecimal.ONE);
+                }
+                stableObjective.weight(1);
+                Optimisation.Result diversitySolved = solvePhase(model, deadline, "diversity");
+                if (diversitySolved == null || !diversitySolved.getState().isOptimal()) {
+                    return blocked(result, started, phaseFailureReason(reduction, diversitySolved),
+                            "diversity", "多样性阶段未证明最优"
+                                    + (diversitySolved == null ? "" : "，solverState="
+                                    + diversitySolved.getState()));
+                }
+                int diversityValue = diversityExcess(groups, diversitySolved);
+                levels.add(new ObjectiveLevel("diversity", diversityValue, diversityValue,
+                        "excess_count"));
+                diversityObjective.weight(0);
+                Expression fixDiversity = model.addExpression("fix_diversity").level(diversityValue);
+                for (Variable excess : excessVariables) {
+                    fixDiversity.set(excess, 1);
+                }
+            }
+            stableObjective.weight(1);
+            Optimisation.Result stableSolved = solvePhase(model, deadline, "diversity_stable");
+            if (stableSolved == null || !stableSolved.getState().isOptimal()) {
+                return blocked(result, started, phaseFailureReason(reduction, stableSolved),
+                        "diversity", "多样性平局阶段未证明最优"
+                                + (stableSolved == null ? "" : "，solverState="
+                                + stableSolved.getState()));
+            }
+            finalSolved = stableSolved;
+        }
+
+        List<CandidateFactDTO> selected = selectedFacts(facts, variables, finalSolved);
         List<CandidateFactDTO> ordered = orderSelected(selected);
         result.setSelectedEntityIds(ids(selected));
         result.setOrderedEntityIds(ids(ordered));
@@ -311,7 +396,7 @@ final class StagedDeterministicPlanSolver {
         result.setResolvedTierCounts(tierCounts(selected));
         populateObjectiveResults(result, safeObjectives, selected);
         result.setStatus("ready");
-        result.setSolverState(utilitySolved.getState().toString());
+        result.setSolverState(finalSolved.getState().toString());
         result.setSolverVersion(SOLVER_VERSION);
         result.setInputDigest(inputDigest(safeSnapshot, safeObjectives, safePolicy));
         result.setDurationMs(elapsedMillis(started));
@@ -558,6 +643,67 @@ final class StagedDeterministicPlanSolver {
             }
         }
         return result;
+    }
+
+    private List<DiversityGroup> diversityGroups(List<CandidateFactDTO> facts,
+                                                 Set<CandidateFactDTO> eligibleFacts,
+                                                 MutationPolicyDTO policy) {
+        Map<String, DiversityGroup> groups = new LinkedHashMap<String, DiversityGroup>();
+        for (int index = 0; index < facts.size(); index++) {
+            CandidateFactDTO fact = facts.get(index);
+            if (!eligibleFacts.contains(fact) || mustRemove(fact, policy)) {
+                continue;
+            }
+            addDiversityGroup(groups, "region", fact.getProvinceName(), index);
+            addDiversityGroup(groups, "major_category", fact.getMajorCategoryId(), index);
+            addDiversityGroup(groups, "school_level", fact.getSchoolLevel(), index);
+        }
+        return new ArrayList<DiversityGroup>(groups.values());
+    }
+
+    private void addDiversityGroup(Map<String, DiversityGroup> groups,
+                                   String dimension,
+                                   String value,
+                                   int factIndex) {
+        String normalized = value == null ? null : value.trim();
+        if (Strings.isNullOrEmpty(normalized)) {
+            return;
+        }
+        String key = dimension + ":" + normalized;
+        DiversityGroup group = groups.get(key);
+        if (group == null) {
+            group = new DiversityGroup(key, dimension);
+            groups.put(key, group);
+        }
+        group.factIndexes.add(factIndex);
+    }
+
+    private int diversityCap(String dimension, DiversityPolicyDTO policy, int targetCount) {
+        double share;
+        if ("major_category".equals(dimension)) {
+            share = policy.getMajorCategoryShare() == null
+                    ? 0.4D : policy.getMajorCategoryShare();
+        } else if ("school_level".equals(dimension)) {
+            share = policy.getSchoolLevelShare() == null
+                    ? 0.6D : policy.getSchoolLevelShare();
+        } else {
+            share = policy.getRegionShare() == null ? 0.4D : policy.getRegionShare();
+        }
+        return Math.max(1, (int) Math.ceil(share * targetCount));
+    }
+
+    private int diversityExcess(List<DiversityGroup> groups, Optimisation.Result solved) {
+        int total = 0;
+        for (DiversityGroup group : groups) {
+            int count = 0;
+            for (Integer factIndex : group.factIndexes) {
+                if (solved.doubleValue(factIndex) > 0.5D) {
+                    count++;
+                }
+            }
+            total += Math.max(0, count - group.cap);
+        }
+        return total;
     }
 
     private List<CandidateFactDTO> selectedFacts(List<CandidateFactDTO> facts,
@@ -881,6 +1027,18 @@ final class StagedDeterministicPlanSolver {
         Result(PlanSolverResultDTO solverResult, List<ObjectiveLevel> levels) {
             this.solverResult = solverResult;
             this.levels = levels;
+        }
+    }
+
+    private static final class DiversityGroup {
+        final String key;
+        final String dimension;
+        final List<Integer> factIndexes = new ArrayList<Integer>();
+        int cap;
+
+        DiversityGroup(String key, String dimension) {
+            this.key = key;
+            this.dimension = dimension;
         }
     }
 

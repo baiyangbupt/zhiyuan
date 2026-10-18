@@ -641,7 +641,10 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
     safety/ratio 派生已落：context 带 safetyFloor 与显式 tierConstraint，
     mapper 对 safety_guard 与显式配额下的 ratio_distribution 直接派生
     finding（unknown 仍 block）；coverage/safety/ratio 三类已反向驱动。
-    其余 probes 仍由 checks 翻译。
+    另 high_tuition/cooperative/special/admission_limit/probability_inversion
+    也已派生（context.riskTags），派生 finding 无 delta 时修复入口回退旧
+    check。P4 diversity 已实现（默认 off，utility→diversity→stable，
+    32 组截断诊断）。count/edge/notice 类仍 checks 翻译。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；
   预览/冻结/后置/回执与普通动作一致；review fix 与 fill 同源。
 - J5.6 清理：解释权重、`rank_in_tier` 语义、重复 filter/eligibility 规则。

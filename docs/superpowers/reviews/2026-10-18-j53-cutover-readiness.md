@@ -166,9 +166,16 @@ fill 契约字段已在此进程生效；agent 18291 的 gateway 透传代码已
   apply_plan_change_proposal 12、move 3、add/remove/replace 各 1；
   0 running/stale。
 - 当前 Java 日志：0 次 `user_goal_frozen` / `solver_input_stale` / 409。
-- **legacy apply 删除闸门**：24h soak 的墙钟下限是 2026-10-19 23:52，
-  但 active=0、applying=0、至少一次 frozen pending 端到端 三项均未满足；
-  现实最早 2026-10-20 之后。删除前必须先处理 19 条旧 pending（reconcile/
-  expire/人工确认），并保留 `isLegacyCanonicalProposal` 与精确版本回退。
+- **2026-10-19 已排空**：对 19 条 active/applying 逐会话调用
+  `/session/pending/reconcile`；16 条 active → expired，2 条 applying
+  plan_change → expired (`operation_result_unknown`)，1 条 applying
+  score_update → applied。当前 active=0、applying=0。
+- **frozen 覆盖已验证**：900045 制造缺口后 prepare，pending data_value 同时含
+  `frozenProposal`/`frozenSelectionDigest`/`frozenRequestDigest`/
+  `hardObjectiveVersion`；apply 成功 44 组，随后恢复 14/44。
+- **legacy apply 删除闸门**：排空与 frozen 覆盖已满足；仅剩 24h soak
+  （墙钟下限 2026-10-19 23:52，且要求期间零 `user_goal_frozen`/
+  `solver_input_stale`/409/apply 失败）。删除前仍保留
+  `isLegacyCanonicalProposal` 与精确版本回退。
 - agent 18291 已于 2026-10-19 重启（pid 914，health 200），
   gateway `hardObjectiveVersion` 透传已激活。

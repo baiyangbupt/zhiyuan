@@ -92,6 +92,7 @@ public class EvaluationContextBuilder {
             entry.setMajorRatio(unit.getAdmissionRatio());
             Integer tuition = null;
             List<String> flags = Lists.newArrayList();
+            List<String> tags = Lists.newArrayList();
             List<CandidateItemDTO> unitCandidates = Lists.newArrayList();
             for (PlanningUnitMajorDTO major : defaultList(unit.getMajorItems())) {
                 CandidateItemDTO candidate = byVolunteer.get(major.getVolunteerId());
@@ -99,6 +100,11 @@ public class EvaluationContextBuilder {
                     continue;
                 }
                 unitCandidates.add(candidate);
+                for (String tag : riskTags(candidate)) {
+                    if (!tags.contains(tag)) {
+                        tags.add(tag);
+                    }
+                }
                 if (candidate.getTuitionPerYear() != null) {
                     tuition = tuition == null ? candidate.getTuitionPerYear()
                             : Math.max(tuition, candidate.getTuitionPerYear());
@@ -111,6 +117,7 @@ public class EvaluationContextBuilder {
             }
             entry.setTuitionPerYear(tuition);
             entry.setRiskFlags(flags);
+            entry.setRiskTags(tags);
             entry.setMatchedCoverageIds(matchedCoverageIds(unitCandidates, coverage));
             entries.add(entry);
         }
@@ -145,12 +152,36 @@ public class EvaluationContextBuilder {
                 entry.setMajorRatio(candidate.getAdmissionRatio());
                 entry.setTuitionPerYear(candidate.getTuitionPerYear());
                 entry.setRiskFlags(Lists.newArrayList(defaultList(candidate.getRiskFlags())));
+                entry.setRiskTags(riskTags(candidate));
                 entry.setMatchedCoverageIds(matchedCoverageIds(
                         Lists.newArrayList(candidate), coverage));
             }
             entries.add(entry);
         }
         return entries;
+    }
+
+    private List<String> riskTags(CandidateItemDTO candidate) {
+        List<String> result = Lists.newArrayList();
+        if (candidate == null) {
+            return result;
+        }
+        for (String value : defaultList(candidate.getReasonCodes())) {
+            if (!Strings.isNullOrEmpty(value) && !result.contains(value)) {
+                result.add(value);
+            }
+        }
+        for (String value : defaultList(candidate.getRiskFlags())) {
+            if (!Strings.isNullOrEmpty(value) && !result.contains(value)) {
+                result.add(value);
+            }
+        }
+        for (String value : defaultList(candidate.getMustSubjects())) {
+            if (!Strings.isNullOrEmpty(value) && !result.contains(value)) {
+                result.add(value);
+            }
+        }
+        return result;
     }
 
     private List<String> matchedCoverageIds(List<CandidateItemDTO> candidates,

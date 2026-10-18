@@ -25,11 +25,16 @@ import java.util.Set;
 /**
  * 旧 review check → 新 PlanEvaluation 的**影子映射**（J5.0）。
  *
- * <p>不改变审查行为：旧 `ReviewStateDTO.checks` 仍是权威输出；本类只把同一份
+ * <p>不改变审查行为：旧 `ReviewStateDTO.checks` 仍是权威输出；本类把同一份
  * 检查结果翻译成四字段 finding，用于 golden diff 和 J5.2 切换前的对照。
- * `count_validation` 按注册表拆成两个 probe；其余 1:1。</p>
+ * `count_validation` 按注册表拆成两个 probe；J5.4 起 coverage/safety/ratio、
+ * 倒挂、高收费与条目级风险标签改为由 EvaluationContext 反向派生，
+ * 有足够上下文数据时跳过对应 check 的翻译，其余仍 1:1。</p>
  */
 public class ReviewEvaluationMapper {
+
+    /** 相邻录取率比较的浮点容差，避免同值因浮点误差被判倒挂。 */
+    private static final double RATIO_EPSILON = 1e-9D;
 
     private final ActionCompiler actionCompiler = new ActionCompiler();
 
@@ -59,6 +64,9 @@ public class ReviewEvaluationMapper {
             return evaluation;
         }
 
+        boolean deriveInversion = hasRatioData(safeContext);
+        boolean deriveHighTuition = hasTuitionData(safeContext);
+        boolean deriveItemRisks = hasEntryRefData(safeContext);
         List<EvaluationFindingDTO> findings = Lists.newArrayList();
         for (ReviewCheckDTO check : reviewState.getChecks()) {
             if (check == null || Strings.isNullOrEmpty(check.getCode())) {
@@ -71,6 +79,21 @@ public class ReviewEvaluationMapper {
             if ("ratio_distribution".equals(check.getCode())
                     && safeContext.getTierConstraint() != null) {
                 // 有显式配额时，配比以配额边界为准；软带 check 不再参与。
+                continue;
+            }
+            if ("probability_inversion".equals(check.getCode()) && deriveInversion) {
+                // J5.4：context 有可比录取率时，倒挂由条目序列派生。
+                continue;
+            }
+            if ("high_tuition".equals(check.getCode()) && deriveHighTuition) {
+                // J5.4：context 有学费数据时，高收费由条目学费派生。
+                continue;
+            }
+            if (("admission_limit".equals(check.getCode())
+                    || "special_enrollment".equals(check.getCode())
+                    || "cooperative_program".equals(check.getCode()))
+                    && deriveItemRisks) {
+                // J5.4：条目级风险标签由 context.entries[].riskFlags 派生。
                 continue;
             }
             if ("count_validation".equals(check.getCode())) {
@@ -91,6 +114,20 @@ public class ReviewEvaluationMapper {
         EvaluationFindingDTO ratio = mapTierRatio(safeContext);
         if (ratio != null) {
             findings.add(ratio);
+        }
+        if (deriveInversion) {
+            addIfPresent(findings, mapProbabilityInversion(safeContext));
+        }
+        if (deriveHighTuition) {
+            addIfPresent(findings, mapHighTuition(safeContext));
+        }
+        if (deriveItemRisks) {
+            addIfPresent(findings, mapRiskFlag(safeContext, "admission_limit",
+                    "当前方案未发现明显限报标签", "当前方案包含限制报考专业"));
+            addIfPresent(findings, mapRiskFlag(safeContext, "special_enrollment",
+                    "当前方案未发现特殊类型招生标签", "当前方案包含特殊类型招生志愿"));
+            addIfPresent(findings, mapRiskFlag(safeContext, "cooperative_program",
+                    "当前方案未发现中外合作办学项目", "当前方案包含中外合作办学项目"));
         }
         evaluation.setFindings(findings);
         evaluation.setProbesRun(findings.size());
@@ -304,6 +341,244 @@ public class ReviewEvaluationMapper {
 
     private boolean above(TierCountRangeDTO bound, int actual) {
         return bound != null && bound.getMaxCount() != null && actual > bound.getMaxCount();
+    }
+
+    /**
+     * J5.4：倒挂由 context 条目按 position（null 最后）排序后相邻录取率比较派生，
+     * 与 review check 同向：前一位录取率高于后一位即倒挂。条目没有任何可比
+     * 录取率时保留旧 check 翻译，避免把缺数据冒充 pass。
+     */
+    private EvaluationFindingDTO mapProbabilityInversion(EvaluationContextDTO context) {
+        EvaluationProbeMetadataDTO metadata = EvaluationProbeRegistry.get("probability_inversion");
+        if (metadata == null) {
+            return null;
+        }
+        List<EvaluationEntryRefDTO> ordered = orderedEntries(context);
+        Set<EvaluationEntryRefDTO> affected = new LinkedHashSet<EvaluationEntryRefDTO>();
+        int inversionCount = 0;
+        for (int index = 1; index < ordered.size(); index++) {
+            Double previousRatio = ratioOf(ordered.get(index - 1));
+            Double currentRatio = ratioOf(ordered.get(index));
+            if (previousRatio == null || currentRatio == null) {
+                continue;
+            }
+            if (previousRatio - currentRatio > RATIO_EPSILON) {
+                inversionCount++;
+                affected.add(ordered.get(index - 1));
+                affected.add(ordered.get(index));
+            }
+        }
+        EvaluationFindingDTO finding = derivedFinding(metadata);
+        finding.setAffectedEntryRefs(Lists.newArrayList(affected));
+        Map<String, Object> threshold = Maps.newLinkedHashMap();
+        threshold.put("inversionCount", inversionCount);
+        threshold.put("ratioField", "majorRatio|schoolRatio");
+        finding.setThreshold(threshold);
+        if (inversionCount == 0) {
+            pass(finding, "当前排序未发现录取概率倒挂");
+        } else {
+            finding.setResultStatus("fail");
+            finding.setDisplaySeverity(derivedFailSeverity(metadata));
+            finding.setReasonCode("probability_inversion");
+            finding.setSummary("当前排序存在录取概率倒挂（" + inversionCount + " 处）");
+        }
+        validateCombination(finding, metadata);
+        return finding;
+    }
+
+    /**
+     * J5.4：高收费由 context 条目学费直接判定（超过 2 万/学年）。
+     * 条目完全没有学费数据时保留旧 check 翻译。
+     */
+    private EvaluationFindingDTO mapHighTuition(EvaluationContextDTO context) {
+        EvaluationProbeMetadataDTO metadata = EvaluationProbeRegistry.get("high_tuition");
+        if (metadata == null) {
+            return null;
+        }
+        List<EvaluationEntryRefDTO> affected = Lists.newArrayList();
+        Integer maxTuition = null;
+        for (EvaluationEntryRefDTO entry : safeList(context.getEntries())) {
+            if (entry == null || entry.getTuitionPerYear() == null) {
+                continue;
+            }
+            maxTuition = maxTuition == null
+                    ? entry.getTuitionPerYear() : Math.max(maxTuition, entry.getTuitionPerYear());
+            if (entry.getTuitionPerYear() > TuitionThresholds.HIGH_TUITION_RISK_PER_YEAR) {
+                affected.add(entry);
+            }
+        }
+        EvaluationFindingDTO finding = derivedFinding(metadata);
+        finding.setAffectedEntryRefs(affected);
+        Map<String, Object> threshold = Maps.newLinkedHashMap();
+        threshold.put("thresholdPerYear", TuitionThresholds.HIGH_TUITION_RISK_PER_YEAR);
+        threshold.put("maxTuitionPerYear", maxTuition);
+        threshold.put("matchedCount", affected.size());
+        finding.setThreshold(threshold);
+        if (affected.isEmpty()) {
+            pass(finding, "当前方案未发现学费超过 2 万/学年的专业");
+        } else {
+            finding.setResultStatus("fail");
+            finding.setDisplaySeverity(derivedFailSeverity(metadata));
+            finding.setReasonCode("high_tuition");
+            finding.setSummary("当前方案包含高收费专业（" + affected.size()
+                    + " 个条目学费超过 2 万/学年）");
+        }
+        validateCombination(finding, metadata);
+        return finding;
+    }
+
+    /**
+     * J5.4：条目级风险标签（限报/特殊类型/中外合作）由
+     * context.entries[].riskFlags 直接派生；条目存在即视为标签数据可用。
+     */
+    private EvaluationFindingDTO mapRiskFlag(EvaluationContextDTO context, String code,
+                                             String passSummary, String failSummary) {
+        EvaluationProbeMetadataDTO metadata = EvaluationProbeRegistry.get(code);
+        if (metadata == null) {
+            return null;
+        }
+        List<EvaluationEntryRefDTO> affected = Lists.newArrayList();
+        for (EvaluationEntryRefDTO entry : safeList(context.getEntries())) {
+            if (entry != null && matchesRiskEntry(code, entry)) {
+                affected.add(entry);
+            }
+        }
+        EvaluationFindingDTO finding = derivedFinding(metadata);
+        finding.setAffectedEntryRefs(affected);
+        Map<String, Object> threshold = Maps.newLinkedHashMap();
+        threshold.put("riskFlag", code);
+        threshold.put("matchedCount", affected.size());
+        finding.setThreshold(threshold);
+        if (affected.isEmpty()) {
+            pass(finding, passSummary);
+        } else {
+            finding.setResultStatus("fail");
+            finding.setDisplaySeverity(derivedFailSeverity(metadata));
+            finding.setReasonCode(code);
+            finding.setSummary(failSummary + "（" + affected.size() + " 个条目）");
+        }
+        validateCombination(finding, metadata);
+        return finding;
+    }
+
+    /**
+     * 与 review 的 admission_limit/special_enrollment/cooperative_program 同判据：
+     * 标签来自 reasonCodes + riskFlags + mustSubjects；中外合作还看校名/专业名。
+     */
+    private boolean matchesRiskEntry(String code, EvaluationEntryRefDTO entry) {
+        List<String> tags = Lists.newArrayList(safeList(entry.getRiskTags()));
+        for (String flag : safeList(entry.getRiskFlags())) {
+            if (flag != null && !tags.contains(flag)) {
+                tags.add(flag);
+            }
+        }
+        if ("admission_limit".equals(code)) {
+            return tags.contains("admission_limit")
+                    || containsAny(tags, "色盲", "色弱", "单科", "性别", "语种");
+        }
+        if ("special_enrollment".equals(code)) {
+            return tags.contains("special_enrollment")
+                    || containsAny(tags, "专项", "公费", "定向", "免费医学生", "强基",
+                    "国家计划", "地方专项", "高校专项");
+        }
+        if ("cooperative_program".equals(code)) {
+            return tags.contains("cooperative_program")
+                    || containsAny(tags, "中外合作")
+                    || containsText(entry.getSchoolName(), "中外合作")
+                    || containsText(entry.getMajorName(), "中外合作");
+        }
+        return tags.contains(code);
+    }
+
+    private boolean containsText(String value, String keyword) {
+        return value != null && value.contains(keyword);
+    }
+
+    private boolean containsAny(List<String> values, String... keywords) {
+        for (String value : values) {
+            if (value == null) {
+                continue;
+            }
+            for (String keyword : keywords) {
+                if (value.contains(keyword)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void addIfPresent(List<EvaluationFindingDTO> findings, EvaluationFindingDTO finding) {
+        if (finding != null) {
+            findings.add(finding);
+        }
+    }
+
+    private boolean hasRatioData(EvaluationContextDTO context) {
+        for (EvaluationEntryRefDTO entry : safeList(context.getEntries())) {
+            if (ratioOf(entry) != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasTuitionData(EvaluationContextDTO context) {
+        for (EvaluationEntryRefDTO entry : safeList(context.getEntries())) {
+            if (entry != null && entry.getTuitionPerYear() != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasEntryRefData(EvaluationContextDTO context) {
+        for (EvaluationEntryRefDTO entry : safeList(context.getEntries())) {
+            if (entry != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** position 升序即方案顺序；position 缺失的条目排在最后。 */
+    private List<EvaluationEntryRefDTO> orderedEntries(EvaluationContextDTO context) {
+        List<EvaluationEntryRefDTO> ordered = Lists.newArrayList();
+        for (EvaluationEntryRefDTO entry : safeList(context.getEntries())) {
+            if (entry != null) {
+                ordered.add(entry);
+            }
+        }
+        ordered.sort((left, right) -> {
+            Integer leftPosition = left.getPosition();
+            Integer rightPosition = right.getPosition();
+            if (leftPosition == null && rightPosition == null) {
+                return 0;
+            }
+            if (leftPosition == null) {
+                return 1;
+            }
+            if (rightPosition == null) {
+                return -1;
+            }
+            return Integer.compare(leftPosition, rightPosition);
+        });
+        return ordered;
+    }
+
+    private Double ratioOf(EvaluationEntryRefDTO entry) {
+        if (entry == null) {
+            return null;
+        }
+        return entry.getMajorRatio() != null ? entry.getMajorRatio() : entry.getSchoolRatio();
+    }
+
+    private String derivedFailSeverity(EvaluationProbeMetadataDTO metadata) {
+        if ("hard".equals(metadata.getRuleStrength())) {
+            return "block";
+        }
+        List<String> allowed = safeList(metadata.getAllowedSeverities());
+        return allowed.contains("action") ? "action" : allowed.isEmpty() ? "notice" : allowed.get(0);
     }
 
     private EvaluationFindingDTO derivedFinding(EvaluationProbeMetadataDTO metadata) {

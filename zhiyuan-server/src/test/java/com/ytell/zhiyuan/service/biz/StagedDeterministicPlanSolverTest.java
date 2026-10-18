@@ -4,7 +4,9 @@ import com.ytell.zhiyuan.model.dto.planning.CandidateFactDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateSnapshotDTO;
 import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
+import com.ytell.zhiyuan.model.dto.planning.DiversityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountsDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
 import org.junit.jupiter.api.Test;
@@ -252,6 +254,124 @@ class StagedDeterministicPlanSolverTest {
             }
         }
         assertFalse(first.isEmpty());
+    }
+
+    @Test
+    void softDiversityPrefersSpreadWhenUtilityEqual() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                withUniqueDimensions(fact("a", "stable", "浙江", false, false, 50, 0)),
+                withUniqueDimensions(fact("b", "stable", "浙江", false, false, 50, 1)),
+                withUniqueDimensions(fact("c", "stable", "江苏", false, false, 50, 2)),
+                withUniqueDimensions(fact("d", "stable", "江苏", false, false, 50, 3)));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(2);
+        objectives.setDiversityPolicy(diversity("soft", 32));
+
+        StagedDeterministicPlanSolver.Result result = solver.solve(
+                snapshot, objectives, policy("GENERATE", true));
+
+        assertEquals("ready", result.solverResult.getStatus(),
+                "diagnostics=" + result.solverResult.getDiagnostics());
+        // utility 同值：旧稳定序会选集中的 a,b；多样性必须换成跨省的 a,c。
+        assertEquals(Arrays.asList("a", "c"), result.solverResult.getSelectedEntityIds());
+        assertEquals(0L, level(result, "diversity"));
+        assertEquals(100L, level(result, "utility"));
+    }
+
+    @Test
+    void diversityOffKeepsLegacyStableSelection() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                withUniqueDimensions(fact("a", "stable", "浙江", false, false, 50, 0)),
+                withUniqueDimensions(fact("b", "stable", "浙江", false, false, 50, 1)),
+                withUniqueDimensions(fact("c", "stable", "江苏", false, false, 50, 2)),
+                withUniqueDimensions(fact("d", "stable", "江苏", false, false, 50, 3)));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(2);
+        objectives.setDiversityPolicy(diversity("off", 32));
+
+        StagedDeterministicPlanSolver.Result result = solver.solve(
+                snapshot, objectives, policy("GENERATE", true));
+
+        assertEquals(Arrays.asList("a", "b"), result.solverResult.getSelectedEntityIds());
+        assertTrue(result.levels.stream().noneMatch(item -> "diversity".equals(item.level)));
+
+        // 默认 null 与显式 off 行为一致。
+        objectives.setDiversityPolicy(null);
+        StagedDeterministicPlanSolver.Result defaultOff = solver.solve(
+                snapshot, objectives, policy("GENERATE", true));
+        assertEquals(Arrays.asList("a", "b"), defaultOff.solverResult.getSelectedEntityIds());
+        assertTrue(defaultOff.levels.stream().noneMatch(item -> "diversity".equals(item.level)));
+    }
+
+    @Test
+    void diversityTruncatesGroupsAndEmitsDiagnostic() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                withUniqueDimensions(fact("a", "stable", "浙江", false, false, 50, 0)),
+                withUniqueDimensions(fact("b", "stable", "江苏", false, false, 50, 1)),
+                withUniqueDimensions(fact("c", "stable", "安徽", false, false, 50, 2)),
+                withUniqueDimensions(fact("d", "stable", "上海", false, false, 50, 3)));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(1);
+        objectives.setDiversityPolicy(diversity("soft", 2));
+
+        StagedDeterministicPlanSolver.Result result = solver.solve(
+                snapshot, objectives, policy("GENERATE", true));
+
+        assertEquals("ready", result.solverResult.getStatus(),
+                "diagnostics=" + result.solverResult.getDiagnostics());
+        PlanSolverResultDTO.DiagnosticDTO truncated = result.solverResult.getDiagnostics().stream()
+                .filter(item -> "diversity_group_truncated".equals(item.getReasonCode()))
+                .findFirst().orElse(null);
+        assertTrue(truncated != null, "缺少 diversity_group_truncated 诊断");
+        assertTrue(truncated.getMessage().contains("retained=2"), truncated.getMessage());
+    }
+
+    @Test
+    void softDiversityIsDeterministicAcrossRuns() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                withUniqueDimensions(fact("a", "stable", "浙江", false, false, 50, 0)),
+                withUniqueDimensions(fact("b", "stable", "浙江", false, false, 50, 1)),
+                withUniqueDimensions(fact("c", "stable", "江苏", false, false, 50, 2)),
+                withUniqueDimensions(fact("d", "stable", "江苏", false, false, 50, 3)));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(2);
+        objectives.setDiversityPolicy(diversity("soft", 32));
+
+        StagedDeterministicPlanSolver.Result first = solver.solve(
+                snapshot, objectives, policy("GENERATE", true));
+        StagedDeterministicPlanSolver.Result second = solver.solve(
+                snapshot, objectives, policy("GENERATE", true));
+
+        assertEquals(first.solverResult.getSelectedEntityIds(),
+                second.solverResult.getSelectedEntityIds());
+        assertEquals(level(first, "diversity"), level(second, "diversity"));
+    }
+
+    @Test
+    void softDiversityRecordsStageValue() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                withUniqueDimensions(fact("a", "stable", "浙江", false, false, 50, 0)),
+                withUniqueDimensions(fact("b", "stable", "浙江", false, false, 50, 1)),
+                withUniqueDimensions(fact("c", "stable", "浙江", false, false, 50, 2)));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(2);
+        objectives.setDiversityPolicy(diversity("soft", 32));
+
+        StagedDeterministicPlanSolver.Result result = solver.solve(
+                snapshot, objectives, policy("GENERATE", true));
+
+        assertEquals("ready", result.solverResult.getStatus(),
+                "diagnostics=" + result.solverResult.getDiagnostics());
+        // 全部同省，cap=ceil(0.4*2)=1；任选 2 条都至少超出 1。
+        assertEquals(1L, level(result, "diversity"));
+    }
+
+    private CandidateFactDTO withUniqueDimensions(CandidateFactDTO fact) {
+        fact.setMajorCategoryId("major-" + fact.getEntityId());
+        fact.setSchoolLevel("level-" + fact.getEntityId());
+        return fact;
+    }
+
+    private DiversityPolicyDTO diversity(String mode, int maxGroups) {
+        DiversityPolicyDTO policy = new DiversityPolicyDTO();
+        policy.setMode(mode);
+        policy.setMaxGroups(maxGroups);
+        return policy;
     }
 
     private long level(StagedDeterministicPlanSolver.Result result, String name) {

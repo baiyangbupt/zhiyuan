@@ -12533,6 +12533,14 @@ public class PlanningStateService {
             ObjectiveDeltaDTO delta = finding.getObjectiveDelta();
             String strategy = delta == null ? null : delta.getStrategy();
             if (Strings.isNullOrEmpty(strategy)) {
+                // J5.4 派生 finding（coverage/safety/ratio/学费/风险标记等）没有
+                // objectiveDelta；不能因此吞掉修复入口。退回同一 code 的旧 check，
+                // 由 check 的默认策略生成候选（coverage:index 无 check，自然跳过）。
+                ReviewCheckDTO fallback = byCode.get(finding.getCode());
+                if (fallback != null && Boolean.FALSE.equals(fallback.getPassed())
+                        && seen.add(fallback.getCode())) {
+                    candidates.add(new ReviewFixCandidate(fallback, null));
+                }
                 continue;
             }
             String sourceCheck = delta.getSourceCheck();
