@@ -96,6 +96,10 @@ const applyToTurn = (state, event) => {
     case 'proposal.preview':
       return mergeTurn(state, turnId, { proposal: { ...payload } });
 
+    case 'interpretation.preview':
+      // 只覆盖最近一次解读：同一回合多次调用时以最后一次为准（不堆多张卡）。
+      return mergeTurn(state, turnId, { interpretation: { ...payload } });
+
     case 'conversationAction.result': {
       const next = { ...payload };
       const previous = prior.actionResult;
@@ -103,6 +107,12 @@ const applyToTurn = (state, event) => {
           && !TERMINAL_ACTION_STATUSES.has(next.actionStatus)) {
         // applied 之后再来的 applying 是迟到的旧事件，不能把它刷回去——
         // 用户会先看到"已生效"再看到"确认中"，然后不确定到底生效没有。
+        return state;
+      }
+      // J3：同一 operationId 的重复回执只保留第一张卡（重复确认/重放不刷第二遍）。
+      if (previous?.receipt?.operationId && next.receipt?.operationId
+          && String(previous.receipt.operationId) === String(next.receipt.operationId)
+          && TERMINAL_ACTION_STATUSES.has(previous.actionStatus)) {
         return state;
       }
       return mergeTurn(state, turnId, { actionResult: next });

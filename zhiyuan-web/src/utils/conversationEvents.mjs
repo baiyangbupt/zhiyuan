@@ -10,6 +10,9 @@ export const CONVERSATION_V1_TYPES = new Set([
   'clarification.resolved',
   'proposal.preview',
   'conversationAction.result',
+  // 录取解读卡：有界摘要（scenarios 不带完整 path；caveats/drivers 已截断），
+  // 完整结果留在工具结果/正文。缺数据由卡片如实标 unknown/数据缺口。
+  'interpretation.preview',
   // 助手增量文本：**可丢弃的提示**（首字延迟感知）。丢一条不影响正确性——
   // 权威文本始终是终态 `assistant.completed`（到达时整段替换，重连不补播）。
   'assistant.delta',
@@ -40,7 +43,17 @@ const V1_PAYLOAD_WHITELIST = {
   // `code`/`message`：动作失败时**必须**能说出原因（110 / 40904 / 84009 …）——
   // 只有 actionStatus 的话，卡上只剩一句"未生效"，用户与排障都无从判断 ✗
   //（服务端 `server.py` 的 action_payload 已把这两个键带上 ✓，这里同步放行 ✓）。
-  'conversationAction.result': ['proposalRef', 'actionStatus', 'newStateVersion', 'workspaceVersion', 'code', 'message'],
+  'conversationAction.result': [
+    'proposalRef', 'actionStatus', 'newStateVersion', 'workspaceVersion',
+    'actualChanges', 'reviewState', 'code', 'message',
+    'origin', 'actionType', 'scope', 'receipt',
+  ],
+  // 解读卡只放有界摘要；完整 path/evidenceRefs 由服务端在适配层裁掉。
+  'interpretation.preview': [
+    'status', 'planVersion', 'admissionMode', 'safetyCoverage',
+    'dataCompletenessBand', 'tierCoverage', 'ratioCoverage', 'dataCompleteness',
+    'orderAnomaly', 'baseLanding', 'scenarios', 'caveats',
+  ],
   'assistant.delta': ['chunk', 'itemId'],
   'assistant.completed': ['message', 'responseType', 'executionStatus', 'limitations'],
   'turn.completed': ['executionStatus', 'toolStatus', 'runtimeStatus'],

@@ -65,6 +65,11 @@ class ConversationActionResult:
     review_state: dict[str, Any] | None = None
     code: str | None = None
     message: str | None = None
+    # J3：回执只用现有 conversationAction.result，不新增 system.action。
+    origin: str | None = None
+    action_type: str | None = None
+    scope: str | None = None
+    receipt: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -75,6 +80,10 @@ class ConversationActionResult:
             "reviewState": self.review_state,
             "code": self.code,
             "message": self.message,
+            "origin": self.origin,
+            "actionType": self.action_type,
+            "scope": self.scope,
+            "receipt": self.receipt,
         }
 
 
@@ -226,13 +235,69 @@ async def execute_conversation_action(
     except (TypeError, ValueError):
         new_version = None
     changes = _actual_changes(data)
+    action_type = str(active_data.get("commandType") or "").strip()
     return ConversationActionResult(
         status, proposal_ref, new_version,
         list(changes) if isinstance(changes, list) else [],
         data.get("reviewState") if isinstance(data.get("reviewState"), Mapping) else None,
         str(response.get("code")) if response.get("code") is not None else None,
         str(response.get("msg") or response.get("message")) if response.get("msg") or response.get("message") else None,
+        origin="user",
+        action_type=action_type or None,
+        scope=_action_scope(action_type),
     )
+
+
+def _action_scope(action_type: str) -> str:
+    """动作作用域：方案结构 / 画像字段。J3 只做三类，未知一律按方案。"""
+    value = str(action_type or "").strip()
+    if value in {"update_score_detail", "career_update"}:
+        return "profile"
+    return "plan"
+
+
+def _receipt_summary(
+    action_type: str,
+    operation_id: str | None,
+    data: Mapping[str, Any],
+    changes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """回执摘要（只放数字与结论；reviewState 已单独返回，不重复）。"""
+    report = data.get("postconditionReport")
+    report = report if isinstance(report, Mapping) else {}
+    change = changes[0] if changes and isinstance(changes[0], Mapping) else {}
+
+    def pick(*values: Any) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return None
+
+    moved_units = data.get("movedUnitIds")
+    moved_volunteers = data.get("movedVolunteerIds")
+    reordered = None
+    if isinstance(moved_units, list) and moved_units:
+        reordered = len(moved_units)
+    elif isinstance(moved_volunteers, list) and moved_volunteers:
+        reordered = len(moved_volunteers)
+    elif str(change.get("type") or "") == "move":
+        reordered = 1
+    receipt = {
+        "operationId": operation_id if operation_id else None,
+        "actionType": action_type or None,
+        "countMode": pick(report.get("countMode"), change.get("countMode")),
+        "before": pick(data.get("targetCountBefore"), change.get("targetCountBefore")),
+        "after": pick(
+            data.get("targetCountAfter"),
+            change.get("targetCountAfter"),
+            report.get("actualCount"),
+        ),
+        "addedCount": pick(data.get("addedVolunteerCount"), change.get("addedCount")),
+        "removedCount": pick(data.get("removedVolunteerCount"), change.get("removedCount")),
+        "reorderedCount": reordered,
+        "postconditionSatisfied": report.get("satisfied"),
+    }
+    return {key: value for key, value in receipt.items() if value is not None}
 
 
 def _actual_changes(data: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -870,6 +935,7 @@ async def _execute_claimed_command(
     这是同一次操作，"重复确认不双写"的依据就没了。
     """
     operation_id = str(active_data.get("operationId") or active.get("operationId") or "").strip()
+    command_type = ""
     # **一次 execute 打一行** ✓（不刷屏 ✓）：这一层的失败**不抛异常** ✗——
     # 它是把 Java 响应体里的业务码翻成"未生效" ✓，所以外面只看得到"卡显示未生效" ✓，
     # 而"输入里到底有没有 operationId / 拿的是哪个 proposalRef"得在这里说 ✓
@@ -1090,7 +1156,11 @@ async def _execute_claimed_command(
                         exc,
                     )
     changes = _actual_changes(data)
+    change_list = list(changes) if isinstance(changes, list) else []
     planning_state = data.get("planningState")
+    action_type = command_type or str(active_data.get("commandType") or "").strip()
+    if not action_type and career_update is not None:
+        action_type = "career_update"
     return ConversationActionResult(
         status,
         proposal_ref,
@@ -1103,8 +1173,12 @@ async def _execute_claimed_command(
             data.get("resultPlanVersion"),
             planning_state.get("version") if isinstance(planning_state, Mapping) else None,
         ),
-        list(changes) if isinstance(changes, list) else [],
+        change_list,
         data.get("reviewState") if isinstance(data.get("reviewState"), Mapping) else None,
         str(response.get("code")) if response.get("code") is not None else None,
         str(response.get("msg") or response.get("message")) if response.get("msg") or response.get("message") else None,
+        origin="user",
+        action_type=action_type or None,
+        scope=_action_scope(action_type),
+        receipt=_receipt_summary(action_type, operation_id, data, change_list),
     )

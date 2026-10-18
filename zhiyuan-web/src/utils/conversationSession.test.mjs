@@ -112,6 +112,39 @@ test('applied 之后迟到的 applying 不把它刷回去', () => {
   assert.equal(stale.turns.t.actionResult.actionStatus, 'applied');
 });
 
+test('同一 operationId 的重复回执只保留第一张卡', () => {
+  const first = reduceConversation(
+    baseline(),
+    event({
+      sequence: 1,
+      type: 'conversationAction.result',
+      payload: {
+        actionStatus: 'applied',
+        proposalRef: 'p1',
+        actionType: 'move_units',
+        receipt: { operationId: 'op-1', before: 44, after: 44 },
+      },
+    }),
+  );
+
+  const duplicate = reduceConversation(
+    first,
+    event({
+      sequence: 2,
+      type: 'conversationAction.result',
+      payload: {
+        actionStatus: 'applied',
+        proposalRef: 'p1',
+        actionType: 'duplicate-must-not-replace',
+        receipt: { operationId: 'op-1', before: 1, after: 1 },
+      },
+    }),
+  );
+
+  assert.equal(duplicate.turns.t.actionResult.receipt.before, 44);
+  assert.equal(duplicate.turns.t.actionResult.actionType, 'move_units');
+});
+
 test('工具进度按 itemId 归并而不是堆成一串', () => {
   const started = reduceConversation(
     baseline(),
@@ -479,4 +512,25 @@ test('同工具不同标签不合并', () => {
   const steps = orderedSteps(state.turns.t);
   assert.equal(steps.length, 2);
   assert.deepEqual(steps.map(step => step.count), [1, 1]);
+});
+
+test('interpretation.preview 落到回合的解读卡，后到覆盖先到（同回合只留一张）', () => {
+  const first = reduceConversation(
+    baseline(),
+    event({
+      type: 'interpretation.preview',
+      payload: { status: 'completed', planVersion: 5, safetyCoverage: '有保底档位' },
+    }),
+  );
+  const second = reduceConversation(
+    first,
+    event({
+      sequence: 2,
+      type: 'interpretation.preview',
+      payload: { status: 'completed', planVersion: 6, safetyCoverage: '无保底档位' },
+    }),
+  );
+
+  assert.equal(second.turns.t.interpretation.planVersion, 6);
+  assert.equal(second.turns.t.interpretation.safetyCoverage, '无保底档位');
 });

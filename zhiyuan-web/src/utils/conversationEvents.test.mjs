@@ -10,6 +10,7 @@ import {
   resolveArtifact,
   parseConversationActionResult,
   applyPendingActionResult,
+  sanitizeV1Payload,
 } from './conversationEvents.mjs';
 
 test('reads action results from native and compatibility websocket envelopes', () => {
@@ -313,9 +314,21 @@ test('补录成绩卡的结构化摘要随 diff 一起通过白名单', () => {
   assert.equal(normalized.payload.internal, undefined, '白名单外的字段不该进渲染面');
 });
 
-test('失败原因（code/message）随动作结果通过白名单', () => {
+test('失败原因、回执与 J3 动作元数据随动作结果通过白名单', () => {
   // "未生效"之外还要说得出**为什么**（110 / 40904 / 84009 / -1 …）——
   // 服务端发了 code/message，白名单不放行的话卡上只剩一句"未生效"。
+  // J3：origin/actionType/scope/receipt 也要放行，同时仍是一张卡。
+  const actualChanges = [{ type: 'add', volunteerIds: ['v2'], addedCount: 1 }];
+  const reviewState = { summary: { passedCount: 10, warnCount: 4, riskCount: 0 } };
+  const receipt = {
+    operationId: 'op-1',
+    actionType: 'add_units',
+    countMode: 'volunteer',
+    before: 45,
+    after: 46,
+    addedCount: 1,
+    postconditionSatisfied: true,
+  };
   const normalized = normalizeConversationEvent({
     protocolVersion: 1,
     type: 'conversationAction.result',
@@ -325,15 +338,57 @@ test('失败原因（code/message）随动作结果通过白名单', () => {
     sequence: 6,
     payload: {
       proposalRef: 'pending-score-1',
-      actionStatus: 'failed',
-      code: '84009',
-      message: '上游策略校验未通过',
-      actualChanges: { secret: 'do-not-display' },
+      actionStatus: 'applied',
+      code: '0',
+      message: '已生效',
+      origin: 'user',
+      actionType: 'add_units',
+      scope: 'plan',
+      receipt,
+      actualChanges,
+      reviewState,
+      unknownField: 'do-not-display',
     },
   });
 
-  assert.equal(normalized.payload.actionStatus, 'failed');
-  assert.equal(normalized.payload.code, '84009');
-  assert.equal(normalized.payload.message, '上游策略校验未通过');
-  assert.equal(normalized.payload.actualChanges, undefined);
+  assert.equal(normalized.payload.actionStatus, 'applied');
+  assert.equal(normalized.payload.code, '0');
+  assert.equal(normalized.payload.message, '已生效');
+  assert.equal(normalized.payload.origin, 'user');
+  assert.equal(normalized.payload.actionType, 'add_units');
+  assert.equal(normalized.payload.scope, 'plan');
+  assert.deepEqual(normalized.payload.receipt, receipt);
+  assert.deepEqual(normalized.payload.actualChanges, actualChanges);
+  assert.deepEqual(normalized.payload.reviewState, reviewState);
+  assert.equal(normalized.payload.unknownField, undefined);
+});
+
+test('interpretation.preview 是合法 V1 事件，且只放行有界摘要字段', () => {
+  const frame = {
+    protocolVersion: 1,
+    type: 'interpretation.preview',
+    sessionId: '42',
+    turnId: 't1',
+    streamEpoch: 'e1',
+    sequence: 3,
+    payload: {},
+  };
+  assert.equal(isConversationV1Event(frame), true);
+
+  const payload = sanitizeV1Payload('interpretation.preview', {
+    status: 'completed',
+    planVersion: 5,
+    safetyCoverage: '有保底档位',
+    scenarios: [{ label: 'base' }],
+    baseLanding: { label: 'base' },
+    // 原生结果里的额外字段不该流到页面。
+    path: [{ id: 'u1' }],
+    evidenceRefs: ['ev_x'],
+  });
+
+  assert.equal(payload.planVersion, 5);
+  assert.equal(payload.safetyCoverage, '有保底档位');
+  assert.deepEqual(payload.scenarios, [{ label: 'base' }]);
+  assert.equal(payload.path, undefined);
+  assert.equal(payload.evidenceRefs, undefined);
 });

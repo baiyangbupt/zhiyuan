@@ -557,6 +557,15 @@ async def test_move_units_confirm_uses_frozen_command_and_reports_positions(monk
     assert change["movedVolunteerIds"] == ["v2"]
     assert change["fromPosition"] == 2
     assert change["toPosition"] == 1
+    receipt = result["actionResult"]["receipt"]
+    assert result["actionResult"]["origin"] == "user"
+    assert result["actionResult"]["actionType"] == "move_units"
+    assert result["actionResult"]["scope"] == "plan"
+    assert receipt["operationId"] == "op-4"
+    assert receipt["reorderedCount"] == 1
+    assert receipt["before"] == 2
+    assert receipt["after"] == 2
+    assert "summary" not in receipt, "回执摘要不重复审查摘要"
     _, execute_kwargs = executor.calls[0]
     assert execute_kwargs["command_type"] == "move_units"
     assert "proposal_apply" not in execute_kwargs

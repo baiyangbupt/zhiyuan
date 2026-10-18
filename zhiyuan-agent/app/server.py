@@ -1102,7 +1102,16 @@ def _action_result_payload(result: Mapping[str, Any], action_result: Mapping[str
     }
     if result.get("snapshotVersion") is not None:
         payload["workspaceVersion"] = result["snapshotVersion"]
-    for key in ("code", "message", "actualChanges", "reviewState"):
+    for key in (
+        "code",
+        "message",
+        "actualChanges",
+        "reviewState",
+        "origin",
+        "actionType",
+        "scope",
+        "receipt",
+    ):
         if action_result.get(key) is not None:
             payload[key] = action_result[key]
     return payload

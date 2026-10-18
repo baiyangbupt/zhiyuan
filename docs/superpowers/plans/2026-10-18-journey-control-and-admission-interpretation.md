@@ -427,10 +427,14 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
 - Modify `zhiyuan-web/src/utils/conversationEvents.mjs`（payload 白名单）
 - Tests: agent + node.
 
-- [ ] 扩展 `conversationAction.result` payload：`origin/actionType/scope/receipt`
-  摘要；前端仍一张卡；同一 operationId 去重。
-- [ ] 不做后台自动动作；undo 前不自动改方案。
-- [ ] 测试：apply 结果只出一张卡；审查摘要不重复；白名单不静默过滤新字段。
+- [x] 扩展 `conversationAction.result` payload：`origin/actionType/scope/receipt`
+  摘要；前端仍一张卡；同一 operationId 在 reducer 去重。真栈 900045 的
+  move 确认回执：`origin=user`、`actionType=move_units`、`scope=plan`，
+  `receipt={operationId, countMode=unit, before=44, after=44, reorderedCount=1,
+  postconditionSatisfied=true}`；`reviewState` 仍单独返回，receipt 不重复审查摘要。
+- [x] 不做后台自动动作；undo 前不自动改方案。
+- [x] 测试：apply 结果只出一张卡；审查摘要不重复；白名单不静默过滤新字段
+  （Python + node tests）。
 
 ## Phase D0：按范围加入（add_units_by_scope，2026-10-18 完成）
 
