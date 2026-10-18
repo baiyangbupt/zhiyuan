@@ -5,6 +5,7 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationContextDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationEntryRefDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
@@ -38,9 +39,12 @@ public class EvaluationContextBuilder {
         }
         boolean groupMode = state.getCandidatePoolState() != null
                 && "majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel());
+        List<CoverageRequirementDTO> coverage =
+                CoverageRequirementSupport.confirmedRequirements(state);
+        context.setCoverageRequirements(Lists.newArrayList(coverage));
         context.setEntries(groupMode
-                ? unitEntries(state, byVolunteer)
-                : itemEntries(state, byVolunteer));
+                ? unitEntries(state, byVolunteer, coverage)
+                : itemEntries(state, byVolunteer, coverage));
         context.setAdmissionMode(groupMode ? "major_group" : "major");
         if (state.getCandidatePoolState() != null) {
             context.setRequiredCount(state.getCandidatePoolState().getRequiredCount());
@@ -60,7 +64,8 @@ public class EvaluationContextBuilder {
     }
 
     private List<EvaluationEntryRefDTO> unitEntries(PlanningStateDTO state,
-                                                    Map<String, CandidateItemDTO> byVolunteer) {
+                                                    Map<String, CandidateItemDTO> byVolunteer,
+                                                    List<CoverageRequirementDTO> coverage) {
         List<EvaluationEntryRefDTO> entries = Lists.newArrayList();
         List<OrderedUnitDTO> units = state.getOrderedPlanState() == null
                 ? Lists.newArrayList() : defaultList(state.getOrderedPlanState().getUnits());
@@ -79,11 +84,13 @@ public class EvaluationContextBuilder {
             entry.setMajorRatio(unit.getAdmissionRatio());
             Integer tuition = null;
             List<String> flags = Lists.newArrayList();
+            List<CandidateItemDTO> unitCandidates = Lists.newArrayList();
             for (PlanningUnitMajorDTO major : defaultList(unit.getMajorItems())) {
                 CandidateItemDTO candidate = byVolunteer.get(major.getVolunteerId());
                 if (candidate == null) {
                     continue;
                 }
+                unitCandidates.add(candidate);
                 if (candidate.getTuitionPerYear() != null) {
                     tuition = tuition == null ? candidate.getTuitionPerYear()
                             : Math.max(tuition, candidate.getTuitionPerYear());
@@ -96,13 +103,15 @@ public class EvaluationContextBuilder {
             }
             entry.setTuitionPerYear(tuition);
             entry.setRiskFlags(flags);
+            entry.setMatchedCoverageIds(matchedCoverageIds(unitCandidates, coverage));
             entries.add(entry);
         }
         return entries;
     }
 
     private List<EvaluationEntryRefDTO> itemEntries(PlanningStateDTO state,
-                                                    Map<String, CandidateItemDTO> byVolunteer) {
+                                                    Map<String, CandidateItemDTO> byVolunteer,
+                                                    List<CoverageRequirementDTO> coverage) {
         List<EvaluationEntryRefDTO> entries = Lists.newArrayList();
         List<OrderedItemDTO> items = state.getOrderedPlanState() == null
                 ? Lists.newArrayList() : defaultList(state.getOrderedPlanState().getItems());
@@ -124,10 +133,27 @@ public class EvaluationContextBuilder {
                 entry.setMajorRatio(candidate.getAdmissionRatio());
                 entry.setTuitionPerYear(candidate.getTuitionPerYear());
                 entry.setRiskFlags(Lists.newArrayList(defaultList(candidate.getRiskFlags())));
+                entry.setMatchedCoverageIds(matchedCoverageIds(
+                        Lists.newArrayList(candidate), coverage));
             }
             entries.add(entry);
         }
         return entries;
+    }
+
+    private List<String> matchedCoverageIds(List<CandidateItemDTO> candidates,
+                                            List<CoverageRequirementDTO> coverage) {
+        List<String> result = Lists.newArrayList();
+        for (int index = 0; index < defaultList(coverage).size(); index++) {
+            CoverageRequirementDTO requirement = coverage.get(index);
+            for (CandidateItemDTO candidate : defaultList(candidates)) {
+                if (candidate != null && CoverageRequirementSupport.matches(candidate, requirement)) {
+                    result.add("coverage:" + index);
+                    break;
+                }
+            }
+        }
+        return result;
     }
 
     private Integer selectionTargetCount(PlanningStateDTO state) {

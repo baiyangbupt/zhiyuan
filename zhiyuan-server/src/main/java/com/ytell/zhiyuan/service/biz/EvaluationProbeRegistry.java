@@ -11,13 +11,14 @@ import java.util.Map;
 /**
  * 方案评价 probe 注册表（J5.0）。
  *
- * <p>14 个旧 review check → 15 个 probe：`count_validation` 拆成
- * `count_validation_hard`（hard/block）与 `count_target`（structure/action|notice）。
- * 本类只提供元数据；阈值与执行仍在现有 review 实现里，J5.2 再切换。</p>
+ * <p>14 个旧 review check → 16 个 probe：`count_validation` 拆成
+ * `count_validation_hard`（hard/block）与 `count_target`（structure/action|notice）；
+ * J5.4 新增 `coverage`（已确认 include 覆盖要求）。本类只提供元数据；
+ * 阈值与执行仍在现有 review 实现里，J5.2 再切换。</p>
  */
 public final class EvaluationProbeRegistry {
 
-    public static final String VERSION = "probe-registry-v1";
+    public static final String VERSION = "probe-registry-v2";
 
     private static final Map<String, EvaluationProbeMetadataDTO> PROBES = build();
 
@@ -43,6 +44,9 @@ public final class EvaluationProbeRegistry {
         register(probes, probe("ratio_distribution", "冲稳保配比", "structure", "soft",
                 severities("action"), "tierCounts", "unit|item", "preview_fixable",
                 "ratio_distribution"));
+        register(probes, probe("coverage", "覆盖要求", "structure", "soft",
+                severities("action", "info"), "coverageMatched", "unit|item",
+                "preview_fixable", null));
         register(probes, probe("safety_guard", "本省保底不足", "hard", "hard",
                 severities("block", "notice"), "localSafetyUnitCount", "unit|item",
                 "preview_fixable", "safety_guard"));

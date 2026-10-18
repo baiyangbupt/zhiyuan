@@ -66,6 +66,41 @@ class EvaluationContextBuilderTest {
     }
 
     @Test
+    void buildsCoverageMatchesFromConfirmedRequirements() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO candidate = new CandidateItemDTO();
+        candidate.setVolunteerId("v1");
+        candidate.setProvinceName("广东");
+        candidate.setMajorName("计算机");
+        state.getCandidatePoolState().getItems().add(candidate);
+        OrderedItemDTO item = new OrderedItemDTO();
+        item.setVolunteerId("v1");
+        item.setTier("冲");
+        state.getOrderedPlanState().getItems().add(item);
+        com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO region =
+                new com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO();
+        region.setDomain("region");
+        region.setKey("province");
+        region.setValues(Lists.newArrayList("广东"));
+        region.setMinCount(1);
+        com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO major =
+                new com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO();
+        major.setDomain("major");
+        major.setKey("major");
+        major.setValues(Lists.newArrayList("计算机"));
+        major.setMinCount(1);
+        state.getConstraintState().getHardPlanningObjectives().setCoverageRequirements(
+                Lists.newArrayList(region, major));
+
+        EvaluationContextDTO context = builder.build(state, null, new ReviewStateDTO());
+
+        assertEquals(2, context.getCoverageRequirements().size());
+        assertEquals(Lists.newArrayList("coverage:0", "coverage:1"),
+                context.getEntries().get(0).getMatchedCoverageIds());
+    }
+
+    @Test
     void buildsUnitEntriesWithMaxTuitionAndUnionFlags() {
         PlanningStateDTO state = new PlanningStateDTO();
         state.getCandidatePoolState().setVolunteerModel("majorGroup");

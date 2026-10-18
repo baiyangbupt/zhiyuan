@@ -16,6 +16,8 @@ import java.util.Map;
 @Data
 public class EvaluationContextDTO {
     private List<EvaluationEntryRefDTO> entries = Lists.newArrayList();
+    /** 已确认的 include 覆盖要求（顺序即 coverage:index）。 */
+    private List<CoverageRequirementDTO> coverageRequirements = Lists.newArrayList();
     /** 用户确认目标（HardPlanningObjectives.selectionTargetCount）。 */
     private Integer selectionTargetCount;
     /** 候选池/摘要目标（requiredCount）。 */

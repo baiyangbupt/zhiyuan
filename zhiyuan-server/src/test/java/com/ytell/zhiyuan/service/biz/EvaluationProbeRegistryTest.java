@@ -14,15 +14,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class EvaluationProbeRegistryTest {
 
     @Test
-    void shouldRegisterAllFourteenLegacyChecksAsFifteenProbes() {
+    void shouldRegisterLegacyChecksAndCoverageAsSixteenProbes() {
         List<EvaluationProbeMetadataDTO> probes = EvaluationProbeRegistry.list();
         Set<String> codes = probes.stream()
                 .map(EvaluationProbeMetadataDTO::getCode)
                 .collect(Collectors.toSet());
 
-        assertEquals(15, probes.size());
+        assertEquals(16, probes.size());
         assertTrue(codes.contains("count_validation_hard"));
         assertTrue(codes.contains("count_target"));
+        assertTrue(codes.contains("coverage"));
         assertTrue(codes.contains("group_inner_safety_guard"));
         assertTrue(codes.contains("plan_update_notice"));
         assertTrue(codes.contains("adjustment_notice"));

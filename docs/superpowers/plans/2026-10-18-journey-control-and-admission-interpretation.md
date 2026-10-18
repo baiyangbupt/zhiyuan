@@ -630,7 +630,10 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
     `TierQuotaResolver`（review 显式配额时绕过 20/40% 软带；范围配额走
     bounds；enrichV2 写 exact/ratios 单点 anchor）。S4 postcondition
     `safetyResult` 已落：与 review 共用 `countLocalProtect`，只报告不因
-    safety 回滚。仍待 coverage probe 与 structure 阈值（20k/60k）。
+    safety 回滚。S5 coverage probe 已落：context 带已确认覆盖要求与
+    `matchedCoverageIds`，evaluation 生成 `coverage:index` finding，旧
+    review checks 不变（registry v2）。仍待 structure 阈值（20k/60k）与
+    findings 完全由 PlanEvaluation 反向驱动。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；
   预览/冻结/后置/回执与普通动作一致；review fix 与 fill 同源。
 - J5.6 清理：解释权重、`rank_in_tier` 语义、重复 filter/eligibility 规则。

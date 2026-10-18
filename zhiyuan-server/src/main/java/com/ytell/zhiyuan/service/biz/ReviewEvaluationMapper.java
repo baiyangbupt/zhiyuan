@@ -3,6 +3,7 @@ package com.ytell.zhiyuan.service.biz;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationContextDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationEntryRefDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
@@ -69,12 +70,72 @@ public class ReviewEvaluationMapper {
                 }
             }
         }
+        findings.addAll(mapCoverage(safeContext));
         evaluation.setFindings(findings);
         evaluation.setProbesRun(findings.size());
         evaluation.setStatus("completed");
         evaluation.setHardFeasible(hardFeasible(findings));
         evaluation.setObjectiveDigest(digestFindings(findings));
         return evaluation;
+    }
+
+    /**
+     * J5.4：coverage finding 由 context 的已确认覆盖要求 + 条目命中集合派生，
+     * 不依赖旧 review check。每个要求一条 finding，id=coverage:index。
+     */
+    private List<EvaluationFindingDTO> mapCoverage(EvaluationContextDTO context) {
+        List<EvaluationFindingDTO> findings = Lists.newArrayList();
+        EvaluationProbeMetadataDTO metadata = EvaluationProbeRegistry.get("coverage");
+        if (metadata == null) {
+            return findings;
+        }
+        List<CoverageRequirementDTO> requirements = context.getCoverageRequirements() == null
+                ? Lists.<CoverageRequirementDTO>newArrayList() : context.getCoverageRequirements();
+        for (int index = 0; index < requirements.size(); index++) {
+            CoverageRequirementDTO requirement = requirements.get(index);
+            String coverageId = "coverage:" + index;
+            int required = CoverageRequirementSupport.minCount(requirement);
+            List<EvaluationEntryRefDTO> matched = Lists.newArrayList();
+            for (EvaluationEntryRefDTO entry : safeList(context.getEntries())) {
+                if (entry != null && safeList(entry.getMatchedCoverageIds()).contains(coverageId)) {
+                    matched.add(entry);
+                }
+            }
+            boolean passed = matched.size() >= required;
+            EvaluationFindingDTO finding = new EvaluationFindingDTO();
+            finding.setCode(coverageId);
+            finding.setLayer(metadata.getLayer());
+            finding.setRuleStrength(metadata.getRuleStrength());
+            finding.setFixability(metadata.getFixability());
+            finding.setMetric(metadata.getMetric());
+            finding.setResultStatus(passed ? "pass" : "fail");
+            finding.setDisplaySeverity(passed ? "info" : "action");
+            finding.setSummary((passed ? "覆盖要求已满足：" : "覆盖要求未满足：")
+                    + coverageLabel(requirement) + "（" + matched.size() + "/" + required + "）");
+            if (!passed) {
+                finding.setReasonCode("coverage_shortfall");
+            }
+            Map<String, Object> threshold = Maps.newLinkedHashMap();
+            threshold.put("domain", requirement == null ? null : requirement.getDomain());
+            threshold.put("key", requirement == null ? null : requirement.getKey());
+            threshold.put("values", requirement == null ? null : requirement.getValues());
+            threshold.put("minCount", required);
+            threshold.put("matchedCount", matched.size());
+            finding.setThreshold(threshold);
+            finding.setAffectedEntryRefs(matched);
+            validateCombination(finding, metadata);
+            findings.add(finding);
+        }
+        return findings;
+    }
+
+    private String coverageLabel(CoverageRequirementDTO requirement) {
+        if (requirement == null) {
+            return "未命名覆盖要求";
+        }
+        return Strings.nullToEmpty(requirement.getDomain()) + "/"
+                + Strings.nullToEmpty(requirement.getKey()) + " "
+                + String.join("、", safeList(requirement.getValues()));
     }
 
     private EvaluationFindingDTO mapOne(ReviewCheckDTO check, EvaluationContextDTO context) {

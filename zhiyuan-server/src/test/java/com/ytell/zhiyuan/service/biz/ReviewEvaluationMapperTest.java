@@ -45,6 +45,45 @@ class ReviewEvaluationMapperTest {
     }
 
     @Test
+    void mapsCoverageRequirementsIntoSeparateFindings() {
+        ReviewStateDTO review = new ReviewStateDTO();
+        review.setChecks(defaultChecks());
+        EvaluationContextDTO context = context(45);
+        com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO region =
+                new com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO();
+        region.setDomain("region");
+        region.setKey("province");
+        region.setValues(Lists.newArrayList("广东"));
+        region.setMinCount(1);
+        com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO major =
+                new com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO();
+        major.setDomain("major");
+        major.setKey("major");
+        major.setValues(Lists.newArrayList("计算机"));
+        major.setMinCount(2);
+        context.getCoverageRequirements().add(region);
+        context.getCoverageRequirements().add(major);
+        context.getEntries().get(0).setMatchedCoverageIds(
+                Lists.newArrayList("coverage:0", "coverage:1"));
+        context.getEntries().get(1).setMatchedCoverageIds(Lists.newArrayList("coverage:0"));
+
+        PlanEvaluationDTO evaluation = mapper.map(review, context);
+
+        assertEquals(17, evaluation.getProbesRun());
+        EvaluationFindingDTO regionFinding = evaluation.getFindings().stream()
+                .filter(item -> "coverage:0".equals(item.getCode())).findFirst().orElse(null);
+        EvaluationFindingDTO majorFinding = evaluation.getFindings().stream()
+                .filter(item -> "coverage:1".equals(item.getCode())).findFirst().orElse(null);
+        assertNotNull(regionFinding);
+        assertEquals("pass", regionFinding.getResultStatus());
+        assertEquals("info", regionFinding.getDisplaySeverity());
+        assertNotNull(majorFinding);
+        assertEquals("fail", majorFinding.getResultStatus());
+        assertEquals("action", majorFinding.getDisplaySeverity());
+        assertEquals("coverage_shortfall", majorFinding.getReasonCode());
+    }
+
+    @Test
     void hardFailuresMakeHardFeasibilityFalse() {
         ReviewStateDTO review = new ReviewStateDTO();
         List<ReviewCheckDTO> checks = defaultChecks();

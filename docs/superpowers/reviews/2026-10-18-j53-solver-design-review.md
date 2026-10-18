@@ -309,5 +309,11 @@ J5.4 gap 复审确认 Q13 之后存在“solver 放行、review 硬拦”的双�
   `SafetyFloorSupport.countLocalProtect` 与 review 共用同一判据；按拍板
   **只报告、不参与 satisfied/回滚**。`UnifiedPlanPostconditionValidatorTest`
   新增“safety 缺口但 apply 仍 satisfied”用例。
-- 全量 Java：**1253/0/0/10**。
-- 仍待 J5.4 后续：coverage probe、structure 阈值（高学费 20k/60k）。
+- S5 coverage probe：`EvaluationContextDTO` 增加已确认覆盖要求，条目记录
+  `matchedCoverageIds`；`EvaluationProbeRegistry` 新增 `coverage`（v2），
+  `ReviewEvaluationMapper` 为每个要求生成 `coverage:index` finding
+  （pass info / fail action + `coverage_shortfall`），旧 review checks 不变。
+  新增 mapper/builder/registry 测试。
+- 全量 Java：**1255/0/0/10**。
+- 仍待 J5.4 后续：structure 阈值（高学费 20k/60k）、review findings 完全
+  由 PlanEvaluation 反向驱动（当前 coverage 已是派生，其余仍由 checks 翻译）。
