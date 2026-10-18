@@ -5,7 +5,7 @@
 已实现：Java journey/freshness/可解读/对账/upsert 保护；Agent 派生/注入/reconcile/
 人工审查摘要；40 条触发目录；applying 硬不变量与 planned ChangeSet 收口。
 证据：`docs/superpowers/reviews/2026-10-18-j1-true-stack-acceptance.md`
-（10041984 snapshot、900040 只读回合、reconcile 接线）。
+（10041984 snapshot、900040 只读回合、reconcile 接线）；提交 `f66b78a`。
 本文只覆盖 J1（旅程事实 + 触发目录 + 网关硬不变量），不包含 J3 回执、
 J4 方案增删改、J5 求解器、J6 风险姿态。
 

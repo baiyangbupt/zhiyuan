@@ -29,7 +29,7 @@ planned ChangeSet 收口。
 Python 全量 2897 passed / 33 skipped；`PlanningStateServiceTest` 仍有 8 个
 **既有** J5.2 相关失败（14→15 probe、策略/计数断言），与本批 J1 改动无关。
 部署：Java 18290 pid 19547、Agent 18291 pid 21810；插件
-1.0.0+codex.20261018092455；未提交。
+1.0.0+codex.20261018092455；已提交 f66b78a（含前置批次）。
 真栈证据：`docs/superpowers/reviews/2026-10-18-j1-true-stack-acceptance.md`
 （10041984 snapshot 45/45、900040 只读回合按 freshness、reconcile 接线）。
 设计稿：`docs/superpowers/specs/2026-10-18-j1-journey-block-design.md`（§12 追加审阅）。

@@ -8,7 +8,8 @@
   `GET /health` 200；日志无 ERROR/Traceback。
 - codex 插件：`1.0.0+codex.20261018092455`，已重装到
   `CODEX_HOME=/root/dev/zhiyuan/.local/codex-local/runtime-home`。
-- 未提交；共享栈重启已获用户批准。
+- 已提交 `f66b78a`（含同源码树前置批次；web 改动未提交）。
+- 共享栈重启已获用户批准。
 
 ## 证据 1：turn-snapshot 返回完整 journey（会话 10041984）
 
