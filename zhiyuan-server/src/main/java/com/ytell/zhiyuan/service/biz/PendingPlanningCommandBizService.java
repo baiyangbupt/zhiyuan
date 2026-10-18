@@ -7,6 +7,7 @@ import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.UpdateScoreDetailRes;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.DraftRemoveReq;
 import com.ytell.zhiyuan.model.dto.planning.DraftSelectReq;
 import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
@@ -166,6 +167,8 @@ public class PendingPlanningCommandBizService {
         Integer resultPlanVersionOverride = null;
         List<String> addUnitsAddedVolunteerIds = new ArrayList<String>();
         List<String> addUnitsAddedUnitIds = new ArrayList<String>();
+        List<String> planActionRemovedVolunteerIds = new ArrayList<String>();
+        List<String> planActionRemovedUnitIds = new ArrayList<String>();
         Integer addUnitsAddedVolunteerCount = null;
         Integer addUnitsAddedUnitCount = null;
         Integer addUnitsRemovedCount = null;
@@ -208,20 +211,15 @@ public class PendingPlanningCommandBizService {
                 state = planningStateService.getPlanningState(chatSessionId);
             }
         } else if (ADD_UNITS.equals(req.getCommandType()) || REPLACE_UNITS.equals(req.getCommandType())) {
-            if (REPLACE_UNITS.equals(req.getCommandType())) {
-                OrderedUnitRemoveReq removeReq = new OrderedUnitRemoveReq();
-                removeReq.setUnitIds(req.getUnitIds());
-                planningStateService.removeOrderedUnits(chatSessionId, removeReq);
-                steps.add("ordered_units_removed");
-            }
-
-            if (ADD_UNITS.equals(req.getCommandType()) && frozenCommand != null) {
-                // 新链路：只认 pending 冻结命令；请求层 volunteerIds 为空/被篡改都已在前置校验处理。
-                AddUnitsExecution execution = executeAddUnitsWithFrozen(
+            if (REPLACE_UNITS.equals(req.getCommandType()) && frozenCommand != null) {
+                // 新链路：替换只认 pending 冻结的“换入 + 换出”集合；请求层字段只做比对。
+                ReplaceUnitsExecution execution = executeReplaceUnitsWithFrozen(
                         tenantId, chatSessionId, frozenCommand, steps);
                 state = execution.state;
                 addUnitsAddedVolunteerIds = execution.addedVolunteerIds;
                 addUnitsAddedUnitIds = execution.addedUnitIds;
+                planActionRemovedVolunteerIds = execution.removedVolunteerIds;
+                planActionRemovedUnitIds = execution.removedUnitIds;
                 addUnitsAddedVolunteerCount = execution.addedVolunteerCount;
                 addUnitsAddedUnitCount = execution.addedUnitCount;
                 addUnitsRemovedCount = execution.removedVolunteerCount;
@@ -231,19 +229,49 @@ public class PendingPlanningCommandBizService {
                 addUnitsPostcondition = execution.postconditionReport;
                 explicitStatus = "applied";
             } else {
-                if (ADD_UNITS.equals(req.getCommandType())
-                        && (req.getVolunteerIds() == null || req.getVolunteerIds().isEmpty())) {
-                    throw new BusinessException(40001,
-                            "add_units requires volunteerIds (frozenCommand missing)");
+                if (REPLACE_UNITS.equals(req.getCommandType())) {
+                    // legacy（无冻结命令）替换仍按请求字段执行；冻结命令缺失时不允许空动作静默成功。
+                    if ((req.getUnitIds() == null || req.getUnitIds().isEmpty())
+                            || (req.getVolunteerIds() == null || req.getVolunteerIds().isEmpty())) {
+                        throw new BusinessException(40001,
+                                "replace_units requires unitIds and volunteerIds (frozenCommand missing)");
+                    }
+                    OrderedUnitRemoveReq removeReq = new OrderedUnitRemoveReq();
+                    removeReq.setUnitIds(req.getUnitIds());
+                    planningStateService.removeOrderedUnits(chatSessionId, removeReq);
+                    steps.add("ordered_units_removed");
                 }
-                DraftSelectReq selectReq = new DraftSelectReq();
-                selectReq.setVolunteerIds(req.getVolunteerIds());
-                selectReq.setSource("pending_command");
-                planningStateService.selectWorkingPlanItems(chatSessionId, selectReq);
-                steps.add("working_plan_items_selected");
 
-                state = planningStateService.generateOrderedPlan(tenantId, chatSessionId, forceOrderedRegenerate());
-                steps.add("ordered_plan_regenerated");
+                if (ADD_UNITS.equals(req.getCommandType()) && frozenCommand != null) {
+                    // 新链路：只认 pending 冻结命令；请求层 volunteerIds 为空/被篡改都已在前置校验处理。
+                    AddUnitsExecution execution = executeAddUnitsWithFrozen(
+                            tenantId, chatSessionId, frozenCommand, steps);
+                    state = execution.state;
+                    addUnitsAddedVolunteerIds = execution.addedVolunteerIds;
+                    addUnitsAddedUnitIds = execution.addedUnitIds;
+                    addUnitsAddedVolunteerCount = execution.addedVolunteerCount;
+                    addUnitsAddedUnitCount = execution.addedUnitCount;
+                    addUnitsRemovedCount = execution.removedVolunteerCount;
+                    addUnitsTargetBefore = execution.targetCountBefore;
+                    addUnitsTargetAfter = execution.targetCountAfter;
+                    addUnitsReviewState = execution.reviewState;
+                    addUnitsPostcondition = execution.postconditionReport;
+                    explicitStatus = "applied";
+                } else {
+                    if (ADD_UNITS.equals(req.getCommandType())
+                            && (req.getVolunteerIds() == null || req.getVolunteerIds().isEmpty())) {
+                        throw new BusinessException(40001,
+                                "add_units requires volunteerIds (frozenCommand missing)");
+                    }
+                    DraftSelectReq selectReq = new DraftSelectReq();
+                    selectReq.setVolunteerIds(req.getVolunteerIds());
+                    selectReq.setSource("pending_command");
+                    planningStateService.selectWorkingPlanItems(chatSessionId, selectReq);
+                    steps.add("working_plan_items_selected");
+
+                    state = planningStateService.generateOrderedPlan(tenantId, chatSessionId, forceOrderedRegenerate());
+                    steps.add("ordered_plan_regenerated");
+                }
             }
         } else if (APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())) {
             proposalApplyRes = planningStateService.applyFixProposal(
@@ -286,6 +314,8 @@ public class PendingPlanningCommandBizService {
             result.setPostconditionReport(addUnitsPostcondition);
             result.setAddedVolunteerIds(addUnitsAddedVolunteerIds);
             result.setAddedUnitIds(addUnitsAddedUnitIds);
+            result.setRemovedVolunteerIds(planActionRemovedVolunteerIds);
+            result.setRemovedUnitIds(planActionRemovedUnitIds);
             result.setAddedVolunteerCount(addUnitsAddedVolunteerCount);
             result.setAddedUnitCount(addUnitsAddedUnitCount);
             result.setRemovedVolunteerCount(addUnitsRemovedCount);
@@ -359,14 +389,39 @@ public class PendingPlanningCommandBizService {
      * 该比较在 replay/requestDigest 之前执行，篡改统一回 40908。
      */
     private void assertRequestMatchesFrozen(PendingPlanningCommandReq req, Map<String, Object> frozen) {
-        if (req == null || !ADD_UNITS.equals(req.getCommandType()) || frozen == null) {
+        if (req == null || frozen == null) {
             return;
         }
-        List<String> frozenIds = stringList(frozen.get("volunteerIds"));
-        Set<String> requestedIds = new LinkedHashSet<String>(stringList(req.getVolunteerIds()));
-        if (!requestedIds.isEmpty() && !requestedIds.equals(new LinkedHashSet<String>(frozenIds))) {
-            throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
-                    "command content mismatch: volunteerIds");
+        if (ADD_UNITS.equals(req.getCommandType())) {
+            List<String> frozenIds = stringList(frozen.get("volunteerIds"));
+            Set<String> requestedIds = new LinkedHashSet<String>(stringList(req.getVolunteerIds()));
+            if (!requestedIds.isEmpty() && !requestedIds.equals(new LinkedHashSet<String>(frozenIds))) {
+                throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
+                        "command content mismatch: volunteerIds");
+            }
+        } else if (REPLACE_UNITS.equals(req.getCommandType())) {
+            List<String> frozenAdded = stringList(frozen.get("addedVolunteerIds"));
+            if (frozenAdded.isEmpty()) {
+                frozenAdded = stringList(frozen.get("volunteerIds"));
+            }
+            Set<String> requestedAdded = new LinkedHashSet<String>(stringList(req.getVolunteerIds()));
+            if (!requestedAdded.isEmpty()
+                    && !requestedAdded.equals(new LinkedHashSet<String>(frozenAdded))) {
+                throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
+                        "command content mismatch: addedVolunteerIds");
+            }
+            List<String> frozenRemoved = stringList(frozen.get("removedUnitIds"));
+            if (frozenRemoved.isEmpty()) {
+                frozenRemoved = stringList(frozen.get("unitIds"));
+            }
+            Set<String> requestedRemoved = new LinkedHashSet<String>(stringList(req.getUnitIds()));
+            if (!requestedRemoved.isEmpty()
+                    && !requestedRemoved.equals(new LinkedHashSet<String>(frozenRemoved))) {
+                throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
+                        "command content mismatch: removedUnitIds");
+            }
+        } else {
+            return;
         }
         if (req.getRerunReview() != null
                 && !req.getRerunReview().equals(Boolean.TRUE.equals(frozen.get("rerunReview")))) {
@@ -479,6 +534,178 @@ public class PendingPlanningCommandBizService {
         report.setGoalType("add_units");
         report.setCountMode(unitMode ? "unit" : "volunteer");
         report.setTargetCount(execution.targetCountAfter);
+        report.setActualCount(afterCount);
+        report.setAddedVolunteerCount(execution.addedVolunteerCount);
+        report.setAffectedUnitCount(execution.addedUnitCount);
+        report.setRemovedVolunteerCount(execution.removedVolunteerCount);
+        report.setSatisfied(true);
+        execution.postconditionReport = report;
+        return execution;
+    }
+
+    /**
+     * 冻结替换执行：只认 pending 里的换入/换出集合。
+     *
+     * <p>后置条件必须同时成立：换入全在、换出全不在、未确认的原有条目一条不少、按
+     * countMode 的总数不变（或等于冻结 override）。任一不满足 → 40905 整笔回滚。</p>
+     */
+    private ReplaceUnitsExecution executeReplaceUnitsWithFrozen(Long tenantId, Long chatSessionId,
+                                                                Map<String, Object> frozen,
+                                                                List<String> steps) {
+        List<String> addedVolunteerIds = stringList(frozen.get("addedVolunteerIds"));
+        if (addedVolunteerIds.isEmpty()) {
+            addedVolunteerIds = stringList(frozen.get("volunteerIds"));
+        }
+        List<String> removedVolunteerIds = stringList(frozen.get("removedVolunteerIds"));
+        List<String> removedUnitIds = stringList(frozen.get("removedUnitIds"));
+        if (removedUnitIds.isEmpty()) {
+            removedUnitIds = stringList(frozen.get("unitIds"));
+        }
+        List<String> frozenAddedUnitIds = stringList(frozen.get("addedUnitIds"));
+        if (addedVolunteerIds.isEmpty()) {
+            throw new BusinessException(40001,
+                    "replace_units requires addedVolunteerIds (frozenCommand empty)");
+        }
+        Set<String> overlap = new LinkedHashSet<String>(addedVolunteerIds);
+        overlap.retainAll(new LinkedHashSet<String>(removedVolunteerIds));
+        if (!overlap.isEmpty()) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "replace_units postcondition failed: added and removed overlap " + overlap.size());
+        }
+        Integer override = intValue(frozen.get("targetCountOverride"));
+        boolean rerunReview = Boolean.TRUE.equals(frozen.get("rerunReview"));
+
+        PlanningStateDTO before = planningStateService.getPlanningState(chatSessionId);
+        boolean unitMode = isUnitMode(before);
+        Set<String> beforeVolunteerIds = workingVolunteerIds(before);
+        Set<String> beforeUnitIds = workingUnitIds(before);
+        int beforeCount = unitMode ? beforeUnitIds.size() : beforeVolunteerIds.size();
+
+        for (String unitId : removedUnitIds) {
+            if (!beforeUnitIds.contains(unitId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "replace_units postcondition failed: remove unit missing " + unitId);
+            }
+        }
+        for (String volunteerId : removedVolunteerIds) {
+            if (!beforeVolunteerIds.contains(volunteerId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "replace_units postcondition failed: remove item missing " + volunteerId);
+            }
+        }
+
+        PlanningStateDTO current = planningStateService.getPlanningState(chatSessionId);
+        Set<String> effectiveVolunteerIds = new LinkedHashSet<String>();
+        for (CandidateItemDTO candidate : planningStateService.resolveEffectiveCandidatesForProposal(current)) {
+            if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
+                effectiveVolunteerIds.add(candidate.getVolunteerId());
+            }
+        }
+        for (String volunteerId : addedVolunteerIds) {
+            if (!effectiveVolunteerIds.contains(volunteerId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "replace_units target_not_found: " + volunteerId
+                                + " (candidate pool changed or target no longer eligible)");
+            }
+        }
+
+        if (unitMode && !removedUnitIds.isEmpty()) {
+            OrderedUnitRemoveReq removeReq = new OrderedUnitRemoveReq();
+            removeReq.setUnitIds(removedUnitIds);
+            planningStateService.removeOrderedUnits(chatSessionId, removeReq);
+            steps.add("ordered_units_removed");
+        } else if (!unitMode && !removedVolunteerIds.isEmpty()) {
+            DraftRemoveReq removeReq = new DraftRemoveReq();
+            removeReq.setVolunteerIds(removedVolunteerIds);
+            planningStateService.removeWorkingPlanItems(chatSessionId, removeReq);
+            steps.add("working_plan_items_removed");
+        }
+
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(addedVolunteerIds);
+        selectReq.setSource("pending_command");
+        planningStateService.selectWorkingPlanItems(chatSessionId, selectReq);
+        steps.add("working_plan_items_selected");
+        PlanningStateDTO state = planningStateService.generateOrderedPlan(
+                tenantId, chatSessionId, forceOrderedRegenerate());
+        steps.add("ordered_plan_regenerated");
+
+        Set<String> afterVolunteerIds = workingVolunteerIds(state);
+        Set<String> afterUnitIds = workingUnitIds(state);
+        Set<String> orderedVolunteerIds = orderedVolunteerIds(state);
+        Set<String> orderedUnitIds = orderedUnitIds(state);
+
+        for (String volunteerId : addedVolunteerIds) {
+            if (!afterVolunteerIds.contains(volunteerId) || !orderedVolunteerIds.contains(volunteerId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "replace_units postcondition failed: added item missing " + volunteerId);
+            }
+        }
+        for (String volunteerId : removedVolunteerIds) {
+            if (afterVolunteerIds.contains(volunteerId) || orderedVolunteerIds.contains(volunteerId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "replace_units postcondition failed: removed item still present " + volunteerId);
+            }
+        }
+        Set<String> untouchedVolunteerIds = new LinkedHashSet<String>(beforeVolunteerIds);
+        untouchedVolunteerIds.removeAll(new LinkedHashSet<String>(removedVolunteerIds));
+        for (String volunteerId : untouchedVolunteerIds) {
+            if (!afterVolunteerIds.contains(volunteerId) || !orderedVolunteerIds.contains(volunteerId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "replace_units postcondition failed: untouched item missing " + volunteerId);
+            }
+        }
+        for (String unitId : removedUnitIds) {
+            if (afterUnitIds.contains(unitId) || orderedUnitIds.contains(unitId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "replace_units postcondition failed: removed unit still present " + unitId);
+            }
+        }
+        for (String unitId : frozenAddedUnitIds) {
+            if (!afterUnitIds.contains(unitId) || !orderedUnitIds.contains(unitId)) {
+                throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                        "replace_units postcondition failed: added unit missing " + unitId);
+            }
+        }
+        int afterCount = unitMode ? afterUnitIds.size() : afterVolunteerIds.size();
+        int expectedCount = override != null ? override : beforeCount;
+        if (afterCount != expectedCount) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "replace_units postcondition failed: target=" + expectedCount + " actual=" + afterCount);
+        }
+
+        ReviewStateDTO reviewState = null;
+        if (rerunReview) {
+            try {
+                reviewState = planningStateService.runReview(tenantId, chatSessionId);
+            } catch (Exception ex) {
+                // 不能 catch-return：@Transactional 会把已替换的方案提交。必须抛出回滚。
+                throw new BusinessException(REVIEW_FAILED_CODE,
+                        "review_failed: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
+            }
+            state = planningStateService.getPlanningState(chatSessionId);
+            steps.add("review_rerun");
+        }
+
+        ReplaceUnitsExecution execution = new ReplaceUnitsExecution();
+        execution.state = state;
+        execution.addedVolunteerIds = new ArrayList<String>(addedVolunteerIds);
+        Set<String> addedUnits = new LinkedHashSet<String>(afterUnitIds);
+        addedUnits.removeAll(beforeUnitIds);
+        execution.addedUnitIds = new ArrayList<String>(addedUnits);
+        execution.removedVolunteerIds = new ArrayList<String>(removedVolunteerIds);
+        execution.removedUnitIds = new ArrayList<String>(removedUnitIds);
+        execution.addedVolunteerCount = addedVolunteerIds.size();
+        execution.addedUnitCount = addedUnits.size();
+        execution.removedVolunteerCount = removedVolunteerIds.size();
+        execution.targetCountBefore = beforeCount;
+        execution.targetCountAfter = afterCount;
+        execution.reviewState = reviewState;
+
+        PlanChangePostconditionReportDTO report = new PlanChangePostconditionReportDTO();
+        report.setGoalType("replace_units");
+        report.setCountMode(unitMode ? "unit" : "volunteer");
+        report.setTargetCount(expectedCount);
         report.setActualCount(afterCount);
         report.setAddedVolunteerCount(execution.addedVolunteerCount);
         report.setAffectedUnitCount(execution.addedUnitCount);
@@ -602,6 +829,21 @@ public class PendingPlanningCommandBizService {
         private PlanChangePostconditionReportDTO postconditionReport;
     }
 
+    private static final class ReplaceUnitsExecution {
+        private PlanningStateDTO state;
+        private List<String> addedVolunteerIds = new ArrayList<String>();
+        private List<String> addedUnitIds = new ArrayList<String>();
+        private List<String> removedVolunteerIds = new ArrayList<String>();
+        private List<String> removedUnitIds = new ArrayList<String>();
+        private Integer addedVolunteerCount;
+        private Integer addedUnitCount;
+        private Integer removedVolunteerCount;
+        private Integer targetCountBefore;
+        private Integer targetCountAfter;
+        private ReviewStateDTO reviewState;
+        private PlanChangePostconditionReportDTO postconditionReport;
+    }
+
     private PendingPlanningCommandRes replay(PlanningPendingCommandEntity existing,
                                              Long tenantId, Long chatSessionId,
                                              PendingPlanningCommandReq req) {
@@ -648,6 +890,8 @@ public class PendingPlanningCommandBizService {
         compact.setPostconditionReport(source.getPostconditionReport());
         compact.setAddedVolunteerIds(new ArrayList<String>(source.getAddedVolunteerIds()));
         compact.setAddedUnitIds(new ArrayList<String>(source.getAddedUnitIds()));
+        compact.setRemovedVolunteerIds(new ArrayList<String>(source.getRemovedVolunteerIds()));
+        compact.setRemovedUnitIds(new ArrayList<String>(source.getRemovedUnitIds()));
         compact.setAddedVolunteerCount(source.getAddedVolunteerCount());
         compact.setAddedUnitCount(source.getAddedUnitCount());
         compact.setRemovedVolunteerCount(source.getRemovedVolunteerCount());
@@ -731,15 +975,10 @@ public class PendingPlanningCommandBizService {
         if (UPDATE_SCORE_DETAIL.equals(req.getCommandType()) && req.getScoreUpdate() == null) {
             throw new BusinessException(40001, "update_score_detail requires scoreUpdate");
         }
-        // add_units 新链路只发 5 个字段（commandType/pendingId/operationId/claimToken/
-        // expectedPlanVersion），volunteerIds 由 Java 从已认领 pending 的 frozenCommand
-        // 读取；请求层允许空/省略。legacy 仍带 volunteerIds，行为不变。
-        // 真正的“空且没有 frozen”在 execute 读取 pending 后再拒绝。
-        if (REPLACE_UNITS.equals(req.getCommandType())
-                && (req.getUnitIds() == null || req.getUnitIds().isEmpty()
-                || req.getVolunteerIds() == null || req.getVolunteerIds().isEmpty())) {
-            throw new BusinessException(40001, "replace_units requires unitIds and volunteerIds");
-        }
+        // add_units / replace_units 新链路只发 5 个字段（commandType/pendingId/operationId/
+        // claimToken/expectedPlanVersion），换入/换出集合由 Java 从已认领 pending 的
+        // frozenCommand 读取；请求层允许空/省略。legacy 仍带 unitIds/volunteerIds，行为不变。
+        // 真正的“空且没有 frozen”在 execute 读取 pending 后再拒绝（否则会在读 frozen 前误杀）。
         if (APPLY_CONSTRAINT_AND_REGENERATE.equals(req.getCommandType())
                 && req.getConstraintUpdate() == null && req.getMaxTuitionPerYear() == null) {
             throw new BusinessException(40001,

@@ -2382,6 +2382,112 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void shouldBuildReplacePreviewWithEqualAddRemovePairsAndStableCount() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO currentA = candidate("v1", "中南大学", "临床医学", "医学", 92D);
+        currentA.setTier("稳");
+        CandidateItemDTO currentB = candidate("v2", "湖南师范大学", "汉语言文学", "文学", 88D);
+        currentB.setTier("稳");
+        CandidateItemDTO replacement = candidate("v3", "南华大学", "法学", "法学", 90D);
+        replacement.setTier("稳");
+        state.getCandidatePoolState().getItems().add(currentA);
+        state.getCandidatePoolState().getItems().add(currentB);
+        state.getCandidatePoolState().getItems().add(replacement);
+        state.getOrderedPlanState().getItems().add(
+                orderedWithTier("v1", "中南大学", "临床医学", "稳"));
+        state.getOrderedPlanState().getItems().add(
+                orderedWithTier("v2", "湖南师范大学", "汉语言文学", "稳"));
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.setAddPolicy("replace");
+        req.getExactTargets().add(exactTarget("南华大学", "法学", null));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("add_units", proposal.getStrategy());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals(java.util.Arrays.asList("v3"), proposal.getAffectedVolunteerIds());
+        assertEquals(1, proposal.getAddedCount());
+        assertEquals(1, proposal.getRemovedCount());
+        assertEquals(2, proposal.getTargetCountBefore());
+        assertEquals(2, proposal.getTargetCountAfter(), "替换总数不变");
+        assertEquals(null, proposal.getTargetCountOverride(), "总数不变时不需要改已确认目标");
+        assertTrue(proposal.getSummary().contains("换出"));
+        assertTrue(proposal.getSummary().contains("换入"));
+        assertTrue(proposal.getSummary().contains("总数保持 2"));
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals("replace_volunteers", action.getActionType());
+        assertEquals(java.util.Arrays.asList("v3"), action.getVolunteerIds());
+        assertEquals(java.util.Arrays.asList("v2"), action.getRemoveVolunteerIds(),
+                "从方案尾部低优先、同档位条目移出");
+        assertFalse(action.getDetail().contains("不删除"));
+    }
+
+    @Test
+    void shouldBlockReplaceWhenNoUnlockedRemovableItem() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "南华大学", "法学", "法学", 90D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "中南大学", "临床医学", true));
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.setAddPolicy("replace");
+        req.getExactTargets().add(exactTarget("南华大学", "法学", null));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("replace_units_insufficient_removable",
+                proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getBlockingReason().contains("未锁定"));
+        assertFalse(proposal.getRequiresConfirmation());
+    }
+
+    @Test
+    void shouldUseUnitPairsForReplaceInMajorGroupMode() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO v1 = candidate("v1", "湖南大学第110组", "专业v1", "管理学", 90D);
+        v1.setPlanSchoolDataId("u1");
+        CandidateItemDTO v2 = candidate("v2", "湖南大学第110组", "专业v2", "管理学", 90D);
+        v2.setPlanSchoolDataId("u1");
+        CandidateItemDTO v3 = candidate("v3", "中南大学第101组", "专业v3", "管理学", 90D);
+        v3.setPlanSchoolDataId("u2");
+        CandidateItemDTO v4 = candidate("v4", "南华大学第201组", "专业v4", "管理学", 90D);
+        v4.setPlanSchoolDataId("u3");
+        for (CandidateItemDTO item : new CandidateItemDTO[]{v1, v2, v3, v4}) {
+            state.getCandidatePoolState().getItems().add(item);
+        }
+        OrderedUnitDTO unit1 = new OrderedUnitDTO();
+        unit1.setUnitId("u1");
+        unit1.setSchoolName("湖南大学第110组");
+        unit1.getMajorItems().add(unitMajor("v1", "专业v1"));
+        OrderedUnitDTO unit3 = new OrderedUnitDTO();
+        unit3.setUnitId("u3");
+        unit3.setSchoolName("南华大学第201组");
+        unit3.getMajorItems().add(unitMajor("v4", "专业v4"));
+        state.getOrderedPlanState().getUnits().add(unit1);
+        state.getOrderedPlanState().getUnits().add(unit3);
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.setAddPolicy("replace");
+        req.getExactTargets().add(exactTarget("湖南大学第110组", "专业v2", "v2"));
+        req.getExactTargets().add(exactTarget("中南大学第101组", "专业v3", "v3"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(2, proposal.getTargetCountBefore());
+        assertEquals(2, proposal.getTargetCountAfter(), "新增 1 组（u2），移出 1 组（u3）");
+        assertEquals(1, proposal.getRemovedCount());
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals(java.util.Arrays.asList("u3"), action.getRemoveUnitIds());
+        assertEquals(java.util.Arrays.asList("v2", "v3"), action.getVolunteerIds());
+        assertEquals("replace_volunteers", action.getActionType());
+    }
+
+    @Test
     void shouldBlockAddUnitsWhenCurrentCountDoesNotMatchConfirmedTarget() {
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));

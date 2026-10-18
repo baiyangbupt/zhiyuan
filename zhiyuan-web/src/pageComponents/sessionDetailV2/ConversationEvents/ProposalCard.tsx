@@ -64,6 +64,8 @@ export type ProposalPayload = {
   diff?: {
     title?: string;
     summary?: string;
+    /** 生命周期说明（确认前不动；确认后写入本会话并重新生成/刷新）——由网关白名单带过来。 */
+    impact?: string;
     status?: string;
     strategy?: string;
     requiresConfirmation?: boolean;
@@ -99,7 +101,36 @@ type Props = {
    *  按钮要收起来 ✓，并把状态说出来 ✓（"确认中" ≠ "已生效" ✗——设计里那条分得很清 ✓）。
    *  `code`/`message` 是**失败原因**（110 / 40904 / 84009 / -1 …）✓——失败不许静默 ✓，
    *  卡上要说得出"未生效 + 为什么" ✓。 */
-  actionResult?: { actionStatus?: string; proposalRef?: string; code?: string; message?: string };
+  actionResult?: {
+    actionStatus?: string;
+    proposalRef?: string;
+    code?: string;
+    message?: string;
+    actualChanges?: Array<{
+      type?: string;
+      volunteerIds?: string[];
+      removedVolunteerIds?: string[];
+      removedUnitIds?: string[];
+      addedCount?: number;
+      addedUnitCount?: number;
+      removedCount?: number;
+      targetCountBefore?: number;
+      targetCountAfter?: number;
+      /** 约束类回执：执行后实际规模与目标规模（单位 = countMode）。 */
+      actualCount?: number;
+      requiredCount?: number;
+      shortage?: number;
+      countMode?: string;
+    }>;
+    reviewState?: {
+      summary?: {
+        passedCount?: number;
+        warnCount?: number;
+        riskCount?: number;
+        blockCount?: number;
+      };
+    };
+  };
   disabled?: boolean;
 };
 
@@ -256,6 +287,16 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
         </div>
       ) : null}
       {/*
+        生命周期（Batch A2）：卡面必须说清"确认前不动、确认后写入本会话并重新生成"，
+        不能统一说"仅本次"，也不能在无命中时暗示已经记下。文案由 Java 按真实行为生成，
+        网关白名单透传，前端只展示、不改写。
+      */}
+      {diff.impact ? (
+        <div data-testid="proposal-impact">
+          <Typography.Text type="secondary">{diff.impact}</Typography.Text>
+        </div>
+      ) : null}
+      {/*
         补录成绩的**结构化明细** ✓（省份/科类/批次/各科/总分/位次 ✓）——数据来源是
         Java 按"服务端既有成绩 + 本次草稿"合并后的那份 ✓（模型说的数字不作数 ✗）：
         用户在这一格里核对的正是"系统到底打算把哪些字段写成什么" ✓。
@@ -365,6 +406,54 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
           data-testid="proposal-failure-reason"
           message={failureReason || '这次确认没有生效，请重试或换一种说法。'}
         />
+      ) : null}
+      {/*
+        已生效的回执：实际加入数量 + 审查摘要（add_units 新链路）。
+        旧后端没有这两个字段时整块不渲染，旧前端行为不变。
+      */}
+      {action === 'applied' &&
+      (actionResult?.actualChanges?.length || actionResult?.reviewState?.summary) ? (
+        <div data-testid="proposal-action-receipt" style={{ marginTop: 8, fontSize: 13 }}>
+          {actionResult?.actualChanges?.map((change, index) => {
+            const before = change.targetCountBefore;
+            const after =
+              change.targetCountAfter != null ? change.targetCountAfter : change.actualCount;
+            // 约束类回执（纯学费/替换）：没有逐条 added/removed，只说总数与缺口——
+            // 不能让"51 组缩到 36 组"只显示成一句"已生效"。
+            if (change.type === 'constraint') {
+              return (
+                <div key={index} data-testid="proposal-constraint-receipt">
+                  方案调整已生效
+                  {before != null && after != null ? `；总数 ${before} → ${after}` : ''}
+                  {Number(change.shortage || 0) > 0 ? `；还差 ${change.shortage}` : ''}
+                </div>
+              );
+            }
+            const added = Number(change.addedCount || 0);
+            const isReplace = change.type === 'replace';
+            return (
+              <div key={index}>
+                {isReplace ? '实际替换：换入' : '实际加入'} {added} 条
+                {change.addedUnitCount != null ? `（${change.addedUnitCount} 个专业组）` : ''}
+                {before != null && after != null ? `；总数 ${before} → ${after}` : ''}
+                {change.removedCount
+                  ? `；${isReplace ? '换出' : '移除'} ${change.removedCount} 条`
+                  : '；未删除现有条目'}
+              </div>
+            );
+          })}
+          {actionResult?.reviewState?.summary ? (
+            <div>
+              审查：通过 {Number(actionResult.reviewState.summary.passedCount || 0)} 项
+              {actionResult.reviewState.summary.warnCount
+                ? ` / 提示 ${actionResult.reviewState.summary.warnCount} 项`
+                : ''}
+              {actionResult.reviewState.summary.riskCount
+                ? ` / 风险 ${actionResult.reviewState.summary.riskCount} 项`
+                : ''}
+            </div>
+          ) : null}
+        </div>
       ) : null}
       {/*
         **超时兜底** ✓✓（2026-10-09）：等 ~30s 还没有该 `proposalRef` 的结果 →

@@ -530,6 +530,29 @@ def test_add_units_accepts_names_only_id_only_and_both() -> None:
     assert both.exact_targets[0].volunteer_id
 
 
+def test_add_units_defaults_to_expand_and_accepts_replace() -> None:
+    expand = _add_proposal([{"schoolName": "肇庆学院", "majorName": "地理科学"}])
+    assert expand.add_policy == "expand"
+
+    replace = _add_proposal(
+        [{"schoolName": "肇庆学院", "majorName": "地理科学"}],
+        add_policy="replace",
+    )
+    assert replace.add_policy == "replace"
+
+
+def test_replace_policy_is_rejected_for_non_add_units() -> None:
+    from app.gateway.contracts import ProposalRequest
+
+    with pytest.raises(ValidationError, match="addPolicy=replace"):
+        ProposalRequest(
+            goal_type="fill_to_count",
+            source_version_guard=1,
+            target_count=10,
+            add_policy="replace",
+        )
+
+
 def test_add_units_rejects_empty_targets() -> None:
     from app.gateway.contracts import ProposalRequest
 

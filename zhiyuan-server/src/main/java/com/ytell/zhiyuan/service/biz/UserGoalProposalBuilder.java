@@ -33,6 +33,8 @@ import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 import org.springframework.beans.BeanUtils;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -429,11 +431,13 @@ final class UserGoalProposalBuilder {
     private static final String REASON_ADD_UNITS_TIER_QUOTA = "add_units_tier_quota_unsupported";
     private static final String REASON_ADD_UNITS_DRY_RUN = "add_units_dry_run_failed";
     private static final String REASON_ADD_UNITS_DRY_RUN_UNAVAILABLE = "add_units_dry_run_unavailable";
+    private static final String REASON_REPLACE_UNITS_INSUFFICIENT = "replace_units_insufficient_removable";
 
     private static FixProposalDTO buildAddUnitsProposal(PlanningStateDTO state,
                                                         UserGoalFixProposalReq req) {
         List<CandidateItemDTO> pool = candidates(state);
         boolean majorGroupMode = isMajorGroupMode(state);
+        boolean replacePolicy = isReplacePolicy(req);
         List<PlanVolunteer> current = currentPlanVolunteers(state, pool);
         if (current.isEmpty()) {
             return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
@@ -449,7 +453,9 @@ final class UserGoalProposalBuilder {
         if (hard != null && hard.getTierQuotaGoal() != null) {
             return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
                     REASON_ADD_UNITS_TIER_QUOTA,
-                    "加入会改变已确认的冲稳保配额；请先调整配额或改用替换动作，第一期不自动改配额。");
+                    replacePolicy
+                            ? "替换也会改变已确认的冲稳保配额；请先调整配额，再生成替换预览。"
+                            : "加入会改变已确认的冲稳保配额；请先调整配额或改用替换动作，不自动改配额。");
         }
 
         Set<String> currentVolunteerIds = current.stream()
@@ -526,10 +532,11 @@ final class UserGoalProposalBuilder {
             return info;
         }
 
-        int currentCount = majorGroupMode
-                ? new LinkedHashSet<String>(current.stream().map(UserGoalProposalBuilder::planUnitKey)
-                .filter(value -> !Strings.isNullOrEmpty(value)).collect(Collectors.toList())).size()
-                : currentVolunteerIds.size();
+        Set<String> currentUnitIds = current.stream()
+                .map(UserGoalProposalBuilder::planUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        int currentCount = majorGroupMode ? currentUnitIds.size() : currentVolunteerIds.size();
         Set<String> addedUnitIds = new LinkedHashSet<String>();
         for (CandidateItemDTO candidate : resolved) {
             String unitId = candidateUnitKey(candidate);
@@ -540,6 +547,11 @@ final class UserGoalProposalBuilder {
         int addedEntryCount = resolved.size();
         int addedUnitCount = addedUnitIds.size();
         int addedCountForMode = majorGroupMode ? addedUnitCount : addedEntryCount;
+        // 换入专业若落在已有专业组里，不增加单元数；替换的移出量按“新增单元数”算，
+        // 否则会把总数压少（专业组模式的总数口径是单元数）。
+        int replaceCountForMode = majorGroupMode
+                ? (int) addedUnitIds.stream().filter(unitId -> !currentUnitIds.contains(unitId)).count()
+                : addedEntryCount;
         Integer confirmedTarget = hard == null ? null : hard.getSelectionTargetCount();
         if (confirmedTarget != null && confirmedTarget != currentCount) {
             return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
@@ -547,17 +559,31 @@ final class UserGoalProposalBuilder {
                     "当前方案实际 " + currentCount + (majorGroupMode ? " 个专业组" : " 条")
                             + "，与已确认目标 " + confirmedTarget + " 不一致；请先补齐/调整目标，再加入。");
         }
-        int targetAfter = currentCount + addedCountForMode;
-        Integer targetCountOverride = confirmedTarget == null ? null : targetAfter;
+        ReplaceRemoval removal = null;
+        if (replacePolicy) {
+            removal = selectReplaceRemovals(current, resolved, majorGroupMode, replaceCountForMode);
+            if (removal == null || removal.countInMode(majorGroupMode) < replaceCountForMode) {
+                return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
+                        REASON_REPLACE_UNITS_INSUFFICIENT,
+                        "当前方案里未锁定/未置顶的可替换" + (majorGroupMode ? "专业组" : "条目")
+                                + "不足 " + replaceCountForMode + " 个；请先解锁或减少替换数量。");
+            }
+        }
+        int targetAfter = replacePolicy ? currentCount : currentCount + addedCountForMode;
+        Integer targetCountOverride = replacePolicy ? null
+                : (confirmedTarget == null ? null : targetAfter);
 
-        AddUnitsDryRun dryRun = dryRunAddUnits(state, current, resolved, targetAfter, majorGroupMode);
+        AddUnitsDryRun dryRun = replacePolicy
+                ? dryRunReplaceUnits(state, current, removal, resolved, targetAfter, majorGroupMode)
+                : dryRunAddUnits(state, current, resolved, targetAfter, majorGroupMode);
         if (!dryRun.ok) {
             return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,
                     dryRun.reason, dryRun.message);
         }
 
         FixProposalDTO proposal = buildUserGoalPreviewBase(state, req,
-                RepairProposalTaxonomy.Strategy.ADD_UNITS, "加入志愿预览");
+                RepairProposalTaxonomy.Strategy.ADD_UNITS,
+                replacePolicy ? "替换志愿预览" : "加入志愿预览");
         proposal.setStatus(RepairProposalTaxonomy.Status.READY);
         proposal.setRequiresConfirmation(true);
         proposal.setAffectedVolunteerIds(resolved.stream()
@@ -569,26 +595,202 @@ final class UserGoalProposalBuilder {
                 .collect(Collectors.toList()));
         proposal.setAddedCount(addedEntryCount);
         proposal.setAddedUnitCount(addedUnitCount);
-        proposal.setRemovedCount(0);
+        proposal.setRemovedCount(replacePolicy ? removal.countInMode(majorGroupMode) : 0);
         proposal.setTargetCountBefore(confirmedTarget == null ? currentCount : confirmedTarget);
         proposal.setTargetCountAfter(targetAfter);
         proposal.setTargetCountOverride(targetCountOverride);
         List<String> labelList = candidateEntryLabels(resolved, majorGroupMode);
         String labels = String.join("、", labelList);
-        proposal.setSummary("将加入 " + formatEntryCount(addedEntryCount, majorGroupMode)
-                + (labels.isEmpty() ? "" : "：" + labels)
-                + "；总数 " + proposal.getTargetCountBefore() + "→" + targetAfter
-                + "；不删除任何现有条目。"
-                + (alreadySelected > 0 ? "另有 " + alreadySelected + " 条已在方案中，不重复加入。" : ""));
-        proposal.setImpact("确认后只加入这些条目，不删除/替换现有志愿；总数按当前方案实际数量 + 新增数量更新。");
-        proposal.getActions().add(addExactAction(resolved, majorGroupMode, labelList));
-        populateFillDryRun(proposal, state, currentCount, targetAfter,
-                addedUnitCount, addedEntryCount, 0, 0,
-                "加入 " + formatEntryCount(addedEntryCount, majorGroupMode) + "；零删除。");
+        if (replacePolicy) {
+            List<String> removedLabels = planEntryLabels(removal.volunteers, majorGroupMode);
+            String removedText = String.join("、", removedLabels);
+            proposal.setSummary("将换出 " + formatEntryCount(removal.countInMode(majorGroupMode), majorGroupMode)
+                    + (removedText.isEmpty() ? "" : "：" + removedText)
+                    + "，换入 " + formatEntryCount(addedEntryCount, majorGroupMode)
+                    + (labels.isEmpty() ? "" : "：" + labels)
+                    + "；总数保持 " + targetAfter + "。"
+                    + (alreadySelected > 0 ? "另有 " + alreadySelected + " 条已在方案中，不重复加入。" : ""));
+            proposal.setImpact("确认后只移出下列条目并加入新条目，其他志愿不动；总数保持不变。");
+            proposal.getActions().add(replaceExactAction(
+                    resolved, removal, majorGroupMode, labelList, removedLabels));
+            populateFillDryRun(proposal, state, currentCount, targetAfter,
+                    addedUnitCount, addedEntryCount,
+                    removal.unitIds.size(), removal.volunteerIds.size(),
+                    "换出 " + formatEntryCount(removal.countInMode(majorGroupMode), majorGroupMode)
+                            + "，换入 " + formatEntryCount(addedEntryCount, majorGroupMode) + "；总数不变。");
+        } else {
+            proposal.setSummary("将加入 " + formatEntryCount(addedEntryCount, majorGroupMode)
+                    + (labels.isEmpty() ? "" : "：" + labels)
+                    + "；总数 " + proposal.getTargetCountBefore() + "→" + targetAfter
+                    + "；不删除任何现有条目。"
+                    + (alreadySelected > 0 ? "另有 " + alreadySelected + " 条已在方案中，不重复加入。" : ""));
+            proposal.setImpact("确认后只加入这些条目，不删除/替换现有志愿；总数按当前方案实际数量 + 新增数量更新。");
+            proposal.getActions().add(addExactAction(resolved, majorGroupMode, labelList));
+            populateFillDryRun(proposal, state, currentCount, targetAfter,
+                    addedUnitCount, addedEntryCount, 0, 0,
+                    "加入 " + formatEntryCount(addedEntryCount, majorGroupMode) + "；零删除。");
+        }
         if (dryRun.solverResult != null) {
             attachSolverMetadata(proposal, dryRun.objectiveSet, dryRun.solverResult);
         }
         return proposal;
+    }
+
+    private static boolean isReplacePolicy(UserGoalFixProposalReq req) {
+        return req != null && "replace".equalsIgnoreCase(
+                Strings.nullToEmpty(req.getAddPolicy()).trim());
+    }
+
+    /**
+     * 替换的移出集合：从方案尾部（低优先）挑未锁定/未置顶的条目，优先同档位。
+     * 专业组模式以“组”为原子，组内任一条锁定/置顶则整组不可移出。
+     * 返回 null 表示可用条目不足。
+     */
+    private static ReplaceRemoval selectReplaceRemovals(List<PlanVolunteer> current,
+                                                        List<CandidateItemDTO> resolved,
+                                                        boolean majorGroupMode,
+                                                        int requiredCount) {
+        Set<String> addedTiers = defaultList(resolved).stream()
+                .map(candidate -> candidate == null ? null : candidate.getTier())
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> addedUnitKeys = defaultList(resolved).stream()
+                .map(UserGoalProposalBuilder::candidateUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        ReplaceRemoval removal = new ReplaceRemoval();
+        if (majorGroupMode) {
+            Map<String, List<PlanVolunteer>> byUnit = new LinkedHashMap<String, List<PlanVolunteer>>();
+            for (PlanVolunteer volunteer : defaultList(current)) {
+                String unitId = firstNonEmpty(volunteer.getUnitId(), volunteer.getVolunteerId());
+                if (!Strings.isNullOrEmpty(unitId)) {
+                    byUnit.computeIfAbsent(unitId, ignored -> Lists.newArrayList()).add(volunteer);
+                }
+            }
+            List<Map.Entry<String, List<PlanVolunteer>>> units =
+                    new ArrayList<Map.Entry<String, List<PlanVolunteer>>>(byUnit.entrySet());
+            Collections.reverse(units);
+            Set<String> chosenUnits = new LinkedHashSet<String>();
+            collectReplaceUnits(units, addedTiers, addedUnitKeys, requiredCount, true, chosenUnits);
+            if (chosenUnits.size() < requiredCount) {
+                collectReplaceUnits(units, addedTiers, addedUnitKeys, requiredCount, false, chosenUnits);
+            }
+            if (chosenUnits.size() < requiredCount) {
+                return null;
+            }
+            for (Map.Entry<String, List<PlanVolunteer>> entry : units) {
+                if (!chosenUnits.contains(entry.getKey())) {
+                    continue;
+                }
+                removal.unitIds.add(entry.getKey());
+                for (PlanVolunteer volunteer : entry.getValue()) {
+                    removal.volunteers.add(volunteer);
+                    if (!Strings.isNullOrEmpty(volunteer.getVolunteerId())) {
+                        removal.volunteerIds.add(volunteer.getVolunteerId());
+                    }
+                }
+            }
+            return removal;
+        }
+        List<PlanVolunteer> tail = new ArrayList<PlanVolunteer>(defaultList(current));
+        Collections.reverse(tail);
+        for (int pass = 0; pass < 2 && removal.volunteerIds.size() < requiredCount; pass++) {
+            for (PlanVolunteer volunteer : tail) {
+                if (volunteer.isLocked() || volunteer.isPinned()
+                        || Strings.isNullOrEmpty(volunteer.getVolunteerId())
+                        || removal.volunteerIds.contains(volunteer.getVolunteerId())) {
+                    continue;
+                }
+                String tier = volunteer.getCandidate() == null ? null : volunteer.getCandidate().getTier();
+                boolean sameTier = !Strings.isNullOrEmpty(tier) && addedTiers.contains(tier);
+                if (pass == 0 && !sameTier) {
+                    continue;
+                }
+                if (pass == 1 && sameTier) {
+                    continue;
+                }
+                removal.volunteers.add(volunteer);
+                removal.volunteerIds.add(volunteer.getVolunteerId());
+                if (removal.volunteerIds.size() >= requiredCount) {
+                    break;
+                }
+            }
+        }
+        return removal.volunteerIds.size() < requiredCount ? null : removal;
+    }
+
+    private static void collectReplaceUnits(List<Map.Entry<String, List<PlanVolunteer>>> units,
+                                            Set<String> addedTiers,
+                                            Set<String> addedUnitKeys,
+                                            int requiredCount,
+                                            boolean sameTierOnly,
+                                            Set<String> chosenUnits) {
+        for (Map.Entry<String, List<PlanVolunteer>> entry : units) {
+            if (chosenUnits.size() >= requiredCount) {
+                return;
+            }
+            if (chosenUnits.contains(entry.getKey()) || entry.getValue().isEmpty()
+                    || addedUnitKeys.contains(entry.getKey())) {
+                // 整组移出会把即将换入该组的新专业一起删掉；该组不能作为移出对象。
+                continue;
+            }
+            boolean protectedUnit = entry.getValue().stream()
+                    .anyMatch(volunteer -> volunteer.isLocked() || volunteer.isPinned());
+            if (protectedUnit) {
+                continue;
+            }
+            String tier = entry.getValue().get(0).getCandidate() == null
+                    ? null : entry.getValue().get(0).getCandidate().getTier();
+            boolean sameTier = !Strings.isNullOrEmpty(tier) && addedTiers.contains(tier);
+            if (sameTier != sameTierOnly) {
+                continue;
+            }
+            chosenUnits.add(entry.getKey());
+        }
+    }
+
+    private static FixProposalActionDTO replaceExactAction(List<CandidateItemDTO> resolved,
+                                                           ReplaceRemoval removal,
+                                                           boolean majorGroupMode,
+                                                           List<String> addedLabels,
+                                                           List<String> removedLabels) {
+        FixProposalActionDTO action = new FixProposalActionDTO();
+        action.setActionType(RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS);
+        action.setLevel("volunteer");
+        action.setSummary("替换点名的院校+专业");
+        List<String> detailLines = Lists.newArrayList();
+        if (!removedLabels.isEmpty()) {
+            detailLines.add("移出：" + String.join("、", removedLabels));
+        }
+        if (!addedLabels.isEmpty()) {
+            detailLines.add("加入：" + String.join("、", addedLabels));
+        }
+        action.setDetail(appendEntryPreviewDetail(
+                "预计移出 " + formatEntryCount(removal.countInMode(majorGroupMode), majorGroupMode)
+                        + "，加入 " + formatEntryCount(resolved.size(), majorGroupMode) + "。",
+                detailLines));
+        List<String> volunteerIds = resolved.stream().map(CandidateItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value)).distinct().collect(Collectors.toList());
+        List<String> unitIds = resolved.stream().map(UserGoalProposalBuilder::candidateUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value)).distinct().collect(Collectors.toList());
+        action.setVolunteerIds(volunteerIds);
+        action.setUnitIds(unitIds);
+        action.setCandidateVolunteerIds(volunteerIds);
+        action.setCandidateUnitIds(unitIds);
+        action.setRemoveVolunteerIds(Lists.newArrayList(removal.volunteerIds));
+        action.setRemoveUnitIds(Lists.newArrayList(removal.unitIds));
+        populateActionTotals(action);
+        return action;
+    }
+
+    private static final class ReplaceRemoval {
+        private final List<PlanVolunteer> volunteers = Lists.newArrayList();
+        private final Set<String> volunteerIds = new LinkedHashSet<String>();
+        private final Set<String> unitIds = new LinkedHashSet<String>();
+
+        private int countInMode(boolean majorGroupMode) {
+            return majorGroupMode ? unitIds.size() : volunteerIds.size();
+        }
     }
 
     private static FixProposalActionDTO addExactAction(List<CandidateItemDTO> resolved,
@@ -779,6 +981,87 @@ final class UserGoalProposalBuilder {
             result.ok = false;
             result.reason = REASON_ADD_UNITS_DRY_RUN_UNAVAILABLE;
             result.message = "当前环境无法完成加入前的只读校验（dry-run），为避免确认后失败，本次不生成可确认卡。";
+            return result;
+        }
+    }
+
+    /**
+     * 替换的只读预检：固定总数 = 当前数，保留集合 = 当前 - 计划移出，可选集合 = 换入。
+     * 解必须同时满足“保留全在、换入全在、计划移出全不在、总数不变”，否则预览阻断。
+     */
+    private static AddUnitsDryRun dryRunReplaceUnits(PlanningStateDTO state,
+                                                     List<PlanVolunteer> current,
+                                                     ReplaceRemoval removal,
+                                                     List<CandidateItemDTO> resolved,
+                                                     int targetCount,
+                                                     boolean unitMode) {
+        AddUnitsDryRun result = new AddUnitsDryRun();
+        if (removal == null) {
+            result.ok = false;
+            result.reason = REASON_REPLACE_UNITS_INSUFFICIENT;
+            result.message = "替换缺少可移出的条目。";
+            return result;
+        }
+        if (!CanonicalPlanningRuntime.hasSelectionObjectives(state)) {
+            result.ok = true;
+            return result;
+        }
+        try {
+            CanonicalPlanningObjectiveSetDTO objectiveSet = PlanningObjectiveCompiler.compileConfirmed(state);
+            CanonicalPlanningObjectiveSetDTO solverObjectiveSet = new CanonicalPlanningObjectiveSetDTO();
+            BeanUtils.copyProperties(objectiveSet, solverObjectiveSet);
+            solverObjectiveSet.setTargetCount(targetCount);
+            FillCurrentProjection projection = new FillCurrentProjection();
+            projection.removeUnitIds.addAll(removal.unitIds);
+            projection.removeVolunteerIds.addAll(removal.volunteerIds);
+            List<CoverageEntity> retained = buildRetainedCoverageEntities(current, projection, unitMode);
+            List<FillOption> available = buildAddFillOptions(resolved, unitMode);
+            PlanSolverResultDTO solved = PLAN_SOLVER.solve(buildSolverInput(
+                    solverObjectiveSet, retained, available, unitMode, null));
+            result.objectiveSet = objectiveSet;
+            result.solverResult = solved;
+            if (RepairProposalTaxonomy.Status.BLOCKED.equals(solved.getStatus())) {
+                PlanSolverResultDTO.DiagnosticDTO diagnostic = solved.getDiagnostics().isEmpty()
+                        ? null : solved.getDiagnostics().get(0);
+                result.ok = false;
+                result.reason = REASON_ADD_UNITS_DRY_RUN;
+                result.message = diagnostic == null || Strings.isNullOrEmpty(diagnostic.getMessage())
+                        ? "替换后的方案无法同时满足已确认目标/约束，已在预览阶段阻断。"
+                        : diagnostic.getMessage();
+                return result;
+            }
+            Set<String> selected = new LinkedHashSet<String>(defaultList(solved.getSelectedEntityIds()));
+            Set<String> retainedIds = retained.stream().map(entity -> entity.entityId(unitMode))
+                    .filter(value -> !Strings.isNullOrEmpty(value)).collect(Collectors.toCollection(LinkedHashSet::new));
+            Set<String> addedIds = available.stream().map(option -> option.entityId(unitMode))
+                    .filter(value -> !Strings.isNullOrEmpty(value)).collect(Collectors.toCollection(LinkedHashSet::new));
+            if (!selected.containsAll(retainedIds) || !selected.containsAll(addedIds)) {
+                result.ok = false;
+                result.reason = REASON_ADD_UNITS_DRY_RUN;
+                result.message = "替换后的求解结果会漏掉保留条目或换入条目，已在预览阶段阻断。";
+                return result;
+            }
+            Set<String> plannedRemoved = unitMode
+                    ? new LinkedHashSet<String>(removal.unitIds)
+                    : new LinkedHashSet<String>(removal.volunteerIds);
+            if (selected.stream().anyMatch(plannedRemoved::contains)) {
+                result.ok = false;
+                result.reason = REASON_ADD_UNITS_DRY_RUN;
+                result.message = "替换后的求解结果仍会保留这次要换出的条目，已在预览阶段阻断。";
+                return result;
+            }
+            if (selected.size() != targetCount) {
+                result.ok = false;
+                result.reason = REASON_ADD_UNITS_DRY_RUN;
+                result.message = "替换后的求解数量与目标 " + targetCount + " 不一致，已在预览阶段阻断。";
+                return result;
+            }
+            result.ok = true;
+            return result;
+        } catch (Exception ex) {
+            result.ok = false;
+            result.reason = REASON_ADD_UNITS_DRY_RUN_UNAVAILABLE;
+            result.message = "当前环境无法完成替换前的只读校验（dry-run），为避免确认后失败，本次不生成可确认卡。";
             return result;
         }
     }

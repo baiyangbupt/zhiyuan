@@ -925,6 +925,10 @@ public class PlanningStateService {
                     String goalType = req == null ? "" : Strings.nullToEmpty(req.getGoalType()).trim();
                     boolean addUnits = "add_units".equalsIgnoreCase(goalType)
                             || "add_units_by_scope".equalsIgnoreCase(goalType);
+                    boolean replaceUnits = addUnits && "add_units".equalsIgnoreCase(goalType)
+                            && "replace".equalsIgnoreCase(
+                                    Strings.nullToEmpty(req == null ? null : req.getAddPolicy()).trim());
+                    String planActionCommand = replaceUnits ? "replace_units" : "add_units";
                     Map<String, Object> dataValue = new LinkedHashMap<String, Object>();
                     dataValue.put("operationId", operationId);
                     dataValue.put("proposalSource", "user_goal");
@@ -952,20 +956,54 @@ public class PlanningStateService {
                         }
                     }
                     if (addUnits && primary != null) {
-                        // 点名加入的**冻结命令**：执行时必须以此为准，调用方传的命令字段
+                        // 点名加入/替换的**冻结命令**：执行时必须以此为准，调用方传的命令字段
                         // 只能用来比对（40908），不能改写它。digest 覆盖命令内容，含 operationId。
+                        List<String> addedVolunteerIds = defaultList(primary.getAffectedVolunteerIds());
+                        List<String> addedUnitIds = defaultList(primary.getAffectedUnitIds());
+                        List<String> removedVolunteerIds = Lists.newArrayList();
+                        List<String> removedUnitIds = Lists.newArrayList();
+                        if (replaceUnits) {
+                            List<FixProposalActionDTO> actions = primary.getActions() == null
+                                    ? Lists.<FixProposalActionDTO>newArrayList() : primary.getActions();
+                            for (FixProposalActionDTO action : actions) {
+                                if (!RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(
+                                        RepairProposalTaxonomy.normalizeActionType(action.getActionType()))) {
+                                    continue;
+                                }
+                                removedVolunteerIds.addAll(defaultList(action.getRemoveVolunteerIds()));
+                                removedUnitIds.addAll(defaultList(action.getRemoveUnitIds()));
+                            }
+                            removedVolunteerIds = removedVolunteerIds.stream()
+                                    .filter(value -> !Strings.isNullOrEmpty(value)).distinct()
+                                    .collect(Collectors.toList());
+                            removedUnitIds = removedUnitIds.stream()
+                                    .filter(value -> !Strings.isNullOrEmpty(value)).distinct()
+                                    .collect(Collectors.toList());
+                        }
                         dataValue.put("kind", "plan_action");
                         dataValue.put("goalType", "add_units");
-                        dataValue.put("commandType", "add_units");
-                        dataValue.put("volunteerIds", defaultList(primary.getAffectedVolunteerIds()));
+                        dataValue.put("commandType", planActionCommand);
+                        dataValue.put("volunteerIds", addedVolunteerIds);
                         dataValue.put("targetCountOverride", primary.getTargetCountOverride());
                         dataValue.put("rerunReview", true);
                         dataValue.put("summary", primary.getSummary());
                         dataValue.put("affectedItems", primary.getAffectedItems());
+                        if (replaceUnits) {
+                            dataValue.put("addedUnitIds", addedUnitIds);
+                            dataValue.put("removedVolunteerIds", removedVolunteerIds);
+                            dataValue.put("removedUnitIds", removedUnitIds);
+                        }
                         Map<String, Object> frozenCommand = new LinkedHashMap<String, Object>();
-                        frozenCommand.put("commandType", "add_units");
+                        frozenCommand.put("commandType", planActionCommand);
                         frozenCommand.put("operationId", operationId);
-                        frozenCommand.put("volunteerIds", defaultList(primary.getAffectedVolunteerIds()));
+                        if (replaceUnits) {
+                            frozenCommand.put("addedVolunteerIds", addedVolunteerIds);
+                            frozenCommand.put("removedVolunteerIds", removedVolunteerIds);
+                            frozenCommand.put("addedUnitIds", addedUnitIds);
+                            frozenCommand.put("removedUnitIds", removedUnitIds);
+                        } else {
+                            frozenCommand.put("volunteerIds", addedVolunteerIds);
+                        }
                         frozenCommand.put("targetCountOverride", primary.getTargetCountOverride());
                         frozenCommand.put("tierQuotaOverride", null);
                         frozenCommand.put("rerunReview", true);
@@ -981,7 +1019,7 @@ public class PlanningStateService {
                     // （prepareOnce 直接回放已存的结果），所以不会造出第二个 pending ✓。
                     upsert.setPendingId(UUID.randomUUID().toString());
                     upsert.setKind(addUnits ? "plan_action" : "plan_change_proposal");
-                    upsert.setActionFamily(addUnits ? "add_units" : "apply_plan_change_proposal");
+                    upsert.setActionFamily(addUnits ? planActionCommand : "apply_plan_change_proposal");
                     upsert.setDataValue(dataValue);
                     // **CAS 修订号**（2026-10-07 F09 实测）：已有 pending 行时按修订号**替换**
                     // ——与补录成绩路径（`ChatSessionBizService#prepareScoreUpdateProposal`）同口径。

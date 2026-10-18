@@ -236,21 +236,32 @@ async def execute_conversation_action(
 
 
 def _actual_changes(data: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """回执：优先用 Java 直出的 actualChanges；没有时把 add_units 的净变化拼成一条。"""
+    """回执：优先用 Java 直出的 actualChanges；没有时把 add/replace 的净变化拼成一条。"""
     changes = data.get("actualChanges")
     if isinstance(changes, list) and changes:
         return [item for item in changes if isinstance(item, dict)]
     added = data.get("addedVolunteerIds")
-    if isinstance(added, list) and added:
-        return [{
-            "type": "add",
-            "volunteerIds": added,
+    removed = data.get("removedVolunteerIds")
+    if (isinstance(added, list) and added) or (isinstance(removed, list) and removed):
+        is_replace = (
+            str(data.get("commandType") or "") == "replace_units"
+            or (isinstance(removed, list) and bool(removed))
+        )
+        change = {
+            "type": "replace" if is_replace else "add",
+            "volunteerIds": added if isinstance(added, list) else [],
             "addedCount": data.get("addedVolunteerCount"),
             "addedUnitCount": data.get("addedUnitCount"),
             "removedCount": data.get("removedVolunteerCount"),
             "targetCountBefore": data.get("targetCountBefore"),
             "targetCountAfter": data.get("targetCountAfter"),
-        }]
+        }
+        if is_replace:
+            change["removedVolunteerIds"] = removed if isinstance(removed, list) else []
+            change["removedUnitIds"] = (
+                data.get("removedUnitIds") if isinstance(data.get("removedUnitIds"), list) else []
+            )
+        return [change]
     # 约束类命令没有逐条 added/removed；回执至少要能说"总数前后 + 缺口"。
     # 没有它，卡上只能显示"已生效"，而方案可能已经从 51 组缩到 36 组（2026-10-18 真栈）。
     if str(data.get("commandType") or "") == "apply_constraint_and_regenerate":
@@ -911,17 +922,23 @@ async def _execute_claimed_command(
             sorted(active_data.keys())[:12],
             source_version,
         )
-    elif str(active_data.get("commandType") or active.get("commandType") or "").strip() == "add_units":
-        # 点名加入：命令内容以 pending 的 frozenCommand 为准；网关只发 5 个字段，
-        # 跳过 proposalApply/canonical/region/major 解析。volunteerIds/targetCountOverride/
+    elif str(active_data.get("commandType") or active.get("commandType") or "").strip() in {
+        "add_units",
+        "replace_units",
+    }:
+        # 点名加入/等量替换：命令内容以 pending 的 frozenCommand 为准；网关只发 5 个字段，
+        # 跳过 proposalApply/canonical/region/major 解析。换入/换出集合、targetCountOverride、
         # rerunReview 都由 Java 从 frozen 读取。
-        command_type = "add_units"
+        command_type = str(
+            active_data.get("commandType") or active.get("commandType") or ""
+        ).strip()
         extra_kwargs = {}
         expected_plan_version = _first_int(
             active_data.get("sourceVersion"), active.get("sourceVersion"), plan_version
         )
         logger.info(
-            "execute stage add_units: expectedPlanVersion=%s dataKeys=%s sourceVersion=%s",
+            "execute stage %s: expectedPlanVersion=%s dataKeys=%s sourceVersion=%s",
+            command_type,
             expected_plan_version,
             sorted(active_data.keys())[:12],
             active_data.get("sourceVersion"),

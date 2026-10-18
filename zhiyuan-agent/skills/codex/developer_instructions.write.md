@@ -10,8 +10,9 @@
   本版人工审查、可用/未支持动作、阻断与建议下一步、方案版本。选路按它，不凭对话记忆猜。
 - `pending=applying`：只提示“上一条变更正在生效，请稍候；结果会以回执为准”，
   不确认、不取消、不生成新写；`pending=active` 才引导确认/取消。
-- `未支持动作`（replace_units/remove_units/move_units/regenerate/undo/rollback）：
+- `未支持动作`（remove_units/move_units/regenerate/undo/rollback）：
   如实说“尚未支持”，不得声称已执行，也不得为它们写 ready 的 `intentDraft`。
+  替换已支持：`add_units` + `addPolicy: "replace"`。
 - `刷新要求=candidates`：先刷新候选（补录成绩后旧候选不能直接用）；
   `=plan`：可用 `fill_to_count` 重算正式方案；`=review` 且本版人工审查已看过时，
   不要重复推荐同一次审查，但要说清“后端规则结果已过期”，两种审查不互相代替。
@@ -66,8 +67,10 @@
   `unresolved`，也不要因此拒绝出预览——直接把用户点名的学校/专业写进 `exactTargets`，
   由确认链在 prepare 阶段做真实校验（找不到会在卡上说明原因）。
   **默认语义是 EXPAND（扩总数，零删除）**：卡面必须写清“总数 当前→当前+新增”。
-  用户明确说“总数不变 / 必须有这几条 / 换掉几条”时，**不要用 add_units 静默扩总数**；
-  先问一次“扩总数，还是保持总数做替换？”，替换路径待支持时如实说明。
+  用户明确说“总数不变 / 必须有这几条 / 换掉几条”时，仍用 `goalType="add_units"`，
+  但显式输出 `addPolicy: "replace"`：服务端会生成等量替换预览（列全换入与换出条目，
+  总数不变），确认后只移出卡上列出的条目。**不要**用默认 expand 静默扩总数，
+  也不要在正文里说“替换尚未支持”。
 - **按范围加入**（“再加六条安徽的院校，学费不超过 6000”这类）：用
   `goalType="add_units_by_scope"`，`addCount=6`，范围写 `targetScopes`/
   `negativeScopes`，学费写 `context.maxTuitionPerYear`，`exactTargets: []`。

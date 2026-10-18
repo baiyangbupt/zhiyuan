@@ -349,6 +349,14 @@ class ProposalRequest(_ContractModel):
             "不支持 add_units 的提案必须输出 []。不要写进 targetScopes/requirements。"
         ),
     )
+    add_policy: Literal["expand", "replace"] = Field(
+        default="expand",
+        description=(
+            "仅 add_units 使用：expand（默认）=纯加入、总数增长；"
+            "replace=等量替换、总数不变（预览会列全新增加与移出条目）。"
+            "用户明确说“总数不变 / 换掉 / 替换”时才用 replace；其余提案保持 expand。"
+        ),
+    )
     tier_quota_goal: ProposalTierQuota | None = None
     requirements: list[ProposalRequirement] = Field(default_factory=list)
     # 同档前置"只支持一条"（2026-10-13 实测，会话 10041981）在 **Java 侧**是硬约束
@@ -375,6 +383,8 @@ class ProposalRequest(_ContractModel):
     def _validate_exact_targets(self) -> "ProposalRequest":
         is_add = self.goal_type == "add_units"
         is_scope_add = self.goal_type == "add_units_by_scope"
+        if self.add_policy == "replace" and not is_add:
+            raise ValueError("addPolicy=replace is only supported for add_units")
         if is_add and not self.exact_targets:
             raise ValueError("add_units requires exactTargets")
         if not is_add and not is_scope_add and self.exact_targets:

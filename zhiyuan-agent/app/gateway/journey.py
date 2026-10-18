@@ -21,7 +21,8 @@ ACTION_STATUS: dict[str, str] = {
     "recommend_candidates": "implemented",
     "review_plan": "implemented",       # 人工审查技能；不声称有审查产物
     "set_preference": "partial",        # scope/学费/排除/同档 priority_rules；风险姿态/目标优先级 J6
-    "add_units": "implemented",         # EXPAND
+    "add_units": "implemented",         # EXPAND（纯加入）
+    "replace_units": "implemented",     # add_units + addPolicy=replace（等量替换）
     "add_units_by_scope": "implemented",
     "fill_to_count": "implemented",
     "interpret_admission": "implemented",
@@ -29,7 +30,6 @@ ACTION_STATUS: dict[str, str] = {
     "update_career": "implemented",
     "confirm": "implemented",
     "cancel": "implemented",
-    "replace_units": "planned",
     "remove_units": "planned",
     "move_units": "planned",
     "regenerate": "planned",
@@ -48,6 +48,7 @@ PLANNED_ACTIONS = frozenset(
 WRITE_ACTIONS = frozenset(
     {
         "add_units",
+        "replace_units",
         "add_units_by_scope",
         "fill_to_count",
         "set_preference",
@@ -246,7 +247,7 @@ def blocked_actions(context: JourneyContext) -> list[BlockedAction]:
         )
     if not context.has_plan:
         block(
-            ["add_units", "add_units_by_scope", "interpret_admission", "review_plan"],
+            ["add_units", "replace_units", "add_units_by_scope", "interpret_admission", "review_plan"],
             "no_plan",
             "先排出一版方案（可先补足到目标数量），再解读/加入",
         )
@@ -258,34 +259,34 @@ def blocked_actions(context: JourneyContext) -> list[BlockedAction]:
         )
     if not context.has_candidates:
         block(
-            ["add_units", "add_units_by_scope", "fill_to_count"],
+            ["add_units", "replace_units", "add_units_by_scope", "fill_to_count"],
             "candidate_source_unavailable",
             "先生成或刷新候选池",
         )
     if context.candidate_freshness == "stale":
         block(
-            ["add_units", "add_units_by_scope", "fill_to_count"],
+            ["add_units", "replace_units", "add_units_by_scope", "fill_to_count"],
             "candidate_stale",
             "先按新成绩/条件刷新候选池，再基于新候选调整",
         )
     if context.plan_freshness == "stale":
         block(
-            ["add_units", "add_units_by_scope"],
+            ["add_units", "replace_units", "add_units_by_scope"],
             "plan_stale",
             "先按当前条件重算方案（可用“补足到目标数量”），再加入",
         )
     if context.tier_quota_goal:
         block(
-            ["add_units", "add_units_by_scope"],
+            ["add_units", "replace_units", "add_units_by_scope"],
             "tier_quota_goal",
-            "先调整冲稳保配额；替换动作尚未支持",
+            "先调整冲稳保配额，再加入或替换",
         )
     if (
         context.selection_target_count is not None
         and context.selection_target_count != context.selection_current_count
     ):
         block(
-            ["add_units", "add_units_by_scope"],
+            ["add_units", "replace_units", "add_units_by_scope"],
             "target_count_mismatch",
             "先补齐/调整到已确认目标数量，再加入",
         )
@@ -314,7 +315,7 @@ def available_actions(context: JourneyContext) -> list[str]:
         and context.candidate_freshness == "fresh"
         and context.plan_freshness == "fresh"
     ):
-        actions.extend(["add_units", "add_units_by_scope"])
+        actions.extend(["add_units", "replace_units", "add_units_by_scope"])
     if context.pending_status == "active":
         actions.extend(["confirm", "cancel"])
     blocked = {item.action for item in blocked_actions(context)}

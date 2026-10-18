@@ -135,15 +135,18 @@ _ACTION_ALIASES = {
     # 同档优先（priorityRules）是已实现能力，不能归一成 planned 的 reorder。
     "prioritize_within_tier": "prioritize",
     "add_units_by_scope": "add_by_scope",
+    # J4a：替换走 add_units + addPolicy=replace（等量替换、总数不变）。
+    "replace_units": "replace",
 }
 
 # planned 动作：归一化名与原样名都要拦；reorder/generate 是 ChangeOperation 的 kind。
+# J4a 起 replace 已由 add_units(addPolicy=replace) 承接，不再列为 planned。
 _PLANNED_ACTIONS = {
-    "remove", "replace", "move", "reorder", "generate",
-    "remove_units", "replace_units", "move_units", "regenerate",
+    "remove", "move", "reorder", "generate",
+    "remove_units", "move_units", "regenerate",
     "undo", "rollback",
 }
-_PLANNED_KINDS = {"remove", "replace", "move", "reorder", "generate"}
+_PLANNED_KINDS = {"remove", "move", "reorder", "generate"}
 
 _CONSTRAINT_ACTION_HINTS = (
     "over_budget",
@@ -174,6 +177,8 @@ def normalize_action(action: str) -> str:
         return "constrain"
     if "only_keep" in lowered or "must_include" in lowered or "exclude" in lowered:
         return "constrain"
+    if "replace" in lowered:
+        return "replace"
     if "priorit" in lowered or "priority" in lowered:
         return "prioritize"
     if "reorder" in lowered or "sort" in lowered:
@@ -323,6 +328,14 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
             operations=[],
             unresolved=["add 缺少明确目标（院校+专业或 volunteerId）"],
             reason="加入动作缺少具体目标。",
+            atomic=False,
+        )
+    if action == "replace" and not has_targets:
+        return ChangeSet(
+            status="needs_clarification",
+            operations=[],
+            unresolved=["replace 缺少明确的换入目标（院校+专业或 volunteerId）"],
+            reason="替换动作缺少具体目标。",
             atomic=False,
         )
 

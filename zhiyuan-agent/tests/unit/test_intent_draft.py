@@ -344,7 +344,7 @@ def test_standalone_planned_action_is_blocked() -> None:
     assert "该动作尚未支持" in change_set.unresolved
 
 
-@pytest.mark.parametrize("action", ["replace_units", "move_units", "undo", "rollback"])
+@pytest.mark.parametrize("action", ["move_units", "undo", "rollback"])
 def test_raw_planned_action_names_do_not_fall_into_readonly_ready(action: str) -> None:
     draft = IntentDraft(
         source_turn_id=f"t-{action}",
@@ -361,6 +361,40 @@ def test_raw_planned_action_names_do_not_fall_into_readonly_ready(action: str) -
     assert change_set.atomic is False
     assert change_set.operations == []
     assert change_set.unsupported_actions == [action]
+
+
+def test_replace_units_is_a_supported_structural_operation() -> None:
+    draft = IntentDraft(
+        source_turn_id="t-replace",
+        user_text="换掉 B 大学计算机",
+        goal_family="plan_mutation",
+        action="replace_units",
+        targets=[{"school_name": "B大学", "major_name": "计算机"}],
+        validity="this_adjustment",
+    )
+
+    change_set = build_change_set(draft)
+
+    assert change_set.status == "ready"
+    assert change_set.atomic is True
+    assert change_set.unsupported_actions == []
+    assert [op.kind for op in change_set.operations] == ["replace"]
+
+
+def test_replace_without_targets_needs_clarification() -> None:
+    draft = IntentDraft(
+        source_turn_id="t-replace-empty",
+        user_text="换掉几条",
+        goal_family="plan_mutation",
+        action="replace",
+        validity="this_adjustment",
+    )
+
+    change_set = build_change_set(draft)
+
+    assert change_set.status == "needs_clarification"
+    assert change_set.operations == []
+    assert any("换入目标" in item for item in change_set.unresolved)
 
 
 def test_remove_primary_with_constraints_keeps_staged_constraint_step() -> None:

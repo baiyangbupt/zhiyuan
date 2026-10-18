@@ -368,6 +368,76 @@ async def test_add_units_confirm_uses_frozen_command_and_skips_proposal_apply(mo
 
 
 @pytest.mark.asyncio
+async def test_replace_units_confirm_uses_frozen_command_and_skips_proposal_apply(monkeypatch):
+    """等量替换：网关同样只发 5 个字段，换入/换出集合由 Java 从 frozenCommand 读取。"""
+    resolver = _Recorder([
+        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "completed"},
+    ])
+    executor = _Recorder([
+        {
+            "code": 0,
+            "status": "applied",
+            "data": {
+                "stateVersion": 7,
+                "commandType": "replace_units",
+                "addedVolunteerIds": ["v3"],
+                "addedVolunteerCount": 1,
+                "addedUnitCount": 1,
+                "removedVolunteerIds": ["v2"],
+                "removedUnitIds": ["u2"],
+                "removedVolunteerCount": 1,
+                "targetCountBefore": 2,
+                "targetCountAfter": 2,
+                "reviewState": {"summary": {"passedCount": 10, "warnCount": 4, "riskCount": 0}},
+            },
+        },
+    ])
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolver)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", executor)
+
+    workspace = _workspace()
+    workspace["activeProposal"] = {
+        "proposalRef": "pending-2",
+        "pendingId": "pending-2",
+        "sourceVersion": 5,
+        "revision": 1,
+        "kind": "plan_action",
+        "data": {
+            "operationId": "op-2",
+            "commandType": "replace_units",
+            "sourceVersion": 5,
+        },
+    }
+    codex = _CodexHarness(_output({
+        "actionType": "confirm_proposal",
+        "proposalRef": "pending-2",
+        "expectedSourceVersion": 5,
+        "intent": "explicit",
+    }))
+    gateway, _ = _gateway(codex, workspace)
+
+    result = await _turn(gateway)
+
+    assert result.get("error") is None, result
+    assert result["actionResult"]["actionStatus"] == "applied"
+    change = result["actionResult"]["actualChanges"][0]
+    assert change["type"] == "replace"
+    assert change["volunteerIds"] == ["v3"]
+    assert change["removedVolunteerIds"] == ["v2"]
+    assert change["removedUnitIds"] == ["u2"]
+    assert change["removedCount"] == 1
+    assert change["targetCountBefore"] == 2
+    assert change["targetCountAfter"] == 2
+    _, execute_kwargs = executor.calls[0]
+    assert execute_kwargs["command_type"] == "replace_units"
+    assert execute_kwargs["expected_plan_version"] == 5
+    assert "proposal_apply" not in execute_kwargs
+    assert "volunteer_ids" not in execute_kwargs
+    assert "unit_ids" not in execute_kwargs
+
+
+@pytest.mark.asyncio
 async def test_confirm_cannot_be_combined_with_a_new_proposal_draft():
     """确认 + 新条件 = 纠正，不是原卡确认；契约层直接拒绝同轮 confirm+新草稿。"""
     output = _output({

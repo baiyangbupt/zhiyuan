@@ -451,12 +451,14 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
 
 ## Phase J4a：scope/学费持久化 + REPLACE（后续）
 
-- [ ] `applyUserGoalTargetToPlanningState` 持久化 targetScopes/negativeScopes/
-  tuitionRange，带 `persist=once|session`。
-- [ ] `updateTuitionRange` 标记候选池/规划 stale，与 `resolveEffectiveCandidates`
-  同口径。
-- [ ] 卡片写“本次/以后都生效”；重新生成后 scope 不丢；学费过滤在 fill/scope/
-  initial 一致。
+- [x] `applyUserGoalTargetToPlanningState` 持久化 targetScopes/negativeScopes/
+  tuitionRange；生命周期按目标语义落定：scope/学费目标写会话约束（session），
+  `add_units_by_scope` 保持一次性选条（once）。提交 `6f59e27`。
+- [x] `updateTuitionRange` 标记约束/规划 stale（`9616633`）：与
+  `resolveEffectiveCandidates` 同口径，只标 recommendation/plan/review，不把候选源
+  数据本身标脏；目标链在方案写入前以 CAS 落学费。
+- [ ] 真栈验收：卡片写“本次/以后都生效”；重新生成后 scope 不丢；学费过滤在
+  fill/scope/initial 一致。
 - [ ] REPLACE 按 v6 frozen/预览/后置骨架实现；预览列全新增/移出；零静默删除。
 
 ## Phase J4b：remove/move/pin（后续）

@@ -22,9 +22,11 @@ public class PendingPlanningCommandRes {
     private List<String> completedSteps = Lists.newArrayList();
     private PlanChangePostconditionReportDTO postconditionReport;
     private PlanningStateDTO planningState;
-    /** add_units 的逐条回执（冻结命令执行后的净变化）。 */
+    /** add_units / replace_units 的逐条回执（冻结命令执行后的净变化）。 */
     private List<String> addedVolunteerIds = Lists.newArrayList();
     private List<String> addedUnitIds = Lists.newArrayList();
+    private List<String> removedVolunteerIds = Lists.newArrayList();
+    private List<String> removedUnitIds = Lists.newArrayList();
     private Integer addedVolunteerCount;
     private Integer addedUnitCount;
     private Integer removedVolunteerCount;

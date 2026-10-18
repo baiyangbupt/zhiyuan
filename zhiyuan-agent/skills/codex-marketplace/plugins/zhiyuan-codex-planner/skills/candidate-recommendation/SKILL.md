@@ -37,8 +37,8 @@ version: 1.0.0
 - 只有“方案里必须保留 / 不能删 / 必须有某类”且**不要求立即加入具体条目**时，才用
   must_have / must_include_scope。
 - **默认语义是 EXPAND（扩总数、零删除）**，卡面写明总数变化；用户明确说“总数不变 /
-  必须有这几条 / 换掉几条”时不要用 add_units 静默扩总数，先问一次“扩总数还是保持总数
-  替换”。
+  必须有这几条 / 换掉几条”时，用 `goalType="add_units"` + `addPolicy="replace"`：
+  服务端生成等量替换预览（列全换入与换出，总数不变），不要再声称替换尚未支持。
 - **按范围加 N 条**（不点名具体院校/专业）→
   `proposalRequest(goalType="add_units_by_scope", addCount=N, targetScopes=[...], context={"maxTuitionPerYear":...})`；
   筛选条件只作用于本次新增。不要把范围条件塞进 `add_units`（它只接受点名目标）。

@@ -298,12 +298,12 @@
     "utterance": "换掉这三条",
     "goalFamily": "plan_mutation",
     "expectedAction": "replace_units",
-    "status": "planned",
-    "carrier": "replace_units / REPLACE（待实现）",
+    "status": "implemented",
+    "carrier": "add_units + addPolicy=replace（等量替换，总数不变）",
     "write": true,
     "slots": ["targets"],
     "ambiguity": null,
-    "failureBehavior": "该动作尚未支持；不把 add_units 冒充替换，说明只能先扩总数或等替换能力"
+    "failureBehavior": "换入目标无法解析或可移出条目不足时在预览阶段阻断，如实说明；不静默扩总数，也不静默删除未确认条目"
   },
   {
     "id": "T26",

@@ -16,6 +16,11 @@ public class UserGoalFixProposalReq {
     private Integer targetCount;
     /** 按范围加入（add_units_by_scope）：本次要新增的条数/单元数（>0）。 */
     private Integer addCount;
+    /**
+     * add_units 的变更策略：expand（默认，纯加入、总数增长）/ replace（等量替换、总数不变）。
+     * 仅 add_units 读取；其余 goalType 忽略。
+     */
+    private String addPolicy = "expand";
     private Boolean persistTargetCount = true;
     private TierQuotaGoalRequestDTO tierQuotaGoal;
     private List<RequirementDTO> requirements = Lists.newArrayList();

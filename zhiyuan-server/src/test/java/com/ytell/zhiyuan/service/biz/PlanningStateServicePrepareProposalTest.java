@@ -3,6 +3,7 @@ package com.ytell.zhiyuan.service.biz;
 import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
+import com.ytell.zhiyuan.model.dto.planning.FixProposalActionDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PrepareResultDTO;
@@ -163,6 +164,62 @@ public class PlanningStateServicePrepareProposalTest {
         assertEquals(9, frozen.get("targetCountOverride"));
         assertEquals(Boolean.TRUE, frozen.get("rerunReview"));
         assertEquals(7, frozen.get("sourceVersion"));
+    }
+
+    @Test
+    void prepareReplaceUnitsFreezesBothSetsAndReplaceCommandType() {
+        FixProposalStateDTO preview = new FixProposalStateDTO();
+        preview.setSourceVersion(7);
+        FixProposalDTO ready = new FixProposalDTO();
+        ready.setProposalId("ugp_replace");
+        ready.setStatus("ready");
+        ready.setRequiresConfirmation(true);
+        ready.setAffectedVolunteerIds(Lists.newArrayList("v-add"));
+        ready.setAffectedUnitIds(Lists.newArrayList("u-add"));
+        ready.setSummary("换出 1 条，换入 1 条；总数保持 2");
+        FixProposalActionDTO action = new FixProposalActionDTO();
+        action.setActionType("replace_volunteers");
+        action.setVolunteerIds(Lists.newArrayList("v-add"));
+        action.setRemoveVolunteerIds(Lists.newArrayList("v-remove"));
+        action.setRemoveUnitIds(Lists.newArrayList("u-remove"));
+        ready.getActions().add(action);
+        preview.setProposals(Lists.newArrayList(ready));
+        PlanningStateService replaceService = serviceWithPreview(preview);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("add_units");
+        req.setAddPolicy("replace");
+        UserGoalFixProposalReq.ExactTargetDTO target = new UserGoalFixProposalReq.ExactTargetDTO();
+        target.setSchoolName("南华大学");
+        target.setMajorName("法学");
+        req.getExactTargets().add(target);
+
+        PrepareResultDTO dto = replaceService.prepareUserGoalProposal(
+                1L, 2L, "req-replace", "digest-replace", req);
+
+        assertNotNull(dto.getPendingId());
+        Map<String, Object> data = upsertedValues.get(0);
+        assertEquals("plan_action", data.get("kind"));
+        assertEquals("replace_units", data.get("commandType"));
+        assertEquals("add_units", data.get("goalType"));
+        assertEquals(Lists.newArrayList("v-add"), data.get("volunteerIds"));
+        assertEquals(Lists.newArrayList("v-remove"), data.get("removedVolunteerIds"));
+        assertEquals(Lists.newArrayList("u-remove"), data.get("removedUnitIds"));
+        assertEquals(Lists.newArrayList("u-add"), data.get("addedUnitIds"));
+        assertEquals(null, data.get("targetCountOverride"));
+        PendingConfirmationUpsertReq upsert = upsertedRequests.get(0);
+        assertEquals("plan_action", upsert.getKind());
+        assertEquals("replace_units", upsert.getActionFamily());
+        Map frozen = (Map) data.get("frozenCommand");
+        assertEquals("replace_units", frozen.get("commandType"));
+        assertEquals(dto.getOperationId(), frozen.get("operationId"));
+        assertEquals(Lists.newArrayList("v-add"), frozen.get("addedVolunteerIds"));
+        assertEquals(Lists.newArrayList("v-remove"), frozen.get("removedVolunteerIds"));
+        assertEquals(Lists.newArrayList("u-add"), frozen.get("addedUnitIds"));
+        assertEquals(Lists.newArrayList("u-remove"), frozen.get("removedUnitIds"));
+        assertEquals(null, frozen.get("targetCountOverride"));
+        assertEquals(Boolean.TRUE, frozen.get("rerunReview"));
+        assertEquals(64, String.valueOf(data.get("commandDigest")).length());
     }
 
     private PlanningStateService serviceWithPreview(final FixProposalStateDTO preview) {
