@@ -304,6 +304,10 @@ J5.4 gap 复审确认 Q13 之后存在“solver 放行、review 硬拦”的双�
   20/40% 软带判 fail；无显式配额保留原 requiredTierCounts 缩放 + 软带。
   `enrichV2` 为 exact/ratios 写显式单点 `tierAnchor`（范围配额仍投影）。
   新增 `TierQuotaResolverTest`；golden 五维对比无变化。
-- 全量 Java：**1252/0/0/10**。
-- 仍待 J5.4 后续：coverage probe、structure 阈值（高学费 20k/60k）、
-  postcondition safety 报告（用户已定：软层 + 硬诊断，不因 safety 回滚）。
+- S4 postcondition safety：`PlanChangePostconditionReportDTO` 新增
+  `safetyResult`（mode/required/actual/satisfied/reasonCode），由
+  `SafetyFloorSupport.countLocalProtect` 与 review 共用同一判据；按拍板
+  **只报告、不参与 satisfied/回滚**。`UnifiedPlanPostconditionValidatorTest`
+  新增“safety 缺口但 apply 仍 satisfied”用例。
+- 全量 Java：**1253/0/0/10**。
+- 仍待 J5.4 后续：coverage probe、structure 阈值（高学费 20k/60k）。

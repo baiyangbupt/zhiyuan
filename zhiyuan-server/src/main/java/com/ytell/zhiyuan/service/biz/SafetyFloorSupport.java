@@ -4,8 +4,12 @@ import com.google.common.base.Strings;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
+
+import java.util.List;
 
 /**
  * 本省保底口径的唯一来源。
@@ -55,6 +59,62 @@ final class SafetyFloorSupport {
         target.setSafetyFloorMode("applicable");
         target.setSafetyFloorReasonCode("local_protect_floor");
         return target;
+    }
+
+    /**
+     * 本省保底实际数量：review、postcondition 共用同一判据。
+     * 单元模式按单元计数（组内任一专业即整组），志愿模式按条目。
+     */
+    static int countLocalProtect(PlanningStateDTO state, List<CandidateItemDTO> candidates) {
+        CandidatePoolStateDTO pool = state == null ? null : state.getCandidatePoolState();
+        String sourceProvince = pool == null ? null : pool.getSourceProvinceName();
+        if (Strings.isNullOrEmpty(sourceProvince) || state.getOrderedPlanState() == null) {
+            return 0;
+        }
+        if ("majorGroup".equalsIgnoreCase(pool.getVolunteerModel())) {
+            int count = 0;
+            for (OrderedUnitDTO unit : defaultList(state.getOrderedPlanState().getUnits())) {
+                if (unit != null && isLocalProtect(unit.getTier(), unit.getProvinceName(), sourceProvince)) {
+                    count++;
+                }
+            }
+            return count;
+        }
+        int count = 0;
+        for (OrderedItemDTO item : defaultList(state.getOrderedPlanState().getItems())) {
+            if (item == null) {
+                continue;
+            }
+            CandidateItemDTO candidate = findCandidate(candidates, item.getVolunteerId());
+            String province = candidate == null ? null : candidate.getProvinceName();
+            String tier = Strings.isNullOrEmpty(item.getTier())
+                    ? (candidate == null ? null : candidate.getTier()) : item.getTier();
+            if (isLocalProtect(tier, province, sourceProvince)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    static boolean isLocalProtect(String tier, String province, String sourceProvince) {
+        return "protect".equals(TierAllocationSupport.canonicalTierKey(tier))
+                && RegionScopeSupport.sameRegionName(province, sourceProvince);
+    }
+
+    private static CandidateItemDTO findCandidate(List<CandidateItemDTO> candidates, String volunteerId) {
+        if (candidates == null || Strings.isNullOrEmpty(volunteerId)) {
+            return null;
+        }
+        for (CandidateItemDTO candidate : candidates) {
+            if (candidate != null && volunteerId.equals(candidate.getVolunteerId())) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static <T> List<T> defaultList(List<T> values) {
+        return values == null ? java.util.Collections.<T>emptyList() : values;
     }
 
     /**

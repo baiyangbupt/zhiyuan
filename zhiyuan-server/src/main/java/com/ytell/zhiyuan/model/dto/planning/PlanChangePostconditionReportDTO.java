@@ -38,7 +38,20 @@ public class PlanChangePostconditionReportDTO {
     private Integer satisfiedPriorityRuleCount = 0;
     private List<PriorityRuleResultDTO> priorityRuleResults = Lists.newArrayList();
     private TierQuotaResultDTO tierQuotaResult;
+    /**
+     * J5.4：safety 只报告、不参与 satisfied/回滚（solver 软层 + review 硬诊断）。
+     */
+    private SafetyResultDTO safetyResult;
     private Boolean satisfied = false;
+
+    @Data
+    public static class SafetyResultDTO {
+        private String mode;
+        private Integer requiredCount = 0;
+        private Integer actualCount = 0;
+        private Boolean satisfied = false;
+        private String reasonCode;
+    }
     // 判"不满足"时留下**原因码** ✓（如 `plan_empty_vacuous` ✓）：
     // 光有 `satisfied=false` 时下游只能猜"是违反了什么、还是根本没有可比对象" ✗。
     private String reasonCode;

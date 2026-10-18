@@ -56,26 +56,24 @@ final class ReviewSafetyGuard {
         int localProtectCount = 0;
         if (isMajorGroupMode(pool)) {
             for (OrderedUnitDTO unit : defaultList(state.getOrderedPlanState().getUnits())) {
-                if (!"protect".equals(TierAllocationSupport.canonicalTierKey(unit.getTier()))) {
+                if (!SafetyFloorSupport.isLocalProtect(
+                        unit.getTier(), unit.getProvinceName(), sourceProvinceName)) {
                     continue;
                 }
-                if (RegionScopeSupport.sameRegionName(unit.getProvinceName(), sourceProvinceName)) {
-                    localProtectCount++;
-                    check.getAffectedUnitIds().add(unit.getUnitId());
-                    defaultList(unit.getMajorItems()).stream()
-                            .map(PlanningUnitMajorDTO::getVolunteerId)
-                            .forEach(check.getAffectedVolunteerIds()::add);
-                }
+                localProtectCount++;
+                check.getAffectedUnitIds().add(unit.getUnitId());
+                defaultList(unit.getMajorItems()).stream()
+                        .map(PlanningUnitMajorDTO::getVolunteerId)
+                        .forEach(check.getAffectedVolunteerIds()::add);
             }
         } else {
             for (OrderedItemDTO orderedItem : defaultList(state.getOrderedPlanState().getItems())) {
-                if (!"protect".equals(TierAllocationSupport.canonicalTierKey(orderedItem.getTier()))) {
-                    continue;
-                }
                 CandidateItemDTO candidateItem = findCandidate(candidates, orderedItem.getVolunteerId());
-                if (candidateItem != null
-                        && RegionScopeSupport.sameRegionName(
-                        candidateItem.getProvinceName(), sourceProvinceName)) {
+                String tier = Strings.isNullOrEmpty(orderedItem.getTier())
+                        ? (candidateItem == null ? null : candidateItem.getTier())
+                        : orderedItem.getTier();
+                String province = candidateItem == null ? null : candidateItem.getProvinceName();
+                if (SafetyFloorSupport.isLocalProtect(tier, province, sourceProvinceName)) {
                     localProtectCount++;
                     check.getAffectedVolunteerIds().add(orderedItem.getVolunteerId());
                 }

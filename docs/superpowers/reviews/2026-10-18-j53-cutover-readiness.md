@@ -82,8 +82,10 @@ STAGED_SOLVER_GOLDEN_FILES="/path/state.json[|/path/pool.json],..." \
      solver 输入前把已在 retained 里的 entityId 从 available 剔除，避免
      旧路径 duplicate entityId 把 preview 误 block。
      add-by-scope 继续跳过已有组（不会产生重复 entityId）。
-5. **diversity 未实现**：层序保留位置，默认 off。
-6. **refill 目标口径**：每档 `max(当前, 池目标)`，所以用户目标 44 时池目标
+5. **safety 口径已定**：solver 软层、review hard/hard、postcondition
+   `safetyResult` 只报告，不因 safety 缺口回滚 apply。
+6. **diversity 未实现**：层序保留位置，默认 off。
+7. **refill 目标口径**：每档 `max(当前, 池目标)`，所以用户目标 44 时池目标
    45 会补到 45——这是既有 refill 语义，不是 solver 引入。
 
 ## 4. 切流操作

@@ -19,6 +19,7 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.RepairReportDTO;
+import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierAllocationResolutionDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
@@ -94,12 +95,14 @@ class UnifiedPlanPostconditionValidator {
         boolean priorityRulesSatisfied = satisfiedPriorityRules == report.getPriorityRuleResults().size();
         boolean tierQuotaSatisfied = populateTierQuota(
                 report, state, userGoal, authoritativeProposal, planCandidates, majorGroupMode);
+        populateSafety(report, state, planCandidates);
 
         boolean countSatisfied = !countRequired || (targetCount != null
                 && actualCount == targetCount
                 && (!persistTargetCount || targetCount.equals(persistedTarget)));
         populateCanonicalObjectiveResults(report, countRequired, countSatisfied);
         validateCanonicalObjectiveResults(report, frozenResult);
+        // J5.4 拍板：safety 只报告，不参与 satisfied；solver 软层、review 硬诊断。
         report.setSatisfied(countSatisfied && requirementsSatisfied
                 && priorityRulesSatisfied && tierQuotaSatisfied);
         if (!Boolean.TRUE.equals(report.getSatisfied())) {
@@ -380,6 +383,28 @@ class UnifiedPlanPostconditionValidator {
      * `40905 frozen objective result mismatch`——"浙江优先"卡（rev15）任何点击必挂 ✗。
      * 修复 = 与生成侧走**同一条回落**：请求里有的规则保留，为空时按 state 已确认规则重建 ✓。
      */
+    private void populateSafety(PlanChangePostconditionReportDTO report,
+                                PlanningStateDTO state,
+                                List<CandidateItemDTO> planCandidates) {
+        StructureTargetDTO floor = SafetyFloorSupport.build(state);
+        PlanChangePostconditionReportDTO.SafetyResultDTO result =
+                new PlanChangePostconditionReportDTO.SafetyResultDTO();
+        String mode = floor.getSafetyFloorMode();
+        int required = floor.getMinLocalProtect() == null ? 0 : floor.getMinLocalProtect();
+        result.setMode(mode);
+        result.setRequiredCount(required);
+        result.setReasonCode(floor.getSafetyFloorReasonCode());
+        if ("not_applicable".equals(mode) || "unknown".equals(mode)) {
+            result.setActualCount(0);
+            result.setSatisfied(true);
+        } else {
+            int actual = SafetyFloorSupport.countLocalProtect(state, planCandidates);
+            result.setActualCount(actual);
+            result.setSatisfied(actual >= required);
+        }
+        report.setSafetyResult(result);
+    }
+
     private int populatePriorityRules(PlanChangePostconditionReportDTO report,
                                       PlanningStateDTO state,
                                       UserGoalFixProposalReq userGoal) {

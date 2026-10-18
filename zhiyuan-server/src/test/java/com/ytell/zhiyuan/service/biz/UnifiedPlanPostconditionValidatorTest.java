@@ -304,6 +304,51 @@ class UnifiedPlanPostconditionValidatorTest {
         assertTrue(report.getObjectiveResults().get(0).getSatisfied());
     }
 
+    /**
+     * J5.4 拍板：safety 只报告、不因缺口回滚。方案数量/要求都满足，但本省
+     * 保底为 0 时，satisfied 仍为 true，safetyResult 明确记缺口。
+     */
+    @Test
+    void shouldReportSafetyDeficitWithoutBlockingApply() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(2);
+        state.getCandidatePoolState().setUserScore(550);
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        CandidateItemDTO first = candidate("v1", "浙江");
+        CandidateItemDTO second = candidate("v2", "浙江");
+        state.getCandidatePoolState().getItems().add(first);
+        state.getCandidatePoolState().getItems().add(second);
+        state.getOrderedPlanState().getItems().add(orderedItem("v1", "稳"));
+        state.getOrderedPlanState().getItems().add(orderedItem("v2", "稳"));
+
+        UserGoalFixProposalReq userGoal = new UserGoalFixProposalReq();
+        userGoal.setGoalType("fill_to_count");
+        userGoal.setTargetCount(2);
+        FixProposalApplyReq applyReq = new FixProposalApplyReq();
+        applyReq.setProposalId("ugp-safety");
+        applyReq.setProposalSource("user_goal");
+        applyReq.setUserGoalRequest(userGoal);
+        FixProposalDTO proposal = new FixProposalDTO();
+        proposal.setProposalId("ugp-safety");
+        proposal.setProposalSource("user_goal");
+        proposal.setStrategy("fill_missing_count");
+        FixProposalApplyRes applyRes = new FixProposalApplyRes();
+        applyRes.setStatus("applied");
+        applyRes.setProposal(proposal);
+        PendingPlanningCommandReq request = new PendingPlanningCommandReq();
+        request.setCommandType(PendingPlanningCommandBizService.APPLY_PLAN_CHANGE_PROPOSAL);
+        request.setProposalApply(applyReq);
+
+        PlanChangePostconditionReportDTO report = validator.validate(request, state, applyRes);
+
+        assertTrue(report.getSatisfied());
+        assertFalse(report.getSafetyResult().getSatisfied());
+        assertEquals(Integer.valueOf(2), report.getSafetyResult().getRequiredCount());
+        assertEquals(Integer.valueOf(0), report.getSafetyResult().getActualCount());
+        assertEquals("applicable", report.getSafetyResult().getMode());
+    }
+
     /** 反向对照 ✓：请求与 state 都没有优先规则时照旧通过，且不许凭空造出一条规则 ✗。 */
     @Test
     void shouldNotReportPriorityRuleWhenNeitherRequestNorStateHasOne() {
