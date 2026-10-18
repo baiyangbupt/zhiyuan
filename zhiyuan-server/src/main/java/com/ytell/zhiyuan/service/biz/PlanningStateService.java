@@ -11223,6 +11223,24 @@ public class PlanningStateService {
         check.setPassed(true);
         check.setSummary("冲稳保区间配比正常");
 
+        // J5.4 S2：显式配额优先。有显式 quota 时直接按 effectiveBounds 判，
+        // 不再让 20/40% 软带把“配额本身合法”的方案判风险。
+        TierQuotaResolver.ExplicitCheck explicit = TierQuotaResolver.evaluateExplicit(state);
+        if (explicit != null) {
+            if (explicit.isPassed()) {
+                check.setSummary("冲稳保数量与已确认配额一致");
+                check.setDetail(explicit.getDetail());
+                return check;
+            }
+            check.setPassed(false);
+            check.setLevel(explicit.getLevel());
+            check.setReasonCode(explicit.getReasonCode());
+            check.setSummary(TierQuotaResolver.summary(explicit.getReasonCode()));
+            check.setDetail(explicit.getDetail());
+            check.setSuggestedAction("按已确认的冲稳保配额调整方案。");
+            return check;
+        }
+
         int total = isMajorGroupMode(state.getCandidatePoolState())
                 ? defaultOrderedUnits(state.getOrderedPlanState().getUnits()).size()
                 : state.getOrderedPlanState().getItems().size();
@@ -12329,6 +12347,10 @@ public class PlanningStateService {
         CandidatePoolStateDTO candidatePoolState = state == null ? null : state.getCandidatePoolState();
         if (candidatePoolState == null) {
             return null;
+        }
+        TierQuotaResolver.ExplicitCheck explicit = TierQuotaResolver.evaluateExplicit(state);
+        if (explicit != null) {
+            return explicit.getReasonCode();
         }
         boolean majorGroupMode = isMajorGroupMode(candidatePoolState);
         int total = majorGroupMode

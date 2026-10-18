@@ -677,6 +677,9 @@ final class RepairProposalStateBuilder {
         if ("sprint_tier_missing".equals(reasonCode)) {
             return "冲";
         }
+        if ("tier_quota_mismatch".equals(reasonCode)) {
+            return "保";
+        }
         return null;
     }
 

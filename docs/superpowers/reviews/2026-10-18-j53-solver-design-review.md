@@ -299,7 +299,11 @@ J5.4 gap 复审确认 Q13 之后存在“solver 放行、review 硬拦”的双�
 - S1 结构评估器抽取：`ReviewEvaluationMapper.buildStructure` 搬到
   `PlanStructureEvaluator`（纯搬移，输出逐字不变），新增
   `PlanStructureEvaluatorTest` 锁 unit/item/tier/safety/学费/flags/ratio。
-- 仍待 J5.4 后续：tier 三源统一（review requiredTierCounts 缩放 vs
-  solver constraint/anchor vs postcondition resolution）、coverage probe、
-  structure 阈值（高学费 20k/60k）、safety 是否硬拦 apply。
-- 全量 Java：**1248/0/0/10**。
+- S2 tier 口径（用户拍板：显式 quota 优先）：新增 `TierQuotaResolver`。
+  review 有显式配额时按 effectiveBounds 判（exact/ratios min=max），不再用
+  20/40% 软带判 fail；无显式配额保留原 requiredTierCounts 缩放 + 软带。
+  `enrichV2` 为 exact/ratios 写显式单点 `tierAnchor`（范围配额仍投影）。
+  新增 `TierQuotaResolverTest`；golden 五维对比无变化。
+- 全量 Java：**1252/0/0/10**。
+- 仍待 J5.4 后续：coverage probe、structure 阈值（高学费 20k/60k）、
+  postcondition safety 报告（用户已定：软层 + 硬诊断，不因 safety 回滚）。

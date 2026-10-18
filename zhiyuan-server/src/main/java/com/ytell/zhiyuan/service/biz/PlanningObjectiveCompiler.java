@@ -90,7 +90,14 @@ final class PlanningObjectiveCompiler {
             return null;
         }
         source.setSchemaVersion(SCHEMA_VERSION_V2);
-        source.setStructureTarget(SafetyFloorSupport.build(state));
+        StructureTargetDTO structureTarget = SafetyFloorSupport.build(state);
+        // S2：显式 quota 的单点锚优先；范围配额/无配额保持 solver 投影。
+        com.ytell.zhiyuan.model.dto.planning.TierCountsDTO tierAnchor =
+                TierQuotaResolver.explicitAnchor(state);
+        if (tierAnchor != null) {
+            structureTarget.setTierAnchor(tierAnchor);
+        }
+        source.setStructureTarget(structureTarget);
         source.setUtilityModel(new UtilityModelDTO());
         source.setMutationPolicy(policy);
         source.setHardObjectiveVersion(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION);
