@@ -2488,6 +2488,35 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void shouldNotIncreaseUnitTargetWhenPureAddJoinsExistingUnit() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO v1 = candidate("v1", "湖南大学第110组", "专业v1", "管理学", 90D);
+        v1.setPlanSchoolDataId("u1");
+        CandidateItemDTO v2 = candidate("v2", "湖南大学第110组", "专业v2", "管理学", 90D);
+        v2.setPlanSchoolDataId("u1");
+        state.getCandidatePoolState().getItems().add(v1);
+        state.getCandidatePoolState().getItems().add(v2);
+        OrderedUnitDTO unit = new OrderedUnitDTO();
+        unit.setUnitId("u1");
+        unit.setSchoolName("湖南大学第110组");
+        unit.getMajorItems().add(unitMajor("v1", "专业v1"));
+        state.getOrderedPlanState().getUnits().add(unit);
+
+        UserGoalFixProposalReq req = addUnitsRequest();
+        req.getExactTargets().add(exactTarget("湖南大学第110组", "专业v2", "v2"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(1, proposal.getTargetCountBefore());
+        assertEquals(1, proposal.getTargetCountAfter(),
+                "向已有组追加专业不新增单元，总数口径保持 1");
+        assertEquals(1, proposal.getAddedCount());
+        assertEquals(1, proposal.getAddedUnitCount());
+    }
+
+    @Test
     void shouldBuildRemoveUnitsPreviewForNamedTargets() {
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
@@ -2872,7 +2901,8 @@ public class UserGoalProposalBuilderTest {
 
         assertEquals("ready", proposal.getStatus());
         assertEquals(1, proposal.getTargetCountBefore());
-        assertEquals(3, proposal.getTargetCountAfter(), "u1 新增 1 个专业仍在同组，u2 新增 1 组 => 单元数 1+2");
+        assertEquals(2, proposal.getTargetCountAfter(),
+                "u1 新增专业仍在同组（不增单元），u2 新增 1 组 => 单元数 1+1");
         assertEquals(3, proposal.getAddedCount());
         assertEquals(2, proposal.getAddedUnitCount());
     }

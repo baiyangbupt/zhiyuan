@@ -572,12 +572,13 @@ final class UserGoalProposalBuilder {
         }
         int addedEntryCount = resolved.size();
         int addedUnitCount = addedUnitIds.size();
-        int addedCountForMode = majorGroupMode ? addedUnitCount : addedEntryCount;
-        // 换入专业若落在已有专业组里，不增加单元数；替换的移出量按“新增单元数”算，
-        // 否则会把总数压少（专业组模式的总数口径是单元数）。
-        int replaceCountForMode = majorGroupMode
-                ? (int) addedUnitIds.stream().filter(unitId -> !currentUnitIds.contains(unitId)).count()
-                : addedEntryCount;
+        // Q14：换入专业若落在已有专业组里，不增加单元数（单元模式的总数口径是单元数）。
+        // 纯加入与替换都按“新增单元数”算；addedUnitCount 仅作“涉及多少个组”的展示。
+        int newUnitCount = (int) addedUnitIds.stream()
+                .filter(unitId -> !currentUnitIds.contains(unitId)).count();
+        int addedCountForMode = majorGroupMode ? newUnitCount : addedEntryCount;
+        // 替换的移出量同样按“新增单元数”算，否则会把总数压少。
+        int replaceCountForMode = majorGroupMode ? newUnitCount : addedEntryCount;
         Integer confirmedTarget = hard == null ? null : hard.getSelectionTargetCount();
         if (confirmedTarget != null && confirmedTarget != currentCount) {
             return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.ADD_UNITS,

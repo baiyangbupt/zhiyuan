@@ -38,7 +38,8 @@ staged solver 的灰度/回滚，不改变产品口径。
 | S3 refill | 最终代码：900045 42/45 缺口，日志 `refill staged solver applied: session=900045 target=45 current=42 added=16`；命令 steps 含 `working_plan_refilled`，postcondition=true，version 15→19，ordered 45 |
 | 大池 | golden 10041983（12,510 候选）ready 80，`candidate_cap_applied`，239ms |
 | golden 回归 | 900018/28/38/900040/900045/900016/900047/10041981/10041983/10041984 全部 ready；两次运行 selected 完全一致 |
-| 全量 Java | 1227 tests / 0 failures / 0 errors / 9 skipped（含默认 skip 的 env-gated golden） |
+| golden 指标对比 | `StagedSolverGoldenComparisonTest`：5 个 legacy-ready 会话五维（coverage/tierDev/churn/protectDef/utility）全部不劣；10041983 同一补偿安全候选宇宙 staged utility 4995 vs legacy 4937；另 5 个 legacy no_change 会话指标逐项相同 |
+| 全量 Java | 1239 tests / 0 failures / 0 errors / 10 skipped（含默认 skip 的 env-gated golden） |
 
 golden 回归命令（只读文件，不连库）：
 
@@ -50,15 +51,28 @@ STAGED_SOLVER_GOLDEN_FILES="/path/state.json[|/path/pool.json],..." \
 
 ## 3. 已知边界（不阻塞灰度，但切默认前需处理或明确接受）
 
-1. **pending 无 TTL**：过期 pending 只会 409，不会错写；清理策略待 S4/运维。
+1. **pending TTL 已实现**：`planning.pending.ttl-minutes` 默认 1440（24h），
+   `<=0` 关闭。只过期 `active` 行（锚点 create_time/update_time），CAS 成
+   `expired`；`applying` 的 claim 租约完全不碰。读路径
+   `getActiveOrApplying` 过期后返回 null，`getCurrent` 返回 expired（upsert
+   仍可按 revision 接续），旧 revision 确认会在 CAS 处 40902。
 2. **`solverVersion` 精确相等**：freeze 模式请求与 proposal 同源，部署/回滚
    不打断已冻结 pending；非 freeze 旧预览失败即要求重预览（fail-closed）。
-   S4 改 major + digest。
+   **决定：S4 前保持精确相等**。`FixProposalApplyReq` 目前不携带
+   `hardObjectiveVersion`，只带 objective/solver/input 三个 digest；改成
+   major+digest 需要同时改网关契约与 pending 回放字段，单独放宽 Java 侧
+   会失去“预览时求解口径”的绑定。S4 与 legacy apply 清理一起做。
 3. **单元档位冲突**：无 tier 目标时 snapshot 也 409 `tier_fact_conflict`；
    等 J5.4/数据侧确认后放宽。
-4. **Q13（排除生源省的 safety）与 Q14（单元模式向已有组加专业）**：
-   Q14 的 named-add 已按“已有组不增加单元数”处理，add-by-scope 直接跳过
-   已有组；Q13 仍待 J5.4 同步 review。
+4. **Q13 / Q14 已收口（2026-10-18 深夜）**：
+   - Q13：生源省被 `mustExcludeRegions` 明确排除时，`SafetyFloorSupport`
+     返回 `not_applicable` / `minLocalProtect=0` / `province_excluded`；
+     省名匹配改用与 `RepairCandidateEligibility` 同源的 `RegionScopeSupport`
+     （规范化身份 + 大区表，不做双向子串放大）。
+   - Q14：named-add 的纯加入与替换都支持换入已有组；目标总数按
+     **新增单元数**（`addedUnitIds - currentUnitIds`）计算，不再把“已有组
+     加专业”算成 +1 个单元。`addedUnitCount` 仍展示涉及多少个组。
+     add-by-scope 继续跳过已有组（不会产生重复 entityId）。
 5. **diversity 未实现**：层序保留位置，默认 off。
 6. **refill 目标口径**：每档 `max(当前, 池目标)`，所以用户目标 44 时池目标
    45 会补到 45——这是既有 refill 语义，不是 solver 引入。

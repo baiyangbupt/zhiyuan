@@ -7,14 +7,16 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
 
 import java.util.List;
-import java.util.Locale;
 
 /**
  * 本省保底口径的唯一来源。
  *
- * <p>J5.3 先只服务 solver shadow；J5.4 再把 review 的 safety_guard 切到
- * 同一实现。当前默认 `safetyFloorNotApplicableEnabled=false`，所以即使
- * 命中“明确排除本省”，也只记录 reason，不改变 review 的旧行为。</p>
+ * <p>Q13：生源省被确认的硬约束明确排除（`mustExcludeRegions` 命中）时，
+ * 本省保底没有可达对象，返回 `not_applicable` + `minLocalProtect=0`，
+ * 而不是一个必然落空、会被当成“已知可执行目标”的保底数。</p>
+ *
+ * <p>省名缺失仍按 `unknown` 处理（无法判断是否被排除，不宣称 not_applicable）；
+ * 未被排除的低分场景维持原有 `local_protect_floor` 口径。</p>
  */
 final class SafetyFloorSupport {
 
@@ -26,6 +28,15 @@ final class SafetyFloorSupport {
         CandidatePoolStateDTO pool = state == null ? null : state.getCandidatePoolState();
         Integer userScore = pool == null ? null : pool.getUserScore();
         String sourceProvince = pool == null ? null : pool.getSourceProvinceName();
+        HardConstraintsDTO hard = state == null || state.getConstraintState() == null
+                ? null : state.getConstraintState().getHardConstraints();
+        // 排除是硬事实：命中即 not_applicable，与分数无关（分数只决定未排除时是否需要保底）。
+        if (!Strings.isNullOrEmpty(sourceProvince) && excludesProvince(hard, sourceProvince)) {
+            target.setMinLocalProtect(0);
+            target.setSafetyFloorMode("not_applicable");
+            target.setSafetyFloorReasonCode("province_excluded");
+            return target;
+        }
         if (userScore != null && userScore >= 580) {
             target.setMinLocalProtect(0);
             target.setSafetyFloorMode("applicable");
@@ -38,39 +49,31 @@ final class SafetyFloorSupport {
             target.setSafetyFloorReasonCode("province_missing");
             return target;
         }
-        HardConstraintsDTO hard = state.getConstraintState() == null
-                ? null : state.getConstraintState().getHardConstraints();
-        if (excludesProvince(hard, sourceProvince)) {
-            // J5.4 前只记录，不真正返回 not_applicable。
-            target.setMinLocalProtect(2);
-            target.setSafetyFloorMode("applicable");
-            target.setSafetyFloorReasonCode("province_excluded_pending_j54");
-            target.getDiagnostics().add("safety_floor_not_applicable_pending_j54");
-            return target;
-        }
         target.setMinLocalProtect(2);
         target.setSafetyFloorMode("applicable");
         target.setSafetyFloorReasonCode("local_protect_floor");
         return target;
     }
 
+    /**
+     * 与 {@link RepairCandidateEligibility} 的区域判据同源（{@link RegionScopeSupport}）：
+     * 大区表 + 规范化身份相等（`"浙江省"`＝`"浙江"`、`"内蒙古自治区"`＝`"内蒙古"`），
+     * 不做双向子串放大。
+     */
     private static boolean excludesProvince(HardConstraintsDTO hard, String sourceProvince) {
         if (hard == null) {
             return false;
         }
-        String source = sourceProvince.trim().toLowerCase(Locale.ROOT);
         List<String> excluded = hard.getMustExcludeRegions();
         if (excluded == null) {
             return false;
         }
         for (String value : excluded) {
-            if (value == null) {
+            if (Strings.isNullOrEmpty(value)) {
                 continue;
             }
-            String candidate = value.trim().toLowerCase(Locale.ROOT);
-            if (!candidate.isEmpty()
-                    && (candidate.equals(source) || source.contains(candidate)
-                    || candidate.contains(source))) {
+            if (RegionScopeSupport.matchesRegionScope(value, sourceProvince, null)
+                    || RegionScopeSupport.sameRegionName(sourceProvince, value)) {
                 return true;
             }
         }

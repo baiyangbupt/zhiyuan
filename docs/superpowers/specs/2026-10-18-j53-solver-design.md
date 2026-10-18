@@ -1113,9 +1113,9 @@ S0b 是行为变更，不能和 S0a 的“不改行为”共用同一个退出�
   按 `solver.v2.shadowSampleRate` 采样（默认 0，灰度期 5%–10%），
   避免每次请求都多跑 3–4 次 ILP 把延迟/CPU 翻倍；大池会话优先采样。
 - 切流模式：按路径逐个开启；每开一个路径，先跑该路径 golden + 真栈
-  小流量，再全量。**Q13（排除本省 safety）与 Q14（单元模式加专业）
-  未拍板前，不开放 initial/scope/add 的相关 solver flag**；对应路径
-  继续走旧逻辑。
+  小流量，再全量。**Q13/Q14 已于 2026-10-18 收口**（Q13 solver 侧
+  `not_applicable`，Q14 支持已有组加专业且按新增单元数计目标）；
+  Q13 的 review probe 仍须在 J5.4 同步，切 initial/默认前确认双口径一致。
 - 回滚：关闭对应 path；旧 solver 代码与旧截断保留至少一个版本周期。
   现有 flag 是静态 `@Value`（如 `planning.candidate-pool.split.enabled`），
   没有 `@RefreshScope`，**回滚需要重启**；若要求热回滚，先引入配置中心/
@@ -1149,8 +1149,8 @@ S0b 是行为变更，不能和 S0a 的“不改行为”共用同一个退出�
 | Q10 | 冻结摘要范围/不一致时 | **selection-scoped digest**；选中事实变化才 409 重新预览 | 整池 digest：正常 overlay 刷新会误杀 pending；仅告警会套旧选择到新事实 |
 | Q11 | review hard finding 是否进 solver 硬约束 | **不进**；J5.3 只共用 safety floor 支持类 | 进：solver 与 review 强耦合；J5.3 不宣称“15 probe 全同源” |
 | Q12 | 同档优先是否影响“选哪些” | **J5.3 不影响**（只排序）；J5.4 升级为选择目标 | 立即影响：更贴用户偏好，但选择集/回执/修复策略都要重新验收 |
-| Q13 | 明确排除本省时 safety 怎么处理 | **not_applicable，但必须 J5.4 同步 review**；J5.4 前按 review 旧口径 | solver 单独 not_applicable 会造成“solver 放行、review 硬拦”双口径 |
-| Q14 | 单元模式向已有组加专业 | **专门路径或 compiler 拒绝**；不进 solver 选择 | 进 solver 会产生重复 entityId / 组原子性破坏 |
+| Q13 | 明确排除本省时 safety 怎么处理 | **已实现 `not_applicable` / minLocalProtect=0 / `province_excluded`**（省名匹配复用 `RegionScopeSupport`）；review probe 在 J5.4 同步 | solver 单独 not_applicable 会造成“solver 放行、review 硬拦”双口径；切 initial/默认前确认 |
+| Q14 | 单元模式向已有组加专业 | **已支持**：纯加入/替换都可进已有组，目标按新增单元数（`addedUnitIds - currentUnitIds`）计算；add-by-scope 继续跳过已有组 | 进 solver 会产生重复 entityId / 组原子性破坏；本实现按单元事实选择，不产生重复 entityId |
 | Q15 | 稳定性承诺 | **固定部署内确定（单线程 + 唯一 stableOrder）；跨部署不承诺** | 严格 `(stableOrder, entityId)` 字典序需逐位 canonicalization，另立里程碑；`Σ stableOrder` 只是标量平局 |
 
 ---

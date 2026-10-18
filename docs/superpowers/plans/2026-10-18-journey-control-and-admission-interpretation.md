@@ -611,6 +611,13 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
     随后恢复 14/44；新增 env-gated `StagedSolverGoldenTest`，10 个真实
     会话全部 ready、两次选择一致（10041983 12,510 候选 239ms）。
     切流检查单见 `docs/superpowers/reviews/2026-10-18-j53-cutover-readiness.md`。
+    **收尾第二批（三路并行，2026-10-18 深夜）**：Q13 排除生源省
+    safety=`not_applicable`（`RegionScopeSupport` 同源匹配）；Q14
+    已有组加专业按新增单元数计目标；pending TTL
+    `planning.pending.ttl-minutes=1440`（只过期 active，applying 租约
+    不动）；`StagedSolverGoldenComparisonTest` 五维不劣
+    （10041983 同补偿安全宇宙 utility 4995 vs legacy 4937）。
+    全量 Java 1239/0/0/10。
 - J5.4 后置条件 + 审查：统一 `UnifiedPlanPostconditionValidator`；审查读同一
   `StructureVector`/`PlanEvaluation`；review tierQuotaGoal 与 solver 一致。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；

@@ -8,8 +8,13 @@ import com.ytell.zhiyuan.model.entity.biz.PendingConfirmationEntity;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.Date;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PendingConfirmationSharedServiceTest {
@@ -66,6 +71,135 @@ class PendingConfirmationSharedServiceTest {
                 "CAS 条件应包含 status，实际: " + sqlSegment);
     }
 
+    @Test
+    void freshActiveShouldPassWithoutExpiryWrite() {
+        InMemorySharedService service =
+                new InMemorySharedService(entity("active", minutesAgo(5L)));
+        ReflectionTestUtils.setField(service, "pendingTtlMinutes", 1440L);
+
+        PendingConfirmationEntity current = service.getCurrent(1L, 101L);
+
+        assertNotNull(current);
+        assertEquals("active", current.getStatus());
+        assertEquals(Long.valueOf(5L), current.getRevision());
+        assertEquals(0, service.updateCalls);
+    }
+
+    @Test
+    void staleActiveShouldExpireAndActiveOrApplyingShouldReturnNull() {
+        InMemorySharedService service =
+                new InMemorySharedService(entity("active", minutesAgo(25L * 60L)));
+        ReflectionTestUtils.setField(service, "pendingTtlMinutes", 1440L);
+
+        PendingConfirmationEntity current = service.getActiveOrApplying(1L, 101L);
+
+        assertNull(current);
+        assertEquals(1, service.updateCalls);
+        // 先取 SQL 片段，MyBatis-Plus 在 getSqlSegment() 时才把 WHERE 参数物化进参数表
+        String sqlSegment = service.captured.getSqlSegment();
+        assertTrue(sqlSegment.contains("status"));
+        assertTrue(sqlSegment.contains("revision"));
+        assertTrue(sqlSegment.contains("pending_id"));
+        // CAS 必须锁住 revision/pendingId/status=active，且落库为 expired
+        assertTrue(service.captured.getSqlSet().contains("status="));
+        assertTrue(service.captured.getParamNameValuePairs().values().contains("expired"));
+        assertTrue(service.captured.getParamNameValuePairs().values().contains("active"));
+        assertTrue(service.captured.getParamNameValuePairs().values().contains("p-1"));
+    }
+
+    @Test
+    void staleActiveShouldPersistExpiredStatusOnGetCurrent() {
+        InMemorySharedService service =
+                new InMemorySharedService(entity("active", minutesAgo(25L * 60L)));
+        ReflectionTestUtils.setField(service, "pendingTtlMinutes", 1440L);
+
+        PendingConfirmationEntity current = service.getCurrent(1L, 101L);
+
+        assertNotNull(current);
+        assertEquals("expired", current.getStatus());
+        assertEquals(Long.valueOf(6L), current.getRevision());
+        assertEquals("expire", current.getResolvedAction());
+        assertTrue(current.getDataValue().contains("\"status\":\"expired\""));
+        assertEquals(1, service.updateCalls);
+    }
+
+    @Test
+    void applyingWithValidClaimShouldNotExpire() {
+        PendingConfirmationEntity applying = entity("applying", minutesAgo(25L * 60L));
+        applying.setClaimToken("claim-1");
+        applying.setClaimExpiresAt(new Date(System.currentTimeMillis() + 300_000L));
+        InMemorySharedService service = new InMemorySharedService(applying);
+        ReflectionTestUtils.setField(service, "pendingTtlMinutes", 1440L);
+
+        PendingConfirmationEntity current = service.getActiveOrApplying(1L, 101L);
+
+        assertNotNull(current);
+        assertEquals("applying", current.getStatus());
+        assertEquals("claim-1", current.getClaimToken());
+        assertEquals(0, service.updateCalls);
+    }
+
+    @Test
+    void disabledTtlShouldPassOldActive() {
+        InMemorySharedService service =
+                new InMemorySharedService(entity("active", minutesAgo(25L * 60L)));
+        ReflectionTestUtils.setField(service, "pendingTtlMinutes", 0L);
+
+        PendingConfirmationEntity current = service.getCurrent(1L, 101L);
+
+        assertNotNull(current);
+        assertEquals("active", current.getStatus());
+        assertEquals(0, service.updateCalls);
+    }
+
+    @Test
+    void staleActiveShouldFallBackToUpdateTimeWhenCreateTimeMissing() {
+        PendingConfirmationEntity stale = entity("active", null);
+        stale.setUpdateTime(minutesAgo(25L * 60L));
+        InMemorySharedService service = new InMemorySharedService(stale);
+        ReflectionTestUtils.setField(service, "pendingTtlMinutes", 1440L);
+
+        PendingConfirmationEntity current = service.getCurrent(1L, 101L);
+
+        assertNotNull(current);
+        assertEquals("expired", current.getStatus());
+        assertEquals(1, service.updateCalls);
+    }
+
+    @Test
+    void casConflictShouldReturnActualRowInsteadOfStaleSnapshot() {
+        InMemorySharedService service =
+                new InMemorySharedService(entity("active", minutesAgo(25L * 60L)));
+        service.reloaded = entity("applying", minutesAgo(1L));
+        service.casSucceeds = false;
+        ReflectionTestUtils.setField(service, "pendingTtlMinutes", 1440L);
+
+        PendingConfirmationEntity current = service.getCurrent(1L, 101L);
+
+        assertNotNull(current);
+        assertEquals("applying", current.getStatus());
+        assertEquals(1, service.updateCalls);
+    }
+
+    private static PendingConfirmationEntity entity(String status, Date createTime) {
+        PendingConfirmationEntity entity = new PendingConfirmationEntity();
+        entity.setId(9L);
+        entity.setTenantId(1L);
+        entity.setChatSessionId(101L);
+        entity.setPendingId("p-1");
+        entity.setRevision(5L);
+        entity.setKind("plan_mutation");
+        entity.setActionFamily("remove_units");
+        entity.setStatus(status);
+        entity.setDataValue("{\"pendingId\":\"p-1\",\"status\":\"" + status + "\",\"revision\":5}");
+        entity.setCreateTime(createTime);
+        return entity;
+    }
+
+    private static Date minutesAgo(long minutes) {
+        return new Date(System.currentTimeMillis() - minutes * 60_000L);
+    }
+
     private static class CapturingSharedService extends PendingConfirmationSharedService {
         private UpdateWrapper<PendingConfirmationEntity> captured;
 
@@ -74,6 +208,36 @@ class PendingConfirmationSharedServiceTest {
                               Wrapper<PendingConfirmationEntity> updateWrapper) {
             this.captured = (UpdateWrapper<PendingConfirmationEntity>) updateWrapper;
             return true;
+        }
+    }
+
+    /** 内存替身：getOne 返回固定行，update 记录 CAS 条件而不再触库。 */
+    private static class InMemorySharedService extends PendingConfirmationSharedService {
+        private final PendingConfirmationEntity stored;
+        private PendingConfirmationEntity reloaded;
+        private int reads;
+        private int updateCalls;
+        private boolean casSucceeds = true;
+        private UpdateWrapper<PendingConfirmationEntity> captured;
+
+        private InMemorySharedService(PendingConfirmationEntity stored) {
+            this.stored = stored;
+            this.reloaded = stored;
+        }
+
+        @Override
+        public PendingConfirmationEntity getOne(Wrapper<PendingConfirmationEntity> queryWrapper,
+                                                boolean throwEx) {
+            this.reads++;
+            return this.reads == 1 ? this.stored : this.reloaded;
+        }
+
+        @Override
+        public boolean update(PendingConfirmationEntity entity,
+                              Wrapper<PendingConfirmationEntity> updateWrapper) {
+            this.updateCalls++;
+            this.captured = (UpdateWrapper<PendingConfirmationEntity>) updateWrapper;
+            return this.casSucceeds;
         }
     }
 }

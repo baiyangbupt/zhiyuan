@@ -259,5 +259,16 @@ canonicalization。
   全部 ready，selected 两次运行一致；10041983（12,510 候选）走
   `candidate_cap_applied`，239ms。
 - 切流检查单/回滚手册：`docs/superpowers/reviews/2026-10-18-j53-cutover-readiness.md`。
-- 全量 Java：**1227 tests / 0 failures / 0 errors / 9 skipped**（含默认
-  skip 的 env-gated golden）。
+- **Q13**：`SafetyFloorSupport` 对“生源省被 mustExcludeRegions 明确排除”
+  返回 `not_applicable` / `minLocalProtect=0` / `province_excluded`；省名
+  匹配改用 `RegionScopeSupport`（与 eligibility 同源）。review probe 仍待
+  J5.4 同步。
+- **Q14**：单元模式纯加入已有组不再把“已有组 +1”算进目标；目标按
+  `addedUnitIds - currentUnitIds` 计算，纯加入 1 个已有组专业保持总数不变。
+- **pending TTL**：`planning.pending.ttl-minutes` 默认 1440，只过期 active
+  行（CAS → expired），applying 的 claim 租约不动。
+- **指标对比**：`StagedSolverGoldenComparisonTest` 在 5 个 legacy-ready
+  会话上五维全部不劣；10041983 同一补偿安全候选宇宙 utility
+  staged 4995 vs legacy 4937；另 5 个 legacy no_change 会话指标相同。
+- 全量 Java：**1239 tests / 0 failures / 0 errors / 10 skipped**（含默认
+  skip 的 2 个 env-gated golden 测试）。

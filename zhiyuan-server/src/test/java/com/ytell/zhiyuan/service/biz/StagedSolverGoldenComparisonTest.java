@@ -1,0 +1,630 @@
+package com.ytell.zhiyuan.service.biz;
+
+import com.alibaba.fastjson.JSON;
+import com.google.common.base.Strings;
+import com.google.common.collect.Lists;
+import com.ytell.zhiyuan.model.dto.planning.CandidateFactDTO;
+import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.CandidateSnapshotDTO;
+import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
+import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanSolverInputDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.fail;
+
+/**
+ * J5.3 golden 对照：同一份候选快照分别喂给旧 Ojalgo solver 与分阶段 solver，
+ * 在真实会话上给出可复现的“新 solver 不更差”证据。
+ *
+ * <p>默认跳过；设置 {@code STAGED_SOLVER_GOLDEN_FILES=state.json[|pool.json],...}
+ * 运行。报告写到 {@code STAGED_SOLVER_GOLDEN_REPORT}（默认
+ * /tmp/j53-solver-comparison.md）。只读文件、不连库。</p>
+ *
+ * <p>口径：快照/目标与 {@link StagedSolverGoldenTest} 一致（ORDERED_FIRST、
+ * 去重后出现的 volunteerId 覆盖先出现的、FILL policy、enrichV2 深拷贝）。
+ * 旧 solver 的输入从同一份快照事实构造：current facts 作为 retained，
+ * 非 current 且 eligible 的 facts 作为 available。</p>
+ */
+@EnabledIfEnvironmentVariable(named = "STAGED_SOLVER_GOLDEN_FILES", matches = ".+")
+class StagedSolverGoldenComparisonTest {
+
+    private static final String DEFAULT_REPORT = "/tmp/j53-solver-comparison.md";
+    private static final List<String> TIERS = Arrays.asList("sprint", "stable", "protect");
+
+    private final StagedDeterministicPlanSolver stagedSolver = new StagedDeterministicPlanSolver();
+    private final DeterministicPlanSolver legacySolver = new OjalgoDeterministicPlanSolver();
+
+    @Test
+    void stagedSolverIsNotWorseThanLegacyOnGoldenSessions() throws Exception {
+        String raw = System.getenv("STAGED_SOLVER_GOLDEN_FILES");
+        String reportPath = Strings.isNullOrEmpty(System.getenv("STAGED_SOLVER_GOLDEN_REPORT"))
+                ? DEFAULT_REPORT : System.getenv("STAGED_SOLVER_GOLDEN_REPORT");
+        List<String> failures = new ArrayList<String>();
+
+        StringBuilder table = new StringBuilder();
+        table.append("| session | staged | legacy | target | staged sel | legacy sel ")
+                .append("| staged churn | legacy churn | staged tierDev | legacy tierDev ")
+                .append("| staged coverage | legacy coverage ")
+                .append("| staged protectDef | legacy protectDef ")
+                .append("| staged utility | legacy utility | note |\n");
+        table.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+
+        for (String item : raw.split(",")) {
+            String[] parts = item.split("\\|", -1);
+            File stateFile = new File(parts[0].trim());
+            File poolFile = parts.length > 1 && !parts[1].trim().isEmpty()
+                    ? new File(parts[1].trim()) : null;
+            PlanningStateDTO state = JSON.parseObject(
+                    new String(Files.readAllBytes(stateFile.toPath()), StandardCharsets.UTF_8),
+                    PlanningStateDTO.class);
+            if (state == null) {
+                failures.add(stateFile.getName() + ": state parse returned null");
+                continue;
+            }
+            if (poolFile != null) {
+                CandidatePoolStateDTO pool = JSON.parseObject(
+                        new String(Files.readAllBytes(poolFile.toPath()), StandardCharsets.UTF_8),
+                        CandidatePoolStateDTO.class);
+                if (state.getCandidatePoolState() == null) {
+                    state.setCandidatePoolState(new CandidatePoolStateDTO());
+                }
+                state.getCandidatePoolState().setItems(pool == null ? null : pool.getItems());
+            }
+            String name = stateFile.getName();
+            if (poolFile != null) {
+                name = name + "|" + poolFile.getName();
+            }
+            runGolden(name, state, table, failures);
+        }
+
+        StringBuilder report = new StringBuilder();
+        report.append("# J5.3 staged vs legacy solver on golden sessions\n\n");
+        report.append("Generated by `StagedSolverGoldenComparisonTest` from real planningState/candidatePool files.\n\n");
+        report.append(table);
+        if (!failures.isEmpty()) {
+            report.append("\n## Failures\n\n");
+            for (String failure : failures) {
+                report.append("- ").append(failure).append('\n');
+            }
+        }
+        File reportFile = new File(reportPath);
+        File parent = reportFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            parent.mkdirs();
+        }
+        Files.write(reportFile.toPath(), report.toString().getBytes(StandardCharsets.UTF_8));
+        System.out.println(report);
+        if (!failures.isEmpty()) {
+            fail("Staged solver golden comparison failed:\n" + String.join("\n", failures));
+        }
+    }
+
+    private void runGolden(String name,
+                           PlanningStateDTO state,
+                           StringBuilder table,
+                           List<String> failures) {
+        CandidatePoolStateDTO pool = state.getCandidatePoolState();
+        List<CandidateItemDTO> rawPool = pool == null || pool.getItems() == null
+                ? new ArrayList<CandidateItemDTO>() : pool.getItems();
+        // 与 runtime / StagedSolverGoldenTest 同一口径：后出现的 volunteerId 覆盖先出现的。
+        Map<String, CandidateItemDTO> byId = new LinkedHashMap<String, CandidateItemDTO>();
+        for (CandidateItemDTO candidate : rawPool) {
+            if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
+                byId.put(candidate.getVolunteerId(), candidate);
+            }
+        }
+        List<CandidateItemDTO> poolItems = new ArrayList<CandidateItemDTO>(byId.values());
+
+        CanonicalPlanningObjectiveSetDTO legacyObjectives = PlanningObjectiveCompiler.compileConfirmed(state);
+        Integer target = legacyObjectives.getTargetCount();
+        if (target == null || target <= 0) {
+            table.append("| ").append(name).append(" | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | SKIP no target |\n");
+            return;
+        }
+
+        MutationPolicyDTO policy = new MutationPolicyDTO();
+        policy.setAction("FILL");
+        policy.setLockExisting(false);
+        policy.setCountAsChurn(true);
+        policy.setRequireCompensationSafe(true);
+        // enrichV2 会改 objective set；旧路径必须拿到未 enrich 的版本。
+        CanonicalPlanningObjectiveSetDTO legacyObjectiveCopy = JSON.parseObject(
+                JSON.toJSONString(legacyObjectives), CanonicalPlanningObjectiveSetDTO.class);
+        CanonicalPlanningObjectiveSetDTO stagedObjectives = JSON.parseObject(
+                JSON.toJSONString(legacyObjectives), CanonicalPlanningObjectiveSetDTO.class);
+        PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
+
+        CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                state, poolItems, CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
+        StagedDeterministicPlanSolver.Result staged = stagedSolver.solve(snapshot, stagedObjectives, policy);
+        PlanSolverResultDTO stagedResult = staged.solverResult;
+
+        // 同一候选宇宙：FILL 策略要求新增候选通过 compensation-safe，旧 solver
+        // 的输入也必须先过同一谓词，否则比较会把“旧路径允许不安全新增”算成优势。
+        PlanSolverInputDTO legacyInput = legacyInput(snapshot, legacyObjectiveCopy, true);
+        PlanSolverResultDTO legacyResult = legacySolver.solve(legacyInput);
+
+        Metrics stagedMetrics = metrics(stagedResult.getSelectedEntityIds(), snapshot,
+                legacyObjectiveCopy, stagedObjectives);
+        Metrics legacyMetrics = metrics(legacyResult.getSelectedEntityIds(), snapshot,
+                legacyObjectiveCopy, stagedObjectives);
+
+        String stagedStatus = stagedResult.getStatus();
+        String legacyStatus = legacyResult.getStatus();
+        StringBuilder note = new StringBuilder();
+
+        // 1. staged 必须是 ready，或带 reason 的 blocked（fail-closed 可解释）。
+        if (!"ready".equals(stagedStatus)) {
+            if ("blocked".equals(stagedStatus)) {
+                String reason = stagedResult.getDiagnostics().isEmpty()
+                        ? null : stagedResult.getDiagnostics().get(0).getReasonCode();
+                if (Strings.isNullOrEmpty(reason)) {
+                    failures.add(name + ": staged blocked without reasonCode");
+                    note.append("staged blocked (no reason); ");
+                } else if ("solver_timeout".equals(reason)) {
+                    failures.add(name + ": staged blocked by solver_timeout");
+                    note.append("staged blocked: solver_timeout; ");
+                } else {
+                    note.append("staged blocked: ").append(reason).append("; ");
+                }
+            } else {
+                failures.add(name + ": staged unexpected status=" + stagedStatus);
+                note.append("staged unexpected status=").append(stagedStatus).append("; ");
+            }
+        }
+
+        // 2. 只在旧 solver status=ready 时做五维比较；staged blocked 时比较无意义。
+        if ("ready".equals(legacyStatus)) {
+            if ("ready".equals(stagedStatus)) {
+                List<String> deltas = compare(name, stagedMetrics, legacyMetrics);
+                failures.addAll(deltas);
+                if (!deltas.isEmpty()) {
+                    failures.addAll(diagnose(name, snapshot, legacyObjectiveCopy,
+                            stagedObjectives, policy, stagedResult, legacyResult));
+                    note.append("FAILED: ").append(String.join("; ", deltas));
+                } else {
+                    note.append("all 5 metrics not worse");
+                }
+            } else {
+                note.append("comparison skipped (staged not ready)");
+            }
+        } else {
+            String legacyReason = legacyResult.getDiagnostics().isEmpty()
+                    ? null : legacyResult.getDiagnostics().get(0).getReasonCode();
+            note.append("comparison skipped (legacy ").append(legacyStatus);
+            if (!Strings.isNullOrEmpty(legacyReason)) {
+                note.append(": ").append(legacyReason);
+            }
+            note.append(")");
+        }
+
+        appendRow(table, name, stagedStatus, legacyStatus, target,
+                stagedMetrics, legacyMetrics, note.toString());
+    }
+
+    /**
+     * 失败时补充精确现场：候选规模、候选帽降维结果、两边选择集差异及对应 utility。
+     * 用于判断是 solver 策略差异还是候选帽/输入口径差异。
+     */
+    private List<String> diagnose(String name,
+                                  CandidateSnapshotDTO snapshot,
+                                  CanonicalPlanningObjectiveSetDTO legacyObjectives,
+                                  CanonicalPlanningObjectiveSetDTO stagedObjectives,
+                                  MutationPolicyDTO policy,
+                                  PlanSolverResultDTO staged,
+                                  PlanSolverResultDTO legacy) {
+        List<String> lines = new ArrayList<String>();
+        Map<String, CandidateFactDTO> factsById = new LinkedHashMap<String, CandidateFactDTO>();
+        int eligible = 0;
+        int current = 0;
+        int legacyCandidates = 0;
+        for (CandidateFactDTO fact : snapshot.getFacts()) {
+            if (fact == null) {
+                continue;
+            }
+            factsById.put(fact.getEntityId(), fact);
+            if (Boolean.TRUE.equals(fact.getEligible())) {
+                eligible++;
+            }
+            if (Boolean.TRUE.equals(fact.getCurrent())) {
+                current++;
+            }
+            if (Boolean.TRUE.equals(fact.getCurrent()) || Boolean.TRUE.equals(fact.getEligible())) {
+                legacyCandidates++;
+            }
+        }
+        CandidatePoolReducer.Reduction reduction = null;
+        Set<String> reducedIds = null;
+        if (snapshot.getFacts().size() > CandidatePoolReducer.DEFAULT_CAP) {
+            reduction = CandidatePoolReducer.reduce(
+                    snapshot, stagedObjectives, policy, CandidatePoolReducer.DEFAULT_CAP);
+            reducedIds = new LinkedHashSet<String>();
+            for (CandidateFactDTO fact : reduction.facts) {
+                reducedIds.add(fact.getEntityId());
+            }
+        }
+        lines.add(name + " [detail] snapshotFacts=" + snapshot.getFacts().size()
+                + " eligible=" + eligible
+                + " current=" + current
+                + " legacyCandidates=" + legacyCandidates
+                + " stagedCandidateCount=" + staged.getCandidateCount()
+                + (reduction == null ? "" : " reduced=" + reduction.candidateCountSolved
+                + " dropped=" + reduction.droppedCount
+                + " witnessAvailable=" + reduction.witnessAvailable
+                + " protectionBudgetTruncated=" + reduction.protectionBudgetTruncated));
+        for (PlanSolverResultDTO.DiagnosticDTO diagnostic : staged.getDiagnostics()) {
+            lines.add(name + " [detail] stagedDiagnostic " + diagnostic.getReasonCode()
+                    + ": " + diagnostic.getMessage());
+        }
+
+        Set<String> stagedIds = new LinkedHashSet<String>(staged.getSelectedEntityIds());
+        Set<String> legacyIds = new LinkedHashSet<String>(legacy.getSelectedEntityIds());
+        int legacyOnlyUtility = 0;
+        int stagedOnlyUtility = 0;
+        int legacyUnsafeUtility = 0;
+        StringBuilder legacyOnly = new StringBuilder();
+        for (String id : legacyIds) {
+            if (stagedIds.contains(id)) {
+                continue;
+            }
+            CandidateFactDTO fact = factsById.get(id);
+            int utility = fact == null || fact.getUtilityScore() == null ? 0 : fact.getUtilityScore();
+            legacyOnlyUtility += utility;
+            boolean compensationSafe = fact != null && Boolean.TRUE.equals(fact.getCompensationSafe());
+            if (!compensationSafe && fact != null && !Boolean.TRUE.equals(fact.getCurrent())) {
+                legacyUnsafeUtility += utility;
+            }
+            legacyOnly.append(' ').append(id)
+                    .append("(u=").append(utility)
+                    .append(",tier=").append(fact == null ? null : fact.getTier())
+                    .append(",current=").append(fact != null && Boolean.TRUE.equals(fact.getCurrent()))
+                    .append(",eligible=").append(fact != null && Boolean.TRUE.equals(fact.getEligible()))
+                    .append(",compSafe=").append(compensationSafe)
+                    .append(reducedIds == null ? "" : ",inReduced=" + reducedIds.contains(id))
+                    .append(')');
+        }
+        StringBuilder stagedOnly = new StringBuilder();
+        for (String id : stagedIds) {
+            if (legacyIds.contains(id)) {
+                continue;
+            }
+            CandidateFactDTO fact = factsById.get(id);
+            int utility = fact == null || fact.getUtilityScore() == null ? 0 : fact.getUtilityScore();
+            stagedOnlyUtility += utility;
+            stagedOnly.append(' ').append(id)
+                    .append("(u=").append(utility)
+                    .append(",tier=").append(fact == null ? null : fact.getTier())
+                    .append(",current=").append(fact != null && Boolean.TRUE.equals(fact.getCurrent()))
+                    .append(",eligible=").append(fact != null && Boolean.TRUE.equals(fact.getEligible()))
+                    .append(",compSafe=").append(fact != null && Boolean.TRUE.equals(fact.getCompensationSafe()))
+                    .append(reducedIds == null ? "" : ",inReduced=" + reducedIds.contains(id))
+                    .append(')');
+        }
+        lines.add(name + " [detail] legacyOnly(utility=" + legacyOnlyUtility
+                + ", nonCurrentCompensationUnsafeUtility=" + legacyUnsafeUtility + "):" + legacyOnly);
+        lines.add(name + " [detail] stagedOnly(utility=" + stagedOnlyUtility + "):" + stagedOnly);
+
+        // 同口径补充（不作为断言）：旧 solver 也按 FILL requireCompensationSafe
+        // 过滤非 current 候选，看看是否只是候选域差异。
+        PlanSolverInputDTO policyInput = legacyInput(snapshot, legacyObjectives, true);
+        PlanSolverResultDTO policyLegacy = legacySolver.solve(policyInput);
+        Metrics policyMetrics = metrics(policyLegacy.getSelectedEntityIds(), snapshot,
+                legacyObjectives, stagedObjectives);
+        lines.add(name + " [detail] legacyWithFillCompensationSafeUniverse (diagnostic only, not asserted):"
+                + " status=" + policyLegacy.getStatus()
+                + " candidates=" + policyInput.getCandidates().size()
+                + " selected=" + policyMetrics.selectedCount
+                + " churn=" + policyMetrics.churn
+                + " tierDev=" + policyMetrics.tierDeviation
+                + " coverage=" + policyMetrics.coverageSatisfied
+                + " protectDef=" + policyMetrics.protectionDeficit
+                + " utility=" + policyMetrics.utility
+                + " stagedUtility=" + utilityOf(staged.getSelectedEntityIds(), factsById));
+        return lines;
+    }
+
+    private List<String> compare(String name, Metrics staged, Metrics legacy) {
+        List<String> failures = new ArrayList<String>();
+        if (staged.coverageSatisfied < legacy.coverageSatisfied) {
+            failures.add(name + ": coverageSatisfied staged=" + staged.coverageSatisfied
+                    + " < legacy=" + legacy.coverageSatisfied
+                    + " (delta " + (staged.coverageSatisfied - legacy.coverageSatisfied) + ")");
+        }
+        if (staged.tierDeviation > legacy.tierDeviation) {
+            failures.add(name + ": tierDeviation staged=" + staged.tierDeviation
+                    + " > legacy=" + legacy.tierDeviation
+                    + " (delta +" + (staged.tierDeviation - legacy.tierDeviation) + ")");
+        }
+        if (staged.churn > legacy.churn) {
+            failures.add(name + ": churn staged=" + staged.churn
+                    + " > legacy=" + legacy.churn
+                    + " (delta +" + (staged.churn - legacy.churn) + ")");
+        }
+        if (staged.protectionDeficit > legacy.protectionDeficit) {
+            failures.add(name + ": protectionDeficit staged=" + staged.protectionDeficit
+                    + " > legacy=" + legacy.protectionDeficit
+                    + " (delta +" + (staged.protectionDeficit - legacy.protectionDeficit) + ")");
+        }
+        if (staged.utility < legacy.utility) {
+            failures.add(name + ": utility staged=" + staged.utility
+                    + " < legacy=" + legacy.utility
+                    + " (delta " + (staged.utility - legacy.utility) + ")");
+        }
+        return failures;
+    }
+
+    private void appendRow(StringBuilder table,
+                           String name,
+                           String stagedStatus,
+                           String legacyStatus,
+                           int target,
+                           Metrics staged,
+                           Metrics legacy,
+                           String note) {
+        table.append("| ").append(name)
+                .append(" | ").append(stagedStatus)
+                .append(" | ").append(legacyStatus)
+                .append(" | ").append(target)
+                .append(" | ").append(staged.selectedCount)
+                .append(" | ").append(legacy.selectedCount)
+                .append(" | ").append(staged.churn)
+                .append(" | ").append(legacy.churn)
+                .append(" | ").append(staged.tierDeviation)
+                .append(" | ").append(legacy.tierDeviation)
+                .append(" | ").append(staged.coverageSatisfied)
+                .append(" | ").append(legacy.coverageSatisfied)
+                .append(" | ").append(staged.protectionDeficit)
+                .append(" | ").append(legacy.protectionDeficit)
+                .append(" | ").append(staged.utility)
+                .append(" | ").append(legacy.utility)
+                .append(" | ").append(note)
+                .append(" |\n");
+    }
+
+    /**
+     * 旧 solver 的候选口径：current facts 作为 retained（保留在候选集中，
+     * eligibility 沿用事实），非 current 且 eligible 的 facts 作为 available。
+     */
+    private PlanSolverInputDTO legacyInput(CandidateSnapshotDTO snapshot,
+                                           CanonicalPlanningObjectiveSetDTO objectives) {
+        return legacyInput(snapshot, objectives, false);
+    }
+
+    private PlanSolverInputDTO legacyInput(CandidateSnapshotDTO snapshot,
+                                           CanonicalPlanningObjectiveSetDTO objectives,
+                                           boolean enforceCompensationSafe) {
+        PlanSolverInputDTO input = new PlanSolverInputDTO();
+        input.setObjectiveSet(objectives);
+        List<CoverageRequirementDTO> coverage = objectives == null || objectives.getCoverageConstraints() == null
+                ? new ArrayList<CoverageRequirementDTO>() : objectives.getCoverageConstraints();
+        for (CandidateFactDTO fact : snapshot.getFacts()) {
+            if (fact == null) {
+                continue;
+            }
+            boolean current = Boolean.TRUE.equals(fact.getCurrent());
+            if (!current && !Boolean.TRUE.equals(fact.getEligible())) {
+                continue;
+            }
+            if (!current && enforceCompensationSafe
+                    && !Boolean.TRUE.equals(fact.getCompensationSafe())) {
+                continue;
+            }
+            PlanSolverInputDTO.CandidateDTO candidate = new PlanSolverInputDTO.CandidateDTO();
+            candidate.setEntityId(fact.getEntityId());
+            candidate.setVolunteerIds(Lists.newArrayList(fact.getVolunteerIds()));
+            candidate.setStableOrder(fact.getStableOrder());
+            candidate.setCurrent(fact.getCurrent());
+            candidate.setLocked(fact.getLocked());
+            candidate.setPinned(fact.getPinned());
+            candidate.setEligible(fact.getEligible());
+            candidate.setTier(fact.getTier());
+            candidate.setPriorityMatched(fact.getPriorityMatched());
+            List<String> coverageObjectiveIds = new ArrayList<String>();
+            for (int index = 0; index < coverage.size(); index++) {
+                if (matchesCoverage(fact, coverage.get(index))) {
+                    coverageObjectiveIds.add("coverage:" + index);
+                }
+            }
+            candidate.setCoverageObjectiveIds(coverageObjectiveIds);
+            input.getCandidates().add(candidate);
+        }
+        return input;
+    }
+
+    private Metrics metrics(List<String> selectedEntityIds,
+                            CandidateSnapshotDTO snapshot,
+                            CanonicalPlanningObjectiveSetDTO objectives,
+                            CanonicalPlanningObjectiveSetDTO stagedObjectives) {
+        Metrics metrics = new Metrics();
+        if (selectedEntityIds != null) {
+            metrics.selectedCount = selectedEntityIds.size();
+        }
+        Set<String> selected = new LinkedHashSet<String>(
+                selectedEntityIds == null ? new ArrayList<String>() : selectedEntityIds);
+        Map<String, CandidateFactDTO> factsById = new LinkedHashMap<String, CandidateFactDTO>();
+        for (CandidateFactDTO fact : snapshot.getFacts()) {
+            if (fact != null && fact.getEntityId() != null) {
+                factsById.put(fact.getEntityId(), fact);
+            }
+        }
+
+        int minLocalProtect = minLocalProtect(stagedObjectives, snapshot);
+        int localProtectSelected = 0;
+        for (String id : selected) {
+            CandidateFactDTO fact = factsById.get(id);
+            if (fact == null) {
+                continue;
+            }
+            if (fact.getUtilityScore() != null) {
+                metrics.utility += fact.getUtilityScore();
+            }
+            if (isLocalProtect(fact, snapshot.getSourceProvince())) {
+                localProtectSelected++;
+            }
+        }
+        for (CandidateFactDTO fact : snapshot.getFacts()) {
+            if (fact != null && Boolean.TRUE.equals(fact.getCurrent())
+                    && (fact.getEntityId() == null || !selected.contains(fact.getEntityId()))) {
+                metrics.churn++;
+            }
+        }
+        metrics.protectionDeficit = Math.max(0, minLocalProtect - localProtectSelected);
+
+        TierAllocationConstraintDTO tierConstraint = objectives == null
+                ? null : objectives.getTierAllocationConstraint();
+        metrics.tierDeviation = tierDeviation(tierConstraint,
+                objectives == null || objectives.getTargetCount() == null
+                        ? 0 : objectives.getTargetCount(),
+                selected, factsById);
+
+        List<CoverageRequirementDTO> coverage = objectives == null
+                || objectives.getCoverageConstraints() == null
+                ? new ArrayList<CoverageRequirementDTO>() : objectives.getCoverageConstraints();
+        for (CoverageRequirementDTO requirement : coverage) {
+            int actual = 0;
+            for (CandidateFactDTO fact : factsById.values()) {
+                if (selected.contains(fact.getEntityId()) && matchesCoverage(fact, requirement)) {
+                    actual++;
+                }
+            }
+            if (actual >= CoverageRequirementSupport.minCount(requirement)) {
+                metrics.coverageSatisfied++;
+            }
+        }
+        return metrics;
+    }
+
+    private int tierDeviation(TierAllocationConstraintDTO constraint,
+                              int targetCount,
+                              Set<String> selected,
+                              Map<String, CandidateFactDTO> factsById) {
+        if (constraint == null) {
+            return 0;
+        }
+        int deviation = 0;
+        for (String tier : TIERS) {
+            TierCountRangeDTO bound = tierBound(constraint, tier, targetCount);
+            int min = bound.getMinCount() == null ? 0 : bound.getMinCount();
+            int max = bound.getMaxCount() == null ? targetCount : bound.getMaxCount();
+            int actual = 0;
+            for (String id : selected) {
+                CandidateFactDTO fact = factsById.get(id);
+                if (fact != null && tier.equals(fact.getTier())) {
+                    actual++;
+                }
+            }
+            deviation += Math.max(0, min - actual);
+            deviation += Math.max(0, actual - max);
+        }
+        return deviation;
+    }
+
+    private TierCountRangeDTO tierBound(TierAllocationConstraintDTO constraint,
+                                        String tier,
+                                        int targetCount) {
+        TierCountRangeDTO source;
+        Integer exact;
+        if ("sprint".equals(tier)) {
+            source = constraint.getSprint();
+            exact = constraint.getSprintCount();
+        } else if ("stable".equals(tier)) {
+            source = constraint.getStable();
+            exact = constraint.getStableCount();
+        } else {
+            source = constraint.getProtect();
+            exact = constraint.getProtectCount();
+        }
+        TierCountRangeDTO result = new TierCountRangeDTO();
+        if (source == null && exact != null) {
+            result.setMinCount(exact);
+            result.setMaxCount(exact);
+            return result;
+        }
+        result.setMinCount(source == null || source.getMinCount() == null ? 0 : source.getMinCount());
+        result.setMaxCount(source == null || source.getMaxCount() == null
+                ? targetCount : source.getMaxCount());
+        return result;
+    }
+
+    private int minLocalProtect(CanonicalPlanningObjectiveSetDTO objectives,
+                                CandidateSnapshotDTO snapshot) {
+        StructureTargetDTO target = objectives == null ? null : objectives.getStructureTarget();
+        if (target == null || "not_applicable".equalsIgnoreCase(target.getSafetyFloorMode())) {
+            return 0;
+        }
+        Integer min = target.getMinLocalProtect();
+        if (min == null || min <= 0 || Strings.isNullOrEmpty(snapshot.getSourceProvince())) {
+            return 0;
+        }
+        return min;
+    }
+
+    private boolean isLocalProtect(CandidateFactDTO fact, String sourceProvince) {
+        return "protect".equals(fact.getTier()) && sameProvince(fact.getProvinceName(), sourceProvince);
+    }
+
+    private boolean sameProvince(String candidateProvince, String sourceProvince) {
+        if (Strings.isNullOrEmpty(candidateProvince) || Strings.isNullOrEmpty(sourceProvince)) {
+            return false;
+        }
+        String candidate = candidateProvince.trim().toLowerCase(Locale.ROOT);
+        String source = sourceProvince.trim().toLowerCase(Locale.ROOT);
+        return candidate.contains(source) || source.contains(candidate);
+    }
+
+    private int utilityOf(List<String> selectedEntityIds, Map<String, CandidateFactDTO> factsById) {
+        int utility = 0;
+        if (selectedEntityIds == null) {
+            return 0;
+        }
+        for (String id : selectedEntityIds) {
+            CandidateFactDTO fact = factsById.get(id);
+            if (fact != null && fact.getUtilityScore() != null) {
+                utility += fact.getUtilityScore();
+            }
+        }
+        return utility;
+    }
+
+    private boolean matchesCoverage(CandidateFactDTO fact, CoverageRequirementDTO requirement) {
+        List<CandidateItemDTO> raw = fact.getRawCandidates() == null
+                ? new ArrayList<CandidateItemDTO>() : fact.getRawCandidates();
+        for (CandidateItemDTO candidate : raw) {
+            if (CoverageRequirementSupport.matches(candidate, requirement)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static final class Metrics {
+        private int selectedCount;
+        private int churn;
+        private int tierDeviation;
+        private int coverageSatisfied;
+        private int protectionDeficit;
+        private int utility;
+    }
+}
