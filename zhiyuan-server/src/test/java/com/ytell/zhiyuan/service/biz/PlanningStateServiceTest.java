@@ -4230,6 +4230,44 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldPersistExcludeScopeEvenWhenOverlayRefreshRewritesState() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(6);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "金融学", 55D, 80D, 55D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "学校C", "稳", "法学", 58D, 75D, 58D, false));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "金融学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
+        // 真栈形态：apply 内部的候选解析会触发 overlay 刷新，刷新会用库里的最新行回填
+        // state（BeanUtils.copyProperties）。若 scope 先写、overlay 后刷，约束会被静默覆盖。
+        state.getStaleFlags().setRecommendationOverlay(true);
+        saveStateToStore(1L, state);
+        bindUserScoreDetail(1L, buildScoreDetailWithVolunteerCount());
+        VolunteerRecommendListResponse response = buildLatestVolunteerResponse("ps1", "m1", "金融学", 1);
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        UserGoalFixProposalReq req = userGoalReq("exclude_scope", 6, userGoalScope("major", "金融学"), true);
+        req.setUserOriginalText("不学金融");
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertTrue(res.getState().getConstraintState().getHardConstraints()
+                .getMustExcludeMajors().contains("金融学"), "overlay 回填后约束仍必须落盘");
+    }
+
+    @Test
     void shouldApplyUserGoalTuitionBudgetProposal() {
         bindPlanningStateStore();
         ChatSessionExtraData scoreRow = bindUserScoreDetailWithTuitionRange(1L, null, null);

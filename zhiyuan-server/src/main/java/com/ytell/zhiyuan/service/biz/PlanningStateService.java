@@ -1120,6 +1120,9 @@ public class PlanningStateService {
 
         state = loadPlanningState(chatSessionId);
         ReviewSummaryDTO beforeReviewSummary = state.getReviewState() == null ? null : state.getReviewState().getSummary();
+        // 先跑推荐 overlay 刷新：它会用库里的最新行回填 state（persistRecommendationOverlay）。
+        // 必须发生在补工作草案和写本轮约束之前，否则尚未落盘的草案/scope 会被回填覆盖。
+        resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
         ensureWorkingPlanContainsOrderedPlanItems(state);
         applyUserGoalTargetToPlanningState(state, userGoalRequest, proposal);
         // 学费写在成绩行；先于方案落盘：写不进去就把这次确认判失败，不能方案生效而学费条件丢失。
@@ -1230,7 +1233,12 @@ public class PlanningStateService {
         req.setRegionPreferences(regions);
         applyConstraintStateUpdate(state, req);
         // 与 updateConstraintState(constraint) 同一失效面：推荐/方案/审查都要按新约束重算。
+        // 但**不把 recommendationOverlay 标脏**：apply 事务里紧接着的候选解析会因该标记
+        // 触发 overlay 刷新，刷新用库中最新行回填 state（persistRecommendationOverlay），
+        // 会把这里尚未落盘的工作草案/scope 一起覆盖掉（真栈 900016 实测）。overlay 是
+        // 候选级评分，不依赖约束名单元数据；需要重算时由下一次读/显式刷新处理。
         ReviewInvalidationPolicy.markConstraintIntentStale(state);
+        state.getStaleFlags().setRecommendationOverlay(false);
     }
 
     private UpdateConstraintStateReq.PreferenceGroup emptyPreferenceGroup() {
