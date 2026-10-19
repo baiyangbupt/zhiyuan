@@ -273,9 +273,11 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
 - 真栈门禁：900700 count_target 夹具下，Search 关时 preview 无 count/safety/
   ratio 提案；Search 开时进入 Search planner。夹具后已恢复 v1/80。
 - `PlanSolverResultDTO` 新增只读 `stageResults`（safety/churn/tier_anchor/
-  utility/diversity 的最优值），并增加 staged solver ready/blocked 结构化日志；
-  该字段不参与 `inputDigest` 与冻结回放判定。
-- Java 全量 **1463 / 0 / 0 / 10**。
+  utility/diversity 的最优值与各阶段耗时），并增加 staged solver ready/blocked
+  结构化日志；该字段不参与 `inputDigest` 与冻结回放判定。
+- 优化器确定性回归：同一输入重复 15 次、候选输入乱序、620 候选帽场景重复
+  5 次，selected/ordered/stageResults 必须逐字一致。
+- Java 全量 **1466 / 0 / 0 / 10**。
 
 仍未覆盖：gap/edge 等 Search probe（设计首期 preview_only）；
 目标/档位/覆盖的 durable patch 持久化。

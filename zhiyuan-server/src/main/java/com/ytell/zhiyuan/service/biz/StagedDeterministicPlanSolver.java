@@ -56,6 +56,8 @@ final class StagedDeterministicPlanSolver {
     private static final int ITERATION_BUDGET = 100_000;
     private static final int MAX_CANDIDATES = 600;
     private static final List<String> TIERS = Arrays.asList("sprint", "stable", "protect");
+    /** 最近一次 solvePhase 的耗时；阶段值写入 stageResults 时按序取用。 */
+    private long lastPhaseDurationMs;
     // 分组截断顺序：(candidateCount ↓, key ↑)，保证同输入同保留集合。
     private static final Comparator<DiversityGroup> DIVERSITY_GROUP_ORDER =
             Comparator.comparingInt((DiversityGroup group) -> group.factIndexes.size())
@@ -166,6 +168,7 @@ final class StagedDeterministicPlanSolver {
         addTierConstraints(model, variables, facts, tierConstraint);
 
         List<ObjectiveLevel> levels = new ArrayList<ObjectiveLevel>();
+        List<Long> levelDurations = new ArrayList<Long>();
         long deadline = started + TIME_BUDGET_MS * 1_000_000L;
 
         int minLocalProtect = minLocalProtect(safeObjectives, safeSnapshot);
@@ -193,6 +196,7 @@ final class StagedDeterministicPlanSolver {
             int deficit = localProtectDeficit(facts, variables, safetySolved, safeSnapshot.getSourceProvince(),
                     minLocalProtect);
             levels.add(new ObjectiveLevel("safety", deficit, deficit, "deficit_points"));
+            levelDurations.add(lastPhaseDurationMs);
             safetyObjective.weight(0);
             Expression fixSafety = model.addExpression("fix_safety").upper(deficit);
             fixSafety.set(safetyDeficit, 1);
@@ -260,9 +264,11 @@ final class StagedDeterministicPlanSolver {
             int tierDeviation = tierDeviation(anchor, facts, variables, mixedSolved);
             if (churnApplicable) {
                 levels.add(new ObjectiveLevel("churn", churnValue, churnValue, "removed_entities"));
+                levelDurations.add(lastPhaseDurationMs);
             }
             if (tierApplicable) {
                 levels.add(new ObjectiveLevel("tier_anchor", tierDeviation, tierDeviation, "deviation_points"));
+                levelDurations.add(lastPhaseDurationMs);
             }
             if (churnExpression != null) {
                 churnExpression.weight(0);
@@ -306,6 +312,7 @@ final class StagedDeterministicPlanSolver {
         }
         int utilityValue = utilityValue(facts, variables, utilitySolved);
         levels.add(new ObjectiveLevel("utility", utilityValue, utilityValue, "utility_points"));
+        levelDurations.add(lastPhaseDurationMs);
         utilityObjective.weight(0);
         stableObjective.weight(0);
 
@@ -339,6 +346,7 @@ final class StagedDeterministicPlanSolver {
             }
             if (groups.isEmpty()) {
                 levels.add(new ObjectiveLevel("diversity", 0L, 0L, "excess_count"));
+                levelDurations.add(0L);
             } else {
                 Expression diversityObjective = model.addExpression("diversity_objective")
                         .weight(BigDecimal.valueOf(utilityWeight));
@@ -369,6 +377,7 @@ final class StagedDeterministicPlanSolver {
                 int diversityValue = diversityExcess(groups, diversitySolved);
                 levels.add(new ObjectiveLevel("diversity", diversityValue, diversityValue,
                         "excess_count"));
+                levelDurations.add(lastPhaseDurationMs);
                 diversityObjective.weight(0);
                 Expression fixDiversity = model.addExpression("fix_diversity").level(diversityValue);
                 for (Variable excess : excessVariables) {
@@ -404,7 +413,7 @@ final class StagedDeterministicPlanSolver {
         result.setSolverVersion(SOLVER_VERSION);
         result.setInputDigest(inputDigest(safeSnapshot, safeObjectives, safePolicy));
         result.setDurationMs(elapsedMillis(started));
-        populateStageResults(result, levels);
+        populateStageResults(result, levels, levelDurations);
         LOG.info("staged solver ready: sourceVersion={} candidates={} selected={} durationMs={} stages={}",
                 safeSnapshot == null ? null : safeSnapshot.getSourceVersion(),
                 facts.size(), selected.size(), result.getDurationMs(), stageSummary(levels));
@@ -539,8 +548,10 @@ final class StagedDeterministicPlanSolver {
     }
 
     private Optimisation.Result solvePhase(ExpressionsBasedModel model, long deadline, String phase) {
-        long remaining = (deadline - System.nanoTime()) / 1_000_000L;
+        long phaseStarted = System.nanoTime();
+        long remaining = (deadline - phaseStarted) / 1_000_000L;
         if (remaining <= 0) {
+            lastPhaseDurationMs = 0L;
             return null;
         }
         model.options.time_abort = remaining;
@@ -548,7 +559,9 @@ final class StagedDeterministicPlanSolver {
         model.options.iterations_abort = ITERATION_BUDGET;
         model.options.iterations_suffice = ITERATION_BUDGET;
         model.options.mip_gap = 0D;
-        return model.minimise();
+        Optimisation.Result solved = model.minimise();
+        lastPhaseDurationMs = elapsedMillis(phaseStarted);
+        return solved;
     }
 
     private String phaseFailureReason(CandidatePoolReducer.Reduction reduction,
@@ -764,12 +777,17 @@ final class StagedDeterministicPlanSolver {
         return result;
     }
 
-    private void populateStageResults(PlanSolverResultDTO result, List<ObjectiveLevel> levels) {
-        for (ObjectiveLevel level : defaultList(levels)) {
+    private void populateStageResults(PlanSolverResultDTO result, List<ObjectiveLevel> levels,
+                                      List<Long> durations) {
+        for (int index = 0; index < defaultList(levels).size(); index++) {
+            ObjectiveLevel level = levels.get(index);
             PlanSolverResultDTO.StageResultDTO stage = new PlanSolverResultDTO.StageResultDTO();
             stage.setObjectiveId(level.level);
             stage.setValue(level.optimum);
             stage.setUnit(level.unit);
+            if (index < defaultList(durations).size()) {
+                stage.setDurationMs(durations.get(index));
+            }
             result.getStageResults().add(stage);
         }
     }

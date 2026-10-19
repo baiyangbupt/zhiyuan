@@ -48,6 +48,10 @@ public class PlanSolverResultDTO {
         private String objectiveId;
         private Long value;
         private String unit;
+        /**
+         * 该阶段求解耗时；仅用于观测，不参与任何 digest 或回放判定。
+         */
+        private Long durationMs;
     }
 
     @Data

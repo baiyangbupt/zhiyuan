@@ -52,6 +52,8 @@ class StagedDeterministicPlanSolverTest {
         assertNotNull(safetyStage);
         assertEquals(0L, safetyStage.getValue());
         assertEquals("deficit_points", safetyStage.getUnit());
+        assertNotNull(safetyStage.getDurationMs());
+        assertTrue(safetyStage.getDurationMs() >= 0L);
         assertTrue(result.solverResult.getStageResults().stream()
                 .anyMatch(stage -> "utility".equals(stage.getObjectiveId())));
     }
@@ -369,6 +371,80 @@ class StagedDeterministicPlanSolverTest {
                 "diagnostics=" + result.solverResult.getDiagnostics());
         // 全部同省，cap=ceil(0.4*2)=1；任选 2 条都至少超出 1。
         assertEquals(1L, level(result, "diversity"));
+    }
+
+    @Test
+    void repeatedRunsProduceIdenticalSelectionOrderAndStageValues() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                fact("a", "protect", "浙江", true, false, 90, 0),
+                fact("b", "protect", "浙江", false, false, 90, 1),
+                fact("c", "stable", "浙江", true, false, 80, 2),
+                fact("d", "stable", "江苏", false, false, 80, 3),
+                fact("e", "sprint", "浙江", true, false, 70, 4),
+                fact("f", "sprint", "江苏", false, false, 70, 5),
+                fact("g", "stable", "浙江", false, false, 60, 6),
+                fact("h", "protect", "江苏", false, false, 60, 7));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(6);
+        StructureTargetDTO target = new StructureTargetDTO();
+        target.setMinLocalProtect(2);
+        objectives.setStructureTarget(target);
+        MutationPolicyDTO policy = policy("FILL", false);
+        policy.setCountAsChurn(true);
+
+        String expected = solverSignature(solver.solve(snapshot, objectives, policy));
+        for (int run = 0; run < 15; run++) {
+            assertEquals(expected, solverSignature(solver.solve(snapshot, objectives, policy)),
+                    "第 " + run + " 次重复求解必须逐字一致");
+        }
+    }
+
+    @Test
+    void candidateOrderPermutationDoesNotChangeSelection() {
+        CandidateFactDTO[] facts = new CandidateFactDTO[]{
+                fact("a", "protect", "浙江", true, false, 90, 0),
+                fact("b", "stable", "浙江", true, false, 80, 1),
+                fact("c", "stable", "江苏", false, false, 80, 2),
+                fact("d", "sprint", "浙江", false, false, 70, 3),
+                fact("e", "protect", "江苏", false, false, 60, 4)};
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(3);
+        MutationPolicyDTO policy = policy("FILL", false);
+        String expected = solverSignature(solver.solve(snapshot(facts), objectives, policy));
+
+        List<CandidateFactDTO> shuffled = new ArrayList<CandidateFactDTO>(Arrays.asList(facts));
+        java.util.Collections.shuffle(shuffled, new java.util.Random(42));
+        String actual = solverSignature(solver.solve(
+                snapshot(shuffled.toArray(new CandidateFactDTO[0])), objectives, policy));
+
+        assertEquals(expected, actual, "候选输入顺序不能改变 stableOrder 语义");
+    }
+
+    @Test
+    void candidateCapRepeatedRunsKeepSameSelection() {
+        List<CandidateFactDTO> facts = new ArrayList<CandidateFactDTO>();
+        for (int index = 0; index < 620; index++) {
+            facts.add(fact("f" + index, "stable", "浙江", index % 7 == 0, false,
+                    100 - index % 50, index));
+        }
+        CandidateSnapshotDTO snapshot = snapshot(facts.toArray(new CandidateFactDTO[0]));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(10);
+        MutationPolicyDTO policy = policy("FILL", false);
+        policy.setCountAsChurn(true);
+
+        String expected = solverSignature(solver.solve(snapshot, objectives, policy));
+        for (int run = 0; run < 5; run++) {
+            assertEquals(expected, solverSignature(solver.solve(snapshot, objectives, policy)),
+                    "候选帽场景第 " + run + " 次求解必须逐字一致");
+        }
+    }
+
+    private String solverSignature(StagedDeterministicPlanSolver.Result result) {
+        return result.solverResult.getStatus() + "|"
+                + result.solverResult.getSelectedEntityIds() + "|"
+                + result.solverResult.getOrderedEntityIds() + "|"
+                + result.solverResult.getStageResults().stream()
+                .map(stage -> stage.getObjectiveId() + "=" + stage.getValue()
+                        + "@" + stage.getUnit())
+                .collect(Collectors.joining(","));
     }
 
     private CandidateFactDTO withUniqueDimensions(CandidateFactDTO fact) {
