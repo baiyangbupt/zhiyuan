@@ -88,15 +88,12 @@ final class SearchReviewPreviewPlanner {
 
         Integer targetCount = command.getTargetCount();
         // 组模式（专业组/专业单元）与普通专业模式共用同一份 UserGoalProposalBuilder
-        // 补齐能力，但计数、物化与冻结载体都换成 unit；只有 count_target 的
-        // fill_missing_count 走这条分支，coverage 等结构修复仍留待后续切片。
+        // 补齐能力，但计数、物化与冻结载体都换成 unit；count_target 与
+        // coverage:<i> 的 fill_missing_count 都走这条分支。
         boolean unitMode = "majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel())
                 || !safeList(state.getWorkingPlanState().getUnits()).isEmpty()
                 || !safeList(state.getOrderedPlanState().getUnits()).isEmpty();
         if (unitMode) {
-            if (!countTarget) {
-                return blocked(proposal, "review_fix_search_unsupported");
-            }
             return planUnits(proposal, state, candidates, finding, command, reevaluate, confirmable);
         }
         List<DraftItemDTO> workingItems = safeList(state.getWorkingPlanState().getItems());
@@ -250,10 +247,11 @@ final class SearchReviewPreviewPlanner {
     }
 
     /**
-     * 组模式（专业组/专业单元）的 count_target 补齐：目标数与当前数都按 unit 计，
-     * 复用 user-goal 的 group fill（solverResult 的 entityId 即 unitId），再把
-     * 选中结果物化成 working units + ordered units/items。冻结后按原 finding
-     * count_target 做后置校验，确认链仍走同一条冻结回放。
+     * 组模式（专业组/专业单元）的 count_target 补齐与 coverage:<i> 覆盖修复：
+     * 目标数与当前数都按 unit 计，复用 user-goal 的 group fill（solverResult
+     * 的 entityId 即 unitId），再把选中结果物化成 working units + ordered
+     * units/items。冻结后按原 finding（count_target 或 coverage:<i>）做后置
+     * 校验，确认链仍走同一条冻结回放。
      */
     private FixProposalDTO planUnits(FixProposalDTO proposal, PlanningStateDTO state,
                                      List<CandidateItemDTO> candidates,
@@ -261,6 +259,8 @@ final class SearchReviewPreviewPlanner {
                                      Function<PlanningStateDTO, ReviewStateDTO> reevaluate,
                                      boolean confirmable) {
         Integer targetCount = command.getTargetCount();
+        boolean coverage = finding.getCode() != null
+                && finding.getCode().startsWith(COVERAGE_PREFIX);
         List<OrderedUnitDTO> currentOrdered = new ArrayList<OrderedUnitDTO>(
                 safeList(state.getOrderedPlanState().getUnits()));
         if (currentOrdered.isEmpty()) {
@@ -287,8 +287,17 @@ final class SearchReviewPreviewPlanner {
             currentUnitIds.add(unit.getUnitId());
         }
         // count_target 在组模式下的“条数”就是专业组数；不足目标才允许补齐。
-        if (targetCount == null || targetCount <= 0 || targetCount <= currentOrdered.size()) {
+        // coverage 允许在相同目标数下等量替换，因此只要求命令带正目标数。
+        if (targetCount == null || targetCount <= 0
+                || (!coverage && targetCount <= currentOrdered.size())) {
             return blocked(proposal, "review_fix_search_no_change");
+        }
+        List<UserGoalFixProposalReq.RequirementDTO> requirements = null;
+        if (coverage) {
+            requirements = coverageRequirements(command);
+            if (requirements.isEmpty()) {
+                return blocked(proposal, "review_fix_coverage_unavailable");
+            }
         }
         // 工作台可能只存 draft items、不存 working units；存在时身份必须与 ordered
         // 完全一致，否则 applyFrozenSelection 的当前集合会与冻结口径错位。
@@ -317,6 +326,9 @@ final class SearchReviewPreviewPlanner {
         req.setTargetCount(targetCount);
         req.setSourceVersionGuard(state.getVersion());
         req.setPersistTargetCount(true);
+        if (coverage) {
+            req.setRequirements(requirements);
+        }
         FixProposalStateDTO generatedState;
         try {
             generatedState = UserGoalProposalBuilder.build(copy, req);
@@ -391,7 +403,8 @@ final class SearchReviewPreviewPlanner {
         } catch (RuntimeException unavailable) {
             return blocked(proposal, "review_fix_evaluation_unavailable");
         }
-        FindingPostconditionDTO postcondition = postconditionEvaluator.evaluate(COUNT_TARGET, afterReview);
+        FindingPostconditionDTO postcondition =
+                postconditionEvaluator.evaluate(finding.getCode(), afterReview);
         proposal.setFindingPostcondition(postcondition);
         if (!Boolean.TRUE.equals(postcondition.getSatisfied())) {
             return blocked(proposal, Strings.isNullOrEmpty(postcondition.getReasonCode())
@@ -407,7 +420,7 @@ final class SearchReviewPreviewPlanner {
         frozen.setFactsDigest(factsDigest);
         proposal.setFrozenReviewPlan(frozen);
         adaptUnits(proposal, generated, solverResult, command, state,
-                currentOrdered, orderedUnits, orderedItems);
+                currentOrdered, orderedUnits, orderedItems, finding.getCode(), coverage);
         proposal.setPlanContentDigest(DirectReviewPreviewPlanner.planContentDigest(state));
         // 摘要口径与 Search/Direct 完全一致：先按 preview_only 计算，确认模式再提升。
         proposal.getDryRunResult().setStatus("preview_only");
@@ -434,15 +447,16 @@ final class SearchReviewPreviewPlanner {
     private void adaptUnits(FixProposalDTO proposal, FixProposalDTO generated,
                             PlanSolverResultDTO solverResult, PlanCommandDTO command,
                             PlanningStateDTO state, List<OrderedUnitDTO> currentOrdered,
-                            List<OrderedUnitDTO> orderedUnits, List<OrderedItemDTO> orderedItems) {
+                            List<OrderedUnitDTO> orderedUnits, List<OrderedItemDTO> orderedItems,
+                            String findingCode, boolean coverage) {
         proposal.setProposalSource(RepairProposalTaxonomy.ProposalSource.REVIEW_CHECK);
         proposal.setSourceVersion(state.getVersion());
         proposal.setStrategy(STRATEGY);
         proposal.setSourceStrategy(command.getSourceStrategy());
-        proposal.setFindingCode(COUNT_TARGET);
+        proposal.setFindingCode(findingCode);
         proposal.setEvaluationVersion(command.getEvaluationVersion());
         proposal.setCommandDigest(command.getCommandDigest());
-        proposal.setTitle("补齐方案目标数量预览");
+        proposal.setTitle(coverage ? "补齐覆盖要求预览" : "补齐方案目标数量预览");
         proposal.setSummary(generated.getSummary());
         proposal.setImpact(generated.getImpact());
         proposal.setCanonicalObjectiveDigest(generated.getCanonicalObjectiveDigest());
@@ -463,7 +477,7 @@ final class SearchReviewPreviewPlanner {
             }
             FixProposalActionDTO copied = copy(action, FixProposalActionDTO.class);
             copied.setLevel("unit");
-            copied.setSourceCheckCode(COUNT_TARGET);
+            copied.setSourceCheckCode(findingCode);
             proposal.getActions().add(copied);
             collectIds(action.getCandidateUnitIds(), action.getUnitIds(), action.getRemoveUnitIds(),
                     affectedUnits);

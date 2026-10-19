@@ -3,6 +3,7 @@ package com.ytell.zhiyuan.service.biz;
 import com.alibaba.fastjson.JSON;
 import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
@@ -232,7 +233,56 @@ class GroupSearchReviewPreviewPlannerTest {
     }
 
     @Test
-    void rejectsNoChangeLocksAndCoverageInUnitMode() {
+    void fillsGroupCoverageInUnitsAtSameCount() {
+        for (CandidateItemDTO candidate : candidates) {
+            if ("u045".equals(candidate.getPlanSchoolDataId())
+                    || "u046".equals(candidate.getPlanSchoolDataId())) {
+                candidate.setProvinceName("浙江");
+            }
+        }
+        finding.setCode("coverage:0");
+        finding.getSuggestedCommand().setStrategy("must_include_scope");
+        finding.getSuggestedCommand().setApplyStrategy("fill_missing_count");
+        finding.getSuggestedCommand().setTargetCount(CURRENT_UNITS);
+        CoverageRequirementDTO requirement = new CoverageRequirementDTO();
+        requirement.setDomain("region");
+        requirement.setKey("province");
+        requirement.setValues(Lists.newArrayList("浙江"));
+        requirement.setMinCount(4);
+        finding.getSuggestedCommand().getCoverageRequirements().add(requirement);
+
+        String baseline = JSON.toJSONString(state);
+        FixProposalDTO proposal = planner.plan(state, candidates, finding, after -> {
+            List<OrderedUnitDTO> units = after.getOrderedPlanState().getUnits();
+            assertEquals(CURRENT_UNITS, units.size(), "coverage 等量替换不改变 unit 数");
+            long local = units.stream()
+                    .filter(unit -> "浙江".equals(unit.getProvinceName()))
+                    .count();
+            assertEquals(4, local, "必须补齐浙江覆盖到 4 组");
+            return coverageReview("pass");
+        }, true);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertEquals("coverage:0", proposal.getFindingCode());
+        assertEquals("补齐覆盖要求预览", proposal.getTitle());
+        assertEquals(CURRENT_UNITS, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertTrue(proposal.getFindingPostcondition().getSatisfied());
+        assertEquals("coverage:0", proposal.getFindingPostcondition().getFindingCode());
+        for (FixProposalActionDTO action : proposal.getActions()) {
+            assertEquals("unit", action.getLevel());
+            assertEquals("coverage:0", action.getSourceCheckCode());
+        }
+        FrozenReviewPlanDTO frozen = proposal.getFrozenReviewPlan();
+        assertNotNull(frozen);
+        assertEquals(CURRENT_UNITS, frozen.getOrderedPlan().getUnits().size());
+        assertEquals(CURRENT_UNITS * MAJORS_PER_UNIT, frozen.getOrderedPlan().getItems().size());
+        assertEquals(baseline, JSON.toJSONString(state), "规划器不得修改输入状态");
+    }
+
+    @Test
+    void rejectsNoChangeLocksAndCoverageWithoutRequirementsInUnitMode() {
         finding.getSuggestedCommand().setTargetCount(CURRENT_UNITS);
         FixProposalDTO noChange = planner.plan(state, candidates, finding,
                 after -> review("pass"), false);
@@ -251,8 +301,26 @@ class GroupSearchReviewPreviewPlannerTest {
         finding.getSuggestedCommand().setStrategy("must_include_scope");
         finding.getSuggestedCommand().setApplyStrategy("fill_missing_count");
         FixProposalDTO coverage = planner.plan(state, candidates, finding,
-                after -> review("pass"), false);
-        assertEquals("review_fix_search_unsupported", coverage.getBlockingReason());
+                after -> coverageReview("pass"), false);
+        assertEquals("review_fix_coverage_unavailable", coverage.getBlockingReason());
+    }
+
+    private ReviewStateDTO coverageReview(String coverageStatus) {
+        ReviewStateDTO review = new ReviewStateDTO();
+        review.setEvaluationStatus("completed");
+        review.setEvaluationVersion("after-group-coverage-evaluation");
+        review.setProbesRun(2);
+        review.setHardFeasible(true);
+        EvaluationFindingDTO coverage = new EvaluationFindingDTO();
+        coverage.setCode("coverage:0");
+        coverage.setResultStatus(coverageStatus);
+        coverage.setRuleStrength("soft");
+        EvaluationFindingDTO hard = new EvaluationFindingDTO();
+        hard.setCode("count_validation_hard");
+        hard.setResultStatus("pass");
+        hard.setRuleStrength("hard");
+        review.setFindings(Lists.newArrayList(coverage, hard));
+        return review;
     }
 
     private ReviewStateDTO review(String countStatus) {

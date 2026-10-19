@@ -229,6 +229,21 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   44 组、无高收费、2 个江西保底组、postcondition true；已恢复 v14/44。
 - Java 全量 **1457 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
 
+## 专业组模式：coverage → fill（2026-10-19）
+
+- `SearchReviewPreviewPlanner.planUnits` 从仅支持 count_target 扩展到
+  `coverage:<i>`：把命令覆盖要求转成 user-goal include 要求，复用 group fill；
+  目标数按 unit 计，允许相同目标数下等量替换；空覆盖集 fail closed
+  `review_fix_coverage_unavailable`。
+- 组模式后置校验改用原 finding code（count_target / coverage:<i>）；
+  unit 级动作的 `sourceCheckCode` 同步为原 finding。
+- 真栈 900045 夹具：44 组当前无广西，覆盖要求广西 ≥ 2；候选池补 2 个江西
+  protect 组满足本省保底。preview `coverage:0` ready、
+  `selected=44/add=4/remove=4`、coverage postcondition pass；
+  prepare→claim→execute 后版本 14→15、44 组、广西 2 组、
+  江西 protect 2 组、postcondition true；已恢复 v14/44。
+- Java 全量 **1460 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
+
 仍未覆盖：gap/edge 等 Search probe（设计首期 preview_only）；
 目标/档位/覆盖的 durable patch 持久化。
 

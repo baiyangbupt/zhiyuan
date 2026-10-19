@@ -718,6 +718,38 @@ class PlanningStateServiceReviewFixApplyTest {
     }
 
     @Test
+    void appliesFrozenGroupCoverageReplacementAtSameUnitCount() {
+        useGroupCoverageFixture();
+        prepareGroupCoverage();
+
+        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+
+        assertEquals("applied", res.getStatus());
+        PlanningStateDTO applied = res.getState();
+        assertEquals(Integer.valueOf(8), applied.getVersion(), "只 bump 一次版本");
+        assertEquals(4, applied.getWorkingPlanState().getUnits().size());
+        assertEquals(4, applied.getOrderedPlanState().getUnits().size());
+        assertEquals(4, applied.getWorkingPlanState().getItems().size());
+        assertEquals(4, applied.getOrderedPlanState().getItems().size());
+        long local = applied.getOrderedPlanState().getUnits().stream()
+                .filter(unit -> "浙江".equals(unit.getProvinceName()))
+                .count();
+        assertEquals(2, local, "回放后必须补齐浙江覆盖 2 组");
+        for (int index = 0; index < 4; index++) {
+            assertEquals(Integer.valueOf(index + 1),
+                    applied.getOrderedPlanState().getUnits().get(index).getPosition());
+        }
+        assertEquals(Integer.valueOf(4), applied.getConstraintState()
+                .getHardPlanningObjectives().getSelectionTargetCount(),
+                "coverage 回放不修改已确认目标数");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(4, saved.getOrderedPlanState().getUnits().size());
+        assertEquals(2, saved.getOrderedPlanState().getUnits().stream()
+                .filter(unit -> "浙江".equals(unit.getProvinceName())).count());
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
     void appliesFrozenGroupRiskReplacementAndRemovesRiskyUnit() {
         useGroupRiskFixture();
         prepareGroupRisk();
@@ -1134,6 +1166,34 @@ class PlanningStateServiceReviewFixApplyTest {
         req.setSourceVersionGuard(preview.getSourceVersion());
         PrepareResultDTO prepared = service.prepareReviewFixProposal(
                 TENANT, SESSION, "req-group-safety-apply", "digest-group-safety-apply", req);
+        assertNotNull(prepared.getPendingId());
+        assertNotNull(activePending);
+    }
+
+    private void useGroupCoverageFixture() {
+        row.setDataValue(JSON.toJSONString(
+                PlanningStateServiceReviewFixPrepareTest.groupCoverageFixture()));
+    }
+
+    private void prepareGroupCoverage() {
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = null;
+        for (FixProposalDTO candidate : preview.getProposals()) {
+            if (candidate != null && "coverage:0".equals(candidate.getFindingCode())) {
+                proposal = candidate;
+                break;
+            }
+        }
+        assertNotNull(proposal, "group coverage fixture 必须产出 Search 提案");
+        assertEquals("ready", proposal.getStatus());
+        ReviewFixPrepareReq req = new ReviewFixPrepareReq();
+        req.setProposalId(proposal.getProposalId());
+        req.setPreviewDigest(proposal.getPreviewDigest());
+        req.setCommandDigest(proposal.getCommandDigest());
+        req.setEvaluationVersion(proposal.getEvaluationVersion());
+        req.setSourceVersionGuard(preview.getSourceVersion());
+        PrepareResultDTO prepared = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-group-coverage-apply", "digest-group-coverage-apply", req);
         assertNotNull(prepared.getPendingId());
         assertNotNull(activePending);
     }
