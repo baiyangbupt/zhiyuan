@@ -1243,8 +1243,25 @@ public class PlanningStateService {
         }
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(
                 tenantId, chatSessionId, state, false);
-        String currentFactsDigest = DirectReviewPreviewPlanner.factsDigestForEntities(
-                frozen.getSelectedEntityIds(), effectiveCandidates);
+        // 组模式的冻结方案以 unit 为载体：事实摘要必须按 unit→major 顺序重算，
+        // 否则会把 unit 身份误当 volunteer 身份（或反之）导致合法确认被判 409。
+        boolean unitFacts = frozen.getOrderedPlan() != null
+                && frozen.getOrderedPlan().getUnits() != null
+                && !frozen.getOrderedPlan().getUnits().isEmpty();
+        if (!unitFacts && proposal.getActions() != null) {
+            for (FixProposalActionDTO action : proposal.getActions()) {
+                if (action != null && "unit".equals(action.getLevel())) {
+                    unitFacts = true;
+                    break;
+                }
+            }
+        }
+        String currentFactsDigest = unitFacts
+                ? DirectReviewPreviewPlanner.factsDigestForUnits(
+                        frozen.getSelectedEntityIds(), frozen.getOrderedPlan().getUnits(),
+                        effectiveCandidates)
+                : DirectReviewPreviewPlanner.factsDigestForEntities(
+                        frozen.getSelectedEntityIds(), effectiveCandidates);
         if (currentFactsDigest == null || !currentFactsDigest.equals(frozen.getFactsDigest())) {
             throw new BusinessException(409, "review_fix_facts_changed");
         }

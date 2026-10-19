@@ -219,8 +219,15 @@ final class CanonicalPlanningRuntime {
     }
 
     static void applyFrozenOrdering(PlanningStateDTO state, PlanSolverResultDTO frozen) {
+        applyFrozenOrdering(state, frozen, isUnitMode(state));
+    }
+
+    /**
+     * 显式指定 unit/item 载体：Direct 组模式修复允许在 volunteerModel 缺失时
+     * 依据 orderedPlanState.units 判定 unit；其它调用方仍沿用 volunteerModel。
+     */
+    static void applyFrozenOrdering(PlanningStateDTO state, PlanSolverResultDTO frozen, boolean unitMode) {
         validateFrozenResult(frozen);
-        boolean unitMode = isUnitMode(state);
         List<String> before = orderedEntityIds(state, unitMode);
         if (!new LinkedHashSet<String>(defaultList(frozen.getSelectedEntityIds()))
                 .equals(new LinkedHashSet<String>(before))) {

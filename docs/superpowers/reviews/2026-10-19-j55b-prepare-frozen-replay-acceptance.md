@@ -161,8 +161,23 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   postcondition true；已恢复 v1/80。
 - Java 全量 **1415 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
 
-仍未覆盖：gap/edge 等 Search probe；专业组模式；目标/档位/覆盖的
-durable patch 持久化。
+## 专业组模式：Direct 概率倒挂（2026-10-19）
+
+- `DirectReviewPreviewPlanner` 增加 unit 模式：按 ordered units 的
+  `admissionRatio`（缺省 schoolEnrollRatio）排序，授权 reorderTargets 的
+  unit 可动、其余 pinned；用 `applyFrozenOrdering(..., unitMode=true)`
+  物化 units+items；冻结 unit facts 摘要；apply 端按 unit facts 校验并原样回放。
+- 兼容线上稀疏位置：unit position 只要求严格递增且唯一，回放时统一重排 1..n。
+- 工作台可能只存 draft items、无 working units：unit 模式下以 ordered units
+  作为当前选中集。
+- 真栈 900045 夹具：44 组、unit1/2 比例 90/10、其余 100、2 条江西保档；
+  preview `ready`、`selected=44`、inversion preflight pass；
+  prepare→claim→execute 后版本 14→15、44 组、倒挂 0、保底 2、
+  postcondition true；已恢复 v14/44。
+- Java 全量 **1427 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
+
+仍未覆盖：gap/edge 等 Search probe；Search/Safety/Ratio/Risk 的专业组模式；
+目标/档位/覆盖的 durable patch 持久化。
 
 ## 尚未完成
 

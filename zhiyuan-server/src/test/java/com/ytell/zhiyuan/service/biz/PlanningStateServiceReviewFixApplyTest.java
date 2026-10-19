@@ -12,8 +12,10 @@ import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyRes;
+import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PrepareResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewFixPrepareReq;
@@ -119,6 +121,137 @@ class PlanningStateServiceReviewFixApplyTest {
         PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
         assertEquals(Lists.newArrayList("low", "mid", "high"), orderedIds(saved));
         assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void appliesTheFrozenGroupUnitOrderExactlyAndReplaysUnitsAndItems() {
+        useGroupFixture();
+        prepareGroup();
+
+        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+
+        assertEquals("applied", res.getStatus());
+        PlanningStateDTO applied = res.getState();
+        assertEquals(Integer.valueOf(8), applied.getVersion(), "只 bump 一次版本");
+        assertEquals(Lists.newArrayList("u-low", "u-mid", "u-high"), orderedUnitIds(applied));
+        assertEquals(Lists.newArrayList("u-low-v", "u-mid-v", "u-high-v"), orderedIds(applied));
+        for (int index = 0; index < 3; index++) {
+            assertEquals(Integer.valueOf(index + 1),
+                    applied.getOrderedPlanState().getUnits().get(index).getPosition());
+            assertEquals(Integer.valueOf(index + 1),
+                    applied.getOrderedPlanState().getItems().get(index).getPosition());
+        }
+        // 工作草案按冻结副本原样回放：倒挂修复只改排序态。
+        assertEquals(Lists.newArrayList("u-high", "u-mid", "u-low"),
+                applied.getWorkingPlanState().getUnits().stream()
+                        .map(DraftUnitDTO::getUnitId).collect(Collectors.toList()));
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(Lists.newArrayList("u-low", "u-mid", "u-high"), orderedUnitIds(saved));
+        assertEquals(Lists.newArrayList("u-low-v", "u-mid-v", "u-high-v"), orderedIds(saved));
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void groupTamperedPreviewDigestIsRejectedBeforeAnyWrite() {
+        useGroupFixture();
+        prepareGroup();
+        FixProposalApplyReq req = applyRequest();
+        req.setPreviewDigest("tampered-group");
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_changed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void groupPlanDriftAfterPrepareIsRejectedAsStale() {
+        useGroupFixture();
+        prepareGroup();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.getOrderedPlanState().getUnits().get(0).setUnitId("changed");
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_stale", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void groupCandidateFactDriftIsRejectedAsFactsChanged() {
+        useGroupFixture();
+        prepareGroup();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.getCandidatePoolState().getItems().get(0).setAdmissionRatio(85D);
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_facts_changed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void groupPostconditionFailureRollsBackWithoutWriting() {
+        useGroupFixture();
+        prepareGroup();
+        // 保持 unit 身份与顺序不变（事实摘要仍一致），只把单元录取率改回倒挂：
+        // 重放后 probability_inversion 仍 fail，写前校验必须回滚。
+        JSONObject frozen = (JSONObject) activePending.getDataValue().get("frozenReviewPlan");
+        JSONArray units = frozen.getJSONObject("orderedPlan").getJSONArray("units");
+        double[] invertedByPosition = {90D, 60D, 30D};
+        for (int index = 0; index < units.size(); index++) {
+            JSONObject unit = units.getJSONObject(index);
+            unit.put("admissionRatio", invertedByPosition[index]);
+            unit.put("schoolEnrollRatio", invertedByPosition[index]);
+        }
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
+        assertEquals("review_fix_postcondition_failed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue(), "后置失败必须回滚，不得留下半套方案");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(Integer.valueOf(7), saved.getVersion());
+    }
+
+    private void useGroupFixture() {
+        row.setDataValue(JSON.toJSONString(PlanningStateServiceReviewFixPrepareTest.groupInversionFixture()));
+    }
+
+    private void prepareGroup() {
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = null;
+        for (FixProposalDTO candidate : preview.getProposals()) {
+            if (candidate != null && "probability_inversion".equals(candidate.getFindingCode())) {
+                proposal = candidate;
+                break;
+            }
+        }
+        assertNotNull(proposal, "group fixture 必须产出 Direct 倒挂提案");
+        assertEquals("ready", proposal.getStatus());
+        ReviewFixPrepareReq req = new ReviewFixPrepareReq();
+        req.setProposalId(proposal.getProposalId());
+        req.setPreviewDigest(proposal.getPreviewDigest());
+        req.setCommandDigest(proposal.getCommandDigest());
+        req.setEvaluationVersion(proposal.getEvaluationVersion());
+        req.setSourceVersionGuard(preview.getSourceVersion());
+        PrepareResultDTO prepared = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-group-apply", "digest-group-apply", req);
+        assertNotNull(prepared.getPendingId());
+        assertNotNull(activePending);
     }
 
     @Test
@@ -830,6 +963,11 @@ class PlanningStateServiceReviewFixApplyTest {
     private static java.util.List<String> orderedIds(PlanningStateDTO state) {
         return state.getOrderedPlanState().getItems().stream()
                 .map(OrderedItemDTO::getVolunteerId).collect(Collectors.toList());
+    }
+
+    private static java.util.List<String> orderedUnitIds(PlanningStateDTO state) {
+        return state.getOrderedPlanState().getUnits().stream()
+                .map(OrderedUnitDTO::getUnitId).collect(Collectors.toList());
     }
 
     private ConversationProposalRequestService inMemoryPrepareService() {

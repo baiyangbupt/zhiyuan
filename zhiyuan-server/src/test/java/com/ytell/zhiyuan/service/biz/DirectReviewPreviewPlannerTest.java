@@ -148,9 +148,9 @@ class DirectReviewPreviewPlannerTest {
     }
 
     @Test
-    void refusesGroupModePinnedLockedAndInconsistentWorkingSelection() {
+    void refusesGroupModeWithoutUnitsAndMajorModePinnedLockedAndInconsistentWorkingSelection() {
         state.getCandidatePoolState().setVolunteerModel("majorGroup");
-        assertNoFrozen(plan(), "review_fix_direct_unsupported");
+        assertNoFrozen(plan(), "review_fix_selection_incomplete");
         fixture();
         state.getOrderedPlanState().getItems().get(0).setPinned(true);
         assertNoFrozen(plan(), "review_fix_order_locked");
@@ -159,6 +159,125 @@ class DirectReviewPreviewPlannerTest {
         assertNoFrozen(plan(), "review_fix_order_locked");
         fixture();
         state.getWorkingPlanState().getItems().remove(0);
+        assertNoFrozen(plan(), "review_fix_selection_incomplete");
+    }
+
+    @Test
+    void groupInversionFreezesReorderedUnitsFlattenedItemsAndUnitFacts() {
+        groupFixture();
+        String baseline = JSON.toJSONString(state);
+        FixProposalDTO proposal = new DirectReviewPreviewPlanner(true)
+                .plan(state, candidates, finding, after -> review("pass", "pass"));
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        FrozenReviewPlanDTO frozen = proposal.getFrozenReviewPlan();
+        assertNotNull(frozen);
+        assertEquals(Lists.newArrayList("u-high", "u-mid", "u-low"), frozen.getSelectedEntityIds());
+        assertEquals(Lists.newArrayList("u-low", "u-mid", "u-high"), frozen.getOrderedEntityIds());
+        assertEquals(frozen.getOrderedEntityIds(), frozen.getOrderedPlan().getUnits().stream()
+                .map(OrderedUnitDTO::getUnitId).collect(Collectors.toList()));
+        assertEquals(Lists.newArrayList("u-low-v", "u-mid-v", "u-high-v"),
+                frozen.getOrderedPlan().getItems().stream()
+                        .map(OrderedItemDTO::getVolunteerId).collect(Collectors.toList()));
+        for (int index = 0; index < 3; index++) {
+            assertEquals(Integer.valueOf(index + 1),
+                    frozen.getOrderedPlan().getUnits().get(index).getPosition());
+            assertEquals(Integer.valueOf(index + 1),
+                    frozen.getOrderedPlan().getItems().get(index).getPosition());
+        }
+        assertEquals(3, frozen.getWorkingPlan().getUnits().size());
+        assertEquals(3, frozen.getWorkingPlan().getItems().size());
+        assertEquals(3, frozen.getSelectedFacts().size());
+        assertEquals("unit", proposal.getActions().get(0).getLevel());
+        assertEquals(Lists.newArrayList("u-low", "u-mid", "u-high"),
+                proposal.getActions().get(0).getUnitIds());
+        assertTrue(proposal.getActions().get(0).getVolunteerIds().isEmpty());
+        assertEquals(Integer.valueOf(3), proposal.getDryRunResult().getBeforeUnitTotal());
+        assertEquals(Integer.valueOf(3), proposal.getDryRunResult().getAfterUnitTotal());
+        assertEquals(new java.util.LinkedHashSet<>(Lists.newArrayList("u-high", "u-mid", "u-low")),
+                proposal.getDryRunResult().getBeforeUnitIds());
+        assertNotNull(proposal.getPreviewDigest());
+        assertTrue(proposal.getFindingPostcondition().getSatisfied());
+        assertEquals(DirectReviewPreviewPlanner.factsDigestForUnits(
+                        frozen.getSelectedEntityIds(), frozen.getOrderedPlan().getUnits(), candidates),
+                frozen.getFactsDigest());
+        assertEquals(baseline, JSON.toJSONString(state), "预览不得改动输入状态");
+    }
+
+    @Test
+    void unitModeIsDetectedFromOrderedUnitsEvenWithoutGroupVolunteerModel() {
+        groupFixture();
+        state.getCandidatePoolState().setVolunteerModel("major");
+        FixProposalDTO proposal = new DirectReviewPreviewPlanner(true)
+                .plan(state, candidates, finding, after -> review("pass", "pass"));
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(Lists.newArrayList("u-low", "u-mid", "u-high"),
+                proposal.getFrozenReviewPlan().getOrderedEntityIds());
+    }
+
+    @Test
+    void unitRatioFallsBackToSchoolEnrollRatioAndRejectsNonFinite() {
+        groupFixture();
+        for (OrderedUnitDTO unit : state.getOrderedPlanState().getUnits()) {
+            unit.setAdmissionRatio(null);
+        }
+        FixProposalDTO proposal = new DirectReviewPreviewPlanner(true)
+                .plan(state, candidates, finding, after -> review("pass", "pass"));
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(Lists.newArrayList("u-low", "u-mid", "u-high"),
+                proposal.getFrozenReviewPlan().getOrderedEntityIds());
+
+        groupFixture();
+        state.getOrderedPlanState().getUnits().get(0).setAdmissionRatio(Double.NaN);
+        assertNoFrozen(plan(), "review_fix_facts_incomplete");
+        groupFixture();
+        for (OrderedUnitDTO unit : state.getOrderedPlanState().getUnits()) {
+            unit.setAdmissionRatio(null);
+            unit.setSchoolEnrollRatio(null);
+        }
+        assertNoFrozen(plan(), "review_fix_facts_incomplete");
+    }
+
+    @Test
+    void unitModeRejectsLocksPinsPriorityRulesAndInconsistentUnits() {
+        groupFixture();
+        state.getOrderedPlanState().getUnits().get(0).setLocked(true);
+        assertNoFrozen(plan(), "review_fix_order_locked");
+        groupFixture();
+        state.getOrderedPlanState().getUnits().get(0).setPinned(true);
+        assertNoFrozen(plan(), "review_fix_order_locked");
+        groupFixture();
+        state.getOrderedPlanState().getUnits().get(0).setPinnedPosition(2);
+        assertNoFrozen(plan(), "review_fix_order_locked");
+        groupFixture();
+        state.getWorkingPlanState().getUnits().get(0).setLocked(true);
+        assertNoFrozen(plan(), "review_fix_order_locked");
+        groupFixture();
+        PriorityRuleDTO priority = new PriorityRuleDTO();
+        priority.setDomain("region");
+        priority.setKey("province");
+        priority.getValues().add("浙江");
+        state.getConstraintState().getHardPlanningObjectives().getPriorityRules().add(priority);
+        assertNoFrozen(plan(), "review_fix_direct_unsupported");
+        groupFixture();
+        state.getWorkingPlanState().getUnits().remove(0);
+        assertNoFrozen(plan(), "review_fix_selection_incomplete");
+        groupFixture();
+        state.getOrderedPlanState().getUnits().get(0).setMajorItems(Lists.newArrayList(major("missing-v")));
+        assertNoFrozen(plan(), "review_fix_facts_incomplete");
+    }
+
+    @Test
+    void unitModeRequiresUnitLevelReorderTargetsAndContiguousPositions() {
+        groupFixture();
+        finding.getSuggestedCommand().getReorderTargets().get(0).setLevel("volunteer");
+        assertNoFrozen(plan(), "review_fix_selection_incomplete");
+        groupFixture();
+        state.getOrderedPlanState().getUnits().get(0).setPosition(2);
+        assertNoFrozen(plan(), "review_fix_selection_incomplete");
+        groupFixture();
+        finding.getSuggestedCommand().getReorderTargets().get(0).setId("unknown-unit");
         assertNoFrozen(plan(), "review_fix_selection_incomplete");
     }
 
@@ -241,6 +360,73 @@ class DirectReviewPreviewPlannerTest {
         fixture();
         state.getConstraintState().getHardConstraints().getMustExcludeSchools().add("民办");
         assertNoFrozen(plan(), "review_fix_facts_incomplete");
+    }
+
+    private void groupFixture() {
+        state = new PlanningStateDTO();
+        state.setVersion(7);
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        state.getCandidatePoolState().setRequiredCount(3);
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        candidates = Lists.newArrayList();
+        String[] unitIds = {"u-high", "u-mid", "u-low"};
+        double[] ratios = {90D, 60D, 30D};
+        for (int index = 0; index < unitIds.length; index++) {
+            String volunteerId = unitIds[index] + "-v";
+            CandidateItemDTO candidate = candidate(volunteerId, ratios[index]);
+            candidate.setSchoolEnrollRatio(ratios[index]);
+            candidates.add(candidate);
+            state.getCandidatePoolState().getItems().add(candidate);
+
+            DraftUnitDTO workingUnit = new DraftUnitDTO();
+            workingUnit.setUnitId(unitIds[index]);
+            workingUnit.setTier("protect");
+            workingUnit.getMajorItems().add(major(volunteerId));
+            state.getWorkingPlanState().getUnits().add(workingUnit);
+
+            DraftItemDTO selected = new DraftItemDTO();
+            selected.setVolunteerId(volunteerId);
+            selected.setTier("protect");
+            state.getWorkingPlanState().getItems().add(selected);
+
+            OrderedUnitDTO orderedUnit = new OrderedUnitDTO();
+            orderedUnit.setUnitId(unitIds[index]);
+            orderedUnit.setPosition(index + 1);
+            orderedUnit.setTier("protect");
+            orderedUnit.setSchoolName("学校" + (index + 1) + "第01组");
+            orderedUnit.setProvinceName("浙江");
+            orderedUnit.setAdmissionRatio(ratios[index]);
+            orderedUnit.setSchoolEnrollRatio(ratios[index]);
+            orderedUnit.getMajorItems().add(major(volunteerId));
+            state.getOrderedPlanState().getUnits().add(orderedUnit);
+
+            OrderedItemDTO ordered = new OrderedItemDTO();
+            ordered.setVolunteerId(volunteerId);
+            ordered.setTier("protect");
+            ordered.setPosition(index + 1);
+            state.getOrderedPlanState().getItems().add(ordered);
+        }
+        finding = new EvaluationFindingDTO();
+        finding.setCode("probability_inversion");
+        finding.setResultStatus("fail");
+        PlanCommandDTO command = new PlanCommandDTO();
+        command.setStrategy("sort_by_probability");
+        command.setSourceStrategy("sort_by_probability");
+        command.setEvaluationVersion("before-evaluation");
+        command.setCommandDigest("command-digest");
+        for (String unitId : unitIds) {
+            EvaluationEntryRefDTO ref = new EvaluationEntryRefDTO();
+            ref.setLevel("unit");
+            ref.setId(unitId);
+            command.getReorderTargets().add(ref);
+        }
+        finding.setSuggestedCommand(command);
+    }
+
+    private PlanningUnitMajorDTO major(String volunteerId) {
+        PlanningUnitMajorDTO major = new PlanningUnitMajorDTO();
+        major.setVolunteerId(volunteerId);
+        return major;
     }
 
     private FixProposalDTO plan() {
