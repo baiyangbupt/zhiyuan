@@ -49,13 +49,47 @@
   `release-4.1.0/plan-solver-adr-cases.json`，并从 4.1.0 baseline manifest 移除
   对应条目；`test_release_410_m0_contract.py` 恢复通过。
 
+## 真栈验收（2026-10-19）
+
+环境：Java 18290 以 `-Dreview.fix.command.enabled=true` 重启（新 jar）；
+agent 18291 未改。fixture：900700（普通专业 major、80 条、无组/无锁/无优先规则），
+先备份 planningState/userScoreDetail，再在夹具中构造：
+
+- 2 条浙江条目改为保档（满足本省保底 2）；
+- 候选比例设为 90/10，其余 100，形成可修复倒挂（修复后 10,90,100...）。
+
+结果：
+
+1. 只读 preview：`status=preview_only`（信封）、proposal `status=ready`、
+   `requiresConfirmation=true`、frozenReviewPlan/factsDigest/previewDigest 齐全，
+   preflight `satisfied=true`。
+2. prepare：`prepared`，pendingId/operationId 正常；pending 顶层含
+   proposalId/commandDigest/previewDigest/evaluationVersion/planContentDigest、
+   frozenProposal/frozenReviewPlan/frozenRequestDigest。
+3. claim：active→applying（claimToken）。
+4. execute `apply_plan_change_proposal`：完成步骤
+   `proposal_applied / ordered_plan_regenerated / review_rerun /
+   postcondition_verified`，版本 1→2；最终 80 条、倒挂 0、本省保底 2；
+   postcondition satisfied=true。
+5. complete：applying→applied。
+6. 恢复：planningState/userScoreDetail 回滚到原 HEX，版本 1、80 条、
+   比例全 1.0、档位全冲；删除 pending/command/proposal-request 测试行。
+7. 运行时已用**开关关闭**重启（pid 12344），健康 200；900040 5/80、
+   900045 14/44 未受影响。
+
+真实问题与修复：`assistant_conversation_proposal_request.result_json` 仍是
+TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回填轻量摘要
+（proposalId/digests/status/summary），完整冻结负载只放 pending.dataValue；
+真栈 prepare 已通过。后续如需在 request 表存完整结果，应单独迁移 MEDIUMTEXT。
+
 ## 尚未完成
 
 - 其余 Direct 策略（remove/replace/group-inner）与 Search planner 尚未接入。
 - 专业组模式、pin/lock、已确认优先规则仍拒绝冻结。
-- 未做真栈 prepare→confirm→apply 验收；未部署、未重启服务。
+- 已做一条真栈 prepare→claim→execute→complete 验收；仅 900700 夹具，
+  不代表其他策略/会话已验收。
 - 旧 generate/apply 分支仍保留，供灰度回滚；J5.5d 再删。
-- 生产默认开关仍关闭。
+- 生产默认开关仍关闭（验收后已重启为关闭）。
 
 ## 下一批门禁
 

@@ -3519,8 +3519,22 @@ public class PlanningStateService {
                     upsert.setExpectedRevision(
                             active == null || active.getRevision() == null ? 0L : active.getRevision());
                     PendingConfirmationRes pending = pendingConfirmationBizService.upsert(tenantId, upsert);
+                    // assistant_conversation_proposal_request.result_json 仍是 TEXT 量级；
+                    // 冻结 proposal 已经在 pending.dataValue，这里只回放放轻量摘要，避免
+                    // “Data too long for column result_json”。真正执行只读 pending。
+                    Map<String, Object> compactResult = new LinkedHashMap<String, Object>();
+                    compactResult.put("proposalId", proposal.getProposalId());
+                    compactResult.put("proposalSource", proposal.getProposalSource());
+                    compactResult.put("status", proposal.getStatus());
+                    compactResult.put("strategy", proposal.getStrategy());
+                    compactResult.put("findingCode", proposal.getFindingCode());
+                    compactResult.put("previewDigest", proposal.getPreviewDigest());
+                    compactResult.put("commandDigest", proposal.getCommandDigest());
+                    compactResult.put("evaluationVersion", proposal.getEvaluationVersion());
+                    compactResult.put("sourceVersion", preview.getSourceVersion());
+                    compactResult.put("summary", proposal.getSummary());
                     return new ConversationProposalRequestService.PrepareOutcome(
-                            pending == null ? null : pending.getPendingId(), operationId, proposal);
+                            pending == null ? null : pending.getPendingId(), operationId, compactResult);
                 });
     }
 
