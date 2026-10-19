@@ -199,7 +199,21 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   后版本 14→15、44 组、保底 2、postcondition true；已恢复 v14/44。
 - Java 全量 **1443 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
 
-仍未覆盖：gap/edge 等 Search probe；Ratio/Risk 的专业组模式；
+## 专业组模式：ratio_distribution → fill（2026-10-19）
+
+- `RatioReviewPreviewPlanner` 增加 unit 分支：按 ordered units 统计当前档位，
+  patch `StructureTarget.tierAllocationConstraint` 与 `tierAnchor`
+  （`TierStructureProjection.project`），以 unit countMode 走 staged solver 的
+  硬档位/soft anchor 阶段；物化 ordered units/items、unit factsDigest，原
+  ratio probe 预检，冻结回放结构与其余 Search 切片同构。
+- 真栈 900045 夹具：44 组全冲、tierQuotaGoal exact 22/11/11、候选池
+  11 稳 + 11 保（含 2 个江西保档组）。preview 同时产出 safety 与 ratio 两条
+  ready 提案；选择 ratio：`selected=44`、`resolvedTierCounts=22/11/11`、
+  add=22/remove=22、postcondition ratio pass；prepare→claim→execute 后版本
+  14→15、44 组、档位 22/11/11、postcondition true；已恢复 v14/44（全冲）。
+- Java 全量 **1452 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
+
+仍未覆盖：gap/edge 等 Search probe；Risk 的专业组模式；
 目标/档位/覆盖的 durable patch 持久化。
 
 ## 尚未完成

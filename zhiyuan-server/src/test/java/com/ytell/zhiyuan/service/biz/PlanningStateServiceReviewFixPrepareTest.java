@@ -602,9 +602,10 @@ class PlanningStateServiceReviewFixPrepareTest {
         assertTrue(upserts.isEmpty());
     }
 
-    private static long localProtectUnitCount(List<String> unitIds) {
+    private long localProtectUnitCount(List<String> unitIds) {
         // 单元事实由候选池派生：同一 unit 的任一专业即代表整组。
-        List<CandidateItemDTO> pool = groupSafetyFixture().getCandidatePoolState().getItems();
+        PlanningStateDTO current = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        List<CandidateItemDTO> pool = current.getCandidatePoolState().getItems();
         return unitIds.stream().filter(unitId -> {
             for (CandidateItemDTO candidate : pool) {
                 if (unitId.equals(candidate.getPlanSchoolDataId())) {
@@ -693,6 +694,97 @@ class PlanningStateServiceReviewFixPrepareTest {
 
     private static FixProposalDTO ratioProposal(ReviewFixPreviewDTO preview) {
         return proposalByFindingCode(preview, "ratio_distribution");
+    }
+
+    @Test
+    void freezesGroupRatioProposalWithFortyFourUnitsAt22AndElevenEleven() {
+        row.setDataValue(JSON.toJSONString(groupRatioFixture()));
+        String baseline = row.getDataValue();
+
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = ratioProposal(preview);
+
+        assertNotNull(proposal, "group ratio fixture 必须产出 Ratio 提案");
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertEquals("rebalance_tier_ratio", proposal.getSourceStrategy());
+        assertEquals("ratio_distribution", proposal.getFindingCode());
+        assertEquals(44, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertEquals(44, proposal.getSolverResult().getOrderedEntityIds().size());
+        assertEquals(22, proposal.getSolverResult().getResolvedTierCounts().getSprintCount());
+        assertEquals(11, proposal.getSolverResult().getResolvedTierCounts().getStableCount());
+        assertEquals(11, proposal.getSolverResult().getResolvedTierCounts().getProtectCount());
+        assertEquals(22, proposal.getSolverResult().getHistoricalTierAnchor().getSprintCount());
+        assertEquals(11, proposal.getSolverResult().getHistoricalTierAnchor().getStableCount());
+        assertEquals(11, proposal.getSolverResult().getHistoricalTierAnchor().getProtectCount());
+        assertTrue(proposal.getFindingPostcondition().getSatisfied());
+        assertEquals("ratio_distribution", proposal.getFindingPostcondition().getFindingCode());
+        for (FixProposalActionDTO action : proposal.getActions()) {
+            assertEquals("unit", action.getLevel());
+        }
+        assertEquals(44, proposal.getFrozenReviewPlan().getSelectedEntityIds().size());
+        assertEquals(44, proposal.getFrozenReviewPlan().getOrderedEntityIds().size());
+        assertEquals(44, proposal.getFrozenReviewPlan().getWorkingPlan().getUnits().size());
+        assertEquals(44, proposal.getFrozenReviewPlan().getOrderedPlan().getUnits().size());
+        assertEquals(88, proposal.getFrozenReviewPlan().getWorkingPlan().getItems().size());
+        assertEquals(88, proposal.getFrozenReviewPlan().getOrderedPlan().getItems().size());
+        assertTrue(localProtectUnitCount(proposal.getSolverResult().getSelectedEntityIds()) >= 2);
+
+        PrepareResultDTO dto = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-group-ratio", "digest-group-ratio",
+                prepareRequest(proposal, preview.getSourceVersion()));
+
+        assertEquals("prepared", dto.getStatus());
+        assertEquals(1, upserts.size());
+        Map<String, Object> data = upserts.get(0).getDataValue();
+        Map<String, Object> frozenProposal = (Map<String, Object>) data.get("frozenProposal");
+        assertEquals("ratio_distribution", frozenProposal.get("findingCode"));
+        assertEquals("fill_missing_count", frozenProposal.get("strategy"));
+        assertEquals("rebalance_tier_ratio", frozenProposal.get("sourceStrategy"));
+        assertEquals(44, ((List) ((Map) frozenProposal.get("solverResult"))
+                .get("selectedEntityIds")).size());
+        Map<String, Object> frozen = (Map<String, Object>) data.get("frozenReviewPlan");
+        assertEquals(44, ((List) frozen.get("selectedEntityIds")).size());
+        assertEquals(44, ((List) frozen.get("orderedEntityIds")).size());
+        assertEquals(44, ((List) ((Map) frozen.get("workingPlan")).get("units")).size());
+        assertEquals(44, ((List) ((Map) frozen.get("orderedPlan")).get("units")).size());
+        assertEquals(88, ((List) ((Map) frozen.get("workingPlan")).get("items")).size());
+        assertEquals(88, ((List) ((Map) frozen.get("orderedPlan")).get("items")).size());
+        assertNotNull(frozen.get("factsDigest"));
+        assertEquals(baseline, row.getDataValue(), "prepare 只冻结 pending，不写方案状态");
+        PlanningStateDTO unchanged = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(Integer.valueOf(22), unchanged.getConstraintState()
+                .getHardPlanningObjectives().getTierQuotaGoal().getSprintCount());
+        assertEquals(Integer.valueOf(11), unchanged.getConstraintState()
+                .getHardPlanningObjectives().getTierQuotaGoal().getStableCount());
+        assertEquals(Integer.valueOf(11), unchanged.getConstraintState()
+                .getHardPlanningObjectives().getTierQuotaGoal().getProtectCount());
+    }
+
+    @Test
+    void groupRatioPrepareRejectsTamperedPreviewDigestAndStaleGuard() {
+        row.setDataValue(JSON.toJSONString(groupRatioFixture()));
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = ratioProposal(preview);
+        ReviewFixPrepareReq tampered = prepareRequest(proposal, preview.getSourceVersion());
+        tampered.setPreviewDigest("tampered-group-ratio-preview");
+
+        BusinessException changed = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(
+                        TENANT, SESSION, "req-group-ratio-bad", "digest-group-ratio-bad", tampered));
+        assertEquals(409, changed.getStatus());
+        assertEquals("review_fix_changed", changed.getMessage());
+        assertTrue(upserts.isEmpty());
+
+        ReviewFixPrepareReq stale = prepareRequest(proposal, preview.getSourceVersion());
+        stale.setSourceVersionGuard(preview.getSourceVersion() - 1);
+        BusinessException outdated = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(
+                        TENANT, SESSION, "req-group-ratio-stale", "digest-group-ratio-stale", stale));
+        assertEquals(409, outdated.getStatus());
+        assertEquals("review_fix_stale", outdated.getMessage());
+        assertTrue(upserts.isEmpty());
     }
 
     @Test
@@ -1060,6 +1152,115 @@ class PlanningStateServiceReviewFixPrepareTest {
             boolean current = unitIndex <= 44;
             boolean local = unitIndex > 44;
             String tier = local ? "protect" : "sprint";
+            String province = local ? "江西" : "江苏";
+            String schoolName = "学校" + unitIndex + "第01组";
+            DraftUnitDTO workingUnit = null;
+            OrderedUnitDTO orderedUnit = null;
+            if (current) {
+                workingUnit = new DraftUnitDTO();
+                workingUnit.setUnitId(unitId);
+                workingUnit.setTier(tier);
+                workingUnit.setSchoolName(schoolName);
+                orderedUnit = new OrderedUnitDTO();
+                orderedUnit.setUnitId(unitId);
+                orderedUnit.setPosition(unitIndex);
+                orderedUnit.setTier(tier);
+                orderedUnit.setSchoolName(schoolName);
+                orderedUnit.setProvinceName(province);
+                orderedUnit.setAdmissionRatio(70D);
+                orderedUnit.setSchoolEnrollRatio(60D);
+                orderedUnit.setTotalMajorCount(2);
+            }
+            for (int majorIndex = 1; majorIndex <= 2; majorIndex++) {
+                String volunteerId = unitId + "-v" + majorIndex;
+                CandidateItemDTO candidate = new CandidateItemDTO();
+                candidate.setVolunteerId(volunteerId);
+                candidate.setPlanSchoolDataId(unitId);
+                candidate.setSchoolId("s" + unitId);
+                candidate.setSchoolName(schoolName);
+                candidate.setDisplaySchoolName(schoolName);
+                candidate.setMajorName("专业" + unitIndex + "-" + majorIndex);
+                candidate.setMajorCategory("工学");
+                candidate.setTier(tier);
+                candidate.setProvinceName(province);
+                candidate.setAdmissionRatio(70D);
+                candidate.setSchoolEnrollRatio(60D);
+                candidate.setFinalScore(80D);
+                candidate.setIntentScore(40D);
+                candidate.setTuitionPerYear(5000);
+                state.getCandidatePoolState().getItems().add(candidate);
+                RecommendationOverlayStateDTO.Item overlay = new RecommendationOverlayStateDTO.Item();
+                overlay.setVolunteerId(volunteerId);
+                state.getRecommendationOverlayState().getItems().add(overlay);
+                if (!current) {
+                    continue;
+                }
+                DraftItemDTO selected = new DraftItemDTO();
+                selected.setVolunteerId(volunteerId);
+                selected.setTier(tier);
+                selected.setSchoolName(schoolName);
+                selected.setMajorName(candidate.getMajorName());
+                state.getWorkingPlanState().getItems().add(selected);
+
+                PlanningUnitMajorDTO workingMajor = new PlanningUnitMajorDTO();
+                workingMajor.setVolunteerId(volunteerId);
+                workingMajor.setMajorName(candidate.getMajorName());
+                workingMajor.setTier(tier);
+                workingUnit.getMajorItems().add(workingMajor);
+
+                OrderedItemDTO ordered = new OrderedItemDTO();
+                ordered.setVolunteerId(volunteerId);
+                ordered.setTier(tier);
+                ordered.setSchoolName(schoolName);
+                ordered.setMajorName(candidate.getMajorName());
+                ordered.setPosition(state.getOrderedPlanState().getItems().size() + 1);
+                state.getOrderedPlanState().getItems().add(ordered);
+
+                PlanningUnitMajorDTO orderedMajor = new PlanningUnitMajorDTO();
+                orderedMajor.setVolunteerId(volunteerId);
+                orderedMajor.setMajorName(candidate.getMajorName());
+                orderedMajor.setTier(tier);
+                orderedUnit.getMajorItems().add(orderedMajor);
+            }
+            if (current) {
+                state.getWorkingPlanState().getUnits().add(workingUnit);
+                state.getOrderedPlanState().getUnits().add(orderedUnit);
+            }
+        }
+        return state;
+    }
+
+    /**
+     * 组模式 ratio：44 个现有专业组全部是冲档，已确认精确配额 22/11/11；
+     * 候选池另有 11 个稳档组 + 11 个保档组（最后 2 组为江西 protect，
+     * 满足 550 分下的本省保底 2 组）。目标数 44 不变，等量替换。
+     */
+    static PlanningStateDTO groupRatioFixture() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setVersion(7);
+        state.setPhase("ordered");
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        state.getCandidatePoolState().setRequiredCount(44);
+        state.getCandidatePoolState().setSourceProvinceName("江西");
+        state.getCandidatePoolState().setUserScore(550);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(44);
+        TierQuotaGoalDTO quota = new TierQuotaGoalDTO();
+        quota.setType("exact_counts");
+        quota.setSprintCount(22);
+        quota.setStableCount(11);
+        quota.setProtectCount(11);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(quota);
+
+        int currentUnits = 44;
+        int stableUnits = 11;
+        int protectUnits = 11;
+        int totalUnits = currentUnits + stableUnits + protectUnits;
+        for (int unitIndex = 1; unitIndex <= totalUnits; unitIndex++) {
+            String unitId = String.format("u%03d", unitIndex);
+            boolean current = unitIndex <= currentUnits;
+            String tier = current ? "sprint"
+                    : unitIndex <= currentUnits + stableUnits ? "stable" : "protect";
+            boolean local = unitIndex > currentUnits + stableUnits + protectUnits - 2;
             String province = local ? "江西" : "江苏";
             String schoolName = "学校" + unitIndex + "第01组";
             DraftUnitDTO workingUnit = null;

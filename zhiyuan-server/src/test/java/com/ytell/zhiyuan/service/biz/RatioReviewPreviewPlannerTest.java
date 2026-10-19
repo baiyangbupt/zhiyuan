@@ -6,12 +6,14 @@ import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
+import com.ytell.zhiyuan.model.dto.planning.FixProposalActionDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.FrozenReviewPlanDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanCommandDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
@@ -349,5 +351,409 @@ class RatioReviewPreviewPlannerTest {
         range.setMinCount(count);
         range.setMaxCount(count);
         return range;
+    }
+
+    // ── 组模式（专业单元）配比切片 ─────────────────────────────────────────
+
+    private static final int GROUP_UNITS = 44;
+    private static final int GROUP_SPRINT = 22;
+    private static final int GROUP_STABLE = 11;
+    private static final int GROUP_PROTECT = 11;
+    private static final int GROUP_MAJORS_PER_UNIT = 2;
+    private static final int GROUP_EXTRA_UNITS = GROUP_STABLE + GROUP_PROTECT;
+
+    @Test
+    void groupRatioFreezesTwentyTwoElevenElevenAcrossFortyFourUnits() {
+        groupFixture();
+        String baseline = JSON.toJSONString(state);
+
+        FixProposalDTO proposal = planner.plan(state, candidates, finding, after -> {
+            assertEquals(GROUP_UNITS, after.getOrderedPlanState().getUnits().size(),
+                    "目标数按 unit 计");
+            assertEquals(GROUP_UNITS * GROUP_MAJORS_PER_UNIT,
+                    after.getOrderedPlanState().getItems().size());
+            assertEquals(GROUP_UNITS, after.getWorkingPlanState().getUnits().size());
+            assertEquals(GROUP_UNITS * GROUP_MAJORS_PER_UNIT,
+                    after.getWorkingPlanState().getItems().size());
+            assertEquals(GROUP_SPRINT, unitTierCount(after, "sprint"));
+            assertEquals(GROUP_STABLE, unitTierCount(after, "stable"));
+            assertEquals(GROUP_PROTECT, unitTierCount(after, "protect"));
+            assertTrue(localProtectUnitCount(orderedUnitIds(after)) >= 2,
+                    "物化后的排序态必须含 2 个本省保底专业组");
+            for (int index = 0; index < GROUP_UNITS; index++) {
+                assertEquals(Integer.valueOf(index + 1),
+                        after.getOrderedPlanState().getUnits().get(index).getPosition());
+            }
+            return groupRatioReview("pass");
+        }, true);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("review_check", proposal.getProposalSource());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertEquals("rebalance_tier_ratio", proposal.getSourceStrategy());
+        assertEquals("ratio_distribution", proposal.getFindingCode());
+        assertEquals("冲稳保配比调整预览", proposal.getTitle());
+        assertEquals(Integer.valueOf(7), proposal.getSourceVersionGuard());
+        assertEquals("ready", proposal.getSolverResult().getStatus());
+        assertEquals(GROUP_UNITS, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertEquals(GROUP_UNITS, proposal.getSolverResult().getOrderedEntityIds().size());
+        assertEquals(GROUP_SPRINT,
+                proposal.getSolverResult().getResolvedTierCounts().getSprintCount());
+        assertEquals(GROUP_STABLE,
+                proposal.getSolverResult().getResolvedTierCounts().getStableCount());
+        assertEquals(GROUP_PROTECT,
+                proposal.getSolverResult().getResolvedTierCounts().getProtectCount());
+        assertEquals(GROUP_SPRINT,
+                proposal.getSolverResult().getHistoricalTierAnchor().getSprintCount());
+        assertEquals(GROUP_STABLE,
+                proposal.getSolverResult().getHistoricalTierAnchor().getStableCount());
+        assertEquals(GROUP_PROTECT,
+                proposal.getSolverResult().getHistoricalTierAnchor().getProtectCount());
+        assertEquals(PlanningObjectiveCompiler.compileConfirmed(state).getObjectiveDigest(),
+                proposal.getCanonicalObjectiveDigest(), "proposal 元数据保持 pre-enrich digest");
+        assertEquals(Integer.valueOf(GROUP_UNITS), proposal.getTargetCountBefore());
+        assertEquals(Integer.valueOf(GROUP_UNITS), proposal.getTargetCountAfter());
+        assertEquals(Integer.valueOf(GROUP_PROTECT + GROUP_STABLE), proposal.getAddedUnitCount());
+        assertEquals(Integer.valueOf(GROUP_PROTECT + GROUP_STABLE), proposal.getRemovedCount());
+        assertTrue(proposal.getFindingPostcondition().getSatisfied());
+        assertEquals("ratio_distribution", proposal.getFindingPostcondition().getFindingCode());
+
+        assertFalse(proposal.getActions().isEmpty());
+        int removeUnits = 0;
+        int addUnits = 0;
+        boolean sawReorder = false;
+        for (FixProposalActionDTO action : proposal.getActions()) {
+            assertEquals("unit", action.getLevel());
+            if ("remove_volunteers".equals(action.getActionType())) {
+                removeUnits = action.getRemoveUnitIds().size();
+                assertEquals(GROUP_PROTECT + GROUP_STABLE, removeUnits);
+            }
+            if ("fill_total_count".equals(action.getActionType())) {
+                addUnits = action.getCandidateUnitIds().size();
+                assertEquals(GROUP_PROTECT + GROUP_STABLE, addUnits);
+            }
+            if ("reorder_volunteers".equals(action.getActionType())) {
+                sawReorder = true;
+                assertEquals(GROUP_UNITS, action.getUnitIds().size());
+            }
+        }
+        assertEquals(GROUP_PROTECT + GROUP_STABLE, removeUnits);
+        assertEquals(GROUP_PROTECT + GROUP_STABLE, addUnits);
+        assertTrue(sawReorder, "重配比后顺序变化必须给出 unit 级 reorder");
+
+        assertEquals(Integer.valueOf(GROUP_UNITS), proposal.getDryRunResult().getBeforeUnitTotal());
+        assertEquals(Integer.valueOf(GROUP_UNITS), proposal.getDryRunResult().getAfterUnitTotal());
+        assertEquals(GROUP_UNITS, proposal.getDryRunResult().getBeforeUnitIds().size());
+        assertEquals(GROUP_UNITS, proposal.getDryRunResult().getAfterUnitIds().size());
+        assertEquals(Integer.valueOf(GROUP_UNITS * GROUP_MAJORS_PER_UNIT),
+                proposal.getDryRunResult().getBeforeVolunteerTotal());
+        assertEquals(Integer.valueOf(GROUP_UNITS * GROUP_MAJORS_PER_UNIT),
+                proposal.getDryRunResult().getAfterVolunteerTotal());
+        assertEquals(Integer.valueOf(GROUP_PROTECT + GROUP_STABLE),
+                proposal.getDryRunResult().getRemoveUnitCount());
+        assertEquals(Integer.valueOf(GROUP_PROTECT + GROUP_STABLE),
+                proposal.getDryRunResult().getAddUnitCount());
+        assertEquals(Integer.valueOf(GROUP_UNITS),
+                proposal.getDryRunResult().getBeforeUnitTierCounts().get("sprint"));
+        assertEquals(Integer.valueOf(GROUP_SPRINT),
+                proposal.getDryRunResult().getAfterUnitTierCounts().get("sprint"));
+        assertEquals(Integer.valueOf(GROUP_STABLE),
+                proposal.getDryRunResult().getAfterUnitTierCounts().get("stable"));
+        assertEquals(Integer.valueOf(GROUP_PROTECT),
+                proposal.getDryRunResult().getAfterUnitTierCounts().get("protect"));
+
+        FrozenReviewPlanDTO frozen = proposal.getFrozenReviewPlan();
+        assertNotNull(frozen);
+        assertEquals(GROUP_UNITS, frozen.getSelectedEntityIds().size());
+        assertEquals(GROUP_UNITS, frozen.getOrderedEntityIds().size());
+        assertEquals(GROUP_UNITS, frozen.getWorkingPlan().getUnits().size());
+        assertEquals(GROUP_UNITS, frozen.getOrderedPlan().getUnits().size());
+        assertEquals(GROUP_UNITS * GROUP_MAJORS_PER_UNIT,
+                frozen.getWorkingPlan().getItems().size());
+        assertEquals(GROUP_UNITS * GROUP_MAJORS_PER_UNIT,
+                frozen.getOrderedPlan().getItems().size());
+        assertEquals(GROUP_UNITS * GROUP_MAJORS_PER_UNIT, frozen.getSelectedFacts().size());
+        assertEquals(frozen.getOrderedEntityIds(), frozen.getOrderedPlan().getUnits().stream()
+                .map(OrderedUnitDTO::getUnitId).collect(java.util.stream.Collectors.toList()));
+        for (int index = 0; index < GROUP_UNITS; index++) {
+            assertEquals(Integer.valueOf(index + 1),
+                    frozen.getOrderedPlan().getUnits().get(index).getPosition());
+        }
+        for (int index = 0; index < GROUP_UNITS * GROUP_MAJORS_PER_UNIT; index++) {
+            assertEquals(Integer.valueOf(index + 1),
+                    frozen.getOrderedPlan().getItems().get(index).getPosition());
+        }
+        assertTrue(localProtectUnitCount(frozen.getSelectedEntityIds()) >= 2);
+        assertEquals(DirectReviewPreviewPlanner.factsDigestForUnits(
+                        frozen.getSelectedEntityIds(), frozen.getOrderedPlan().getUnits(), candidates),
+                frozen.getFactsDigest());
+        assertNotNull(proposal.getPreviewDigest());
+        assertNotNull(proposal.getPlanContentDigest());
+        assertEquals(baseline, JSON.toJSONString(state), "规划器不得修改输入状态");
+    }
+
+    @Test
+    void groupRatioDetectsUnitModeFromOrderedUnitsWhenVolunteerModelIsMissing() {
+        groupFixture();
+        state.getCandidatePoolState().setVolunteerModel(null);
+
+        FixProposalDTO proposal = planner.plan(state, candidates, finding,
+                after -> groupRatioReview("pass"), true);
+
+        assertEquals("ready", proposal.getStatus());
+        assertNotNull(proposal.getFrozenReviewPlan());
+        assertEquals(GROUP_UNITS, proposal.getFrozenReviewPlan().getOrderedPlan().getUnits().size());
+        assertEquals(GROUP_SPRINT,
+                proposal.getSolverResult().getResolvedTierCounts().getSprintCount());
+    }
+
+    @Test
+    void groupRatioAcceptsSparsePositionsAndMissingWorkingUnits() {
+        groupFixture();
+        for (int index = 0; index < state.getOrderedPlanState().getUnits().size(); index++) {
+            state.getOrderedPlanState().getUnits().get(index).setPosition((index + 1) * 2);
+        }
+        state.getWorkingPlanState().getUnits().clear();
+
+        FixProposalDTO proposal = planner.plan(state, candidates, finding,
+                after -> groupRatioReview("pass"), true);
+
+        assertEquals("ready", proposal.getStatus());
+        assertNotNull(proposal.getFrozenReviewPlan());
+        assertEquals(GROUP_UNITS, proposal.getFrozenReviewPlan().getOrderedPlan().getUnits().size());
+        for (int index = 0; index < GROUP_UNITS; index++) {
+            assertEquals(Integer.valueOf(index + 1),
+                    proposal.getFrozenReviewPlan().getOrderedPlan().getUnits().get(index).getPosition());
+        }
+    }
+
+    @Test
+    void groupRatioRejectsLocksPinsPriorityRulesAndMalformedUnits() {
+        groupFixture();
+        state.getOrderedPlanState().getUnits().get(0).setPinned(true);
+        assertNull(plan(false));
+        state.getOrderedPlanState().getUnits().get(0).setPinned(null);
+        state.getOrderedPlanState().getUnits().get(0).setLocked(true);
+        assertNull(plan(false));
+        state.getOrderedPlanState().getUnits().get(0).setLocked(null);
+        state.getOrderedPlanState().getUnits().get(0).setPinnedPosition(3);
+        assertNull(plan(false));
+        state.getOrderedPlanState().getUnits().get(0).setPinnedPosition(null);
+
+        PriorityRuleDTO rule = new PriorityRuleDTO();
+        rule.setDomain("region");
+        rule.setKey("province");
+        rule.setValues(Lists.newArrayList("江西"));
+        state.getConstraintState().getHardPlanningObjectives().getPriorityRules().add(rule);
+        assertNull(plan(false));
+        state.getConstraintState().getHardPlanningObjectives().getPriorityRules().clear();
+
+        state.getOrderedPlanState().getUnits().get(1).setPosition(1);
+        assertNull(plan(false), "位置必须严格递增");
+        state.getOrderedPlanState().getUnits().get(1).setPosition(2);
+        state.getOrderedPlanState().getUnits().get(2).setUnitId("u001");
+        assertNull(plan(false), "unitId 必须唯一");
+        state.getOrderedPlanState().getUnits().get(2).setUnitId("u003");
+        state.getOrderedPlanState().getUnits().clear();
+        assertNull(plan(false), "没有 ordered units 时不得退回志愿口径");
+
+        assertNull(planner.plan(state, candidates, finding,
+                after -> groupRatioReview("fail"), false));
+    }
+
+    /**
+     * 组模式配比切片：44 个现有专业组全部是冲档，已确认精确配额 22/11/11；
+     * 候选池另有 11 个稳档组 + 11 个保档组（其中 2 个江西保底），
+     * 目标数 44 不变，靠等量替换把冲档压到 22 并补齐稳/保。
+     */
+    private void groupFixture() {
+        state = new PlanningStateDTO();
+        state.setVersion(7);
+        state.setPhase("ordered");
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        state.getCandidatePoolState().setRequiredCount(GROUP_UNITS);
+        state.getCandidatePoolState().setSourceProvinceName("江西");
+        // 550 分 → 本省保底 2 组；候选池尾部 2 个江西 protect 组。
+        state.getCandidatePoolState().setUserScore(550);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(GROUP_UNITS);
+        TierQuotaGoalDTO quota = new TierQuotaGoalDTO();
+        quota.setType("exact_counts");
+        quota.setSprintCount(GROUP_SPRINT);
+        quota.setStableCount(GROUP_STABLE);
+        quota.setProtectCount(GROUP_PROTECT);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(quota);
+
+        candidates = Lists.newArrayList();
+        for (int unitIndex = 1; unitIndex <= GROUP_UNITS + GROUP_EXTRA_UNITS; unitIndex++) {
+            String unitId = String.format("u%03d", unitIndex);
+            boolean current = unitIndex <= GROUP_UNITS;
+            String tier = current ? "sprint"
+                    : unitIndex <= GROUP_UNITS + GROUP_STABLE ? "stable" : "protect";
+            boolean local = unitIndex > GROUP_UNITS + GROUP_STABLE + GROUP_PROTECT - 2;
+            String province = local ? "江西" : "江苏";
+            String schoolName = "学校" + unitIndex + "第01组";
+
+            DraftUnitDTO workingUnit = null;
+            OrderedUnitDTO orderedUnit = null;
+            if (current) {
+                workingUnit = new DraftUnitDTO();
+                workingUnit.setUnitId(unitId);
+                workingUnit.setTier(tier);
+                workingUnit.setSchoolName(schoolName);
+                orderedUnit = new OrderedUnitDTO();
+                orderedUnit.setUnitId(unitId);
+                orderedUnit.setPosition(unitIndex);
+                orderedUnit.setTier(tier);
+                orderedUnit.setSchoolName(schoolName);
+                orderedUnit.setProvinceName(province);
+                orderedUnit.setAdmissionRatio(70D);
+                orderedUnit.setSchoolEnrollRatio(60D);
+            }
+            for (int majorIndex = 1; majorIndex <= GROUP_MAJORS_PER_UNIT; majorIndex++) {
+                String volunteerId = unitId + "-v" + majorIndex;
+                CandidateItemDTO candidate = new CandidateItemDTO();
+                candidate.setVolunteerId(volunteerId);
+                candidate.setPlanSchoolDataId(unitId);
+                candidate.setSchoolId("s" + unitId);
+                candidate.setSchoolName(schoolName);
+                candidate.setDisplaySchoolName(schoolName);
+                candidate.setMajorName("专业" + unitIndex + "-" + majorIndex);
+                candidate.setMajorCategory("工学");
+                candidate.setTier(tier);
+                candidate.setProvinceName(province);
+                candidate.setAdmissionRatio(70D);
+                candidate.setSchoolEnrollRatio(60D);
+                candidate.setFinalScore(80D);
+                candidate.setIntentScore(40D);
+                candidate.setTuitionPerYear(5000);
+                candidates.add(candidate);
+                state.getCandidatePoolState().getItems().add(candidate);
+                if (!current) {
+                    continue;
+                }
+                DraftItemDTO selected = new DraftItemDTO();
+                selected.setVolunteerId(volunteerId);
+                selected.setTier(tier);
+                selected.setSchoolName(schoolName);
+                selected.setMajorName(candidate.getMajorName());
+                state.getWorkingPlanState().getItems().add(selected);
+
+                PlanningUnitMajorDTO workingMajor = new PlanningUnitMajorDTO();
+                workingMajor.setVolunteerId(volunteerId);
+                workingMajor.setMajorName(candidate.getMajorName());
+                workingMajor.setTier(tier);
+                workingUnit.getMajorItems().add(workingMajor);
+
+                OrderedItemDTO ordered = new OrderedItemDTO();
+                ordered.setVolunteerId(volunteerId);
+                ordered.setTier(tier);
+                ordered.setSchoolName(schoolName);
+                ordered.setMajorName(candidate.getMajorName());
+                ordered.setPosition(state.getOrderedPlanState().getItems().size() + 1);
+                state.getOrderedPlanState().getItems().add(ordered);
+
+                PlanningUnitMajorDTO orderedMajor = new PlanningUnitMajorDTO();
+                orderedMajor.setVolunteerId(volunteerId);
+                orderedMajor.setMajorName(candidate.getMajorName());
+                orderedMajor.setTier(tier);
+                orderedUnit.getMajorItems().add(orderedMajor);
+            }
+            if (current) {
+                state.getWorkingPlanState().getUnits().add(workingUnit);
+                state.getOrderedPlanState().getUnits().add(orderedUnit);
+            }
+        }
+
+        finding = new EvaluationFindingDTO();
+        finding.setCode("ratio_distribution");
+        finding.setResultStatus("fail");
+        finding.setRuleStrength("soft");
+        finding.setReasonCode("sprint_tier_over_limit");
+        PlanCommandDTO command = new PlanCommandDTO();
+        command.setStrategy("rebalance_tier_ratio");
+        command.setApplyStrategy("fill_missing_count");
+        command.setSourceStrategy("rebalance_tier_ratio");
+        command.setSourceCheck("ratio_distribution");
+        command.setLevel("unit");
+        command.setTargetCount(GROUP_UNITS);
+        command.setTierConstraint(groupQuotaConstraint());
+        command.setEvaluationVersion("before-group-ratio-evaluation");
+        command.setCommandDigest("group-ratio-command-digest");
+        finding.setSuggestedCommand(command);
+    }
+
+    private TierAllocationConstraintDTO groupQuotaConstraint() {
+        TierAllocationConstraintDTO constraint = new TierAllocationConstraintDTO();
+        constraint.setType("exact_counts");
+        constraint.setSourceType("exact_counts");
+        constraint.setSprint(range(GROUP_SPRINT));
+        constraint.setStable(range(GROUP_STABLE));
+        constraint.setProtect(range(GROUP_PROTECT));
+        return constraint;
+    }
+
+    private List<String> orderedUnitIds(PlanningStateDTO current) {
+        List<String> ids = Lists.newArrayList();
+        for (OrderedUnitDTO unit : current.getOrderedPlanState().getUnits()) {
+            ids.add(unit.getUnitId());
+        }
+        return ids;
+    }
+
+    private int unitTierCount(PlanningStateDTO current, String tier) {
+        int count = 0;
+        for (OrderedUnitDTO unit : current.getOrderedPlanState().getUnits()) {
+            String actual = TierAllocationSupport.canonicalTierKey(unit.getTier());
+            if (actual.isEmpty()) {
+                for (PlanningUnitMajorDTO major : unit.getMajorItems()) {
+                    actual = TierAllocationSupport.canonicalTierKey(major == null ? null : major.getTier());
+                    if (!actual.isEmpty()) {
+                        break;
+                    }
+                }
+            }
+            if (tier.equals(actual)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private long localProtectUnitCount(List<String> unitIds) {
+        long count = 0;
+        for (String unitId : unitIds) {
+            for (CandidateItemDTO candidate : candidates) {
+                if (unitId.equals(candidate.getPlanSchoolDataId())) {
+                    if ("protect".equals(candidate.getTier())
+                            && "江西".equals(candidate.getProvinceName())) {
+                        count++;
+                    }
+                    break;
+                }
+            }
+        }
+        return count;
+    }
+
+    private ReviewStateDTO groupRatioReview(String ratioStatus) {
+        ReviewStateDTO review = new ReviewStateDTO();
+        review.setEvaluationStatus("completed");
+        review.setEvaluationVersion("after-group-ratio-evaluation");
+        review.setProbesRun(2);
+        review.setHardFeasible(true);
+        EvaluationFindingDTO ratio = new EvaluationFindingDTO();
+        ratio.setCode("ratio_distribution");
+        ratio.setResultStatus(ratioStatus);
+        ratio.setRuleStrength("soft");
+        ratio.getThreshold().put("sprintActual", GROUP_SPRINT);
+        ratio.getThreshold().put("stableActual", GROUP_STABLE);
+        ratio.getThreshold().put("protectActual", GROUP_PROTECT);
+        EvaluationFindingDTO hard = new EvaluationFindingDTO();
+        hard.setCode("count_validation_hard");
+        hard.setResultStatus("pass");
+        hard.setRuleStrength("hard");
+        review.setFindings(Lists.newArrayList(ratio, hard));
+        return review;
     }
 }

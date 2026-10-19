@@ -11,12 +11,14 @@ import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
 import com.ytell.zhiyuan.model.dto.planning.FindingPostconditionDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalActionDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
+import com.ytell.zhiyuan.model.dto.planning.FixProposalDryRunResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.FrozenReviewPlanDTO;
 import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanCommandDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
@@ -82,12 +84,16 @@ final class RatioReviewPreviewPlanner {
                 || Strings.isNullOrEmpty(command.getCommandDigest())) {
             return null;
         }
-        // 与 Search/Safety 切片同一 fail-closed 口径：专业组、unit 列表、优先规则与
-        // 锁定/固定项都留给后续切片，避免把配比修复缩水成纯替换。
-        if ("majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel())
+        // 组模式（专业组/专业单元）走 planUnits；普通专业模式保持原有路径。
+        // 与 Search/Safety 切片同一 fail-closed 口径：优先规则留给确认链校验。
+        boolean unitMode = "majorGroup".equalsIgnoreCase(
+                state.getCandidatePoolState().getVolunteerModel())
                 || !safeList(state.getWorkingPlanState().getUnits()).isEmpty()
-                || !safeList(state.getOrderedPlanState().getUnits()).isEmpty()
-                || !PriorityRuleSupport.confirmedRules(state).isEmpty()) {
+                || !safeList(state.getOrderedPlanState().getUnits()).isEmpty();
+        if (unitMode) {
+            return planUnits(proposal, state, candidates, finding, command, reevaluate, confirmable);
+        }
+        if (!PriorityRuleSupport.confirmedRules(state).isEmpty()) {
             return null;
         }
         List<DraftItemDTO> workingItems = safeList(state.getWorkingPlanState().getItems());
@@ -321,6 +327,380 @@ final class RatioReviewPreviewPlanner {
         proposal.getDryRunResult().setAddVolunteerCount(added.size());
         proposal.getDryRunResult().setRemoveVolunteerCount(removed.size());
         proposal.getDryRunResult().setAffectedVolunteerCount(affected.size());
+    }
+
+    /**
+     * 组模式（专业组/专业单元）的冲稳保配比修复：目标数与档位计数都按 unit 计，
+     * 复用 staged solver 选出一份满足配额与本省保底的 unit 选择集，再按 Search 组模式
+     * 同一套物化逻辑重建 working/ordered units 与 ordered items。
+     *
+     * <p>选择集从 ordered units 派生（工作台可能只存 draft items、不存 working units）；
+     * ordered units 允许稀疏但必须严格递增且唯一，锁定/置顶、优先规则与不自洽的
+     * unit 列表一律 fail closed，保持与普通专业模式相同的“无法冻结就返回 null”口径。</p>
+     */
+    private FixProposalDTO planUnits(FixProposalDTO proposal, PlanningStateDTO state,
+                                     List<CandidateItemDTO> candidates,
+                                     EvaluationFindingDTO finding, PlanCommandDTO command,
+                                     Function<PlanningStateDTO, ReviewStateDTO> reevaluate,
+                                     boolean confirmable) {
+        if (!PriorityRuleSupport.confirmedRules(state).isEmpty()) {
+            return null;
+        }
+        List<OrderedUnitDTO> currentOrdered = new ArrayList<OrderedUnitDTO>(
+                safeList(state.getOrderedPlanState().getUnits()));
+        if (currentOrdered.isEmpty()) {
+            return null;
+        }
+        currentOrdered.sort(Comparator.comparing(unit -> unit == null || unit.getPosition() == null
+                ? Integer.MAX_VALUE : unit.getPosition()));
+        Map<String, OrderedUnitDTO> orderedById = new LinkedHashMap<String, OrderedUnitDTO>();
+        Integer previousPosition = null;
+        for (OrderedUnitDTO unit : currentOrdered) {
+            // 线上 group 方案的位置可能稀疏（1,2,8,9...），只要求严格递增且唯一；
+            // 物化时会统一重排为 1..n。
+            if (unit == null || Strings.isNullOrEmpty(unit.getUnitId()) || unit.getPosition() == null
+                    || (previousPosition != null && unit.getPosition() <= previousPosition)
+                    || orderedById.put(unit.getUnitId(), unit) != null) {
+                return null;
+            }
+            if (Boolean.TRUE.equals(unit.getLocked()) || Boolean.TRUE.equals(unit.getPinned())
+                    || unit.getPinnedPosition() != null) {
+                return null;
+            }
+            previousPosition = unit.getPosition();
+        }
+
+        // volunteerModel 缺失但存在 units 时，副本显式归一为 majorGroup：objectives、
+        // snapshot 与 applyFrozenSelection 必须同源按 unit 口径，否则会把 unit 身份
+        // 误当志愿者身份。
+        PlanningStateDTO copy = copy(state, PlanningStateDTO.class);
+        SearchReviewPreviewPlanner.normalizeGroupMode(copy);
+        CanonicalPlanningObjectiveSetDTO canonical = PlanningObjectiveCompiler.compileConfirmed(copy);
+        CanonicalPlanningObjectiveSetDTO objectives = copy(canonical, CanonicalPlanningObjectiveSetDTO.class);
+        MutationPolicyDTO policy = new MutationPolicyDTO();
+        policy.setAction(POLICY_ACTION);
+        policy.setLockExisting(false);
+        policy.setCountAsChurn(true);
+        policy.setRequireCompensationSafe(true);
+        PlanningObjectiveCompiler.enrichV2(copy, objectives, policy);
+        // 配额不是用户目标：canonical digest 保持 compileConfirmed 的旧口径，
+        // 只在 solver 使用的副本上 patch tierConstraint 与档位锚。
+        objectives.setTierAllocationConstraint(copy(command.getTierConstraint(),
+                TierAllocationConstraintDTO.class));
+        TierCountsDTO anchor = TierStructureProjection.project(
+                unitTierCounts(currentOrdered), command.getTargetCount(), command.getTierConstraint());
+        if (anchor == null) {
+            return null;
+        }
+        StructureTargetDTO structureTarget = objectives.getStructureTarget();
+        if (structureTarget == null) {
+            structureTarget = new StructureTargetDTO();
+            objectives.setStructureTarget(structureTarget);
+        }
+        structureTarget.setTierAnchor(anchor);
+
+        CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                copy, candidates, CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
+        if (snapshot == null || !"unit".equals(snapshot.getCountMode())) {
+            return null;
+        }
+        PlanSolverResultDTO solverResult;
+        try {
+            solverResult = new StagedDeterministicPlanSolver()
+                    .solve(snapshot, objectives, policy).solverResult;
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
+        if (solverResult == null || !"ready".equals(solverResult.getStatus())) {
+            return null;
+        }
+        List<String> selectedEntityIds = new ArrayList<String>(
+                safeList(solverResult.getSelectedEntityIds()));
+        List<String> orderedEntityIds = new ArrayList<String>(
+                safeList(solverResult.getOrderedEntityIds()));
+        if (selectedEntityIds.isEmpty() || orderedEntityIds.isEmpty()
+                || new LinkedHashSet<String>(selectedEntityIds).size() != selectedEntityIds.size()
+                || new LinkedHashSet<String>(orderedEntityIds).size() != orderedEntityIds.size()
+                || !new LinkedHashSet<String>(selectedEntityIds)
+                .equals(new LinkedHashSet<String>(orderedEntityIds))) {
+            return null;
+        }
+
+        Map<String, CandidateItemDTO> candidatesById =
+                SearchReviewPreviewPlanner.candidatesById(candidates);
+        PlanningStateDTO after = copy(state, PlanningStateDTO.class);
+        SearchReviewPreviewPlanner.normalizeGroupMode(after);
+        try {
+            CanonicalPlanningRuntime.applyFrozenSelection(after, candidates, solverResult);
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
+        Map<String, DraftItemDTO> workingItemsById = new LinkedHashMap<String, DraftItemDTO>();
+        for (DraftItemDTO item : safeList(after.getWorkingPlanState().getItems())) {
+            if (item != null && !Strings.isNullOrEmpty(item.getVolunteerId())) {
+                workingItemsById.put(item.getVolunteerId(), item);
+            }
+        }
+        List<OrderedUnitDTO> orderedUnits = SearchReviewPreviewPlanner.orderedUnitsFromSolver(
+                orderedEntityIds, orderedById,
+                safeList(after.getWorkingPlanState().getUnits()), candidatesById);
+        if (orderedUnits == null) {
+            return null;
+        }
+        Map<String, OrderedItemDTO> existingOrderedItemsById = new LinkedHashMap<String, OrderedItemDTO>();
+        for (OrderedItemDTO item : safeList(state.getOrderedPlanState().getItems())) {
+            if (item != null && !Strings.isNullOrEmpty(item.getVolunteerId())) {
+                existingOrderedItemsById.put(item.getVolunteerId(), item);
+            }
+        }
+        List<OrderedItemDTO> orderedItems = SearchReviewPreviewPlanner.orderedItemsFromUnits(
+                orderedUnits, existingOrderedItemsById, workingItemsById, candidatesById);
+        if (orderedItems == null) {
+            return null;
+        }
+        after.getOrderedPlanState().setUnits(orderedUnits);
+        after.getOrderedPlanState().setItems(orderedItems);
+
+        // 组模式事实摘要按 unit→major 顺序；apply 侧用冻结 units 重算同一口径。
+        List<CandidateItemDTO> unitFacts = DirectReviewPreviewPlanner.factsForUnits(
+                selectedEntityIds, orderedUnits, candidates);
+        if (unitFacts == null) {
+            return null;
+        }
+        String factsDigest = DirectReviewPreviewPlanner.digestJson(unitFacts);
+        List<CandidateItemDTO> selectedFacts = new ArrayList<CandidateItemDTO>();
+        for (CandidateItemDTO fact : unitFacts) {
+            selectedFacts.add(copy(fact, CandidateItemDTO.class));
+        }
+
+        ReviewStateDTO afterReview;
+        try {
+            afterReview = reevaluate.apply(copy(after, PlanningStateDTO.class));
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
+        FindingPostconditionDTO postcondition =
+                postconditionEvaluator.evaluate(RATIO_DISTRIBUTION, afterReview);
+        proposal.setFindingPostcondition(postcondition);
+        if (!Boolean.TRUE.equals(postcondition.getSatisfied())) {
+            return null;
+        }
+
+        FrozenReviewPlanDTO frozen = new FrozenReviewPlanDTO();
+        frozen.setWorkingPlan(copy(after.getWorkingPlanState(), DraftPlanStateDTO.class));
+        frozen.setOrderedPlan(copy(after.getOrderedPlanState(), OrderedPlanStateDTO.class));
+        frozen.setSelectedEntityIds(selectedEntityIds);
+        frozen.setOrderedEntityIds(orderedEntityIds);
+        frozen.setSelectedFacts(selectedFacts);
+        frozen.setFactsDigest(factsDigest);
+        proposal.setFrozenReviewPlan(frozen);
+        adaptUnits(proposal, solverResult, command, state, canonical,
+                currentOrdered, orderedUnits, orderedItems);
+        proposal.setPlanContentDigest(DirectReviewPreviewPlanner.planContentDigest(state));
+        // 摘要必须在“提升为 ready”之前算：prepare 用确认模式重算时若把
+        // dryRunResult.status 的差异算进去，合法的确认会被判 409。
+        proposal.getDryRunResult().setStatus("preview_only");
+        proposal.setProposalId("fp_" + DirectReviewPreviewPlanner.digestJson(Arrays.asList(
+                command.getEvaluationVersion(), proposal.getPlanContentDigest(),
+                command.getCommandDigest(), proposal.getActions())).substring(0, 16));
+        proposal.setPreviewDigest(DirectReviewPreviewPlanner.digestJson(Arrays.asList(
+                proposal.getProposalId(), command.getEvaluationVersion(),
+                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(), frozen,
+                proposal.getActions(), proposal.getDryRunResult(), postcondition)));
+        if (confirmable) {
+            proposal.setStatus("ready");
+            proposal.setRequiresConfirmation(true);
+            proposal.setSourceVersionGuard(state.getVersion());
+            command.setExecutable(true);
+            proposal.getDryRunResult().setStatus("ready");
+        } else {
+            proposal.setBlockingReason("review_fix_prepare_unavailable");
+            proposal.getBlockingReasonCodes().add("review_fix_prepare_unavailable");
+        }
+        return proposal;
+    }
+
+    /**
+     * 组模式 Ratio 提案元数据与 unit 级动作：add/remove/reorder 全部以 unit 计，
+     * dryRun 同时给出 unit 与志愿者总量，口径与 Safety/Search 组模式一致。
+     */
+    private void adaptUnits(FixProposalDTO proposal, PlanSolverResultDTO solverResult,
+                            PlanCommandDTO command, PlanningStateDTO state,
+                            CanonicalPlanningObjectiveSetDTO canonical,
+                            List<OrderedUnitDTO> currentOrdered,
+                            List<OrderedUnitDTO> orderedUnits,
+                            List<OrderedItemDTO> orderedItems) {
+        proposal.setProposalSource(RepairProposalTaxonomy.ProposalSource.REVIEW_CHECK);
+        proposal.setSourceVersion(state.getVersion());
+        proposal.setStrategy(STRATEGY);
+        proposal.setSourceStrategy(command.getSourceStrategy());
+        proposal.setFindingCode(RATIO_DISTRIBUTION);
+        proposal.setEvaluationVersion(command.getEvaluationVersion());
+        proposal.setCommandDigest(command.getCommandDigest());
+        proposal.setTitle("冲稳保配比调整预览");
+        proposal.setSummary("按已确认的冲稳保配额移出超额档位专业组并等量补入缺口档位；确认后按冻结方案原样回放。");
+        proposal.setImpact("只写回工作草案与排序态；冲稳保配额仍由当前状态派生，不新增持久化目标。");
+        // 预 enrich 的旧口径：与 apply 侧 compileConfirmed 重算保持逐字一致。
+        proposal.setCanonicalObjectiveDigest(canonical.getObjectiveDigest());
+        proposal.setSolverVersion(solverResult.getSolverVersion());
+        proposal.setSolverInputDigest(solverResult.getInputDigest());
+        proposal.setHardObjectiveVersion(solverResult.getHardObjectiveVersion());
+        proposal.setSolverResult(copy(solverResult, PlanSolverResultDTO.class));
+
+        List<String> removed = new ArrayList<String>(safeList(solverResult.getRemoveEntityIds()));
+        List<String> added = new ArrayList<String>(safeList(solverResult.getAddEntityIds()));
+        List<String> orderedIds = new ArrayList<String>(safeList(solverResult.getOrderedEntityIds()));
+        List<String> beforeOrderedIds = new ArrayList<String>();
+        Map<String, OrderedUnitDTO> beforeById = new LinkedHashMap<String, OrderedUnitDTO>();
+        for (OrderedUnitDTO unit : currentOrdered) {
+            beforeOrderedIds.add(unit.getUnitId());
+            beforeById.put(unit.getUnitId(), unit);
+        }
+        Map<String, OrderedUnitDTO> afterById = new LinkedHashMap<String, OrderedUnitDTO>();
+        for (OrderedUnitDTO unit : orderedUnits) {
+            afterById.put(unit.getUnitId(), unit);
+        }
+        Set<String> removedVolunteers = volunteerIdsForUnits(removed, beforeById);
+        Set<String> addedVolunteers = volunteerIdsForUnits(added, afterById);
+        Set<String> affectedUnits = new LinkedHashSet<String>();
+        affectedUnits.addAll(removed);
+        affectedUnits.addAll(added);
+        Set<String> affectedVolunteers = new LinkedHashSet<String>();
+        affectedVolunteers.addAll(removedVolunteers);
+        affectedVolunteers.addAll(addedVolunteers);
+        proposal.setAffectedUnitIds(new ArrayList<String>(affectedUnits));
+        proposal.setAffectedVolunteerIds(new ArrayList<String>(affectedVolunteers));
+
+        proposal.setTargetCountBefore(currentOrdered.size());
+        proposal.setTargetCountAfter(orderedUnits.size());
+        proposal.setAddedCount(addedVolunteers.size());
+        proposal.setAddedUnitCount(added.size());
+        proposal.setRemovedCount(removed.size());
+
+        if (!removed.isEmpty()) {
+            FixProposalActionDTO removeAction = new FixProposalActionDTO();
+            removeAction.setActionType(RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS);
+            removeAction.setLevel("unit");
+            removeAction.setSourceCheckCode(RATIO_DISTRIBUTION);
+            removeAction.setSummary("移出 " + removed.size() + " 个超出配额的现有专业组");
+            removeAction.setUnitIds(new ArrayList<String>(removed));
+            removeAction.setRemoveUnitIds(new ArrayList<String>(removed));
+            removeAction.setVolunteerIds(new ArrayList<String>(removedVolunteers));
+            removeAction.setRemoveVolunteerIds(new ArrayList<String>(removedVolunteers));
+            removeAction.setTotalUnitCount(removed.size());
+            removeAction.setTotalVolunteerCount(removedVolunteers.size());
+            proposal.getActions().add(removeAction);
+        }
+        if (!added.isEmpty()) {
+            // 与 fill 链路一致：add 侧使用 fill_total_count。
+            FixProposalActionDTO addAction = new FixProposalActionDTO();
+            addAction.setActionType(RepairProposalTaxonomy.ActionType.FILL_TOTAL_COUNT);
+            addAction.setLevel("unit");
+            addAction.setSourceCheckCode(RATIO_DISTRIBUTION);
+            addAction.setSummary("从当前候选池补入 " + added.size() + " 个缺口档位专业组");
+            addAction.setUnitIds(new ArrayList<String>(added));
+            addAction.setCandidateUnitIds(new ArrayList<String>(added));
+            addAction.setVolunteerIds(new ArrayList<String>(addedVolunteers));
+            addAction.setCandidateVolunteerIds(new ArrayList<String>(addedVolunteers));
+            addAction.setTotalUnitCount(added.size());
+            addAction.setTotalVolunteerCount(addedVolunteers.size());
+            proposal.getActions().add(addAction);
+        }
+        if (!orderedIds.isEmpty() && !orderedIds.equals(beforeOrderedIds)) {
+            FixProposalActionDTO reorderAction = new FixProposalActionDTO();
+            reorderAction.setActionType(RepairProposalTaxonomy.ActionType.REORDER_VOLUNTEERS);
+            reorderAction.setLevel("unit");
+            reorderAction.setSourceCheckCode(RATIO_DISTRIBUTION);
+            reorderAction.setSummary("按冻结后的顺序写回 " + orderedIds.size() + " 个专业组");
+            reorderAction.setUnitIds(new ArrayList<String>(orderedIds));
+            reorderAction.setTotalUnitCount(orderedIds.size());
+            proposal.getActions().add(reorderAction);
+        }
+
+        Set<String> beforeVolunteerIds = volunteerIdsForUnits(beforeOrderedIds, beforeById);
+        Set<String> afterVolunteerIds = new LinkedHashSet<String>();
+        for (OrderedItemDTO item : orderedItems) {
+            afterVolunteerIds.add(item.getVolunteerId());
+        }
+        FixProposalDryRunResultDTO dryRun = proposal.getDryRunResult();
+        dryRun.setBeforeUnitTotal(currentOrdered.size());
+        dryRun.setAfterUnitTotal(orderedUnits.size());
+        dryRun.setBeforeUnitIds(new LinkedHashSet<String>(beforeOrderedIds));
+        dryRun.setAfterUnitIds(new LinkedHashSet<String>(orderedIds));
+        dryRun.setBeforeUnitTierCounts(unitTierCountMap(currentOrdered));
+        dryRun.setAfterUnitTierCounts(unitTierCountMap(orderedUnits));
+        dryRun.setBeforeVolunteerTotal(beforeVolunteerIds.size());
+        dryRun.setAfterVolunteerTotal(afterVolunteerIds.size());
+        dryRun.setBeforeVolunteerIds(beforeVolunteerIds);
+        dryRun.setAfterVolunteerIds(afterVolunteerIds);
+        dryRun.setAddUnitCount(added.size());
+        dryRun.setAddVolunteerCount(addedVolunteers.size());
+        dryRun.setRemoveUnitCount(removed.size());
+        dryRun.setRemoveVolunteerCount(removedVolunteers.size());
+        dryRun.setAffectedUnitCount(affectedUnits.size());
+        dryRun.setAffectedVolunteerCount(affectedVolunteers.size());
+    }
+
+    private Set<String> volunteerIdsForUnits(List<String> unitIds,
+                                             Map<String, OrderedUnitDTO> unitsById) {
+        Set<String> result = new LinkedHashSet<String>();
+        for (String unitId : safeList(unitIds)) {
+            OrderedUnitDTO unit = unitsById.get(unitId);
+            if (unit == null) {
+                continue;
+            }
+            for (PlanningUnitMajorDTO major : safeList(unit.getMajorItems())) {
+                if (major != null && !Strings.isNullOrEmpty(major.getVolunteerId())) {
+                    result.add(major.getVolunteerId());
+                }
+            }
+        }
+        return result;
+    }
+
+    private TierCountsDTO unitTierCounts(List<OrderedUnitDTO> units) {
+        TierCountsDTO counts = new TierCountsDTO();
+        counts.setSprintCount(0);
+        counts.setStableCount(0);
+        counts.setProtectCount(0);
+        for (OrderedUnitDTO unit : safeList(units)) {
+            String tier = unitTier(unit);
+            if ("sprint".equals(tier)) {
+                counts.setSprintCount(counts.getSprintCount() + 1);
+            } else if ("stable".equals(tier)) {
+                counts.setStableCount(counts.getStableCount() + 1);
+            } else if ("protect".equals(tier)) {
+                counts.setProtectCount(counts.getProtectCount() + 1);
+            }
+        }
+        return counts;
+    }
+
+    private Map<String, Integer> unitTierCountMap(List<OrderedUnitDTO> units) {
+        TierCountsDTO counts = unitTierCounts(units);
+        Map<String, Integer> result = new LinkedHashMap<String, Integer>();
+        result.put("sprint", counts.getSprintCount());
+        result.put("stable", counts.getStableCount());
+        result.put("protect", counts.getProtectCount());
+        return result;
+    }
+
+    /** 单元档位优先取 unit 自身，缺失时退回组内第一个专业的档位。 */
+    private String unitTier(OrderedUnitDTO unit) {
+        if (unit == null) {
+            return "";
+        }
+        String tier = TierAllocationSupport.canonicalTierKey(unit.getTier());
+        if (!Strings.isNullOrEmpty(tier)) {
+            return tier;
+        }
+        for (PlanningUnitMajorDTO major : safeList(unit.getMajorItems())) {
+            tier = TierAllocationSupport.canonicalTierKey(major == null ? null : major.getTier());
+            if (!Strings.isNullOrEmpty(tier)) {
+                return tier;
+            }
+        }
+        return "";
     }
 
     private FixProposalDTO proposal(PlanningStateDTO state, EvaluationFindingDTO finding,
