@@ -9505,6 +9505,36 @@ async def test_query_plan_no_plan_filter_does_not_claim_absence():
     assert "方案里没有" not in result["message"]
 
 
+def test_pending_resource_raw_copies_top_level_pending_identity():
+    """真实 GET /session/pending 的 pendingId/kind 在顶层；raw 必须一并带回，
+    否则 review fix 的 claim 会拿空 pendingId 调 CAS。"""
+    from app.zhiyuan_agent.tools import _pending_resource_raw
+
+    raw = _pending_resource_raw(
+        {
+            "data": {
+                "pendingId": "pending-review-fix",
+                "kind": "plan_change_proposal",
+                "actionFamily": "apply_plan_change_proposal",
+                "revision": 3,
+                "status": "active",
+                "dataValue": {
+                    "proposalId": "fp-review-fix",
+                    "status": "active",
+                    "sourceVersion": 14,
+                },
+            }
+        }
+    )
+
+    assert raw["pendingId"] == "pending-review-fix"
+    assert raw["kind"] == "plan_change_proposal"
+    assert raw["actionFamily"] == "apply_plan_change_proposal"
+    assert raw["revision"] == 3
+    assert raw["_pendingRevision"] == 3
+    assert raw["proposalId"] == "fp-review-fix"
+
+
 async def test_confirm_pending_no_active_pending():
     result = _load(await confirm_pending(make_run_context(request_context=_direct_context()), action="confirm"))
 
@@ -10093,6 +10123,8 @@ async def test_confirm_pending_prepares_review_fix_proposal_then_executes(
         "evaluationVersion": "eval-v1",
     }
     assert save_mock.await_args.args[1]["status"] == "applied"
+    assert save_mock.await_args.args[1]["pendingId"] == "pending-review-fix"
+    assert save_mock.await_args.args[1]["actionFamily"] == "apply_plan_change_proposal"
 
 
 async def test_confirm_pending_review_fix_dry_run_never_prepares(mocker):

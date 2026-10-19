@@ -7571,6 +7571,13 @@ def _pending_resource_raw(response: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not value:
         return {}
     raw = dict(value)
+    # GET /session/pending 把 pendingId/kind/actionFamily 放在顶层，dataValue
+    # 只存业务负载。claim/complete 必须拿顶层 pendingId，否则真实 CAS 会以
+    # 空 id 调用 resolve（单测因 claim 被整体打桩而漏掉）。
+    for key in ("pendingId", "kind", "actionFamily"):
+        top_level = data.get(key)
+        if top_level not in (None, ""):
+            raw.setdefault(key, top_level)
     revision = _as_int(data.get("revision"))
     if revision > 0:
         raw["_pendingRevision"] = revision
@@ -7745,6 +7752,15 @@ async def _mark_pending_status(
         "kind": pending.get("kind") or "",
         "actionFamily": pending.get("action_family") or "",
     }
+    # raw 可能来自 claim 回包的 dataValue，历史版本只带业务负载；落终态前补齐
+    # pending 身份，避免 complete/fail 以空 pendingId 调 CAS 后卡在 applying。
+    state.setdefault(
+        "pendingId", pending.get("pending_id") or pending.get("pendingId") or ""
+    )
+    if pending.get("kind"):
+        state.setdefault("kind", pending.get("kind"))
+    if pending.get("action_family"):
+        state.setdefault("actionFamily", pending.get("action_family"))
     state["status"] = status
     state["updatedAt"] = _now_iso()
     state.update({key: value for key, value in extra.items() if value is not None})
@@ -11759,6 +11775,15 @@ async def confirm_pending(
             )
         claimed_raw = claim_data.get("dataValue") if isinstance(claim_data.get("dataValue"), dict) else {}
         if claimed_raw:
+            # claim 回包的 dataValue 同样不带顶层 pendingId/kind；后续 complete
+            # 必须靠这些字段按 CAS 落 applied，不能只保留业务负载。
+            for key, fallback in (
+                ("pendingId", claim_data.get("pendingId") or pending.get("pending_id")),
+                ("kind", claim_data.get("kind") or kind),
+                ("actionFamily", claim_data.get("actionFamily") or action_family),
+            ):
+                if fallback not in (None, ""):
+                    claimed_raw.setdefault(key, fallback)
             claimed_raw["_pendingRevision"] = claim_data.get("revision")
             claimed_raw["revision"] = claim_data.get("revision")
             claimed_raw["_pendingClaimToken"] = claim_data.get("claimToken")

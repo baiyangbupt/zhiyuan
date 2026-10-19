@@ -244,6 +244,25 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   江西 protect 2 组、postcondition true；已恢复 v14/44。
 - Java 全量 **1460 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
 
+## Python 一次确认真栈 E2E（2026-10-20）
+
+- 真实 Java（`review.fix.command.enabled=true`）+ Python `tools`：
+  900045 group coverage 夹具，直接调用 `_preview_review_repair_plan_change`
+  生成只读预览候选，再用 `confirm_pending(action=confirm)` 走完整
+  prepare → claim → execute → complete。
+- 结果：`applied=true`，完成步骤
+  `proposal_applied / ordered_plan_regenerated / review_rerun /
+  postcondition_verified`；版本 14→15、44 组、广西 2、江西 protect 2，
+  pending 终态 `applied`；已恢复 v14/44。
+- 真栈暴露并修复两个 Python 链路 bug：
+  1. `_pending_resource_raw` 只拷 `dataValue`，漏掉 GET pending 顶层
+     `pendingId/kind/actionFamily`，真实 CLAIM 用空 pendingId 调 CAS；
+  2. CLAIM 回包的 `dataValue` 同样不含身份字段，complete 再次以空 id 落终态，
+     pending 卡在 `applying`。
+  两处已补顶层身份回填，并加单测断言 complete 携带 pendingId/actionFamily。
+- Python unit **2934 passed / 32 skipped**；Java 全量保持
+  **1460 / 0 / 0 / 10**。
+
 仍未覆盖：gap/edge 等 Search probe（设计首期 preview_only）；
 目标/档位/覆盖的 durable patch 持久化。
 
