@@ -9,6 +9,7 @@ import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.mapper.ConversationProposalRequestMapper;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
+import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyRes;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
@@ -280,6 +281,105 @@ class PlanningStateServiceReviewFixApplyTest {
         assertEquals(baseline, row.getDataValue(), "后置失败必须回滚，不得留下半套方案");
         PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
         assertEquals(Integer.valueOf(7), saved.getVersion());
+    }
+
+    @Test
+    void appliesTheFrozenCoverageFillAndReplaysEightyEntries() {
+        useCoverageFixture();
+        prepareCoverage();
+
+        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+
+        assertEquals("applied", res.getStatus());
+        PlanningStateDTO applied = res.getState();
+        assertEquals(Integer.valueOf(8), applied.getVersion(), "只 bump 一次版本");
+        assertEquals(80, applied.getWorkingPlanState().getItems().size());
+        assertEquals(80, applied.getOrderedPlanState().getItems().size());
+        assertEquals(80, orderedIds(applied).stream().distinct().count());
+        assertTrue(coverageMatched(applied) >= 20, "回放后必须满足浙江覆盖下限");
+        long added = applied.getOrderedPlanState().getItems().stream()
+                .filter(item -> "review_fix".equals(item.getSource())).count();
+        assertTrue(added >= 10, "至少补入 10 条浙江以达成覆盖要求");
+        assertEquals(Integer.valueOf(20), applied.getConstraintState().getHardPlanningObjectives()
+                        .getCoverageRequirements().get(0).getMinCount(),
+                "coverage 回放不修改已确认覆盖要求");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(80, orderedIds(saved).size());
+        assertTrue(coverageMatched(saved) >= 20);
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void coverageTamperedCommandDigestIsRejectedBeforeAnyWrite() {
+        useCoverageFixture();
+        prepareCoverage();
+        FixProposalApplyReq req = applyRequest();
+        req.setCommandDigest("tampered");
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_changed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void coveragePlanDriftAfterPrepareIsRejectedAsStale() {
+        useCoverageFixture();
+        prepareCoverage();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.getOrderedPlanState().getItems().get(0).setVolunteerId("changed");
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_stale", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    private void useCoverageFixture() {
+        row.setDataValue(JSON.toJSONString(PlanningStateServiceReviewFixPrepareTest.coverageFixture()));
+    }
+
+    private void prepareCoverage() {
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = null;
+        for (FixProposalDTO candidate : preview.getProposals()) {
+            if (candidate != null && "coverage:0".equals(candidate.getFindingCode())) {
+                proposal = candidate;
+                break;
+            }
+        }
+        assertNotNull(proposal, "coverage fixture 必须产出 Search 提案");
+        assertEquals("ready", proposal.getStatus());
+        ReviewFixPrepareReq req = new ReviewFixPrepareReq();
+        req.setProposalId(proposal.getProposalId());
+        req.setPreviewDigest(proposal.getPreviewDigest());
+        req.setCommandDigest(proposal.getCommandDigest());
+        req.setEvaluationVersion(proposal.getEvaluationVersion());
+        req.setSourceVersionGuard(preview.getSourceVersion());
+        PrepareResultDTO prepared = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-coverage-apply", "digest-coverage-apply", req);
+        assertNotNull(prepared.getPendingId());
+        assertNotNull(activePending);
+    }
+
+    private static long coverageMatched(PlanningStateDTO state) {
+        Map<String, String> provinceById = new LinkedHashMap<String, String>();
+        for (CandidateItemDTO candidate : state.getCandidatePoolState().getItems()) {
+            if (candidate != null) {
+                provinceById.put(candidate.getVolunteerId(), candidate.getProvinceName());
+            }
+        }
+        return state.getOrderedPlanState().getItems().stream()
+                .map(item -> provinceById.get(item.getVolunteerId()))
+                .filter("浙江"::equals)
+                .count();
     }
 
     private void useCountTargetFixture() {

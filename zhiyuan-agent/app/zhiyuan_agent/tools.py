@@ -9716,16 +9716,24 @@ async def _preview_review_repair_plan_change(
     # 计数类问题在 Java 端可能暴露为 count_validation / count_target /
     # count_validation_hard 等变体，修复目标同为 fill_missing_count。
     count_repair_issues = {"count_validation", "count_target", "count_validation_hard"}
+    # 覆盖类问题在 Java 端暴露为 coverage / coverage:<i> 等变体，
+    # 修复目标为 must_include_scope 或 fill_missing_count；同一个覆盖目标
+    # 在两侧策略名可能不同，匹配时视为等价。
+    coverage_fix_strategies = {"must_include_scope", "fill_missing_count"}
+    coverage_fix_goal = canonical_issue.startswith("coverage")
+    coverage_preview_route = (
+        coverage_fix_goal and requested_strategy in coverage_fix_strategies
+    )
     if (
         canonical_issue == "probability_inversion"
         and requested_strategy == "sort_by_probability"
     ) or (
         canonical_issue in count_repair_issues
         and requested_strategy == "fill_missing_count"
-    ):
-        # J5.5b：倒挂排序与计数补齐都走新的只读冻结预览（working/ordered/
-        # selected facts + previewDigest + 原 probe 预检）；旧 generate 只作为
-        # 其他策略的回退。
+    ) or coverage_preview_route:
+        # J5.5b：倒挂排序、计数补齐与覆盖补齐都走新的只读冻结预览
+        # （working/ordered/selected facts + previewDigest + 原 probe 预检）；
+        # 旧 generate 只作为其他策略的回退。
         response = await internal_client.preview_review_fix_proposals(
             getattr(ctx.deps, "tenant_id", 1),
             ctx.deps.sessionid,
@@ -9751,12 +9759,20 @@ async def _preview_review_repair_plan_change(
             for code in item.get("sourceCheckCodes", item.get("source_check_codes", [])) or []
             if str(code or "").strip()
         ]
-        if strategy != requested_strategy:
+        if coverage_preview_route:
+            # 覆盖修复的 must_include_scope / fill_missing_count 视为同一目标。
+            if strategy not in coverage_fix_strategies:
+                continue
+        elif strategy != requested_strategy:
             continue
         if canonical_issue in count_repair_issues:
             # 计数修复目标内部等价：count_validation / count_target /
             # count_validation_hard 之间任意 count_* 来源码都算匹配。
             issue_matched = any(code.startswith("count_") for code in source_codes)
+        elif coverage_fix_goal:
+            # 覆盖修复目标内部等价：coverage / coverage:<i> 之间任意
+            # coverage* 来源码都算匹配。
+            issue_matched = any(code.startswith("coverage") for code in source_codes)
         else:
             issue_matched = canonical_issue in source_codes
         if issue_matched:

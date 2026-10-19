@@ -8,6 +8,7 @@ import com.ytell.zhiyuan.mapper.ConversationProposalRequestMapper;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
@@ -256,9 +257,80 @@ class PlanningStateServiceReviewFixPrepareTest {
         assertTrue(upserts.isEmpty());
     }
 
+    @Test
+    void freezesCoverageSearchProposalWithoutChangingPlanState() {
+        row.setDataValue(JSON.toJSONString(coverageFixture()));
+        String baseline = row.getDataValue();
+
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = coverageProposal(preview);
+
+        assertNotNull(proposal, "coverage fixture 必须产出 Search 提案");
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertEquals("coverage:0", proposal.getFindingCode());
+        assertTrue(proposal.getSourceCheckCodes().contains("coverage:0"));
+        assertTrue(proposal.getSourceCheckCodes().contains("coverage"));
+        assertEquals(80, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertEquals(80, proposal.getFrozenReviewPlan().getSelectedEntityIds().size());
+        assertTrue(proposal.getFindingPostcondition().getSatisfied());
+        assertEquals("coverage:0", proposal.getFindingPostcondition().getFindingCode());
+
+        PrepareResultDTO dto = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-coverage", "digest-coverage",
+                prepareRequest(proposal, preview.getSourceVersion()));
+
+        assertEquals("prepared", dto.getStatus());
+        assertEquals(1, upserts.size());
+        Map<String, Object> data = upserts.get(0).getDataValue();
+        Map<String, Object> frozenProposal = (Map<String, Object>) data.get("frozenProposal");
+        assertEquals("coverage:0", frozenProposal.get("findingCode"));
+        assertEquals("fill_missing_count", frozenProposal.get("strategy"));
+        assertEquals(80, ((List) ((Map) frozenProposal.get("solverResult")).get("selectedEntityIds")).size());
+        Map<String, Object> frozen = (Map<String, Object>) data.get("frozenReviewPlan");
+        assertEquals(80, ((List) frozen.get("selectedEntityIds")).size());
+        assertEquals(80, ((List) frozen.get("orderedEntityIds")).size());
+        assertEquals(80, ((List) ((Map) frozen.get("workingPlan")).get("items")).size());
+        assertEquals(80, ((List) ((Map) frozen.get("orderedPlan")).get("items")).size());
+        int zhejiang = 0;
+        for (Object fact : (List) frozen.get("selectedFacts")) {
+            if (fact instanceof Map && "浙江".equals(((Map) fact).get("provinceName"))) {
+                zhejiang++;
+            }
+        }
+        assertTrue(zhejiang >= 20, "冻结事实必须满足浙江覆盖下限");
+        assertNotNull(frozen.get("factsDigest"));
+        assertEquals(baseline, row.getDataValue(), "prepare 只冻结 pending，不写方案状态");
+    }
+
+    @Test
+    void coveragePrepareRejectsTamperedPreviewDigest() {
+        row.setDataValue(JSON.toJSONString(coverageFixture()));
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        ReviewFixPrepareReq req = prepareRequest(coverageProposal(preview), preview.getSourceVersion());
+        req.setPreviewDigest("tampered-coverage-preview");
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(
+                        TENANT, SESSION, "req-coverage-bad", "digest-coverage-bad", req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_changed", ex.getMessage());
+        assertTrue(upserts.isEmpty());
+    }
+
     private static FixProposalDTO countTargetProposal(ReviewFixPreviewDTO preview) {
+        return proposalByFindingCode(preview, "count_target");
+    }
+
+    private static FixProposalDTO coverageProposal(ReviewFixPreviewDTO preview) {
+        return proposalByFindingCode(preview, "coverage:0");
+    }
+
+    private static FixProposalDTO proposalByFindingCode(ReviewFixPreviewDTO preview, String findingCode) {
         for (FixProposalDTO proposal : preview.getProposals()) {
-            if (proposal != null && "count_target".equals(proposal.getFindingCode())) {
+            if (proposal != null && findingCode.equals(proposal.getFindingCode())) {
                 return proposal;
             }
         }
@@ -286,6 +358,58 @@ class PlanningStateServiceReviewFixPrepareTest {
             candidate.setMajorCategory("工学");
             candidate.setTier("protect");
             candidate.setProvinceName("浙江");
+            candidate.setAdmissionRatio(40D + index);
+            candidate.setSchoolEnrollRatio(40D + index);
+            candidate.setFinalScore(80D);
+            candidate.setIntentScore(40D);
+            state.getCandidatePoolState().getItems().add(candidate);
+
+            RecommendationOverlayStateDTO.Item overlay = new RecommendationOverlayStateDTO.Item();
+            overlay.setVolunteerId(candidate.getVolunteerId());
+            state.getRecommendationOverlayState().getItems().add(overlay);
+            if (index <= 80) {
+                DraftItemDTO selected = new DraftItemDTO();
+                selected.setVolunteerId(candidate.getVolunteerId());
+                selected.setTier("protect");
+                state.getWorkingPlanState().getItems().add(selected);
+
+                OrderedItemDTO ordered = new OrderedItemDTO();
+                ordered.setVolunteerId(candidate.getVolunteerId());
+                ordered.setTier("protect");
+                ordered.setPosition(index);
+                state.getOrderedPlanState().getItems().add(ordered);
+            }
+        }
+        return state;
+    }
+
+    /**
+     * 80 条已有志愿、目标 80；存量只有 10 条浙江，覆盖要求浙江 ≥ 20（fail）。
+     * 候选池尾部另有 20 条浙江，Search 必须等量替换 10 条非浙江而不能改变总数。
+     */
+    static PlanningStateDTO coverageFixture() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setVersion(7);
+        state.setPhase("ordered");
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(80);
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(80);
+        CoverageRequirementDTO requirement = new CoverageRequirementDTO();
+        requirement.setDomain("region");
+        requirement.setKey("province");
+        requirement.setValues(Lists.newArrayList("浙江"));
+        requirement.setMinCount(20);
+        state.getConstraintState().getHardPlanningObjectives().getCoverageRequirements().add(requirement);
+        for (int index = 1; index <= 100; index++) {
+            CandidateItemDTO candidate = new CandidateItemDTO();
+            candidate.setVolunteerId(String.format("v%03d", index));
+            candidate.setSchoolName("学校" + index);
+            candidate.setDisplaySchoolName("学校" + index);
+            candidate.setMajorName("专业" + index);
+            candidate.setMajorCategory("工学");
+            candidate.setTier("protect");
+            candidate.setProvinceName(index <= 10 || index > 80 ? "浙江" : "江苏");
             candidate.setAdmissionRatio(40D + index);
             candidate.setSchoolEnrollRatio(40D + index);
             candidate.setFinalScore(80D);

@@ -3,6 +3,7 @@ package com.ytell.zhiyuan.service.biz;
 import com.alibaba.fastjson.JSON;
 import com.google.common.base.Strings;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
@@ -32,17 +33,27 @@ import java.util.Set;
 import java.util.function.Function;
 
 /**
- * Search 型审查修复的首个切片：普通专业模式下的 {@code count_target} 不达标
- * （fail）→ {@code fill_missing_count}。
+ * Search 型审查修复切片：普通专业模式下复用 {@code UserGoalProposalBuilder} 的
+ * staged solver，把 solverResult 冻结成与 Direct 倒挂修复同构的 frozenReviewPlan。
  *
- * <p>不新增目标编译器：直接复用 {@link UserGoalProposalBuilder#build} 的 staged
- * solver，把 solverResult 冻结成与 Direct 倒挂修复同构的 frozenReviewPlan，
- * prepare/apply 仍走同一条冻结回放与后置校验链路。</p>
+ * <p>支持两类 finding：</p>
+ * <ul>
+ *   <li>{@code count_target} fail → {@code fill_missing_count}（按目标数补齐）；</li>
+ *   <li>{@code coverage:<i>} fail → {@code fill_missing_count}（以命令里的覆盖要求
+ *   作为 include 要求，保持在目标数内等量补齐/替换）。</li>
+ * </ul>
+ *
+ * <p>不新增目标编译器：prepare/apply 仍走同一条冻结回放与后置校验链路；
+ * 后置条件始终使用原始 finding code。</p>
  */
 final class SearchReviewPreviewPlanner {
-    private static final String FINDING_CODE = "count_target";
+    private static final String COUNT_TARGET = "count_target";
+    private static final String COVERAGE_PREFIX = "coverage:";
+    private static final String COVERAGE_CHECK = "coverage";
     private static final String STRATEGY = RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT;
+    private static final String MUST_INCLUDE_SCOPE = RepairProposalTaxonomy.Strategy.MUST_INCLUDE_SCOPE;
     private static final String GOAL_TYPE = "fill_to_count";
+    private static final String INCLUDE = ProjectedHardRequirementSupport.KIND_INCLUDE;
 
     private final FindingPostconditionEvaluator postconditionEvaluator = new FindingPostconditionEvaluator();
 
@@ -51,10 +62,17 @@ final class SearchReviewPreviewPlanner {
                         Function<PlanningStateDTO, ReviewStateDTO> reevaluate,
                         boolean confirmable) {
         PlanCommandDTO command = finding == null ? null : finding.getSuggestedCommand();
-        if (finding == null || command == null
-                || !FINDING_CODE.equals(finding.getCode())
-                || !"fail".equals(finding.getResultStatus())
-                || !STRATEGY.equals(RepairProposalTaxonomy.normalizeStrategy(command.getStrategy()))) {
+        if (finding == null || command == null || !"fail".equals(finding.getResultStatus())) {
+            return null;
+        }
+        String findingCode = finding.getCode();
+        boolean countTarget = COUNT_TARGET.equals(findingCode)
+                && STRATEGY.equals(RepairProposalTaxonomy.normalizeStrategy(command.getStrategy()));
+        boolean coverage = findingCode != null && findingCode.startsWith(COVERAGE_PREFIX)
+                && (MUST_INCLUDE_SCOPE.equals(RepairProposalTaxonomy.normalizeStrategy(command.getStrategy()))
+                || STRATEGY.equals(RepairProposalTaxonomy.normalizeStrategy(command.getApplyStrategy())))
+                && command.getTargetCount() != null && command.getTargetCount() > 0;
+        if (!countTarget && !coverage) {
             return null;
         }
         FixProposalDTO proposal = proposal(state, finding, command);
@@ -68,10 +86,13 @@ final class SearchReviewPreviewPlanner {
 
         Integer targetCount = command.getTargetCount();
         List<DraftItemDTO> workingItems = safeList(state.getWorkingPlanState().getItems());
-        if (targetCount == null || targetCount <= 0 || targetCount <= workingItems.size()) {
+        // count_target 必须真正增加条数；coverage 允许在相同目标数下等量替换，
+        // 因此只要求命令带正目标数（模式判定里已校验）。
+        if (countTarget && (targetCount == null || targetCount <= 0
+                || targetCount <= workingItems.size())) {
             return blocked(proposal, "review_fix_search_no_change");
         }
-        // 首个 Search 切片只接受普通专业模式：专业组、unit 列表、优先规则与锁定/固定项
+        // Search 切片只接受普通专业模式：专业组、unit 列表、优先规则与锁定/固定项
         // 都留给后续切片；这里 fail closed，避免误把结构修复缩水成纯加条。
         if ("majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel())
                 || !safeList(state.getWorkingPlanState().getUnits()).isEmpty()
@@ -121,6 +142,14 @@ final class SearchReviewPreviewPlanner {
         // 本切片是补齐语义（80→82），因此必须走默认的 fill（true）。
         // review_check 的冻结回放链路本身不会持久化目标数量。
         req.setPersistTargetCount(true);
+        if (coverage) {
+            List<UserGoalFixProposalReq.RequirementDTO> requirements =
+                    coverageRequirements(command);
+            if (requirements.isEmpty()) {
+                return blocked(proposal, "review_fix_coverage_unavailable");
+            }
+            req.setRequirements(requirements);
+        }
         FixProposalStateDTO generatedState;
         try {
             generatedState = UserGoalProposalBuilder.build(copy, req);
@@ -169,7 +198,7 @@ final class SearchReviewPreviewPlanner {
         } catch (RuntimeException unavailable) {
             return blocked(proposal, "review_fix_evaluation_unavailable");
         }
-        FindingPostconditionDTO postcondition = postconditionEvaluator.evaluate(FINDING_CODE, afterReview);
+        FindingPostconditionDTO postcondition = postconditionEvaluator.evaluate(findingCode, afterReview);
         proposal.setFindingPostcondition(postcondition);
         if (!Boolean.TRUE.equals(postcondition.getSatisfied())) {
             return blocked(proposal, Strings.isNullOrEmpty(postcondition.getReasonCode())
@@ -184,7 +213,7 @@ final class SearchReviewPreviewPlanner {
         frozen.setSelectedFacts(selectedFacts);
         frozen.setFactsDigest(factsDigest);
         proposal.setFrozenReviewPlan(frozen);
-        adapt(proposal, generated, solverResult, command, state);
+        adapt(proposal, generated, solverResult, command, state, findingCode, coverage);
         proposal.setPlanContentDigest(DirectReviewPreviewPlanner.planContentDigest(state));
         // 摘要必须在“提升为 ready”之前算：prepare 用确认模式重算时若把
         // dryRunResult.status 的差异算进去，合法的确认会被判 409。
@@ -211,15 +240,18 @@ final class SearchReviewPreviewPlanner {
 
     private void adapt(FixProposalDTO proposal, FixProposalDTO generated,
                        PlanSolverResultDTO solverResult, PlanCommandDTO command,
-                       PlanningStateDTO state) {
+                       PlanningStateDTO state, String findingCode, boolean coverage) {
         proposal.setProposalSource(RepairProposalTaxonomy.ProposalSource.REVIEW_CHECK);
         proposal.setSourceVersion(state.getVersion());
         proposal.setStrategy(STRATEGY);
         proposal.setSourceStrategy(command.getSourceStrategy());
-        proposal.setFindingCode(FINDING_CODE);
+        proposal.setFindingCode(findingCode);
+        if (coverage && !proposal.getSourceCheckCodes().contains(COVERAGE_CHECK)) {
+            proposal.getSourceCheckCodes().add(COVERAGE_CHECK);
+        }
         proposal.setEvaluationVersion(command.getEvaluationVersion());
         proposal.setCommandDigest(command.getCommandDigest());
-        proposal.setTitle("补齐方案目标数量预览");
+        proposal.setTitle(coverage ? "补齐覆盖要求预览" : "补齐方案目标数量预览");
         proposal.setSummary(generated.getSummary());
         proposal.setImpact(generated.getImpact());
         proposal.setCanonicalObjectiveDigest(generated.getCanonicalObjectiveDigest());
@@ -285,10 +317,41 @@ final class SearchReviewPreviewPlanner {
         proposal.setFindingCode(finding.getCode());
         proposal.setEvaluationVersion(command.getEvaluationVersion());
         proposal.setCommandDigest(command.getCommandDigest());
-        proposal.setTitle("补齐方案目标数量预览");
+        boolean coverage = finding.getCode() != null && finding.getCode().startsWith(COVERAGE_PREFIX);
+        proposal.setTitle(coverage ? "补齐覆盖要求预览" : "补齐方案目标数量预览");
         proposal.setSummary("只读冻结预览；确认执行入口尚未启用。");
         proposal.getSourceCheckCodes().add(finding.getCode());
+        if (coverage) {
+            proposal.getSourceCheckCodes().add(COVERAGE_CHECK);
+        }
         return proposal;
+    }
+
+    /**
+     * 命令里的覆盖要求 → user-goal include 要求。canonicalize 负责统一 domain/key/values，
+     * 并补齐默认 minCount；空列表由调用方 fail closed。
+     */
+    private List<UserGoalFixProposalReq.RequirementDTO> coverageRequirements(PlanCommandDTO command) {
+        List<UserGoalFixProposalReq.RequirementDTO> requirements =
+                new ArrayList<UserGoalFixProposalReq.RequirementDTO>();
+        for (CoverageRequirementDTO source : safeList(command.getCoverageRequirements())) {
+            if (source == null) {
+                continue;
+            }
+            UserGoalFixProposalReq.RequirementDTO requirement = new UserGoalFixProposalReq.RequirementDTO();
+            requirement.setKind(INCLUDE);
+            requirement.setDomain(source.getDomain());
+            requirement.setKey(source.getKey());
+            requirement.setValues(new ArrayList<String>(safeList(source.getValues())));
+            requirement.setMinCount(source.getMinCount());
+            CoverageRequirementDTO canonical = CoverageRequirementSupport.canonicalize(requirement);
+            requirement.setDomain(canonical.getDomain());
+            requirement.setKey(canonical.getKey());
+            requirement.setValues(canonical.getValues());
+            requirement.setMinCount(canonical.getMinCount());
+            requirements.add(requirement);
+        }
+        return requirements;
     }
 
     private FixProposalDTO blocked(FixProposalDTO proposal, String reason) {

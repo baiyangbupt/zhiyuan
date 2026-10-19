@@ -1203,15 +1203,17 @@ public class PlanningStateService {
                 || frozen.getWorkingPlan() == null || frozen.getOrderedPlan() == null) {
             throw new BusinessException(409, "review_fix_not_confirmable");
         }
-        // 冻结回放接受两类：Direct 倒挂重排，以及首个 Search 切片（count_target →
-        // fill_missing_count）。Search 的目标数在 state 里已确认，回放时不做任何改动。
+        // 冻结回放接受两类：Direct 倒挂重排，以及 Search 的 fill_missing_count
+        // （count_target / count_validation_hard / coverage:<i>）。Search 的目标数
+        // 与覆盖要求在 state 里已确认，回放时不做任何 patch 写入。
         String frozenStrategy = RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy());
         String frozenFindingCode = proposal.getFindingCode();
         boolean directInversion = RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY.equals(frozenStrategy)
                 && "probability_inversion".equals(frozenFindingCode);
         boolean searchFill = RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(frozenStrategy)
                 && ("count_target".equals(frozenFindingCode)
-                || "count_validation_hard".equals(frozenFindingCode));
+                || "count_validation_hard".equals(frozenFindingCode)
+                || (frozenFindingCode != null && frozenFindingCode.startsWith("coverage:")));
         if (!directInversion && !searchFill) {
             throw new BusinessException(409, "review_fix_not_confirmable");
         }

@@ -99,7 +99,23 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   pending/command/proposal-request 测试行。
 - Java 全量 **1368 / 0 / 0 / 10**；Python unit **2925 passed / 32 skipped**。
 
-仍未覆盖：safety/ratio/coverage/gap/edge 等 Search probe；专业组模式；
+## 第二个 Search 切片：coverage → fill（2026-10-19）
+
+- `SearchReviewPreviewPlanner` 增加 coverage 模式：finding `coverage:<i>` fail、
+  command `must_include_scope`/apply fill；把 command.coverageRequirements 转成
+  `RequirementDTO{kind:include}` 交给同一个 `UserGoalProposalBuilder` staged solver。
+- 允许 target == current（等量替换）；空 coverage 集 fail closed
+  `review_fix_coverage_unavailable`。
+- apply 接受 `fill_missing_count + coverage:*`，仍只回放冻结方案；coverage
+  要求必须已在 state 中确认，冻结链不写 durable patch。
+- 真栈 900700 夹具：required=80、当前 80、浙江覆盖 min=16、2 条浙江保档；
+  候选池仅 16 个浙江（选中 15 + 可换 1）。preview `ready`、
+  `selected=80/add=1/remove=1`、preflight coverage pass；prepare→claim→execute
+  后版本 1→2、80 条、浙江 16、保底 2、postcondition true；已恢复 v1/80，
+  清 pending/command/proposal-request 测试行。
+- Java 全量 **1375 / 0 / 0 / 10**；Python unit 定向 297 passed / 32 skipped。
+
+仍未覆盖：safety/ratio/gap/edge 等 Search probe；专业组模式；
 remove/replace 需要候选的 Direct 场景；目标/档位/覆盖的 durable patch 持久化。
 
 ## 尚未完成

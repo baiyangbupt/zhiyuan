@@ -836,6 +836,155 @@ async def test_preview_plan_change_count_matching_ignores_cross_goal_ready_propo
     save_mock.assert_not_awaited()
 
 
+async def test_preview_plan_change_coverage_routes_to_frozen_preview_and_confirms(mocker):
+    """覆盖修复目标走只读冻结预览：must_include_scope 目标匹配 fill 提案。"""
+    preview_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.preview_review_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "sourceVersionGuard": 12,
+                    "proposals": [
+                        {
+                            "proposalId": "fp-coverage-0",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["coverage:0"],
+                            "title": "补齐覆盖要求",
+                            "summary": "补入1个满足覆盖要求的专业组。",
+                            "impact": "专业组由45个增加到46个。",
+                            "commandDigest": "command-digest-coverage",
+                            "previewDigest": "preview-digest-coverage",
+                            "evaluationVersion": "eval-coverage",
+                            "planContentDigest": "plan-content-coverage",
+                            "dryRunResult": {
+                                "status": "ready",
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 46,
+                                "affectedUnitCount": 1,
+                                "addUnitCount": 1,
+                            },
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0, "data": {"proposals": []}}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_planning_workspace_state",
+        AsyncMock(return_value={"code": 0, "data": {"version": 12}}),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={
+                "repair_goal": {
+                    "review_issue_code": "coverage",
+                    "strategy": "must_include_scope",
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["pending_created"] is False
+    assert result["data"]["requires_confirmation"] is True
+    assert result["data"]["proposal"]["proposal_id"] == "fp-coverage-0"
+    assert result["data"]["proposal"]["source_check_codes"] == ["coverage:0"]
+    assert result["data"]["repair_goal"] == {
+        "review_issue_code": "coverage",
+        "strategy": "must_include_scope",
+    }
+    candidate = result["data"]["review_fix_prepare_candidate"]
+    assert candidate["proposal_id"] == "fp-coverage-0"
+    assert candidate["command_digest"] == "command-digest-coverage"
+    assert candidate["preview_digest"] == "preview-digest-coverage"
+    assert candidate["evaluation_version"] == "eval-coverage"
+    assert candidate["plan_content_digest"] == "plan-content-coverage"
+    preview_mock.assert_awaited_once_with(1, ctx.sessionid)
+    generate_mock.assert_not_awaited()
+    save_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_coverage_issue_matches_coverage_suffix_source_code(mocker):
+    """coverage 目标按前缀匹配来源码 coverage:0，且不会误配其他来源码。"""
+    preview_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.preview_review_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "sourceVersionGuard": 12,
+                    "proposals": [
+                        {
+                            "proposalId": "fp-unrelated-count",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["count_validation"],
+                        },
+                        {
+                            "proposalId": "fp-coverage-0",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["coverage:0"],
+                            "title": "补齐覆盖要求",
+                            "summary": "补入1个满足覆盖要求的专业组。",
+                            "commandDigest": "command-digest-coverage",
+                            "previewDigest": "preview-digest-coverage",
+                            "dryRunResult": {"status": "ready", "affectedUnitCount": 1},
+                        },
+                    ],
+                },
+            }
+        ),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_planning_workspace_state",
+        AsyncMock(return_value={"code": 0, "data": {"version": 12}}),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "repair_goal": {
+                    "review_issue_code": "coverage",
+                    "strategy": "fill_missing_count",
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["proposal"]["proposal_id"] == "fp-coverage-0"
+    assert result["data"]["review_fix_prepare_candidate"]["preview_digest"] == (
+        "preview-digest-coverage"
+    )
+    preview_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
 def _prime_active_negative_major_intent_pending(ctx: RequestContext, *, section=None) -> None:
     merged = section or {"major_intents": {"negative_level1": ["医学"]}}
     execution_payload = {
