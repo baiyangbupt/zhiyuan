@@ -593,6 +593,13 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.generateFixProposals(tenantId, chatSessionId));
     }
 
+    @PostMapping("/session/fix-proposals/preview")
+    @ApiOperation("只读审查修复意图预览，不创建待确认动作")
+    public BaseResponse<ReviewFixPreviewDTO> previewReviewFixProposals(@PathVariable("tenantId") Long tenantId,
+                                                                     @RequestParam("chatSessionId") Long chatSessionId) {
+        return BaseResponse.success(planningStateService.previewReviewFixProposals(tenantId, chatSessionId));
+    }
+
     @PostMapping("/session/fix-proposals/user-goal/generate")
     @ApiOperation("按用户复合目标生成只读方案调整预览")
     public BaseResponse<FixProposalStateDTO> generateUserGoalFixProposals(@PathVariable("tenantId") Long tenantId,

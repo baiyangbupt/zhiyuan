@@ -15,7 +15,7 @@ import java.security.NoSuchAlgorithmException;
  */
 public final class EvaluationVersion {
 
-    public static final String OBJECTIVE_COMPILER_VERSION = "objective-compiler-v1";
+    public static final String OBJECTIVE_COMPILER_VERSION = "objective-compiler-v3";
     public static final String OBJECTIVE_WEIGHTS_VERSION = "objective-weights-v1";
 
     private EvaluationVersion() {

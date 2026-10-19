@@ -26,10 +26,9 @@ public class EvaluationFindingDTO {
     private List<EvaluationEntryRefDTO> affectedEntryRefs = Lists.newArrayList();
     private ObjectiveDeltaDTO objectiveDelta;
     /**
-     * 目标态应由 ActionCompiler 从 objectiveDelta 编译；J5.0 影子阶段恒为 null，
-     * 避免出现“delta 与 command 两套修复”的分叉。
+     * 只由 PlanCommandCompiler 从 objectiveDelta 编译，避免两套修复权威。
      */
-    private Object suggestedCommand;
+    private PlanCommandDTO suggestedCommand;
     private String source = "probe";
     private String reasonCode;
 }

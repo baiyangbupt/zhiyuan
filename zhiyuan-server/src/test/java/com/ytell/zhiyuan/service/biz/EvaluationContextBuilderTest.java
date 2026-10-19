@@ -3,11 +3,13 @@ package com.ytell.zhiyuan.service.biz;
 import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationContextDTO;
+import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import org.junit.jupiter.api.Test;
@@ -15,10 +17,53 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EvaluationContextBuilderTest {
 
     private final EvaluationContextBuilder builder = new EvaluationContextBuilder();
+
+    @Test
+    void preservesCooperationFromSelectedMemberNamesInUnitRiskProjection() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO candidate = new CandidateItemDTO();
+        candidate.setVolunteerId("selected");
+        candidate.setMajorName("工程管理(中外合作办学)");
+        state.getCandidatePoolState().getItems().add(candidate);
+        CandidateItemDTO unselected = new CandidateItemDTO();
+        unselected.setVolunteerId("unselected");
+        unselected.setMajorName("计算机(中外合作办学)");
+        state.getCandidatePoolState().getItems().add(unselected);
+        OrderedUnitDTO unit = new OrderedUnitDTO();
+        unit.setUnitId("unit");
+        PlanningUnitMajorDTO major = new PlanningUnitMajorDTO();
+        major.setVolunteerId("selected");
+        unit.getMajorItems().add(major);
+        state.getOrderedPlanState().getUnits().add(unit);
+        ReviewStateDTO review = new ReviewStateDTO();
+        ReviewCheckDTO check = new ReviewCheckDTO();
+        check.setCode("cooperative_program");
+        check.setPassed(true);
+        review.getChecks().add(check);
+
+        EvaluationContextDTO context = builder.build(state, null, review);
+        assertTrue(context.getEntries().get(0).getRiskTags().contains("cooperative_program"));
+        EvaluationFindingDTO finding = new ReviewEvaluationMapper().map(review, context).getFindings().stream()
+                .filter(value -> "cooperative_program".equals(value.getCode())).findFirst().get();
+        assertEquals("fail", finding.getResultStatus());
+        assertEquals("unit", finding.getAffectedEntryRefs().get(0).getId());
+        assertTrue(candidate.getReasonCodes().isEmpty());
+        assertTrue(candidate.getRiskFlags().isEmpty());
+
+        candidate.setMajorName("工程管理");
+        candidate.setSchoolName("某大学(中外合作)");
+        assertTrue(builder.build(state, null, review).getEntries().get(0).getRiskTags().contains("cooperative_program"));
+        candidate.setSchoolName("某大学");
+        finding = new ReviewEvaluationMapper().map(review, builder.build(state, null, review)).getFindings().stream()
+                .filter(value -> "cooperative_program".equals(value.getCode())).findFirst().get();
+        assertEquals("pass", finding.getResultStatus());
+    }
 
     @Test
     void buildsMajorModeEntriesAndCarriesTargets() {

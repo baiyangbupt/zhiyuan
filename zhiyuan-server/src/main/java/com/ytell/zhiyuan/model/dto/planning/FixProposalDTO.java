@@ -47,4 +47,12 @@ public class FixProposalDTO {
     private String hardObjectiveVersion;
     private PlanSolverResultDTO solverResult;
     private TierQuotaChangeDTO tierQuotaChange;
+    private String commandDigest;
+    private String previewDigest;
+    private String sourceStrategy;
+    private String findingCode;
+    private String evaluationVersion;
+    private String planContentDigest;
+    private FrozenReviewPlanDTO frozenReviewPlan;
+    private FindingPostconditionDTO findingPostcondition;
 }

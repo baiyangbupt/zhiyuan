@@ -288,7 +288,7 @@ class ReviewEvaluationMapperTest {
 
 
     @Test
-    void failingFindingsCarryObjectiveDeltaAndCompiledAction() {
+    void failingFindingsCarryObjectiveDeltaAndTypedCommand() {
         ReviewStateDTO review = new ReviewStateDTO();
         List<ReviewCheckDTO> checks = defaultChecks();
         ReviewCheckDTO highTuition = check("high_tuition", false, "warn", "action",
@@ -302,8 +302,7 @@ class ReviewEvaluationMapperTest {
         EvaluationFindingDTO finding = find(evaluation, "high_tuition");
         assertEquals("replace_risk_items", finding.getObjectiveDelta().getStrategy());
         assertEquals("u1", finding.getObjectiveDelta().getRemoveTargets().get(0).getId());
-        com.ytell.zhiyuan.model.dto.planning.CompiledActionDTO compiled =
-                (com.ytell.zhiyuan.model.dto.planning.CompiledActionDTO) finding.getSuggestedCommand();
+        com.ytell.zhiyuan.model.dto.planning.PlanCommandDTO compiled = finding.getSuggestedCommand();
         assertNotNull(compiled);
         assertEquals("replace_risk_items", compiled.getStrategy());
         assertFalse(compiled.getExecutable());
@@ -345,7 +344,8 @@ class ReviewEvaluationMapperTest {
         assertEquals("high_tuition", finding.getReasonCode());
         assertEquals(1, finding.getAffectedEntryRefs().size());
         assertEquals("u1", finding.getAffectedEntryRefs().get(0).getId());
-        assertNull(finding.getObjectiveDelta());
+        assertNotNull(finding.getObjectiveDelta());
+        assertEquals("replace_risk_items", finding.getSuggestedCommand().getStrategy());
         assertTrue(evaluation.getHardFeasible());
     }
 

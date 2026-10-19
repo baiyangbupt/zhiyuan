@@ -1,253 +1,106 @@
 package com.ytell.zhiyuan.service.biz;
 
 import com.alibaba.fastjson.JSON;
-import com.google.common.base.Strings;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationContextDTO;
-import com.ytell.zhiyuan.model.dto.planning.EvaluationEntryRefDTO;
-import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
-import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
-import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanEvaluationDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
-import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
-import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
-import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * J5.0 golden shadow：拿真实会话的 planningState 快照，对比旧 review checks 与
- * 新 PlanEvaluation。默认跳过；设置
- * {@code EVALUATION_GOLDEN_FILES=state.json[|pool.json],...} 运行。
- *
- * <p>本测试只读文件、不连库、不改状态。差异报告写到
- * {@code EVALUATION_GOLDEN_REPORT}（可选）。</p>
+ * Read-only snapshot comparison using the production evaluation input boundary.
+ * EVALUATION_GOLDEN_FILES=state.json[|pool.json],... enables the snapshot runner;
+ * the adjacent harness regression tests run without environment variables.
  */
-@EnabledIfEnvironmentVariable(named = "EVALUATION_GOLDEN_FILES", matches = ".+")
 class EvaluationGoldenShadowTest {
 
     private final ReviewEvaluationMapper mapper = new ReviewEvaluationMapper();
 
     @Test
+    @EnabledIfEnvironmentVariable(named = "EVALUATION_GOLDEN_FILES", matches = ".+")
     void shadowEvaluationExplainsEveryDifference() throws Exception {
-        String raw = System.getenv("EVALUATION_GOLDEN_FILES");
         StringBuilder report = new StringBuilder();
-        for (String item : raw.split(",")) {
-            String[] parts = item.split("\\|", -1);
-            File stateFile = new File(parts[0].trim());
-            File poolFile = parts.length > 1 && !parts[1].trim().isEmpty()
-                    ? new File(parts[1].trim()) : null;
-            PlanningStateDTO state = JSON.parseObject(
-                    new String(Files.readAllBytes(stateFile.toPath()), StandardCharsets.UTF_8),
-                    PlanningStateDTO.class);
-            if (poolFile != null) {
-                CandidatePoolStateDTO pool = JSON.parseObject(
-                        new String(Files.readAllBytes(poolFile.toPath()), StandardCharsets.UTF_8),
-                        CandidatePoolStateDTO.class);
-                state.getCandidatePoolState().setItems(pool.getItems());
+        List<Throwable> failures = new ArrayList<>();
+        int evaluated = 0;
+        int skipped = 0;
+        for (String fixture : System.getenv("EVALUATION_GOLDEN_FILES").split(",")) {
+            String[] paths = fixture.split("\\|", -1);
+            String name = Paths.get(paths[0].trim()).getFileName().toString();
+            try {
+                assertTrue(paths.length <= 2, "invalid fixture: " + fixture);
+                PlanningStateDTO state = JSON.parseObject(read(paths[0]), PlanningStateDTO.class);
+                assertNotNull(state, name + ": state");
+                if (paths.length == 2 && !paths[1].trim().isEmpty()) {
+                    CandidatePoolStateDTO pool = JSON.parseObject(read(paths[1]), CandidatePoolStateDTO.class);
+                    assertNotNull(pool, name + ": external pool");
+                    assertNotNull(state.getCandidatePoolState(), name + ": pool metadata");
+                    state.getCandidatePoolState().setItems(pool.getItems());
+                }
+                if (assertGolden(state, name, report)) {
+                    evaluated++;
+                } else {
+                    skipped++;
+                }
+            } catch (Exception | AssertionError failure) {
+                report.append("FAIL: ").append(name).append(": ").append(failure).append("\n\n");
+                failures.add(failure);
             }
-            assertGolden(state, stateFile.getName(), report);
         }
+        report.append("SUMMARY evaluated=").append(evaluated).append(" skipped=")
+                .append(skipped).append(" failed=").append(failures.size()).append('\n');
         String reportPath = System.getenv("EVALUATION_GOLDEN_REPORT");
-        if (!Strings.isNullOrEmpty(reportPath)) {
-            Files.write(new File(reportPath).toPath(),
-                    report.toString().getBytes(StandardCharsets.UTF_8));
+        if (reportPath != null && !reportPath.trim().isEmpty()) {
+            Files.write(Paths.get(reportPath), report.toString().getBytes(StandardCharsets.UTF_8));
         }
         System.out.println(report);
+        assertAll("golden snapshots", failures.stream().map(failure -> () -> { throw failure; }));
+        assertTrue(evaluated > 0, "no evaluable snapshots; skips are not a successful comparison");
     }
 
-    private void assertGolden(PlanningStateDTO state, String name, StringBuilder report) {
+    boolean assertGolden(PlanningStateDTO state, String name, StringBuilder report) {
         ReviewStateDTO review = state.getReviewState();
+        report.append("== ").append(name).append(" ==\n");
         if (review == null || review.getChecks() == null || review.getChecks().isEmpty()) {
-            // 没有审查结果的会话不能做 golden diff；报告里明确标出，不伪装“对比通过”。
-            report.append("== ").append(name).append(" ==\n")
-                    .append("SKIP: no review checks (reviewSource=")
+            report.append("SKIP: no review checks (reviewSource=")
                     .append(review == null ? null : review.getSourceVersion())
                     .append(", version=").append(state.getVersion()).append(")\n\n");
-            return;
+            return false;
         }
-
+        String stateBefore = JSON.toJSONString(state);
         EvaluationContextDTO context = buildContext(state);
+        String contextBefore = JSON.toJSONString(context);
         PlanEvaluationDTO evaluation = mapper.map(review, context);
-
-        int expectedFindings = review.getChecks().size() + 1; // count_validation 拆两条
-        assertEquals(expectedFindings, evaluation.getFindings().size(),
-                name + ": finding count");
-        assertEquals("completed", evaluation.getStatus(), name + ": status");
-        assertNotNull(evaluation.getEvaluationVersion(), name + ": evaluationVersion");
-
-        report.append("== ").append(name).append(" ==\n")
-                .append("version=").append(state.getVersion())
-                .append(" reviewSource=").append(review.getSourceVersion())
-                .append(" checks=").append(review.getChecks().size())
-                .append(" findings=").append(evaluation.getFindings().size())
-                .append(" hardFeasible=").append(evaluation.getHardFeasible())
-                .append('\n');
-
-        for (ReviewCheckDTO check : review.getChecks()) {
-            if ("count_validation".equals(check.getCode())) {
-                EvaluationFindingDTO hard = find(evaluation, "count_validation_hard");
-                EvaluationFindingDTO target = find(evaluation, "count_target");
-                report.append("count_validation -> ")
-                        .append(hard.getResultStatus()).append('/').append(hard.getDisplaySeverity())
-                        .append(" + ")
-                        .append(target.getResultStatus()).append('/').append(target.getDisplaySeverity())
-                        .append(" reason=").append(check.getReasonCode()).append('\n');
-                continue;
-            }
-            EvaluationFindingDTO finding = find(evaluation, check.getCode());
-            String expected = expectedStatus(check);
-            assertEquals(expected, finding.getResultStatus(),
-                    name + ": " + check.getCode());
-            boolean changed = !expected.equals(checkPassStatus(check));
-            // pass 一律映射 info 是设计口径，不算差异；只对 fail/unknown 报 severity 变化。
-            boolean severityChanged = !"pass".equals(expected)
-                    && !Strings.isNullOrEmpty(check.getSeverity())
-                    && !check.getSeverity().equals(finding.getDisplaySeverity());
-            if (changed || severityChanged || !"pass".equals(expected)) {
-                report.append(check.getCode()).append(": legacy ")
-                        .append(checkPassStatus(check))
-                        .append('/').append(check.getSeverity())
-                        .append(" -> ").append(expected)
-                        .append('/').append(finding.getDisplaySeverity())
-                        .append(" reason=").append(check.getReasonCode())
-                        .append(" summary=").append(check.getSummary())
-                        .append('\n');
-            }
-        }
-        report.append('\n');
+        report.append("version=").append(state.getVersion()).append(" reviewSource=")
+                .append(review.getSourceVersion()).append(" checks=").append(review.getChecks().size())
+                .append(" findings=").append(evaluation.getFindings().size()).append('\n');
+        EvaluationGoldenOracle.verify(state, context, evaluation, name, report);
+        assertEquals(stateBefore, JSON.toJSONString(state), name + ": state mutated");
+        assertEquals(contextBefore, JSON.toJSONString(context), name + ": context mutated");
+        assertEquals(JSON.toJSONString(evaluation), JSON.toJSONString(mapper.map(review, context)),
+                name + ": evaluation must be deterministic");
+        report.append("PASS: independently verified derived facts; strict legacy status parity\n\n");
+        return true;
     }
 
-    private String checkPassStatus(ReviewCheckDTO check) {
-        return Boolean.FALSE.equals(check.getPassed()) ? "fail" : "pass";
+    EvaluationContextDTO buildContext(PlanningStateDTO state) {
+        return new EvaluationContextBuilder().build(state,
+                state.getCandidatePoolState() == null ? null : state.getCandidatePoolState().getItems(),
+                state.getReviewState());
     }
 
-    private String expectedStatus(ReviewCheckDTO check) {
-        if (Boolean.TRUE.equals(check.getPassed())
-                && "warn".equals(check.getLevel())
-                && !"info".equals(check.getSeverity())) {
-            return "unknown";
-        }
-        return checkPassStatus(check);
-    }
-
-    private EvaluationFindingDTO find(PlanEvaluationDTO evaluation, String code) {
-        return evaluation.getFindings().stream()
-                .filter(item -> code.equals(item.getCode()))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("missing finding " + code));
-    }
-
-    private EvaluationContextDTO buildContext(PlanningStateDTO state) {
-        CandidatePoolStateDTO pool = state.getCandidatePoolState();
-        Map<String, CandidateItemDTO> byVolunteer = Maps.newHashMap();
-        for (CandidateItemDTO candidate : safeList(pool.getItems())) {
-            if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
-                byVolunteer.put(candidate.getVolunteerId(), candidate);
-            }
-        }
-        boolean groupMode = "majorGroup".equalsIgnoreCase(pool.getVolunteerModel())
-                || !safeList(state.getOrderedPlanState().getUnits()).isEmpty();
-        List<EvaluationEntryRefDTO> entries = Lists.newArrayList();
-        if (groupMode) {
-            for (OrderedUnitDTO unit : safeList(state.getOrderedPlanState().getUnits())) {
-                EvaluationEntryRefDTO entry = new EvaluationEntryRefDTO();
-                entry.setLevel("unit");
-                entry.setId(unit.getUnitId());
-                entry.setPosition(unit.getPosition());
-                entry.setSchoolName(unit.getSchoolName());
-                entry.setProvinceName(unit.getProvinceName());
-                entry.setPathTier(unit.getTier());
-                entry.setSchoolRatio(unit.getSchoolEnrollRatio());
-                entry.setMajorRatio(unit.getAdmissionRatio());
-                Integer tuition = null;
-                List<String> flags = Lists.newArrayList();
-                for (PlanningUnitMajorDTO major : safeList(unit.getMajorItems())) {
-                    CandidateItemDTO candidate = byVolunteer.get(major.getVolunteerId());
-                    if (candidate == null) {
-                        continue;
-                    }
-                    if (candidate.getTuitionPerYear() != null) {
-                        tuition = tuition == null ? candidate.getTuitionPerYear()
-                                : Math.max(tuition, candidate.getTuitionPerYear());
-                    }
-                    for (String flag : safeList(candidate.getRiskFlags())) {
-                        if (!flags.contains(flag)) {
-                            flags.add(flag);
-                        }
-                    }
-                }
-                entry.setTuitionPerYear(tuition);
-                entry.setRiskFlags(flags);
-                entries.add(entry);
-            }
-        } else {
-            for (OrderedItemDTO item : safeList(state.getOrderedPlanState().getItems())) {
-                CandidateItemDTO candidate = byVolunteer.get(item.getVolunteerId());
-                EvaluationEntryRefDTO entry = new EvaluationEntryRefDTO();
-                entry.setLevel("volunteer");
-                entry.setId(item.getVolunteerId());
-                entry.setPosition(item.getPosition());
-                entry.setSchoolName(item.getSchoolName());
-                entry.setMajorName(item.getMajorName());
-                entry.setPathTier(item.getTier());
-                if (candidate != null) {
-                    entry.setProvinceName(candidate.getProvinceName());
-                    entry.setSchoolRatio(candidate.getSchoolEnrollRatio());
-                    entry.setMajorRatio(candidate.getAdmissionRatio());
-                    entry.setTuitionPerYear(candidate.getTuitionPerYear());
-                    entry.setRiskFlags(Lists.newArrayList(safeList(candidate.getRiskFlags())));
-                }
-                entries.add(entry);
-            }
-        }
-
-        EvaluationContextDTO context = new EvaluationContextDTO();
-        context.setEntries(entries);
-        context.setSelectionTargetCount(selectionTargetCount(state));
-        context.setRequiredCount(pool.getRequiredCount());
-        context.setRequiredTierCounts(pool.getRequiredTierCounts());
-        context.setAdmissionMode(groupMode ? "major_group" : "major");
-        context.setSourceProvince(pool.getSourceProvinceName());
-        context.setUserScore(pool.getUserScore());
-        context.setCandidateSourceVersion(pool.getSourceVersion());
-        context.setEvaluatedStateVersion(reviewSource(state));
-        context.setPlanContentDigest(EvaluationVersion.sha256(
-                JSON.toJSONString(state.getOrderedPlanState())));
-        context.setDataVersion(state.getDataFreshnessState().getDataVersion());
-        return context;
-    }
-
-    private Integer selectionTargetCount(PlanningStateDTO state) {
-        if (state.getConstraintState() == null
-                || state.getConstraintState().getHardPlanningObjectives() == null) {
-            return null;
-        }
-        Integer target = state.getConstraintState().getHardPlanningObjectives()
-                .getSelectionTargetCount();
-        return target != null && target > 0 ? target : null;
-    }
-
-    private Integer reviewSource(PlanningStateDTO state) {
-        return state.getReviewState() != null && state.getReviewState().getSourceVersion() != null
-                ? state.getReviewState().getSourceVersion() : state.getVersion();
-    }
-
-    private static <T> List<T> safeList(List<T> value) {
-        return value == null ? Lists.newArrayList() : value;
+    private String read(String path) throws Exception {
+        Path file = Paths.get(path.trim());
+        return new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
     }
 }

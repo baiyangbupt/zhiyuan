@@ -68,6 +68,39 @@ final class PlanOrderingEngine {
         return result;
     }
 
+    static OrderResult orderByProbability(List<OrderEntry> entries, Map<String, Double> ratios) {
+        if (entries == null || ratios == null) {
+            throw new IllegalArgumentException("probability_order_input_missing");
+        }
+        Set<String> identities = new LinkedHashSet<String>();
+        List<OrderEntry> movable = new ArrayList<OrderEntry>();
+        for (OrderEntry entry : entries) {
+            Double ratio = entry == null ? null : ratios.get(entry.entityId);
+            if (entry == null || Strings.isNullOrEmpty(entry.entityId) || !identities.add(entry.entityId)
+                    || ratio == null || !Double.isFinite(ratio)) {
+                throw new IllegalArgumentException("probability_order_facts_incomplete");
+            }
+            if (!entry.pinned) {
+                movable.add(entry);
+            }
+        }
+        movable.sort((left, right) -> Double.compare(ratios.get(left.entityId), ratios.get(right.entityId)));
+        List<OrderEntry> ordered = new ArrayList<OrderEntry>();
+        int next = 0;
+        for (OrderEntry entry : entries) {
+            ordered.add(entry.pinned ? entry : movable.get(next++));
+        }
+        OrderResult result = new OrderResult();
+        result.selectedIds = ids(entries);
+        result.orderedIds = ids(ordered);
+        for (int index = 1; index < ordered.size(); index++) {
+            if (ratios.get(ordered.get(index - 1).entityId) - ratios.get(ordered.get(index).entityId) > 1e-9D) {
+                result.inversionCount++;
+            }
+        }
+        return result;
+    }
+
     private static int priorityInversions(List<OrderEntry> ordered) {
         Map<String, Integer> unmatched = new LinkedHashMap<String, Integer>();
         int result = 0;

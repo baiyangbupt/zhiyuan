@@ -10,7 +10,6 @@ import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
 import com.ytell.zhiyuan.model.dto.planning.EvaluationProbeMetadataDTO;
 import com.ytell.zhiyuan.model.dto.planning.ObjectiveDeltaDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanEvaluationDTO;
-import com.ytell.zhiyuan.model.dto.planning.ReviewRuleMetadataDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureVectorDTO;
@@ -36,7 +35,8 @@ public class ReviewEvaluationMapper {
     /** 相邻录取率比较的浮点容差，避免同值因浮点误差被判倒挂。 */
     private static final double RATIO_EPSILON = 1e-9D;
 
-    private final ActionCompiler actionCompiler = new ActionCompiler();
+    private final FindingObjectiveDeltaBuilder deltaBuilder = new FindingObjectiveDeltaBuilder();
+    private final PlanCommandCompiler commandCompiler = new PlanCommandCompiler();
 
     public PlanEvaluationDTO map(ReviewStateDTO reviewState, EvaluationContextDTO context) {
         EvaluationContextDTO safeContext = context == null ? new EvaluationContextDTO() : context;
@@ -137,6 +137,14 @@ public class ReviewEvaluationMapper {
         }
         if (safeContext.getUserScore() != null && safeContext.getBatchScore() != null) {
             addIfPresent(findings, mapEdgeScore(safeContext));
+        }
+        for (EvaluationFindingDTO finding : findings) {
+            if ("unknown".equals(finding.getResultStatus())) {
+                finding.setFixability("needs_input");
+            }
+            ObjectiveDeltaDTO delta = deltaBuilder.build(finding, safeContext);
+            finding.setObjectiveDelta(delta);
+            finding.setSuggestedCommand(commandCompiler.compile(delta, safeContext));
         }
         evaluation.setFindings(findings);
         evaluation.setProbesRun(findings.size());
@@ -721,43 +729,7 @@ public class ReviewEvaluationMapper {
         }
         finding.setThreshold(threshold);
         finding.setAffectedEntryRefs(affectedRefs(check, context));
-        // J5.2：未通过/未知的 finding 带 delta，修复意图统一由 ActionCompiler 编译；
-        // pass/not_applicable 必须保持 null（“已通过还建议改”是非法组合）。
-        if (!"pass".equals(resultStatus) && !"not_applicable".equals(resultStatus)) {
-            ObjectiveDeltaDTO delta = buildDelta(metadata, check, finding.getAffectedEntryRefs());
-            finding.setObjectiveDelta(delta);
-            finding.setSuggestedCommand(actionCompiler.compile(delta));
-        }
         return finding;
-    }
-
-    private ObjectiveDeltaDTO buildDelta(EvaluationProbeMetadataDTO metadata,
-                                         ReviewCheckDTO check,
-                                         List<EvaluationEntryRefDTO> refs) {
-        ReviewRuleMetadataDTO rule = ReviewRuleRegistry.get(metadata.getSourceCheck());
-        String strategy = rule == null ? null : rule.getDefaultFixStrategy();
-        if (Strings.isNullOrEmpty(strategy)) {
-            return null;
-        }
-        // 数量超官方上限是“精简”，不是“补足”——按结果码纠正默认策略。
-        if ("count_over_limit".equals(check.getReasonCode())) {
-            strategy = RepairProposalTaxonomy.Strategy.REMOVE_RISK_ITEMS;
-        }
-        ObjectiveDeltaDTO delta = new ObjectiveDeltaDTO();
-        delta.setStrategy(strategy);
-        delta.setSourceCheck(metadata.getSourceCheck());
-        delta.setReasonCode(Strings.isNullOrEmpty(check.getReasonCode())
-                ? metadata.getCode() : check.getReasonCode());
-        String normalized = strategy.toLowerCase();
-        if (normalized.contains("sort") || normalized.contains("reorder")
-                || normalized.contains("regenerate_order")) {
-            delta.getReorderTargets().addAll(refs);
-        } else if (normalized.contains("remove") || normalized.contains("replace")) {
-            delta.getRemoveTargets().addAll(refs);
-        } else {
-            delta.getAddTargets().addAll(refs);
-        }
-        return delta;
     }
 
     private List<EvaluationEntryRefDTO> affectedRefs(ReviewCheckDTO check, EvaluationContextDTO context) {

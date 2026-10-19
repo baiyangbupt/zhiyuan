@@ -1,7 +1,6 @@
 # J5.5 设计：统一“评价 → 命令 → 预览 → 确认 → 执行”框架
 
-状态：**修订版，已按首轮三路评审 + 二次架构/执行复审修订；待最终确认，
-确认前不落地实现**。
+状态：**用户已批准按第三轮复核修订后分阶段落地；J5.5a 与 b 的只读冻结排序/原 probe 预检前置已本地实现；旧 Golden 上下文已修复，并修正专业组合作办学漏报；b/c 确认执行写链尚未切换**。
 日期：2026-10-19
 首轮评审：`docs/superpowers/reviews/2026-10-19-j55-review-to-action-design-review.md`
 
@@ -151,6 +150,7 @@ class PlanCommandDTO {
     // 绝对目标（null=不变）
     Integer targetCount;
     Map<String,Integer> tierTargetCounts;       // 冲/稳/保，总和=targetCount
+    TierAllocationConstraintDTO tierConstraint; // 保留已确认的范围边界
     Integer safetyMinLocalProtect;              // 绝对下限
     List<CoverageRequirementDTO> coverageRequirements; // 全量绝对集合
     HardConstraintsDTO constraintPatch;
@@ -172,6 +172,12 @@ class PlanCommandDTO {
 `targetCount`/`tierTargetCounts`/`safetyMinLocalProtect`/`coverageRequirements`
 都是**绝对值**。`ObjectiveDelta` 里的 `targetCountDelta` 只用于卡面
 “+2/-3”展示和审计；compiler 用 state 上下文换算成绝对值。
+
+第三轮修订：命令增加 `tierConstraint` 保留现有范围边界。只有用户明确授权
+精确配额时才填 `tierTargetCounts`；修复范围目标不把某次解向量升级为新目标。
+`constraintPatch` 仅承载授权的持久约束变化；安全等派生 effective target
+单独存储，不自动写入永久用户目标。digest 覆盖 `tierConstraint`；重排序列
+保持顺序语义，不能像目标集合一样排序去重后丢失执行顺序。
 
 **digest 公式（消除循环依赖）**：
 
@@ -242,8 +248,9 @@ prepare/apply 入口校验；未带或非 `write` → 403 `readonly_mode`。同�
    - 用户给目标（补数量/地区/专业/档位）→ 用户目标预览；
    - 用户确认某条审查问题 → 审查修复预览；
 3. 预览 ready → 输出 `proposalApply` + `artifactRefs` + `previewDigest`；
-4. 用户确认 → prepare → pending；
-5. 再次确认 → claim/execute。
+4. 用户明确要求修复时 → prepare → pending，并展示已经冻结的可确认卡；
+5. 用户对冻结卡一次确认 → claim/execute。纯查看建议不创建 pending，
+   也不把没有 active pending 的只读预览当成确认入口。
 
 审查修复卡必须带：
 
@@ -264,7 +271,7 @@ prepare/apply 入口校验；未带或非 `write` → 403 `readonly_mode`。同�
 
 ## 3.3 审查新鲜度与版本
 
-- `runReviewInternal(persist=true)`：显式 `/review/run`，写 `reviewState` 并
+- 目标态 `runReviewInternal(persist=true)`：显式 `/review/run`，写 `reviewState` 并
   清 stale；`evaluatedStateVersion` = 评价时的 stateVersion。
 - **审查写不推进计划版本**：`reviewState` 使用独立的 `reviewVersion`
   （或直接以 `evaluationVersion` 作为版本），不得修改 `planningState.version`、
@@ -278,11 +285,17 @@ prepare/apply 入口校验；未带或非 `write` → 403 `readonly_mode`。同�
   **不包含 version/reviewState**。apply guard 用它判断方案是否变化。
 - `evaluationVersion = hash(evaluatedStateVersion, planContentDigest,
   candidateSourceVersion, dataVersion, objectiveModelVersion)`。
-- review prepare/apply 校验 `evaluationVersion + planContentDigest`；
-  `sourceVersionGuard` 取 prepare 时的当前 plan version（review 写不改变它）。
+- preview→prepare 校验当前评价与预览内容；冻结后 `evaluationVersion` 用于
+  请求/pending 来源绑定。apply 不重算整池评价版本来判失效，而校验计划内容、
+  硬目标/动作契约及选择/显式动作涉及的硬事实；未选候选刷新不使 pending 失效。
+  `sourceVersionGuard` 取 prepare 时的当前 plan version。
 - 预览的候选解析必须 **in-memory refresh**：`resolveEffectiveCandidates` 的
   refresh 分支不得写 overlay（现 `:9894/:10000-10002` 会 save）；若数据已
   stale 且无法内存刷新，直接 409 `review_fix_stale`，不写库。
+
+阶段边界：a 的独立 preview 已与旧持久审查计算分离；旧 `/review/run` 的
+版本递增行为暂时保留，独立 reviewVersion/内容 guard 的写链迁移属于 b，
+不能把此处的目标态描述当成旧端点已经完成迁移。
 
 ---
 
@@ -307,8 +320,9 @@ ordered/actions/dryRun，不存在循环）。
 预览期间：
 
 - 候选解析 in-memory；不保存 overlay、不写 reviewState、不 bump version；
-- 不创建任何 pending（删除现有 review 工具的 legacy pending 创建
-  `tools.py:9558`）；
+- 不创建任何 pending；a 新增独立 `/session/fix-proposals/preview`，仅返回
+  review/findings/typed commands 和空 proposals，status=preview_only。
+  旧 generate/tool/pending 保持原样，b 的 prepare/gateway 能力完成后才切流；
 - 只读实例（`codex_readonly`）止步于此。
 
 ## 4.2 审查修复 prepare
@@ -420,6 +434,10 @@ evaluationVersion` 与 pending.dataValue；不一致 → 409
 | count | 官方/目标计数满足 |
 | coverage | 原 requirement 匹配数 >= 要求 |
 
+以上 evaluator 也是 planner 的纯内存 preflight：solver ready 不代表原问题
+修复成功。候选后态必须满足原 probe 和硬约束后才能出可确认卡；仍有安全缺口
+等情况返回 blocked/preview_only（`repair_goal_unreachable`），不能等确认后才回滚。
+
 - 评价输入不可用（缺字段/候选刷新）→ fail-closed，40905。
 - 回执 `RepairReportDTO` 增 `findingCode/commandDigest/sourceStrategy`；
   Web 可选展示，默认内部审计。
@@ -497,7 +515,7 @@ List<CoverageRequirementDTO> coverageRemove;
 | probe | delta | 备注 |
 |---|---|---|
 | `safety_guard` | `safetyMinLocalProtect=requiredAbs`；targetCount=baseTarget | required=0 或 province_excluded → 无修复 |
-| `ratio_distribution` | `tierTargetCounts` 绝对；targetCount=baseTarget | 无显式 tierConstraint → not_applicable |
+| `ratio_distribution` | `tierConstraint` 原边界；targetCount=baseTarget | 无显式 tierConstraint → 无命令；精确目标才带绝对 tierTargetCounts |
 | `count_validation_hard` | 低于官方 → targetCount=officialMin；超上限 → forcedRemoveTargets | **空 reasonCode + passed/warn**（缺官方数）→ needs_input；`count_missing` 是“当前低于官方下限”，正常产 fill |
 | `count_target` | targetCount=selectionTargetCount | 无 selectionTargetCount → not_applicable |
 | `coverage:<i>` | coverageRequirements 绝对集合 | 已满足项不重复加；无 requirement → 不产 |
@@ -508,7 +526,7 @@ List<CoverageRequirementDTO> coverageRemove;
 | `special_enrollment` | forcedRemoveTargets | |
 | `cooperative_program` | replacementPairs/forcedRemoveTargets | |
 | `edge_score` | safetyMinLocalProtect/tierTargetCounts | 首期 preview_only |
-| `group_inner_safety_guard` | `replacementPairs`（组内 from→to 专业）；无显式配对 → Search `forcedRemove`/`forcedAdd` | 不允许 Direct 自己挑组内专业 |
+| `group_inner_safety_guard` | `replacementPairs`（组内 from→to 专业）；无显式配对 → preview_only，无命令 | 不回退 unit-level Search |
 | `major_group_safety_intent_alignment` | 同上 | 同上 |
 | notices | 无 | policy |
 
@@ -522,8 +540,8 @@ unknown/needs_input（缺省/缺官方数/缺评价输入）→ `fixability=need
 - `sort_by_probability`：reorderTargets；preview 时由 PlanOrderingEngine 生成
   冻结 orderedEntityIds，apply 只回放。
 - `adjust_major_group_inner_safety`：必须给**组内 from→to 专业**
-  `replacementPairs`；只给 unit 不构成可执行命令，转 Search
-  `forcedRemove`/`forcedAdd`。
+  `replacementPairs`；只给 unit 不构成可执行命令，保持 preview_only。
+  当前 unit solver 不能表达同组专业替换；以后另设组内 planner 才能开放。
 - `remove_risk_items`：仅当 targets 已明确且无需补偿选择；否则转 Search
   `forcedRemoveTargets`。
 - `replace_risk_items`：仅当 `replacementPairs` 已给出；否则转 Search。
@@ -547,15 +565,14 @@ applyPatch(base, command):                               // 后 patch
   7 重冻 `solverObjectiveDigest`；`canonicalObjectiveDigest` 保持 enrich 前值
 ```
 
-补丁持久化（apply 同事务，先写后回放）：
+补丁持久化（仅明确授权的 durable change，apply 同事务，先写后回放）：
 
-- `HardPlanningObjectivesDTO` 增加 `safetyMinLocalProtect`/`safetyFloorMode`
-  或等价持久字段；`SafetyFloorSupport.build` 必须优先读显式值，不能被
-  state 默认覆盖。
+- 派生 safety 仅为 effective target，随成绩/生源省/范围重新计算，不自动
+  写成最高优先级显式硬目标；未来显式用户安全目标需单独定义授权和失效规则。
 - `CoverageRequirementSupport.persist` 增加按 identity 删除；现有实现只
   add/max，无法移除。
-- tier 目标写回 `TierAllocationSupport` 的 confirmed goal/resolution；
-  targetCount 写回 `selectionTargetCount`。
+- 修复现有 tier 范围保留 confirmed goal 原 bounds，不写回本次精确解；
+  只有用户明确修改目标时才写 durable tier/count/coverage patch。
 - 持久化完成后再执行 frozen selection；后置校验读写入后的 state。
 
 必须单测断言：`StagedDeterministicPlanSolver` 收到的 objective 中
@@ -575,18 +592,19 @@ MutationPolicy 按 **sourceStrategy**（不是归一后的 applyStrategy）选�
 
 | sourceStrategy | action | lockExisting | countAsChurn | requireCompensationSafe | forced |
 |---|---|---|---|---|---|
-| fill_missing_count / count_target | FILL | false | true | true | — |
-| add_safety_items | FILL | false | true | true | forcedRemoveTargets（非本省保底） |
-| rebalance_tier_ratio | FILL | false | true | true | forcedRemoveTargets（超配额档） |
-| fill_probability_gap | FILL | false | true | true | forcedRemove |
-| edge_score | FILL | false | true | true | forcedRemove |
-| coverage / safety | FILL | false | true | true | forcedRemove |
+| fill_missing_count / count_target | FILL | true | true | true | 合规存量硬保留 |
+| add_safety_items | REVIEW_FIX | false | true | true | 明确 removableEntityIds 授权范围 |
+| rebalance_tier_ratio | REVIEW_FIX | false | true | true | 明确 removableEntityIds 授权范围 |
+| fill_probability_gap | REVIEW_FIX | false | true | true | 首期 preview_only |
+| edge_score | REVIEW_FIX | false | true | true | 首期 preview_only |
+| coverage / safety | REVIEW_FIX | false | true | true | 明确 removableEntityIds 授权范围 |
 | remove_risk_items | REMOVE | false | true | true | forcedRemoveTargets |
 | replace_risk_items | REPLACE | false | true | true | replacementPairs |
 
 `safety`/`ratio` 不能用 `lockExisting=true`：actual=0 / 全冲场景下 current 会被
-强制保留，目标不可行。需要保留 current 的语义由 solver 的 churn 目标表达，
-而不是 lock；必须移出的项通过 `forcedRemoveTargets` 显式给出。
+强制保留，目标不可行。结构修复仅在授权的 removableEntityIds 内允许换项，
+其他合规 current 硬保留，churn 只在授权范围内最小化改动；普通数量 FILL
+不能仅靠 churn 保留存量，也不能继承结构修复的任意换项权限。
 
 ### 5.5.3 结果 → proposal
 
@@ -705,7 +723,8 @@ apply：FrozenPlanExecutor 回放顺序；不重新 sort。
 Fixture：unit u1 内 3 个 major，安全垫 ratio 低于下限；候选池有同组替代专业。
 delta：`replacementPairs=[{from:u1-majorA,to:u1-majorB}]`（逐对显式）。
 planner：Direct；action=ADJUST_MAJOR_GROUP_INNER_SAFETY，列明 from/to 专业。
-无显式配对：转 Search `forcedRemove/forcedAdd`，不允许 Direct 自己挑专业。
+无显式配对：preview_only，无命令；不使用 unit-level forcedRemove/forcedAdd
+模拟同组专业替换，也不允许 Direct 自己挑专业。
 预期：action 列明专业替换；后置 group_inner_safety pass。
 
 ## 案例 H：只读/陈旧/篡改
@@ -754,7 +773,10 @@ planner：Direct；action=ADJUST_MAJOR_GROUP_INNER_SAFETY，列明 from/to 专�
 - evaluation unavailable → checks fallback 正常；
 - 旧 pending（无 frozen）→ 过渡分支只执行一次；
 - user-goal fill/priority/scope 全回归；
-- 候选刷新/overlay 变化 → selection guard 409；
+- 未选候选刷新允许冻结回放；选中/显式动作涉及实体资格变化 → selection guard 409；
+- solver ready 但原 safety probe 仍 fail → 不出可确认卡；
+- 范围修复后仍保留范围；派生 safety 随成绩更新重新计算；
+- count fill 不删合规旧项，safety repair 只允许授权范围内最小必要替换；
 - 预览后跑一次 review → plan version/planContentDigest 不变，prepare 不 409；
 - 并发 claim、同 operationId replay、两个 proposal 重叠；
 - 409 端到端：stale/changed/tamper/expired；
@@ -812,18 +834,31 @@ planner：Direct；action=ADJUST_MAJOR_GROUP_INNER_SAFETY，列明 from/to 专�
 
 - `PlanCommandDTO` 替换 `CompiledActionDTO`；绝对目标 + digest；
 - mapper 逐 probe delta；unknown/needs_input 无命令；
-- review preview 改 `persist=false` + 不建 pending；
+- 新增独立纯读 preview，不建 pending；旧 generate/tool 路由不切换；
 - 单测/golden；执行行为零变化。
 
 ## J5.5b：冻结回放（不依赖 Search）
 
+2026-10-19 前置批次进度：只读 `/fix-proposals/preview` 已接入普通专业模式的
+显式作用域概率排序，返回完整 working/ordered/selected facts 的冻结后态与
+previewDigest；共享 `FindingPostconditionEvaluator` 已用于新鲜审查 preflight。
+所有新卡仍 `preview_only`、`requiresConfirmation=false`，命令
+`executable=false`。组模式、pin/lock、已确认优先排序尚不支持；原 probe 或
+硬目标不满足、缺事实时不返回冻结后态。下列 prepare/冻结执行/gateway 工作仍待落地，
+不能把该前置批次视为 b 完成。详见
+`docs/superpowers/plans/2026-10-19-j55b-frozen-preview-preflight.md`。
+
 - `PlanProposalPlanner` 接口 + `LegacyReviewAdapter`：现有 review builder
   产出的 proposal 也能进入统一冻结/回放；
-- `FrozenPlanExecutor`（selected/ordered；patch 持久化接口先留空）；
+- Legacy adapter 必须物化完整 selected/ordered/专业级后态和事实摘要；
+  无法物化的策略保持 preview_only，不伪造 solverResult；
+- `FrozenPlanExecutor` + 最小 `FindingPostconditionEvaluator`，预览 preflight
+  与 apply 共用原 probe 判定；有 durable patch 的策略需持久化能力才可开放；
 - review prepare 端点 + frozen replay；canonical guard 对所有 solver proposal；
 - Python `prepare_review_fix_proposal` + tools/gateway confirm；
 - 开关 `review.fix.command.enabled`；旧重新生成分支保留供回滚；
-- 真栈 fill/安全/倒挂/组内（这些现有 builder 已能出 proposal）。
+- 真栈仅验收已经具备冻结后态及后置校验的 fill/倒挂/显式专业配对；
+  safety/ratio 如依赖 Search，后移 c 验收。
 - **前置**：previewDigest、版本 guard、PlanProposalPlanner 接口；
   **不要求** Search planner（c 才接）。
 
@@ -832,7 +867,7 @@ planner：Direct；action=ADJUST_MAJOR_GROUP_INNER_SAFETY，列明 from/to 专�
 - `applyPatch`（enrich 后）+ patch 持久化；
 - Search：fill/count/coverage 先开；safety/ratio golden 后开；
   gap/edge preview_only；
-- `FindingPostconditionEvaluator`；
+- 扩展 b 的 `FindingPostconditionEvaluator` 到 Search probe；
 - Direct 自产 dryRunResult，删除 RepairDryRunSimulator；
 - 开关 `review.fix.search.enabled`。
 

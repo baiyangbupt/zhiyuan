@@ -182,6 +182,11 @@ public class EvaluationContextBuilder {
                 result.add(value);
             }
         }
+        if (((candidate.getSchoolName() != null && candidate.getSchoolName().contains("中外合作"))
+                || (candidate.getMajorName() != null && candidate.getMajorName().contains("中外合作")))
+                && !result.contains("cooperative_program")) {
+            result.add("cooperative_program");
+        }
         return result;
     }
 

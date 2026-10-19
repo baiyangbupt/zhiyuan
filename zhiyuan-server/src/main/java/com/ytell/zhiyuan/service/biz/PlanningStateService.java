@@ -6,6 +6,7 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.common.exception.ReviewFixStaleException;
 import com.ytell.zhiyuan.common.util.ExcelUtil;
 import com.ytell.zhiyuan.manager.MajorExtraDataManager;
 import com.ytell.zhiyuan.manager.SchoolManager;
@@ -3291,10 +3292,48 @@ public class PlanningStateService {
         throw writeCasConflict("方案审查");
     }
 
-    /** 审查计算（纯内存；以传入 state 为事实来源），并把结论与版本/阶段写回 state。 */
+    public ReviewFixPreviewDTO previewReviewFixProposals(Long tenantId, Long chatSessionId) {
+        PlanningStateDTO state = loadPlanningStateReadOnly(chatSessionId);
+        if (state.getBaselineDataValue() == null
+                || state.getCandidatePoolState().getItems().isEmpty()
+                || Boolean.TRUE.equals(state.getStaleFlags().getCandidatePool())
+                || shouldRefreshRecommendationOverlay(state)) {
+            throw new ReviewFixStaleException();
+        }
+        normalizeCandidatePoolForPlanning(state);
+        List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, false);
+        ReviewStateDTO review = evaluateReview(state, effectiveCandidates);
+        ReviewFixPreviewDTO preview = new ReviewFixPreviewDTO();
+        preview.setSourceVersion(state.getVersion());
+        preview.setReview(review);
+        if (!"completed".equals(review.getEvaluationStatus())) {
+            preview.setStatus("unavailable");
+            return preview;
+        }
+        DirectReviewPreviewPlanner planner = new DirectReviewPreviewPlanner();
+        for (EvaluationFindingDTO finding : review.getFindings()) {
+            FixProposalDTO proposal = planner.plan(state, effectiveCandidates, finding,
+                    after -> evaluateReview(after, effectiveCandidates));
+            if (proposal != null) {
+                preview.getProposals().add(proposal);
+            }
+        }
+        return preview;
+    }
+
     private ReviewStateDTO runReviewInternal(Long tenantId, Long chatSessionId, PlanningStateDTO state) {
         normalizeCandidatePoolForPlanning(state);
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+        ReviewStateDTO reviewState = evaluateReview(state, effectiveCandidates);
+        state.setReviewState(reviewState);
+        state.setSessionId(chatSessionId);
+        state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+        state.setPhase("reviewed");
+        state.getStaleFlags().setReview(false);
+        return reviewState;
+    }
+
+    private ReviewStateDTO evaluateReview(PlanningStateDTO state, List<CandidateItemDTO> effectiveCandidates) {
         ReviewStateDTO reviewState = new ReviewStateDTO();
         reviewState.setStatus("completed");
         reviewState.setReviewedAt(OffsetDateTime.now().toString());
@@ -3332,11 +3371,6 @@ public class PlanningStateService {
         attachPlanEvaluation(state, effectiveCandidates, reviewState);
         recalculateReviewSummary(reviewState);
 
-        state.setReviewState(reviewState);
-        state.setSessionId(chatSessionId);
-        state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
-        state.setPhase("reviewed");
-        state.getStaleFlags().setReview(false);
         return reviewState;
     }
 
@@ -12506,7 +12540,11 @@ public class PlanningStateService {
                 ReviewCheckDTO fallback = byCode.get(finding.getCode());
                 if (fallback != null && Boolean.FALSE.equals(fallback.getPassed())
                         && seen.add(fallback.getCode())) {
-                    candidates.add(new ReviewFixCandidate(fallback, null));
+                    ReviewRuleMetadataDTO legacyRule = finding.getThreshold() != null
+                            && finding.getThreshold().containsKey("sourceCheck")
+                            ? ReviewRuleRegistry.get(fallback.getCode()) : null;
+                    candidates.add(new ReviewFixCandidate(fallback,
+                            legacyRule == null ? null : legacyRule.getDefaultFixStrategy()));
                 }
                 continue;
             }

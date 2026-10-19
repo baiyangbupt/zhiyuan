@@ -3,6 +3,7 @@ package com.ytell.zhiyuan.common.config;
 import com.ytell.zhiyuan.common.base.BaseResponse;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.common.exception.ConversationAccessException;
+import com.ytell.zhiyuan.common.exception.ReviewFixStaleException;
 import org.springframework.http.ResponseEntity;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -38,6 +39,13 @@ public class GlobalExceptionHandler {
         log.warn("conversation access denied: {}", ex.getMessage());
         return ResponseEntity.status(ex.getStatus())
                 .body(BaseResponse.error(ex.getStatus(), ex.getMessage()));
+    }
+
+    @ExceptionHandler(ReviewFixStaleException.class)
+    @ResponseBody
+    public ResponseEntity<BaseResponse> handlerReviewFixStale(ReviewFixStaleException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(BaseResponse.error(40905, ex.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)

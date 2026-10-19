@@ -3,10 +3,13 @@ package com.ytell.zhiyuan.service.biz;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class PlanOrderingEngineTest {
 
@@ -45,6 +48,31 @@ class PlanOrderingEngineTest {
         assertEquals(Arrays.asList("a", "b"), result.orderedIds);
         assertFalse(result.changed());
         assertFalse(result.pinnedConflict);
+    }
+
+    @Test
+    void probabilitySortIsAscendingStableAndKeepsUnauthorizedSlots() {
+        Map<String, Double> ratios = new LinkedHashMap<String, Double>();
+        ratios.put("high", 90D);
+        ratios.put("fixed", 50D);
+        ratios.put("low", 30D);
+        ratios.put("equal", 30D);
+        PlanOrderingEngine.OrderResult result = PlanOrderingEngine.orderByProbability(Arrays.asList(
+                entry("high", "protect", false, false), entry("fixed", "protect", false, true),
+                entry("low", "protect", false, false), entry("equal", "protect", false, false)), ratios);
+        assertEquals(Arrays.asList("low", "fixed", "equal", "high"), result.orderedIds);
+        assertEquals(Arrays.asList("high", "fixed", "low", "equal"), result.selectedIds);
+        assertFalse(result.pinnedConflict);
+    }
+
+    @Test
+    void probabilitySortRejectsMissingAndNonFiniteRatios() {
+        Map<String, Double> ratios = new LinkedHashMap<String, Double>();
+        assertThrows(IllegalArgumentException.class, () -> PlanOrderingEngine.orderByProbability(
+                Arrays.asList(entry("missing", "protect", false, false)), ratios));
+        ratios.put("missing", Double.POSITIVE_INFINITY);
+        assertThrows(IllegalArgumentException.class, () -> PlanOrderingEngine.orderByProbability(
+                Arrays.asList(entry("missing", "protect", false, false)), ratios));
     }
 
     private PlanOrderingEngine.OrderEntry entry(String id, String tier,
