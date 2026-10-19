@@ -227,6 +227,95 @@ class PlanningStateServiceReviewFixApplyTest {
         assertEquals(Integer.valueOf(7), saved.getVersion());
     }
 
+    @Test
+    void appliesFrozenGroupCountTargetFillAndReplaysFortySixUnits() {
+        useGroupCountTargetFixture();
+        prepareGroupCountTarget();
+
+        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+
+        assertEquals("applied", res.getStatus());
+        PlanningStateDTO applied = res.getState();
+        assertEquals(Integer.valueOf(8), applied.getVersion(), "只 bump 一次版本");
+        assertEquals(46, applied.getOrderedPlanState().getUnits().size());
+        assertEquals(92, applied.getOrderedPlanState().getItems().size());
+        assertEquals(46, applied.getWorkingPlanState().getUnits().size());
+        assertEquals(92, applied.getWorkingPlanState().getItems().size());
+        for (int index = 0; index < 46; index++) {
+            assertEquals(Integer.valueOf(index + 1),
+                    applied.getOrderedPlanState().getUnits().get(index).getPosition());
+        }
+        for (int index = 0; index < 92; index++) {
+            assertEquals(Integer.valueOf(index + 1),
+                    applied.getOrderedPlanState().getItems().get(index).getPosition());
+        }
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(46, saved.getOrderedPlanState().getUnits().size());
+        assertEquals(92, saved.getOrderedPlanState().getItems().size());
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void groupCountTargetTamperedPreviewDigestIsRejectedBeforeAnyWrite() {
+        useGroupCountTargetFixture();
+        prepareGroupCountTarget();
+        FixProposalApplyReq req = applyRequest();
+        req.setPreviewDigest("tampered-group-count");
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_changed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void groupCountTargetPlanDriftAfterPrepareIsRejectedAsStale() {
+        useGroupCountTargetFixture();
+        prepareGroupCountTarget();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.getOrderedPlanState().getUnits().get(0).setUnitId("changed");
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_stale", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    private void useGroupCountTargetFixture() {
+        row.setDataValue(JSON.toJSONString(
+                PlanningStateServiceReviewFixPrepareTest.groupCountTargetFixture()));
+    }
+
+    private void prepareGroupCountTarget() {
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = null;
+        for (FixProposalDTO candidate : preview.getProposals()) {
+            if (candidate != null && "count_target".equals(candidate.getFindingCode())) {
+                proposal = candidate;
+                break;
+            }
+        }
+        assertNotNull(proposal, "group count_target fixture 必须产出 Search 提案");
+        assertEquals("ready", proposal.getStatus());
+        ReviewFixPrepareReq req = new ReviewFixPrepareReq();
+        req.setProposalId(proposal.getProposalId());
+        req.setPreviewDigest(proposal.getPreviewDigest());
+        req.setCommandDigest(proposal.getCommandDigest());
+        req.setEvaluationVersion(proposal.getEvaluationVersion());
+        req.setSourceVersionGuard(preview.getSourceVersion());
+        PrepareResultDTO prepared = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-group-count-apply", "digest-group-count-apply", req);
+        assertNotNull(prepared.getPendingId());
+        assertNotNull(activePending);
+    }
+
     private void useGroupFixture() {
         row.setDataValue(JSON.toJSONString(PlanningStateServiceReviewFixPrepareTest.groupInversionFixture()));
     }

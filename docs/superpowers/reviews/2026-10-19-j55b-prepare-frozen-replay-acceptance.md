@@ -176,7 +176,18 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   postcondition true；已恢复 v14/44。
 - Java 全量 **1427 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
 
-仍未覆盖：gap/edge 等 Search probe；Search/Safety/Ratio/Risk 的专业组模式；
+## 专业组模式：count_target → fill（2026-10-19）
+
+- `SearchReviewPreviewPlanner` 增加 unit 分支：targetCount 按**单元**计；
+  复用 `UserGoalProposalBuilder` 的 group 模式 fill，物化 working items+
+  ordered units/items，unit facts 摘要与冻结回放。
+- apply 接受 fill_missing_count + count_target 的 unit 冻结方案。
+- 真栈 900045 夹具：required/selectionTarget=46、当前 44 组、2 条江西保档；
+  preview `ready`、`selected=46/add=2`；prepare→claim→execute 后版本
+  14→15、46 组/166 条、保底 2、postcondition true；已恢复 v14/44。
+- Java 全量 **1434 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
+
+仍未覆盖：gap/edge 等 Search probe；Safety/Ratio/Risk 的专业组模式；
 目标/档位/覆盖的 durable patch 持久化。
 
 ## 尚未完成

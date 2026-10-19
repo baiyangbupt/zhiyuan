@@ -146,9 +146,11 @@ class SearchReviewPreviewPlannerTest {
     }
 
     @Test
-    void rejectsUnitModeAndUnsupportedSelections() {
+    void rejectsUnitModeWithoutUnitCarriersAndUnsupportedSelections() {
         state.getCandidatePoolState().setVolunteerModel("majorGroup");
-        assertNoFrozen(plan(false), "review_fix_search_unsupported");
+        // 组模式已由 GroupSearchReviewPreviewPlannerTest 覆盖；本夹具没有 unit 载体，
+        // 因此 unit 分支必须拒绝而不是退回 item 模式物化。
+        assertNoFrozen(plan(false), "review_fix_selection_incomplete");
         state.getCandidatePoolState().setVolunteerModel("major");
         state.getOrderedPlanState().getItems().get(0).setPinned(true);
         assertNoFrozen(plan(false), "review_fix_selection_incomplete");

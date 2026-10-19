@@ -479,7 +479,8 @@ final class DirectReviewPreviewPlanner {
         return facts == null ? null : digestJson(facts);
     }
 
-    private static List<CandidateItemDTO> factsForUnits(List<String> selectedUnitIds,
+    /** 组模式事实列表（按 unit→major 顺序）；Search 组模式补齐切片共用同一口径。 */
+    static List<CandidateItemDTO> factsForUnits(List<String> selectedUnitIds,
                                                         List<OrderedUnitDTO> orderedUnits,
                                                         List<CandidateItemDTO> candidates) {
         if (selectedUnitIds == null || selectedUnitIds.isEmpty()) {
