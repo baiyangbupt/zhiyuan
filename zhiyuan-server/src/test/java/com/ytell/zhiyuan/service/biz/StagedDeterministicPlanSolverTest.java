@@ -19,6 +19,7 @@ import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StagedDeterministicPlanSolverTest {
@@ -45,6 +46,14 @@ class StagedDeterministicPlanSolverTest {
         assertTrue(result.solverResult.getSelectedEntityIds().contains("c-local-protect"));
         assertEquals(0L, level(result, "safety"));
         assertEquals(1, result.solverResult.getRemoveEntityIds().size());
+        assertEquals(result.levels.size(), result.solverResult.getStageResults().size());
+        PlanSolverResultDTO.StageResultDTO safetyStage = result.solverResult.getStageResults().stream()
+                .filter(stage -> "safety".equals(stage.getObjectiveId())).findFirst().orElse(null);
+        assertNotNull(safetyStage);
+        assertEquals(0L, safetyStage.getValue());
+        assertEquals("deficit_points", safetyStage.getUnit());
+        assertTrue(result.solverResult.getStageResults().stream()
+                .anyMatch(stage -> "utility".equals(stage.getObjectiveId())));
     }
 
     @Test
@@ -114,6 +123,7 @@ class StagedDeterministicPlanSolverTest {
         assertEquals("blocked", result.solverResult.getStatus());
         assertEquals("mutation_policy_conflict",
                 result.solverResult.getDiagnostics().get(0).getReasonCode());
+        assertTrue(result.solverResult.getStageResults().isEmpty());
     }
 
     @Test

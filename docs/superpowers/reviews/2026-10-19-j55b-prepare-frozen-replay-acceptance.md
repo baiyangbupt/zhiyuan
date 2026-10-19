@@ -263,6 +263,20 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
 - Python unit **2934 passed / 32 skipped**；Java 全量保持
   **1460 / 0 / 0 / 10**。
 
+## 灰度分层与求解观测（2026-10-20）
+
+- 新增 `review.fix.search.enabled`（默认 false），把 Search/Safety/Ratio/Risk
+  从 Direct 倒挂中拆开灰度：
+  - 总开关 `review.fix.command.enabled` 关闭：所有确认链不可用；
+  - 总开关开、Search 关：只生成 Direct 倒挂，Search 提案不生成；
+  - Search 提案在 prepare/apply 阶段返回 409 `review_fix_search_disabled`。
+- 真栈门禁：900700 count_target 夹具下，Search 关时 preview 无 count/safety/
+  ratio 提案；Search 开时进入 Search planner。夹具后已恢复 v1/80。
+- `PlanSolverResultDTO` 新增只读 `stageResults`（safety/churn/tier_anchor/
+  utility/diversity 的最优值），并增加 staged solver ready/blocked 结构化日志；
+  该字段不参与 `inputDigest` 与冻结回放判定。
+- Java 全量 **1463 / 0 / 0 / 10**。
+
 仍未覆盖：gap/edge 等 Search probe（设计首期 preview_only）；
 目标/档位/覆盖的 durable patch 持久化。
 

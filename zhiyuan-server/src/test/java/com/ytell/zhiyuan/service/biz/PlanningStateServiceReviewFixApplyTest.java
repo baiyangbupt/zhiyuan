@@ -61,6 +61,7 @@ class PlanningStateServiceReviewFixApplyTest {
     @BeforeEach
     void setUp() {
         System.setProperty(ReviewFixCommandFlags.PROPERTY, "true");
+        System.setProperty(ReviewFixSearchFlags.PROPERTY, "true");
         row = new ChatSessionExtraData();
         row.setDataValue(JSON.toJSONString(PlanningStateServiceReviewFixPrepareTest.inversionFixture()));
 
@@ -97,6 +98,7 @@ class PlanningStateServiceReviewFixApplyTest {
     @AfterEach
     void tearDown() {
         System.clearProperty(ReviewFixCommandFlags.PROPERTY);
+        System.clearProperty(ReviewFixSearchFlags.PROPERTY);
     }
 
     @Test
@@ -450,6 +452,21 @@ class PlanningStateServiceReviewFixApplyTest {
         PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
         assertEquals(82, orderedIds(saved).size());
         assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void searchFlagOffRejectsFrozenSearchApplyBeforeAnyWrite() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        String baseline = row.getDataValue();
+        System.clearProperty(ReviewFixSearchFlags.PROPERTY);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_search_disabled", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
     }
 
     @Test

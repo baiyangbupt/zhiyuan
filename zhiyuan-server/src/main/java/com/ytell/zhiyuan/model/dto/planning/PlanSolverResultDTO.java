@@ -13,6 +13,11 @@ public class PlanSolverResultDTO {
     private List<String> removeEntityIds = Lists.newArrayList();
     private List<String> addEntityIds = Lists.newArrayList();
     private List<ObjectiveResultDTO> objectiveResults = Lists.newArrayList();
+    /**
+     * 字典序各阶段的最优值（safety/churn/tier_anchor/utility/diversity），
+     * 仅用于审计/观测；不参与 inputDigest，也不作为冻结回放的正确性判据。
+     */
+    private List<StageResultDTO> stageResults = Lists.newArrayList();
     private List<DiagnosticDTO> diagnostics = Lists.newArrayList();
     private String solverVersion;
     /**
@@ -36,6 +41,13 @@ public class PlanSolverResultDTO {
         private Integer requiredMax;
         private Integer actualCount;
         private Boolean satisfied = false;
+    }
+
+    @Data
+    public static class StageResultDTO {
+        private String objectiveId;
+        private Long value;
+        private String unit;
     }
 
     @Data

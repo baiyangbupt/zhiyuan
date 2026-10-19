@@ -1230,6 +1230,9 @@ public class PlanningStateService {
         boolean riskFill = RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(frozenStrategy)
                 && RiskReplaceReviewPreviewPlanner.isRiskFinding(frozenFindingCode)
                 && proposal.getSolverResult() != null;
+        if (!directInversion && !ReviewFixSearchFlags.enabled()) {
+            throw new BusinessException(409, "review_fix_search_disabled");
+        }
         if (!directInversion && !searchFill && !safetyFill && !ratioFill && !riskFill) {
             throw new BusinessException(409, "review_fix_not_confirmable");
         }
@@ -3488,22 +3491,25 @@ public class PlanningStateService {
         SafetyReviewPreviewPlanner safety = new SafetyReviewPreviewPlanner();
         RatioReviewPreviewPlanner ratio = new RatioReviewPreviewPlanner();
         RiskReplaceReviewPreviewPlanner riskReplace = new RiskReplaceReviewPreviewPlanner();
+        // Direct 倒挂只重排显式集合，跟随总开关；Search/Safety/Ratio/Risk 走
+        // staged solver 选集合，单独由 review.fix.search.enabled 放量。
+        boolean searchEnabled = ReviewFixSearchFlags.enabled();
         for (EvaluationFindingDTO finding : review.getFindings()) {
             FixProposalDTO proposal = direct.plan(state, effectiveCandidates, finding,
                     after -> evaluateReview(after, effectiveCandidates));
-            if (proposal == null) {
+            if (proposal == null && searchEnabled) {
                 proposal = search.plan(state, effectiveCandidates, finding,
                         after -> evaluateReview(after, effectiveCandidates), confirmable);
             }
-            if (proposal == null) {
+            if (proposal == null && searchEnabled) {
                 proposal = safety.plan(state, effectiveCandidates, finding,
                         after -> evaluateReview(after, effectiveCandidates), confirmable);
             }
-            if (proposal == null) {
+            if (proposal == null && searchEnabled) {
                 proposal = ratio.plan(state, effectiveCandidates, finding,
                         after -> evaluateReview(after, effectiveCandidates), confirmable);
             }
-            if (proposal == null) {
+            if (proposal == null && searchEnabled) {
                 proposal = riskReplace.plan(state, effectiveCandidates, finding,
                         after -> evaluateReview(after, effectiveCandidates), confirmable);
             }
@@ -3564,6 +3570,9 @@ public class PlanningStateService {
                     preview.getProposals().addAll(buildReviewFixProposals(
                             state, effectiveCandidates, review, true));
                     FixProposalDTO proposal = findReviewFixProposal(preview, safeReq.getProposalId());
+                    if (proposal == null && !ReviewFixSearchFlags.enabled()) {
+                        throw new BusinessException(409, "review_fix_search_disabled");
+                    }
                     validateReviewFixPrepare(state, review, proposal, safeReq);
 
                     String operationId = UUID.randomUUID().toString().replace("-", "");

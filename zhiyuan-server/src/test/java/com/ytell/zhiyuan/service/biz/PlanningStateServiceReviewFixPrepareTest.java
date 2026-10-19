@@ -67,6 +67,7 @@ class PlanningStateServiceReviewFixPrepareTest {
     @BeforeEach
     void setUp() {
         System.setProperty(ReviewFixCommandFlags.PROPERTY, "true");
+        System.setProperty(ReviewFixSearchFlags.PROPERTY, "true");
         state = inversionFixture();
         row = new ChatSessionExtraData();
         row.setDataValue(JSON.toJSONString(state));
@@ -97,6 +98,7 @@ class PlanningStateServiceReviewFixPrepareTest {
     @AfterEach
     void tearDown() {
         System.clearProperty(ReviewFixCommandFlags.PROPERTY);
+        System.clearProperty(ReviewFixSearchFlags.PROPERTY);
     }
 
     @Test
@@ -288,6 +290,7 @@ class PlanningStateServiceReviewFixPrepareTest {
     @Test
     void disabledFlagRejectsPrepareBeforeAnyWork() {
         System.clearProperty(ReviewFixCommandFlags.PROPERTY);
+        System.clearProperty(ReviewFixSearchFlags.PROPERTY);
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.prepareReviewFixProposal(
@@ -297,6 +300,45 @@ class PlanningStateServiceReviewFixPrepareTest {
         assertEquals("review_fix_command_disabled", ex.getMessage());
         assertTrue(upserts.isEmpty());
         assertTrue(requestTable.isEmpty());
+    }
+
+    @Test
+    void searchFlagOffKeepsDirectInversionConfirmable() {
+        System.clearProperty(ReviewFixSearchFlags.PROPERTY);
+
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = preview.getProposals().get(0);
+        assertEquals("probability_inversion", proposal.getFindingCode());
+        assertEquals("ready", proposal.getStatus());
+
+        PrepareResultDTO dto = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-direct-search-off", "digest-direct-search-off",
+                prepareRequest(proposal, preview.getSourceVersion()));
+
+        assertEquals("prepared", dto.getStatus());
+        assertEquals(1, upserts.size());
+    }
+
+    @Test
+    void searchFlagOffHidesSearchProposalsAndRejectsTheirPrepare() {
+        row.setDataValue(JSON.toJSONString(countTargetFixture()));
+        ReviewFixPreviewDTO onPreview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = countTargetProposal(onPreview);
+        assertNotNull(proposal);
+        ReviewFixPrepareReq req = prepareRequest(proposal, onPreview.getSourceVersion());
+
+        System.clearProperty(ReviewFixSearchFlags.PROPERTY);
+        ReviewFixPreviewDTO offPreview = service.previewReviewFixProposals(TENANT, SESSION);
+        boolean hasCount = offPreview.getProposals().stream()
+                .anyMatch(item -> "count_target".equals(item.getFindingCode()));
+        assertFalse(hasCount, "Search 开关关闭时不得返回 count_target 提案");
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(
+                        TENANT, SESSION, "req-search-off", "digest-search-off", req));
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_search_disabled", ex.getMessage());
+        assertTrue(upserts.isEmpty());
     }
 
     private ReviewFixPrepareReq prepareRequest() {

@@ -21,6 +21,8 @@ import org.ojalgo.optimisation.Expression;
 import org.ojalgo.optimisation.ExpressionsBasedModel;
 import org.ojalgo.optimisation.Optimisation;
 import org.ojalgo.optimisation.Variable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -45,6 +47,8 @@ import java.util.Set;
  * 单元测试。所有阶段共用同一模型，阶段最优值用纯层表达式固定。</p>
  */
 final class StagedDeterministicPlanSolver {
+
+    private static final Logger LOG = LoggerFactory.getLogger(StagedDeterministicPlanSolver.class);
 
     static final String SOLVER_VERSION = "ojalgo-48.4.2-j53-staged";
     static final String HARD_OBJECTIVE_VERSION = "solver-hard-objective-v1";
@@ -400,6 +404,10 @@ final class StagedDeterministicPlanSolver {
         result.setSolverVersion(SOLVER_VERSION);
         result.setInputDigest(inputDigest(safeSnapshot, safeObjectives, safePolicy));
         result.setDurationMs(elapsedMillis(started));
+        populateStageResults(result, levels);
+        LOG.info("staged solver ready: sourceVersion={} candidates={} selected={} durationMs={} stages={}",
+                safeSnapshot == null ? null : safeSnapshot.getSourceVersion(),
+                facts.size(), selected.size(), result.getDurationMs(), stageSummary(levels));
         if (reduction != null) {
             PlanSolverResultDTO.DiagnosticDTO cap = new PlanSolverResultDTO.DiagnosticDTO();
             cap.setReasonCode("candidate_cap_applied");
@@ -756,6 +764,27 @@ final class StagedDeterministicPlanSolver {
         return result;
     }
 
+    private void populateStageResults(PlanSolverResultDTO result, List<ObjectiveLevel> levels) {
+        for (ObjectiveLevel level : defaultList(levels)) {
+            PlanSolverResultDTO.StageResultDTO stage = new PlanSolverResultDTO.StageResultDTO();
+            stage.setObjectiveId(level.level);
+            stage.setValue(level.optimum);
+            stage.setUnit(level.unit);
+            result.getStageResults().add(stage);
+        }
+    }
+
+    private String stageSummary(List<ObjectiveLevel> levels) {
+        StringBuilder summary = new StringBuilder();
+        for (ObjectiveLevel level : defaultList(levels)) {
+            if (summary.length() > 0) {
+                summary.append(',');
+            }
+            summary.append(level.level).append('=').append(level.optimum);
+        }
+        return summary.toString();
+    }
+
     private void populateObjectiveResults(PlanSolverResultDTO result,
                                           CanonicalPlanningObjectiveSetDTO objectives,
                                           List<CandidateFactDTO> selected) {
@@ -986,6 +1015,8 @@ final class StagedDeterministicPlanSolver {
         diagnostic.setMessage(message);
         result.getDiagnostics().add(diagnostic);
         result.setDurationMs(elapsedMillis(started));
+        LOG.warn("staged solver blocked: reason={} objective={} candidates={} durationMs={} message={}",
+                reasonCode, objectiveId, result.getCandidateCount(), result.getDurationMs(), message);
         return new Result(result, new ArrayList<ObjectiveLevel>());
     }
 
