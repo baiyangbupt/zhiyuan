@@ -800,47 +800,39 @@ public class UserGoalProposalBuilderTest {
         assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getBeforeVolunteerTotal());
         assertEquals(Integer.valueOf(4), proposal.getDryRunResult().getAfterVolunteerTotal());
         assertTrue(proposal.getCanonicalObjectiveDigest().matches("[0-9a-f]{64}"));
-        assertEquals("ojalgo-48.4.2-m2", proposal.getSolverVersion());
+        assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION, proposal.getSolverVersion());
         assertTrue(proposal.getSolverInputDigest().matches("[0-9a-f]{64}"));
-        assertEquals(java.util.Arrays.asList("v1", "v2", "v3", "v4"),
+        // staged selectedEntityIds 按事实名次（finalScore 降序）返回。
+        assertEquals(java.util.Arrays.asList("v3", "v4", "v2", "v1"),
                 proposal.getSolverResult().getSelectedEntityIds());
-        // legacy solver 不写硬目标契约版本（S4 兼容判据此时回退精确比对）。
-        assertEquals(null, proposal.getHardObjectiveVersion());
+        assertEquals(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION,
+                proposal.getHardObjectiveVersion());
     }
 
     @Test
     void shouldAttachHardObjectiveVersionFromStagedSolverResult() {
-        String previousPaths = System.getProperty("solver.v2.paths");
-        System.setProperty("solver.v2.paths", "fill");
-        try {
-            PlanningStateDTO state = state(12);
-            state.getCandidatePoolState().setVolunteerModel("major");
-            state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "专业1", "类别1", 80D));
-            state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "专业2", "类别2", 81D));
-            state.getCandidatePoolState().getItems().add(candidate("v3", "学校3", "专业3", "类别3", 95D));
-            state.getCandidatePoolState().getItems().add(candidate("v4", "学校4", "专业4", "类别4", 90D));
-            state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "专业1", false));
-            state.getOrderedPlanState().getItems().add(ordered("v2", "学校2", "专业2", false));
-            UserGoalFixProposalReq req = new UserGoalFixProposalReq();
-            req.setGoalType("fill_to_count");
-            req.setTargetCount(4);
-            req.setSourceVersionGuard(12);
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().getItems().add(candidate("v1", "学校1", "专业1", "类别1", 80D));
+        state.getCandidatePoolState().getItems().add(candidate("v2", "学校2", "专业2", "类别2", 81D));
+        state.getCandidatePoolState().getItems().add(candidate("v3", "学校3", "专业3", "类别3", 95D));
+        state.getCandidatePoolState().getItems().add(candidate("v4", "学校4", "专业4", "类别4", 90D));
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校1", "专业1", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "学校2", "专业2", false));
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(4);
+        req.setSourceVersionGuard(12);
 
-            FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
 
-            assertEquals("ready", proposal.getStatus());
-            assertEquals(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION,
-                    proposal.getSolverResult().getHardObjectiveVersion());
-            assertEquals(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION,
-                    proposal.getHardObjectiveVersion(),
-                    "attachSolverMetadata 必须把硬目标契约版本从 solverResult 透传到提案");
-        } finally {
-            if (previousPaths == null) {
-                System.clearProperty("solver.v2.paths");
-            } else {
-                System.setProperty("solver.v2.paths", previousPaths);
-            }
-        }
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION, proposal.getSolverVersion());
+        assertEquals(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION,
+                proposal.getSolverResult().getHardObjectiveVersion());
+        assertEquals(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION,
+                proposal.getHardObjectiveVersion(),
+                "attachSolverMetadata 必须把硬目标契约版本从 solverResult 透传到提案");
     }
 
     @Test
@@ -892,11 +884,9 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
-    void shouldCapFillSolverCandidatePoolToSolverLimit() {
-        // review §五-36（10041982 实拍）：大候选池（>600）经 fill 路径全量直达 canonical solver，
-        // 撞 OjalgoDeterministicPlanSolver.MAX_CANDIDATES 硬帽 → blocked solver_complexity_limit。
-        // 修后：UserGoalProposalBuilder 侧按既有展示名次（finalScore 预览序）头部截断输入池，
-        // 解仍出 targetCount 条（名次头部 = 挑最好的 N 条）。
+    void shouldHandleLargeFillCandidatePoolWithStagedSolver() {
+        // staged solver 自带 MAX_CANDIDATES reducer（600），UserGoalProposalBuilder 不再预截断；
+        // 大池仍应产出 targetCount 条且不因候选数超帽而失败。
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().setVolunteerModel("major");
         for (int index = 0; index < 700; index++) {
@@ -911,8 +901,11 @@ public class UserGoalProposalBuilderTest {
         FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
 
         assertEquals("ready", proposal.getStatus());
-        assertEquals(Integer.valueOf(OjalgoDeterministicPlanSolver.MAX_CANDIDATES),
-                proposal.getSolverResult().getCandidateCount());
+        assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION, proposal.getSolverVersion());
+        assertTrue(proposal.getSolverResult().getCandidateCount() <= 600,
+                "staged reducer 应把候选事实控制在 600 以内: "
+                        + proposal.getSolverResult().getCandidateCount());
+        assertEquals(12, proposal.getSolverResult().getSelectedEntityIds().size());
         assertEquals(java.util.Arrays.asList(
                         "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"),
                 proposal.getSolverResult().getSelectedEntityIds());
@@ -922,7 +915,7 @@ public class UserGoalProposalBuilderTest {
 
     @Test
     void shouldKeepFillSolverCandidatePoolIntactWhenWithinSolverLimit() {
-        // review §五-36：池 ≤ MAX_CANDIDATES 时不截断——送入 solver 的候选数与原池一致，行为与改前逐字不变。
+        // 池 ≤ MAX_CANDIDATES 时 staged solver 直接使用全量事实，候选数与原始池一致。
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().setVolunteerModel("major");
         for (int index = 0; index < 599; index++) {
@@ -945,7 +938,7 @@ public class UserGoalProposalBuilderTest {
 
     @Test
     void shouldReportOriginalEligibleCountWhenSolverPoolIsTruncated() {
-        // review §五-36 诊断数字语义：截断只降维"送入求解"的输入；卡面"可用数"仍按原始 eligible 口径，
+        // 诊断数字语义：staged reducer 只降维"送入求解"的事实；卡面"可用数"仍按原始 eligible 口径，
         // 不能让用户看到"可用 600"这种假数。
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().setVolunteerModel("major");
@@ -1080,8 +1073,9 @@ public class UserGoalProposalBuilderTest {
         assertEquals("info", proposal.getStatus());
         assertFalse(proposal.getRequiresConfirmation());
         assertTrue(proposal.getActions().isEmpty());
-        assertEquals("no_change", proposal.getSolverResult().getStatus());
-        assertEquals(java.util.Arrays.asList("v1", "v2"),
+        assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION,
+                proposal.getSolverResult().getSolverVersion());
+        assertEquals(java.util.Arrays.asList("v2", "v1"),
                 proposal.getSolverResult().getSelectedEntityIds());
     }
 
@@ -1570,7 +1564,8 @@ public class UserGoalProposalBuilderTest {
 
         assertEquals("ready", proposal.getStatus());
         assertTrue(proposal.getActions().isEmpty());
-        assertEquals("no_change", proposal.getSolverResult().getStatus());
+        assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION,
+                proposal.getSolverResult().getSolverVersion());
         assertTrue(proposal.getTierQuotaChange().getStateChanged());
         assertTrue(proposal.getSummary().contains("当前方案有 4 个志愿"), proposal.getSummary());
         assertTrue(proposal.getSummary().contains("方案项目不变"));
@@ -1711,8 +1706,9 @@ public class UserGoalProposalBuilderTest {
                 state, fillWithSprintRange("replace", 2, null)).getProposals().get(0);
 
         assertEquals("blocked", proposal.getStatus());
+        // staged solver 统一报 objective_set_infeasible，提案层再细化成 tier_min_infeasible。
         assertEquals("tier_min_infeasible", proposal.getBlockingReasonCodes().get(0));
-        assertEquals("tier_min_infeasible",
+        assertEquals("objective_set_infeasible",
                 proposal.getSolverResult().getDiagnostics().get(0).getReasonCode());
         assertTrue(proposal.getActions().isEmpty());
     }
@@ -1919,6 +1915,7 @@ public class UserGoalProposalBuilderTest {
 
         assertEquals("ready", proposal.getStatus());
         assertEquals("prioritize_within_tier", proposal.getStrategy());
+        assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION, proposal.getSolverVersion());
         assertEquals(1, proposal.getActions().size());
         assertEquals("reorder_volunteers", proposal.getActions().get(0).getActionType());
         assertEquals(java.util.Arrays.asList("v2", "v4"), proposal.getActions().get(0).getVolunteerIds());
@@ -1929,6 +1926,13 @@ public class UserGoalProposalBuilderTest {
         assertEquals(Integer.valueOf(4), proposal.getDryRunResult().getAfterVolunteerTotal());
         assertEquals(java.util.Arrays.asList("v2", "v4", "v1", "v3"),
                 proposal.getSolverResult().getOrderedEntityIds());
+        assertEquals(java.util.Arrays.asList("v1", "v2", "v3", "v4"),
+                proposal.getSolverResult().getSelectedEntityIds());
+        assertEquals(1, proposal.getSolverResult().getObjectiveResults().size());
+        assertEquals("priority:0", proposal.getSolverResult()
+                .getObjectiveResults().get(0).getObjectiveId());
+        assertEquals(Integer.valueOf(0), proposal.getSolverResult()
+                .getObjectiveResults().get(0).getActualCount());
         // 卡面人话化 + 具体项目名（review §五-20）：说"把 N 个谁前移"，不甩"命中/同档逆序"这类引擎口径
         assertFalse(proposal.getSummary().contains("命中"), proposal.getSummary());
         assertFalse(proposal.getSummary().contains("逆序"), proposal.getSummary());

@@ -9,12 +9,10 @@ import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateSnapshotDTO;
 import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
 import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
-import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
-import com.ytell.zhiyuan.model.dto.planning.PlanSolverInputDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
@@ -22,6 +20,9 @@ import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -33,7 +34,6 @@ import java.util.stream.Collectors;
 
 final class CanonicalPlanningRuntime {
 
-    private static final DeterministicPlanSolver SOLVER = new OjalgoDeterministicPlanSolver();
     private static final StagedDeterministicPlanSolver STAGED_SOLVER = new StagedDeterministicPlanSolver();
     private static final Logger LOG = LoggerFactory.getLogger(CanonicalPlanningRuntime.class);
 
@@ -64,42 +64,36 @@ final class CanonicalPlanningRuntime {
                 && concat(current, available).stream().anyMatch(Entity::hasConflictingTier)) {
             throw new BusinessException(409, "tier_fact_conflict: 同一专业组存在多个冲稳保档位");
         }
-        PlanSolverResultDTO solved;
-        if (SolverShadowSupport.pathEnabled("initial")) {
-            // 快照必须与 applySelection 的可加入集合同源：apply 只从 available 里解读
-            // addEntityIds，且 available 已过滤 banned/compensation-safe。否则 solver
-            // 可能选中 apply 解析不到的实体，直接 409 solver_candidate_missing。
-            CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
-                    state, candidateFacts, CandidateSnapshotBuilder.CurrentSource.WORKING);
-            MutationPolicyDTO policy = new MutationPolicyDTO();
-            policy.setAction("INITIAL");
-            policy.setLockExisting(false);
-            policy.setCountAsChurn(true);
-            policy.setRequireCompensationSafe(true);
-            Set<String> availableIds = available.stream()
-                    .map(entity -> entity.entityId)
-                    .collect(Collectors.toCollection(LinkedHashSet::new));
-            for (CandidateFactDTO fact : snapshot.getFacts()) {
-                if (!Boolean.TRUE.equals(fact.getCurrent())
-                        && !availableIds.contains(fact.getEntityId())) {
-                    fact.setEligible(false);
-                }
+        // 快照必须与 applySelection 的可加入集合同源：apply 只从 available 里解读
+        // addEntityIds，且 available 已过滤 banned/compensation-safe。否则 solver
+        // 可能选中 apply 解析不到的实体，直接 409 solver_candidate_missing。
+        CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                state, candidateFacts, CandidateSnapshotBuilder.CurrentSource.WORKING);
+        MutationPolicyDTO policy = new MutationPolicyDTO();
+        policy.setAction("INITIAL");
+        policy.setLockExisting(false);
+        policy.setCountAsChurn(true);
+        policy.setRequireCompensationSafe(true);
+        Set<String> availableIds = available.stream()
+                .map(entity -> entity.entityId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        for (CandidateFactDTO fact : snapshot.getFacts()) {
+            if (!Boolean.TRUE.equals(fact.getCurrent())
+                    && !availableIds.contains(fact.getEntityId())) {
+                fact.setEligible(false);
             }
-            // 用副本 enrich，保留原 objectives 的旧 digest 供后置校验/旧口径使用。
-            CanonicalPlanningObjectiveSetDTO stagedObjectives = JSON.parseObject(
-                    JSON.toJSONString(objectives), CanonicalPlanningObjectiveSetDTO.class);
-            PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
-            solved = STAGED_SOLVER.solve(snapshot, stagedObjectives, policy).solverResult;
-            LOG.info("staged initial selection: session={} status={} selected={} remove={} add={} candidates={}",
-                    state.getSessionId(), solved.getStatus(),
-                    defaultList(solved.getSelectedEntityIds()).size(),
-                    defaultList(solved.getRemoveEntityIds()).size(),
-                    defaultList(solved.getAddEntityIds()).size(),
-                    solved.getCandidateCount());
-        } else {
-            solved = SOLVER.solve(input(objectives, current, available));
-            SolverShadowSupport.shadowSelection(state, effectiveCandidates, objectives, solved);
         }
+        // 用副本 enrich，保留原 objectives 的旧 digest 供后置校验/旧口径使用。
+        CanonicalPlanningObjectiveSetDTO stagedObjectives = JSON.parseObject(
+                JSON.toJSONString(objectives), CanonicalPlanningObjectiveSetDTO.class);
+        PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
+        PlanSolverResultDTO solved = STAGED_SOLVER.solve(snapshot, stagedObjectives, policy).solverResult;
+        LOG.info("staged initial selection: session={} status={} selected={} remove={} add={} candidates={}",
+                state.getSessionId(), solved.getStatus(),
+                defaultList(solved.getSelectedEntityIds()).size(),
+                defaultList(solved.getRemoveEntityIds()).size(),
+                defaultList(solved.getAddEntityIds()).size(),
+                solved.getCandidateCount());
         ensureReady(solved);
         applySelection(state, effectiveCandidates, current, available, solved);
         return solved;
@@ -161,10 +155,30 @@ final class CanonicalPlanningRuntime {
             }
             throw new BusinessException(409, "priority_target_not_in_plan: 当前方案没有命中优先目标");
         }
-        CanonicalPlanningObjectiveSetDTO objectives = copyWithTarget(compiled, ordered.size());
-        PlanSolverResultDTO solved = SOLVER.solve(input(objectives, ordered, Lists.newArrayList()));
-        ensureReady(solved);
-        applyOrdering(state, solved.getOrderedEntityIds(), unitMode);
+        List<PlanOrderingEngine.OrderEntry> entries = ordered.stream()
+                .map(entity -> new PlanOrderingEngine.OrderEntry(
+                        entity.entityId, entity.tier(), entity.priorityMatched, entity.pinned))
+                .collect(Collectors.toList());
+        PlanOrderingEngine.OrderResult orderResult = PlanOrderingEngine.order(entries, true);
+        if (orderResult.pinnedConflict) {
+            throw new BusinessException(409,
+                    "pinned_conflict: 同档优先排序会改变 pinned 项目所在档位的位置。");
+        }
+        PlanSolverResultDTO solved = new PlanSolverResultDTO();
+        solved.setSelectedEntityIds(orderResult.selectedIds);
+        solved.setOrderedEntityIds(orderResult.orderedIds);
+        solved.setStatus(orderResult.changed() ? "ready" : "no_change");
+        solved.setSolverVersion(StagedDeterministicPlanSolver.SOLVER_VERSION);
+        solved.setInputDigest(orderingDigest(orderResult.selectedIds, priorities));
+        PlanSolverResultDTO.ObjectiveResultDTO priority = new PlanSolverResultDTO.ObjectiveResultDTO();
+        priority.setObjectiveId("priority:0");
+        priority.setObjectiveType("priority_within_tier");
+        priority.setRequiredMin(0);
+        priority.setRequiredMax(0);
+        priority.setActualCount(orderResult.inversionCount);
+        priority.setSatisfied(orderResult.inversionCount == 0);
+        solved.getObjectiveResults().add(priority);
+        applyOrdering(state, orderResult.orderedIds, unitMode);
         return solved;
     }
 
@@ -421,23 +435,6 @@ final class CanonicalPlanningRuntime {
         return result;
     }
 
-    private static PlanSolverInputDTO input(CanonicalPlanningObjectiveSetDTO objectives,
-                                            List<Entity> current,
-                                            List<Entity> available) {
-        PlanSolverInputDTO result = new PlanSolverInputDTO();
-        result.setObjectiveSet(objectives);
-        int stableOrder = 0;
-        for (Entity entity : current) {
-            result.getCandidates().add(entity.toSolverCandidate(
-                    objectives, stableOrder++, true));
-        }
-        for (Entity entity : available) {
-            result.getCandidates().add(entity.toSolverCandidate(
-                    objectives, stableOrder++, false));
-        }
-        return result;
-    }
-
     private static List<Entity> currentEntities(DraftPlanStateDTO draft,
                                                 List<CandidateItemDTO> candidates,
                                                 boolean unitMode) {
@@ -628,10 +625,38 @@ final class CanonicalPlanningRuntime {
     }
 
     private static PlanSolverResultDTO noChange(CanonicalPlanningObjectiveSetDTO objectives) {
-        CanonicalPlanningObjectiveSetDTO safe = copyWithTarget(objectives, 0);
-        PlanSolverInputDTO input = new PlanSolverInputDTO();
-        input.setObjectiveSet(safe);
-        return SOLVER.solve(input);
+        PlanSolverResultDTO result = new PlanSolverResultDTO();
+        result.setStatus("no_change");
+        result.setSolverVersion(StagedDeterministicPlanSolver.SOLVER_VERSION);
+        Map<String, Object> payload = new LinkedHashMap<String, Object>();
+        payload.put("objectiveDigest", objectives == null ? null : objectives.getObjectiveDigest());
+        payload.put("countMode", objectives == null ? null : objectives.getCountMode());
+        payload.put("targetCount", objectives == null ? null : objectives.getTargetCount());
+        result.setInputDigest(sha256(payload));
+        return result;
+    }
+
+    /** 排序路径输入摘要：原有序 id + 优先规则。 */
+    private static String orderingDigest(List<String> orderedEntityIds,
+                                         List<PriorityRuleDTO> priorities) {
+        Map<String, Object> payload = new LinkedHashMap<String, Object>();
+        payload.put("orderedEntityIds", defaultList(orderedEntityIds));
+        payload.put("priorityRules", defaultList(priorities));
+        return sha256(payload);
+    }
+
+    private static String sha256(Object payload) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(JSON.toJSONString(payload).getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(bytes.length * 2);
+            for (byte value : bytes) {
+                result.append(String.format("%02x", value & 0xff));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable", ex);
+        }
     }
 
     private static CanonicalPlanningObjectiveSetDTO copyWithTarget(
@@ -752,35 +777,6 @@ final class CanonicalPlanningRuntime {
                     .collect(Collectors.toList());
             this.locked = locked;
             this.pinned = pinned;
-        }
-
-        private PlanSolverInputDTO.CandidateDTO toSolverCandidate(
-                CanonicalPlanningObjectiveSetDTO objectives,
-                int stableOrder,
-                boolean current) {
-            PlanSolverInputDTO.CandidateDTO result = new PlanSolverInputDTO.CandidateDTO();
-            result.setEntityId(entityId);
-            result.setVolunteerIds(Lists.newArrayList(volunteerIds));
-            result.setStableOrder(stableOrder);
-            result.setCurrent(current);
-            result.setLocked(locked);
-            result.setPinned(pinned);
-            result.setEligible(true);
-            result.setTier(tier());
-            List<String> coverageIds = new ArrayList<String>();
-            for (int index = 0; index < defaultList(objectives.getCoverageConstraints()).size(); index++) {
-                CoverageRequirementDTO coverage = objectives.getCoverageConstraints().get(index);
-                if (candidates.stream().anyMatch(candidate ->
-                        CoverageRequirementSupport.matches(candidate, coverage))) {
-                    coverageIds.add("coverage:" + index);
-                }
-            }
-            result.setCoverageObjectiveIds(coverageIds);
-            PriorityRuleDTO priority = defaultList(objectives.getOrderingConstraints()).isEmpty()
-                    ? null : objectives.getOrderingConstraints().get(0);
-            result.setPriorityMatched(priority != null && (priorityMatched || candidates.stream()
-                    .anyMatch(candidate -> PriorityRuleSupport.matches(candidate, priority))));
-            return result;
         }
 
         private String tier() {

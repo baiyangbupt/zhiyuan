@@ -13122,31 +13122,6 @@ public class PlanningStateService {
                 .thenComparing(CandidateItemDTO::getVolunteerId, Comparator.nullsLast(String::compareTo));
     }
 
-    private void addAutoSelectedByTier(DraftPlanStateDTO draft,
-                                       List<CandidateItemDTO> sortedCandidates,
-                                       Set<String> selectedVolunteerIds,
-                                       Set<String> bannedVolunteerIds,
-                                       String tier,
-                                       Integer expectedCount) {
-        if (expectedCount == null || expectedCount <= 0) {
-            return;
-        }
-        for (CandidateItemDTO candidate : sortedCandidates) {
-            long currentTierCount = draft.getItems().stream().filter(item -> tier.equals(item.getTier())).count();
-            if (currentTierCount >= expectedCount) {
-                break;
-            }
-            if (!tier.equals(candidate.getTier())) {
-                continue;
-            }
-            if (!canAutoSelectCandidate(candidate, selectedVolunteerIds, bannedVolunteerIds)) {
-                continue;
-            }
-            draft.getItems().add(toAutoDraftItem(candidate));
-            selectedVolunteerIds.add(candidate.getVolunteerId());
-        }
-    }
-
     /**
      * 约束生效后按档位目标数，从**合格候选**补足工作方案。
      *
@@ -13170,35 +13145,42 @@ public class PlanningStateService {
             state.setSessionId(chatSessionId);
             return state;
         }
+        if (!applyTierTargetRefill(state, tenantId, chatSessionId)) {
+            // 分阶段 solver 未产出补足结果（无缺口/失败）：返回当前态，不写盘、不回退。
+            state.setSessionId(chatSessionId);
+            return state;
+        }
         // RETRY_REPLAY：补足是纯内存变换（只追加、幂等），CAS 输 -> 重读最新后重放；耗尽响亮冲突
-        applyTierTargetRefill(state, tenantId, chatSessionId);
         return saveWorkingPlanStateWithReplay(chatSessionId, state, "refill_by_tier",
                 latest -> applyTierTargetRefill(latest, tenantId, chatSessionId));
     }
 
-    /** 档位目标补足变换（纯内存、只追加；重放安全）。 */
-    private void applyTierTargetRefill(PlanningStateDTO state, Long tenantId, Long chatSessionId) {
+    /**
+     * 档位目标补足变换（纯内存、只追加；重放安全）。分阶段 solver 是唯一路径。
+     *
+     * @return true=已产生补足变更；false=无缺口或 solver 未产出可应用结果（不改状态、不写盘）
+     */
+    boolean applyTierTargetRefill(PlanningStateDTO state, Long tenantId, Long chatSessionId) {
         DraftPlanStateDTO draft = state.getDraftPlanState();
         CandidatePoolStateDTO pool = state.getCandidatePoolState();
         if (draft == null || pool == null || pool.getItems() == null || pool.getItems().isEmpty()) {
-            return;
+            return false;
         }
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
-        if (SolverShadowSupport.pathEnabled("refill")
-                && refillWithStagedSolver(state, tenantId, chatSessionId,
-                effectiveCandidates, pool)) {
-            syncWorkingPlanUnitsWithItems(draft, effectiveCandidates, pool);
-            recalculateWorkingPlanSummary(draft, pool);
-            return;
+        if (!refillWithStagedSolver(state, tenantId, chatSessionId, effectiveCandidates, pool)) {
+            // 分阶段 solver 是唯一实现：失败/无缺口都不再回退旧贪心补足，也不写盘。
+            log.warn("refill skipped: session={} reason=staged_solver_not_applied (no legacy fallback)",
+                    chatSessionId);
+            return false;
         }
-        refillWorkingPlanByTier(draft, effectiveCandidates, pool.getRequiredTierCounts());
         syncWorkingPlanUnitsWithItems(draft, effectiveCandidates, pool);
         recalculateWorkingPlanSummary(draft, pool);
+        return true;
     }
 
     /**
      * S3 refill：只追加、零删除。目标 = 每个档位 max(当前, 池目标) 之和；
-     * 失败/无缺口返回 false，回退旧的按档位贪心补足。
+     * 失败/无缺口返回 false（调用方不回退、不写盘）。
      */
     boolean refillWithStagedSolver(PlanningStateDTO state,
                                            Long tenantId,
@@ -13282,7 +13264,7 @@ public class PlanningStateService {
                     chatSessionId, target, currentTotal, toAdd.size());
             return true;
         } catch (RuntimeException ex) {
-            log.warn("refill staged fallback: session={} error={}",
+            log.warn("refill staged solver failed: session={} error={}",
                     chatSessionId, ex.getClass().getSimpleName());
             return false;
         }
@@ -13375,39 +13357,6 @@ public class PlanningStateService {
         result.setMinCount(value);
         result.setMaxCount(value);
         return result;
-    }
-
-    /**
-     * 补足本体（package-private：单测直接打这一层 ✓，`PlanningStateServiceRefillTest`）。
-     *
-     * <p>候选**按池内顺序**使用 ✓（池本身就是推荐顺序，不在这里重排 ✗）；`tierTargets`
-     * 取自候选池的 `requiredTierCounts` ✓（会话里就有，如 `{冲13, 稳13, 保19}` ✓）。
-     */
-    void refillWorkingPlanByTier(DraftPlanStateDTO draft,
-                                 List<CandidateItemDTO> candidates,
-                                 Map<String, Integer> tierTargets) {
-        if (draft == null || tierTargets == null || tierTargets.isEmpty()) {
-            return;
-        }
-        Set<String> selected = new LinkedHashSet<String>();
-        for (DraftItemDTO item : defaultDraftItems(draft.getItems())) {
-            if (item != null && !Strings.isNullOrEmpty(item.getVolunteerId())) {
-                selected.add(item.getVolunteerId());
-            }
-        }
-        Set<String> banned = new LinkedHashSet<String>(defaultList(draft.getBannedVolunteerIds()));
-        for (Map.Entry<String, Integer> entry : tierTargets.entrySet()) {
-            addAutoSelectedByTier(draft, candidates, selected, banned, entry.getKey(), entry.getValue());
-        }
-    }
-
-    private boolean canAutoSelectCandidate(CandidateItemDTO candidate,
-                                           Set<String> selectedVolunteerIds,
-                                           Set<String> bannedVolunteerIds) {
-        return candidate != null
-                && !Strings.isNullOrEmpty(candidate.getVolunteerId())
-                && !selectedVolunteerIds.contains(candidate.getVolunteerId())
-                && !bannedVolunteerIds.contains(candidate.getVolunteerId());
     }
 
     private DraftItemDTO toAutoDraftItem(CandidateItemDTO candidate) {

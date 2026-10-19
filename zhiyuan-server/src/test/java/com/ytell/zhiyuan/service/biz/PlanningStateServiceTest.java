@@ -3661,7 +3661,8 @@ public class PlanningStateServiceTest {
         FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req)
                 .getProposals().get(0);
 
-        assertEquals("ready", proposal.getStatus());
+        assertEquals("ready", proposal.getStatus(),
+                proposal.getBlockingReason() + " " + proposal.getBlockingReasonCodes());
         assertEquals(Integer.valueOf(1), proposal.getDryRunResult().getRemoveUnitCount());
         assertEquals(Integer.valueOf(2), proposal.getDryRunResult().getAddUnitCount());
         FixProposalActionDTO removeAction = proposal.getActions().stream()
@@ -4020,7 +4021,7 @@ public class PlanningStateServiceTest {
         assertEquals(Integer.valueOf(2), TierAllocationSupport.confirmedGoal(res.getState())
                 .getSprint().getMaxCount());
         assertNotNull(TierAllocationSupport.confirmedResolution(res.getState()).getObjectiveDigest());
-        assertEquals("ojalgo-48.4.2-m2",
+        assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION,
                 TierAllocationSupport.confirmedResolution(res.getState()).getSolverVersion());
 
         OrderedPlanGenerateReq regenerate = new OrderedPlanGenerateReq();
@@ -10410,6 +10411,7 @@ public class PlanningStateServiceTest {
         applyReq.setProposalSource("user_goal");
         applyReq.setSourceVersionGuard(proposal.getSourceVersionGuard());
         applyReq.setCanonicalObjectiveDigest(proposal.getCanonicalObjectiveDigest());
+        applyReq.setHardObjectiveVersion(proposal.getHardObjectiveVersion());
         applyReq.setSolverVersion(proposal.getSolverVersion());
         applyReq.setSolverInputDigest(proposal.getSolverInputDigest());
         applyReq.setUserGoalRequest(userGoalRequest);

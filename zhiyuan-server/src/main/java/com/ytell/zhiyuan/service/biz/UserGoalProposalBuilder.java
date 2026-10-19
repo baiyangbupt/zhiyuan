@@ -2,6 +2,7 @@ package com.ytell.zhiyuan.service.biz;
 
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
+import com.ytell.zhiyuan.model.dto.planning.CandidateFactDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateShortageDTO;
@@ -22,10 +23,10 @@ import com.ytell.zhiyuan.model.dto.planning.OrderedPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
-import com.ytell.zhiyuan.model.dto.planning.PlanSolverInputDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReplacementPairDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierAllocationResolutionDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountsDTO;
@@ -38,6 +39,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeanUtils;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -78,7 +81,6 @@ final class UserGoalProposalBuilder {
     /** 明细预览：≤5 条全列；>5 条只列前 3 条并注明余量（2026-10-16 口径）。 */
     private static final int ENTRY_PREVIEW_FULL_LIST_LIMIT = 5;
     private static final int ENTRY_PREVIEW_HEAD_COUNT = 3;
-    private static final DeterministicPlanSolver PLAN_SOLVER = new OjalgoDeterministicPlanSolver();
     private static final StagedDeterministicPlanSolver STAGED_SOLVER = new StagedDeterministicPlanSolver();
     private static final Logger LOG = LoggerFactory.getLogger(UserGoalProposalBuilder.class);
     private UserGoalProposalBuilder() {
@@ -998,27 +1000,22 @@ final class UserGoalProposalBuilder {
             projection.removeUnitIds.addAll(removal.unitIds);
             projection.removeVolunteerIds.addAll(removal.volunteerIds);
             List<CoverageEntity> retained = buildRetainedCoverageEntities(current, projection, unitMode);
-            PlanSolverResultDTO solved;
-            if (SolverShadowSupport.pathEnabled("remove")) {
-                MutationPolicyDTO policy = new MutationPolicyDTO();
-                policy.setAction("REMOVE");
-                policy.setLockExisting(true);
-                policy.setCountAsChurn(false);
-                policy.getForcedRemoveEntityIds().addAll(unitMode
-                        ? removal.unitIds : removal.volunteerIds);
-                CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
-                        state, snapshotCandidates(state, Lists.<CandidateItemDTO>newArrayList()),
-                        CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
-                PlanningObjectiveCompiler.enrichV2(state, solverObjectiveSet, policy);
-                solved = STAGED_SOLVER.solve(snapshot, solverObjectiveSet, policy).solverResult;
-                LOG.info("staged dry-run remove: session={} status={} selected={} remove={}",
-                        state.getSessionId(), solved.getStatus(),
-                        defaultList(solved.getSelectedEntityIds()).size(),
-                        defaultList(solved.getRemoveEntityIds()).size());
-            } else {
-                solved = PLAN_SOLVER.solve(buildSolverInput(
-                        solverObjectiveSet, retained, Lists.<FillOption>newArrayList(), unitMode, null));
-            }
+            MutationPolicyDTO policy = new MutationPolicyDTO();
+            policy.setAction("REMOVE");
+            policy.setLockExisting(true);
+            policy.setCountAsChurn(false);
+            policy.getForcedRemoveEntityIds().addAll(unitMode
+                    ? removal.unitIds : removal.volunteerIds);
+            CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                    state, snapshotCandidates(state, Lists.<CandidateItemDTO>newArrayList()),
+                    CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
+            PlanningObjectiveCompiler.enrichV2(state, solverObjectiveSet, policy);
+            PlanSolverResultDTO solved = STAGED_SOLVER.solve(
+                    snapshot, solverObjectiveSet, policy).solverResult;
+            LOG.info("staged dry-run remove: session={} status={} selected={} remove={}",
+                    state.getSessionId(), solved.getStatus(),
+                    defaultList(solved.getSelectedEntityIds()).size(),
+                    defaultList(solved.getRemoveEntityIds()).size());
             result.objectiveSet = objectiveSet;
             result.solverResult = solved;
             if (RepairProposalTaxonomy.Status.BLOCKED.equals(solved.getStatus())) {
@@ -1498,33 +1495,28 @@ final class UserGoalProposalBuilder {
                     current, new FillCurrentProjection(), unitMode);
             List<FillOption> available = excludeRetainedOptions(
                     buildAddFillOptions(resolved, unitMode), retained, unitMode);
-            PlanSolverResultDTO solved;
-            if (SolverShadowSupport.pathEnabled(solverPath)) {
-                MutationPolicyDTO policy = new MutationPolicyDTO();
-                policy.setAction("ADD");
-                policy.setLockExisting(true);
-                policy.setCountAsChurn(false);
-                policy.setRequireCompensationSafe("scope".equals(solverPath));
-                for (FillOption option : available) {
-                    String entityId = option.entityId(unitMode);
-                    if (!Strings.isNullOrEmpty(entityId)) {
-                        policy.getFrozenRequiredEntityIds().add(entityId);
-                    }
+            MutationPolicyDTO policy = new MutationPolicyDTO();
+            policy.setAction("ADD");
+            policy.setLockExisting(true);
+            policy.setCountAsChurn(false);
+            policy.setRequireCompensationSafe("scope".equals(solverPath));
+            for (FillOption option : available) {
+                String entityId = option.entityId(unitMode);
+                if (!Strings.isNullOrEmpty(entityId)) {
+                    policy.getFrozenRequiredEntityIds().add(entityId);
                 }
-                CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
-                        state, snapshotCandidates(state, resolved),
-                        CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
-                PlanningObjectiveCompiler.enrichV2(state, solverObjectiveSet, policy);
-                solved = STAGED_SOLVER.solve(snapshot, solverObjectiveSet, policy).solverResult;
-                LOG.info("staged dry-run {}: session={} status={} selected={} remove={} add={}",
-                        solverPath, state.getSessionId(), solved.getStatus(),
-                        defaultList(solved.getSelectedEntityIds()).size(),
-                        defaultList(solved.getRemoveEntityIds()).size(),
-                        defaultList(solved.getAddEntityIds()).size());
-            } else {
-                solved = PLAN_SOLVER.solve(buildSolverInput(
-                        solverObjectiveSet, retained, available, unitMode, null));
             }
+            CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                    state, snapshotCandidates(state, resolved),
+                    CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
+            PlanningObjectiveCompiler.enrichV2(state, solverObjectiveSet, policy);
+            PlanSolverResultDTO solved = STAGED_SOLVER.solve(
+                    snapshot, solverObjectiveSet, policy).solverResult;
+            LOG.info("staged dry-run {}: session={} status={} selected={} remove={} add={}",
+                    solverPath, state.getSessionId(), solved.getStatus(),
+                    defaultList(solved.getSelectedEntityIds()).size(),
+                    defaultList(solved.getRemoveEntityIds()).size(),
+                    defaultList(solved.getAddEntityIds()).size());
             result.objectiveSet = objectiveSet;
             result.solverResult = solved;
             if (RepairProposalTaxonomy.Status.BLOCKED.equals(solved.getStatus())) {
@@ -1603,34 +1595,29 @@ final class UserGoalProposalBuilder {
             List<CoverageEntity> retained = buildRetainedCoverageEntities(current, projection, unitMode);
             List<FillOption> available = excludeRetainedOptions(
                     buildAddFillOptions(resolved, unitMode), retained, unitMode);
-            PlanSolverResultDTO solved;
-            if (SolverShadowSupport.pathEnabled("replace")) {
-                MutationPolicyDTO policy = new MutationPolicyDTO();
-                policy.setAction("REPLACE");
-                policy.setLockExisting(true);
-                policy.setCountAsChurn(false);
-                policy.getForcedRemoveEntityIds().addAll(unitMode
-                        ? removal.unitIds : removal.volunteerIds);
-                for (FillOption option : available) {
-                    String entityId = option.entityId(unitMode);
-                    if (!Strings.isNullOrEmpty(entityId)) {
-                        policy.getForcedAddEntityIds().add(entityId);
-                    }
+            MutationPolicyDTO policy = new MutationPolicyDTO();
+            policy.setAction("REPLACE");
+            policy.setLockExisting(true);
+            policy.setCountAsChurn(false);
+            policy.getForcedRemoveEntityIds().addAll(unitMode
+                    ? removal.unitIds : removal.volunteerIds);
+            for (FillOption option : available) {
+                String entityId = option.entityId(unitMode);
+                if (!Strings.isNullOrEmpty(entityId)) {
+                    policy.getForcedAddEntityIds().add(entityId);
                 }
-                CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
-                        state, snapshotCandidates(state, resolved),
-                        CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
-                PlanningObjectiveCompiler.enrichV2(state, solverObjectiveSet, policy);
-                solved = STAGED_SOLVER.solve(snapshot, solverObjectiveSet, policy).solverResult;
-                LOG.info("staged dry-run replace: session={} status={} selected={} remove={} add={}",
-                        state.getSessionId(), solved.getStatus(),
-                        defaultList(solved.getSelectedEntityIds()).size(),
-                        defaultList(solved.getRemoveEntityIds()).size(),
-                        defaultList(solved.getAddEntityIds()).size());
-            } else {
-                solved = PLAN_SOLVER.solve(buildSolverInput(
-                        solverObjectiveSet, retained, available, unitMode, null));
             }
+            CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                    state, snapshotCandidates(state, resolved),
+                    CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
+            PlanningObjectiveCompiler.enrichV2(state, solverObjectiveSet, policy);
+            PlanSolverResultDTO solved = STAGED_SOLVER.solve(
+                    snapshot, solverObjectiveSet, policy).solverResult;
+            LOG.info("staged dry-run replace: session={} status={} selected={} remove={} add={}",
+                    state.getSessionId(), solved.getStatus(),
+                    defaultList(solved.getSelectedEntityIds()).size(),
+                    defaultList(solved.getRemoveEntityIds()).size(),
+                    defaultList(solved.getAddEntityIds()).size());
             result.objectiveSet = objectiveSet;
             result.solverResult = solved;
             if (RepairProposalTaxonomy.Status.BLOCKED.equals(solved.getStatus())) {
@@ -1826,15 +1813,23 @@ final class UserGoalProposalBuilder {
                     REASON_PROJECTED_REQUIREMENTS_LOCKED, message);
         }
         if (!hasProjectedRequirements && !hasPriorityRule && !hasTierQuota && currentCount >= targetCount) {
-            CanonicalPlanningObjectiveSetDTO solverObjectiveSet = objectiveSet;
-            if (currentCount > targetCount) {
-                solverObjectiveSet = copyObjectiveSet(objectiveSet);
-                solverObjectiveSet.setTargetCount(currentCount);
-            }
-            List<CoverageEntity> retained = buildRetainedCoverageEntities(
-                    current, currentProjection, majorGroupMode);
-            PlanSolverResultDTO solverResult = PLAN_SOLVER.solve(buildSolverInput(
-                    solverObjectiveSet, retained, Lists.newArrayList(), majorGroupMode, null));
+            // 无变更预览仍走 staged（FILL 口径，目标数 = 当前数），只为把 canonical 元数据
+            // （solverVersion/inputDigest/objectiveResults）挂到提案上；集合保持不变。
+            CanonicalPlanningObjectiveSetDTO stagedObjectives = copyObjectiveSet(objectiveSet);
+            stagedObjectives.setTargetCount(currentCount);
+            MutationPolicyDTO policy = new MutationPolicyDTO();
+            policy.setAction("FILL");
+            policy.setLockExisting(false);
+            policy.setCountAsChurn(true);
+            List<CandidateItemDTO> currentCandidates = current.stream()
+                    .map(PlanVolunteer::asCandidate)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList());
+            CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                    state, currentCandidates, CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
+            PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
+            PlanSolverResultDTO solverResult = STAGED_SOLVER.solve(
+                    snapshot, stagedObjectives, policy).solverResult;
             attachSolverMetadata(proposal, objectiveSet, solverResult);
             proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
             proposal.setSummary("当前方案已有 " + currentCount + (majorGroupMode ? " 个专业组" : " 个志愿")
@@ -1868,7 +1863,7 @@ final class UserGoalProposalBuilder {
 
         FillSelection selection = selectFillCandidates(state, projectedHardConstraints, poolCandidates,
                 selectedVolunteerIds, selectedUnitIds, targetCount, majorGroupMode,
-                current, currentProjection, objectiveSet, priorityRule);
+                current, currentProjection, objectiveSet);
         attachSolverMetadata(proposal, objectiveSet, selection.solverResult);
         populateTierQuotaResolution(proposal, selection.solverResult);
         if (!Strings.isNullOrEmpty(selection.blockingReason)) {
@@ -2006,8 +2001,11 @@ final class UserGoalProposalBuilder {
             populateActionTotals(action);
             proposal.getActions().add(action);
         }
+        // staged solver 恒返回 ready，这里按实际增删集合判定"方案是否变化"，
+        // 与旧 solver 的 no_change 语义保持一致（纯持久化/已满足走 INFO）。
         boolean planChanged = selection.solverResult != null
-                && RepairProposalTaxonomy.Status.READY.equals(selection.solverResult.getStatus());
+                && (!selection.unitIds.isEmpty() || !selection.volunteerIds.isEmpty()
+                || !selection.removeUnitIds.isEmpty() || !selection.removeVolunteerIds.isEmpty());
         boolean objectiveChanged = Boolean.TRUE.equals(objectiveSet.getTierAllocationStateChanged());
         if (!planChanged && !objectiveChanged && !hasProjectedRequirements && !hasPriorityRule) {
             proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
@@ -2139,10 +2137,21 @@ final class UserGoalProposalBuilder {
         FillCurrentProjection projection = new FillCurrentProjection();
         List<CoverageEntity> retained = buildRetainedCoverageEntities(
                 current, projection, analysis.isUnitMode());
-        CanonicalPlanningObjectiveSetDTO solverObjectiveSet = copyObjectiveSet(objectiveSet);
-        solverObjectiveSet.setTargetCount(retained.size());
-        PlanSolverResultDTO solverResult = PLAN_SOLVER.solve(buildSolverInput(
-                solverObjectiveSet, retained, Lists.newArrayList(), analysis.isUnitMode(), rule));
+        // 同档前置只重排现有方案，不再交给求解器：直接由 PlanOrderingEngine 产出
+        // 稳定排序结果，并组装一个与旧 solver 同形的 PlanSolverResultDTO。
+        List<PlanOrderingEngine.OrderEntry> orderEntries =
+                new ArrayList<PlanOrderingEngine.OrderEntry>();
+        for (CoverageEntity entity : retained) {
+            boolean priorityMatched = rule != null && entity.candidates.stream()
+                    .anyMatch(candidate -> PriorityRuleSupport.matches(candidate, rule));
+            orderEntries.add(new PlanOrderingEngine.OrderEntry(
+                    entity.entityId(analysis.isUnitMode()),
+                    entity.candidates.isEmpty() ? null : entity.candidates.get(0).getTier(),
+                    priorityMatched,
+                    entity.pinned));
+        }
+        PlanOrderingEngine.OrderResult ordering = PlanOrderingEngine.order(orderEntries, true);
+        PlanSolverResultDTO solverResult = priorityOrderingResult(objectiveSet, ordering);
         if (RepairProposalTaxonomy.Status.BLOCKED.equals(solverResult.getStatus())) {
             PlanSolverResultDTO.DiagnosticDTO diagnostic = solverResult.getDiagnostics().isEmpty()
                     ? null : solverResult.getDiagnostics().get(0);
@@ -2200,6 +2209,56 @@ final class UserGoalProposalBuilder {
         proposal.getDryRunResult().setAfterVolunteerTotal(currentPlanVolunteerCount(state));
         populatePriorityDryRun(proposal, analysis);
         return proposal;
+    }
+
+    private static PlanSolverResultDTO priorityOrderingResult(
+            CanonicalPlanningObjectiveSetDTO objectiveSet,
+            PlanOrderingEngine.OrderResult ordering) {
+        PlanSolverResultDTO result = new PlanSolverResultDTO();
+        result.setSelectedEntityIds(Lists.newArrayList(ordering.selectedIds));
+        result.setOrderedEntityIds(Lists.newArrayList(ordering.orderedIds));
+        result.setStatus(ordering.pinnedConflict
+                ? RepairProposalTaxonomy.Status.BLOCKED
+                : ordering.changed() ? RepairProposalTaxonomy.Status.READY : "no_change");
+        result.setSolverVersion(StagedDeterministicPlanSolver.SOLVER_VERSION);
+        result.setHardObjectiveVersion(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION);
+        result.setInputDigest(orderingInputDigest(objectiveSet, ordering));
+        PlanSolverResultDTO.ObjectiveResultDTO priority = new PlanSolverResultDTO.ObjectiveResultDTO();
+        priority.setObjectiveId("priority:0");
+        priority.setObjectiveType("priority_within_tier");
+        priority.setRequiredMin(0);
+        priority.setRequiredMax(0);
+        priority.setActualCount(ordering.inversionCount);
+        priority.setSatisfied(ordering.inversionCount == 0);
+        result.getObjectiveResults().add(priority);
+        if (ordering.pinnedConflict) {
+            PlanSolverResultDTO.DiagnosticDTO diagnostic = new PlanSolverResultDTO.DiagnosticDTO();
+            diagnostic.setReasonCode("pinned_conflict");
+            diagnostic.setObjectiveId("priority:0");
+            diagnostic.setMessage("同档优先排序会改变 pinned 项目所在档位的位置。");
+            result.getDiagnostics().add(diagnostic);
+        }
+        return result;
+    }
+
+    private static String orderingInputDigest(CanonicalPlanningObjectiveSetDTO objectiveSet,
+                                              PlanOrderingEngine.OrderResult ordering) {
+        Map<String, Object> payload = new LinkedHashMap<String, Object>();
+        payload.put("objective", objectiveSet == null ? null : objectiveSet.getObjectiveDigest());
+        payload.put("selected", ordering.selectedIds);
+        payload.put("ordered", ordering.orderedIds);
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(com.alibaba.fastjson.JSON.toJSONString(payload)
+                    .getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte value : hash) {
+                hex.append(String.format("%02x", value & 0xff));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable", ex);
+        }
     }
 
     private static PriorityRuleSupport.Analysis analyzeProjectedPriority(
@@ -2351,25 +2410,6 @@ final class UserGoalProposalBuilder {
         }
     }
 
-    /**
-     * review §五-36：canonical solver 的 {@link OjalgoDeterministicPlanSolver#MAX_CANDIDATES} 硬帽保留
-     * （继续 fail-closed 保护 solver）；本处只做输入降维：把交给 solver 的补入候选池按已有确定性名次
-     * （buildFillOptions 已排序的 finalScore/展示序）头部截断，保证 retained + 补入的候选总数不超帽。
-     * 被截掉的是名次尾部，对"挑 N 条最好"的语义影响可忽略；池不超帽时返回原列表，行为逐字不变。
-     * 诊断口径（"可用数"）由调用方继续使用截断前的全量池，不把帽值当成可用数。
-     *
-     * <p>TODO(review §五-36 顺带核查)：{@link OjalgoDeterministicPlanSolver#MAX_COVERAGE_CONSTRAINTS}（64）
-     * 是覆盖约束数的同类硬帽，本处不处理——约束数超帽仍由 solver fail-closed 拦截并给出人话建议，
-     * 本次候选池截断不会新增该路径（截断只减少候选、不影响约束数）。
-     */
-    private static List<FillOption> capSolverCandidatePool(List<FillOption> eligible, int retainedCount) {
-        int limit = Math.max(0, OjalgoDeterministicPlanSolver.MAX_CANDIDATES - Math.max(0, retainedCount));
-        if (eligible == null || eligible.size() <= limit) {
-            return eligible;
-        }
-        return Lists.newArrayList(eligible.subList(0, limit));
-    }
-
     private static FillSelection selectFillCandidates(PlanningStateDTO state,
                                                       HardConstraintsDTO projectedHardConstraints,
                                                       List<CandidateItemDTO> poolCandidates,
@@ -2379,8 +2419,7 @@ final class UserGoalProposalBuilder {
                                                       boolean unitMode,
                                                       List<PlanVolunteer> current,
                                                       FillCurrentProjection currentProjection,
-                                                      CanonicalPlanningObjectiveSetDTO objectiveSet,
-                                                      PriorityRuleDTO priorityRule) {
+                                                      CanonicalPlanningObjectiveSetDTO objectiveSet) {
         List<FillOption> available = buildFillOptions(poolCandidates, selectedVolunteerIds, selectedUnitIds, unitMode);
         List<FillOption> eligible = available.stream()
                 .map(option -> option.retainAllowed(projectedHardConstraints))
@@ -2393,54 +2432,76 @@ final class UserGoalProposalBuilder {
 
         List<CoverageEntity> retained = buildRetainedCoverageEntities(
                 current, currentProjection, unitMode);
-        // review §五-36：solver 硬帽（MAX_CANDIDATES）保留，用于兜底保护 solver 本身；
-        // 本处只做输入降维——eligible 已按既有展示名次（intentScore/admissionRatio/finalScore 预览序）排序，
-        // 按名次头部截断到帽内后交给 solver。被截掉的是名次尾部，对"挑 N 条最好"的语义影响可忽略；
-        // 池不超帽时列表逐字不变。注意：selection.availableWithHardConstraints 等诊断口径仍用截断前的全量池，
-        // 卡面不出现"可用=帽值"这种假数（"原始可用"与"送入求解"保持可区分）。
-        List<FillOption> solverEligible = capSolverCandidatePool(eligible, retained.size());
-        PlanSolverInputDTO solverInput = buildSolverInput(
-                objectiveSet, retained, solverEligible, unitMode, priorityRule);
-        boolean stagedFill = SolverShadowSupport.pathEnabled("fill");
-        if (stagedFill) {
-            // 快照必须与下面 additions 映射使用同一批候选：映射表来自 capped 的
-            // eligible，若快照仍用全量池，solver 选中映射表外的实体时会被静默丢弃，
-            // 全量池 >600 时还会误报 candidate pool insufficient。
-            Set<String> snapshotEntityIds = new LinkedHashSet<String>();
-            for (FillOption option : solverEligible) {
-                String entityId = option.entityId(unitMode);
-                if (!Strings.isNullOrEmpty(entityId)) {
-                    snapshotEntityIds.add(entityId);
-                }
+        // 快照必须与下面 additions 映射使用同一批候选：映射表来自 eligible，
+        // 若快照用别的池，solver 选中映射表外的实体时会被静默丢弃。
+        Set<String> snapshotEntityIds = new LinkedHashSet<String>();
+        for (FillOption option : eligible) {
+            String entityId = option.entityId(unitMode);
+            if (!Strings.isNullOrEmpty(entityId)) {
+                snapshotEntityIds.add(entityId);
             }
-            for (CoverageEntity entity : retained) {
-                String entityId = entity.entityId(unitMode);
-                if (!Strings.isNullOrEmpty(entityId)) {
-                    snapshotEntityIds.add(entityId);
-                }
-            }
-            List<CandidateItemDTO> snapshotPool = defaultList(poolCandidates).stream()
-                    .filter(candidate -> snapshotEntityIds.contains(
-                            candidateEntityId(candidate, unitMode)))
-                    .collect(Collectors.toList());
-            CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(state, snapshotPool,
-                    CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
-            MutationPolicyDTO policy = new MutationPolicyDTO();
-            policy.setAction("FILL");
-            policy.setLockExisting(false);
-            policy.setCountAsChurn(true);
-            policy.setRequireCompensationSafe(true);
-            // 用副本 enrich：proposal 的 canonicalObjectiveDigest 仍保持旧口径，
-            // 避免 apply 后置校验用 compileConfirmed 重算时 40905。
-            CanonicalPlanningObjectiveSetDTO stagedObjectives = com.alibaba.fastjson.JSON.parseObject(
-                    com.alibaba.fastjson.JSON.toJSONString(objectiveSet),
-                    CanonicalPlanningObjectiveSetDTO.class);
-            PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
-            selection.solverResult = STAGED_SOLVER.solve(snapshot, stagedObjectives, policy).solverResult;
-        } else {
-            selection.solverResult = PLAN_SOLVER.solve(solverInput);
-            SolverShadowSupport.shadowSelection(state, poolCandidates, objectiveSet, selection.solverResult);
         }
+        for (CoverageEntity entity : retained) {
+            String entityId = entity.entityId(unitMode);
+            if (!Strings.isNullOrEmpty(entityId)) {
+                snapshotEntityIds.add(entityId);
+            }
+        }
+        List<CandidateItemDTO> snapshotPool = defaultList(poolCandidates).stream()
+                .filter(candidate -> snapshotEntityIds.contains(
+                        candidateEntityId(candidate, unitMode)))
+                .collect(Collectors.toList());
+        CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(state, snapshotPool,
+                CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
+        // 被本轮投影要求移出的存量项不能回到候选集：CandidateSnapshotBuilder 会把
+        // ordered plan 里的项补成 current（churn=0），若留着会被 staged 优先保留，
+        // 导致"应移出"的项被选中、补入项落空。移出名单由 currentProjection 另行落账。
+        //
+        // 单元模式下一个专业组可能只移出部分专业（组仍保留）：除整条 fact 外，
+        // 还要把被移出的专业从 rawCandidates 中剔除，否则 staged 的
+        // eligibilityConstraints（如"排除医学"）会因残留专业把整组判为不合格。
+        Set<String> removalEntityIds = unitMode
+                ? new LinkedHashSet<String>(defaultList(currentProjection.removeUnitIds))
+                : new LinkedHashSet<String>(defaultList(currentProjection.removeVolunteerIds));
+        if (!removalEntityIds.isEmpty()) {
+            List<CandidateFactDTO> keptFacts = new ArrayList<CandidateFactDTO>();
+            for (CandidateFactDTO fact : defaultList(snapshot.getFacts())) {
+                if (removalEntityIds.contains(fact.getEntityId())) {
+                    continue;
+                }
+                // 池内候选与方案项的 volunteerId 口径可能不同，按投影硬要求判据
+                // 剔除被移出的专业，而不是比对 ID。
+                defaultList(fact.getRawCandidates()).removeIf(candidate ->
+                        !ProjectedHardRequirementSupport.isAllowed(
+                                candidate, projectedHardConstraints));
+                if (fact.getRawCandidates() == null || fact.getRawCandidates().isEmpty()) {
+                    continue;
+                }
+                keptFacts.add(fact);
+            }
+            snapshot.setFacts(keptFacts);
+        }
+        // 快照默认只读 state 里已确认的优先规则；组合请求（fill + 本轮新增优先规则）
+        // 的规则还没落库，必须用 objectiveSet 里的本轮 orderingConstraints 覆盖命中标记，
+        // 否则 staged 排序不会把命中项前置。
+        List<PriorityRuleDTO> orderingRules = defaultList(objectiveSet.getOrderingConstraints());
+        if (!orderingRules.isEmpty()) {
+            for (CandidateFactDTO fact : defaultList(snapshot.getFacts())) {
+                fact.setPriorityMatched(defaultList(fact.getRawCandidates()).stream()
+                        .anyMatch(candidate -> orderingRules.stream()
+                                .anyMatch(rule -> PriorityRuleSupport.matches(candidate, rule))));
+            }
+        }
+        MutationPolicyDTO policy = new MutationPolicyDTO();
+        policy.setAction("FILL");
+        policy.setLockExisting(false);
+        policy.setCountAsChurn(true);
+        policy.setRequireCompensationSafe(true);
+        // 用副本 enrich：proposal 的 canonicalObjectiveDigest 仍保持原口径，
+        // 避免 apply 后置校验用 compileConfirmed 重算时 40905。
+        CanonicalPlanningObjectiveSetDTO stagedObjectives = copyObjectiveSet(objectiveSet);
+        PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
+        selection.solverResult = STAGED_SOLVER.solve(snapshot, stagedObjectives, policy).solverResult;
         if (RepairProposalTaxonomy.Status.BLOCKED.equals(selection.solverResult.getStatus())) {
             PlanSolverResultDTO.DiagnosticDTO diagnostic = selection.solverResult.getDiagnostics().isEmpty()
                     ? null : selection.solverResult.getDiagnostics().get(0);
@@ -2448,15 +2509,21 @@ final class UserGoalProposalBuilder {
             if ("candidate_shortage".equals(solverReason)) {
                 return selection;
             }
+            // staged solver 对 LP 不可行统一给 objective_set_infeasible；
+            // 这里按目标/锁定事实还原既有的可操作原因（tier_*/locked_conflict）。
+            String refinedReason = isStagedInfeasible(solverReason)
+                    ? resolveStagedInfeasibleReason(objectiveSet, retained, eligible) : null;
+            String effectiveReason = Strings.isNullOrEmpty(refinedReason) ? solverReason : refinedReason;
             boolean tierDiagnostic = objectiveSet.getTierAllocationConstraint() != null
-                    && !Strings.isNullOrEmpty(solverReason)
-                    && (solverReason.startsWith("tier_") || "locked_conflict".equals(solverReason));
-            String reasonCode = tierDiagnostic ? solverReason
-                    : "solver_complexity_limit".equals(solverReason)
+                    && !Strings.isNullOrEmpty(effectiveReason)
+                    && (effectiveReason.startsWith("tier_") || "locked_conflict".equals(effectiveReason));
+            String reasonCode = tierDiagnostic ? effectiveReason
+                    : "solver_complexity_limit".equals(effectiveReason)
                     ? REASON_SOLVER_COMPLEXITY_LIMIT
-                    : "locked_conflict".equals(solverReason) || "pinned_conflict".equals(solverReason)
+                    : "locked_conflict".equals(effectiveReason)
+                    || "pinned_conflict".equals(effectiveReason)
                     ? REASON_COVERAGE_REPLACEMENT_LOCKED
-                    : "candidate_shortage".equals(solverReason)
+                    : "candidate_shortage".equals(effectiveReason)
                     ? selection.availableWithoutHardConstraints >= targetCount - retained.size()
                     ? REASON_HARD_CONSTRAINTS_INSUFFICIENT : REASON_CANDIDATE_POOL_INSUFFICIENT
                     : REASON_COVERAGE_INSUFFICIENT;
@@ -2488,36 +2555,112 @@ final class UserGoalProposalBuilder {
         return selection;
     }
 
-    private static PlanSolverInputDTO buildSolverInput(CanonicalPlanningObjectiveSetDTO objectiveSet,
-                                                       List<CoverageEntity> retained,
-                                                       List<FillOption> available,
-                                                       boolean unitMode,
-                                                       PriorityRuleDTO priorityRule) {
-        PlanSolverInputDTO result = new PlanSolverInputDTO();
-        result.setObjectiveSet(objectiveSet);
-        int stableOrder = 0;
-        for (CoverageEntity entity : defaultList(retained)) {
-            result.getCandidates().add(entity.asSolverCandidate(
-                    unitMode, stableOrder++, objectiveSet.getCoverageConstraints(), priorityRule));
-        }
-        for (FillOption option : defaultList(available)) {
-            result.getCandidates().add(option.asSolverCandidate(
-                    unitMode, stableOrder++, objectiveSet.getCoverageConstraints(), priorityRule));
-        }
-        return result;
+    private static boolean isStagedInfeasible(String reasonCode) {
+        return "objective_set_infeasible".equals(reasonCode)
+                || "solver_infeasible_after_cap".equals(reasonCode)
+                || "solver_witness_broken".equals(reasonCode);
     }
 
-    private static List<String> matchedCoverageIds(List<CandidateItemDTO> candidates,
-                                                   List<CoverageRequirementDTO> coverage) {
-        List<String> result = Lists.newArrayList();
-        for (int index = 0; index < defaultList(coverage).size(); index++) {
-            CoverageRequirementDTO objective = coverage.get(index);
-            if (defaultList(candidates).stream()
-                    .anyMatch(candidate -> CoverageRequirementSupport.matches(candidate, objective))) {
-                result.add("coverage:" + index);
+    /**
+     * 把 staged solver 的通用不可行原因细化为既有诊断口径：
+     * 覆盖不足 → coverage_infeasible；锁定项挤占槽位 / 锁定项超档 → locked_conflict；
+     * 档位最低数量不足 → tier_min_infeasible / tier_exact_infeasible。
+     */
+    private static String resolveStagedInfeasibleReason(
+            CanonicalPlanningObjectiveSetDTO objectiveSet,
+            List<CoverageEntity> retained,
+            List<FillOption> eligible) {
+        if (objectiveSet == null) {
+            return null;
+        }
+        int targetCount = objectiveSet.getTargetCount() == null ? 0 : objectiveSet.getTargetCount();
+        List<CoverageEntity> locked = retained.stream()
+                .filter(entity -> entity.locked)
+                .collect(Collectors.toList());
+        for (CoverageRequirementDTO requirement : defaultList(objectiveSet.getCoverageConstraints())) {
+            int required = CoverageRequirementSupport.minCount(requirement);
+            int available = countCoverage(retained, eligible, requirement);
+            if (required > targetCount || available < required) {
+                return "coverage_infeasible";
+            }
+            int lockedMatches = countCoverage(locked, Lists.<FillOption>newArrayList(), requirement);
+            int unlockedMatches = available - lockedMatches;
+            int remainingSlots = Math.max(0, targetCount - locked.size());
+            if (lockedMatches + Math.min(remainingSlots, unlockedMatches) < required) {
+                return "locked_conflict";
             }
         }
-        return result;
+        TierAllocationConstraintDTO constraint = objectiveSet.getTierAllocationConstraint();
+        if (constraint == null) {
+            return null;
+        }
+        boolean exact = TierAllocationSupport.TYPE_EXACT_COUNTS.equalsIgnoreCase(
+                Strings.nullToEmpty(constraint.getSourceType()).trim())
+                || TierAllocationSupport.TYPE_RATIOS.equalsIgnoreCase(
+                Strings.nullToEmpty(constraint.getSourceType()).trim());
+        for (String tier : new String[]{"sprint", "stable", "protect"}) {
+            TierCountRangeDTO bound = tierBound(constraint, tier);
+            if (bound == null || bound.getMinCount() == null) {
+                continue;
+            }
+            int available = countTier(retained, eligible, tier);
+            int fixed = countTier(locked, Lists.<FillOption>newArrayList(), tier);
+            if (available < bound.getMinCount()) {
+                return exact ? "tier_exact_infeasible" : "tier_min_infeasible";
+            }
+            if (bound.getMaxCount() != null && fixed > bound.getMaxCount()) {
+                return "locked_conflict";
+            }
+        }
+        return null;
+    }
+
+    private static TierCountRangeDTO tierBound(TierAllocationConstraintDTO constraint, String tier) {
+        if ("sprint".equals(tier)) {
+            return constraint.getSprint();
+        }
+        if ("stable".equals(tier)) {
+            return constraint.getStable();
+        }
+        return constraint.getProtect();
+    }
+
+    private static int countCoverage(List<CoverageEntity> entities,
+                                     List<FillOption> options,
+                                     CoverageRequirementDTO requirement) {
+        int count = 0;
+        for (CoverageEntity entity : defaultList(entities)) {
+            if (entity.candidates.stream()
+                    .anyMatch(candidate -> CoverageRequirementSupport.matches(candidate, requirement))) {
+                count++;
+            }
+        }
+        for (FillOption option : defaultList(options)) {
+            if (option.candidates.stream()
+                    .anyMatch(candidate -> CoverageRequirementSupport.matches(candidate, requirement))) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static int countTier(List<CoverageEntity> entities,
+                                 List<FillOption> options,
+                                 String tier) {
+        int count = 0;
+        for (CoverageEntity entity : defaultList(entities)) {
+            if (entity.matchesTier(tier)) {
+                count++;
+            }
+        }
+        for (FillOption option : defaultList(options)) {
+            String optionTier = option.representative == null ? null
+                    : TierAllocationSupport.canonicalTierKey(option.representative.getTier());
+            if (tier.equals(optionTier)) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
@@ -4742,26 +4885,6 @@ final class UserGoalProposalBuilder {
         private String entityId(boolean unitMode) {
             return unitMode ? unitId : volunteerIds.isEmpty() ? null : volunteerIds.get(0);
         }
-
-        private PlanSolverInputDTO.CandidateDTO asSolverCandidate(
-                boolean unitMode,
-                int stableOrder,
-                List<CoverageRequirementDTO> coverage,
-                PriorityRuleDTO priorityRule) {
-            PlanSolverInputDTO.CandidateDTO result = new PlanSolverInputDTO.CandidateDTO();
-            result.setEntityId(entityId(unitMode));
-            result.setVolunteerIds(Lists.newArrayList(volunteerIds));
-            result.setStableOrder(stableOrder);
-            result.setCurrent(false);
-            result.setLocked(false);
-            result.setPinned(false);
-            result.setEligible(true);
-            result.setTier(representative == null ? null : representative.getTier());
-            result.setCoverageObjectiveIds(matchedCoverageIds(candidates, coverage));
-            result.setPriorityMatched(priorityRule != null && candidates.stream()
-                    .anyMatch(candidate -> PriorityRuleSupport.matches(candidate, priorityRule)));
-            return result;
-        }
     }
 
     private static final class CoverageEntity {
@@ -4812,26 +4935,6 @@ final class UserGoalProposalBuilder {
         private String entityId(boolean unitMode) {
             return unitMode ? unitIds.isEmpty() ? null : unitIds.get(0)
                     : volunteerIds.isEmpty() ? null : volunteerIds.get(0);
-        }
-
-        private PlanSolverInputDTO.CandidateDTO asSolverCandidate(
-                boolean unitMode,
-                int stableOrder,
-                List<CoverageRequirementDTO> coverage,
-                PriorityRuleDTO priorityRule) {
-            PlanSolverInputDTO.CandidateDTO result = new PlanSolverInputDTO.CandidateDTO();
-            result.setEntityId(entityId(unitMode));
-            result.setVolunteerIds(Lists.newArrayList(volunteerIds));
-            result.setStableOrder(stableOrder);
-            result.setCurrent(true);
-            result.setLocked(locked);
-            result.setPinned(pinned);
-            result.setEligible(true);
-            result.setTier(candidates.isEmpty() ? null : candidates.get(0).getTier());
-            result.setCoverageObjectiveIds(matchedCoverageIds(candidates, coverage));
-            result.setPriorityMatched(priorityRule != null && candidates.stream()
-                    .anyMatch(candidate -> PriorityRuleSupport.matches(candidate, priorityRule)));
-            return result;
         }
     }
 

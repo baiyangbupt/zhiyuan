@@ -1,7 +1,7 @@
 # J5.3 solver 切流前检查单与回滚手册（2026-10-18）
 
-状态：**实现完成、复审修复完成、默认 shadow-only**。本文只覆盖 J5.3
-staged solver 的灰度/回滚，不改变产品口径。
+状态：**已全量切流，旧 solver 已删除（2026-10-19）**。本文保留灰度/验收记录；
+第 1、5 节的旧开关与回滚路径已不再适用，现行口径见第 9 节。
 
 关联文档：
 
@@ -13,16 +13,15 @@ staged solver 的灰度/回滚，不改变产品口径。
 
 | 开关 | 默认 | 作用 |
 |---|---|---|
-| `solver.v2.shadow` | 关 | 旧 solver 生效，新 solver 只记录差异；异常吞掉 |
-| `solver.v2.paths` | 空 | 逗号列表：`fill,initial,add,remove,replace,scope,refill` |
+| ~~`solver.v2.shadow`~~ | 已删除 | 旧 solver 与 shadow 对比已移除 |
+| ~~`solver.v2.paths`~~ | 已删除 | 所有路径无条件走 staged solver |
 | `solver.v2.diversity` | 关 | P4 多样性 soft 阶段；默认 off，不影响 digest |
-| ~~`planning.user-goal.freeze-apply.enabled`~~ | 已删除 | 现在预览无条件冻结、apply 只回放 |
+| ~~`planning.user-goal.freeze-apply.enabled`~~ | 已删除 | 预览无条件冻结、apply 只回放 |
 
-当前运行时：`-Dsolver.v2.shadow=true`，`solver.v2.paths` 与 freeze 均关闭
-（Java pid 12938，2026-10-18 23:00）。
-
-切流顺序建议：`shadow` → `fill` → `initial` → `add/remove/replace/scope`
-→ `refill` → `freeze-apply` → 默认值。每一步单独观察、单独回滚。
+2026-10-19 起 `fill / initial / add / remove / replace / scope / refill`
+全部走 staged solver；旧 greedy refill、旧 canonical solverVersion 精确回退、
+shadow/path 灰度已删除。运行时无需再带 `solver.v2.*` 参数（启动脚本即使
+保留也会被忽略）。
 
 ## 2. 已通过的验收
 
@@ -107,16 +106,16 @@ STAGED_SOLVER_GOLDEN_FILES="/path/state.json[|/path/pool.json],..." \
 
 ## 5. 回滚
 
-1. 去掉 `solver.v2.paths` 对应项（或整个参数），重启 Java。
-2. freeze 已开启时，未确认的 pending：
-   - 有 `frozenProposal`：去掉 freeze flag 后走旧“重新生成再应用”路径；
-   - 无 `frozenProposal`：按旧 pending 兼容逻辑处理。
-   已 apply 的会话不回滚方案，只回退后续执行路径。
-3. 恢复验收时改动的会话：用第 4 节的 HEX 备份执行
+旧 solver 类与 `PlanSolverInputDTO` 已删除，**不能再通过开关回退**。
+需要回滚时只能部署删除前的 jar（`bfb3200` 及之前的灰度版本），且：
+
+1. 新预览的 pending 带 `frozenProposal`/`hardObjectiveVersion`，旧 jar
+   不会使用冻结负载；跨版本回滚应作废旧 pending 后重新预览。
+2. 已 apply 的会话不回滚方案，只回退后续执行路径。
+3. 恢复验收时改动的会话：用第 4 节 HEX 备份执行
    `UPDATE ... SET data_value=CONVERT(UNHEX('...') USING utf8mb4) ...`，
    并删除该会话的 pending 行。
-4. 健康检查：`/gaotu-assistant-bot/inner/ops/health` 200，确认 cmdline 只剩
-   `-Dsolver.v2.shadow=true`。
+4. 健康检查：`/gaotu-assistant-bot/inner/ops/health` 200。
 
 ## 6. 本次真栈改动记录
 
@@ -192,3 +191,32 @@ turn.completed`，`executionStatus=completed`、`runtimeStatus=native`。只读�
     旧 jar 使用；跨版本回滚应保留 pending 或重新预览。
 - agent 18291 已于 2026-10-19 重启（pid 914，health 200），
   gateway `hardObjectiveVersion` 透传已激活。
+
+## 9. 全量切流 + 旧 solver 删除（2026-10-19）
+
+按用户拍板“旧框架未上线，直接删除，不做回滚/兼容”：
+
+- `CanonicalPlanningRuntime.enforceSelection` 无条件走
+  `CandidateSnapshotBuilder → PlanningObjectiveCompiler.enrichV2 →
+  StagedDeterministicPlanSolver`；`enforceOrdering` 改用纯
+  `PlanOrderingEngine`（同档命中前置、pinned 冲突 409）。
+- `UserGoalProposalBuilder` 删除 `PLAN_SOLVER`、`capSolverCandidatePool`、
+  `buildSolverInput`；fill/add/remove/replace/scope 全部 staged；
+  PRIORITIZE 用 `PlanOrderingEngine`。
+- `PlanningStateService` refill 删除 greedy 回退
+  （`refillWorkingPlanByTier`/`addAutoSelectedByTier`/`canAutoSelectCandidate`）；
+  staged 无法补足时返回 false、不写状态。
+- `RepairProposalApplyPolicy` / `UnifiedPlanPostconditionValidator`：
+  canonical 提案强制要求两侧 `hardObjectiveVersion` + objective digest +
+  提案↔冻结 solverResult 绑定；scope-only 提案按设计跳过。旧精确
+  `solverVersion`/`solverInputDigest` 回退已删除。
+- 删除 `OjalgoDeterministicPlanSolver`、`DeterministicPlanSolver`、
+  `PlanSolverInputDTO`、`SolverShadowSupport` 及对应旧测试；
+  `solver.v2.shadow` / `solver.v2.paths` 开关退役，仅保留
+  `solver.v2.diversity`（`SolverFeatureFlags`，默认 off）。
+- `PlanningObjectiveCompiler.freezeDigest` 的 tier resolution
+  `solverVersion` 改记 staged 版本。
+
+验收：全量 Java **1274 tests / 0 failures / 0 errors / 9 skipped**。
+排序口径补充：同档内命中优先规则 → 当前方案条目（保持相对顺序）→
+新增条目（按 stableOrder），避免一次补齐把用户现有顺序整体按分数重排。

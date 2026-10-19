@@ -103,7 +103,7 @@ final class PlanningObjectiveCompiler {
         source.setMutationPolicy(policy);
         // P4 灰度：仅在显式开启时写入 soft 策略；默认保持 null（off）。
         // diversityPolicy 不在 digest 白名单内，冻结值不受影响。
-        if (SolverShadowSupport.diversityEnabled()) {
+        if (SolverFeatureFlags.diversityEnabled()) {
             DiversityPolicyDTO diversity = new DiversityPolicyDTO();
             diversity.setMode("soft");
             source.setDiversityPolicy(diversity);
@@ -346,7 +346,7 @@ final class PlanningObjectiveCompiler {
         if (objectiveSet.getTierAllocationResolution() != null) {
             objectiveSet.getTierAllocationResolution().setObjectiveDigest(objectiveDigest);
             objectiveSet.getTierAllocationResolution().setSolverVersion(
-                    OjalgoDeterministicPlanSolver.SOLVER_VERSION);
+                    StagedDeterministicPlanSolver.SOLVER_VERSION);
         }
     }
 

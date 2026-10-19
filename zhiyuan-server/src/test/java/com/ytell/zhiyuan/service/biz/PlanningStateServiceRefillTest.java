@@ -1,22 +1,19 @@
 package com.ytell.zhiyuan.service.biz;
 
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
-import com.ytell.zhiyuan.model.dto.planning.DraftPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import org.junit.jupiter.api.Test;
-
-import java.util.List;
-import java.util.Map;
+import org.mockito.Mockito;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 约束生效后的"补足"（`refillWorkingPlanByTier`）。
+ * 约束生效后的"补足"：分阶段 solver 是唯一路径，不存在 legacy 贪心回退。
  *
  * <p>背景（2026-09-25 真栈实测）：约束路只有"同步"（删掉不合规的 ✗），没有"补足"——
  * 于是一次筛空就再也回不来（工作方案成 0 行后，此后任何重生成都从空方案出发 ✗）。
@@ -27,65 +24,14 @@ public class PlanningStateServiceRefillTest {
     private final PlanningStateService service = new PlanningStateService();
 
     @Test
-    void shouldAppendUntilTierTargetsAreMet() {
-        DraftPlanStateDTO draft = new DraftPlanStateDTO();
-        draft.getItems().add(item("v-existing", "冲"));
-        List<CandidateItemDTO> candidates = Lists.newArrayList(
-                candidate("v-sprint", "冲"), candidate("v-stable", "稳"), candidate("v-protect", "保"));
-        Map<String, Integer> targets = Maps.newHashMap();
-        targets.put("冲", 2);
-        targets.put("稳", 1);
-
-        service.refillWorkingPlanByTier(draft, candidates, targets);
-
-        assertEquals(3, draft.getItems().size());
-        assertEquals(2, countTier(draft, "冲"));
-        assertEquals(1, countTier(draft, "稳"));
-        assertEquals(0, countTier(draft, "保"), "没给目标的档位不补");
-        assertEquals("v-existing", draft.getItems().get(0).getVolunteerId(), "已有条目不动、且仍在最前");
-    }
-
-    @Test
-    void shouldSkipAlreadySelectedAndBannedCandidates() {
-        DraftPlanStateDTO draft = new DraftPlanStateDTO();
-        draft.getItems().add(item("v-existing", "冲"));
-        draft.getBannedVolunteerIds().add("v-banned");
-        List<CandidateItemDTO> candidates = Lists.newArrayList(
-                candidate("v-banned", "冲"), candidate("v-new", "冲"), candidate("v-existing", "冲"));
-        Map<String, Integer> targets = Maps.newHashMap();
-        targets.put("冲", 3);
-
-        service.refillWorkingPlanByTier(draft, candidates, targets);
-
-        assertEquals(2, countTier(draft, "冲"), "已禁的不补、已选的不重复");
-        assertTrue(draft.getItems().stream().anyMatch(row -> "v-new".equals(row.getVolunteerId())));
-        assertTrue(draft.getItems().stream().noneMatch(row -> "v-banned".equals(row.getVolunteerId())));
-    }
-
-    @Test
-    void shouldLeavePlanUntouchedWhenNoTierTargets() {
-        DraftPlanStateDTO draft = new DraftPlanStateDTO();
-        draft.getItems().add(item("v-existing", "冲"));
-
-        service.refillWorkingPlanByTier(draft, Lists.newArrayList(candidate("v-sprint", "冲")),
-                Maps.newHashMap());
-
-        assertEquals(1, draft.getItems().size());
-    }
-
-    @Test
     void stagedRefillAppendsOnlyMissingTierItems() {
-        PlanningStateDTO state = new PlanningStateDTO();
+        PlanningStateDTO state = stateWithSingleExistingSprintItem();
         CandidatePoolStateDTO pool = state.getCandidatePoolState();
-        pool.setVolunteerModel("major");
         pool.setRequiredCount(2);
-        pool.setRequiredTierCounts(Maps.newHashMap());
         pool.getRequiredTierCounts().put("冲", 2);
-        CandidateItemDTO existing = candidate("v-existing", "冲");
+        CandidateItemDTO existing = pool.getItems().get(0);
         CandidateItemDTO missing = candidate("v-new", "冲");
-        pool.setItems(Lists.newArrayList(existing, missing));
-        DraftItemDTO draftItem = item("v-existing", "冲");
-        state.getWorkingPlanState().getItems().add(draftItem);
+        pool.getItems().add(missing);
 
         boolean applied = service.refillWithStagedSolver(
                 state, 1L, 1L, Lists.newArrayList(existing, missing), pool);
@@ -96,8 +42,65 @@ public class PlanningStateServiceRefillTest {
                 .anyMatch(row -> "v-new".equals(row.getVolunteerId())));
     }
 
-    private static int countTier(DraftPlanStateDTO draft, String tier) {
-        return (int) draft.getItems().stream().filter(row -> tier.equals(row.getTier())).count();
+    /**
+     * 旧路径/灰度门控已删除：补足无条件走分阶段 solver，没有 greedy 回退。
+     */
+    @Test
+    void applyTierTargetRefillAlwaysUsesStagedSolver() {
+        PlanningStateService spy = Mockito.spy(new PlanningStateService());
+        PlanningStateDTO state = stateWithSingleExistingSprintItem();
+        CandidatePoolStateDTO pool = state.getCandidatePoolState();
+        pool.setRequiredCount(2);
+        pool.getRequiredTierCounts().put("冲", 2);
+        pool.getItems().add(candidate("v-new", "冲"));
+
+        Mockito.doReturn(true).when(spy).refillWithStagedSolver(
+                Mockito.same(state), Mockito.isNull(), Mockito.isNull(),
+                Mockito.anyList(), Mockito.same(pool));
+
+        boolean applied = spy.applyTierTargetRefill(state, null, null);
+
+        assertTrue(applied, "staged solver result should drive the refill");
+        Mockito.verify(spy).refillWithStagedSolver(
+                Mockito.same(state), Mockito.isNull(), Mockito.isNull(),
+                Mockito.anyList(), Mockito.same(pool));
+    }
+
+    /** solver 返回 false（已无缺口）时：补足返回 false，工作方案保持不变、不写盘。 */
+    @Test
+    void applyTierTargetRefillReturnsFalseAndLeavesPlanUnchangedWhenNoGap() {
+        PlanningStateDTO state = stateWithSingleExistingSprintItem();
+        state.getCandidatePoolState().getRequiredTierCounts().put("冲", 1);
+
+        boolean applied = service.applyTierTargetRefill(state, null, null);
+
+        assertFalse(applied, "no gap means nothing was applied");
+        assertEquals(1, state.getDraftPlanState().getItems().size());
+        assertEquals("v-existing", state.getDraftPlanState().getItems().get(0).getVolunteerId());
+        assertTrue(state.getDraftPlanState().getUnits().isEmpty());
+    }
+
+    /** solver 无法达到目标（候选不足）：返回 false，不做 legacy 贪心兜底，工作方案原样返回。 */
+    @Test
+    void applyTierTargetRefillReturnsFalseWithoutLegacyFallbackWhenSolverCannotReachTarget() {
+        PlanningStateDTO state = stateWithSingleExistingSprintItem();
+        state.getCandidatePoolState().getRequiredTierCounts().put("冲", 2);
+
+        boolean applied = service.applyTierTargetRefill(state, null, null);
+
+        assertFalse(applied, "staged solver cannot satisfy the target");
+        assertEquals(1, state.getDraftPlanState().getItems().size(),
+                "no legacy greedy rows may be added");
+        assertEquals("v-existing", state.getDraftPlanState().getItems().get(0).getVolunteerId());
+    }
+
+    private static PlanningStateDTO stateWithSingleExistingSprintItem() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        CandidatePoolStateDTO pool = state.getCandidatePoolState();
+        pool.setItems(Lists.newArrayList(candidate("v-existing", "冲")));
+        DraftItemDTO draftItem = item("v-existing", "冲");
+        state.getWorkingPlanState().getItems().add(draftItem);
+        return state;
     }
 
     private static DraftItemDTO item(String volunteerId, String tier) {

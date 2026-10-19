@@ -71,7 +71,7 @@ class CanonicalPlanningRuntimeTest {
     }
 
     @Test
-    void shouldUseCanonicalTargetCountForPersistedRanges() {
+    void shouldResolvePersistedRangesWithStagedSelection() {
         PlanningStateDTO state = state("major", 48);
         state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(3);
         CandidateItemDTO sprint = candidate("v1", "u1", "数学", "冲", "北京", 90D);
@@ -91,10 +91,30 @@ class CanonicalPlanningRuntimeTest {
         PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
                 state, state.getCandidatePoolState().getItems());
 
-        assertEquals("no_change", result.getStatus());
+        assertEquals("ready", result.getStatus());
+        assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION, result.getSolverVersion());
         assertEquals(Integer.valueOf(1), result.getResolvedTierCounts().getSprintCount());
         assertEquals(3, result.getObjectiveResults().stream()
                 .filter(item -> "tier_range".equals(item.getObjectiveType())).count());
+    }
+
+    @Test
+    void shouldAlwaysUseStagedSelectionWithVersionAndDigest() {
+        PlanningStateDTO state = state("major", 48);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(2);
+        CandidateItemDTO current = candidate("v1", "u1", "数学", "稳", "北京", 90D);
+        CandidateItemDTO addition = candidate("v2", "u2", "法学", "保", "上海", 89D);
+        state.getCandidatePoolState().setItems(Arrays.asList(current, addition));
+        state.getWorkingPlanState().getItems().add(draft(current, false));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                state, state.getCandidatePoolState().getItems());
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION, result.getSolverVersion());
+        assertEquals(64, result.getInputDigest().length());
+        assertEquals(Arrays.asList("v1", "v2"), result.getSelectedEntityIds());
+        assertEquals(Arrays.asList("v1", "v2"), result.getOrderedEntityIds());
     }
 
     @Test
@@ -139,6 +159,45 @@ class CanonicalPlanningRuntimeTest {
         assertEquals(result.getOrderedEntityIds(), state.getOrderedPlanState().getItems().stream()
                 .map(OrderedItemDTO::getVolunteerId).collect(Collectors.toList()));
         assertEquals("hard_priority_rank_before", state.getOrderedPlanState().getItems().get(0).getOrderReason());
+    }
+
+    @Test
+    void shouldOrderDeterministicallyThroughPlanOrderingEngine() {
+        PlanSolverResultDTO first = orderByShanghaiPriority();
+        PlanSolverResultDTO second = orderByShanghaiPriority();
+
+        assertEquals(Arrays.asList("v1", "v2", "v3", "v4"), first.getSelectedEntityIds());
+        assertEquals(Arrays.asList("v2", "v4", "v1", "v3"), first.getOrderedEntityIds());
+        assertEquals(first.getOrderedEntityIds(), second.getOrderedEntityIds());
+        assertEquals(first.getInputDigest(), second.getInputDigest());
+        assertEquals("ready", first.getStatus());
+        assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION, first.getSolverVersion());
+        assertEquals(1, first.getObjectiveResults().size());
+        PlanSolverResultDTO.ObjectiveResultDTO priority = first.getObjectiveResults().get(0);
+        assertEquals("priority:0", priority.getObjectiveId());
+        assertEquals("priority_within_tier", priority.getObjectiveType());
+        assertEquals(Integer.valueOf(0), priority.getActualCount());
+        assertTrue(priority.getSatisfied());
+    }
+
+    @Test
+    void shouldReportNoChangeWhenPriorityOrderAlreadySatisfied() {
+        PlanningStateDTO state = state("major", 2);
+        CandidateItemDTO matched = candidate("v1", "u1", "法学", "稳", "上海", 90D);
+        CandidateItemDTO other = candidate("v2", "u2", "数学", "稳", "北京", 89D);
+        List<CandidateItemDTO> candidates = Arrays.asList(matched, other);
+        state.getCandidatePoolState().setItems(candidates);
+        state.getOrderedPlanState().getItems().add(ordered(matched));
+        state.getOrderedPlanState().getItems().add(ordered(other));
+        PriorityRuleSupport.persist(state, Arrays.asList(priority("上海")));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceOrdering(state, candidates);
+
+        assertEquals("no_change", result.getStatus());
+        assertEquals(Arrays.asList("v1", "v2"), result.getOrderedEntityIds());
+        assertEquals(Integer.valueOf(0), result.getObjectiveResults().get(0).getActualCount());
+        assertEquals(Arrays.asList("v1", "v2"), state.getOrderedPlanState().getItems().stream()
+                .map(OrderedItemDTO::getVolunteerId).collect(Collectors.toList()));
     }
 
     @Test
@@ -385,6 +444,21 @@ class CanonicalPlanningRuntimeTest {
         assertTrue(error.getMessage().contains("solver_frozen_candidate_missing"));
         assertEquals(Arrays.asList("v1", "v2"), state.getWorkingPlanState().getItems().stream()
                 .map(DraftItemDTO::getVolunteerId).collect(Collectors.toList()));
+    }
+
+    private PlanSolverResultDTO orderByShanghaiPriority() {
+        PlanningStateDTO state = state("major", 4);
+        CandidateItemDTO v1 = candidate("v1", "u1", "数学", "稳", "北京", 90D);
+        CandidateItemDTO v2 = candidate("v2", "u2", "法学", "稳", "上海", 89D);
+        CandidateItemDTO v3 = candidate("v3", "u3", "金融学", "稳", "天津", 88D);
+        CandidateItemDTO v4 = candidate("v4", "u4", "会计学", "稳", "上海", 87D);
+        List<CandidateItemDTO> candidates = Arrays.asList(v1, v2, v3, v4);
+        state.getCandidatePoolState().setItems(candidates);
+        for (CandidateItemDTO candidate : candidates) {
+            state.getOrderedPlanState().getItems().add(ordered(candidate));
+        }
+        PriorityRuleSupport.persist(state, Arrays.asList(priority("上海")));
+        return CanonicalPlanningRuntime.enforceOrdering(state, candidates);
     }
 
     private PlanningStateDTO state(String volunteerModel, int targetCount) {

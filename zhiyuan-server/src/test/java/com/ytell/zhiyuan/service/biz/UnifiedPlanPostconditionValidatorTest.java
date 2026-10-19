@@ -235,9 +235,60 @@ class UnifiedPlanPostconditionValidatorTest {
     /**
      * 覆盖约束同理：生成侧 `mergedCoverage(state, request)` 总会带上已确认覆盖，
      * 报告侧只遍历请求就会漏掉 `coverage:0` → 40905。请求没重复浙江≥2 时也要报。
+     * canonical 元数据完整（两侧 digest + hardObjectiveVersion）时正常通过。
      */
     @Test
-    void shouldReportPersistedCoverageRequirementWhenRequestOmitsRequirements() {
+    void shouldReportPersistedCoverageRequirementWhenCanonicalMetadataIsComplete() {
+        PlanningStateDTO state = coverageState();
+        Fixture fixture = coverageFixture(state, "solver-hard-objective-v1.2");
+
+        PlanChangePostconditionReportDTO report = validator.validate(
+                fixture.request, fixture.state, fixture.applyResult);
+
+        assertTrue(report.getSatisfied());
+        assertEquals(Integer.valueOf(1), report.getRequirementCount());
+        // validateCanonicalObjectiveResults 通过后用 frozen 列表回填报告，
+        // 所以这里只剩冻结结果本身（coverage:0）。
+        assertEquals("coverage:0", report.getObjectiveResults().get(0).getObjectiveId());
+        assertTrue(report.getObjectiveResults().get(0).getSatisfied());
+    }
+
+    /**
+     * 旧测试曾靠 solverVersion/solverInputDigest 精确相等、无 hardObjectiveVersion 也能成功
+     * （legacy 回退）。staged solver 是唯一框架后 hardObjectiveVersion 强制：缺失即 40905。
+     */
+    @Test
+    void shouldFailCanonicalPostconditionWhenHardObjectiveVersionIsMissing() {
+        PlanningStateDTO state = coverageState();
+        Fixture fixture = coverageFixture(state, null);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> validator.validate(fixture.request, fixture.state, fixture.applyResult));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, error.getStatus());
+        assertTrue(error.getMessage().contains("canonical frozen result metadata mismatch"));
+    }
+
+    /** scope-only 提案（无 canonical objective 元数据）：canonical 校验整体跳过。 */
+    @Test
+    void shouldSkipCanonicalChecksForScopeOnlyProposal() {
+        PlanningStateDTO state = coverageState();
+        Fixture fixture = coverageFixture(state, null);
+        fixture.request.getProposalApply().setCanonicalObjectiveDigest(null);
+        fixture.request.getProposalApply().setSolverVersion(null);
+        fixture.request.getProposalApply().setSolverInputDigest(null);
+        fixture.applyResult.getProposal().setCanonicalObjectiveDigest(null);
+        fixture.applyResult.getProposal().setSolverVersion(null);
+        fixture.applyResult.getProposal().setSolverInputDigest(null);
+        fixture.applyResult.getProposal().setSolverResult(null);
+
+        PlanChangePostconditionReportDTO report = validator.validate(
+                fixture.request, fixture.state, fixture.applyResult);
+
+        assertTrue(report.getSatisfied());
+    }
+
+    private PlanningStateDTO coverageState() {
         PlanningStateDTO state = new PlanningStateDTO();
         state.getCandidatePoolState().setVolunteerModel("major");
         state.getCandidatePoolState().setRequiredCount(2);
@@ -252,7 +303,10 @@ class UnifiedPlanPostconditionValidatorTest {
         coverage.setMinCount(2);
         state.getConstraintState().getHardPlanningObjectives()
                 .setCoverageRequirements(Lists.newArrayList(coverage));
+        return state;
+    }
 
+    private Fixture coverageFixture(PlanningStateDTO state, String hardObjectiveVersion) {
         UserGoalFixProposalReq userGoal = new UserGoalFixProposalReq();
         userGoal.setGoalType("fill_to_count");
         userGoal.setTargetCount(2);
@@ -264,6 +318,7 @@ class UnifiedPlanPostconditionValidatorTest {
         applyReq.setCanonicalObjectiveDigest(digest);
         applyReq.setSolverVersion("sv");
         applyReq.setSolverInputDigest("sid");
+        applyReq.setHardObjectiveVersion(hardObjectiveVersion);
 
         PlanSolverResultDTO frozen = new PlanSolverResultDTO();
         frozen.setStatus("ready");
@@ -286,6 +341,7 @@ class UnifiedPlanPostconditionValidatorTest {
         proposal.setCanonicalObjectiveDigest(digest);
         proposal.setSolverVersion("sv");
         proposal.setSolverInputDigest("sid");
+        proposal.setHardObjectiveVersion(hardObjectiveVersion);
         proposal.setSolverResult(frozen);
         PendingPlanningCommandReq request = new PendingPlanningCommandReq();
         request.setCommandType(PendingPlanningCommandBizService.APPLY_PLAN_CHANGE_PROPOSAL);
@@ -293,20 +349,13 @@ class UnifiedPlanPostconditionValidatorTest {
         FixProposalApplyRes applyRes = new FixProposalApplyRes();
         applyRes.setStatus("applied");
         applyRes.setProposal(proposal);
-
-        PlanChangePostconditionReportDTO report = validator.validate(request, state, applyRes);
-
-        assertTrue(report.getSatisfied());
-        assertEquals(Integer.valueOf(1), report.getRequirementCount());
-        // validateCanonicalObjectiveResults 通过后用 frozen 列表回填报告，
-        // 所以这里只剩冻结结果本身（coverage:0）。
-        assertEquals("coverage:0", report.getObjectiveResults().get(0).getObjectiveId());
-        assertTrue(report.getObjectiveResults().get(0).getSatisfied());
+        return new Fixture(request, state, applyRes);
     }
 
     /**
-     * S4：后置校验与 apply 前策略同判据——两侧都有 hardObjectiveVersion 时，
-     * solverVersion/solverInputDigest 的跨部署漂移不应把已应用的结果判失败。
+     * 后置校验与 apply 前策略同判据：两侧 hardObjectiveVersion major 相同时，
+     * solverVersion/solverInputDigest 的跨部署漂移不应把已应用的结果判失败
+     * （请求↔提案的版本不再比对，绑定只看提案↔冻结结果）。
      */
     @Test
     void shouldAcceptSolverVersionDriftWhenHardObjectiveMajorMatches() {

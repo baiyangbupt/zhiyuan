@@ -1583,6 +1583,7 @@ public class PendingPlanningCommandBizServiceTest {
     private PendingPlanningCommandReq canonicalPlanChangeReq(int targetCount) {
         PendingPlanningCommandReq req = planChangeReq(targetCount);
         req.getProposalApply().setCanonicalObjectiveDigest("objective-digest");
+        req.getProposalApply().setHardObjectiveVersion(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION);
         req.getProposalApply().setSolverVersion("ojalgo-48.4.2-m1");
         req.getProposalApply().setSolverInputDigest("input-digest");
         return req;
@@ -1617,6 +1618,7 @@ public class PendingPlanningCommandBizServiceTest {
         applyReq.setRegenerateOrderedPlan(true);
         applyReq.setRerunReview(true);
         applyReq.setUserGoalRequest(userGoal);
+        applyReq.setHardObjectiveVersion(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION);
         req.setProposalApply(applyReq);
         return req;
     }
@@ -1658,6 +1660,7 @@ public class PendingPlanningCommandBizServiceTest {
         proposal.setProposalSource("user_goal");
         proposal.setStrategy("fill_missing_count");
         proposal.setCanonicalObjectiveDigest("objective-digest");
+        proposal.setHardObjectiveVersion(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION);
         proposal.setSolverVersion("ojalgo-48.4.2-m1");
         proposal.setSolverInputDigest("input-digest");
         proposal.setSolverResult(solverResult);

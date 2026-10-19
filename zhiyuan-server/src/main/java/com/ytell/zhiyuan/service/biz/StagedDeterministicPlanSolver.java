@@ -733,13 +733,25 @@ final class StagedDeterministicPlanSolver {
         }
         List<CandidateFactDTO> result = new ArrayList<CandidateFactDTO>();
         for (List<CandidateFactDTO> bucket : byTier.values()) {
-            List<CandidateFactDTO> matched = new ArrayList<CandidateFactDTO>();
-            List<CandidateFactDTO> other = new ArrayList<CandidateFactDTO>();
+            // 同档内：命中优先规则的前置；其余保持“已在本方案中的条目优先于新增条目”，
+            // 避免一次补齐把用户当前顺序整体按分数重排（组内仍按 stableOrder 稳定）。
+            List<CandidateFactDTO> matchedCurrent = new ArrayList<CandidateFactDTO>();
+            List<CandidateFactDTO> matchedAdded = new ArrayList<CandidateFactDTO>();
+            List<CandidateFactDTO> otherCurrent = new ArrayList<CandidateFactDTO>();
+            List<CandidateFactDTO> otherAdded = new ArrayList<CandidateFactDTO>();
             for (CandidateFactDTO fact : bucket) {
-                (Boolean.TRUE.equals(fact.getPriorityMatched()) ? matched : other).add(fact);
+                boolean matched = Boolean.TRUE.equals(fact.getPriorityMatched());
+                boolean current = Boolean.TRUE.equals(fact.getCurrent());
+                if (matched) {
+                    (current ? matchedCurrent : matchedAdded).add(fact);
+                } else {
+                    (current ? otherCurrent : otherAdded).add(fact);
+                }
             }
-            matched.addAll(other);
-            result.addAll(matched);
+            result.addAll(matchedCurrent);
+            result.addAll(matchedAdded);
+            result.addAll(otherCurrent);
+            result.addAll(otherAdded);
         }
         return result;
     }

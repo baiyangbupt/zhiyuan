@@ -26,27 +26,27 @@ class RepairProposalApplyPolicyTest {
     }
 
     @Test
-    void shouldRejectSolverVersionAndInputDigestMismatchWhenHardObjectiveVersionIsMissing() {
-        // 任一侧缺 hardObjectiveVersion → 维持旧的精确三件套比对（fail-closed）。
-        FixProposalDTO rebuilt = readyProposal();
-        rebuilt.setHardObjectiveVersion(null);
-        FixProposalApplyReq versionMismatch = applyRequest();
-        versionMismatch.setHardObjectiveVersion(null);
-        versionMismatch.setSolverVersion("other-solver");
+    void shouldRejectCanonicalProposalWhenHardObjectiveVersionIsMissingOnEitherSide() {
+        // staged solver 是唯一框架：canonical 提案两侧的 hardObjectiveVersion 都是强制的，
+        // 任一侧缺失即 fail closed（不再回退精确 solverVersion/solverInputDigest 比对）。
+        FixProposalDTO proposalWithoutVersion = readyProposal();
+        proposalWithoutVersion.setHardObjectiveVersion(null);
         assertEquals(409, assertThrows(BusinessException.class,
-                () -> RepairProposalApplyPolicy.validateProposalForApply(versionMismatch, rebuilt)).getStatus());
+                () -> RepairProposalApplyPolicy.validateProposalForApply(
+                        applyRequest(), proposalWithoutVersion)).getStatus());
 
-        FixProposalApplyReq inputMismatch = applyRequest();
-        inputMismatch.setHardObjectiveVersion(null);
-        inputMismatch.setSolverInputDigest("other-input");
+        FixProposalApplyReq requestWithoutVersion = applyRequest();
+        requestWithoutVersion.setHardObjectiveVersion(null);
         assertEquals(409, assertThrows(BusinessException.class,
-                () -> RepairProposalApplyPolicy.validateProposalForApply(inputMismatch, rebuilt)).getStatus());
+                () -> RepairProposalApplyPolicy.validateProposalForApply(
+                        requestWithoutVersion, readyProposal())).getStatus());
     }
 
     @Test
-    void shouldAllowSolverVersionDriftWhenHardObjectiveMajorAndObjectiveDigestMatch() {
-        // S4：部署/回滚导致请求侧 solverVersion 与 inputDigest 不同，但 major 与
-        // objective digest 相同、提案仍与冻结 solverResult 绑定 → 放行。
+    void shouldAllowHardObjectiveMajorDriftAndIgnoreRequestSolverVersion() {
+        // 跨部署/回滚：请求侧 solverVersion/solverInputDigest 与提案不同也不再参与比对；
+        // 判据 = hardObjectiveVersion major 相同 + objective digest 相同 + 提案仍与冻结
+        // solverResult 绑定。
         FixProposalDTO rebuilt = readyProposal();
         rebuilt.setHardObjectiveVersion("solver-hard-objective-v1.2");
         rebuilt.setSolverVersion("ojalgo-48.4.2-m2");
@@ -58,6 +58,18 @@ class RepairProposalApplyPolicyTest {
         request.setSolverInputDigest("input-digest-from-another-deploy");
 
         assertDoesNotThrow(() -> RepairProposalApplyPolicy.validateProposalForApply(request, rebuilt));
+    }
+
+    @Test
+    void shouldAllowCanonicalProposalWithoutRequestSolverVersionOrInputDigest() {
+        // 新契约不再要求请求携带 solverVersion/solverInputDigest：只有 digest +
+        // hardObjectiveVersion 是两侧强制项。
+        FixProposalApplyReq request = applyRequest();
+        request.setSolverVersion(null);
+        request.setSolverInputDigest(null);
+
+        assertDoesNotThrow(() -> RepairProposalApplyPolicy.validateProposalForApply(
+                request, readyProposal()));
     }
 
     @Test
@@ -74,27 +86,6 @@ class RepairProposalApplyPolicyTest {
     }
 
     @Test
-    void shouldKeepExactSolverVersionCheckWhenHardObjectiveVersionIsMissingOnEitherSide() {
-        // 提案侧缺失
-        FixProposalDTO proposalWithoutVersion = readyProposal();
-        proposalWithoutVersion.setHardObjectiveVersion(null);
-        FixProposalApplyReq requestWithVersion = applyRequest();
-        requestWithVersion.setHardObjectiveVersion("solver-hard-objective-v1");
-        requestWithVersion.setSolverVersion("other-solver");
-        assertEquals(409, assertThrows(BusinessException.class,
-                () -> RepairProposalApplyPolicy.validateProposalForApply(
-                        requestWithVersion, proposalWithoutVersion)).getStatus());
-
-        // 请求侧缺失
-        FixProposalApplyReq requestWithoutVersion = applyRequest();
-        requestWithoutVersion.setHardObjectiveVersion(null);
-        requestWithoutVersion.setSolverVersion("other-solver");
-        assertEquals(409, assertThrows(BusinessException.class,
-                () -> RepairProposalApplyPolicy.validateProposalForApply(
-                        requestWithoutVersion, readyProposal())).getStatus());
-    }
-
-    @Test
     void shouldRejectBrokenProposalSolverResultBindingEvenWithCompatibleHardObjective() {
         FixProposalDTO rebuilt = readyProposal();
         rebuilt.setHardObjectiveVersion("solver-hard-objective-v1.2");
@@ -107,16 +98,31 @@ class RepairProposalApplyPolicyTest {
     }
 
     @Test
-    void shouldRejectPartialCanonicalMetadata() {
-        FixProposalApplyReq request = applyRequest();
-        request.setSolverInputDigest(null);
+    void shouldRejectCanonicalProposalWithPartialMetadata() {
+        // 提案仍有 hardObjectiveVersion + solverResult（判定为 canonical），但 digest 缺失
+        // → 元数据不完整，fail closed。
+        FixProposalDTO rebuilt = readyProposal();
+        rebuilt.setCanonicalObjectiveDigest(null);
 
         assertEquals(409, assertThrows(BusinessException.class,
-                () -> RepairProposalApplyPolicy.validateProposalForApply(request, readyProposal())).getStatus());
+                () -> RepairProposalApplyPolicy.validateProposalForApply(applyRequest(), rebuilt)).getStatus());
     }
 
     @Test
-    void shouldAllowLegacyPendingOnlyWhenRequestAndProposalMetadataAreBothAbsent() {
+    void shouldFailClosedWhenProposalOnlyCarriesFrozenResult() {
+        // 有冻结 solverResult 但缺 canonical digest/hardObjectiveVersion：不是 scope-only，
+        // 视为 canonical 元数据不完整，fail closed。
+        FixProposalDTO rebuilt = readyProposal();
+        rebuilt.setCanonicalObjectiveDigest(null);
+        rebuilt.setHardObjectiveVersion(null);
+
+        assertEquals(409, assertThrows(BusinessException.class,
+                () -> RepairProposalApplyPolicy.validateProposalForApply(applyRequest(), rebuilt)).getStatus());
+    }
+
+    @Test
+    void shouldAllowScopeOnlyProposalWithoutCanonicalMetadata() {
+        // scope-only 提案按设计没有 canonical objective 元数据：即使请求也不带，照旧放行。
         FixProposalDTO rebuilt = readyProposal();
         rebuilt.setCanonicalObjectiveDigest(null);
         rebuilt.setSolverVersion(null);

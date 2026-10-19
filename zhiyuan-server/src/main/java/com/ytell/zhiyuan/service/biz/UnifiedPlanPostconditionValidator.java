@@ -517,39 +517,17 @@ class UnifiedPlanPostconditionValidator {
     private PlanSolverResultDTO validateCanonicalFrozenResult(FixProposalApplyReq applyReq,
                                                                PlanningStateDTO state,
                                                                FixProposalDTO proposal) {
-        if (!RepairProposalApplyPolicy.hasCanonicalMetadata(applyReq)) {
+        // 判据与 apply 前 `RepairProposalApplyPolicy.validateCanonicalMetadata` 完全同源：
+        // 提案侧有无 canonical 元数据决定是否校验（scope-only 跳过）；canonical 提案必须
+        // 两侧 digest + hardObjectiveVersion 完整、提案↔冻结结果绑定一致、hard major 相同、
+        // objective digest 相同。没有 legacy 精确版本回退，hardObjectiveVersion 缺失即失败。
+        if (!RepairProposalApplyPolicy.hasCanonicalMetadata(proposal)) {
             return null;
         }
-        PlanSolverResultDTO frozen = proposal == null ? null : proposal.getSolverResult();
-        // S4：与 apply 前的 `RepairProposalApplyPolicy.validateCanonicalMetadata` 同判据——
-        // 两侧都有 hardObjectiveVersion 时只要求 major 相同 + objective digest 相同；
-        // solverInputDigest/solverVersion 只保留在提案与冻结 solverResult 之间。
-        // 任一侧缺失则回退旧的精确三件套比对。
-        boolean hardObjectivePresent = proposal != null
-                && !Strings.isNullOrEmpty(applyReq.getHardObjectiveVersion())
-                && !Strings.isNullOrEmpty(proposal.getHardObjectiveVersion());
-        boolean requestMetadataMatches;
-        if (hardObjectivePresent) {
-            requestMetadataMatches = RepairProposalApplyPolicy.hardObjectiveMajor(
-                    applyReq.getHardObjectiveVersion()).equals(
-                    RepairProposalApplyPolicy.hardObjectiveMajor(proposal.getHardObjectiveVersion()))
-                    && Objects.equals(applyReq.getCanonicalObjectiveDigest(),
-                    proposal.getCanonicalObjectiveDigest());
-        } else {
-            requestMetadataMatches = Objects.equals(applyReq.getCanonicalObjectiveDigest(),
-                    proposal == null ? null : proposal.getCanonicalObjectiveDigest())
-                    && Objects.equals(applyReq.getSolverVersion(),
-                    proposal == null ? null : proposal.getSolverVersion())
-                    && Objects.equals(applyReq.getSolverInputDigest(),
-                    proposal == null ? null : proposal.getSolverInputDigest());
-        }
-        boolean metadataMatches = proposal != null && frozen != null
-                && requestMetadataMatches
-                && Objects.equals(proposal.getSolverVersion(), frozen.getSolverVersion())
-                && Objects.equals(proposal.getSolverInputDigest(), frozen.getInputDigest());
-        if (!metadataMatches) {
+        if (!RepairProposalApplyPolicy.canonicalMetadataMatches(applyReq, proposal)) {
             throw failed("canonical frozen result metadata mismatch");
         }
+        PlanSolverResultDTO frozen = proposal.getSolverResult();
         CanonicalPlanningObjectiveSetDTO persistedObjectives;
         try {
             persistedObjectives = PlanningObjectiveCompiler.compileConfirmed(state);
