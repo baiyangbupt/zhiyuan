@@ -6,6 +6,10 @@ import lombok.Data;
 public class FixProposalApplyReq {
     private String proposalId;
     private String proposalSource = "review_check";
+    /** J5.5b：审查修复确认时回传的冻结摘要（与 pending.dataValue 逐字比对）。 */
+    private String commandDigest;
+    private String previewDigest;
+    private String evaluationVersion;
     private Integer sourceVersionGuard;
     private Boolean regenerateOrderedPlan = true;
     private Boolean rerunReview = true;

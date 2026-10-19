@@ -79,7 +79,9 @@ from app.util.structured_log import log_event
 
 logger = logging.getLogger(__name__)
 
-_PLAN_PENDING_KINDS = {"plan_mutation", "plan_generation"}
+# J5.5b：`plan_change_proposal` 是 review-fix prepare 产出的 pending kind，
+# 与旧 plan_mutation 一样属于方案动作（同轮确认后需要刷新 ordered/review）。
+_PLAN_PENDING_KINDS = {"plan_mutation", "plan_generation", "plan_change_proposal"}
 _SUPPORTED_PENDING_KINDS = {"intent_change", *_PLAN_PENDING_KINDS}
 
 
@@ -473,6 +475,13 @@ def _compact_tool_return_content(content: Any) -> str:
         "success",
     )
     compacted = {key: parsed.get(key) for key in keys if parsed.get(key) is not None}
+    # J5.5b：只读审查修复预览不建 pending，确认回合要靠这份候选（proposalId +
+    # 冻结摘要）调 prepare。它是小对象，裁剪时必须原样保留，否则历史一压缩
+    # 用户再点"确认"就永远找不到可确认的提案。
+    data = parsed.get("data") if isinstance(parsed.get("data"), dict) else {}
+    candidate = data.get("review_fix_prepare_candidate")
+    if isinstance(candidate, dict):
+        compacted["review_fix_prepare_candidate"] = candidate
     if not compacted:
         return "[工具结果已裁剪：原结果过长]"
     compacted["_truncated"] = True
@@ -3166,7 +3175,7 @@ def _direct_confirm_workspace_refresh_targets(confirm_result: dict[str, Any]) ->
         return []
     kind = str(data.get("kind") or "").strip()
     result = data.get("result") if isinstance(data.get("result"), dict) else {}
-    if kind in {"plan_mutation", "plan_generation"}:
+    if _is_plan_pending_kind(kind):
         return ["ordered", "review"]
     if kind == "intent_change" and result.get("plan_regenerated") is True:
         return ["ordered", "review"]
@@ -6935,6 +6944,10 @@ class ChatService:
         on_progress: ProgressCallback | None,
     ) -> str | ChatServiceResponseEnvelope:
         direct_started_at = time.monotonic()
+        # J5.5b：短文本确认桥用 SimpleNamespace(deps=request_context) 直接调工具，
+        # 没有 RunContext.messages；把本轮运行时历史挂到上下文，供确认回合从
+        # 上一轮 preview_plan_change 的回包里取冻结候选。
+        request_context.agent_messages = message_history
         active_pending = resolve_pending_confirmation(request_context)
         short_pending_action = (
             _pending_short_text_action(content)

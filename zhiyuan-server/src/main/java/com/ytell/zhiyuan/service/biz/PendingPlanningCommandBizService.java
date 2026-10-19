@@ -87,10 +87,11 @@ public class PendingPlanningCommandBizService {
         validate(tenantId, chatSessionId, req);
         PendingConfirmationEntity pending = validatePendingOwner(tenantId, chatSessionId, req);
         Map<String, Object> frozenCommand = frozenCommand(pending);
+        Map<String, Object> pendingData = pendingData(pending);
         // 确认内容绑定：篡改比较必须在 replay/requestDigest 之前，否则会被 40903 截走。
-        if (frozenCommand != null) {
-            assertRequestMatchesFrozen(req, frozenCommand);
-        }
+        // review_check 的 apply_plan_change_proposal 没有 frozenCommand，但仍有
+        // commandDigest/previewDigest/evaluationVersion 需要与 pending 比对——不能早退。
+        assertRequestMatchesFrozen(req, frozenCommand, pendingData);
         PlanningPendingCommandEntity existing = commandSharedService.getByOperationId(req.getOperationId());
         if (existing != null) {
             return replay(existing, tenantId, chatSessionId, req);
@@ -98,9 +99,7 @@ public class PendingPlanningCommandBizService {
 
         pending = validatePendingOwner(tenantId, chatSessionId, req);
         frozenCommand = frozenCommand(pending);
-        if (frozenCommand != null) {
-            assertRequestMatchesFrozen(req, frozenCommand);
-        }
+        assertRequestMatchesFrozen(req, frozenCommand, pendingData(pending));
         extraDataSharedService.lockBySessionIdAndDataKey(
                 chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         existing = commandSharedService.getByOperationId(req.getOperationId());
@@ -436,9 +435,21 @@ public class PendingPlanningCommandBizService {
     /**
      * 确认内容绑定：调用方只带 5 个字段时容忍空；一旦带了命令字段，就必须与 frozen 一致。
      * 该比较在 replay/requestDigest 之前执行，篡改统一回 40908。
+     *
+     * <p>apply_plan_change_proposal 走单独的摘要比对：review_check 的 pending 把
+     * commandDigest/previewDigest/evaluationVersion 放在 dataValue 顶层（没有 frozenCommand），
+     * 所以这里**不能**因为 frozen 为 null 就早退。</p>
      */
-    private void assertRequestMatchesFrozen(PendingPlanningCommandReq req, Map<String, Object> frozen) {
-        if (req == null || frozen == null) {
+    private void assertRequestMatchesFrozen(PendingPlanningCommandReq req, Map<String, Object> frozen,
+                                            Map<String, Object> pendingData) {
+        if (req == null) {
+            return;
+        }
+        if (APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())) {
+            assertPlanChangeProposalMatchesFrozen(req.getProposalApply(), pendingData);
+            return;
+        }
+        if (frozen == null) {
             return;
         }
         if (ADD_UNITS.equals(req.getCommandType())) {
@@ -506,6 +517,43 @@ public class PendingPlanningCommandBizService {
                 && !req.getRerunReview().equals(Boolean.TRUE.equals(frozen.get("rerunReview")))) {
             throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
                     "command content mismatch: rerunReview");
+        }
+    }
+
+    /**
+     * review_check 的冻结摘要绑定。user_goal pending 没有这些键（请求也不带），
+     * 两侧都为空时放行；只要一侧有值就必须逐字相等。
+     */
+    private void assertPlanChangeProposalMatchesFrozen(FixProposalApplyReq applyReq,
+                                                       Map<String, Object> pendingData) {
+        if (applyReq == null || pendingData == null
+                || !RepairProposalTaxonomy.isReviewCheckSource(applyReq.getProposalSource())) {
+            return;
+        }
+        assertFrozenValue(pendingData, "commandDigest", applyReq.getCommandDigest());
+        assertFrozenValue(pendingData, "previewDigest", applyReq.getPreviewDigest());
+        assertFrozenValue(pendingData, "evaluationVersion", applyReq.getEvaluationVersion());
+    }
+
+    private void assertFrozenValue(Map<String, Object> pendingData, String key, String requested) {
+        Object frozen = pendingData.get(key);
+        if (frozen == null && requested == null) {
+            return;
+        }
+        if (frozen == null || requested == null || !String.valueOf(frozen).equals(requested)) {
+            throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
+                    "command content mismatch: " + key);
+        }
+    }
+
+    private Map<String, Object> pendingData(PendingConfirmationEntity pending) {
+        if (pending == null || Strings.isNullOrEmpty(pending.getDataValue())) {
+            return null;
+        }
+        try {
+            return JSONObject.parseObject(pending.getDataValue());
+        } catch (Exception ex) {
+            return null;
         }
     }
 

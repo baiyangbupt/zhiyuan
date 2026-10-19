@@ -179,6 +179,10 @@ class RequestContext:
     confirmation_entry: str = ""  # "card" | "short_text"，仅用于审计和执行链路观测
     stale_pending_notice: str = ""  # 本轮开始时失效的待确认操作提示，供模型重新生成预览而不是复述旧确认
     dry_run_state_mutations: bool = False  # Shadow/评估链路只观测工具选择，不写入或执行状态变更
+    # 本轮可用的 pydantic-ai 消息历史。直连短文本确认桥用 SimpleNamespace(deps=ctx)
+    # 调工具、拿不到 RunContext.messages；J5.5b 需要从上一轮 preview 的工具回包里
+    # 取回冻结候选，所以由 ChatService 在路由前补这份历史。
+    agent_messages: list[Any] | None = None
 
 
 def resolve_pending_confirmation(deps: Any) -> "PendingConfirmation | None":

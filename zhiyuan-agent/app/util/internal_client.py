@@ -1258,6 +1258,51 @@ async def prepare_user_goal_planning_fix_proposals(
     )
 
 
+async def preview_review_fix_proposals(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+) -> Dict[str, Any]:
+    """J5.5b：只读审查修复预览（不建 pending、不推进方案版本）。
+
+    返回 `ReviewFixPreviewDTO`：status/sourceVersion/review/proposals。只有
+    `requiresConfirmation=true` 且带 commandDigest/previewDigest 的 proposal
+    才能进入确认回合的 prepare。
+    """
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/fix-proposals/preview"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data={},
+        error_msg="生成审查修复预览失败",
+    )
+
+
+async def prepare_review_fix_proposal(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    *,
+    request_id: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """J5.5b：把**只读**的审查修复预览冻结成 pending（唯一写入口的第一段）。
+
+    与旧 `apply_planning_fix_proposal` 的区别：apply 直连在 J5.5b 起对
+    `review_check` 返回 409 `review_fix_requires_pending`；审查修复必须先走这里，
+    由 Java 重新定位 proposalId 对应的唯一 command、复算 previewDigest 并落
+    pending（dataValue 里带 operationId/冻结字段）。`requestId` 是幂等键：
+    同一 requestId + 同内容重放返回同一个 pendingId/operationId，不生成第二份预览。
+    """
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/fix-proposals/review/prepare"
+            f"?chatSessionId={chat_session_id}&requestId={request_id}"
+        ),
+        json_data=payload or {},
+        error_msg="生成审查修复待确认失败",
+    )
+
+
 async def preview_score_update(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],

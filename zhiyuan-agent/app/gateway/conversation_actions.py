@@ -393,6 +393,15 @@ OPTIONAL_METADATA_FIELDS = (
     ("hardObjectiveVersion", "hard_objective_version"),
 )
 
+# J5.5b：审查修复冻结三件套（prepare 落进 pending.dataValue、apply 顶层必须比对）。
+# **只透传、不参与硬门禁**：legacy review pending 没有它们，硬拒会把旧卡的
+# "确认"变成不可执行；新卡缺了它们由 Java 在 execute 时比对并 409。
+REVIEW_FIX_METADATA_FIELDS = (
+    ("commandDigest", "command_digest"),
+    ("previewDigest", "preview_digest"),
+    ("evaluationVersion", "evaluation_version"),
+)
+
 
 def _proposal_apply_payload(
     active: Mapping[str, Any], active_data: Mapping[str, Any], *, proposal_ref: str, source_version: Any
@@ -438,6 +447,17 @@ def _proposal_apply_payload(
         value = active.get(camel) or active_data.get(camel) or active.get(snake) or active_data.get(snake)
         if isinstance(value, str) and value.strip():
             payload[camel] = value.strip()
+    # J5.5b：审查修复冻结元数据（prepare 产出、execute 顶层比对）。只在
+    # pending/activeProposal 真的带了才透传 ✓——缺省不编 ✗（编错 digest 只会
+    # 把"没有"换成 409 `command_content_mismatch`，更难查）。`evaluationVersion`
+    # 契约是字符串，历史数据偶尔落成数字时统一转字符串。
+    for camel, snake in REVIEW_FIX_METADATA_FIELDS:
+        value = active.get(camel) or active_data.get(camel) or active.get(snake) or active_data.get(snake)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            payload[camel] = text
     return payload
 
 

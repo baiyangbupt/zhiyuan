@@ -3,7 +3,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.gateway.conversation_actions import _actual_changes, execute_conversation_action
+from app.gateway.conversation_actions import (
+    _actual_changes,
+    _proposal_apply_payload,
+    execute_conversation_action,
+)
 from app.gateway.service import GatewayService
 from app.gateway.ui_events import SessionKey
 from app.server import _run_native_turn
@@ -358,6 +362,49 @@ def snapshot_with_pending(data: dict | None = None) -> dict:
         **(data or {}),
     }
     return current
+
+
+def test_proposal_apply_payload_passes_review_fix_metadata_both_naming_styles():
+    """J5.5b：prepare 落进 pending.dataValue 的 commandDigest/previewDigest/
+    evaluationVersion 必须透传到扁平 proposalApply（Java execute 顶层比对）；
+    camel / snake 两种历史命名都认，缺省不编。"""
+    payload = _proposal_apply_payload(
+        {
+            "proposalSource": "review_check",
+            "commandDigest": "command-digest-v1",
+            "preview_digest": "preview-digest-v1",
+            "evaluation_version": "eval-v1",
+        },
+        {
+            "proposalId": "proposal-review",
+            "proposalSource": "review_check",
+            "sourceVersion": 12,
+        },
+        proposal_ref="proposal-review",
+        source_version=12,
+    )
+
+    assert payload["proposalId"] == "proposal-review"
+    assert payload["proposalSource"] == "review_check"
+    assert payload["sourceVersionGuard"] == 12
+    assert payload["regenerateOrderedPlan"] is True
+    assert payload["rerunReview"] is True
+    assert payload["commandDigest"] == "command-digest-v1"
+    assert payload["previewDigest"] == "preview-digest-v1"
+    assert payload["evaluationVersion"] == "eval-v1"
+
+
+def test_proposal_apply_payload_omits_absent_review_fix_metadata():
+    payload = _proposal_apply_payload(
+        {"proposalSource": "review_check"},
+        {"proposalId": "legacy-review", "sourceVersion": 12},
+        proposal_ref="legacy-review",
+        source_version=12,
+    )
+
+    assert "commandDigest" not in payload
+    assert "previewDigest" not in payload
+    assert "evaluationVersion" not in payload
 
 
 @pytest.mark.asyncio

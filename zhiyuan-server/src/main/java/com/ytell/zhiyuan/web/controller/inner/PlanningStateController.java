@@ -600,6 +600,23 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.previewReviewFixProposals(tenantId, chatSessionId));
     }
 
+    @PostMapping("/session/fix-proposals/review/prepare")
+    @ApiOperation("冻结审查修复提案为待确认（J5.5b：只读预览 → prepare → pending）")
+    public BaseResponse<PrepareResultDTO> prepareReviewFixProposal(@PathVariable("tenantId") Long tenantId,
+                                                                   @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                                   @ApiParam("幂等键：同一 requestId 重放返回同一次结果（同一个 operationId）")
+                                                                   @RequestParam("requestId") String requestId,
+                                                                   @RequestBody(required = false) ReviewFixPrepareReq req) {
+        ReviewFixPrepareReq safeReq = req == null ? new ReviewFixPrepareReq() : req;
+        // 与 user-goal prepare 同口径：摘要只用于识别“同一 requestId 配不同内容”。
+        String digest = DigestUtils.md5DigestAsHex(
+                JSON.toJSONString(safeReq).getBytes(StandardCharsets.UTF_8));
+        log.info("prepareReviewFixProposal: tenantId={}, chatSessionId={}, requestId={}",
+                tenantId, chatSessionId, requestId);
+        return BaseResponse.success(planningStateService.prepareReviewFixProposal(
+                tenantId, chatSessionId, requestId, digest, safeReq));
+    }
+
     @PostMapping("/session/fix-proposals/user-goal/generate")
     @ApiOperation("按用户复合目标生成只读方案调整预览")
     public BaseResponse<FixProposalStateDTO> generateUserGoalFixProposals(@PathVariable("tenantId") Long tenantId,

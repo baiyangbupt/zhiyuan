@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import aiohttp
 from pydantic import Field
 from pydantic_ai import RunContext
+from pydantic_ai.messages import ToolReturnPart
 from typing_extensions import NotRequired, TypedDict
 
 from app.agent.context import RequestContext, resolve_pending_confirmation
@@ -7441,12 +7442,20 @@ def _pending_source_version(pending: dict[str, Any]) -> int:
         pending.get("source_backend_version")
         or pending.get("sourceBackendVersion")
         or raw_data.get("sourceBackendVersion")
+        or raw_data.get("sourceVersion")
         or raw_data.get("planningVersion")
     )
 
 
 def _pending_command_operation_id(pending: dict[str, Any], command_type: str) -> str:
     raw = pending.get("raw") if isinstance(pending.get("raw"), dict) else {}
+    # J5.5b：prepare 产出的 operationId 是幂等执行键（Java 台账按它去重），
+    # 有就必须用；uuid5 只是旧卡片没有该字段时的稳定兜底。
+    operation_id = str(
+        pending.get("operationId") or pending.get("operation_id") or raw.get("operationId") or ""
+    ).strip()
+    if operation_id:
+        return operation_id
     pending_id = str(pending.get("pending_id") or pending.get("pendingId") or raw.get("pendingId") or "").strip()
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"zhiyuan:{pending_id}:{command_type}"))
 
@@ -7454,6 +7463,262 @@ def _pending_command_operation_id(pending: dict[str, Any], command_type: str) ->
 def _pending_claim_token(pending: dict[str, Any]) -> str:
     raw = pending.get("raw") if isinstance(pending.get("raw"), dict) else {}
     return str(raw.get("_pendingClaimToken") or raw.get("claimToken") or "").strip()
+
+
+def _review_fix_candidate_from_tool_return(content: Any) -> dict[str, Any] | None:
+    """从 `preview_plan_change` 的工具回包里取回只读预览冻结的确认依据。
+
+    运行时历史可能被裁剪（`_compact_tool_return_content`），所以候选既可能在
+    `data.review_fix_prepare_candidate`，也可能被提到顶层；两者都认。
+    """
+    if not isinstance(content, str):
+        return None
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    data = parsed.get("data") if isinstance(parsed.get("data"), dict) else {}
+    candidate = data.get("review_fix_prepare_candidate")
+    if not isinstance(candidate, dict):
+        candidate = parsed.get("review_fix_prepare_candidate")
+    if isinstance(candidate, dict):
+        proposal_id = str(candidate.get("proposal_id") or candidate.get("proposalId") or "").strip()
+        proposal_source = str(
+            candidate.get("proposal_source") or candidate.get("proposalSource") or ""
+        ).strip()
+        if proposal_id and (not proposal_source or proposal_source == "review_check"):
+            normalized = dict(candidate)
+            normalized["proposal_id"] = proposal_id
+            normalized["proposal_source"] = "review_check"
+            return normalized
+    proposal = data.get("proposal")
+    if isinstance(proposal, dict):
+        proposal_id = str(proposal.get("proposal_id") or proposal.get("proposalId") or "").strip()
+        proposal_source = str(
+            proposal.get("proposal_source") or proposal.get("proposalSource") or ""
+        ).strip()
+        if proposal_id and proposal_source == "review_check":
+            proposal_apply = (
+                data.get("proposal_apply") if isinstance(data.get("proposal_apply"), dict) else {}
+            )
+            return {
+                "proposal_id": proposal_id,
+                "proposal_source": "review_check",
+                "source_version_guard": _as_int(
+                    proposal.get("source_version")
+                    or proposal.get("sourceVersion")
+                    or proposal.get("sourceVersionGuard")
+                ),
+                "command_digest": str(
+                    proposal.get("command_digest") or proposal.get("commandDigest") or ""
+                ).strip(),
+                "preview_digest": str(
+                    proposal.get("preview_digest") or proposal.get("previewDigest") or ""
+                ).strip(),
+                "evaluation_version": str(
+                    proposal.get("evaluation_version") or proposal.get("evaluationVersion") or ""
+                ).strip(),
+                "title": str(proposal.get("title") or "").strip(),
+                "summary": str(proposal.get("summary") or "").strip(),
+                "impact": str(proposal.get("impact") or "").strip(),
+                "proposal_apply": dict(proposal_apply),
+            }
+    return None
+
+
+def _latest_review_fix_prepare_candidate(
+    ctx: RunContext[RequestContext],
+) -> dict[str, Any] | None:
+    """按时间倒序扫描消息历史，找最近一次只读审查修复预览的冻结候选。
+
+    先扫当前 RunContext 的消息（本轮新产生的优先），再扫服务端补进来的
+    运行时历史（直连短文本桥没有 `ctx.messages`）。两个来源不能混在一起
+    倒序，否则本轮的预览会被上一轮的旧回包盖住。
+    """
+    sources: list[list[Any]] = []
+    ctx_messages = getattr(ctx, "messages", None)
+    if ctx_messages:
+        sources.append(list(ctx_messages))
+    agent_messages = getattr(ctx.deps, "agent_messages", None)
+    if agent_messages:
+        sources.append(list(agent_messages))
+    for messages in sources:
+        for message in reversed(messages):
+            for part in reversed(list(getattr(message, "parts", []) or [])):
+                if not isinstance(part, ToolReturnPart) or part.tool_name != "preview_plan_change":
+                    continue
+                candidate = _review_fix_candidate_from_tool_return(part.content)
+                if candidate:
+                    return candidate
+    return None
+
+
+def _pending_resource_raw(response: Any) -> dict[str, Any]:
+    """从 `GET /session/pending` 回包解析 dataValue + 修订/领取信息。"""
+    if not isinstance(response, dict):
+        return {}
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    value = data.get("pendingConfirmation")
+    if value is None:
+        value = data.get("dataValue")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(value, dict) or not value:
+        return {}
+    raw = dict(value)
+    revision = _as_int(data.get("revision"))
+    if revision > 0:
+        raw["_pendingRevision"] = revision
+        raw["revision"] = revision
+    claim_token = str(data.get("claimToken") or "").strip()
+    if claim_token:
+        raw["_pendingClaimToken"] = claim_token
+    claim_expires_at = data.get("claimExpiresAt")
+    if claim_expires_at not in (None, ""):
+        raw["_pendingClaimExpiresAt"] = claim_expires_at
+    status = str(data.get("status") or raw.get("status") or "").strip()
+    if status:
+        raw.setdefault("status", status)
+    return raw
+
+
+def _review_fix_proposal_apply_from_pending(
+    raw_pending: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    source_version: int,
+) -> dict[str, Any]:
+    """构造 `apply_plan_change_proposal` 的扁平请求体；pending 权威值优先。"""
+    proposal_id = str(
+        raw_pending.get("proposalId") or candidate.get("proposal_id") or ""
+    ).strip()
+    guard = _as_int(raw_pending.get("sourceVersion")) or _as_int(
+        candidate.get("source_version_guard")
+    ) or source_version
+    payload: dict[str, Any] = {
+        "proposalId": proposal_id,
+        "proposalSource": "review_check",
+        "sourceVersionGuard": guard,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+    }
+    for camel, candidate_key in (
+        ("commandDigest", "command_digest"),
+        ("previewDigest", "preview_digest"),
+        ("evaluationVersion", "evaluation_version"),
+        ("canonicalObjectiveDigest", "canonical_objective_digest"),
+        ("solverVersion", "solver_version"),
+        ("solverInputDigest", "solver_input_digest"),
+        ("hardObjectiveVersion", "hard_objective_version"),
+    ):
+        value = raw_pending.get(camel)
+        if value is None:
+            value = candidate.get(candidate_key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            payload[camel] = text
+    return payload
+
+
+async def _prepare_review_fix_pending(
+    ctx: RunContext[RequestContext],
+    candidate: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    """只读预览的确认回合：先 prepare 冻结 pending，再交给原 claim→execute 流程。
+
+    幂等键由 `chatSessionId + proposalId + previewDigest` 派生：同一张卡重试
+    确认会命中 Java 的 requestId 重放，不会生成第二份预览/第二个 operationId。
+    """
+    proposal_id = str(candidate.get("proposal_id") or "").strip()
+    preview_digest = str(candidate.get("preview_digest") or "").strip()
+    command_digest = str(candidate.get("command_digest") or "").strip()
+    evaluation_version = str(candidate.get("evaluation_version") or "").strip()
+    source_version = _as_int(candidate.get("source_version_guard"))
+    if not proposal_id:
+        return None, "没有找到可确认的审查修复提案，请重新生成预览后再确认。"
+    if source_version <= 0 or not preview_digest or not command_digest:
+        return None, "这份审查修复预览缺少确认所需的冻结信息，请重新生成预览后再确认。"
+    request_id = f"review-prepare:{ctx.deps.sessionid}:{proposal_id}:{preview_digest[:16]}"
+    response = await internal_client.prepare_review_fix_proposal(
+        getattr(ctx.deps, "tenant_id", 1),
+        ctx.deps.sessionid,
+        request_id=request_id,
+        payload={
+            "proposalId": proposal_id,
+            "previewDigest": preview_digest,
+            "commandDigest": command_digest,
+            "evaluationVersion": evaluation_version,
+            "sourceVersionGuard": source_version,
+            "regenerateOrderedPlan": True,
+            "rerunReview": True,
+        },
+    )
+    if not _is_success_response(response):
+        return None, (
+            "这次确认没能冻结审查修复预览（方案或审查可能已变化），本轮不会改动方案；"
+            "请重新生成预览后再确认。"
+        )
+    prepare_data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    status = str(prepare_data.get("status") or "").strip().lower()
+    pending_id = str(prepare_data.get("pendingId") or "").strip()
+    operation_id = str(prepare_data.get("operationId") or "").strip()
+    if status == "superseded":
+        return None, "这张审查修复卡已被更新的预览取代，本轮不会执行；请按最新预览重新确认。"
+    if status == "preparing":
+        return None, "这份预览的待确认内容还在生成中，请稍后再确认。"
+    if status not in {"prepared", "duplicate"} or not pending_id or not operation_id:
+        return None, "这次确认没有生成可执行的待确认内容，本轮不会改动方案；请重新生成预览后再确认。"
+    snapshot_response = await internal_client.get_last_pending_confirmation(ctx.deps.sessionid)
+    raw_pending = _pending_resource_raw(snapshot_response)
+    if not raw_pending:
+        return None, "这次确认没有找到对应的待确认内容，本轮不会改动方案；请刷新后重试。"
+    raw_pending_id = str(
+        raw_pending.get("pendingId") or raw_pending.get("pending_id") or ""
+    ).strip()
+    if raw_pending_id and raw_pending_id != pending_id:
+        return None, "当前待确认内容已经变化，本轮不会执行；请刷新后按最新预览重新确认。"
+    raw_status = str(raw_pending.get("status") or "").strip()
+    if raw_status and raw_status != "active":
+        return None, "这次待确认内容已被处理或已失效，本轮不会重复执行。请刷新后以最新状态为准。"
+    proposal_apply = _review_fix_proposal_apply_from_pending(
+        raw_pending, candidate, source_version=source_version
+    )
+    if not proposal_apply.get("previewDigest") or not proposal_apply.get("commandDigest"):
+        return None, "这次确认缺少冻结摘要，本轮不会改动方案；请重新生成预览后再确认。"
+    summary = str(
+        raw_pending.get("summary")
+        or candidate.get("summary")
+        or candidate.get("title")
+        or ""
+    ).strip()
+    return {
+        "active": True,
+        "pending_id": pending_id,
+        "pendingId": pending_id,
+        "operationId": operation_id,
+        "kind": "plan_change_proposal",
+        "action_family": "apply_plan_change_proposal",
+        "summary": summary,
+        "affected_scope": str(candidate.get("impact") or summary or "当前方案").strip(),
+        "source_backend_version": _as_int(raw_pending.get("sourceVersion")) or source_version,
+        "execution_payload": {
+            "action_family": "apply_plan_change_proposal",
+            "proposal_apply": proposal_apply,
+            "postconditions": {
+                "proposal_id": proposal_id,
+                "proposal_source": "review_check",
+                "post_validation_required": True,
+            },
+        },
+        "raw": raw_pending,
+    }, ""
 
 
 def _pending_command_execution_uncertain(response: dict[str, Any] | None) -> bool:
@@ -7495,7 +7760,7 @@ def _invalidate_after_pending_action(ctx: RunContext[RequestContext], kind: str,
         paths.extend(["profile.json", "constraints.json", "plan/candidates.json"])
         if action_family in {"generate_plan", "regenerate_order", "apply_selected_intents"}:
             paths.extend(["plan/summary.json", "plan/items.json", "plan/review.json"])
-    elif kind in {"plan_mutation", "plan_generation"}:
+    elif kind in {"plan_mutation", "plan_generation", "plan_change_proposal"}:
         paths.extend(["plan/summary.json", "plan/items.json", "plan/review.json", "plan/candidates.json"])
     sandbox.invalidate(paths)
 
@@ -9306,6 +9571,38 @@ def _review_repair_proposal_view(proposal: dict[str, Any]) -> dict[str, Any]:
         ],
         "dry_run": dry_run,
         "candidate_shortages": proposal.get("candidateShortages") or [],
+        # J5.5b：prepare 的幂等/冻结依据。预览只读也要把它们带出来——确认回合
+        # 靠这份结果（消息历史里的工具回包）里冻结的 proposalId+digests 调 prepare，
+        # 不再从 pending 里读（预览本来就不允许建 pending）。
+        "requires_confirmation": bool(
+            proposal.get("requiresConfirmation", proposal.get("requires_confirmation", True))
+        ),
+        "command_digest": str(
+            proposal.get("commandDigest") or proposal.get("command_digest") or ""
+        ).strip(),
+        "preview_digest": str(
+            proposal.get("previewDigest") or proposal.get("preview_digest") or ""
+        ).strip(),
+        "evaluation_version": str(
+            proposal.get("evaluationVersion") or proposal.get("evaluation_version") or ""
+        ).strip(),
+        "plan_content_digest": str(
+            proposal.get("planContentDigest") or proposal.get("plan_content_digest") or ""
+        ).strip(),
+        "canonical_objective_digest": str(
+            proposal.get("canonicalObjectiveDigest")
+            or proposal.get("canonical_objective_digest")
+            or ""
+        ).strip(),
+        "solver_version": str(
+            proposal.get("solverVersion") or proposal.get("solver_version") or ""
+        ).strip(),
+        "solver_input_digest": str(
+            proposal.get("solverInputDigest") or proposal.get("solver_input_digest") or ""
+        ).strip(),
+        "hard_objective_version": str(
+            proposal.get("hardObjectiveVersion") or proposal.get("hard_objective_version") or ""
+        ).strip(),
     }
 
 
@@ -9416,7 +9713,24 @@ async def _preview_review_repair_plan_change(
     requested_issue = str(repair_goal.get("review_issue_code") or "").strip()
     canonical_issue = _canonical_review_issue_code(requested_issue) or requested_issue
     requested_strategy = str(repair_goal.get("strategy") or "").strip()
-    backend_response, backend_data, proposals = await _generate_review_repair_proposals(ctx)
+    if (
+        canonical_issue == "probability_inversion"
+        and requested_strategy == "sort_by_probability"
+    ):
+        # J5.5b：倒挂排序走新的只读冻结预览（working/ordered/selected facts +
+        # previewDigest + 原 probe 预检）；旧 generate 只作为其他策略的回退。
+        response = await internal_client.preview_review_fix_proposals(
+            getattr(ctx.deps, "tenant_id", 1),
+            ctx.deps.sessionid,
+        )
+        backend_response = response
+        backend_data = _response_data(response)
+        proposals = [
+            item for item in (backend_data.get("proposals") or [])
+            if isinstance(item, dict)
+        ]
+    else:
+        backend_response, backend_data, proposals = await _generate_review_repair_proposals(ctx)
     proposal_envelope_version = _as_int(
         backend_data.get("sourceVersionGuard") or backend_data.get("sourceVersion")
     )
@@ -9507,7 +9821,6 @@ async def _preview_review_repair_plan_change(
             }
         )
 
-    action_family = "apply_plan_change_proposal"
     frozen_repair_goal = {
         **(
             {"objective": str(repair_goal.get("objective") or "").strip()}
@@ -9517,6 +9830,9 @@ async def _preview_review_repair_plan_change(
         "review_issue_code": canonical_issue,
         "strategy": requested_strategy,
     }
+    command_digest = str(proposal_view.get("command_digest") or "").strip()
+    preview_digest = str(proposal_view.get("preview_digest") or "").strip()
+    evaluation_version = str(proposal_view.get("evaluation_version") or "").strip()
     proposal_apply = {
         "proposalId": proposal_id,
         "proposalSource": "review_check",
@@ -9524,19 +9840,22 @@ async def _preview_review_repair_plan_change(
         "regenerateOrderedPlan": True,
         "rerunReview": True,
     }
-    execution_payload = {
-        "action_family": action_family,
-        "plan_change_spec": {"repair_goal": frozen_repair_goal},
-        "proposal_apply": proposal_apply,
-        "proposal_snapshot": proposal_view,
-        "postconditions": {
-            "proposal_id": proposal_id,
-            "proposal_source": "review_check",
-            "review_issue_code": canonical_issue,
-            "strategy": requested_strategy,
-            "post_validation_required": True,
-        },
-    }
+    for key, value in (
+        ("commandDigest", command_digest),
+        ("previewDigest", preview_digest),
+        ("evaluationVersion", evaluation_version),
+    ):
+        if value:
+            proposal_apply[key] = value
+    for key, view_key in (
+        ("canonicalObjectiveDigest", "canonical_objective_digest"),
+        ("solverVersion", "solver_version"),
+        ("solverInputDigest", "solver_input_digest"),
+        ("hardObjectiveVersion", "hard_objective_version"),
+    ):
+        value = str(proposal_view.get(view_key) or "").strip()
+        if value:
+            proposal_apply[key] = value
     plan_impact = {
         "source": "preview_plan_change",
         "repair_goal": frozen_repair_goal,
@@ -9555,16 +9874,35 @@ async def _preview_review_repair_plan_change(
     summary = str(proposal_view.get("summary") or title or "").strip()
     impact = str(proposal_view.get("impact") or "").strip()
     fallback_summary = "按当前审查结果调整方案并重新校验"
-    pending_result = await _create_plan_pending(
-        ctx,
-        kind="plan_mutation",
-        action_family=action_family,
-        summary=summary or fallback_summary,
-        payload=execution_payload,
-        affected_scope=impact or title or "当前方案",
-        plan_impact=plan_impact,
-        source_version=proposal_source_version,
+    confirmable = bool(
+        proposal_id
+        and proposal_source_version > 0
+        and preview_digest
+        and command_digest
+        and bool(proposal_view.get("requires_confirmation", True))
     )
+    # J5.5b：预览**只读**。确认回合由 `confirm_pending` 凭这份候选先调
+    # `/fix-proposals/review/prepare` 冻结 pending，再走 claim→execute→complete；
+    # 预览本身绝不落 pending（`pending_created` 恒为 False）。
+    review_fix_prepare_candidate = {
+        "proposal_id": proposal_id,
+        "proposal_source": "review_check",
+        "source_version_guard": proposal_source_version,
+        "command_digest": command_digest,
+        "preview_digest": preview_digest,
+        "evaluation_version": evaluation_version,
+        "plan_content_digest": str(proposal_view.get("plan_content_digest") or "").strip(),
+        "canonical_objective_digest": str(
+            proposal_view.get("canonical_objective_digest") or ""
+        ).strip(),
+        "solver_version": str(proposal_view.get("solver_version") or "").strip(),
+        "solver_input_digest": str(proposal_view.get("solver_input_digest") or "").strip(),
+        "hard_objective_version": str(proposal_view.get("hard_objective_version") or "").strip(),
+        "title": title,
+        "summary": summary or fallback_summary,
+        "impact": impact,
+        "proposal_apply": proposal_apply,
+    }
     message = f"{title}：{summary}" if title and summary and title != summary else summary
     message = message or f"已生成{fallback_summary}的预览。"
     if impact:
@@ -9573,23 +9911,23 @@ async def _preview_review_repair_plan_change(
     affected_volunteer_count = _as_int(plan_impact.get("affected_volunteer_count"))
     if not impact and (affected_unit_count or affected_volunteer_count):
         message += f" 具体影响：{affected_unit_count}个专业组、{affected_volunteer_count}条专业志愿。"
-    if pending_result.get("created"):
+    if confirmable:
         message += " 确认后会按这次预览调整方案、重新生成排序并复审；确认前不会改动方案。"
     else:
-        message += " 但待确认状态保存失败，本轮不会执行。"
+        message += " 当前预览缺少可确认的执行信息，本轮不会创建待确认操作。"
     return _json(
         {
             "data": {
                 "repair_goal": frozen_repair_goal,
                 "proposal": proposal_view,
+                "proposal_apply": proposal_apply,
                 "plan_impact": plan_impact,
                 "replaced_active_pending": replaced_active_pending,
-                "pending_id": pending_result.get("pending_id"),
-                "pending_version": pending_result.get("pending_version"),
-                "pending_created": bool(pending_result.get("created")),
-                "requires_confirmation": bool(pending_result.get("created")),
+                "review_fix_prepare_candidate": review_fix_prepare_candidate,
+                "pending_created": False,
+                "requires_confirmation": confirmable,
             },
-            "next_step": "confirm" if pending_result.get("created") else "respond",
+            "next_step": "confirm" if confirmable else "respond",
             "message": message,
         }
     )
@@ -11152,47 +11490,87 @@ async def confirm_pending(
         )
 
     runtime_pending = _turn_started_active_pending(ctx)
-    if runtime_pending is None:
-        return _json(
-            {
-                "data": {
-                    "active": False,
-                    "action": normalized_action,
-                },
-                "next_step": "respond",
-                "message": _no_active_pending_confirmation_message(),
-            }
-        )
-
     pending = await _pending_data(ctx)
-    if not pending.get("active"):
-        return _json(
-            {
-                "data": {
-                    "active": False,
-                    "action": normalized_action,
-                },
-                "next_step": "respond",
-                "message": _no_active_pending_confirmation_message(),
-            }
+    if runtime_pending is None:
+        candidate = (
+            _latest_review_fix_prepare_candidate(ctx)
+            if normalized_action == "confirm"
+            else None
         )
+        if candidate is None:
+            return _json(
+                {
+                    "data": {
+                        "active": False,
+                        "action": normalized_action,
+                    },
+                    "next_step": "respond",
+                    "message": _no_active_pending_confirmation_message(),
+                }
+            )
+        # J5.5b：只读预览不建 pending，确认时先凭预览回包里冻结的
+        # proposalId/digests 调 prepare，再走同一轮 claim→execute→complete。
+        # 评估模式绝不能落任何状态，所以 prepare 之前就返回 would_apply。
+        if _dry_run_state_mutations(ctx):
+            return _json(
+                {
+                    "data": {
+                        "active": False,
+                        "action": "confirm",
+                        "kind": "plan_change_proposal",
+                        "action_family": "apply_plan_change_proposal",
+                        "proposal_id": candidate.get("proposal_id"),
+                        "applied": False,
+                        "would_apply": True,
+                        "dry_run": True,
+                    },
+                    "next_step": "respond",
+                    "message": "这次会采纳当前待确认内容；评估模式下不会实际执行。",
+                }
+            )
+        pending, prepare_message = await _prepare_review_fix_pending(ctx, candidate)
+        if pending is None:
+            return _json(
+                {
+                    "data": {
+                        "active": False,
+                        "action": "confirm",
+                        "error": "review_fix_prepare_failed",
+                        "proposal_id": candidate.get("proposal_id"),
+                    },
+                    "next_step": "respond",
+                    "message": prepare_message,
+                }
+            )
+    else:
+        if not pending.get("active"):
+            return _json(
+                {
+                    "data": {
+                        "active": False,
+                        "action": normalized_action,
+                    },
+                    "next_step": "respond",
+                    "message": _no_active_pending_confirmation_message(),
+                }
+            )
 
-    runtime_pending_id = str(getattr(runtime_pending, "pending_id", "") or "").strip()
-    snapshot_pending_id = str(pending.get("pending_id") or pending.get("pendingId") or "").strip()
-    if not runtime_pending_id or not snapshot_pending_id or runtime_pending_id != snapshot_pending_id:
-        return _json(
-            {
-                "data": {
-                    "active": False,
-                    "action": normalized_action,
-                    "error": "pending_snapshot_mismatch",
-                    "runtime_pending_id": runtime_pending_id,
-                    "snapshot_pending_id": snapshot_pending_id,
-                },
-                "next_step": "respond",
-                "message": "当前待确认内容已经变化，这次不会执行。请刷新后按最新预览重新确认。",
-            }
-        )
+        runtime_pending_id = str(getattr(runtime_pending, "pending_id", "") or "").strip()
+        snapshot_pending_id = str(pending.get("pending_id") or pending.get("pendingId") or "").strip()
+        if not runtime_pending_id or not snapshot_pending_id or runtime_pending_id != snapshot_pending_id:
+            return _json(
+                {
+                    "data": {
+                        "active": False,
+                        "action": normalized_action,
+                        "error": "pending_snapshot_mismatch",
+                        "runtime_pending_id": runtime_pending_id,
+                        "snapshot_pending_id": snapshot_pending_id,
+                    },
+                    "next_step": "respond",
+                    "message": "当前待确认内容已经变化，这次不会执行。请刷新后按最新预览重新确认。",
+                }
+            )
 
     kind = str(pending.get("kind") or "").strip()
     action_family = str(pending.get("action_family") or pending.get("actionFamily") or "").strip()
@@ -11304,7 +11682,7 @@ async def confirm_pending(
             pending,
             apply_to_current_plan_override=apply_to_current_plan,
         )
-    elif kind in {"plan_mutation", "plan_generation"}:
+    elif kind in {"plan_mutation", "plan_generation", "plan_change_proposal"}:
         success, data, message = await _apply_plan_pending(ctx, pending)
     else:
         success = False

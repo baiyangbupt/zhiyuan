@@ -79,6 +79,49 @@ class DirectReviewPreviewPlannerTest {
     }
 
     @Test
+    void confirmableModePromotesFrozenProposalToReadyWithExecutableCommand() {
+        DirectReviewPreviewPlanner confirmable = new DirectReviewPreviewPlanner(true);
+        FixProposalDTO proposal = confirmable.plan(state, candidates, finding,
+                after -> review("pass", "pass"));
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertTrue(finding.getSuggestedCommand().getExecutable());
+        assertEquals("ready", proposal.getDryRunResult().getStatus());
+        assertNotNull(proposal.getFrozenReviewPlan());
+        assertNotNull(proposal.getPreviewDigest());
+        assertNotNull(proposal.getPlanContentDigest());
+        assertEquals(Integer.valueOf(7), proposal.getSourceVersionGuard());
+        assertNull(proposal.getBlockingReason());
+        assertFalse(proposal.getBlockingReasonCodes().contains("review_fix_prepare_unavailable"));
+        assertEquals(Lists.newArrayList("low", "mid", "high"),
+                proposal.getFrozenReviewPlan().getOrderedEntityIds());
+    }
+
+    @Test
+    void previewModeKeepsTheOriginalPreviewOnlyContract() {
+        FixProposalDTO proposal = plan();
+        assertEquals("preview_only", proposal.getStatus());
+        assertFalse(proposal.getRequiresConfirmation());
+        assertFalse(finding.getSuggestedCommand().getExecutable());
+        assertEquals("preview_only", proposal.getDryRunResult().getStatus());
+        assertEquals("review_fix_prepare_unavailable", proposal.getBlockingReason());
+        assertTrue(proposal.getBlockingReasonCodes().contains("review_fix_prepare_unavailable"));
+    }
+
+    @Test
+    void confirmableModeStillBlocksWhenPostconditionFails() {
+        DirectReviewPreviewPlanner confirmable = new DirectReviewPreviewPlanner(true);
+        FixProposalDTO proposal = confirmable.plan(state, candidates, finding,
+                after -> review("fail", "pass"));
+
+        assertNotEquals("ready", proposal.getStatus());
+        assertFalse(proposal.getRequiresConfirmation());
+        assertNull(proposal.getFrozenReviewPlan());
+        assertEquals("repair_goal_unreachable", proposal.getBlockingReason());
+    }
+
+    @Test
     void stableDigestsBindSelectedFactsButNotUnrelatedPoolOrder() {
         FixProposalDTO first = plan();
         assertEquals(first.getProposalId(), plan().getProposalId());

@@ -20,6 +20,7 @@ from pydantic_ai.messages import (
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -378,7 +379,8 @@ async def test_preview_plan_change_rejects_new_ready_proposal_without_canonical_
     save_mock.assert_not_awaited()
 
 
-async def test_preview_plan_change_creates_exact_review_repair_proposal_pending(mocker):
+async def test_preview_plan_change_returns_readonly_review_repair_candidate(mocker):
+    """J5.5b：审查修复预览只读——不建 pending，只回冻结候选供确认回合 prepare。"""
     generate_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
         AsyncMock(
@@ -406,6 +408,10 @@ async def test_preview_plan_change_creates_exact_review_repair_proposal_pending(
                             "summary": "3个专业组各补入1个录取率更高的专业作为安全垫。",
                             "impact": "保持专业组不变，补充组内专业。",
                             "sourceCheckCodes": ["group_inner_safety_guard"],
+                            "commandDigest": "command-digest-v1",
+                            "previewDigest": "preview-digest-v1",
+                            "evaluationVersion": "eval-v1",
+                            "planContentDigest": "plan-digest-v1",
                             "dryRunResult": {
                                 "status": "ready",
                                 "beforeUnitTotal": 45,
@@ -445,28 +451,33 @@ async def test_preview_plan_change_creates_exact_review_repair_proposal_pending(
     )
 
     assert result["next_step"] == "confirm"
-    assert result["data"]["pending_created"] is True
+    assert result["data"]["pending_created"] is False
+    assert result["data"]["requires_confirmation"] is True
     assert result["data"]["proposal"]["proposal_id"] == "fp-group-safety"
     assert result["data"]["plan_impact"]["affected_unit_count"] == 3
     assert result["data"]["plan_impact"]["add_volunteer_count"] == 3
-    pending = save_mock.await_args.args[1]
-    assert pending["kind"] == "plan_mutation"
-    assert pending["actionFamily"] == "apply_plan_change_proposal"
-    assert pending["affectedScope"] == "保持专业组不变，补充组内专业。"
     assert "具体影响：保持专业组不变，补充组内专业。" in result["message"]
-    assert pending["executionPayload"]["proposal_apply"] == {
+    assert "确认前不会改动方案" in result["message"]
+    assert "后端处理提案" not in result["message"]
+    save_mock.assert_not_awaited()
+    candidate = result["data"]["review_fix_prepare_candidate"]
+    assert candidate["proposal_id"] == "fp-group-safety"
+    assert candidate["source_version_guard"] == 12
+    assert candidate["command_digest"] == "command-digest-v1"
+    assert candidate["preview_digest"] == "preview-digest-v1"
+    assert candidate["evaluation_version"] == "eval-v1"
+    assert candidate["plan_content_digest"] == "plan-digest-v1"
+    assert candidate["proposal_apply"] == {
         "proposalId": "fp-group-safety",
         "proposalSource": "review_check",
         "sourceVersionGuard": 12,
         "regenerateOrderedPlan": True,
         "rerunReview": True,
+        "commandDigest": "command-digest-v1",
+        "previewDigest": "preview-digest-v1",
+        "evaluationVersion": "eval-v1",
     }
-    assert "userGoalRequest" not in pending["executionPayload"]["proposal_apply"]
-    assert "后端处理提案" not in result["message"]
-    assert pending["executionPayload"]["plan_change_spec"]["repair_goal"] == {
-        "review_issue_code": "group_inner_safety_guard",
-        "strategy": "adjust_major_group_inner_safety",
-    }
+    assert "userGoalRequest" not in candidate["proposal_apply"]
     generate_mock.assert_awaited_once_with(1, ctx.sessionid)
 
 
@@ -609,7 +620,7 @@ async def test_preview_plan_change_stability_objective_returns_options_without_g
 
 async def test_preview_plan_change_stability_exact_selection_freezes_only_selected_proposal(mocker):
     mocker.patch(
-        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        "app.zhiyuan_agent.tools.internal_client.preview_review_fix_proposals",
         AsyncMock(
             return_value={
                 "code": 0,
@@ -633,6 +644,9 @@ async def test_preview_plan_change_stability_exact_selection_freezes_only_select
                             "sourceCheckCodes": ["probability_inversion"],
                             "summary": "按录取概率重新排序，消除顺序倒挂。",
                             "impact": "不改变志愿集合，只降低顺序风险。",
+                            "commandDigest": "command-digest-v1",
+                            "previewDigest": "preview-digest-v1",
+                            "evaluationVersion": "eval-v1",
                             "dryRunResult": {"status": "ready", "affectedUnitCount": 2},
                         },
                     ],
@@ -663,14 +677,18 @@ async def test_preview_plan_change_stability_exact_selection_freezes_only_select
     )
 
     assert result["next_step"] == "confirm"
+    assert result["data"]["pending_created"] is False
     assert result["data"]["proposal"]["proposal_id"] == "fp-probability-order"
-    pending = save_mock.await_args.args[1]
-    assert pending["executionPayload"]["plan_change_spec"]["repair_goal"] == {
+    assert result["data"]["repair_goal"] == {
         "objective": "increase_stability",
         "review_issue_code": "probability_inversion",
         "strategy": "sort_by_probability",
     }
-    assert pending["executionPayload"]["proposal_apply"]["proposalId"] == "fp-probability-order"
+    candidate = result["data"]["review_fix_prepare_candidate"]
+    assert candidate["proposal_id"] == "fp-probability-order"
+    assert candidate["proposal_apply"]["proposalId"] == "fp-probability-order"
+    assert candidate["command_digest"] == "command-digest-v1"
+    save_mock.assert_not_awaited()
 
 
 def _prime_active_negative_major_intent_pending(ctx: RequestContext, *, section=None) -> None:
@@ -9207,6 +9225,158 @@ async def test_confirm_pending_applies_review_repair_proposal_and_reports_actual
     assert save_mock.await_args.args[1]["status"] == "applied"
 
 
+async def test_confirm_pending_prepares_review_fix_proposal_then_executes(
+    mocker, _stub_pending_planning_command
+):
+    """J5.5b：只读预览没有 pending；确认回合先 prepare，再同一轮 claim→execute→complete。"""
+    prepare_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.prepare_review_fix_proposal",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "status": "prepared",
+                    "pendingId": "pending-review-fix",
+                    "operationId": "operation-review-fix",
+                },
+            }
+        ),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_last_pending_confirmation",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "pendingId": "pending-review-fix",
+                    "revision": 4,
+                    "status": "active",
+                    "dataValue": {
+                        "operationId": "operation-review-fix",
+                        "proposalId": "fp-group-safety",
+                        "proposalSource": "review_check",
+                        "sourceVersion": 12,
+                        "commandDigest": "command-digest",
+                        "previewDigest": "preview-digest",
+                        "evaluationVersion": "eval-v1",
+                        "planContentDigest": "plan-digest",
+                    },
+                },
+            }
+        ),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+    ctx.agent_messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="preview_plan_change",
+                    content=json.dumps(
+                        {
+                            "data": {
+                                "pending_created": False,
+                                "review_fix_prepare_candidate": {
+                                    "proposal_id": "fp-group-safety",
+                                    "proposal_source": "review_check",
+                                    "source_version_guard": 12,
+                                    "command_digest": "command-digest",
+                                    "preview_digest": "preview-digest",
+                                    "evaluation_version": "eval-v1",
+                                    "title": "补足专业组内安全垫",
+                                    "summary": "3个专业组各补入1个录取率更高的专业作为安全垫。",
+                                    "impact": "保持专业组不变，补充组内专业。",
+                                },
+                            },
+                            "next_step": "confirm",
+                            "message": "预览",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="call-preview-review-fix",
+                )
+            ]
+        )
+    ]
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["applied"] is True
+    prepare_mock.assert_awaited_once()
+    prepare_args = prepare_mock.await_args
+    assert prepare_args.args[0] == 1
+    assert prepare_args.args[1] == ctx.sessionid
+    assert prepare_args.kwargs["request_id"] == (
+        f"review-prepare:{ctx.sessionid}:fp-group-safety:preview-digest"
+    )
+    assert prepare_args.kwargs["payload"] == {
+        "proposalId": "fp-group-safety",
+        "previewDigest": "preview-digest",
+        "commandDigest": "command-digest",
+        "evaluationVersion": "eval-v1",
+        "sourceVersionGuard": 12,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+    }
+    execute_kwargs = _stub_pending_planning_command.await_args.kwargs
+    assert execute_kwargs["command_type"] == "apply_plan_change_proposal"
+    assert execute_kwargs["operation_id"] == "operation-review-fix"
+    assert execute_kwargs["expected_plan_version"] == 12
+    assert execute_kwargs["proposal_apply"] == {
+        "proposalId": "fp-group-safety",
+        "proposalSource": "review_check",
+        "sourceVersionGuard": 12,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+        "commandDigest": "command-digest",
+        "previewDigest": "preview-digest",
+        "evaluationVersion": "eval-v1",
+    }
+    assert save_mock.await_args.args[1]["status"] == "applied"
+
+
+async def test_confirm_pending_review_fix_dry_run_never_prepares(mocker):
+    """评估模式绝不能因为"确认"而落 pending：prepare 之前就返回 would_apply。"""
+    prepare_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.prepare_review_fix_proposal",
+        AsyncMock(return_value={"code": 0, "data": {}}),
+    )
+    ctx = _direct_context()
+    ctx.dry_run_state_mutations = True
+    ctx.agent_messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="preview_plan_change",
+                    content=json.dumps(
+                        {
+                            "data": {
+                                "review_fix_prepare_candidate": {
+                                    "proposal_id": "fp-group-safety",
+                                    "proposal_source": "review_check",
+                                }
+                            },
+                            "next_step": "confirm",
+                            "message": "预览",
+                        }
+                    ),
+                    tool_call_id="call-preview-review-fix-dry-run",
+                )
+            ]
+        )
+    ]
+
+    result = _load(await confirm_pending(make_run_context(request_context=ctx), action="confirm"))
+
+    assert result["data"]["would_apply"] is True
+    assert result["data"]["applied"] is False
+    assert result["data"]["dry_run"] is True
+    prepare_mock.assert_not_awaited()
+
+
 async def test_confirm_pending_rejects_review_repair_when_post_validation_fails(
     mocker, _stub_pending_planning_command
 ):
@@ -11301,6 +11471,45 @@ async def test_service_zhiyuan_agent_direct_review_repair_pending_card():
     assert card_payload["title"] == "确认调整方案"
     assert card_payload["pendingId"] == pending_id
     assert history_store.saved is not None
+
+
+async def test_service_short_text_confirm_bridge_receives_runtime_history(mocker):
+    """J5.5b：直连短文本确认桥没有 RunContext.messages；服务端必须在调工具前
+    把运行时历史挂到 RequestContext，确认回合才能找回上一轮的冻结候选。"""
+    captured: dict[str, Any] = {}
+
+    async def fake_confirm(call_ctx, action):  # noqa: ARG001
+        captured["messages"] = call_ctx.deps.agent_messages
+        return json.dumps(
+            {
+                "data": {"active": False, "action": "confirm"},
+                "next_step": "respond",
+                "message": "已处理本次确认。",
+            },
+            ensure_ascii=False,
+        )
+
+    mocker.patch("app.service.zhiyuan_agent_confirm_pending", side_effect=fake_confirm)
+    service, _ = _direct_service(SimpleNamespace())
+    ctx = _direct_context()
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="先给我看预览")]),
+        ModelRequest(parts=[UserPromptPart(content="确认")]),
+    ]
+
+    reply = await service._maybe_handle_zhiyuan_agent_direct_route(
+        session_id=ctx.sessionid,
+        user_id=ctx.userid,
+        content="确认",
+        history=[],
+        request_context=ctx,
+        message_history=history,
+        turn_started_at=time.monotonic(),
+        on_progress=None,
+    )
+
+    assert reply == "已处理本次确认。"
+    assert captured["messages"] == history
 
 
 async def test_service_zhiyuan_agent_direct_plan_pending_card_preserves_compound_reply():

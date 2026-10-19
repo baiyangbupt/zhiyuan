@@ -204,8 +204,6 @@
   "m0ContractArtifacts": [
     "examples/plan_change_spec_410_contract.py",
     "examples/plan_change_spec_410_golden.json",
-    "tests/unit/test_release_410_m0_contract.py",
-    "../zhiyuan-server/src/test/resources/release-4.1.0/plan-solver-adr-cases.json",
-    "../zhiyuan-server/src/test/java/com/ytell/zhiyuan/service/biz/PlanSolver410AdrBenchmarkTest.java"
+    "tests/unit/test_release_410_m0_contract.py"
   ]
 }

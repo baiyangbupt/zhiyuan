@@ -848,6 +848,12 @@ previewDigest；共享 `FindingPostconditionEvaluator` 已用于新鲜审查 pre
 不能把该前置批次视为 b 完成。详见
 `docs/superpowers/plans/2026-10-19-j55b-frozen-preview-preflight.md`。
 
+2026-10-19 后续（Direct 倒挂切片）：`/review/prepare` + pending 冻结 +
+FrozenPlanExecutor 回放 + 原 probe 前后置校验 + Python 一次确认已接通；
+灰度开关 `review.fix.command.enabled` 默认关。Java 1356/0/0/10、
+Python unit 2923 passed/32 skipped；未部署、未做真栈验收。详见
+`docs/superpowers/reviews/2026-10-19-j55b-prepare-frozen-replay-acceptance.md`。
+
 - `PlanProposalPlanner` 接口 + `LegacyReviewAdapter`：现有 review builder
   产出的 proposal 也能进入统一冻结/回放；
 - Legacy adapter 必须物化完整 selected/ordered/专业级后态和事实摘要；

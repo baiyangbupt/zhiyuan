@@ -1134,6 +1134,12 @@ public class PlanningStateService {
         if (RepairProposalTaxonomy.isUserGoalSource(safeReq.getProposalSource())) {
             return applyUserGoalFixProposal(tenantId, chatSessionId, safeReq);
         }
+        // J5.5b：开关打开后，review_check 只认 prepare 冻结的 pending（只回放，不重排）。
+        // 开关关闭时保留旧的“重新生成再应用”路径，作为回滚位。
+        if (RepairProposalTaxonomy.isReviewCheckSource(safeReq.getProposalSource())
+                && ReviewFixCommandFlags.enabled()) {
+            return applyFrozenReviewFixProposal(tenantId, chatSessionId, safeReq);
+        }
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         RepairProposalApplyPolicy.validateStateVersionGuard(safeReq, state);
         RepairProposalApplyPolicy.ensureReviewReady(state);
@@ -1155,6 +1161,113 @@ public class PlanningStateService {
         res.setRepairReport(RepairReportBuilder.build(proposal, beforeReviewSummary, state));
         res.setState(state);
         return res;
+    }
+
+    /**
+     * J5.5b：review_check 的冻结回放。
+     *
+     * <p>只执行 prepare 冻结的那一份：工作草案 + 排序态原样写回（绝不重跑排序/重生成），
+     * 写前比对方案内容与选中事实摘要，写后按原探针重新评价并做后置条件校验。
+     * 任何一步不一致都 fail closed；后置不满足时抛 40905，让 pending 事务整体回滚。</p>
+     *
+     * <p>写前也做一次同样的后置校验：REST 直接 apply 没有外层事务，不能先落盘再抛错。</p>
+     */
+    private FixProposalApplyRes applyFrozenReviewFixProposal(Long tenantId, Long chatSessionId,
+                                                             FixProposalApplyReq req) {
+        PendingConfirmationRes pending = pendingConfirmationBizService
+                .getActiveOrApplying(tenantId, chatSessionId);
+        Map<String, Object> data = pending == null ? null : pending.getDataValue();
+        if (data == null
+                || !RepairProposalTaxonomy.ProposalSource.REVIEW_CHECK.equals(
+                stringValue(data.get("proposalSource")))
+                || data.get("frozenProposal") == null
+                || data.get("frozenReviewPlan") == null) {
+            throw new BusinessException(409, "review_fix_requires_pending");
+        }
+        if (!req.getProposalId().equals(stringValue(data.get("proposalId")))) {
+            throw new BusinessException(409, "review_fix_changed");
+        }
+        assertReviewFixDigest(data, "commandDigest", req.getCommandDigest());
+        assertReviewFixDigest(data, "previewDigest", req.getPreviewDigest());
+        assertReviewFixDigest(data, "evaluationVersion", req.getEvaluationVersion());
+
+        FixProposalDTO proposal;
+        FrozenReviewPlanDTO frozen;
+        try {
+            proposal = JSON.parseObject(JSON.toJSONString(data.get("frozenProposal")), FixProposalDTO.class);
+            frozen = JSON.parseObject(JSON.toJSONString(data.get("frozenReviewPlan")), FrozenReviewPlanDTO.class);
+        } catch (RuntimeException invalid) {
+            throw new BusinessException(409, "review_fix_not_confirmable");
+        }
+        if (proposal == null || frozen == null
+                || frozen.getWorkingPlan() == null || frozen.getOrderedPlan() == null) {
+            throw new BusinessException(409, "review_fix_not_confirmable");
+        }
+        if (!RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY.equals(
+                RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy()))
+                || !"probability_inversion".equals(proposal.getFindingCode())) {
+            throw new BusinessException(409, "review_fix_not_confirmable");
+        }
+
+        // 与预览同一条只读加载：保证 planContentDigest 的序列化输入与冻结时逐字一致。
+        PlanningStateDTO state = loadPlanningStateReadOnly(chatSessionId);
+        RepairProposalApplyPolicy.validateStateVersionGuard(req, state);
+        if (!Objects.equals(stringValue(data.get("planContentDigest")),
+                DirectReviewPreviewPlanner.planContentDigest(state))) {
+            throw new BusinessException(409, "review_fix_stale");
+        }
+        List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(
+                tenantId, chatSessionId, state, false);
+        String currentFactsDigest = DirectReviewPreviewPlanner.factsDigestForEntities(
+                frozen.getSelectedEntityIds(), effectiveCandidates);
+        if (currentFactsDigest == null || !currentFactsDigest.equals(frozen.getFactsDigest())) {
+            throw new BusinessException(409, "review_fix_facts_changed");
+        }
+
+        ReviewSummaryDTO beforeReviewSummary = state.getReviewState() == null
+                ? null : state.getReviewState().getSummary();
+        // 冻结回放：工作草案与排序态都按 prepare 时的冻结内容写回；倒挂修复只改顺序，
+        // 但两份副本必须同时落，避免草案与排序态错位。
+        state.setWorkingPlanState(JSON.parseObject(
+                JSON.toJSONString(frozen.getWorkingPlan()), DraftPlanStateDTO.class));
+        state.setOrderedPlanState(JSON.parseObject(
+                JSON.toJSONString(frozen.getOrderedPlan()), OrderedPlanStateDTO.class));
+        // 写前校验（REST 直接 apply 无事务）：后置条件不满足时绝不能先落盘。
+        assertReviewFixPostcondition(proposal, state, effectiveCandidates);
+        if (!saveOrderedState(chatSessionId, state, "fix_apply_review_frozen")) {
+            throw writeCasConflict("修复建议应用");
+        }
+        // 按契约在“已保存态”上重算原探针；不满足则抛 40905，让 pending 事务回滚。
+        assertReviewFixPostcondition(proposal, state, effectiveCandidates);
+
+        FixProposalApplyRes res = new FixProposalApplyRes();
+        res.setStatus("applied");
+        res.setMessage("已按确认前的冻结顺序应用修复建议，并完成原探针后置校验");
+        res.setProposal(proposal);
+        res.setRepairReport(RepairReportBuilder.build(proposal, beforeReviewSummary, state));
+        res.setState(state);
+        return res;
+    }
+
+    private void assertReviewFixDigest(Map<String, Object> data, String key, String requested) {
+        if (requested == null || !requested.equals(stringValue(data.get(key)))) {
+            throw new BusinessException(409, "review_fix_changed");
+        }
+    }
+
+    private void assertReviewFixPostcondition(FixProposalDTO proposal, PlanningStateDTO state,
+                                              List<CandidateItemDTO> effectiveCandidates) {
+        ReviewStateDTO freshReview = evaluateReview(state, effectiveCandidates);
+        FindingPostconditionDTO postcondition = new FindingPostconditionEvaluator()
+                .evaluate(proposal.getFindingCode(), freshReview);
+        if (!Boolean.TRUE.equals(postcondition.getSatisfied())) {
+            throw new BusinessException(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE,
+                    "review_fix_postcondition_failed");
+        }
+    }
+
+    private static String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     /**
@@ -3293,14 +3406,7 @@ public class PlanningStateService {
     }
 
     public ReviewFixPreviewDTO previewReviewFixProposals(Long tenantId, Long chatSessionId) {
-        PlanningStateDTO state = loadPlanningStateReadOnly(chatSessionId);
-        if (state.getBaselineDataValue() == null
-                || state.getCandidatePoolState().getItems().isEmpty()
-                || Boolean.TRUE.equals(state.getStaleFlags().getCandidatePool())
-                || shouldRefreshRecommendationOverlay(state)) {
-            throw new ReviewFixStaleException();
-        }
-        normalizeCandidatePoolForPlanning(state);
+        PlanningStateDTO state = loadReviewFixPreviewState(chatSessionId);
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, false);
         ReviewStateDTO review = evaluateReview(state, effectiveCandidates);
         ReviewFixPreviewDTO preview = new ReviewFixPreviewDTO();
@@ -3310,7 +3416,10 @@ public class PlanningStateService {
             preview.setStatus("unavailable");
             return preview;
         }
-        DirectReviewPreviewPlanner planner = new DirectReviewPreviewPlanner();
+        // 开关打开时，只读预览也返回“可确认”的冻结提案（仍需显式 prepare 才落 pending）；
+        // 关闭时保持原 preview_only，作为回滚位。
+        DirectReviewPreviewPlanner planner =
+                new DirectReviewPreviewPlanner(ReviewFixCommandFlags.enabled());
         for (EvaluationFindingDTO finding : review.getFindings()) {
             FixProposalDTO proposal = planner.plan(state, effectiveCandidates, finding,
                     after -> evaluateReview(after, effectiveCandidates));
@@ -3319,6 +3428,138 @@ public class PlanningStateService {
             }
         }
         return preview;
+    }
+
+    /**
+     * 只读预览与 prepare 共用的新鲜度闸口：没有落库基线、候选池为空/过期、
+     * 或推荐 overlay 需要刷新，都 fail closed（返回 409 review_fix_stale），
+     * 绝不在只读纵切里补写。normalize 只在内存里做，不影响落盘。
+     */
+    private PlanningStateDTO loadReviewFixPreviewState(Long chatSessionId) {
+        PlanningStateDTO state = loadPlanningStateReadOnly(chatSessionId);
+        if (state.getBaselineDataValue() == null
+                || state.getCandidatePoolState().getItems().isEmpty()
+                || Boolean.TRUE.equals(state.getStaleFlags().getCandidatePool())
+                || shouldRefreshRecommendationOverlay(state)) {
+            throw new ReviewFixStaleException();
+        }
+        normalizeCandidatePoolForPlanning(state);
+        return state;
+    }
+
+    /**
+     * J5.5b：把只读预览里用户点中的审查修复提案冻结成 pending。
+     *
+     * <p>不落任何方案状态：重新计算审查与提案（确认模式），逐字比对调用方回传的
+     * previewDigest/commandDigest/evaluationVersion/sourceVersionGuard；一致才冻结
+     * 整份 proposal + frozenReviewPlan + 全部摘要。确认后 apply 只回放冻结内容，
+     * 不再重新排序或重新生成。</p>
+     */
+    public PrepareResultDTO prepareReviewFixProposal(Long tenantId, Long chatSessionId, String requestId,
+                                                     String requestDigest, ReviewFixPrepareReq req) {
+        if (!ReviewFixCommandFlags.enabled()) {
+            throw new BusinessException(409, "review_fix_command_disabled");
+        }
+        ReviewFixPrepareReq safeReq = req == null ? new ReviewFixPrepareReq() : req;
+        PendingConfirmationRes active = pendingConfirmationBizService.getCurrent(tenantId, chatSessionId);
+        String activePendingStatus = active == null ? null : active.getStatus();
+        return conversationProposalRequestService.prepareOnce(
+                tenantId, chatSessionId, requestId, requestDigest, activePendingStatus,
+                () -> {
+                    PlanningStateDTO state = loadReviewFixPreviewState(chatSessionId);
+                    List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(
+                            tenantId, chatSessionId, state, false);
+                    ReviewStateDTO review = evaluateReview(state, effectiveCandidates);
+                    ReviewFixPreviewDTO preview = new ReviewFixPreviewDTO();
+                    preview.setSourceVersion(state.getVersion());
+                    preview.setReview(review);
+                    if (!"completed".equals(review.getEvaluationStatus())) {
+                        preview.setStatus("unavailable");
+                        throw new BusinessException(409, "review_fix_changed");
+                    }
+                    DirectReviewPreviewPlanner planner = new DirectReviewPreviewPlanner(true);
+                    for (EvaluationFindingDTO finding : review.getFindings()) {
+                        FixProposalDTO proposal = planner.plan(state, effectiveCandidates, finding,
+                                after -> evaluateReview(after, effectiveCandidates));
+                        if (proposal != null) {
+                            preview.getProposals().add(proposal);
+                        }
+                    }
+                    FixProposalDTO proposal = findReviewFixProposal(preview, safeReq.getProposalId());
+                    validateReviewFixPrepare(state, review, proposal, safeReq);
+
+                    String operationId = UUID.randomUUID().toString().replace("-", "");
+                    Map<String, Object> dataValue = new LinkedHashMap<String, Object>();
+                    dataValue.put("operationId", operationId);
+                    dataValue.put("proposalSource", RepairProposalTaxonomy.ProposalSource.REVIEW_CHECK);
+                    dataValue.put("proposalId", proposal.getProposalId());
+                    dataValue.put("sourceVersion", preview.getSourceVersion());
+                    dataValue.put("evaluationVersion", proposal.getEvaluationVersion());
+                    dataValue.put("planContentDigest", proposal.getPlanContentDigest());
+                    dataValue.put("commandDigest", proposal.getCommandDigest());
+                    dataValue.put("previewDigest", proposal.getPreviewDigest());
+                    putIfNotBlank(dataValue, "canonicalObjectiveDigest", proposal.getCanonicalObjectiveDigest());
+                    putIfNotBlank(dataValue, "hardObjectiveVersion", proposal.getHardObjectiveVersion());
+                    dataValue.put("frozenProposal",
+                            JSONObject.parseObject(JSONObject.toJSONString(proposal)));
+                    dataValue.put("frozenReviewPlan",
+                            JSONObject.parseObject(JSONObject.toJSONString(proposal.getFrozenReviewPlan())));
+                    dataValue.put("frozenRequestDigest", EvaluationVersion.sha256(
+                            proposal.getProposalId() + "|" + proposal.getPreviewDigest() + "|"
+                                    + proposal.getEvaluationVersion() + "|" + proposal.getPlanContentDigest()));
+                    dataValue.put("regenerateOrderedPlan", true);
+                    dataValue.put("rerunReview", true);
+
+                    PendingConfirmationUpsertReq upsert = new PendingConfirmationUpsertReq();
+                    upsert.setChatSessionId(chatSessionId);
+                    upsert.setPendingId(UUID.randomUUID().toString());
+                    upsert.setKind("plan_change_proposal");
+                    upsert.setActionFamily("apply_plan_change_proposal");
+                    upsert.setDataValue(dataValue);
+                    upsert.setExpectedRevision(
+                            active == null || active.getRevision() == null ? 0L : active.getRevision());
+                    PendingConfirmationRes pending = pendingConfirmationBizService.upsert(tenantId, upsert);
+                    return new ConversationProposalRequestService.PrepareOutcome(
+                            pending == null ? null : pending.getPendingId(), operationId, proposal);
+                });
+    }
+
+    private FixProposalDTO findReviewFixProposal(ReviewFixPreviewDTO preview, String proposalId) {
+        if (preview == null || preview.getProposals() == null || Strings.isNullOrEmpty(proposalId)) {
+            return null;
+        }
+        for (FixProposalDTO proposal : preview.getProposals()) {
+            if (proposal != null && proposalId.equals(proposal.getProposalId())) {
+                return proposal;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 比对规则：sourceVersionGuard 对不上 = 方案已漂移（stale）；
+     * 其余摘要对不上 = 提案/命令/评价已变化（changed）；没有可确认冻结方案 = not_confirmable。
+     */
+    private void validateReviewFixPrepare(PlanningStateDTO state, ReviewStateDTO review,
+                                          FixProposalDTO proposal, ReviewFixPrepareReq req) {
+        if (proposal == null) {
+            throw new BusinessException(409, "review_fix_changed");
+        }
+        Integer guard = req.getSourceVersionGuard();
+        if (guard == null || !guard.equals(state.getVersion())) {
+            throw new BusinessException(409, "review_fix_stale");
+        }
+        if (!Objects.equals(req.getPreviewDigest(), proposal.getPreviewDigest())
+                || !Objects.equals(req.getCommandDigest(), proposal.getCommandDigest())
+                || !Objects.equals(req.getEvaluationVersion(), proposal.getEvaluationVersion())
+                || !Objects.equals(proposal.getEvaluationVersion(), review.getEvaluationVersion())) {
+            throw new BusinessException(409, "review_fix_changed");
+        }
+        if (!"ready".equals(proposal.getStatus())
+                || !Boolean.TRUE.equals(proposal.getRequiresConfirmation())
+                || proposal.getFrozenReviewPlan() == null) {
+            throw new BusinessException(409, "review_fix_not_confirmable");
+        }
     }
 
     private ReviewStateDTO runReviewInternal(Long tenantId, Long chatSessionId, PlanningStateDTO state) {

@@ -1915,6 +1915,77 @@ def test_build_runtime_history_trims_long_history_and_compacts_tool_returns():
     assert "预览删除 2 条志愿" in tool_returns[0].content
 
 
+def test_build_runtime_history_keeps_review_fix_prepare_candidate_when_compacting():
+    """J5.5b：确认回合要从历史里的 preview_plan_change 回包取冻结候选；
+    裁剪长回包时必须保留它，否则第二轮的"确认"永远找不到可确认的提案。"""
+    candidate = {
+        "proposal_id": "fp-group-safety",
+        "proposal_source": "review_check",
+        "source_version_guard": 12,
+        "command_digest": "command-digest-v1",
+        "preview_digest": "preview-digest-v1",
+        "evaluation_version": "eval-v1",
+        "proposal_apply": {
+            "proposalId": "fp-group-safety",
+            "proposalSource": "review_check",
+        },
+    }
+    long_tool_content = json.dumps(
+        {
+            "data": {
+                "pending_created": False,
+                "review_fix_prepare_candidate": candidate,
+                "proposal": {"unrelated_bulk": "x" * 5000},
+            },
+            "next_step": "confirm",
+            "message": "预览已生成，确认后才会调整。",
+        },
+        ensure_ascii=False,
+    )
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="先给我看预览")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="preview_plan_change",
+                    args={"repair_goal": {"strategy": "adjust_major_group_inner_safety"}},
+                    tool_call_id="preview-review-fix",
+                )
+            ],
+            model_name="test",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="preview_plan_change",
+                    content=long_tool_content,
+                    tool_call_id="preview-review-fix",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="确认后才会调整")], model_name="test"),
+    ]
+    config = MagicMock(runtime_max_messages=24, runtime_drop_tool_returns_over_chars=200)
+
+    runtime = build_runtime_history(
+        history,
+        latest_user_content="确认",
+        config=config,
+    )
+
+    tool_returns = [
+        part
+        for message in runtime.model_history or []
+        for part in getattr(message, "parts", [])
+        if isinstance(part, ToolReturnPart)
+    ]
+    assert tool_returns
+    compacted = json.loads(tool_returns[0].content)
+    assert compacted["review_fix_prepare_candidate"] == candidate
+    assert compacted["_truncated"] is True
+    assert "unrelated_bulk" not in tool_returns[0].content
+
+
 def test_build_runtime_history_compacts_preview_intent_change_returns_even_when_short():
     payload = {
         "status": "existing_only",

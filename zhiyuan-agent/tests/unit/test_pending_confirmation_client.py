@@ -234,6 +234,37 @@ async def test_score_update_preview_and_prepare_hit_their_own_endpoints(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_review_fix_prepare_hits_its_own_endpoint_with_frozen_payload(monkeypatch):
+    """J5.5b：审查修复 prepare 是独立端点；requestId 必须进 query（幂等重放依据），
+    冻结摘要与版本守卫原样进请求体。"""
+    post_mock = AsyncMock(return_value={"code": 0})
+    monkeypatch.setattr(internal_client.http_client, "post", post_mock)
+
+    payload = {
+        "proposalId": "fp-group-safety",
+        "previewDigest": "preview-digest-v1",
+        "commandDigest": "command-digest-v1",
+        "evaluationVersion": "eval-v1",
+        "sourceVersionGuard": 12,
+        "regenerateOrderedPlan": True,
+        "rerunReview": True,
+    }
+    await internal_client.prepare_review_fix_proposal(
+        1,
+        "101",
+        request_id="review-prepare:101:fp-group-safety:preview-digest-v1",
+        payload=payload,
+    )
+
+    call = post_mock.await_args
+    assert call.kwargs["endpoint"] == (
+        "/gaotu-assistant-bot/inner/planning/1/session/fix-proposals/review/prepare"
+        "?chatSessionId=101&requestId=review-prepare:101:fp-group-safety:preview-digest-v1"
+    )
+    assert call.kwargs["json_data"] == payload
+
+
+@pytest.mark.asyncio
 async def test_pending_planning_command_carries_the_score_update_draft(monkeypatch):
     """`update_score_detail` 的执行输入是 pending 里的草稿 ✓（Java 执行体按它合并/校验/落库）：
     透传键名 `scoreUpdate` 与 Java 的 `PendingPlanningCommandReq` 逐字一致 ✓。"""
