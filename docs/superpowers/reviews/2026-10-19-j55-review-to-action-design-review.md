@@ -70,8 +70,48 @@
 
 ---
 
-## 5. 评审结论
+## 5. 首轮评审结论
 
 - 首版设计方向正确（评价/命令/冻结回放统一），但 **P0 语义与执行可行性不足**，不能直接落地。
 - 修订版需再次做架构/执行两路复审；复审通过后从 J5.5a（纯命令模型+delta，不改执行）开始。
-- 本文与设计稿同提交；二次复审结论追加在本文件末尾。
+
+---
+
+## 6. 二次复审（修订版）
+
+复审对象：修订版设计（绝对目标、patch after enrich、FrozenPlanExecutor、
+previewDigest、typed delta）。两路复审结论：**仍未 ready**，但只剩 1 个 P0
+（架构）与 4 个执行 P0，均为局部修订，不需要推翻框架。
+
+### 6.1 架构复审
+
+| # | 问题 | 处置 |
+|---|---|---|
+| P0 | `applyStrategy` 归一与 `FixProposalDTO.strategy` 保留原语义冲突；safety/ratio 仍被 taxonomy/apply 拒绝 | 已改为 **proposal.strategy=applyStrategy**（fill），`sourceStrategy` 只做审计；apply 按 solverResult 分派 |
+| P1-1 | policy 表与 Case A 矛盾（safety/ratio lockExisting=true 不可行） | 已改为按 sourceStrategy 配置；safety/ratio `lockExisting=false + forcedRemove` |
+| P1-2 | `count_missing` 误判 needs_input | 已改：空 reason+passed/warn=缺官方数→needs_input；count_missing=低于官方→fill |
+| P1-3 | group-inner Direct 仍自己挑专业 | 已改：必须显式 replacementPairs；否则 Search forcedRemove/Add |
+| P1-4 | pending/apply 比对依赖不存在的 frozenCommand；直连 apply 第二入口 | 已改：顶层 proposalId/commandDigest/previewDigest/evaluationVersion 比对；直连 review apply 409 |
+| P1-5 | proposalId/previewDigest 循环 | 已改：proposalId 不含 previewDigest；previewDigest 含 proposalId |
+| P1-6 | 回滚依赖旧分支，但 J5.5b 又删 | 已改：旧分支保留到 J5.5d；失败状态 REQUIRES_NEW |
+| P1-7 | user-goal 统一措辞过强 | 已改：J5.5b 只统一 proposal/freeze/apply；J5.5d 再议编译合并 |
+
+### 6.2 执行复审
+
+| # | 问题 | 处置 |
+|---|---|---|
+| P0-1 | digest 循环；canonical digest 与 compileConfirmed 口径不一致 | 已改：proposalId/previewDigest 公式分离；canonical 存 enrich 前，solverObjective 存 patch 后 |
+| P0-2 | patch 持久化不可行（HardPlanningObjectives 无 safety、coverage 不能删） | 已补：DTO/ SafetyFloorSupport / CoverageRequirementSupport 的持久与移除设计 |
+| P0-3 | review-only bump 导致 expectedPlanVersion/sourceVersionGuard 409 | 已改：review 写不推进 plan version；用 evaluationVersion+planContentDigest |
+| P0-4 | apply 要求 regenerate/rerun=true，与 frozen 回放冲突 | 已改：true 语义=按冻结顺序同步；rerun 在提交后；不再 force regenerate |
+| P1-1 | 预览 resolveEffectiveCandidates 会写 overlay | 已改：in-memory refresh；stale 则 409，不写 |
+| P1-2 | Java 无 readonly 机制 | 已补：header `X-Assistant-Mode` + `planning.write.enabled`，Java 端点拒绝 |
+
+### 6.3 复审后状态
+
+- 上述 P0/P1 已回填设计 §2–§6、§9、§10；剩余为产品/数据侧确认（coverage
+  identity、组内展示粒度、fixture 会话），已在设计 §11.1 列出。
+- 建议下一步：只做 J5.5a（命令模型 + typed delta + 纯读预览），
+  **不改 apply**；b/c 在 a 的测试与 review 通过后启动。
+- 最终确认前仍需一次简短的实现边界核对（尤其 `applyStrategy` 归一和
+  `FrozenPlanExecutor` 分派），但不需要再推翻整体框架。

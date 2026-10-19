@@ -1,6 +1,7 @@
 # J5.5 设计：统一“评价 → 命令 → 预览 → 确认 → 执行”框架
 
-状态：**修订版，已按首轮三路评审修订；待二次复审，复审通过前不落地实现**。
+状态：**修订版，已按首轮三路评审 + 二次架构/执行复审修订；待最终确认，
+确认前不落地实现**。
 日期：2026-10-19
 首轮评审：`docs/superpowers/reviews/2026-10-19-j55-review-to-action-design-review.md`
 
@@ -42,8 +43,11 @@
 | Pending | 冻结、幂等、状态机 | 不重新规划 |
 | Apply | 只回放 + 持久化 + 后置 | 不重新规划 |
 
-用户目标与审查修复只差**入口和意图来源**，共享命令、预览、冻结、执行、
-后置、回执六件套。Direct 动作只用于**全显式**变更；需要选候选的修复一律走
+**J5.5b 的统一范围**：审查修复与用户目标共享 **proposal / freeze / apply /
+postcondition / receipt** 五件套；用户目标在 J5.5b 仍由 `UserGoalPlanner`
+适配现有 `UserGoalProposalBuilder`（同一个 `PlanProposalPlanner` 接口），
+但**不共享 PlanCommandDTO**。J5.5d 再评估是否把用户目标编译也并入
+PlanCommand。Direct 动作只用于**全显式**变更；需要选候选的修复一律走
 Search/Solver。
 
 ---
@@ -169,6 +173,28 @@ class PlanCommandDTO {
 都是**绝对值**。`ObjectiveDelta` 里的 `targetCountDelta` 只用于卡面
 “+2/-3”展示和审计；compiler 用 state 上下文换算成绝对值。
 
+**digest 公式（消除循环依赖）**：
+
+```
+commandDigest  = sha256(canonicalJson(
+    evaluationVersion, commandType, strategy, applyStrategy, sourceStrategy,
+    sourceCheck, reasonCode, level,
+    targetCount, tierTargetCounts(sorted), safetyMinLocalProtect,
+    coverageRequirements(sorted), constraintPatch(sorted),
+    targets/forcedRemove/replacementPairs/reorderTargets(sorted by level+id)))
+proposalId     = "fp_" + sha256(evaluationVersion, planContentDigest,
+                                commandDigest, canonicalProposalContent)[:16]
+previewDigest  = sha256(proposalId, evaluationVersion, planContentDigest,
+                        selectedEntityIds, orderedEntityIds,
+                        canonicalJson(actions), canonicalJson(dryRunResult))
+```
+
+- `proposalId` **不含** previewDigest；
+- `previewDigest` 包含 proposalId，反向不成立；
+- `canonicalProposalContent` = 策略 + 目标绝对值 + actions 骨架（不含
+  solver 结果），用于同一命令的稳定 id。
+- map 一律按 key 排序，target/ref 按 level+id 排序，列表稳定。
+
 ## 2.5 预览对象
 
 继续使用 `FixProposalDTO`（协议兼容）。新增：
@@ -177,9 +203,15 @@ class PlanCommandDTO {
 - `previewDigest`（见 §4.1）
 - `sourceStrategy` / `findingCode` / `evaluationVersion`
 - `objectivePatch`（冻结 patch，供 apply 持久化）
+- `solverObjectiveDigest`（enrich+patch 后的 solver 目标摘要）
 
-`solverResult / canonicalObjectiveDigest / solverVersion / solverInputDigest /
-hardObjectiveVersion` 继续作为冻结/后置权威。
+`canonicalObjectiveDigest` **必须保存 enrich 之前的 digest**（与
+`UserGoalProposalBuilder:104` 同口径），供 apply 时
+`compileConfirmed(state)` 对比；`solverObjectiveDigest` 单独保存
+enrich+patch 后的值，仅用于审计/solver 复现。两者不得混用。
+
+`solverResult / solverVersion / solverInputDigest / hardObjectiveVersion`
+继续作为冻结/后置权威。
 
 ---
 
@@ -197,8 +229,11 @@ hardObjectiveVersion` 继续作为冻结/后置权威。
 | 确认执行 | `confirm_pending`/网关 claim → `/pending-command/execute` | 写 | 只回放 |
 | 测试/内部 | inner endpoints | 视接口 | 同上 |
 
-只读实例（`codex_readonly`）只能执行“读”行；Java prepare 端点必须做
-**服务端只读拒绝**（不能只靠 agent 工具层）。
+只读实例（`codex_readonly`）只能执行“读”行；Java prepare/execute 端点必须做
+**服务端只读拒绝**（不能只靠 agent 工具层）：内部请求带
+`X-Assistant-Mode: readonly`（由网关/agent 从运行时模式注入），Java 在
+prepare/apply 入口校验；未带或非 `write` → 403 `readonly_mode`。同时保留
+配置开关 `planning.write.enabled` 供只读实例整体关闭写路径。
 
 ## 3.2 用户对话判定
 
@@ -227,19 +262,27 @@ hardObjectiveVersion` 继续作为冻结/后置权威。
 网关只允许确认**当前 active proposal**；proposalId/previewDigest 不一致 →
 重新预览。
 
-## 3.3 审查新鲜度
+## 3.3 审查新鲜度与版本
 
 - `runReviewInternal(persist=true)`：显式 `/review/run`，写 `reviewState` 并
   清 stale；`evaluatedStateVersion` = 评价时的 stateVersion。
+- **审查写不推进计划版本**：`reviewState` 使用独立的 `reviewVersion`
+  （或直接以 `evaluationVersion` 作为版本），不得修改 `planningState.version`、
+  不得改变 `planContentDigest`。否则 prepare/confirm 之间跑一次 review 就会
+  触发 `expectedPlanVersion`/`sourceVersionGuard` 409（现网 off-by-one：
+  900045 v14/review13、900040 v5/review4）。
 - `runReviewInternal(persist=false)`：预览/修复生成使用，**纯内存**，不写
-  reviewState、不 bump version。
+  reviewState、不 bump 任何版本。
 - 方案写操作通过 `ReviewInvalidationPolicy`（:41-83）标 stale。
 - `planContentDigest` = hash(workingPlan + orderedPlan + constraints + targets)；
   **不包含 version/reviewState**。apply guard 用它判断方案是否变化。
 - `evaluationVersion = hash(evaluatedStateVersion, planContentDigest,
   candidateSourceVersion, dataVersion, objectiveModelVersion)`。
 - review prepare/apply 校验 `evaluationVersion + planContentDigest`；
-  review-only 写导致 version+1 不影响 guard。
+  `sourceVersionGuard` 取 prepare 时的当前 plan version（review 写不改变它）。
+- 预览的候选解析必须 **in-memory refresh**：`resolveEffectiveCandidates` 的
+  refresh 分支不得写 overlay（现 `:9894/:10000-10002` 会 save）；若数据已
+  stale 且无法内存刷新，直接 409 `review_fix_stale`，不写库。
 
 ---
 
@@ -257,15 +300,16 @@ Agent review_plan
   → 返回 proposalId/commandDigest/previewDigest/evaluationVersion/sourceVersion
 ```
 
-`previewDigest = sha256(
-  evaluationVersion,
-  planContentDigest,
-  proposalId,
-  commandDigest,
-  canonicalJson(selectedEntityIds, orderedEntityIds, actions, dryRunResult)
-)`。
+`previewDigest` 公式见 §2.4（proposalId 由 evaluationVersion +
+planContentDigest + commandDigest 生成，previewDigest 再覆盖 selected/
+ordered/actions/dryRun，不存在循环）。
 
-只读实例止步于此；不创建任何 pending（删除现有 review 工具的 legacy pending 创建）。
+预览期间：
+
+- 候选解析 in-memory；不保存 overlay、不写 reviewState、不 bump version；
+- 不创建任何 pending（删除现有 review 工具的 legacy pending 创建
+  `tools.py:9558`）；
+- 只读实例（`codex_readonly`）止步于此。
 
 ## 4.2 审查修复 prepare
 
@@ -283,8 +327,11 @@ Body {
 
 1. `ConversationProposalRequestService.prepareOnce` 幂等/supersede；
 2. 加载 state/reviewState，校验 guard/evaluationVersion/planContentDigest；
-3. 重新运行 `ReviewFixPlanner.plan(command)`（不信任网关回传内容，只信 digest），
-   重新计算 `previewDigest`；与请求不一致 → 409 `review_fix_changed`；
+3. 按 `proposalId` 从当前 evaluation 的 findings/commands 中**定位唯一 command**
+   （多 proposal 时 proposalId 必须唯一；找不到 → 409 `review_fix_changed`），
+   重新运行 `PlanProposalPlanner.plan(command)`（不信任网关回传内容，只信
+   proposalId/digest），重新计算 `previewDigest`；与请求不一致 → 409
+   `review_fix_changed`；
 4. 只有 `requiresConfirmation=true` 的主提案才落 pending；
 5. 冻结：
 
@@ -322,9 +369,10 @@ claim pending（active→applying，claimToken）
            commandType=apply_plan_change_proposal, proposalApply
   → PendingPlanningCommandBizService.execute
      1 validatePendingOwner（pendingId/claimToken/applying/claim 未过期）
-     2 frozenCommand 内容比对（proposalId/commandDigest/previewDigest）
+     2 proposalApply 顶层比对：proposalId/commandDigest/previewDigest/
+       evaluationVersion 必须与 pending.dataValue 一致
      3 operationId 幂等 replay
-     4 expectedPlanVersion 校验
+     4 expectedPlanVersion 校验（= prepare 时 plan version；review 写不推进）
      5 command 行插入
      6 executeCommand → FrozenPlanExecutor
      7 postcondition + 回执
@@ -332,19 +380,34 @@ claim pending（active→applying，claimToken）
   → complete pending（applying→applied）
 ```
 
+`apply_plan_change_proposal` 的 `assertRequestMatchesFrozen` 不再早退：
+改成比对 `proposalApply.proposalId / commandDigest / previewDigest /
+evaluationVersion` 与 pending.dataValue；不一致 → 409
+`command_content_mismatch`。不依赖 `frozenCommand`（现有 review 数据没有它）。
+
 `FrozenPlanExecutor`（**按 proposal 是否带 solverResult 分派，不看 source**）：
 
 - 有 `solverResult`：
   - `applyFrozenSelection`（selected/remove/add 回放）；
   - `applyFrozenOrdering`（orderedEntityIds 回放）；
-  - **禁止**再 force regenerate ordered plan；
-  - apply 同事务持久化 `objectivePatch`（target/tier/safety/coverage）。
+  - `regenerateOrderedPlan=true` 的语义改为“按冻结 orderedEntityIds 同步
+    ordered plan”，**不是** force regenerate；实现上禁止重新调用
+    `enforceSelection/enforceOrdering`；
+  - `rerunReview=true` 在 apply 事务提交后执行，允许 bump review 版本，
+    但不改变方案/顺序；
+  - apply 同事务先持久化 `objectivePatch`（target/tier/safety/coverage），
+    再用 frozen selection 回放，最后后置校验。
 - 无 `solverResult`（Direct 显式动作）：
   - 按 frozen actions 执行 remove/replace/reorder/group；
   - reorder 必须回放冻结 `orderedEntityIds`，不能重新排序。
 
 `applyFixProposal` review 分支不再调用 `generateFixProposals`；canonical
-校验对所有带 solverResult 的 proposal 生效（不再只对 user_goal）。
+校验对所有带 solverResult 的 proposal 生效（不再只对 user_goal），且比较的是
+**enrich 前的 canonicalObjectiveDigest**（见 §2.5）。
+
+**唯一写入口**：审查修复只能走 `/review/prepare` → `/pending-command/execute`；
+直连 `/fix-proposals/apply` 对 `review_check` 返回 409
+`review_fix_requires_pending`（legacy 旧 pending 过渡按 §6 处理）。
 
 ## 4.4 后置校验与回执
 
@@ -360,7 +423,10 @@ claim pending（active→applying，claimToken）
 - 评价输入不可用（缺字段/候选刷新）→ fail-closed，40905。
 - 回执 `RepairReportDTO` 增 `findingCode/commandDigest/sourceStrategy`；
   Web 可选展示，默认内部审计。
-- 后置校验不通过 → 事务回滚，pending fail/expired，command failed。
+- 后置校验不通过 → 方案事务回滚。
+- **失败状态另事务写**：command failed / pending fail/expired 用
+  `REQUIRES_NEW` 失败写入器（或 outbox），不能与回滚的方案事务共用同一事务；
+  失败行必须可审计，claim 过期后重新领取要换新 claimToken。
 
 ## 4.5 失败矩阵
 
@@ -374,7 +440,7 @@ claim pending（active→applying，claimToken）
 | frozenSelectionDigest 不匹配 | 409 `solver_input_stale` |
 | search 不可行 | proposal blocked，不落 pending |
 | apply/postcondition 异常 | 事务回滚；command failed；pending fail/expired |
-| 只读模式止步 prepare | 403 `readonly_mode` |
+| 只读模式止步 prepare/execute | 403 `readonly_mode`（Java 端校验 header/config） |
 
 ---
 
@@ -406,8 +472,11 @@ claim pending（active→applying，claimToken）
 4. `safetyMinLocalProtect = max(0, requiredAbs)`（绝对值，不叠加）；
 5. `coverageRequirements`：按 identity 合并；已有项取 max，新项加入；
 6. `constraintPatch` 复制；
-7. `applyStrategy`：Search 统一归一为 `fill_missing_count`（apply 层），
-   `sourceStrategy` 保留语义；
+7. `applyStrategy`：
+   - Search 选条目（fill/safety/ratio/coverage/gap/edge）→ `fill_missing_count`；
+   - 明确移出/替换（forcedRemove/replacementPairs）→ `remove_risk_items`/
+     `replace_risk_items`；
+   - `sourceStrategy` 保留原语义；
 8. `commandDigest = sha256(canonicalJson(所有绝对字段, targets 排序,
    maps key 排序, evaluationVersion))`。
 
@@ -429,7 +498,7 @@ List<CoverageRequirementDTO> coverageRemove;
 |---|---|---|
 | `safety_guard` | `safetyMinLocalProtect=requiredAbs`；targetCount=baseTarget | required=0 或 province_excluded → 无修复 |
 | `ratio_distribution` | `tierTargetCounts` 绝对；targetCount=baseTarget | 无显式 tierConstraint → not_applicable |
-| `count_validation_hard` | 低于官方 → targetCount=officialMin；超上限 → forcedRemoveTargets | `count_missing` → needs_input，无修复 |
+| `count_validation_hard` | 低于官方 → targetCount=officialMin；超上限 → forcedRemoveTargets | **空 reasonCode + passed/warn**（缺官方数）→ needs_input；`count_missing` 是“当前低于官方下限”，正常产 fill |
 | `count_target` | targetCount=selectionTargetCount | 无 selectionTargetCount → not_applicable |
 | `coverage:<i>` | coverageRequirements 绝对集合 | 已满足项不重复加；无 requirement → 不产 |
 | `probability_inversion` | reorderTargets=affected | Direct |
@@ -439,8 +508,8 @@ List<CoverageRequirementDTO> coverageRemove;
 | `special_enrollment` | forcedRemoveTargets | |
 | `cooperative_program` | replacementPairs/forcedRemoveTargets | |
 | `edge_score` | safetyMinLocalProtect/tierTargetCounts | 首期 preview_only |
-| `group_inner_safety_guard` | targets=unit + 组内 major refs | Direct |
-| `major_group_safety_intent_alignment` | 组内 refs | Direct |
+| `group_inner_safety_guard` | `replacementPairs`（组内 from→to 专业）；无显式配对 → Search `forcedRemove`/`forcedAdd` | 不允许 Direct 自己挑组内专业 |
+| `major_group_safety_intent_alignment` | 同上 | 同上 |
 | notices | 无 | policy |
 
 unknown/needs_input（缺省/缺官方数/缺评价输入）→ `fixability=needs_input`，
@@ -452,7 +521,9 @@ unknown/needs_input（缺省/缺官方数/缺评价输入）→ `fixability=need
 
 - `sort_by_probability`：reorderTargets；preview 时由 PlanOrderingEngine 生成
   冻结 orderedEntityIds，apply 只回放。
-- `adjust_major_group_inner_safety`：unit + 组内 major refs。
+- `adjust_major_group_inner_safety`：必须给**组内 from→to 专业**
+  `replacementPairs`；只给 unit 不构成可执行命令，转 Search
+  `forcedRemove`/`forcedAdd`。
 - `remove_risk_items`：仅当 targets 已明确且无需补偿选择；否则转 Search
   `forcedRemoveTargets`。
 - `replace_risk_items`：仅当 `replacementPairs` 已给出；否则转 Search。
@@ -473,11 +544,23 @@ applyPatch(base, command):                               // 后 patch
   4 coverageRequirements
   5 constraintPatch
   6 重新计算 tierAnchor / resolvedCounts
-  7 重冻 objectiveDigest（hardObjectiveVersion 不变）
+  7 重冻 `solverObjectiveDigest`；`canonicalObjectiveDigest` 保持 enrich 前值
 ```
 
+补丁持久化（apply 同事务，先写后回放）：
+
+- `HardPlanningObjectivesDTO` 增加 `safetyMinLocalProtect`/`safetyFloorMode`
+  或等价持久字段；`SafetyFloorSupport.build` 必须优先读显式值，不能被
+  state 默认覆盖。
+- `CoverageRequirementSupport.persist` 增加按 identity 删除；现有实现只
+  add/max，无法移除。
+- tier 目标写回 `TierAllocationSupport` 的 confirmed goal/resolution；
+  targetCount 写回 `selectionTargetCount`。
+- 持久化完成后再执行 frozen selection；后置校验读写入后的 state。
+
 必须单测断言：`StagedDeterministicPlanSolver` 收到的 objective 中
-`structureTarget.tierAnchor`、`safetyFloor`、coverage 与命令一致。
+`structureTarget.tierAnchor`、`safetyFloor`、coverage 与命令一致；apply 后
+再次 compileConfirmed 仍带同样补丁。
 
 ### 5.5.2 快照与 solver
 
@@ -488,28 +571,36 @@ policy = mutationPolicy(applyStrategy)
 StagedDeterministicPlanSolver.solve(snapshot, base, policy)
 ```
 
-MutationPolicy（绝对目标下）：
+MutationPolicy 按 **sourceStrategy**（不是归一后的 applyStrategy）选择：
 
-| applyStrategy | action | lockExisting | countAsChurn | requireCompensationSafe |
-|---|---|---|---|---|
-| fill_missing_count | FILL | false | true | true |
-| add_safety_items | FILL | true | true | true |
-| rebalance_tier_ratio | FILL | true | true | true |
-| fill_probability_gap | FILL | false | true | true |
-| edge_score | FILL | true | true | true |
+| sourceStrategy | action | lockExisting | countAsChurn | requireCompensationSafe | forced |
+|---|---|---|---|---|---|
+| fill_missing_count / count_target | FILL | false | true | true | — |
+| add_safety_items | FILL | false | true | true | forcedRemoveTargets（非本省保底） |
+| rebalance_tier_ratio | FILL | false | true | true | forcedRemoveTargets（超配额档） |
+| fill_probability_gap | FILL | false | true | true | forcedRemove |
+| edge_score | FILL | false | true | true | forcedRemove |
+| coverage / safety | FILL | false | true | true | forcedRemove |
+| remove_risk_items | REMOVE | false | true | true | forcedRemoveTargets |
+| replace_risk_items | REPLACE | false | true | true | replacementPairs |
 
-`lockExisting=true` 只用于“必须保留 current、在其上调整”的场景；safety/ratio
-需要替换时用 `forcedRemoveTargets` + `lockExisting=false`，避免 current 被
-强制锁死导致无法收缩/替换。
+`safety`/`ratio` 不能用 `lockExisting=true`：actual=0 / 全冲场景下 current 会被
+强制保留，目标不可行。需要保留 current 的语义由 solver 的 churn 目标表达，
+而不是 lock；必须移出的项通过 `forcedRemoveTargets` 显式给出。
 
 ### 5.5.3 结果 → proposal
 
-- `applyStrategy=fill_missing_count`（apply 层统一）；
-- `strategy/sourceStrategy` 保留原语义用于展示/审计；
+- `FixProposalDTO.strategy = applyStrategy`（**必须是 taxonomy 的
+  applyable 值**：选条目用 `fill_missing_count`，移出用
+  `remove_risk_items`，替换用 `replace_risk_items`），否则
+  `RepairProposalApplyPolicy`/`applySupportedFixProposalStrategy` 仍会拒绝；
+- `sourceStrategy` 保留原语义（safety/ratio/coverage）用于展示/审计；
 - `actions` 由 solver add/remove/ordered 生成；
 - `solverResult` 整份冻结；
 - `objectivePatch` 一并冻结，apply 持久化；
-- `previewDigest` 覆盖 selected/ordered/actions。
+- `canonicalObjectiveDigest` 存 enrich 前值，`solverObjectiveDigest` 存
+  enrich+patch 后值；
+- `previewDigest` 覆盖 selected/ordered/actions/dryRun。
 
 ### 5.5.4 失败
 
@@ -535,8 +626,9 @@ J5.5 落地时：
 |---|---|---|
 | `CompiledActionDTO` → `PlanCommandDTO` | 单一命令对象 | J5.5a |
 | review 预览的 legacy pending 创建（`tools.py:9558`） | 预览纯读，prepare 才落 pending | J5.5a/b |
-| `applyFixProposal` review 重新生成（:1139） | FrozenPlanExecutor 替代 | J5.5b |
-| review-only 不可达分支（PRIORITIZE solver-null、FILL user-goal legacy） | 新链不再产生 | J5.5b |
+| `applyFixProposal` review 重新生成（:1139） | FrozenPlanExecutor 替代；**旧分支保留到 J5.5d 供回滚** | J5.5b 新增，J5.5d 删除 |
+| review-only 不可达分支（PRIORITIZE solver-null、FILL user-goal legacy） | 新链不再产生；回滚依赖，J5.5d 再删 | J5.5d |
+| 直连 `/fix-proposals/apply` 的 review 分支 | 返回 409 `review_fix_requires_pending`；旧 pending 走 Legacy adapter | J5.5b |
 | `RepairDryRunSimulator` | Direct 自产 dryRunResult 后删除 | J5.5c |
 | `RepairProposalStateBuilder` 旧 check 路径 | Legacy adapter 保留；checks 退场后删 | J5.5d |
 | `RepairProposalApplyPolicy` 冗余策略分支 | 归一后删除 | J5.5d |
@@ -547,7 +639,8 @@ J5.5 落地时：
 - `candidateShortages`（Web/agent 读：`tools.py:3258`、`service.py:5613`、
   `fix_proposal_formatter.py:237`、`ProposalCard.tsx:81`）。
 - `targetCountAfter`（进入 FrozenSelectionDigest）。
-- `RepairDryRunSimulator`（J5.5b Direct 仍用，c 再删）。
+- `RepairDryRunSimulator`（J5.5b Direct 仍用；J5.5c 由 Direct 自产
+  dryRunResult 后再删）。
 - checks 回退与旧 builder（旧会话）。
 - replay/claim/postcondition 相关测试。
 
@@ -609,9 +702,10 @@ apply：FrozenPlanExecutor 回放顺序；不重新 sort。
 
 ## 案例 G：组内安全垫不足（Direct）
 
-Fixture：unit u1 内 3 个 major，安全垫 ratio 低于下限。
-delta：targets=[unit u1]+组内 major refs。
-planner：组内调整 action（明确 from/to 专业）。
+Fixture：unit u1 内 3 个 major，安全垫 ratio 低于下限；候选池有同组替代专业。
+delta：`replacementPairs=[{from:u1-majorA,to:u1-majorB}]`（逐对显式）。
+planner：Direct；action=ADJUST_MAJOR_GROUP_INNER_SAFETY，列明 from/to 专业。
+无显式配对：转 Search `forcedRemove/forcedAdd`，不允许 Direct 自己挑专业。
 预期：action 列明专业替换；后置 group_inner_safety pass。
 
 ## 案例 H：只读/陈旧/篡改
@@ -638,9 +732,13 @@ planner：组内调整 action（明确 from/to 专业）。
 | Direct | 仅显式动作；无 replacement pair 转 Search；reorder 冻结顺序 |
 | Search | patch 在 enrich 后生效；solver 输入断言；输出映射；lock/forcedRemove |
 | 失败 | shortage/infeasible/timeout/snapshot stale → blocked/409 |
-| 冻结 | previewDigest/evaluationVersion/planContentDigest/selection guard |
+| 冻结 | previewDigest/evaluationVersion/planContentDigest/selection guard；proposalId 不含 previewDigest（无循环） |
 | 后置 | 每个 finding code fail→pass；评价不可用 fail-closed |
-| 幂等 | prepareOnce/operationId replay/claim CAS/revision |
+| 幂等 | prepareOnce/operationId replay/claim CAS/revision；失败行 REQUIRES_NEW |
+| 纯读预览 | generate 不写 extra_data/reviewState、不 bump plan version、不建 pending |
+| patch 持久化 | apply 后 compileConfirmed 仍带 target/tier/safety/coverage；移除项真的消失 |
+| 版本 | review-only 写不改变 plan version；prepare/confirm 之间跑 review 不 409 |
+| 只读 | Java prepare/execute 带 readonly header/config → 403 |
 
 ## 8.2 契约
 
@@ -657,8 +755,10 @@ planner：组内调整 action（明确 from/to 专业）。
 - 旧 pending（无 frozen）→ 过渡分支只执行一次；
 - user-goal fill/priority/scope 全回归；
 - 候选刷新/overlay 变化 → selection guard 409；
+- 预览后跑一次 review → plan version/planContentDigest 不变，prepare 不 409；
 - 并发 claim、同 operationId replay、两个 proposal 重叠；
 - 409 端到端：stale/changed/tamper/expired；
+- readonly header/config 的 Java 端点拒绝；
 - 全量 Java clean test；gateway pytest；WS e2e 审查卡确认。
 
 ## 8.4 Golden
@@ -715,14 +815,17 @@ planner：组内调整 action（明确 from/to 专业）。
 - review preview 改 `persist=false` + 不建 pending；
 - 单测/golden；执行行为零变化。
 
-## J5.5b：冻结回放
+## J5.5b：冻结回放（不依赖 Search）
 
-- `FrozenPlanExecutor`（selected/ordered/patch 持久化）；
+- `PlanProposalPlanner` 接口 + `LegacyReviewAdapter`：现有 review builder
+  产出的 proposal 也能进入统一冻结/回放；
+- `FrozenPlanExecutor`（selected/ordered；patch 持久化接口先留空）；
 - review prepare 端点 + frozen replay；canonical guard 对所有 solver proposal；
 - Python `prepare_review_fix_proposal` + tools/gateway confirm；
-- Legacy adapter 保留；开关 `review.fix.command.enabled`；
-- 真栈 fill/safety/倒挂/组内。
-- **前置**：Direct planner 骨架、previewDigest、版本 guard。
+- 开关 `review.fix.command.enabled`；旧重新生成分支保留供回滚；
+- 真栈 fill/安全/倒挂/组内（这些现有 builder 已能出 proposal）。
+- **前置**：previewDigest、版本 guard、PlanProposalPlanner 接口；
+  **不要求** Search planner（c 才接）。
 
 ## J5.5c：Search planner
 
@@ -733,11 +836,12 @@ planner：组内调整 action（明确 from/to 专业）。
 - Direct 自产 dryRunResult，删除 RepairDryRunSimulator；
 - 开关 `review.fix.search.enabled`。
 
-## J5.5d：清理
+## J5.5d：清理（回滚窗口结束后）
 
 - 删除 Legacy adapter、review 重新生成分支、旧 check builder、未用字段/测试；
 - checks 退出按 J5.2 三段式；
-- 稳定后删除开关。
+- 稳定后删除开关；
+- **J5.5b/c 不删旧分支**，否则 §10 的回滚不成立。
 
 ---
 
@@ -762,13 +866,29 @@ planner：组内调整 action（明确 from/to 专业）。
 
 ---
 
-# 11. 待二次复审确认
+# 11. 已定稿决策（二次复审后）
 
-1. 绝对目标模型是否彻底解决 sign/base 与官方上限冲突？
-2. `applyStrategy` 归一为 `fill_missing_count`、原策略进 `sourceStrategy` 是否可接受？
-3. Direct 只做全显式动作，remove/replace 无显式配对时转 Search，是否符合产品预期？
-4. `previewDigest` 构成是否足够绑定“用户看到的方案”？
-5. review guard 用 `evaluationVersion + planContentDigest` 替代整数 sourceVersion 是否可行？
-6. 首批 executable：fill/count/coverage + Direct；safety/ratio golden 后开？
-7. 旧 review pending 过渡分支保留一轮？
-8. `FixProposalDTO` 暂不改名 PlanProposal，只加字段？
+1. **绝对目标模型**：`targetCount/tierTargetCounts/safetyMinLocalProtect/
+   coverageRequirements` 全部绝对值；delta 只做展示/审计。
+2. **applyStrategy 归一**：Search proposal 的 `strategy=fill_missing_count`，
+   `sourceStrategy` 保留原语义；apply 按 `solverResult` 分派，不看 strategy。
+3. **Direct 边界**：只做全显式动作；remove/replace/组内无显式配对时转 Search
+   `forcedRemove/forcedAdd`。
+4. **previewDigest**：proposalId 先由 evaluationVersion+planContentDigest+
+   commandDigest 生成；previewDigest 再覆盖 selected/ordered/actions，
+   无循环。
+5. **version guard**：review 写不推进 plan version；用
+   `evaluationVersion + planContentDigest`，`expectedPlanVersion` 取 prepare
+   时的当前值。
+6. **首批 executable**：fill/count/coverage + Direct（sort/remove/replace/
+   group）；safety/ratio golden 后开；gap/edge 仍 preview_only。
+7. **旧 pending**：保留一轮 Legacy adapter（双开关），J5.5d 删除。
+8. **命名**：`CompiledActionDTO` 改名 `PlanCommandDTO`；
+   `FixProposalDTO` 暂不改名，只加字段。
+
+## 11.1 仍需产品/数据侧确认
+
+- coverage requirement 的 identity 规则（region/major/tag 组合）与
+  `CoverageRequirementSupport.persist` 删除语义。
+- group-inner 显式 replacementPairs 在卡面上的展示粒度（专业名/组名）。
+- 真栈 fixture 会话由谁提供（900058 克隆或新建）。
