@@ -17,6 +17,7 @@ import com.ytell.zhiyuan.model.dto.planning.PrepareResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.RecommendationOverlayStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewFixPrepareReq;
 import com.ytell.zhiyuan.model.dto.planning.ReviewFixPreviewDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.entity.biz.ConversationProposalRequestEntity;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
@@ -423,6 +424,96 @@ class PlanningStateServiceReviewFixPrepareTest {
         return proposalByFindingCode(preview, "safety_guard");
     }
 
+    @Test
+    void freezesRatioProposalWithRebalancedFrozenEntries() {
+        row.setDataValue(JSON.toJSONString(ratioFixture()));
+        String baseline = row.getDataValue();
+
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = ratioProposal(preview);
+
+        assertNotNull(proposal, "ratio fixture 必须产出 Ratio 提案");
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertEquals("rebalance_tier_ratio", proposal.getSourceStrategy());
+        assertEquals("ratio_distribution", proposal.getFindingCode());
+        assertEquals("冲稳保配比调整预览", proposal.getTitle());
+        assertEquals(80, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertEquals(40, tierCount(proposal.getSolverResult().getSelectedEntityIds(), "sprint"));
+        assertEquals(20, tierCount(proposal.getSolverResult().getSelectedEntityIds(), "stable"));
+        assertEquals(20, tierCount(proposal.getSolverResult().getSelectedEntityIds(), "protect"));
+        assertTrue(proposal.getFindingPostcondition().getSatisfied());
+        assertEquals("ratio_distribution", proposal.getFindingPostcondition().getFindingCode());
+        assertEquals(80, proposal.getFrozenReviewPlan().getSelectedEntityIds().size());
+        assertEquals(80, proposal.getFrozenReviewPlan().getOrderedEntityIds().size());
+        assertEquals(80, proposal.getFrozenReviewPlan().getWorkingPlan().getItems().size());
+        assertEquals(80, proposal.getFrozenReviewPlan().getOrderedPlan().getItems().size());
+
+        PrepareResultDTO dto = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-ratio", "digest-ratio",
+                prepareRequest(proposal, preview.getSourceVersion()));
+
+        assertEquals("prepared", dto.getStatus());
+        assertEquals(1, upserts.size());
+        Map<String, Object> data = upserts.get(0).getDataValue();
+        Map<String, Object> frozenProposal = (Map<String, Object>) data.get("frozenProposal");
+        assertEquals("ratio_distribution", frozenProposal.get("findingCode"));
+        assertEquals("fill_missing_count", frozenProposal.get("strategy"));
+        assertEquals("rebalance_tier_ratio", frozenProposal.get("sourceStrategy"));
+        assertEquals(80, ((List) ((Map) frozenProposal.get("solverResult")).get("selectedEntityIds")).size());
+        Map<String, Object> frozen = (Map<String, Object>) data.get("frozenReviewPlan");
+        assertEquals(80, ((List) frozen.get("selectedEntityIds")).size());
+        assertEquals(80, ((List) frozen.get("orderedEntityIds")).size());
+        assertEquals(80, ((List) ((Map) frozen.get("workingPlan")).get("items")).size());
+        assertEquals(80, ((List) ((Map) frozen.get("orderedPlan")).get("items")).size());
+        assertNotNull(frozen.get("factsDigest"));
+        assertEquals(baseline, row.getDataValue(), "prepare 只冻结 pending，不写方案状态");
+    }
+
+    @Test
+    void ratioPrepareRejectsTamperedPreviewDigestAndStaleGuard() {
+        row.setDataValue(JSON.toJSONString(ratioFixture()));
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        ReviewFixPrepareReq tampered = prepareRequest(ratioProposal(preview), preview.getSourceVersion());
+        tampered.setPreviewDigest("tampered-ratio-preview");
+
+        BusinessException changed = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(
+                        TENANT, SESSION, "req-ratio-bad", "digest-ratio-bad", tampered));
+        assertEquals(409, changed.getStatus());
+        assertEquals("review_fix_changed", changed.getMessage());
+        assertTrue(upserts.isEmpty());
+
+        ReviewFixPrepareReq stale = prepareRequest(ratioProposal(preview), preview.getSourceVersion());
+        stale.setSourceVersionGuard(preview.getSourceVersion() - 1);
+        BusinessException outdated = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(
+                        TENANT, SESSION, "req-ratio-stale", "digest-ratio-stale", stale));
+        assertEquals(409, outdated.getStatus());
+        assertEquals("review_fix_stale", outdated.getMessage());
+        assertTrue(upserts.isEmpty());
+    }
+
+    private static FixProposalDTO ratioProposal(ReviewFixPreviewDTO preview) {
+        return proposalByFindingCode(preview, "ratio_distribution");
+    }
+
+    private int tierCount(List<String> ids, String tier) {
+        PlanningStateDTO current = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        Map<String, String> tierById = new LinkedHashMap<String, String>();
+        for (CandidateItemDTO candidate : current.getCandidatePoolState().getItems()) {
+            tierById.put(candidate.getVolunteerId(), candidate.getTier());
+        }
+        int count = 0;
+        for (String id : ids) {
+            if (tier.equals(tierById.get(id))) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     private long localProtectCount(List<String> ids) {
         PlanningStateDTO current = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
         Map<String, String> provinceById = new LinkedHashMap<String, String>();
@@ -525,6 +616,61 @@ class PlanningStateServiceReviewFixPrepareTest {
                 OrderedItemDTO ordered = new OrderedItemDTO();
                 ordered.setVolunteerId(candidate.getVolunteerId());
                 ordered.setTier("protect");
+                ordered.setPosition(index);
+                state.getOrderedPlanState().getItems().add(ordered);
+            }
+        }
+        return state;
+    }
+
+    /**
+     * 80 条已有志愿、目标 80；已确认精确配额 冲40/稳20/保20，但存量全部是冲档。
+     * 候选池另有 20 条稳档 + 20 条保档，Ratio 必须移出 40 条冲档并等量补入缺口档位。
+     */
+    static PlanningStateDTO ratioFixture() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setVersion(7);
+        state.setPhase("ordered");
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(80);
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        // ≥580：本省保底不适用，避免 safety_guard 干扰配比后置校验。
+        state.getCandidatePoolState().setUserScore(600);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(80);
+        TierQuotaGoalDTO quota = new TierQuotaGoalDTO();
+        quota.setType("exact_counts");
+        quota.setSprintCount(40);
+        quota.setStableCount(20);
+        quota.setProtectCount(20);
+        state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(quota);
+        for (int index = 1; index <= 120; index++) {
+            String tier = index <= 80 ? "sprint" : index <= 100 ? "stable" : "protect";
+            CandidateItemDTO candidate = new CandidateItemDTO();
+            candidate.setVolunteerId(String.format("v%03d", index));
+            candidate.setSchoolName("学校" + index);
+            candidate.setDisplaySchoolName("学校" + index);
+            candidate.setMajorName("专业" + index);
+            candidate.setMajorCategory("工学");
+            candidate.setTier(tier);
+            candidate.setProvinceName("浙江");
+            candidate.setAdmissionRatio(90D - index * 0.5D);
+            candidate.setSchoolEnrollRatio(90D - index * 0.5D);
+            candidate.setFinalScore(80D);
+            candidate.setIntentScore(40D);
+            state.getCandidatePoolState().getItems().add(candidate);
+
+            RecommendationOverlayStateDTO.Item overlay = new RecommendationOverlayStateDTO.Item();
+            overlay.setVolunteerId(candidate.getVolunteerId());
+            state.getRecommendationOverlayState().getItems().add(overlay);
+            if (index <= 80) {
+                DraftItemDTO selected = new DraftItemDTO();
+                selected.setVolunteerId(candidate.getVolunteerId());
+                selected.setTier(tier);
+                state.getWorkingPlanState().getItems().add(selected);
+
+                OrderedItemDTO ordered = new OrderedItemDTO();
+                ordered.setVolunteerId(candidate.getVolunteerId());
+                ordered.setTier(tier);
                 ordered.setPosition(index);
                 state.getOrderedPlanState().getItems().add(ordered);
             }

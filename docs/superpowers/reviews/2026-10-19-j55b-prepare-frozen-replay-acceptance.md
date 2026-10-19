@@ -129,7 +129,23 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   postcondition true；已恢复 v1/80。
 - Java 全量 **1388 / 0 / 0 / 10**；Python 定向 299 passed / 32 skipped。
 
-仍未覆盖：ratio/gap/edge 等 Search probe；专业组模式；
+## 第四个 Search 切片：ratio_distribution → fill（2026-10-19）
+
+- 新增 `RatioReviewPreviewPlanner`：`ratio_distribution` fail → `rebalance_tier_ratio`，
+  在 enrichV2 后 patch `tierAllocationConstraint` 与 `StructureTarget.tierAnchor`
+  （由 `TierStructureProjection.project` 按当前档位计数与目标数计算），再走
+  staged solver 的硬档位约束/soft anchor 阶段。
+- 真栈 900700 夹具：required=80、tierQuotaGoal exact 40/20/20、当前 79 冲 +
+  1 保、可用候选 20 稳 + 20 保（其中 1 条浙江保档）；安全下限 2。
+  preview 同时产出 safety 与 ratio 两条 ready 提案；选择 ratio：
+  `selected=80`、`resolvedTierCounts=40/20/20`、postcondition ratio pass；
+  prepare→claim→execute 后版本 1→2、档位 40/20/20、保底 2、
+  postcondition true；已恢复 v1/80。
+- apply 接受 `fill_missing_count + ratio_distribution`，只回放冻结方案；
+  档位目标已在 state 确认，不写 durable patch。
+- Java 全量 **1400 / 0 / 0 / 10**；Python unit **2931 passed / 32 skipped**。
+
+仍未覆盖：gap/edge 等 Search probe；专业组模式；
 remove/replace 需要候选的 Direct 场景；目标/档位/覆盖的 durable patch 持久化。
 
 ## 尚未完成

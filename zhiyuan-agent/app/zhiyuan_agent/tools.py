@@ -9730,14 +9730,22 @@ async def _preview_review_repair_plan_change(
     safety_preview_route = (
         canonical_issue == "safety_guard" and requested_strategy in safety_fix_strategies
     )
+    # 冲稳保配比在 Java 端来源码为 ratio_distribution，Agent 侧规范码为
+    # tier_gap；冻结提案策略为 fill_missing_count，请求侧可能是
+    # rebalance_tier_ratio 或 fill_missing_count，两侧视为同一修复目标。
+    ratio_fix_strategies = {"rebalance_tier_ratio", "fill_missing_count"}
+    ratio_fix_goal = canonical_issue in {"ratio_distribution", "tier_gap"}
+    ratio_preview_route = (
+        ratio_fix_goal and requested_strategy in ratio_fix_strategies
+    )
     if (
         canonical_issue == "probability_inversion"
         and requested_strategy == "sort_by_probability"
     ) or (
         canonical_issue in count_repair_issues
         and requested_strategy == "fill_missing_count"
-    ) or coverage_preview_route or safety_preview_route:
-        # J5.5b：倒挂排序、计数补齐、覆盖补齐与安全垫补齐都走新的只读冻结预览
+    ) or coverage_preview_route or safety_preview_route or ratio_preview_route:
+        # J5.5b：倒挂排序、计数补齐、覆盖补齐、安全垫补齐与配比补齐都走新的只读冻结预览
         # （working/ordered/selected facts + previewDigest + 原 probe 预检）；
         # 旧 generate 只作为其他策略的回退。
         response = await internal_client.preview_review_fix_proposals(
@@ -9773,6 +9781,10 @@ async def _preview_review_repair_plan_change(
             # 安全垫修复的 add_safety_items / fill_missing_count 视为同一目标。
             if strategy not in safety_fix_strategies:
                 continue
+        elif ratio_preview_route:
+            # 配比修复的 rebalance_tier_ratio / fill_missing_count 视为同一目标。
+            if strategy not in ratio_fix_strategies:
+                continue
         elif strategy != requested_strategy:
             continue
         if canonical_issue in count_repair_issues:
@@ -9783,6 +9795,12 @@ async def _preview_review_repair_plan_change(
             # 覆盖修复目标内部等价：coverage / coverage:<i> 之间任意
             # coverage* 来源码都算匹配。
             issue_matched = any(code.startswith("coverage") for code in source_codes)
+        elif ratio_fix_goal:
+            # 配比修复目标精确匹配来源码 ratio_distribution；来源码经
+            # 规范化后为 tier_gap，两者视为同一问题，不按前缀放松。
+            issue_matched = any(
+                code in {"ratio_distribution", "tier_gap"} for code in source_codes
+            )
         else:
             issue_matched = canonical_issue in source_codes
         if issue_matched:

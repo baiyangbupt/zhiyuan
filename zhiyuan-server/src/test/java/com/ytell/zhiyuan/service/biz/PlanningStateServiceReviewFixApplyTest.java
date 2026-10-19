@@ -428,6 +428,129 @@ class PlanningStateServiceReviewFixApplyTest {
         assertEquals(Integer.valueOf(7), saved.getVersion());
     }
 
+    @Test
+    void appliesTheFrozenRatioRebalanceAndReplaysEightyEntries() {
+        useRatioFixture();
+        prepareRatio();
+
+        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+
+        assertEquals("applied", res.getStatus());
+        PlanningStateDTO applied = res.getState();
+        assertEquals(Integer.valueOf(8), applied.getVersion(), "只 bump 一次版本");
+        assertEquals(80, applied.getWorkingPlanState().getItems().size());
+        assertEquals(80, applied.getOrderedPlanState().getItems().size());
+        assertEquals(80, orderedIds(applied).stream().distinct().count());
+        assertEquals(40, orderedTierCount(applied, "sprint"));
+        assertEquals(20, orderedTierCount(applied, "stable"));
+        assertEquals(20, orderedTierCount(applied, "protect"));
+        assertEquals(Integer.valueOf(80), applied.getConstraintState()
+                .getHardPlanningObjectives().getSelectionTargetCount(),
+                "ratio 回放不修改已确认目标数");
+        assertEquals(Integer.valueOf(40), applied.getConstraintState()
+                .getHardPlanningObjectives().getTierQuotaGoal().getSprintCount(),
+                "ratio 回放不修改已确认配额");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(80, orderedIds(saved).size());
+        assertEquals(40, orderedTierCount(saved, "sprint"));
+        assertEquals(20, orderedTierCount(saved, "stable"));
+        assertEquals(20, orderedTierCount(saved, "protect"));
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void ratioTamperedCommandDigestIsRejectedBeforeAnyWrite() {
+        useRatioFixture();
+        prepareRatio();
+        FixProposalApplyReq req = applyRequest();
+        req.setCommandDigest("tampered");
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_changed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void ratioPlanDriftAfterPrepareIsRejectedAsStale() {
+        useRatioFixture();
+        prepareRatio();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.getOrderedPlanState().getItems().get(0).setVolunteerId("changed");
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_stale", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void ratioPostconditionFailureRollsBackWithoutWriting() {
+        useRatioFixture();
+        prepareRatio();
+        // 把冻结方案的全部条目改回冲档：摘要仍与 pending/当前方案一致，
+        // 但重放后 ratio_distribution 仍然 fail，写前校验必须回滚。
+        JSONObject frozen = (JSONObject) activePending.getDataValue().get("frozenReviewPlan");
+        forceTier(frozen.getJSONObject("orderedPlan").getJSONArray("items"), "sprint");
+        forceTier(frozen.getJSONObject("workingPlan").getJSONArray("items"), "sprint");
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
+        assertEquals("review_fix_postcondition_failed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue(), "后置失败必须回滚，不得留下半套方案");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(Integer.valueOf(7), saved.getVersion());
+    }
+
+    private static void forceTier(JSONArray items, String tier) {
+        for (int index = 0; index < items.size(); index++) {
+            items.getJSONObject(index).put("tier", tier);
+        }
+    }
+
+    private void useRatioFixture() {
+        row.setDataValue(JSON.toJSONString(PlanningStateServiceReviewFixPrepareTest.ratioFixture()));
+    }
+
+    private void prepareRatio() {
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = null;
+        for (FixProposalDTO candidate : preview.getProposals()) {
+            if (candidate != null && "ratio_distribution".equals(candidate.getFindingCode())) {
+                proposal = candidate;
+                break;
+            }
+        }
+        assertNotNull(proposal, "ratio fixture 必须产出 Ratio 提案");
+        assertEquals("ready", proposal.getStatus());
+        ReviewFixPrepareReq req = new ReviewFixPrepareReq();
+        req.setProposalId(proposal.getProposalId());
+        req.setPreviewDigest(proposal.getPreviewDigest());
+        req.setCommandDigest(proposal.getCommandDigest());
+        req.setEvaluationVersion(proposal.getEvaluationVersion());
+        req.setSourceVersionGuard(preview.getSourceVersion());
+        PrepareResultDTO prepared = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-ratio-apply", "digest-ratio-apply", req);
+        assertNotNull(prepared.getPendingId());
+        assertNotNull(activePending);
+    }
+
+    private static long orderedTierCount(PlanningStateDTO state, String tier) {
+        return state.getOrderedPlanState().getItems().stream()
+                .filter(item -> tier.equals(item.getTier()))
+                .count();
+    }
+
     private static void replaceIds(JSONArray items, Map<String, String> swap) {
         for (int index = 0; index < items.size(); index++) {
             JSONObject item = items.getJSONObject(index);

@@ -1137,6 +1137,160 @@ async def test_preview_plan_change_safety_guard_matches_exact_source_code(mocker
     save_mock.assert_not_awaited()
 
 
+async def test_preview_plan_change_ratio_distribution_routes_to_frozen_preview_and_confirms(mocker):
+    """冲稳保配比走只读冻结预览：rebalance_tier_ratio 目标匹配 fill_missing_count 提案。"""
+    preview_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.preview_review_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "sourceVersionGuard": 12,
+                    "proposals": [
+                        {
+                            "proposalId": "fp-ratio-distribution",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["ratio_distribution"],
+                            "title": "调整冲稳保配比",
+                            "summary": "补入稳保承接项，冲稳保配比回到目标区间。",
+                            "impact": "专业组由45个增加到46个。",
+                            "commandDigest": "command-digest-ratio",
+                            "previewDigest": "preview-digest-ratio",
+                            "evaluationVersion": "eval-ratio",
+                            "planContentDigest": "plan-content-ratio",
+                            "dryRunResult": {
+                                "status": "ready",
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 46,
+                                "affectedUnitCount": 1,
+                                "addUnitCount": 1,
+                            },
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0, "data": {"proposals": []}}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_planning_workspace_state",
+        AsyncMock(return_value={"code": 0, "data": {"version": 12}}),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={
+                "repair_goal": {
+                    "review_issue_code": "ratio_distribution",
+                    "strategy": "rebalance_tier_ratio",
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["pending_created"] is False
+    assert result["data"]["requires_confirmation"] is True
+    assert result["data"]["proposal"]["proposal_id"] == "fp-ratio-distribution"
+    assert result["data"]["proposal"]["source_check_codes"] == ["ratio_distribution"]
+    assert result["data"]["proposal"]["strategy"] == "fill_missing_count"
+    candidate = result["data"]["review_fix_prepare_candidate"]
+    assert candidate["proposal_id"] == "fp-ratio-distribution"
+    assert candidate["command_digest"] == "command-digest-ratio"
+    assert candidate["preview_digest"] == "preview-digest-ratio"
+    assert candidate["evaluation_version"] == "eval-ratio"
+    assert candidate["plan_content_digest"] == "plan-content-ratio"
+    preview_mock.assert_awaited_once_with(1, ctx.sessionid)
+    generate_mock.assert_not_awaited()
+    save_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_ratio_matching_requires_ratio_source_code(mocker):
+    """配比目标精确匹配 ratio_distribution 来源码，不吞其他 fill_missing_count 提案。"""
+    preview_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.preview_review_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "sourceVersionGuard": 12,
+                    "proposals": [
+                        {
+                            "proposalId": "fp-unrelated-count",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["count_validation"],
+                            "commandDigest": "command-digest-count",
+                            "previewDigest": "preview-digest-count",
+                        },
+                        {
+                            "proposalId": "fp-ratio-distribution",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["ratio_distribution"],
+                            "title": "调整冲稳保配比",
+                            "summary": "补入稳保承接项，冲稳保配比回到目标区间。",
+                            "commandDigest": "command-digest-ratio",
+                            "previewDigest": "preview-digest-ratio",
+                            "dryRunResult": {"status": "ready", "affectedUnitCount": 1},
+                        },
+                    ],
+                },
+            }
+        ),
+    )
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0, "data": {"proposals": []}}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_planning_workspace_state",
+        AsyncMock(return_value={"code": 0, "data": {"version": 12}}),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "repair_goal": {
+                    "review_issue_code": "tier_gap",
+                    "strategy": "fill_missing_count",
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["proposal"]["proposal_id"] == "fp-ratio-distribution"
+    assert result["data"]["proposal"]["source_check_codes"] == ["ratio_distribution"]
+    assert result["data"]["review_fix_prepare_candidate"]["preview_digest"] == (
+        "preview-digest-ratio"
+    )
+    preview_mock.assert_awaited_once()
+    generate_mock.assert_not_awaited()
+    save_mock.assert_not_awaited()
+
+
 def _prime_active_negative_major_intent_pending(ctx: RequestContext, *, section=None) -> None:
     merged = section or {"major_intents": {"negative_level1": ["医学"]}}
     execution_payload = {
