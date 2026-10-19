@@ -1306,6 +1306,12 @@ public class PlanningStateService {
             throw new BusinessException(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE,
                     "review_fix_postcondition_failed");
         }
+        // 回执的 postValidationPassed 读的是 resultState.reviewState.checks；
+        // 冻结回放后必须把新鲜审查写回内存态，否则会拿旧 checks 误报 40905。
+        state.setReviewState(freshReview);
+        if (state.getStaleFlags() != null) {
+            state.getStaleFlags().setReview(false);
+        }
     }
 
     private static String stringValue(Object value) {

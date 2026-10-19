@@ -187,7 +187,19 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   14→15、46 组/166 条、保底 2、postcondition true；已恢复 v14/44。
 - Java 全量 **1434 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
 
-仍未覆盖：gap/edge 等 Search probe；Safety/Ratio/Risk 的专业组模式；
+## 专业组模式：safety_guard → fill（2026-10-19）
+
+- `SafetyReviewPreviewPlanner` 增加 unit 分支：按 ordered units 识别当前选中集，
+  patch `StructureTarget.minLocalProtect` 后用 unit countMode 求解；
+  物化 ordered units/items，unit factsDigest，原 safety probe 预检。
+- apply 冻结回放写回新鲜 reviewState，修复回执 `postValidationPassed`
+  读旧 checks 导致 40905 的问题（major/group 通用）。
+- 真栈 900045 夹具：44 组全冲、候选池 2 个江西 protect 组、安全下限 2；
+  preview `ready`、`selected=44/add=2/remove=2`；prepare→claim→execute
+  后版本 14→15、44 组、保底 2、postcondition true；已恢复 v14/44。
+- Java 全量 **1443 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
+
+仍未覆盖：gap/edge 等 Search probe；Ratio/Risk 的专业组模式；
 目标/档位/覆盖的 durable patch 持久化。
 
 ## 尚未完成

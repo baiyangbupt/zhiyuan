@@ -515,7 +515,7 @@ final class SearchReviewPreviewPlanner {
         }
     }
 
-    private Map<String, CandidateItemDTO> candidatesById(List<CandidateItemDTO> candidates) {
+    static Map<String, CandidateItemDTO> candidatesById(List<CandidateItemDTO> candidates) {
         Map<String, CandidateItemDTO> result = new LinkedHashMap<String, CandidateItemDTO>();
         for (CandidateItemDTO candidate : safeList(candidates)) {
             if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
@@ -531,7 +531,7 @@ final class SearchReviewPreviewPlanner {
      * 并用候选事实补齐省市/学校 ID 与录取率，保证后续 review 与回放口径一致。
      * 任一 unit 无专业载体或 ID 重复返回 null，由调用方 fail closed。
      */
-    private List<OrderedUnitDTO> orderedUnitsFromSolver(
+    static List<OrderedUnitDTO> orderedUnitsFromSolver(
             List<String> orderedEntityIds,
             Map<String, OrderedUnitDTO> existingOrderedById,
             List<DraftUnitDTO> workingUnits,
@@ -577,7 +577,7 @@ final class SearchReviewPreviewPlanner {
         return result;
     }
 
-    private List<PlanningUnitMajorDTO> majorsForUnit(
+    private static List<PlanningUnitMajorDTO> majorsForUnit(
             String unitId, Map<String, CandidateItemDTO> candidatesById) {
         List<PlanningUnitMajorDTO> majors = new ArrayList<PlanningUnitMajorDTO>();
         for (CandidateItemDTO candidate : candidatesById.values()) {
@@ -604,8 +604,8 @@ final class SearchReviewPreviewPlanner {
         return majors;
     }
 
-    private void enrichUnitFromCandidate(OrderedUnitDTO unit,
-                                         Map<String, CandidateItemDTO> candidatesById) {
+    private static void enrichUnitFromCandidate(OrderedUnitDTO unit,
+                                                Map<String, CandidateItemDTO> candidatesById) {
         CandidateItemDTO fact = null;
         for (PlanningUnitMajorDTO major : safeList(unit.getMajorItems())) {
             if (major != null && !Strings.isNullOrEmpty(major.getVolunteerId())) {
@@ -645,7 +645,7 @@ final class SearchReviewPreviewPlanner {
      * 新补入条目从 draft item / 候选事实生成，位置统一 1..n。
      * volunteerId 重复返回 null（冻结回放无法唯一解析）。
      */
-    private List<OrderedItemDTO> orderedItemsFromUnits(
+    static List<OrderedItemDTO> orderedItemsFromUnits(
             List<OrderedUnitDTO> units,
             Map<String, OrderedItemDTO> existingById,
             Map<String, DraftItemDTO> workingItemsById,
@@ -681,7 +681,7 @@ final class SearchReviewPreviewPlanner {
         return items;
     }
 
-    private void normalizeGroupMode(PlanningStateDTO state) {
+    static void normalizeGroupMode(PlanningStateDTO state) {
         if (state != null && state.getCandidatePoolState() != null
                 && !"majorGroup".equalsIgnoreCase(
                 state.getCandidatePoolState().getVolunteerModel())) {
@@ -829,7 +829,7 @@ final class SearchReviewPreviewPlanner {
         return value == null ? null : JSON.parseObject(JSON.toJSONString(value), type);
     }
 
-    private <Value> List<Value> copyList(List<Value> values, Class<Value> type) {
+    private static <Value> List<Value> copyList(List<Value> values, Class<Value> type) {
         List<Value> result = new ArrayList<Value>();
         for (Value value : safeList(values)) {
             if (value != null) {
@@ -839,7 +839,7 @@ final class SearchReviewPreviewPlanner {
         return result;
     }
 
-    private <Value> List<Value> safeList(List<Value> values) {
+    static <Value> List<Value> safeList(List<Value> values) {
         return values == null ? new ArrayList<Value>() : values;
     }
 }
