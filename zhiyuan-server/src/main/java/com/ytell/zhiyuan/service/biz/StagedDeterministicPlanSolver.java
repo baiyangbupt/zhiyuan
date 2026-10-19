@@ -46,7 +46,7 @@ import java.util.Set;
  */
 final class StagedDeterministicPlanSolver {
 
-    static final String SOLVER_VERSION = "ojalgo-48.4.2-j53-shadow";
+    static final String SOLVER_VERSION = "ojalgo-48.4.2-j53-staged";
     static final String HARD_OBJECTIVE_VERSION = "solver-hard-objective-v1";
     private static final long TIME_BUDGET_MS = 2_000L;
     private static final int ITERATION_BUDGET = 100_000;
