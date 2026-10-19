@@ -236,3 +236,4 @@ postcondition_verified`，postcondition=true、actual=46、
 solverVersion=`ojalgo-48.4.2-j53-staged`，版本 14→17、44→46 组。
 验收后恢复 planningState 与 candidatePool 目标（14/44、required=44、
 冲=44），删除 pending 与验收 command 行，GET 复核通过。
+同轮只读 `add_units_by_scope`（浙江 2）预览 ready、状态保持 14/44。
