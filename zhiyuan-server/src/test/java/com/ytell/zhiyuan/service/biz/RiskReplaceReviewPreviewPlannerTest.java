@@ -10,8 +10,10 @@ import com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.FrozenReviewPlanDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanCommandDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import org.junit.jupiter.api.BeforeEach;
@@ -289,6 +291,186 @@ class RiskReplaceReviewPreviewPlannerTest {
         assertNotNull(proposal.getFrozenReviewPlan());
         assertEquals(TARGET, proposal.getFrozenReviewPlan().getWorkingPlan().getItems().size());
         assertEquals(baseline, JSON.toJSONString(state), "reevaluate 也只拿到副本");
+    }
+
+    @Test
+    void replacesRiskyGroupUnitWithUnitFactsAndActions() {
+        groupFixture();
+        String baseline = JSON.toJSONString(state);
+
+        FixProposalDTO proposal = planner.plan(state, candidates, finding,
+                after -> riskReview("high_tuition", "pass", "pass"), true);
+
+        assertNotNull(proposal);
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertEquals("replace_risk_items", proposal.getSourceStrategy());
+        assertEquals(4, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertTrue(proposal.getSolverResult().getRemoveEntityIds().contains("u001"));
+        assertFalse(proposal.getSolverResult().getSelectedEntityIds().contains("u001"));
+        assertTrue(proposal.getSolverResult().getAddEntityIds().contains("u005"));
+        assertEquals(1, proposal.getRemovedCount());
+        assertEquals(1, proposal.getAddedUnitCount());
+        assertEquals(Integer.valueOf(4), proposal.getDryRunResult().getBeforeUnitTotal());
+        assertEquals(Integer.valueOf(4), proposal.getDryRunResult().getAfterUnitTotal());
+
+        FrozenReviewPlanDTO frozen = proposal.getFrozenReviewPlan();
+        assertNotNull(frozen);
+        assertEquals(4, frozen.getSelectedEntityIds().size());
+        assertEquals(4, frozen.getOrderedEntityIds().size());
+        assertEquals(4, frozen.getOrderedPlan().getUnits().size());
+        assertEquals(4, frozen.getWorkingPlan().getUnits().size());
+        assertEquals(4, frozen.getSelectedFacts().size());
+        for (int index = 0; index < frozen.getOrderedPlan().getUnits().size(); index++) {
+            assertEquals(Integer.valueOf(index + 1),
+                    frozen.getOrderedPlan().getUnits().get(index).getPosition());
+            assertEquals(frozen.getOrderedEntityIds().get(index),
+                    frozen.getOrderedPlan().getUnits().get(index).getUnitId());
+        }
+        assertEquals(DirectReviewPreviewPlanner.digestJson(DirectReviewPreviewPlanner.factsForUnits(
+                        frozen.getSelectedEntityIds(), frozen.getOrderedPlan().getUnits(), candidates)),
+                frozen.getFactsDigest());
+
+        boolean sawUnitRemove = false;
+        for (com.ytell.zhiyuan.model.dto.planning.FixProposalActionDTO action : proposal.getActions()) {
+            if ("unit".equals(action.getLevel()) && action.getRemoveUnitIds().contains("u001")) {
+                sawUnitRemove = true;
+                assertTrue(action.getRemoveVolunteerIds().contains("u001-v1"));
+            }
+        }
+        assertTrue(sawUnitRemove, "组模式风险替换必须产出 unit 级移出动作");
+        assertEquals(baseline, JSON.toJSONString(state), "规划器不得修改输入状态");
+    }
+
+    @Test
+    void rejectsGroupRefsWithoutUnitLevelAndUnstableUnitList() {
+        groupFixture();
+        finding.getSuggestedCommand().getForcedRemoveTargets().get(0).setLevel("volunteer");
+        assertNull(plan(false), "组模式强制移出必须是 unit 粒度");
+        finding.getSuggestedCommand().getForcedRemoveTargets().get(0).setLevel("unit");
+
+        state.getOrderedPlanState().getUnits().get(1).setPosition(1);
+        assertNull(plan(false), "位置必须严格递增");
+        state.getOrderedPlanState().getUnits().get(1).setPosition(2);
+        state.getOrderedPlanState().getUnits().get(2).setUnitId("malformed");
+        assertNull(plan(false), "unit id 必须在候选池中存在");
+        state.getOrderedPlanState().getUnits().get(2).setUnitId("u003");
+
+        PriorityRuleDTO rule = new PriorityRuleDTO();
+        rule.setDomain("region");
+        rule.setKey("province");
+        rule.setValues(Lists.newArrayList("江苏"));
+        state.getConstraintState().getHardPlanningObjectives().getPriorityRules().add(rule);
+        assertNull(plan(false));
+        state.getConstraintState().getHardPlanningObjectives().getPriorityRules().clear();
+
+        assertNull(planner.plan(state, candidates, finding,
+                after -> riskReview("high_tuition", "fail", "pass"), false));
+    }
+
+    /**
+     * 组模式风险切片：4 个现有专业组，u001 组内专业高收费；候选池另有
+     * u005/u006 两个可替代组，目标数 4 不变。
+     */
+    private void groupFixture() {
+        state = new PlanningStateDTO();
+        state.setVersion(12);
+        state.setPhase("ordered");
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        state.getCandidatePoolState().setRequiredCount(4);
+        state.getCandidatePoolState().setSourceProvinceName("江苏");
+        state.getCandidatePoolState().setUserScore(600);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(4);
+
+        candidates = Lists.newArrayList();
+        for (int unitIndex = 1; unitIndex <= 6; unitIndex++) {
+            String unitId = String.format("u%03d", unitIndex);
+            boolean current = unitIndex <= 4;
+            String schoolName = "学校" + unitIndex + "第01组";
+            int tuition = unitIndex == 1 ? 30000 : 5000;
+            String volunteerId = unitId + "-v1";
+
+            CandidateItemDTO candidate = new CandidateItemDTO();
+            candidate.setVolunteerId(volunteerId);
+            candidate.setPlanSchoolDataId(unitId);
+            candidate.setSchoolId("s" + unitId);
+            candidate.setSchoolName(schoolName);
+            candidate.setDisplaySchoolName(schoolName);
+            candidate.setMajorName("专业" + unitIndex);
+            candidate.setTier("protect");
+            candidate.setProvinceName("江苏");
+            candidate.setAdmissionRatio(70D);
+            candidate.setSchoolEnrollRatio(60D);
+            candidate.setFinalScore(80D);
+            candidate.setIntentScore(40D);
+            candidate.setTuitionPerYear(tuition);
+            candidates.add(candidate);
+            state.getCandidatePoolState().getItems().add(candidate);
+            if (!current) {
+                continue;
+            }
+
+            DraftUnitDTO workingUnit = new DraftUnitDTO();
+            workingUnit.setUnitId(unitId);
+            workingUnit.setTier("protect");
+            workingUnit.setSchoolName(schoolName);
+            OrderedUnitDTO orderedUnit = new OrderedUnitDTO();
+            orderedUnit.setUnitId(unitId);
+            orderedUnit.setPosition(unitIndex);
+            orderedUnit.setTier("protect");
+            orderedUnit.setSchoolName(schoolName);
+            orderedUnit.setProvinceName("江苏");
+            orderedUnit.setAdmissionRatio(70D);
+            orderedUnit.setSchoolEnrollRatio(60D);
+
+            DraftItemDTO selected = new DraftItemDTO();
+            selected.setVolunteerId(volunteerId);
+            selected.setTier("protect");
+            selected.setSchoolName(schoolName);
+            selected.setMajorName(candidate.getMajorName());
+            state.getWorkingPlanState().getItems().add(selected);
+
+            PlanningUnitMajorDTO workingMajor = new PlanningUnitMajorDTO();
+            workingMajor.setVolunteerId(volunteerId);
+            workingMajor.setMajorName(candidate.getMajorName());
+            workingMajor.setTier("protect");
+            workingUnit.getMajorItems().add(workingMajor);
+
+            OrderedItemDTO ordered = new OrderedItemDTO();
+            ordered.setVolunteerId(volunteerId);
+            ordered.setTier("protect");
+            ordered.setSchoolName(schoolName);
+            ordered.setMajorName(candidate.getMajorName());
+            ordered.setPosition(unitIndex);
+            state.getOrderedPlanState().getItems().add(ordered);
+
+            PlanningUnitMajorDTO orderedMajor = new PlanningUnitMajorDTO();
+            orderedMajor.setVolunteerId(volunteerId);
+            orderedMajor.setMajorName(candidate.getMajorName());
+            orderedMajor.setTier("protect");
+            orderedUnit.getMajorItems().add(orderedMajor);
+
+            state.getWorkingPlanState().getUnits().add(workingUnit);
+            state.getOrderedPlanState().getUnits().add(orderedUnit);
+        }
+
+        finding = new EvaluationFindingDTO();
+        finding.setCode("high_tuition");
+        finding.setResultStatus("fail");
+        finding.setRuleStrength("soft");
+        finding.setReasonCode("high_tuition");
+        PlanCommandDTO command = new PlanCommandDTO();
+        command.setStrategy("replace_risk_items");
+        command.setApplyStrategy("fill_missing_count");
+        command.setSourceStrategy("replace_risk_items");
+        command.setSourceCheck("high_tuition");
+        command.setLevel("unit");
+        command.setTargetCount(4);
+        command.getForcedRemoveTargets().add(ref("unit", "u001"));
+        command.setEvaluationVersion("before-group-risk-evaluation");
+        command.setCommandDigest("group-risk-command-digest");
+        finding.setSuggestedCommand(command);
     }
 
     private FixProposalDTO plan(boolean confirmable) {

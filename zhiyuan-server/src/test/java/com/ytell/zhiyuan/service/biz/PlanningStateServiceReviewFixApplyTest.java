@@ -718,6 +718,62 @@ class PlanningStateServiceReviewFixApplyTest {
     }
 
     @Test
+    void appliesFrozenGroupRiskReplacementAndRemovesRiskyUnit() {
+        useGroupRiskFixture();
+        prepareGroupRisk();
+
+        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+
+        assertEquals("applied", res.getStatus());
+        PlanningStateDTO applied = res.getState();
+        assertEquals(Integer.valueOf(8), applied.getVersion(), "只 bump 一次版本");
+        assertEquals(4, applied.getWorkingPlanState().getUnits().size());
+        assertEquals(4, applied.getOrderedPlanState().getUnits().size());
+        assertEquals(4, applied.getWorkingPlanState().getItems().size());
+        assertEquals(4, applied.getOrderedPlanState().getItems().size());
+        assertEquals(4, orderedUnitIds(applied).stream().distinct().count());
+        assertFalse(orderedUnitIds(applied).contains("u001"), "高风险组必须被移出");
+        for (int index = 0; index < 4; index++) {
+            assertEquals(Integer.valueOf(index + 1),
+                    applied.getOrderedPlanState().getUnits().get(index).getPosition());
+            assertEquals(Integer.valueOf(index + 1),
+                    applied.getOrderedPlanState().getItems().get(index).getPosition());
+        }
+        Map<String, Integer> tuitionById = new LinkedHashMap<String, Integer>();
+        for (CandidateItemDTO candidate : applied.getCandidatePoolState().getItems()) {
+            tuitionById.put(candidate.getVolunteerId(), candidate.getTuitionPerYear());
+        }
+        for (OrderedItemDTO item : applied.getOrderedPlanState().getItems()) {
+            assertTrue(tuitionById.get(item.getVolunteerId()) <= 20000,
+                    "回放后不得保留高收费条目");
+        }
+        assertEquals(Integer.valueOf(4), applied.getConstraintState()
+                .getHardPlanningObjectives().getSelectionTargetCount(),
+                "风险替换不修改已确认目标数");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(4, saved.getOrderedPlanState().getUnits().size());
+        assertFalse(orderedUnitIds(saved).contains("u001"));
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void groupRiskPlanDriftAfterPrepareIsRejectedAsStale() {
+        useGroupRiskFixture();
+        prepareGroupRisk();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.getOrderedPlanState().getUnits().get(0).setUnitId("changed");
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_stale", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
     void appliesFrozenGroupRatioAndReplaysFortyFourUnitsAt22AndElevenEleven() {
         useGroupRatioFixture();
         prepareGroupRatio();
@@ -1078,6 +1134,34 @@ class PlanningStateServiceReviewFixApplyTest {
         req.setSourceVersionGuard(preview.getSourceVersion());
         PrepareResultDTO prepared = service.prepareReviewFixProposal(
                 TENANT, SESSION, "req-group-safety-apply", "digest-group-safety-apply", req);
+        assertNotNull(prepared.getPendingId());
+        assertNotNull(activePending);
+    }
+
+    private void useGroupRiskFixture() {
+        row.setDataValue(JSON.toJSONString(
+                PlanningStateServiceReviewFixPrepareTest.groupRiskFixture()));
+    }
+
+    private void prepareGroupRisk() {
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = null;
+        for (FixProposalDTO candidate : preview.getProposals()) {
+            if (candidate != null && "high_tuition".equals(candidate.getFindingCode())) {
+                proposal = candidate;
+                break;
+            }
+        }
+        assertNotNull(proposal, "group risk fixture 必须产出 RiskReplace 提案");
+        assertEquals("ready", proposal.getStatus());
+        ReviewFixPrepareReq req = new ReviewFixPrepareReq();
+        req.setProposalId(proposal.getProposalId());
+        req.setPreviewDigest(proposal.getPreviewDigest());
+        req.setCommandDigest(proposal.getCommandDigest());
+        req.setEvaluationVersion(proposal.getEvaluationVersion());
+        req.setSourceVersionGuard(preview.getSourceVersion());
+        PrepareResultDTO prepared = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-group-risk-apply", "digest-group-risk-apply", req);
         assertNotNull(prepared.getPendingId());
         assertNotNull(activePending);
     }

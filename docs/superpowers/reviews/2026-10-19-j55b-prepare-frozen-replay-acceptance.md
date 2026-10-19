@@ -213,7 +213,23 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   14→15、44 组、档位 22/11/11、postcondition true；已恢复 v14/44（全冲）。
 - Java 全量 **1452 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
 
-仍未覆盖：gap/edge 等 Search probe；Risk 的专业组模式；
+## 专业组模式：风险条目替换/移除（2026-10-19）
+
+- `RiskReplaceReviewPreviewPlanner` 增加 unit 分支：`forcedRemoveTargets`
+  按 unit 粒度命中，目标数按 unit 计；把 forced 移出写进
+  `MutationPolicy.forcedRemoveEntityIds`，复用 staged solver 的 unit 口径
+  选替代组，再按 Search/Ratio 组模式物化 units/items 与 unit facts。
+- 组模式动作全部 `level=unit`，add/remove/reorder 同时给出关联志愿者数；
+  apply 仍只回放冻结方案，不写 durable 风险字段。
+- 真栈 900045 夹具：44 组中 2 个现有组高收费（其中一个注入 30000），
+  候选池另外补 2 个江西 protect 组满足本省保底。preview 同时产出 safety、
+  high_tuition、cooperative 三条 ready 提案；选择 high_tuition：
+  `selected=44/add=2/remove=2`（移出 2266/6016，补入 5046/5692）、
+  postcondition high_tuition pass；prepare→claim→execute 后版本 14→15、
+  44 组、无高收费、2 个江西保底组、postcondition true；已恢复 v14/44。
+- Java 全量 **1457 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
+
+仍未覆盖：gap/edge 等 Search probe（设计首期 preview_only）；
 目标/档位/覆盖的 durable patch 持久化。
 
 ## 尚未完成
