@@ -567,7 +567,7 @@ applyPatch(base, command):                               // 后 patch
 ```
 CandidateSnapshotBuilder.build(state, effectiveCandidates, source)
   countMode/sourceVersion/dataVersion 与 state 一致
-policy = mutationPolicy(applyStrategy)
+policy = mutationPolicy(sourceStrategy)
 StagedDeterministicPlanSolver.solve(snapshot, base, policy)
 ```
 

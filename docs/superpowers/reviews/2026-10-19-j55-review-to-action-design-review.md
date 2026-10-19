@@ -111,7 +111,9 @@ previewDigest、typed delta）。两路复审结论：**仍未 ready**，但只�
 
 - 上述 P0/P1 已回填设计 §2–§6、§9、§10；剩余为产品/数据侧确认（coverage
   identity、组内展示粒度、fixture 会话），已在设计 §11.1 列出。
+- 终审只发现一处文字矛盾：`mutationPolicy` 的 key 应为 `sourceStrategy`，
+  已修正；其余项均通过。
+- **最终结论：SIGN-OFF READY**（执行复审明确通过；架构复审确认无 P0，
+  P1 修正后关闭）。
 - 建议下一步：只做 J5.5a（命令模型 + typed delta + 纯读预览），
   **不改 apply**；b/c 在 a 的测试与 review 通过后启动。
-- 最终确认前仍需一次简短的实现边界核对（尤其 `applyStrategy` 归一和
-  `FrozenPlanExecutor` 分派），但不需要再推翻整体框架。
