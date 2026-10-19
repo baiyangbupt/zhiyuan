@@ -82,6 +82,26 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
 （proposalId/digests/status/summary），完整冻结负载只放 pending.dataValue；
 真栈 prepare 已通过。后续如需在 request 表存完整结果，应单独迁移 MEDIUMTEXT。
 
+## 首个 Search 切片：count_target → fill（2026-10-19）
+
+- 新增 `SearchReviewPreviewPlanner`：普通 major 模式、`count_target` fail、
+  `fill_missing_count`；复用 `UserGoalProposalBuilder.build` 的 staged solver，
+  再通过 `applyFrozenSelection` 物化后态并跑原 probe 预检。
+- `preview`/`prepare` 共享 helper：先 Direct（倒挂），再 Search（count_target）；
+  apply 接受 Direct 倒挂 + fill(count_target/count_validation_hard)。
+- 目标数量：本切片要求 `selectionTargetCount` 已存在且为目标值；apply 只回放
+  冻结方案，不修改目标/档位/覆盖。`persistTargetCount=true` 仅用于让
+  user-goal builder 产出 80→82 的补齐动作，review 冻结链本身不落目标。
+- 真栈 900700 夹具：required/selectionTarget=82、2 条浙江保档、当前 80 条；
+  preview `ready`、`selected=82/add=2/remove=0`、preflight satisfied；
+  prepare→claim→execute 后版本 1→2、82 条、保底 2、postcondition true；
+  已恢复 planningState/userScoreDetail 到原 HEX（v1/80/全冲），清
+  pending/command/proposal-request 测试行。
+- Java 全量 **1368 / 0 / 0 / 10**；Python unit **2925 passed / 32 skipped**。
+
+仍未覆盖：safety/ratio/coverage/gap/edge 等 Search probe；专业组模式；
+remove/replace 需要候选的 Direct 场景；目标/档位/覆盖的 durable patch 持久化。
+
 ## 尚未完成
 
 - 其余 Direct 策略（remove/replace/group-inner）与 Search planner 尚未接入。

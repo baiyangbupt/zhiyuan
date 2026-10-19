@@ -691,6 +691,151 @@ async def test_preview_plan_change_stability_exact_selection_freezes_only_select
     save_mock.assert_not_awaited()
 
 
+async def test_preview_plan_change_count_target_preview_routes_to_frozen_proposals(mocker):
+    """计数补齐走新只读冻结预览：count_validation 目标匹配 count_target 来源码。"""
+    preview_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.preview_review_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "sourceVersionGuard": 12,
+                    "proposals": [
+                        {
+                            "proposalId": "fp-count-target",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["count_target"],
+                            "targetCount": 46,
+                            "title": "补齐方案数量",
+                            "summary": "按目标数量补齐1个专业组。",
+                            "impact": "专业组由45个增加到46个。",
+                            "commandDigest": "command-digest-count",
+                            "previewDigest": "preview-digest-count",
+                            "evaluationVersion": "eval-count",
+                            "dryRunResult": {
+                                "status": "ready",
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 46,
+                                "affectedUnitCount": 1,
+                                "addUnitCount": 1,
+                            },
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0, "data": {"proposals": []}}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_planning_workspace_state",
+        AsyncMock(return_value={"code": 0, "data": {"version": 12}}),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={
+                "repair_goal": {
+                    "review_issue_code": "count_validation",
+                    "strategy": "fill_missing_count",
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["pending_created"] is False
+    assert result["data"]["requires_confirmation"] is True
+    assert result["data"]["proposal"]["proposal_id"] == "fp-count-target"
+    assert result["data"]["proposal"]["source_check_codes"] == ["count_target"]
+    candidate = result["data"]["review_fix_prepare_candidate"]
+    assert candidate["proposal_id"] == "fp-count-target"
+    assert candidate["command_digest"] == "command-digest-count"
+    assert candidate["preview_digest"] == "preview-digest-count"
+    assert candidate["evaluation_version"] == "eval-count"
+    preview_mock.assert_awaited_once_with(1, ctx.sessionid)
+    generate_mock.assert_not_awaited()
+    save_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_count_matching_ignores_cross_goal_ready_proposal(mocker):
+    """count_* 变体互相等价，但其他 issue 仍做精确匹配且不放松唯一性。"""
+    preview_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.preview_review_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "sourceVersionGuard": 12,
+                    "proposals": [
+                        {
+                            "proposalId": "fp-cross-goal-count",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["probability_inversion"],
+                            "commandDigest": "command-digest-cross",
+                            "previewDigest": "preview-digest-cross",
+                        },
+                        {
+                            "proposalId": "fp-count-target",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["count_target"],
+                            "title": "补齐方案数量",
+                            "summary": "按目标数量补齐1个专业组。",
+                            "impact": "专业组由45个增加到46个。",
+                            "commandDigest": "command-digest-count",
+                            "previewDigest": "preview-digest-count",
+                            "dryRunResult": {"status": "ready", "affectedUnitCount": 1},
+                        },
+                    ],
+                },
+            }
+        ),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_planning_workspace_state",
+        AsyncMock(return_value={"code": 0, "data": {"version": 12}}),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "repair_goal": {
+                    "review_issue_code": "count_validation_hard",
+                    "strategy": "fill_missing_count",
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["proposal"]["proposal_id"] == "fp-count-target"
+    assert result["data"]["proposal"]["source_check_codes"] == ["count_target"]
+    preview_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
 def _prime_active_negative_major_intent_pending(ctx: RequestContext, *, section=None) -> None:
     merged = section or {"major_intents": {"negative_level1": ["医学"]}}
     execution_payload = {

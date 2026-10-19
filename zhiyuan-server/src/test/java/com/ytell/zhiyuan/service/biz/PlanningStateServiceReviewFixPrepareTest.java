@@ -191,14 +191,124 @@ class PlanningStateServiceReviewFixPrepareTest {
         assertEquals("completed", preview.getReview().getEvaluationStatus());
         assertFalse(preview.getProposals().isEmpty(), "fixture 必须产出一份倒挂修复预览");
         FixProposalDTO proposal = preview.getProposals().get(0);
+        return prepareRequest(proposal, preview.getSourceVersion());
+    }
 
+    private ReviewFixPrepareReq prepareRequest(FixProposalDTO proposal, Integer sourceVersion) {
         ReviewFixPrepareReq req = new ReviewFixPrepareReq();
         req.setProposalId(proposal.getProposalId());
         req.setPreviewDigest(proposal.getPreviewDigest());
         req.setCommandDigest(proposal.getCommandDigest());
         req.setEvaluationVersion(proposal.getEvaluationVersion());
-        req.setSourceVersionGuard(preview.getSourceVersion());
+        req.setSourceVersionGuard(sourceVersion);
         return req;
+    }
+
+    @Test
+    void freezesCountTargetSearchProposalWithEightyTwoFrozenEntries() {
+        row.setDataValue(JSON.toJSONString(countTargetFixture()));
+        String baseline = row.getDataValue();
+
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = countTargetProposal(preview);
+
+        assertNotNull(proposal, "count_target fixture 必须产出 Search 提案");
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertEquals("count_target", proposal.getFindingCode());
+        assertEquals(82, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertEquals(82, proposal.getFrozenReviewPlan().getSelectedEntityIds().size());
+        assertEquals(82, proposal.getFrozenReviewPlan().getOrderedEntityIds().size());
+
+        PrepareResultDTO dto = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-count", "digest-count",
+                prepareRequest(proposal, preview.getSourceVersion()));
+
+        assertEquals("prepared", dto.getStatus());
+        assertEquals(1, upserts.size());
+        Map<String, Object> data = upserts.get(0).getDataValue();
+        assertEquals("count_target", ((Map) data.get("frozenProposal")).get("findingCode"));
+        assertEquals("fill_missing_count", ((Map) data.get("frozenProposal")).get("strategy"));
+        assertEquals(82, ((List) ((Map) ((Map) data.get("frozenProposal"))
+                .get("solverResult")).get("selectedEntityIds")).size());
+        Map frozen = (Map) data.get("frozenReviewPlan");
+        assertEquals(82, ((List) frozen.get("selectedEntityIds")).size());
+        assertEquals(82, ((List) frozen.get("orderedEntityIds")).size());
+        assertEquals(82, ((List) ((Map) frozen.get("workingPlan")).get("items")).size());
+        assertEquals(82, ((List) ((Map) frozen.get("orderedPlan")).get("items")).size());
+        assertNotNull(frozen.get("factsDigest"));
+        assertEquals(baseline, row.getDataValue(), "prepare 只冻结 pending，不写方案状态");
+    }
+
+    @Test
+    void countTargetPrepareRejectsTamperedPreviewDigest() {
+        row.setDataValue(JSON.toJSONString(countTargetFixture()));
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        ReviewFixPrepareReq req = prepareRequest(countTargetProposal(preview), preview.getSourceVersion());
+        req.setPreviewDigest("tampered-count-preview");
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(TENANT, SESSION, "req-count-bad", "digest-count-bad", req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_changed", ex.getMessage());
+        assertTrue(upserts.isEmpty());
+    }
+
+    private static FixProposalDTO countTargetProposal(ReviewFixPreviewDTO preview) {
+        for (FixProposalDTO proposal : preview.getProposals()) {
+            if (proposal != null && "count_target".equals(proposal.getFindingCode())) {
+                return proposal;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 80 条已有志愿、目标 82：count_target fail，Search 从候选池补 2 条。
+     * 硬口径（官方 82）与软口径（目标 82）都要求补齐后才能通过后置校验。
+     */
+    static PlanningStateDTO countTargetFixture() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setVersion(7);
+        state.setPhase("ordered");
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(82);
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(82);
+        for (int index = 1; index <= 84; index++) {
+            CandidateItemDTO candidate = new CandidateItemDTO();
+            candidate.setVolunteerId(String.format("v%03d", index));
+            candidate.setSchoolName("学校" + index);
+            candidate.setDisplaySchoolName("学校" + index);
+            candidate.setMajorName("专业" + index);
+            candidate.setMajorCategory("工学");
+            candidate.setTier("protect");
+            candidate.setProvinceName("浙江");
+            candidate.setAdmissionRatio(40D + index);
+            candidate.setSchoolEnrollRatio(40D + index);
+            candidate.setFinalScore(80D);
+            candidate.setIntentScore(40D);
+            state.getCandidatePoolState().getItems().add(candidate);
+
+            RecommendationOverlayStateDTO.Item overlay = new RecommendationOverlayStateDTO.Item();
+            overlay.setVolunteerId(candidate.getVolunteerId());
+            state.getRecommendationOverlayState().getItems().add(overlay);
+            if (index <= 80) {
+                DraftItemDTO selected = new DraftItemDTO();
+                selected.setVolunteerId(candidate.getVolunteerId());
+                selected.setTier("protect");
+                state.getWorkingPlanState().getItems().add(selected);
+
+                OrderedItemDTO ordered = new OrderedItemDTO();
+                ordered.setVolunteerId(candidate.getVolunteerId());
+                ordered.setTier("protect");
+                ordered.setPosition(index);
+                state.getOrderedPlanState().getItems().add(ordered);
+            }
+        }
+        return state;
     }
 
     /** 假表 + 真实状态机：与 ConversationProposalRequestServiceTest 同一套替身。 */

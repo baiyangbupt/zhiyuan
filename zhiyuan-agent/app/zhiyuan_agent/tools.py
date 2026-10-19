@@ -9713,12 +9713,19 @@ async def _preview_review_repair_plan_change(
     requested_issue = str(repair_goal.get("review_issue_code") or "").strip()
     canonical_issue = _canonical_review_issue_code(requested_issue) or requested_issue
     requested_strategy = str(repair_goal.get("strategy") or "").strip()
+    # 计数类问题在 Java 端可能暴露为 count_validation / count_target /
+    # count_validation_hard 等变体，修复目标同为 fill_missing_count。
+    count_repair_issues = {"count_validation", "count_target", "count_validation_hard"}
     if (
         canonical_issue == "probability_inversion"
         and requested_strategy == "sort_by_probability"
+    ) or (
+        canonical_issue in count_repair_issues
+        and requested_strategy == "fill_missing_count"
     ):
-        # J5.5b：倒挂排序走新的只读冻结预览（working/ordered/selected facts +
-        # previewDigest + 原 probe 预检）；旧 generate 只作为其他策略的回退。
+        # J5.5b：倒挂排序与计数补齐都走新的只读冻结预览（working/ordered/
+        # selected facts + previewDigest + 原 probe 预检）；旧 generate 只作为
+        # 其他策略的回退。
         response = await internal_client.preview_review_fix_proposals(
             getattr(ctx.deps, "tenant_id", 1),
             ctx.deps.sessionid,
@@ -9744,7 +9751,15 @@ async def _preview_review_repair_plan_change(
             for code in item.get("sourceCheckCodes", item.get("source_check_codes", [])) or []
             if str(code or "").strip()
         ]
-        if strategy == requested_strategy and canonical_issue in source_codes:
+        if strategy != requested_strategy:
+            continue
+        if canonical_issue in count_repair_issues:
+            # 计数修复目标内部等价：count_validation / count_target /
+            # count_validation_hard 之间任意 count_* 来源码都算匹配。
+            issue_matched = any(code.startswith("count_") for code in source_codes)
+        else:
+            issue_matched = canonical_issue in source_codes
+        if issue_matched:
             matching.append(item)
 
     ready_matching = [

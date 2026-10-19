@@ -1203,9 +1203,16 @@ public class PlanningStateService {
                 || frozen.getWorkingPlan() == null || frozen.getOrderedPlan() == null) {
             throw new BusinessException(409, "review_fix_not_confirmable");
         }
-        if (!RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY.equals(
-                RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy()))
-                || !"probability_inversion".equals(proposal.getFindingCode())) {
+        // 冻结回放接受两类：Direct 倒挂重排，以及首个 Search 切片（count_target →
+        // fill_missing_count）。Search 的目标数在 state 里已确认，回放时不做任何改动。
+        String frozenStrategy = RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy());
+        String frozenFindingCode = proposal.getFindingCode();
+        boolean directInversion = RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY.equals(frozenStrategy)
+                && "probability_inversion".equals(frozenFindingCode);
+        boolean searchFill = RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(frozenStrategy)
+                && ("count_target".equals(frozenFindingCode)
+                || "count_validation_hard".equals(frozenFindingCode));
+        if (!directInversion && !searchFill) {
             throw new BusinessException(409, "review_fix_not_confirmable");
         }
 
@@ -3418,16 +3425,34 @@ public class PlanningStateService {
         }
         // 开关打开时，只读预览也返回“可确认”的冻结提案（仍需显式 prepare 才落 pending）；
         // 关闭时保持原 preview_only，作为回滚位。
-        DirectReviewPreviewPlanner planner =
-                new DirectReviewPreviewPlanner(ReviewFixCommandFlags.enabled());
+        preview.getProposals().addAll(buildReviewFixProposals(
+                state, effectiveCandidates, review, ReviewFixCommandFlags.enabled()));
+        return preview;
+    }
+
+    /**
+     * 只读预览与 prepare 共用的提案生成：Direct（全显式动作）优先，其次 Search
+     * （复用 user-goal staged solver 选条目）。两类都返回冻结方案，确认链不再重算。
+     */
+    private List<FixProposalDTO> buildReviewFixProposals(PlanningStateDTO state,
+                                                         List<CandidateItemDTO> effectiveCandidates,
+                                                         ReviewStateDTO review,
+                                                         boolean confirmable) {
+        List<FixProposalDTO> proposals = new ArrayList<FixProposalDTO>();
+        DirectReviewPreviewPlanner direct = new DirectReviewPreviewPlanner(confirmable);
+        SearchReviewPreviewPlanner search = new SearchReviewPreviewPlanner();
         for (EvaluationFindingDTO finding : review.getFindings()) {
-            FixProposalDTO proposal = planner.plan(state, effectiveCandidates, finding,
+            FixProposalDTO proposal = direct.plan(state, effectiveCandidates, finding,
                     after -> evaluateReview(after, effectiveCandidates));
+            if (proposal == null) {
+                proposal = search.plan(state, effectiveCandidates, finding,
+                        after -> evaluateReview(after, effectiveCandidates), confirmable);
+            }
             if (proposal != null) {
-                preview.getProposals().add(proposal);
+                proposals.add(proposal);
             }
         }
-        return preview;
+        return proposals;
     }
 
     /**
@@ -3477,14 +3502,8 @@ public class PlanningStateService {
                         preview.setStatus("unavailable");
                         throw new BusinessException(409, "review_fix_changed");
                     }
-                    DirectReviewPreviewPlanner planner = new DirectReviewPreviewPlanner(true);
-                    for (EvaluationFindingDTO finding : review.getFindings()) {
-                        FixProposalDTO proposal = planner.plan(state, effectiveCandidates, finding,
-                                after -> evaluateReview(after, effectiveCandidates));
-                        if (proposal != null) {
-                            preview.getProposals().add(proposal);
-                        }
-                    }
+                    preview.getProposals().addAll(buildReviewFixProposals(
+                            state, effectiveCandidates, review, true));
                     FixProposalDTO proposal = findReviewFixProposal(preview, safeReq.getProposalId());
                     validateReviewFixPrepare(state, review, proposal, safeReq);
 

@@ -205,6 +205,119 @@ class PlanningStateServiceReviewFixApplyTest {
         assertEquals("review_fix_requires_pending", ex.getMessage());
     }
 
+    @Test
+    void appliesTheFrozenCountTargetFillAndReplaysEightyTwoEntries() {
+        useCountTargetFixture();
+        prepareCountTarget();
+
+        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+
+        assertEquals("applied", res.getStatus());
+        PlanningStateDTO applied = res.getState();
+        assertEquals(Integer.valueOf(8), applied.getVersion(), "只 bump 一次版本");
+        assertEquals(82, applied.getWorkingPlanState().getItems().size());
+        assertEquals(82, applied.getOrderedPlanState().getItems().size());
+        assertEquals(82, orderedIds(applied).stream().distinct().count());
+        long added = applied.getOrderedPlanState().getItems().stream()
+                .filter(item -> "review_fix".equals(item.getSource())).count();
+        assertEquals(2, added, "只补入缺口 2 条，合规存量原样保留");
+        assertEquals(Integer.valueOf(82), applied.getConstraintState()
+                .getHardPlanningObjectives().getSelectionTargetCount(),
+                "count_target 回放不修改已确认目标数");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(82, orderedIds(saved).size());
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void countTargetTamperedCommandDigestIsRejectedBeforeAnyWrite() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        FixProposalApplyReq req = applyRequest();
+        req.setCommandDigest("tampered");
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_changed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void countTargetPlanDriftAfterPrepareIsRejectedAsStale() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.getOrderedPlanState().getItems().get(0).setVolunteerId("changed");
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_stale", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void countTargetPostconditionFailureRollsBackWithoutWriting() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        // 把冻结结果缩回 80 条：重放后 count_target 仍然 fail，写前校验必须回滚。
+        JSONObject frozen = (JSONObject) activePending.getDataValue().get("frozenReviewPlan");
+        trimTo(frozen.getJSONObject("workingPlan").getJSONArray("items"), 80);
+        trimTo(frozen.getJSONObject("orderedPlan").getJSONArray("items"), 80);
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
+        assertEquals("review_fix_postcondition_failed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue(), "后置失败必须回滚，不得留下半套方案");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(Integer.valueOf(7), saved.getVersion());
+    }
+
+    private void useCountTargetFixture() {
+        row.setDataValue(JSON.toJSONString(PlanningStateServiceReviewFixPrepareTest.countTargetFixture()));
+    }
+
+    private void prepareCountTarget() {
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = null;
+        for (FixProposalDTO candidate : preview.getProposals()) {
+            if (candidate != null && "count_target".equals(candidate.getFindingCode())) {
+                proposal = candidate;
+                break;
+            }
+        }
+        assertNotNull(proposal, "count_target fixture 必须产出 Search 提案");
+        assertEquals("ready", proposal.getStatus());
+        ReviewFixPrepareReq req = new ReviewFixPrepareReq();
+        req.setProposalId(proposal.getProposalId());
+        req.setPreviewDigest(proposal.getPreviewDigest());
+        req.setCommandDigest(proposal.getCommandDigest());
+        req.setEvaluationVersion(proposal.getEvaluationVersion());
+        req.setSourceVersionGuard(preview.getSourceVersion());
+        PrepareResultDTO prepared = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-count-apply", "digest-count-apply", req);
+        assertNotNull(prepared.getPendingId());
+        assertNotNull(activePending);
+    }
+
+    private static void trimTo(JSONArray items, int size) {
+        while (items.size() > size) {
+            items.remove(items.size() - 1);
+        }
+        for (int index = 0; index < items.size(); index++) {
+            items.getJSONObject(index).put("position", index + 1);
+        }
+    }
+
     private void prepare() {
         ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
         FixProposalDTO proposal = preview.getProposals().get(0);
