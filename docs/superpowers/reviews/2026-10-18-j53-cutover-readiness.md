@@ -220,3 +220,10 @@ turn.completed`，`executionStatus=completed`、`runtimeStatus=native`。只读�
 验收：全量 Java **1274 tests / 0 failures / 0 errors / 9 skipped**。
 排序口径补充：同档内命中优先规则 → 当前方案条目（保持相对顺序）→
 新增条目（按 stableOrder），避免一次补齐把用户现有顺序整体按分数重排。
+提交：`ed32d70`（删除/切流）+ `137ce1e`（solverVersion 改为
+`ojalgo-48.4.2-j53-staged`）。
+
+真栈：Java 18290 重启为 pid 18531，cmdline 不再带
+`solver.v2.shadow` / `solver.v2.paths`，启动 0 ERROR；只读预览：
+900040 fill 82 → ready `selected=82/add=2/remove=0`（状态仍 5/80），
+900045 fill 46 → ready `selected=46/add=2`（状态仍 14/44）。
