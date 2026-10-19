@@ -342,6 +342,144 @@ class PlanningStateServiceReviewFixApplyTest {
         assertEquals(baseline, row.getDataValue());
     }
 
+    @Test
+    void appliesTheFrozenSafetyFillAndReplaysEightyEntriesWithLocalProtect() {
+        useSafetyFixture();
+        prepareSafety();
+
+        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+
+        assertEquals("applied", res.getStatus());
+        PlanningStateDTO applied = res.getState();
+        assertEquals(Integer.valueOf(8), applied.getVersion(), "只 bump 一次版本");
+        assertEquals(80, applied.getWorkingPlanState().getItems().size());
+        assertEquals(80, applied.getOrderedPlanState().getItems().size());
+        assertEquals(80, orderedIds(applied).stream().distinct().count());
+        assertTrue(localProtectCount(applied) >= 2, "回放后必须满足本省保底下限");
+        assertEquals(Integer.valueOf(80), applied.getConstraintState()
+                .getHardPlanningObjectives().getSelectionTargetCount(),
+                "safety 回放不修改已确认目标数");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(80, orderedIds(saved).size());
+        assertTrue(localProtectCount(saved) >= 2);
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void safetyTamperedCommandDigestIsRejectedBeforeAnyWrite() {
+        useSafetyFixture();
+        prepareSafety();
+        FixProposalApplyReq req = applyRequest();
+        req.setCommandDigest("tampered");
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_changed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void safetyPlanDriftAfterPrepareIsRejectedAsStale() {
+        useSafetyFixture();
+        prepareSafety();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.getOrderedPlanState().getItems().get(0).setVolunteerId("changed");
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_stale", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void safetyPostconditionFailureRollsBackWithoutWriting() {
+        useSafetyFixture();
+        prepareSafety();
+        // 把冻结方案里的本省保底条目换成被移出的非浙江条目：摘要仍与 pending/当前方案
+        // 一致，但重放后 safety_guard 仍然 fail，写前校验必须回滚。
+        JSONObject frozenProposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        JSONObject solverResult = frozenProposal.getJSONObject("solverResult");
+        JSONArray added = solverResult.getJSONArray("addEntityIds");
+        JSONArray removed = solverResult.getJSONArray("removeEntityIds");
+        assertTrue(added != null && removed != null && added.size() == removed.size());
+        Map<String, String> swap = new LinkedHashMap<>();
+        for (int index = 0; index < added.size(); index++) {
+            swap.put(added.getString(index), removed.getString(index));
+        }
+        JSONObject frozen = (JSONObject) activePending.getDataValue().get("frozenReviewPlan");
+        replaceIds(frozen.getJSONObject("workingPlan").getJSONArray("items"), swap);
+        replaceIds(frozen.getJSONObject("orderedPlan").getJSONArray("items"), swap);
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
+        assertEquals("review_fix_postcondition_failed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue(), "后置失败必须回滚，不得留下半套方案");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(Integer.valueOf(7), saved.getVersion());
+    }
+
+    private static void replaceIds(JSONArray items, Map<String, String> swap) {
+        for (int index = 0; index < items.size(); index++) {
+            JSONObject item = items.getJSONObject(index);
+            String replacement = swap.get(item.getString("volunteerId"));
+            if (replacement != null) {
+                item.put("volunteerId", replacement);
+            }
+        }
+    }
+
+    private void useSafetyFixture() {
+        row.setDataValue(JSON.toJSONString(PlanningStateServiceReviewFixPrepareTest.safetyFixture()));
+    }
+
+    private void prepareSafety() {
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = null;
+        for (FixProposalDTO candidate : preview.getProposals()) {
+            if (candidate != null && "safety_guard".equals(candidate.getFindingCode())) {
+                proposal = candidate;
+                break;
+            }
+        }
+        assertNotNull(proposal, "safety fixture 必须产出 Safety 提案");
+        assertEquals("ready", proposal.getStatus());
+        ReviewFixPrepareReq req = new ReviewFixPrepareReq();
+        req.setProposalId(proposal.getProposalId());
+        req.setPreviewDigest(proposal.getPreviewDigest());
+        req.setCommandDigest(proposal.getCommandDigest());
+        req.setEvaluationVersion(proposal.getEvaluationVersion());
+        req.setSourceVersionGuard(preview.getSourceVersion());
+        PrepareResultDTO prepared = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-safety-apply", "digest-safety-apply", req);
+        assertNotNull(prepared.getPendingId());
+        assertNotNull(activePending);
+    }
+
+    private static long localProtectCount(PlanningStateDTO state) {
+        Map<String, String> provinceById = new LinkedHashMap<>();
+        Map<String, String> tierById = new LinkedHashMap<>();
+        for (CandidateItemDTO candidate : state.getCandidatePoolState().getItems()) {
+            if (candidate != null) {
+                provinceById.put(candidate.getVolunteerId(), candidate.getProvinceName());
+                tierById.put(candidate.getVolunteerId(), candidate.getTier());
+            }
+        }
+        return state.getOrderedPlanState().getItems().stream()
+                .filter(item -> "浙江".equals(provinceById.get(item.getVolunteerId()))
+                        && "protect".equals(tierById.get(item.getVolunteerId())))
+                .count();
+    }
+
     private void useCoverageFixture() {
         row.setDataValue(JSON.toJSONString(PlanningStateServiceReviewFixPrepareTest.coverageFixture()));
     }

@@ -337,6 +337,155 @@ class PlanningStateServiceReviewFixPrepareTest {
         return null;
     }
 
+    @Test
+    void freezesSafetyProposalWithEightyFrozenEntriesAndLocalProtect() {
+        row.setDataValue(JSON.toJSONString(safetyFixture()));
+        String baseline = row.getDataValue();
+
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = safetyProposal(preview);
+
+        assertNotNull(proposal, "safety fixture 必须产出 Safety 提案");
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertEquals("add_safety_items", proposal.getSourceStrategy());
+        assertEquals("safety_guard", proposal.getFindingCode());
+        assertEquals("本省保底补齐预览", proposal.getTitle());
+        assertEquals(80, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertTrue(localProtectCount(proposal.getSolverResult().getSelectedEntityIds()) >= 2);
+        assertTrue(proposal.getFindingPostcondition().getSatisfied());
+        assertEquals("safety_guard", proposal.getFindingPostcondition().getFindingCode());
+        assertEquals(80, proposal.getFrozenReviewPlan().getSelectedEntityIds().size());
+        assertEquals(80, proposal.getFrozenReviewPlan().getOrderedEntityIds().size());
+        assertEquals(80, proposal.getFrozenReviewPlan().getWorkingPlan().getItems().size());
+        assertEquals(80, proposal.getFrozenReviewPlan().getOrderedPlan().getItems().size());
+
+        PrepareResultDTO dto = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-safety", "digest-safety",
+                prepareRequest(proposal, preview.getSourceVersion()));
+
+        assertEquals("prepared", dto.getStatus());
+        assertEquals(1, upserts.size());
+        Map<String, Object> data = upserts.get(0).getDataValue();
+        Map<String, Object> frozenProposal = (Map<String, Object>) data.get("frozenProposal");
+        assertEquals("safety_guard", frozenProposal.get("findingCode"));
+        assertEquals("fill_missing_count", frozenProposal.get("strategy"));
+        assertEquals("add_safety_items", frozenProposal.get("sourceStrategy"));
+        assertEquals(80, ((List) ((Map) frozenProposal.get("solverResult")).get("selectedEntityIds")).size());
+        Map<String, Object> frozen = (Map<String, Object>) data.get("frozenReviewPlan");
+        assertEquals(80, ((List) frozen.get("selectedEntityIds")).size());
+        assertEquals(80, ((List) frozen.get("orderedEntityIds")).size());
+        assertEquals(80, ((List) ((Map) frozen.get("workingPlan")).get("items")).size());
+        assertEquals(80, ((List) ((Map) frozen.get("orderedPlan")).get("items")).size());
+        int local = 0;
+        for (Object fact : (List) frozen.get("selectedFacts")) {
+            if (fact instanceof Map && "浙江".equals(((Map) fact).get("provinceName"))) {
+                local++;
+            }
+        }
+        assertTrue(local >= 2, "冻结事实必须包含本省保底");
+        assertNotNull(frozen.get("factsDigest"));
+        assertEquals(baseline, row.getDataValue(), "prepare 只冻结 pending，不写方案状态");
+    }
+
+    @Test
+    void safetyPrepareRejectsTamperedPreviewDigest() {
+        row.setDataValue(JSON.toJSONString(safetyFixture()));
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        ReviewFixPrepareReq req = prepareRequest(safetyProposal(preview), preview.getSourceVersion());
+        req.setPreviewDigest("tampered-safety-preview");
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(TENANT, SESSION, "req-safety-bad", "digest-safety-bad", req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_changed", ex.getMessage());
+        assertTrue(upserts.isEmpty());
+    }
+
+    @Test
+    void safetyPrepareRejectsStaleSourceVersionGuard() {
+        row.setDataValue(JSON.toJSONString(safetyFixture()));
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        ReviewFixPrepareReq req = prepareRequest(safetyProposal(preview), preview.getSourceVersion());
+        req.setSourceVersionGuard(preview.getSourceVersion() - 1);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(TENANT, SESSION, "req-safety-stale", "digest-safety-stale", req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_stale", ex.getMessage());
+        assertTrue(upserts.isEmpty());
+    }
+
+    private static FixProposalDTO safetyProposal(ReviewFixPreviewDTO preview) {
+        return proposalByFindingCode(preview, "safety_guard");
+    }
+
+    private long localProtectCount(List<String> ids) {
+        PlanningStateDTO current = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        Map<String, String> provinceById = new LinkedHashMap<String, String>();
+        Map<String, String> tierById = new LinkedHashMap<String, String>();
+        for (CandidateItemDTO candidate : current.getCandidatePoolState().getItems()) {
+            provinceById.put(candidate.getVolunteerId(), candidate.getProvinceName());
+            tierById.put(candidate.getVolunteerId(), candidate.getTier());
+        }
+        long count = 0;
+        for (String id : ids) {
+            if ("浙江".equals(provinceById.get(id)) && "protect".equals(tierById.get(id))) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 80 条已有志愿（全部非浙江）、目标 80；本省保底要求浙江 protect ≥ 2，
+     * 候选池尾部有 3 条浙江 protect。safety_guard fail → add_safety_items。
+     */
+    static PlanningStateDTO safetyFixture() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setVersion(7);
+        state.setPhase("ordered");
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(80);
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(80);
+        for (int index = 1; index <= 83; index++) {
+            CandidateItemDTO candidate = new CandidateItemDTO();
+            candidate.setVolunteerId(String.format("v%03d", index));
+            candidate.setSchoolName("学校" + index);
+            candidate.setDisplaySchoolName("学校" + index);
+            candidate.setMajorName("专业" + index);
+            candidate.setMajorCategory("工学");
+            candidate.setTier("protect");
+            candidate.setProvinceName(index <= 80 ? "江苏" : "浙江");
+            candidate.setAdmissionRatio(10D + index);
+            candidate.setSchoolEnrollRatio(10D + index);
+            candidate.setFinalScore(80D);
+            candidate.setIntentScore(40D);
+            state.getCandidatePoolState().getItems().add(candidate);
+
+            RecommendationOverlayStateDTO.Item overlay = new RecommendationOverlayStateDTO.Item();
+            overlay.setVolunteerId(candidate.getVolunteerId());
+            state.getRecommendationOverlayState().getItems().add(overlay);
+            if (index <= 80) {
+                DraftItemDTO selected = new DraftItemDTO();
+                selected.setVolunteerId(candidate.getVolunteerId());
+                selected.setTier("protect");
+                state.getWorkingPlanState().getItems().add(selected);
+
+                OrderedItemDTO ordered = new OrderedItemDTO();
+                ordered.setVolunteerId(candidate.getVolunteerId());
+                ordered.setTier("protect");
+                ordered.setPosition(index);
+                state.getOrderedPlanState().getItems().add(ordered);
+            }
+        }
+        return state;
+    }
+
     /**
      * 80 条已有志愿、目标 82：count_target fail，Search 从候选池补 2 条。
      * 硬口径（官方 82）与软口径（目标 82）都要求补齐后才能通过后置校验。

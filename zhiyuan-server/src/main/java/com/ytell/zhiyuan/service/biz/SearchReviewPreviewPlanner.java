@@ -279,7 +279,7 @@ final class SearchReviewPreviewPlanner {
         proposal.setDryRunResult(copy(generated.getDryRunResult(), FixProposalDryRunResultDTO.class));
     }
 
-    private List<OrderedItemDTO> orderedItemsFromSolver(
+    static List<OrderedItemDTO> orderedItemsFromSolver(
             List<String> orderedEntityIds,
             Map<String, OrderedItemDTO> existingById,
             Map<String, CandidateItemDTO> candidatesById) {
@@ -374,7 +374,7 @@ final class SearchReviewPreviewPlanner {
         return "review_fix_solver_unavailable";
     }
 
-    private <Value> Value copy(Value value, Class<Value> type) {
+    private static <Value> Value copy(Value value, Class<Value> type) {
         return value == null ? null : JSON.parseObject(JSON.toJSONString(value), type);
     }
 

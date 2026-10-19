@@ -1203,9 +1203,11 @@ public class PlanningStateService {
                 || frozen.getWorkingPlan() == null || frozen.getOrderedPlan() == null) {
             throw new BusinessException(409, "review_fix_not_confirmable");
         }
-        // 冻结回放接受两类：Direct 倒挂重排，以及 Search 的 fill_missing_count
-        // （count_target / count_validation_hard / coverage:<i>）。Search 的目标数
-        // 与覆盖要求在 state 里已确认，回放时不做任何 patch 写入。
+        // 冻结回放接受三类：Direct 倒挂重排，以及 Search 的 fill_missing_count
+        // （count_target / count_validation_hard / coverage:<i>），以及 Safety 的
+        // fill_missing_count + safety_guard（候选集与保底缺口在 prepare 时已冻结）。
+        // Search/Safety 的目标数与覆盖/保底要求在 state 里已确认或派生，回放时不做
+        // 任何 patch 写入；保底 floors 不落持久化字段。
         String frozenStrategy = RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy());
         String frozenFindingCode = proposal.getFindingCode();
         boolean directInversion = RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY.equals(frozenStrategy)
@@ -1214,7 +1216,10 @@ public class PlanningStateService {
                 && ("count_target".equals(frozenFindingCode)
                 || "count_validation_hard".equals(frozenFindingCode)
                 || (frozenFindingCode != null && frozenFindingCode.startsWith("coverage:")));
-        if (!directInversion && !searchFill) {
+        boolean safetyFill = RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(frozenStrategy)
+                && "safety_guard".equals(frozenFindingCode)
+                && proposal.getSolverResult() != null;
+        if (!directInversion && !searchFill && !safetyFill) {
             throw new BusinessException(409, "review_fix_not_confirmable");
         }
 
@@ -3434,7 +3439,8 @@ public class PlanningStateService {
 
     /**
      * 只读预览与 prepare 共用的提案生成：Direct（全显式动作）优先，其次 Search
-     * （复用 user-goal staged solver 选条目）。两类都返回冻结方案，确认链不再重算。
+     * （复用 user-goal staged solver 选条目），最后 Safety（直接走 staged solver
+     * 补齐本省保底）。三类都返回冻结方案，确认链不再重算。
      */
     private List<FixProposalDTO> buildReviewFixProposals(PlanningStateDTO state,
                                                          List<CandidateItemDTO> effectiveCandidates,
@@ -3443,11 +3449,16 @@ public class PlanningStateService {
         List<FixProposalDTO> proposals = new ArrayList<FixProposalDTO>();
         DirectReviewPreviewPlanner direct = new DirectReviewPreviewPlanner(confirmable);
         SearchReviewPreviewPlanner search = new SearchReviewPreviewPlanner();
+        SafetyReviewPreviewPlanner safety = new SafetyReviewPreviewPlanner();
         for (EvaluationFindingDTO finding : review.getFindings()) {
             FixProposalDTO proposal = direct.plan(state, effectiveCandidates, finding,
                     after -> evaluateReview(after, effectiveCandidates));
             if (proposal == null) {
                 proposal = search.plan(state, effectiveCandidates, finding,
+                        after -> evaluateReview(after, effectiveCandidates), confirmable);
+            }
+            if (proposal == null) {
+                proposal = safety.plan(state, effectiveCandidates, finding,
                         after -> evaluateReview(after, effectiveCandidates), confirmable);
             }
             if (proposal != null) {

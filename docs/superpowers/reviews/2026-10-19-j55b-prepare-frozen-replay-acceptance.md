@@ -115,7 +115,21 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   清 pending/command/proposal-request 测试行。
 - Java 全量 **1375 / 0 / 0 / 10**；Python unit 定向 297 passed / 32 skipped。
 
-仍未覆盖：safety/ratio/gap/edge 等 Search probe；专业组模式；
+## 第三个 Search 切片：safety_guard → fill（2026-10-19）
+
+- 新增 `SafetyReviewPreviewPlanner`：`safety_guard` fail → `add_safety_items`，
+  在 enrichV2 后直接 patch `StructureTarget.minLocalProtect`，走 staged solver
+  的 safety 阶段；物化后态、原 probe 预检、冻结回放与 Search 切片同构。
+- 普通 major 模式；不可冻结路径返回 null（不把旧预览变成 blocked 占位）。
+- apply 接受 `fill_missing_count + safety_guard`，只回放冻结方案；保底由
+  state 派生，不写 durable 字段。
+- 真栈 900700 夹具：required=80、当前 80、1 条已选浙江保档 + 1 条可换浙江保档，
+  安全下限 2（实际 1）。preview `ready`、`selected=80/add=1/remove=1`、
+  safety preflight pass；prepare→claim→execute 后版本 1→2、80 条、保底 2、
+  postcondition true；已恢复 v1/80。
+- Java 全量 **1388 / 0 / 0 / 10**；Python 定向 299 passed / 32 skipped。
+
+仍未覆盖：ratio/gap/edge 等 Search probe；专业组模式；
 remove/replace 需要候选的 Direct 场景；目标/档位/覆盖的 durable patch 持久化。
 
 ## 尚未完成

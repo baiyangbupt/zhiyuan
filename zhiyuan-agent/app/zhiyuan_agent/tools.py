@@ -9724,14 +9724,20 @@ async def _preview_review_repair_plan_change(
     coverage_preview_route = (
         coverage_fix_goal and requested_strategy in coverage_fix_strategies
     )
+    # Java 的安全垫冻结提案可能以 add_safety_items 或 fill_missing_count
+    # 暴露策略名，两者是同一修复目标；来源码仍须精确命中 safety_guard。
+    safety_fix_strategies = {"add_safety_items", "fill_missing_count"}
+    safety_preview_route = (
+        canonical_issue == "safety_guard" and requested_strategy in safety_fix_strategies
+    )
     if (
         canonical_issue == "probability_inversion"
         and requested_strategy == "sort_by_probability"
     ) or (
         canonical_issue in count_repair_issues
         and requested_strategy == "fill_missing_count"
-    ) or coverage_preview_route:
-        # J5.5b：倒挂排序、计数补齐与覆盖补齐都走新的只读冻结预览
+    ) or coverage_preview_route or safety_preview_route:
+        # J5.5b：倒挂排序、计数补齐、覆盖补齐与安全垫补齐都走新的只读冻结预览
         # （working/ordered/selected facts + previewDigest + 原 probe 预检）；
         # 旧 generate 只作为其他策略的回退。
         response = await internal_client.preview_review_fix_proposals(
@@ -9762,6 +9768,10 @@ async def _preview_review_repair_plan_change(
         if coverage_preview_route:
             # 覆盖修复的 must_include_scope / fill_missing_count 视为同一目标。
             if strategy not in coverage_fix_strategies:
+                continue
+        elif safety_preview_route:
+            # 安全垫修复的 add_safety_items / fill_missing_count 视为同一目标。
+            if strategy not in safety_fix_strategies:
                 continue
         elif strategy != requested_strategy:
             continue
