@@ -499,6 +499,133 @@ class PlanningStateServiceReviewFixPrepareTest {
         return proposalByFindingCode(preview, "ratio_distribution");
     }
 
+    @Test
+    void freezesRiskReplaceProposalWithForcedRemovalAndEightyFrozenEntries() {
+        row.setDataValue(JSON.toJSONString(riskReplaceFixture()));
+        String baseline = row.getDataValue();
+
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = riskProposal(preview);
+
+        assertNotNull(proposal, "risk fixture 必须产出 RiskReplace 提案");
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("fill_missing_count", proposal.getStrategy());
+        assertEquals("replace_risk_items", proposal.getSourceStrategy());
+        assertEquals("high_tuition", proposal.getFindingCode());
+        assertEquals("风险条目替换预览", proposal.getTitle());
+        assertEquals(80, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertTrue(proposal.getSolverResult().getRemoveEntityIds().contains("v001"));
+        assertFalse(proposal.getSolverResult().getSelectedEntityIds().contains("v001"));
+        assertTrue(proposal.getFindingPostcondition().getSatisfied());
+        assertEquals("high_tuition", proposal.getFindingPostcondition().getFindingCode());
+        assertEquals(80, proposal.getFrozenReviewPlan().getSelectedEntityIds().size());
+        assertEquals(80, proposal.getFrozenReviewPlan().getOrderedEntityIds().size());
+        assertEquals(80, proposal.getFrozenReviewPlan().getWorkingPlan().getItems().size());
+        assertEquals(80, proposal.getFrozenReviewPlan().getOrderedPlan().getItems().size());
+
+        PrepareResultDTO dto = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-risk", "digest-risk",
+                prepareRequest(proposal, preview.getSourceVersion()));
+
+        assertEquals("prepared", dto.getStatus());
+        assertEquals(1, upserts.size());
+        Map<String, Object> data = upserts.get(0).getDataValue();
+        Map<String, Object> frozenProposal = (Map<String, Object>) data.get("frozenProposal");
+        assertEquals("high_tuition", frozenProposal.get("findingCode"));
+        assertEquals("fill_missing_count", frozenProposal.get("strategy"));
+        assertEquals("replace_risk_items", frozenProposal.get("sourceStrategy"));
+        assertEquals(80, ((List) ((Map) frozenProposal.get("solverResult")).get("selectedEntityIds")).size());
+        assertTrue(((List) ((Map) frozenProposal.get("solverResult")).get("removeEntityIds"))
+                .contains("v001"));
+        Map<String, Object> frozen = (Map<String, Object>) data.get("frozenReviewPlan");
+        assertEquals(80, ((List) frozen.get("selectedEntityIds")).size());
+        assertEquals(80, ((List) frozen.get("orderedEntityIds")).size());
+        assertEquals(80, ((List) ((Map) frozen.get("workingPlan")).get("items")).size());
+        assertEquals(80, ((List) ((Map) frozen.get("orderedPlan")).get("items")).size());
+        assertFalse(((List) frozen.get("selectedEntityIds")).contains("v001"));
+        assertNotNull(frozen.get("factsDigest"));
+        assertEquals(baseline, row.getDataValue(), "prepare 只冻结 pending，不写方案状态");
+    }
+
+    @Test
+    void riskPrepareRejectsTamperedPreviewDigestAndStaleGuard() {
+        row.setDataValue(JSON.toJSONString(riskReplaceFixture()));
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        ReviewFixPrepareReq tampered = prepareRequest(riskProposal(preview), preview.getSourceVersion());
+        tampered.setPreviewDigest("tampered-risk-preview");
+
+        BusinessException changed = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(
+                        TENANT, SESSION, "req-risk-bad", "digest-risk-bad", tampered));
+        assertEquals(409, changed.getStatus());
+        assertEquals("review_fix_changed", changed.getMessage());
+        assertTrue(upserts.isEmpty());
+
+        ReviewFixPrepareReq stale = prepareRequest(riskProposal(preview), preview.getSourceVersion());
+        stale.setSourceVersionGuard(preview.getSourceVersion() - 1);
+        BusinessException outdated = assertThrows(BusinessException.class,
+                () -> service.prepareReviewFixProposal(
+                        TENANT, SESSION, "req-risk-stale", "digest-risk-stale", stale));
+        assertEquals(409, outdated.getStatus());
+        assertEquals("review_fix_stale", outdated.getMessage());
+        assertTrue(upserts.isEmpty());
+    }
+
+    private static FixProposalDTO riskProposal(ReviewFixPreviewDTO preview) {
+        return proposalByFindingCode(preview, "high_tuition");
+    }
+
+    /**
+     * 80 条已有志愿、目标 80；v001 学费 3 万/学年（high_tuition fail），
+     * 其余 2 万以内，候选池尾部另有 1 条低学费替代。forcedRemove v001 后
+     * 等量补入替代，保持 80 条。
+     */
+    static PlanningStateDTO riskReplaceFixture() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setVersion(7);
+        state.setPhase("ordered");
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(80);
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        // ≥580：本省保底不适用，避免 safety_guard 干扰风险替换后置校验。
+        state.getCandidatePoolState().setUserScore(600);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(80);
+        for (int index = 1; index <= 81; index++) {
+            CandidateItemDTO candidate = new CandidateItemDTO();
+            candidate.setVolunteerId(String.format("v%03d", index));
+            candidate.setSchoolName("学校" + index);
+            candidate.setDisplaySchoolName("学校" + index);
+            candidate.setMajorName("专业" + index);
+            candidate.setMajorCategory("工学");
+            candidate.setTier("protect");
+            candidate.setProvinceName("浙江");
+            candidate.setTuitionPerYear(index == 1 ? 30000 : 5000);
+            candidate.setAdmissionRatio(50D);
+            candidate.setSchoolEnrollRatio(50D);
+            candidate.setFinalScore(80D);
+            candidate.setIntentScore(40D);
+            state.getCandidatePoolState().getItems().add(candidate);
+
+            RecommendationOverlayStateDTO.Item overlay = new RecommendationOverlayStateDTO.Item();
+            overlay.setVolunteerId(candidate.getVolunteerId());
+            state.getRecommendationOverlayState().getItems().add(overlay);
+            if (index <= 80) {
+                DraftItemDTO selected = new DraftItemDTO();
+                selected.setVolunteerId(candidate.getVolunteerId());
+                selected.setTier("protect");
+                state.getWorkingPlanState().getItems().add(selected);
+
+                OrderedItemDTO ordered = new OrderedItemDTO();
+                ordered.setVolunteerId(candidate.getVolunteerId());
+                ordered.setTier("protect");
+                ordered.setPosition(index);
+                state.getOrderedPlanState().getItems().add(ordered);
+            }
+        }
+        return state;
+    }
+
     private int tierCount(List<String> ids, String tier) {
         PlanningStateDTO current = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
         Map<String, String> tierById = new LinkedHashMap<String, String>();

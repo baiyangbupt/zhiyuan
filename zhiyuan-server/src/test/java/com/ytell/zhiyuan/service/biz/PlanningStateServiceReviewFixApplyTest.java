@@ -512,6 +512,126 @@ class PlanningStateServiceReviewFixApplyTest {
         assertEquals(Integer.valueOf(7), saved.getVersion());
     }
 
+    @Test
+    void appliesTheFrozenRiskReplacementAndRemovesForcedTarget() {
+        useRiskFixture();
+        prepareRisk();
+
+        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+
+        assertEquals("applied", res.getStatus());
+        PlanningStateDTO applied = res.getState();
+        assertEquals(Integer.valueOf(8), applied.getVersion(), "只 bump 一次版本");
+        assertEquals(80, applied.getWorkingPlanState().getItems().size());
+        assertEquals(80, applied.getOrderedPlanState().getItems().size());
+        assertEquals(80, orderedIds(applied).stream().distinct().count());
+        assertFalse(orderedIds(applied).contains("v001"), "回放后必须移出高收费条目");
+        assertTrue(orderedIds(applied).contains("v081"), "回放后必须补入低学费替代");
+        assertEquals(Integer.valueOf(80), applied.getConstraintState()
+                .getHardPlanningObjectives().getSelectionTargetCount(),
+                "risk 回放不修改已确认目标数");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(80, orderedIds(saved).size());
+        assertFalse(orderedIds(saved).contains("v001"));
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void riskTamperedCommandDigestIsRejectedBeforeAnyWrite() {
+        useRiskFixture();
+        prepareRisk();
+        FixProposalApplyReq req = applyRequest();
+        req.setCommandDigest("tampered");
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, req));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_changed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void riskPlanDriftAfterPrepareIsRejectedAsStale() {
+        useRiskFixture();
+        prepareRisk();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.getOrderedPlanState().getItems().get(0).setVolunteerId("changed");
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_stale", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void riskPostconditionFailureRollsBackWithoutWriting() {
+        useRiskFixture();
+        prepareRisk();
+        // 把冻结方案里的低学费替代换回被移出的高收费条目：摘要仍与 pending/当前方案
+        // 一致，但重放后 high_tuition 仍然 fail，写前校验必须回滚。
+        JSONObject frozenProposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        JSONObject solverResult = frozenProposal.getJSONObject("solverResult");
+        JSONArray added = solverResult.getJSONArray("addEntityIds");
+        JSONArray removed = solverResult.getJSONArray("removeEntityIds");
+        assertTrue(added != null && added.size() > 0 && removed != null && removed.size() > 0);
+        String risky = removed.getString(0);
+        JSONObject frozen = (JSONObject) activePending.getDataValue().get("frozenReviewPlan");
+        replaceId(frozen.getJSONObject("workingPlan").getJSONArray("items"), added.getString(0), risky);
+        replaceId(frozen.getJSONObject("orderedPlan").getJSONArray("items"), added.getString(0), risky);
+        String baseline = row.getDataValue();
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
+        assertEquals("review_fix_postcondition_failed", ex.getMessage());
+        assertEquals(baseline, row.getDataValue(), "后置失败必须回滚，不得留下半套方案");
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(Integer.valueOf(7), saved.getVersion());
+    }
+
+    private static void replaceId(JSONArray items, String from, String to) {
+        for (int index = 0; index < items.size(); index++) {
+            JSONObject item = items.getJSONObject(index);
+            if (from.equals(item.getString("volunteerId"))) {
+                item.put("volunteerId", to);
+            }
+        }
+    }
+
+    private void useRiskFixture() {
+        row.setDataValue(JSON.toJSONString(PlanningStateServiceReviewFixPrepareTest.riskReplaceFixture()));
+    }
+
+    private void prepareRisk() {
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+        FixProposalDTO proposal = null;
+        for (FixProposalDTO candidate : preview.getProposals()) {
+            if (candidate != null && "high_tuition".equals(candidate.getFindingCode())) {
+                proposal = candidate;
+                break;
+            }
+        }
+        assertNotNull(proposal, "risk fixture 必须产出 RiskReplace 提案");
+        assertEquals("ready", proposal.getStatus());
+        ReviewFixPrepareReq req = new ReviewFixPrepareReq();
+        req.setProposalId(proposal.getProposalId());
+        req.setPreviewDigest(proposal.getPreviewDigest());
+        req.setCommandDigest(proposal.getCommandDigest());
+        req.setEvaluationVersion(proposal.getEvaluationVersion());
+        req.setSourceVersionGuard(preview.getSourceVersion());
+        PrepareResultDTO prepared = service.prepareReviewFixProposal(
+                TENANT, SESSION, "req-risk-apply", "digest-risk-apply", req);
+        assertNotNull(prepared.getPendingId());
+        assertNotNull(activePending);
+    }
+
     private static void forceTier(JSONArray items, String tier) {
         for (int index = 0; index < items.size(); index++) {
             items.getJSONObject(index).put("tier", tier);

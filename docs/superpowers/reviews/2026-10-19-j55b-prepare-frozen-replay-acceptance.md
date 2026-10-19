@@ -145,8 +145,24 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   档位目标已在 state 确认，不写 durable patch。
 - Java 全量 **1400 / 0 / 0 / 10**；Python unit **2931 passed / 32 skipped**。
 
-仍未覆盖：gap/edge 等 Search probe；专业组模式；
-remove/replace 需要候选的 Direct 场景；目标/档位/覆盖的 durable patch 持久化。
+## 第五个 Search 切片：风险条目替换/移除（2026-10-19）
+
+- 新增 `RiskReplaceReviewPreviewPlanner`：high_tuition / cooperative_program /
+  admission_limit / special_enrollment → `replace_risk_items`/`remove_risk_items`；
+  把 forcedRemoveTargets 写进 `MutationPolicy.forcedRemoveEntityIds`，用 staged
+  solver 选替代条目；targetCount 缺省时按当前条目数保持数量。
+- 物化后态、原 finding probe 预检、冻结回放与其余 Search 切片同构；
+  额外确认所有 forced 目标已不在最终方案。
+- apply 接受 `fill_missing_count + 上述四类 finding`，只回放冻结方案；不写
+  durable patch。
+- 真栈 900700 夹具：required=80、2 条浙江保档、1 条已选高收费（25000）；
+  preview `ready`、`selected=80/add=1/remove=1`、high_tuition preflight pass；
+  prepare→claim→execute 后版本 1→2、80 条、无高收费、保底 2、
+  postcondition true；已恢复 v1/80。
+- Java 全量 **1415 / 0 / 0 / 10**；Python unit **2933 passed / 32 skipped**。
+
+仍未覆盖：gap/edge 等 Search probe；专业组模式；目标/档位/覆盖的
+durable patch 持久化。
 
 ## 尚未完成
 

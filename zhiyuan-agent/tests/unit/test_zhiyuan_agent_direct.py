@@ -1291,6 +1291,163 @@ async def test_preview_plan_change_ratio_matching_requires_ratio_source_code(moc
     save_mock.assert_not_awaited()
 
 
+async def test_preview_plan_change_high_tuition_routes_to_frozen_preview_and_confirms(mocker):
+    """高收费风险项走只读冻结预览：replace_risk_items 目标匹配 fill 提案。"""
+    preview_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.preview_review_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "sourceVersionGuard": 12,
+                    "proposals": [
+                        {
+                            "proposalId": "fp-high-tuition",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["high_tuition"],
+                            "title": "替换高收费项",
+                            "summary": "移出高收费专业组并补入同档正常收费项。",
+                            "impact": "专业组由45个保持45个。",
+                            "commandDigest": "command-digest-tuition",
+                            "previewDigest": "preview-digest-tuition",
+                            "evaluationVersion": "eval-tuition",
+                            "planContentDigest": "plan-content-tuition",
+                            "dryRunResult": {
+                                "status": "ready",
+                                "beforeUnitTotal": 45,
+                                "afterUnitTotal": 45,
+                                "affectedUnitCount": 1,
+                                "addUnitCount": 1,
+                            },
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0, "data": {"proposals": []}}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_planning_workspace_state",
+        AsyncMock(return_value={"code": 0, "data": {"version": 12}}),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+    ctx = _direct_context()
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=ctx),
+            spec={
+                "repair_goal": {
+                    "review_issue_code": "high_tuition",
+                    "strategy": "replace_risk_items",
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["pending_created"] is False
+    assert result["data"]["requires_confirmation"] is True
+    assert result["data"]["proposal"]["proposal_id"] == "fp-high-tuition"
+    assert result["data"]["proposal"]["source_check_codes"] == ["high_tuition"]
+    assert result["data"]["repair_goal"] == {
+        "review_issue_code": "high_tuition",
+        "strategy": "replace_risk_items",
+    }
+    candidate = result["data"]["review_fix_prepare_candidate"]
+    assert candidate["proposal_id"] == "fp-high-tuition"
+    assert candidate["command_digest"] == "command-digest-tuition"
+    assert candidate["preview_digest"] == "preview-digest-tuition"
+    assert candidate["evaluation_version"] == "eval-tuition"
+    assert candidate["plan_content_digest"] == "plan-content-tuition"
+    preview_mock.assert_awaited_once_with(1, ctx.sessionid)
+    generate_mock.assert_not_awaited()
+    save_mock.assert_not_awaited()
+
+
+async def test_preview_plan_change_high_tuition_matching_ignores_unrelated_count(mocker):
+    """高收费目标精确匹配来源码 high_tuition，不吞无关的计数补齐提案。"""
+    preview_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.preview_review_fix_proposals",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "sourceVersionGuard": 12,
+                    "proposals": [
+                        {
+                            "proposalId": "fp-unrelated-count",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["count_validation"],
+                            "commandDigest": "command-digest-count",
+                            "previewDigest": "preview-digest-count",
+                        },
+                        {
+                            "proposalId": "fp-high-tuition",
+                            "proposalSource": "review_check",
+                            "sourceVersionGuard": 12,
+                            "status": "ready",
+                            "strategy": "fill_missing_count",
+                            "sourceCheckCodes": ["high_tuition"],
+                            "title": "替换高收费项",
+                            "summary": "移出高收费专业组并补入同档正常收费项。",
+                            "commandDigest": "command-digest-tuition",
+                            "previewDigest": "preview-digest-tuition",
+                            "dryRunResult": {"status": "ready", "affectedUnitCount": 1},
+                        },
+                    ],
+                },
+            }
+        ),
+    )
+    generate_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.generate_planning_fix_proposals",
+        AsyncMock(return_value={"code": 0, "data": {"proposals": []}}),
+    )
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.get_planning_workspace_state",
+        AsyncMock(return_value={"code": 0, "data": {"version": 12}}),
+    )
+    save_mock = mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.save_pending_confirmation",
+        AsyncMock(return_value={"code": 0}),
+    )
+
+    result = _load(
+        await preview_plan_change(
+            make_run_context(request_context=_direct_context()),
+            spec={
+                "repair_goal": {
+                    "review_issue_code": "high_tuition",
+                    "strategy": "fill_missing_count",
+                }
+            },
+        )
+    )
+
+    assert result["next_step"] == "confirm"
+    assert result["data"]["proposal"]["proposal_id"] == "fp-high-tuition"
+    assert result["data"]["proposal"]["source_check_codes"] == ["high_tuition"]
+    assert result["data"]["review_fix_prepare_candidate"]["preview_digest"] == (
+        "preview-digest-tuition"
+    )
+    preview_mock.assert_awaited_once()
+    generate_mock.assert_not_awaited()
+    save_mock.assert_not_awaited()
+
+
 def _prime_active_negative_major_intent_pending(ctx: RequestContext, *, section=None) -> None:
     merged = section or {"major_intents": {"negative_level1": ["医学"]}}
     execution_payload = {

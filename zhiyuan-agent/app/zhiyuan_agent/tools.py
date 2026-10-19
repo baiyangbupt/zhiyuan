@@ -9738,14 +9738,37 @@ async def _preview_review_repair_plan_change(
     ratio_preview_route = (
         ratio_fix_goal and requested_strategy in ratio_fix_strategies
     )
+    # 四类风险项（高收费/中外合作/限报/特殊招生）在 Java 端冻结为
+    # fill_missing_count 提案，来源码精确等于问题码；请求侧策略可能是
+    # replace_risk_items / remove_risk_items / fill_missing_count，视为同一修复目标。
+    risk_fix_issues = {
+        "high_tuition",
+        "cooperative_program",
+        "admission_limit",
+        "special_enrollment",
+    }
+    risk_fix_strategies = {
+        "replace_risk_items",
+        "remove_risk_items",
+        "fill_missing_count",
+    }
+    risk_preview_route = (
+        canonical_issue in risk_fix_issues and requested_strategy in risk_fix_strategies
+    )
     if (
         canonical_issue == "probability_inversion"
         and requested_strategy == "sort_by_probability"
     ) or (
         canonical_issue in count_repair_issues
         and requested_strategy == "fill_missing_count"
-    ) or coverage_preview_route or safety_preview_route or ratio_preview_route:
-        # J5.5b：倒挂排序、计数补齐、覆盖补齐、安全垫补齐与配比补齐都走新的只读冻结预览
+    ) or (
+        coverage_preview_route
+        or safety_preview_route
+        or ratio_preview_route
+        or risk_preview_route
+    ):
+        # J5.5b：倒挂排序、计数补齐、覆盖补齐、安全垫补齐、配比补齐与风险项处理
+        # 都走新的只读冻结预览
         # （working/ordered/selected facts + previewDigest + 原 probe 预检）；
         # 旧 generate 只作为其他策略的回退。
         response = await internal_client.preview_review_fix_proposals(
@@ -9785,6 +9808,10 @@ async def _preview_review_repair_plan_change(
             # 配比修复的 rebalance_tier_ratio / fill_missing_count 视为同一目标。
             if strategy not in ratio_fix_strategies:
                 continue
+        elif risk_preview_route:
+            # 风险项冻结提案只以 fill_missing_count 暴露。
+            if strategy != "fill_missing_count":
+                continue
         elif strategy != requested_strategy:
             continue
         if canonical_issue in count_repair_issues:
@@ -9801,6 +9828,9 @@ async def _preview_review_repair_plan_change(
             issue_matched = any(
                 code in {"ratio_distribution", "tier_gap"} for code in source_codes
             )
+        elif risk_preview_route:
+            # 四类风险项要求来源码与问题码精确相等，不按前缀放松。
+            issue_matched = canonical_issue in source_codes
         else:
             issue_matched = canonical_issue in source_codes
         if issue_matched:
