@@ -27,7 +27,7 @@ public class RepairProposalStateBuilderTest {
         check.setCategory("structure_risk");
 
         FixProposalDTO proposal = RepairProposalStateBuilder.buildBaseProposal(
-                state, check, Collections.emptyList(), 3);
+                state, check, Collections.emptyList(), 3, null);
 
         assertEquals("cannot_satisfy", proposal.getStrategy());
         assertTrue(proposal.getSummary().contains("断层区间"));
@@ -66,7 +66,7 @@ public class RepairProposalStateBuilderTest {
         check.setCategory("structure_risk");
 
         FixProposalDTO proposal = RepairProposalStateBuilder.buildBaseProposal(
-                state, check, Collections.emptyList(), 4);
+                state, check, Collections.emptyList(), 4, null);
         RepairProposalStateBuilder.populateCandidateShortages(state, check, proposal);
 
         assertEquals(1, proposal.getCandidateShortages().size());
@@ -91,7 +91,7 @@ public class RepairProposalStateBuilderTest {
         check.setCategory("structure_risk");
 
         FixProposalDTO proposal = RepairProposalStateBuilder.buildBaseProposal(
-                state, check, Collections.emptyList(), 4);
+                state, check, Collections.emptyList(), 4, null);
         RepairProposalStateBuilder.populateCandidateShortages(state, check, proposal);
 
         assertEquals("cannot_satisfy", proposal.getStrategy());

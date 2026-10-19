@@ -93,13 +93,6 @@ final class RepairProposalStateBuilder {
                 .orElse(null);
     }
 
-    static FixProposalDTO buildBaseProposal(PlanningStateDTO state,
-                                            ReviewCheckDTO check,
-                                            List<CompensationActionDTO> compensationActions,
-                                            Integer sourceReviewVersion) {
-        return buildBaseProposal(state, check, compensationActions, sourceReviewVersion, null);
-    }
-
     /**
      * J5.2：策略可由统一评价的 objectiveDelta 覆盖（ findings 是权威）；
      * override 为空时退回 check 自身解析，旧行为不变。
