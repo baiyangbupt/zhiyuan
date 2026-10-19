@@ -650,6 +650,8 @@ snapshotVersion=sourceVersionGuard，同一计数器；不是内容版本）；�
     `solver.v2.diversity` 运行时开关已接（默认 off）。全量 Java 1287/0/0/10。
 - J5.5 审查→动作：`EvaluationFinding.objective_delta` 编译成同一 `PlanCommand`；
   预览/冻结/后置/回执与普通动作一致；review fix 与 fill 同源。
+  设计稿：`docs/superpowers/specs/2026-10-19-j55-review-to-action-design.md`
+  （待独立评审，评审通过前不落地实现）。
 - J5.6 清理：解释权重、`rank_in_tier` 语义、重复 filter/eligibility 规则。
 - J6：风险姿态/目标优先级作为 `ObjectiveModel` 层，依赖 J5；不纳入本批。
 - 前置 P0：J4a scope/学费持久化、candidate source 统一、coverage 40905、
