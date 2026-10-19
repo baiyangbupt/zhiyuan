@@ -227,3 +227,12 @@ turn.completed`，`executionStatus=completed`、`runtimeStatus=native`。只读�
 `solver.v2.shadow` / `solver.v2.paths`，启动 0 ERROR；只读预览：
 900040 fill 82 → ready `selected=82/add=2/remove=0`（状态仍 5/80），
 900045 fill 46 → ready `selected=46/add=2`（状态仍 14/44）。
+
+冻结写闭环真栈验收（2026-10-19）：900045 先 HEX 备份 planningState，
+fill 46 `prepare` → pending 带三件冻结负载 → confirm 领取 →
+execute `apply_plan_change_proposal`：completedSteps
+`proposal_applied / ordered_plan_regenerated / review_rerun /
+postcondition_verified`，postcondition=true、actual=46、
+solverVersion=`ojalgo-48.4.2-j53-staged`，版本 14→17、44→46 组。
+验收后恢复 planningState 与 candidatePool 目标（14/44、required=44、
+冲=44），删除 pending 与验收 command 行，GET 复核通过。
