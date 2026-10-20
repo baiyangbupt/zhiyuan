@@ -479,6 +479,43 @@ class CanonicalPlanningRuntimeTest {
     }
 
     @Test
+    void initialContentGuardCoversCooperativeAndAdmissionRisks() {
+        // high_tuition 在 compensate-safe 谓词里已经无法作为新增候选；
+        // 这里验证能通过补偿安全、但仍被内容护栏识别的两类风险。
+        for (String code : Arrays.asList("cooperative_program", "admission_limit")) {
+            PlanningStateDTO state = state("major", 2);
+            CandidateItemDTO safe = candidate("v1", "u1", "数学", "稳", "北京", 10D);
+            CandidateItemDTO risky = candidate("v2", "u2", "实验班", "稳", "上海", 99D);
+            risky.setRiskFlags(Arrays.asList(code));
+            state.getCandidatePoolState().setItems(Arrays.asList(safe, risky));
+            state.getWorkingPlanState().getItems().add(draft(safe, false));
+
+            PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                    state, state.getCandidatePoolState().getItems(), 2, true);
+
+            assertEquals("no_change", result.getStatus(), code);
+            assertEquals("initial_content_guard", result.getDiagnostics().get(0).getReasonCode(), code);
+            assertTrue(result.getDiagnostics().get(0).getMessage().contains(code), code);
+        }
+    }
+
+    @Test
+    void initialContentGuardAllowsSafeFill() {
+        PlanningStateDTO state = state("major", 2);
+        CandidateItemDTO safe = candidate("v1", "u1", "数学", "稳", "北京", 10D);
+        CandidateItemDTO addition = candidate("v2", "u2", "法学", "稳", "上海", 20D);
+        state.getCandidatePoolState().setItems(Arrays.asList(safe, addition));
+        state.getWorkingPlanState().getItems().add(draft(safe, false));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                state, state.getCandidatePoolState().getItems(), 2, true);
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(new java.util.HashSet<String>(Arrays.asList("v1", "v2")),
+                new java.util.HashSet<String>(result.getSelectedEntityIds()));
+    }
+
+    @Test
     void initialContentGuardRejectsItemCountExplosion() {
         PlanningStateDTO state = state("majorGroup", 2);
         CandidateItemDTO current = candidate("v1", "u1", "数学", "稳", "北京", 10D);

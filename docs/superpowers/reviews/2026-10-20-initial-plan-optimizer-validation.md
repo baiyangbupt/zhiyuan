@@ -145,6 +145,8 @@ staged solver。
 
 1. **风险标签不增加**：special_enrollment / cooperative_program /
    high_tuition / admission_limit，solver 选中数不得高于启发式基线。
+   其中 high_tuition 作为新增候选时已被 `compensate-safe` 谓词拦截；
+   内容护栏作为第二道防线，并覆盖 current 条目与名称/标签旁路场景。
 2. **条目不膨胀**：unit 模式按组内专业数计；允许上限
    `max(5, ceil(baselineItems * 20%))`。
 3. **preferred 专业不丢失**：选中 preferred volunteer 数不得低于基线。
