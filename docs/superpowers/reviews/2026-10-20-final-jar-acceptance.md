@@ -1,8 +1,9 @@
 # 最终 jar 验收（新求解器默认值 + 审查修复链）
 
-日期：2026-10-20。运行时提交：`95e1597`（`c6827d8` 修复合单元号；
-`95e1597` 把推荐池档位比例投影进初始选择；更早的 `3801a5f`、`b541c46`
-仅测试/文档）。验收使用 `zhiyuan-server/target/zhiyuan-server.jar`。
+日期：2026-10-20。运行时提交：`c88ba7a`（`c6827d8` 修复合单元号；
+`95e1597` 把推荐池档位比例投影进初始选择；`c88ba7a` 用 solver-only
+档位平衡修复空方案 user-goal fill；更早的 `3801a5f`、`b541c46` 仅测试/文档）。
+验收使用 `zhiyuan-server/target/zhiyuan-server.jar`。
 
 ## 1. 隔离环境
 
@@ -90,23 +91,24 @@ current + available 的可用供给做上限；投影不可行则保持旧口径
 32 保**，不再是单一冲刺档。900045/900016 的候选池本身全为冲档，仍分别
 44/45 组全冲，属于数据供给限制。
 
-注意：10041991 走的是 **user-goal fill**（`UserGoalProposalBuilder`），
-本轮投影只接在 initial selection 上；该路径最终仍是 32 冲 / 13 稳 / 0 保，
-需要后续把同一档位投影接进 user-goal fill，或由模型显式带档位要求。
+### 空方案 user-goal fill 档位修复（`c88ba7a`）
 
-尝试直接把同一投影加到 user-goal fill 的 stagedObjectives 后，确认返回
-`40905 plan change postcondition failed: frozen objective result mismatch`：
-solver 产生了 `tier_exact` 结果，但 canonical objective / tierQuotaReport 里没有
-这条目标，后置校验按冻结结果逐项比对时拒绝。该尝试已回滚，未提交。下一步
-必须把隐式档位目标纳入 canonical/Proposal 的 tier quota 口径，或明确把
-solver-only 档位结果排除在冻结结果之外，不能只在 solver 输入里偷偷加约束。
+`UserGoalProposalBuilder` 现在对**空方案首次补齐**也投影推荐档位，但走
+`solverTierBalance` 这一 solver-only 字段：不进入 canonical objective /
+solverObjectiveDigest，也不产生 `tier_*` 冻结结果，因此后置校验不会
+因“多出来的目标”拒绝。已有条目的普通补齐仍保持“保留存量优先”，不施加
+精确档位约束。
+
+真栈 10041994（majorGroup，空方案，5785 候选）：**45 组 = 14 冲 / 13 稳 /
+18 保**，WS 确认 `applied`。此前 10041993 的 32/13/0 是修复前结果；
+直接把档位加进 `stagedObjectives.tierAllocationConstraint` 会导致 40905
+`frozen objective result mismatch`，该尝试已回滚。
 
 ### 仍需关注
 
-- **内容梯度**：10041991（user-goal fill）最终 45 组为 32 冲 / 13 稳 / **0 保**，
-  而候选池存在保档；模型回复声称“保底会放足”，与实际结果不一致。10041989
-  的候选池本身全为冲档。初始方案路径已由 `95e1597` 修复，user-goal fill
-  路径仍需跟进。
+- **内容梯度**：10041994 已按 14/13/18 平衡；10041989 的候选池本身全为冲档，
+  因此仍全冲，属于数据供给限制。模型话术仍需确认“实际结果”与“承诺档位”
+  一致。
 - 模型在“45 条 + 浙江优先”复合表述下先产出了 `user_goal_unclear` 的 blocked
   proposal，却口头描述为可确认卡片；随后才拆成单独要求。工具/模型话术需要
   继续观察。
@@ -115,7 +117,7 @@ solver-only 档位结果排除在冻结结果之外，不能只在 solver 输入
 
 ## 6. 收尾
 
-- 源环境 18290 保持普通启动（review 开关关闭），pid `18199`。
+- 源环境 18290 保持普通启动（review 开关关闭），pid `20015`。
 - 源库 900045/900700 planningState 哈希保持验收前值；真实模型验收只使用
   新建的 900002 测试会话。
 - Python 单元全量：**2978 passed / 32 skipped / 20 warnings**。
