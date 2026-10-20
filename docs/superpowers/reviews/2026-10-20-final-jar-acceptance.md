@@ -152,6 +152,19 @@ title/summary/impact/status/requiresConfirmation；冷加载兜底卡把
 卡片完整显示摘要、影响说明和采纳/放弃按钮；点“采纳”后 pending 变
 `applied`，方案达到 45 组，页面无异常。
 
+### 全策略浏览器复核（2026-10-21）
+
+18290 已切到 `command + search + strategies=all` 后，用 group_count 合成
+会话 10041999 在浏览器确认一条 **review count_target** 卡片：
+
+- 首次确认返回 `40908`：agent 冷加载构造 `proposalApply` 时漏了
+  `commandDigest/previewDigest/evaluationVersion`，Java 逐项比对失败。
+- 修复（`0ddff12`）：`_proposal_apply_payload` 从 pending dataValue 透传
+  这三个冻结摘要。
+- 重启 agent 后复跑：浏览器卡片“采纳” → pending `applied`，
+  44 → **46 组 / 92 条**，页面无异常。
+- Python 全量：**2978 passed / 32 skipped**。
+
 ### 仍需关注
 
 - **内容梯度**：10041994 已按 14/13/18 平衡；10041989 的候选池本身全为冲档，
