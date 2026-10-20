@@ -1,9 +1,11 @@
 package com.ytell.zhiyuan.model.dto.planning;
 
 import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 @Data
 public class PlanSolverResultDTO {
@@ -32,6 +34,11 @@ public class PlanSolverResultDTO {
     private Integer constraintCount = 0;
     private TierCountsDTO historicalTierAnchor;
     private TierCountsDTO resolvedTierCounts;
+    /**
+     * unitId → 该组实际选中的专业 volunteerId 顺序。
+     * 两阶段组内选择启用时写入；为空表示沿用旧的“组内帽/全部专业”物化。
+     */
+    private Map<String, List<String>> selectedMajorIdsByUnit = Maps.newLinkedHashMap();
 
     @Data
     public static class ObjectiveResultDTO {

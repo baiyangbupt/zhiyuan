@@ -413,7 +413,26 @@ final class CanonicalPlanningRuntime {
                 throw new BusinessException(409, "solver_candidate_missing: " + entityId);
             }
             List<CandidateItemDTO> candidatesToAdd = entity.candidates;
-            if (unitMode && GroupInnerMajorCapFlags.enabled()) {
+            List<String> plannedMajorIds = solved.getSelectedMajorIdsByUnit() == null
+                    ? null : solved.getSelectedMajorIdsByUnit().get(entityId);
+            if (unitMode && plannedMajorIds != null && !plannedMajorIds.isEmpty()) {
+                Map<String, CandidateItemDTO> byVolunteer = new LinkedHashMap<String, CandidateItemDTO>();
+                for (CandidateItemDTO candidate : entity.candidates) {
+                    if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
+                        byVolunteer.put(candidate.getVolunteerId(), candidate);
+                    }
+                }
+                List<CandidateItemDTO> planned = new ArrayList<CandidateItemDTO>();
+                for (String volunteerId : plannedMajorIds) {
+                    CandidateItemDTO candidate = byVolunteer.get(volunteerId);
+                    if (candidate == null) {
+                        throw new BusinessException(409,
+                                "solver_major_candidate_missing: " + volunteerId);
+                    }
+                    planned.add(candidate);
+                }
+                candidatesToAdd = planned;
+            } else if (unitMode && GroupInnerMajorCapFlags.enabled()) {
                 Double unitEnrollRatio = null;
                 for (CandidateItemDTO candidate : entity.candidates) {
                     if (candidate != null && candidate.getSchoolEnrollRatio() != null) {
