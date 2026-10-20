@@ -12,6 +12,21 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.*;
 
 class DirectReviewPreviewPlannerTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(ReviewProtectionTestSupport.Carrier.class)
+    void rejectsProtectionAcrossAllGroupCarriers(ReviewProtectionTestSupport.Carrier carrier) {
+        groupFixture();
+        carrier.protect(state);
+        String baseline = JSON.toJSONString(state);
+
+        FixProposalDTO proposal = planner.plan(state, candidates, finding, after -> {
+            throw new AssertionError("protected plans must not reach reevaluation");
+        });
+
+        assertNoFrozen(proposal, "review_fix_order_locked");
+        assertEquals(baseline, JSON.toJSONString(state));
+    }
+
     private final DirectReviewPreviewPlanner planner = new DirectReviewPreviewPlanner();
     private PlanningStateDTO state;
     private EvaluationFindingDTO finding;

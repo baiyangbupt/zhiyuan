@@ -34,6 +34,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 后置条件通过后才允许进入确认链。不经过 UserGoalProposalBuilder。
  */
 class SafetyReviewPreviewPlannerTest {
+    @Test
+    void groupFillPolicyFreezesRequiredMajorCountInSolverInput() {
+        groupFixture();
+        state.getCandidatePoolState().setRequiredMajorCount(1);
+        FixProposalDTO oneMajor = plan(true);
+        state.getCandidatePoolState().setRequiredMajorCount(2);
+        FixProposalDTO twoMajors = plan(true);
+
+        assertNotNull(oneMajor);
+        assertNotNull(twoMajors);
+        assertEquals("ready", oneMajor.getStatus());
+        assertEquals("ready", twoMajors.getStatus());
+        org.junit.jupiter.api.Assertions.assertNotEquals(oneMajor.getSolverInputDigest(),
+                twoMajors.getSolverInputDigest(), "group cap must be part of the frozen FILL policy");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(ReviewProtectionTestSupport.Carrier.class)
+    void rejectsProtectionAcrossAllGroupCarriers(ReviewProtectionTestSupport.Carrier carrier) {
+        groupFixture();
+        carrier.protect(state);
+        String baseline = JSON.toJSONString(state);
+
+        assertNull(planner.plan(state, candidates, finding, after -> {
+            throw new AssertionError("protected plans must not reach reevaluation");
+        }, true));
+        assertEquals(baseline, JSON.toJSONString(state));
+    }
+
     private static final int TARGET = 80;
     private static final int SAFETY_MIN = 2;
     private static final int LOCAL_CANDIDATES = 3;

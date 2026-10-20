@@ -1782,6 +1782,9 @@ final class UserGoalProposalBuilder {
                 && !req.getRequirements().isEmpty();
         boolean hasPriorityRule = priorityRule != null;
         boolean hasTierQuota = objectiveSet.getTierAllocationConstraint() != null;
+        boolean allowStructuralReplacement = tierQuotaGoal != null
+                || defaultList(req.getRequirements()).stream().anyMatch(requirement -> requirement != null
+                && ProjectedHardRequirementSupport.KIND_INCLUDE.equalsIgnoreCase(requirement.getKind()));
         String projectedRequirementSummary = ProjectedHardRequirementSupport.summarize(
                 req == null ? null : req.getRequirements());
         List<String> objectiveSummaries = Lists.newArrayList();
@@ -1817,16 +1820,13 @@ final class UserGoalProposalBuilder {
             // （solverVersion/inputDigest/objectiveResults）挂到提案上；集合保持不变。
             CanonicalPlanningObjectiveSetDTO stagedObjectives = copyObjectiveSet(objectiveSet);
             stagedObjectives.setTargetCount(currentCount);
-            MutationPolicyDTO policy = new MutationPolicyDTO();
-            policy.setAction("FILL");
-            policy.setLockExisting(false);
-            policy.setCountAsChurn(true);
             List<CandidateItemDTO> currentCandidates = current.stream()
                     .map(PlanVolunteer::asCandidate)
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
             CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
                     state, currentCandidates, CandidateSnapshotBuilder.CurrentSource.ORDERED_FIRST);
+            MutationPolicyDTO policy = fillMutationPolicy(state, stagedObjectives, snapshot, false);
             PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
             PlanSolverResultDTO solverResult = STAGED_SOLVER.solve(
                     snapshot, stagedObjectives, policy).solverResult;
@@ -1863,7 +1863,7 @@ final class UserGoalProposalBuilder {
 
         FillSelection selection = selectFillCandidates(state, projectedHardConstraints, poolCandidates,
                 selectedVolunteerIds, selectedUnitIds, targetCount, majorGroupMode,
-                current, currentProjection, objectiveSet);
+                current, currentProjection, objectiveSet, allowStructuralReplacement);
         attachSolverMetadata(proposal, objectiveSet, selection.solverResult);
         populateTierQuotaResolution(proposal, selection.solverResult);
         if (!Strings.isNullOrEmpty(selection.blockingReason)) {
@@ -2419,7 +2419,8 @@ final class UserGoalProposalBuilder {
                                                       boolean unitMode,
                                                       List<PlanVolunteer> current,
                                                       FillCurrentProjection currentProjection,
-                                                      CanonicalPlanningObjectiveSetDTO objectiveSet) {
+                                                      CanonicalPlanningObjectiveSetDTO objectiveSet,
+                                                      boolean allowStructuralReplacement) {
         List<FillOption> available = buildFillOptions(poolCandidates, selectedVolunteerIds, selectedUnitIds, unitMode);
         List<FillOption> eligible = available.stream()
                 .map(option -> option.retainAllowed(projectedHardConstraints))
@@ -2492,10 +2493,7 @@ final class UserGoalProposalBuilder {
                                 .anyMatch(rule -> PriorityRuleSupport.matches(candidate, rule))));
             }
         }
-        MutationPolicyDTO policy = new MutationPolicyDTO();
-        policy.setAction("FILL");
-        policy.setLockExisting(false);
-        policy.setCountAsChurn(true);
+        MutationPolicyDTO policy = fillMutationPolicy(state, objectiveSet, snapshot, allowStructuralReplacement);
         policy.setRequireCompensationSafe(true);
         // 用副本 enrich：proposal 的 canonicalObjectiveDigest 仍保持原口径，
         // 避免 apply 后置校验用 compileConfirmed 重算时 40905。
@@ -2553,6 +2551,29 @@ final class UserGoalProposalBuilder {
             selection.add(additions.get(entityId));
         }
         return selection;
+    }
+
+    private static MutationPolicyDTO fillMutationPolicy(PlanningStateDTO state,
+                                                         CanonicalPlanningObjectiveSetDTO objectives,
+                                                         CandidateSnapshotDTO snapshot,
+                                                         boolean allowStructuralReplacement) {
+        MutationPolicyDTO policy = new MutationPolicyDTO();
+        policy.setAction("FILL");
+        policy.setLockExisting(false);
+        policy.setCountAsChurn(true);
+        policy.setRequiredMajorCount(state == null || state.getCandidatePoolState() == null
+                ? null : state.getCandidatePoolState().getRequiredMajorCount());
+        if (!allowStructuralReplacement) {
+            for (CandidateFactDTO fact : defaultList(snapshot.getFacts())) {
+                if (Boolean.TRUE.equals(fact.getCurrent()) && Boolean.TRUE.equals(fact.getEligible())
+                        && InitialContentPolicySupport.candidatesForSelection(fact).stream()
+                        .allMatch(candidate -> ProjectedHardRequirementSupport.isAllowed(
+                                candidate, objectives.getEligibilityConstraints()))) {
+                    policy.getFrozenRequiredEntityIds().add(fact.getEntityId());
+                }
+            }
+        }
+        return policy;
     }
 
     private static boolean isStagedInfeasible(String reasonCode) {

@@ -1,6 +1,7 @@
 package com.ytell.zhiyuan.service.biz;
 
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalActionDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
@@ -22,6 +23,125 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class UserGoalProposalBuilderTest {
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void fillPolicyFreezesRequiredMajorCountInSolverInput(boolean alreadyAtTarget) {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO first = candidate("v1", "学校1", "专业1", "类别1", 90D);
+        first.setPlanSchoolDataId("u1");
+        CandidateItemDTO second = candidate("v2", "学校1", "专业2", "类别2", 89D);
+        second.setPlanSchoolDataId("u1");
+        state.getCandidatePoolState().getItems().addAll(java.util.Arrays.asList(first, second));
+        if (alreadyAtTarget) {
+            OrderedUnitDTO unit = new OrderedUnitDTO();
+            unit.setUnitId("u1");
+            unit.setTier("稳");
+            unit.getMajorItems().add(unitMajor("v1", "专业1"));
+            state.getOrderedPlanState().getUnits().add(unit);
+        }
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("fill_to_count");
+        req.setTargetCount(1);
+        req.setSourceVersionGuard(12);
+
+        state.getCandidatePoolState().setRequiredMajorCount(1);
+        FixProposalDTO oneMajor = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+        state.getCandidatePoolState().setRequiredMajorCount(2);
+        FixProposalDTO twoMajors = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals(alreadyAtTarget ? "info" : "ready", oneMajor.getStatus());
+        assertEquals(oneMajor.getStatus(), twoMajors.getStatus());
+        org.junit.jupiter.api.Assertions.assertNotNull(oneMajor.getSolverInputDigest());
+        org.junit.jupiter.api.Assertions.assertNotEquals(oneMajor.getSolverInputDigest(),
+                twoMajors.getSolverInputDigest(), "group cap must be part of the frozen FILL policy");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "major,none", "major,coverage", "major,tier",
+            "majorGroup,none", "majorGroup,coverage", "majorGroup,tier"
+    })
+    void countFillRetainsCompliantItemsInsteadOfReplacingForSafety(String volunteerModel,
+                                                                   String confirmedObjective) {
+        boolean unitMode = "majorGroup".equals(volunteerModel);
+        PlanningStateDTO state = countFillSafetyState(unitMode);
+        if ("coverage".equals(confirmedObjective)) {
+            CoverageRequirementDTO coverage = new CoverageRequirementDTO();
+            coverage.setDomain("region");
+            coverage.setKey("province");
+            coverage.setValues(java.util.Arrays.asList("江苏"));
+            coverage.setMinCount(1);
+            state.getConstraintState().getHardPlanningObjectives().getCoverageRequirements().add(coverage);
+        } else if ("tier".equals(confirmedObjective)) {
+            state.getConstraintState().getHardPlanningObjectives().setTierQuotaGoal(quotaGoal(0, 0, 3));
+        }
+        UserGoalFixProposalReq req = fillRequest(3);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals(3, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertTrue(proposal.getSolverResult().getSelectedEntityIds().containsAll(
+                java.util.Arrays.asList(unitMode ? "u1" : "v1", unitMode ? "u2" : "v2")));
+        assertTrue(proposal.getSolverResult().getRemoveEntityIds().isEmpty());
+        assertEquals(1, proposal.getSolverResult().getAddEntityIds().size());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void countFillCanMeetSafetyWhenGapIsSufficientWithoutRemovingCurrentItems(boolean unitMode) {
+        PlanningStateDTO state = countFillSafetyState(unitMode);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, fillRequest(4)).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(4, proposal.getSolverResult().getSelectedEntityIds().size());
+        assertTrue(proposal.getSolverResult().getRemoveEntityIds().isEmpty());
+        assertEquals(2, proposal.getSolverResult().getAddEntityIds().size());
+    }
+
+    @Test
+    void countFillCanReplaceOnlyCurrentItemsThatViolateConfirmedEligibility() {
+        PlanningStateDTO state = countFillSafetyState(false);
+        state.getCandidatePoolState().setSourceProvinceName(null);
+        state.getCandidatePoolState().getItems().get(1).setProvinceName("浙江");
+        state.getConstraintState().getHardConstraints().setMustExcludeRegions(java.util.Arrays.asList("江苏"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, fillRequest(3)).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals(java.util.Arrays.asList("v1"), proposal.getSolverResult().getRemoveEntityIds());
+        assertTrue(proposal.getSolverResult().getSelectedEntityIds().contains("v2"));
+    }
+
+    private PlanningStateDTO countFillSafetyState(boolean unitMode) {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel(unitMode ? "majorGroup" : "major");
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        for (int index = 1; index <= 4; index++) {
+            CandidateItemDTO candidate = candidate("v" + index, "学校" + index, "专业", "类别", 90D);
+            candidate.setPlanSchoolDataId("u" + index);
+            candidate.setTier("protect");
+            candidate.setProvinceName(index <= 2 ? "江苏" : "浙江");
+            state.getCandidatePoolState().getItems().add(candidate);
+            if (index <= 2) {
+                state.getOrderedPlanState().getItems().add(orderedWithTier(
+                        candidate.getVolunteerId(), candidate.getSchoolName(), "专业", "protect"));
+                if (unitMode) {
+                    OrderedUnitDTO unit = new OrderedUnitDTO();
+                    unit.setUnitId("u" + index);
+                    unit.setTier("protect");
+                    unit.setProvinceName(candidate.getProvinceName());
+                    unit.getMajorItems().add(unitMajor(candidate.getVolunteerId(), "专业"));
+                    state.getOrderedPlanState().getUnits().add(unit);
+                }
+            }
+        }
+        return state;
+    }
 
     @Test
     void shouldBuildOnlyKeepPreviewFromCurrentPlanAndCandidatePool() {

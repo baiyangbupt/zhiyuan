@@ -33,6 +33,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 进入确认链。
  */
 class RiskReplaceReviewPreviewPlannerTest {
+    @Test
+    void groupFillPolicyFreezesRequiredMajorCountInSolverInput() {
+        groupFixture();
+        state.getCandidatePoolState().setRequiredMajorCount(1);
+        FixProposalDTO oneMajor = plan(true);
+        state.getCandidatePoolState().setRequiredMajorCount(2);
+        FixProposalDTO twoMajors = plan(true);
+
+        assertNotNull(oneMajor);
+        assertNotNull(twoMajors);
+        assertEquals("ready", oneMajor.getStatus());
+        assertEquals("ready", twoMajors.getStatus());
+        org.junit.jupiter.api.Assertions.assertNotEquals(oneMajor.getSolverInputDigest(),
+                twoMajors.getSolverInputDigest(), "group cap must be part of the frozen FILL policy");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(ReviewProtectionTestSupport.Carrier.class)
+    void rejectsProtectionAcrossAllGroupCarriers(ReviewProtectionTestSupport.Carrier carrier) {
+        groupFixture();
+        carrier.protect(state);
+        String baseline = JSON.toJSONString(state);
+
+        assertNull(planner.plan(state, candidates, finding, after -> {
+            throw new AssertionError("protected plans must not reach reevaluation");
+        }, true));
+        assertEquals(baseline, JSON.toJSONString(state));
+    }
+
     private static final int TARGET = 80;
     private static final String RISKY = "v001";
     private static final String REPLACEMENT = "v081";

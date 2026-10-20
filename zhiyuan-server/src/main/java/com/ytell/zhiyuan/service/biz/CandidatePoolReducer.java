@@ -54,31 +54,37 @@ final class CandidatePoolReducer {
 
         Set<String> mandatory = mandatoryIds(facts, policy, objectives);
         result.mandatorySize = mandatory.size();
-        if (mandatory.size() > cap) {
+        Set<String> core = new LinkedHashSet<String>(mandatory);
+        for (CandidateFactDTO fact : facts) {
+            if (Boolean.TRUE.equals(fact.getCurrent())) {
+                core.add(fact.getEntityId());
+            }
+        }
+        if (core.size() > cap) {
             result.coreOverLimit = true;
-            result.facts = keepByIds(facts, mandatory);
+            result.facts = keepByIds(facts, core);
             result.candidateCountSolved = result.facts.size();
             result.droppedCount = Math.max(0, facts.size() - result.facts.size());
             return result;
         }
 
-        List<CandidateFactDTO> witness = findWitness(facts, objectives, policy, mandatory);
+        List<CandidateFactDTO> witness;
+        if (policy != null && (Boolean.TRUE.equals(policy.getPrioritySelection())
+                || Boolean.TRUE.equals(policy.getInitialContentGuard()))) {
+            CandidateSnapshotDTO seed = witnessSeed(snapshot, objectives, policy, core, cap, result);
+            StagedDeterministicPlanSolver.Result solved = new StagedDeterministicPlanSolver()
+                    .solveReductionWitness(seed, objectives, policy);
+            witness = "ready".equals(solved.solverResult.getStatus())
+                    ? keepByIds(facts, new LinkedHashSet<String>(solved.solverResult.getSelectedEntityIds()))
+                    : null;
+        } else {
+            witness = findWitness(facts, objectives, policy, mandatory);
+        }
         result.witnessAvailable = witness != null;
-        Set<String> keep = new LinkedHashSet<String>(mandatory);
+        Set<String> keep = new LinkedHashSet<String>(core);
         if (witness != null) {
             result.witnessSize = witness.size();
             for (CandidateFactDTO fact : witness) {
-                keep.add(fact.getEntityId());
-            }
-        }
-        Set<String> forcedRemove = policy == null ? new LinkedHashSet<String>()
-                : defaultSet(policy.getForcedRemoveEntityIds());
-        keep.addAll(forcedRemove);
-        // current 行即使不是 mandatory（FILL/initial 的 lockExisting=false），也必须进入
-        // reduced 集：solver 的 removeEntityIds 需要看见它们。丢掉会变成“静默不删”，
-        // apply 后总数 = target + 被丢掉的存量行。这里只保证可见，不强制选中。
-        for (CandidateFactDTO fact : facts) {
-            if (Boolean.TRUE.equals(fact.getCurrent())) {
                 keep.add(fact.getEntityId());
             }
         }
@@ -127,6 +133,82 @@ final class CandidatePoolReducer {
         result.droppedCount = Math.max(0, facts.size() - result.facts.size());
         result.capLimited = result.droppedCount > 0;
         return result;
+    }
+
+    private static CandidateSnapshotDTO witnessSeed(CandidateSnapshotDTO snapshot,
+                                                    CanonicalPlanningObjectiveSetDTO objectives,
+                                                    MutationPolicyDTO policy,
+                                                    Set<String> core,
+                                                    int cap,
+                                                    Reduction reduction) {
+        int target = objectives == null || objectives.getTargetCount() == null
+                ? 0 : Math.max(0, objectives.getTargetCount());
+        boolean unitMode = "unit".equals(snapshot.getCountMode());
+        List<CandidateFactDTO> sorted = new ArrayList<CandidateFactDTO>(snapshot.getFacts());
+        Comparator<CandidateFactDTO> comparator = fillComparator();
+        if (Boolean.TRUE.equals(policy.getInitialContentGuard())) {
+            comparator = Comparator.comparingInt((CandidateFactDTO fact) ->
+                    InitialContentPolicySupport.riskCounts(Lists.newArrayList(fact))
+                            .values().stream().mapToInt(Integer::intValue).sum())
+                    .thenComparing(fact -> InitialContentPolicySupport.preferredVolunteerIds(fact).size(),
+                            Comparator.reverseOrder())
+                    .thenComparingInt(fact -> InitialContentPolicySupport.itemCount(fact, unitMode))
+                    .thenComparing(comparator);
+        }
+        if (Boolean.TRUE.equals(policy.getPrioritySelection())) {
+            comparator = Comparator.comparing((CandidateFactDTO fact) ->
+                    !Boolean.TRUE.equals(fact.getPriorityMatched())).thenComparing(comparator);
+        }
+        sorted.sort(comparator);
+        Map<List<Object>, List<CandidateFactDTO>> profiles =
+                new LinkedHashMap<List<Object>, List<CandidateFactDTO>>();
+        int representativeCount = core.size();
+        for (CandidateFactDTO fact : sorted) {
+            if (target == 0 || core.contains(fact.getEntityId())
+                    || !isEligible(fact, objectives, policy) || mustRemove(fact, policy)) {
+                continue;
+            }
+            List<Object> profile = Lists.<Object>newArrayList(fact.getTier(),
+                    "protect".equals(fact.getTier()) && sameProvince(fact.getProvinceName(), snapshot.getSourceProvince()));
+            for (CoverageRequirementDTO requirement : defaultList(objectives.getCoverageConstraints())) {
+                profile.add(matchesCoverage(fact, requirement));
+            }
+            if (Boolean.TRUE.equals(policy.getPrioritySelection())) {
+                profile.add(Boolean.TRUE.equals(fact.getPriorityMatched()));
+            }
+            if (Boolean.TRUE.equals(policy.getInitialContentGuard())) {
+                Set<String> riskTags = InitialContentPolicySupport.riskTags(fact);
+                for (String code : InitialContentPolicySupport.RISK_CODES) {
+                    profile.add(InitialContentPolicySupport.hasRisk(riskTags, code));
+                }
+                profile.add(InitialContentPolicySupport.itemCount(fact, unitMode));
+                profile.add(InitialContentPolicySupport.preferredVolunteerIds(fact).size());
+            }
+            List<CandidateFactDTO> representatives = profiles.computeIfAbsent(
+                    profile, key -> new ArrayList<CandidateFactDTO>());
+            if (representatives.size() < target) {
+                representatives.add(fact);
+                representativeCount++;
+            }
+        }
+        reduction.protectionBudgetTruncated = representativeCount > cap;
+        Set<String> seedIds = new LinkedHashSet<String>(core);
+        for (int round = 0; round < target && seedIds.size() < cap; round++) {
+            boolean added = false;
+            for (List<CandidateFactDTO> representatives : profiles.values()) {
+                if (seedIds.size() < cap && round < representatives.size()) {
+                    added |= seedIds.add(representatives.get(round).getEntityId());
+                }
+            }
+            if (!added) {
+                break;
+            }
+        }
+        CandidateSnapshotDTO seed = new CandidateSnapshotDTO();
+        seed.setCountMode(snapshot.getCountMode());
+        seed.setSourceProvince(snapshot.getSourceProvince());
+        seed.setFacts(keepByIds(snapshot.getFacts(), seedIds));
+        return seed;
     }
 
     private static List<CandidateFactDTO> findWitness(List<CandidateFactDTO> facts,
@@ -371,7 +453,7 @@ final class CandidatePoolReducer {
     }
 
     private static boolean matchesCoverage(CandidateFactDTO fact, CoverageRequirementDTO requirement) {
-        for (CandidateItemDTO candidate : defaultList(fact.getRawCandidates())) {
+        for (CandidateItemDTO candidate : InitialContentPolicySupport.candidatesForSelection(fact)) {
             if (CoverageRequirementSupport.matches(candidate, requirement)) {
                 return true;
             }
@@ -520,7 +602,7 @@ final class CandidatePoolReducer {
         if (objectives == null || objectives.getEligibilityConstraints() == null) {
             return true;
         }
-        List<CandidateItemDTO> raw = defaultList(fact.getRawCandidates());
+        List<CandidateItemDTO> raw = InitialContentPolicySupport.candidatesForSelection(fact);
         if (raw.isEmpty()) {
             return true;
         }

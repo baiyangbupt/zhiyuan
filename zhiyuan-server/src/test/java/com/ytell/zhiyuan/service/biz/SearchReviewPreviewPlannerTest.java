@@ -78,6 +78,34 @@ class SearchReviewPreviewPlannerTest {
         finding.setSuggestedCommand(command);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void countFillCannotRemoveCompliantCurrentItemsToMeetSafetyFloor(boolean hasSatisfiedCoverage) {
+        state.getCandidatePoolState().setRequiredCount(CURRENT + 1);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(CURRENT + 1);
+        finding.getSuggestedCommand().setTargetCount(CURRENT + 1);
+        for (int index = 0; index < CURRENT; index++) {
+            candidates.get(index).setProvinceName("江苏");
+        }
+        if (hasSatisfiedCoverage) {
+            CoverageRequirementDTO coverage = new CoverageRequirementDTO();
+            coverage.setDomain("region");
+            coverage.setKey("province");
+            coverage.setValues(Lists.newArrayList("江苏"));
+            coverage.setMinCount(1);
+            state.getConstraintState().getHardPlanningObjectives().getCoverageRequirements().add(coverage);
+        }
+        String baseline = JSON.toJSONString(state);
+
+        FixProposalDTO proposal = planner.plan(state, candidates, finding,
+                after -> review("pass", SafetyFloorSupport.countLocalProtect(after, candidates) >= 2
+                        ? "pass" : "fail"), true);
+
+        assertNotReady(proposal);
+        assertNull(proposal.getFrozenReviewPlan());
+        assertEquals(baseline, JSON.toJSONString(state));
+    }
+
     @Test
     void freezesSolverSelectionForCountTargetAndPassesPostcondition() {
         String baseline = JSON.toJSONString(state);

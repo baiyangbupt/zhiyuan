@@ -67,12 +67,29 @@ final class StagedDeterministicPlanSolver {
     Result solve(CandidateSnapshotDTO snapshot,
                  CanonicalPlanningObjectiveSetDTO objectives,
                  MutationPolicyDTO policy) {
+        return solve(snapshot, objectives, policy, false);
+    }
+
+    Result solveReductionWitness(CandidateSnapshotDTO snapshot,
+                                 CanonicalPlanningObjectiveSetDTO objectives,
+                                 MutationPolicyDTO policy) {
+        return solve(snapshot, objectives, policy, true);
+    }
+
+    private Result solve(CandidateSnapshotDTO snapshot,
+                         CanonicalPlanningObjectiveSetDTO objectives,
+                         MutationPolicyDTO policy,
+                         boolean witnessOnly) {
         long started = System.nanoTime();
         CandidateSnapshotDTO safeSnapshot = snapshot == null ? new CandidateSnapshotDTO() : snapshot;
         CanonicalPlanningObjectiveSetDTO safeObjectives = objectives == null
                 ? new CanonicalPlanningObjectiveSetDTO() : objectives;
         MutationPolicyDTO safePolicy = policy == null ? new MutationPolicyDTO() : policy;
         PlanSolverResultDTO result = baseResult(safeObjectives, safeSnapshot);
+        if (witnessOnly && defaultList(safeSnapshot.getFacts()).size() > MAX_CANDIDATES) {
+            return blocked(result, started, "solver_input_invalid", "reduction_witness",
+                    "witness 预求解不得超过候选帽。");
+        }
         if (safeObjectives.getTargetCount() == null || safeObjectives.getTargetCount() < 0) {
             return blocked(result, started, "solver_input_invalid", null,
                     "canonical objective set 和非负 targetCount 必须存在。");
@@ -85,7 +102,7 @@ final class StagedDeterministicPlanSolver {
         }
         CandidatePoolReducer.Reduction reduction = null;
         List<CandidateFactDTO> facts;
-        if (defaultList(safeSnapshot.getFacts()).size() > MAX_CANDIDATES) {
+        if (!witnessOnly && defaultList(safeSnapshot.getFacts()).size() > MAX_CANDIDATES) {
             reduction = CandidatePoolReducer.reduce(
                     safeSnapshot, safeObjectives, safePolicy, MAX_CANDIDATES);
             if (reduction.coreOverLimit) {
@@ -232,6 +249,17 @@ final class StagedDeterministicPlanSolver {
                     fixPriority.set(variables.get(index), 1);
                 }
             }
+        }
+
+        if (witnessOnly) {
+            Optimisation.Result witness = solvePhase(model, deadline, "reduction_witness");
+            if (witness == null || !witness.getState().isOptimal()) {
+                return blocked(result, started, phaseFailureReason(null, witness),
+                        "reduction_witness", "候选裁剪未能证明全量池硬约束 witness。");
+            }
+            result.setSelectedEntityIds(ids(selectedFacts(facts, variables, witness)));
+            result.setStatus("ready");
+            return new Result(result, levels);
         }
 
         Expression churnExpression = null;
@@ -579,8 +607,7 @@ final class StagedDeterministicPlanSolver {
     }
 
     private boolean matchesCoverage(CandidateFactDTO fact, CoverageRequirementDTO requirement) {
-        List<CandidateItemDTO> candidates = defaultList(fact.getPlannedCandidates()).isEmpty()
-                ? defaultList(fact.getRawCandidates()) : fact.getPlannedCandidates();
+        List<CandidateItemDTO> candidates = InitialContentPolicySupport.candidatesForSelection(fact);
         for (CandidateItemDTO candidate : candidates) {
             if (CoverageRequirementSupport.matches(candidate, requirement)) {
                 return true;
@@ -999,7 +1026,7 @@ final class StagedDeterministicPlanSolver {
         if (hard == null) {
             return true;
         }
-        List<CandidateItemDTO> raw = defaultList(fact.getRawCandidates());
+        List<CandidateItemDTO> raw = InitialContentPolicySupport.candidatesForSelection(fact);
         if (raw.isEmpty()) {
             return true;
         }

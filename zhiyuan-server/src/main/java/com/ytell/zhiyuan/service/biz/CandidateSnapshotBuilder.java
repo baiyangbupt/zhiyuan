@@ -243,35 +243,21 @@ final class CandidateSnapshotBuilder {
             bucket.candidates.add(candidate);
         }
         // 当前工作草案/正式方案里的单元，即使候选池没有，也要保留。
-        Set<String> draftUnitIds = new LinkedHashSet<String>();
-        for (DraftItemDTO item : defaultList(state.getWorkingPlanState() == null
-                ? null : state.getWorkingPlanState().getItems())) {
-            if (item == null || Strings.isNullOrEmpty(item.getVolunteerId())) {
-                continue;
-            }
-            CandidateItemDTO candidate = byVolunteer.get(item.getVolunteerId());
-            String unitId = candidate == null ? unitIdFromVolunteer(item.getVolunteerId())
-                    : unitId(candidate);
-            if (!Strings.isNullOrEmpty(unitId)) {
-                draftUnitIds.add(unitId);
-            }
-        }
-        Set<String> currentUnitIds = new LinkedHashSet<String>();
-        if (source == CurrentSource.WORKING) {
-            currentUnitIds.addAll(draftUnitIds);
-        } else if (source == CurrentSource.ORDERED_FIRST && !orderedByUnit.isEmpty()) {
-            currentUnitIds.addAll(orderedByUnit.keySet());
-        } else {
-            currentUnitIds.addAll(draftUnitIds);
-            currentUnitIds.addAll(orderedByUnit.keySet());
-        }
-        for (String unitId : currentUnitIds) {
+        Map<String, List<CandidateItemDTO>> currentByUnit = currentUnitCandidates(
+                byVolunteer, draftByVolunteer, orderedByVolunteer, orderedByUnit, source);
+        for (Map.Entry<String, List<CandidateItemDTO>> entry : currentByUnit.entrySet()) {
+            String unitId = entry.getKey();
             Bucket bucket = result.get(unitId);
             if (bucket == null) {
                 bucket = new Bucket(unitId, "working_plan");
-                OrderedUnitDTO unit = orderedByUnit.get(unitId);
-                bucket.candidates.addAll(fallbackUnitCandidates(unitId, unit));
                 result.put(unitId, bucket);
+            }
+            bucket.selectedCandidates.addAll(entry.getValue());
+            Set<String> candidateIds = new LinkedHashSet<String>(volunteerIds(bucket.candidates));
+            for (CandidateItemDTO selected : entry.getValue()) {
+                if (candidateIds.add(selected.getVolunteerId())) {
+                    bucket.candidates.add(selected);
+                }
             }
             bucket.current = true;
             OrderedUnitDTO ordered = orderedByUnit.get(unitId);
@@ -291,6 +277,72 @@ final class CandidateSnapshotBuilder {
             assertUnitTierConsistent(bucket);
         }
         return new ArrayList<Bucket>(result.values());
+    }
+
+    private static Map<String, List<CandidateItemDTO>> currentUnitCandidates(
+            Map<String, CandidateItemDTO> byVolunteer,
+            Map<String, DraftItemDTO> draftByVolunteer,
+            Map<String, OrderedItemDTO> orderedByVolunteer,
+            Map<String, OrderedUnitDTO> orderedByUnit,
+            CurrentSource source) {
+        Map<String, List<CandidateItemDTO>> ordered = new LinkedHashMap<String, List<CandidateItemDTO>>();
+        Map<String, String> orderedUnitIds = new LinkedHashMap<String, String>();
+        Map<String, CandidateItemDTO> orderedCandidates = new LinkedHashMap<String, CandidateItemDTO>();
+        for (Map.Entry<String, OrderedUnitDTO> entry : orderedByUnit.entrySet()) {
+            for (CandidateItemDTO fallback : fallbackUnitCandidates(entry.getKey(), entry.getValue())) {
+                CandidateItemDTO candidate = byVolunteer.get(fallback.getVolunteerId());
+                ordered.computeIfAbsent(entry.getKey(), key -> new ArrayList<CandidateItemDTO>())
+                        .add(candidate == null ? fallback : candidate);
+                orderedUnitIds.put(fallback.getVolunteerId(), entry.getKey());
+                orderedCandidates.put(fallback.getVolunteerId(), candidate == null ? fallback : candidate);
+            }
+        }
+        for (OrderedItemDTO item : orderedByVolunteer.values()) {
+            if (orderedUnitIds.containsKey(item.getVolunteerId())) {
+                continue;
+            }
+            CandidateItemDTO candidate = byVolunteer.get(item.getVolunteerId());
+            String unitId = candidate == null ? unitIdFromVolunteer(item.getVolunteerId()) : unitId(candidate);
+            if (candidate == null) {
+                candidate = fallbackVolunteer(item.getVolunteerId(), null, item);
+                candidate.setPlanSchoolDataId(unitId);
+            }
+            ordered.computeIfAbsent(unitId, key -> new ArrayList<CandidateItemDTO>()).add(candidate);
+            orderedUnitIds.put(item.getVolunteerId(), unitId);
+            orderedCandidates.put(item.getVolunteerId(), candidate);
+        }
+        Map<String, List<CandidateItemDTO>> current = new LinkedHashMap<String, List<CandidateItemDTO>>();
+        if (source != CurrentSource.ORDERED_FIRST || ordered.isEmpty()) {
+            for (DraftItemDTO item : draftByVolunteer.values()) {
+                CandidateItemDTO candidate = byVolunteer.get(item.getVolunteerId());
+                if (candidate == null) {
+                    candidate = orderedCandidates.get(item.getVolunteerId());
+                }
+                String unitId = candidate == null ? orderedUnitIds.get(item.getVolunteerId()) : unitId(candidate);
+                if (Strings.isNullOrEmpty(unitId)) {
+                    unitId = unitIdFromVolunteer(item.getVolunteerId());
+                }
+                if (candidate == null) {
+                    candidate = fallbackVolunteer(item.getVolunteerId(), item,
+                            orderedByVolunteer.get(item.getVolunteerId()));
+                    candidate.setPlanSchoolDataId(unitId);
+                }
+                current.computeIfAbsent(unitId, key -> new ArrayList<CandidateItemDTO>()).add(candidate);
+            }
+        }
+        if (source != CurrentSource.WORKING) {
+            for (Map.Entry<String, List<CandidateItemDTO>> entry : ordered.entrySet()) {
+                List<CandidateItemDTO> selected = current.computeIfAbsent(
+                        entry.getKey(), key -> new ArrayList<CandidateItemDTO>());
+                Set<String> selectedIds = new LinkedHashSet<String>(volunteerIds(selected));
+                for (CandidateItemDTO candidate : entry.getValue()) {
+                    if (selectedIds.add(candidate.getVolunteerId())) {
+                        selected.add(candidate);
+                    }
+                }
+            }
+        }
+        return current;
     }
 
     private static void assertUnitTierConsistent(Bucket bucket) {
@@ -313,7 +365,9 @@ final class CandidateSnapshotBuilder {
         boolean unitMode = state != null && state.getCandidatePoolState() != null
                 && "majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel());
         List<CandidateItemDTO> planned = Lists.newArrayList();
-        if (unitMode && GroupInnerMajorOptimizationFlags.enabled()) {
+        if (unitMode && bucket.current) {
+            planned = Lists.newArrayList(bucket.selectedCandidates);
+        } else if (unitMode && GroupInnerMajorOptimizationFlags.enabled()) {
             Integer requiredMajorCount = state.getCandidatePoolState().getRequiredMajorCount();
             Double unitEnrollRatio = candidates.isEmpty() ? null : candidates.get(0).getSchoolEnrollRatio();
             planned = GroupInnerMajorSelector.select(candidates, requiredMajorCount, unitEnrollRatio);
@@ -354,11 +408,12 @@ final class CandidateSnapshotBuilder {
         fact.setPinned(bucket.pinned);
         // 存量工作草案项即使缺候选事实也视为可保留；是否移除由动作的
         // removableEntityIds / 后置校验决定，不能在这里判成不合格。
-        fact.setEligible("working_plan".equals(bucket.source) || allEligible(state, candidates));
+        List<CandidateItemDTO> selected = planned.isEmpty() ? candidates : planned;
+        fact.setEligible("working_plan".equals(bucket.source) || allEligible(state, selected));
         fact.setEligibilityReasonCodes(fact.getEligible()
                 ? Lists.newArrayList() : Lists.newArrayList("confirmed_hard_constraint"));
         boolean compensationSafe = "working_plan".equals(bucket.source)
-                || allCompensationSafe(candidates);
+                || allCompensationSafe(selected);
         fact.setCompensationSafe(compensationSafe);
         fact.setUnitAllSafe(compensationSafe);
         List<CandidateItemDTO> priorityCandidates = planned.isEmpty() ? candidates : planned;
@@ -478,6 +533,16 @@ final class CandidateSnapshotBuilder {
                 candidate.setMajorName(major.getMajorName());
                 candidate.setMajorCategoryId(major.getMajorCategoryId());
                 candidate.setMajorSubCategoryId(major.getMajorSubCategoryId());
+                candidate.setMajorCategory(major.getMajorCategory());
+                candidate.setMajorDiscipline(major.getMajorDiscipline());
+                candidate.setMajorId(major.getMajorId());
+                candidate.setAdmissionRatio(major.getAdmissionRatio());
+                candidate.setSchoolEnrollRatio(unit.getSchoolEnrollRatio());
+                candidate.setFinalScore(major.getFinalScore());
+                candidate.setIntentScore(major.getIntentScore());
+                candidate.setTuitionPerYear(major.getTuitionPerYear());
+                candidate.setPreferred(major.getPreferred());
+                candidate.setReasonCodes(Lists.newArrayList(defaultList(major.getReasonCodes())));
                 result.add(candidate);
             }
         }
@@ -550,6 +615,7 @@ final class CandidateSnapshotBuilder {
         private final String entityId;
         private final String source;
         private final List<CandidateItemDTO> candidates = new ArrayList<CandidateItemDTO>();
+        private final List<CandidateItemDTO> selectedCandidates = new ArrayList<CandidateItemDTO>();
         private boolean current;
         private boolean locked;
         private boolean pinned;

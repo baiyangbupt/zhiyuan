@@ -35,6 +35,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * fill_missing_count；目标数按 unit 计，物化后 working/ordered units 均为 46。
  */
 class GroupSearchReviewPreviewPlannerTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(ReviewProtectionTestSupport.Carrier.class)
+    void rejectsProtectionAcrossAllGroupCarriers(ReviewProtectionTestSupport.Carrier carrier) {
+        carrier.protect(state);
+        String baseline = JSON.toJSONString(state);
+
+        FixProposalDTO proposal = planner.plan(state, candidates, finding, after -> {
+            throw new AssertionError("protected plans must not reach reevaluation");
+        }, true);
+
+        assertEquals("review_fix_order_locked", proposal.getBlockingReason());
+        assertFalse(proposal.getRequiresConfirmation());
+        assertNull(proposal.getFrozenReviewPlan());
+        assertEquals(baseline, JSON.toJSONString(state));
+    }
+
     private static final int CURRENT_UNITS = 44;
     private static final int TARGET_UNITS = 46;
     private static final int EXTRA_UNITS = 4;

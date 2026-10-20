@@ -93,6 +93,9 @@ final class SearchReviewPreviewPlanner {
         boolean unitMode = "majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel())
                 || !safeList(state.getWorkingPlanState().getUnits()).isEmpty()
                 || !safeList(state.getOrderedPlanState().getUnits()).isEmpty();
+        if (ReviewProtectionSupport.hasProtection(state)) {
+            return blocked(proposal, unitMode ? "review_fix_order_locked" : "review_fix_selection_incomplete");
+        }
         if (unitMode) {
             return planUnits(proposal, state, candidates, finding, command, reevaluate, confirmable);
         }
@@ -119,7 +122,7 @@ final class SearchReviewPreviewPlanner {
                 ? Integer.MAX_VALUE : item.getPosition()));
         for (DraftItemDTO item : workingItems) {
             if (item == null || Strings.isNullOrEmpty(item.getVolunteerId())
-                    || Boolean.TRUE.equals(item.getLocked()) || !selectedIds.add(item.getVolunteerId())) {
+                    || !selectedIds.add(item.getVolunteerId())) {
                 return blocked(proposal, "review_fix_selection_incomplete");
             }
         }
@@ -127,8 +130,6 @@ final class SearchReviewPreviewPlanner {
             OrderedItemDTO item = ordered.get(index);
             if (item == null || Strings.isNullOrEmpty(item.getVolunteerId())
                     || item.getPosition() == null || item.getPosition() != index + 1
-                    || Boolean.TRUE.equals(item.getLocked())
-                    || Boolean.TRUE.equals(item.getPinned()) || item.getPinnedPosition() != null
                     || orderedById.put(item.getVolunteerId(), item) != null) {
                 return blocked(proposal, "review_fix_selection_incomplete");
             }
@@ -279,10 +280,6 @@ final class SearchReviewPreviewPlanner {
                     || existingOrderedById.put(unit.getUnitId(), unit) != null) {
                 return blocked(proposal, "review_fix_selection_incomplete");
             }
-            if (Boolean.TRUE.equals(unit.getLocked()) || Boolean.TRUE.equals(unit.getPinned())
-                    || unit.getPinnedPosition() != null) {
-                return blocked(proposal, "review_fix_order_locked");
-            }
             previousPosition = unit.getPosition();
             currentUnitIds.add(unit.getUnitId());
         }
@@ -306,9 +303,6 @@ final class SearchReviewPreviewPlanner {
             if (unit == null || Strings.isNullOrEmpty(unit.getUnitId())
                     || !workingUnitIds.add(unit.getUnitId())) {
                 return blocked(proposal, "review_fix_selection_incomplete");
-            }
-            if (Boolean.TRUE.equals(unit.getLocked())) {
-                return blocked(proposal, "review_fix_order_locked");
             }
         }
         if (!workingUnitIds.isEmpty() && !workingUnitIds.equals(currentUnitIds)) {

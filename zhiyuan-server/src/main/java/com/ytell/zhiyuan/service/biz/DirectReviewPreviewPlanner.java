@@ -62,6 +62,9 @@ final class DirectReviewPreviewPlanner {
                 || Strings.isNullOrEmpty(command.getCommandDigest())) {
             return blocked(proposal, "review_fix_evaluation_unavailable");
         }
+        if (ReviewProtectionSupport.hasProtection(state)) {
+            return blocked(proposal, "review_fix_order_locked");
+        }
         if (!PriorityRuleSupport.confirmedRules(state).isEmpty()) {
             return blocked(proposal, "review_fix_direct_unsupported");
         }
@@ -89,9 +92,6 @@ final class DirectReviewPreviewPlanner {
         ordered.sort(Comparator.comparing(OrderedItemDTO::getPosition));
         Set<String> selectedIds = new LinkedHashSet<String>();
         for (DraftItemDTO item : selected) {
-            if (Boolean.TRUE.equals(item.getLocked())) {
-                return blocked(proposal, "review_fix_order_locked");
-            }
             if (!selectedIds.add(item.getVolunteerId())) {
                 return blocked(proposal, "review_fix_selection_incomplete");
             }
@@ -99,10 +99,6 @@ final class DirectReviewPreviewPlanner {
         Map<String, OrderedItemDTO> orderedById = new LinkedHashMap<String, OrderedItemDTO>();
         for (int index = 0; index < ordered.size(); index++) {
             OrderedItemDTO item = ordered.get(index);
-            if (Boolean.TRUE.equals(item.getLocked()) || Boolean.TRUE.equals(item.getPinned())
-                    || item.getPinnedPosition() != null) {
-                return blocked(proposal, "review_fix_order_locked");
-            }
             if (Strings.isNullOrEmpty(item.getVolunteerId()) || item.getPosition() != index + 1
                     || orderedById.put(item.getVolunteerId(), item) != null) {
                 return blocked(proposal, "review_fix_selection_incomplete");
@@ -241,9 +237,6 @@ final class DirectReviewPreviewPlanner {
             }
         } else {
             for (DraftUnitDTO unit : selected) {
-                if (Boolean.TRUE.equals(unit.getLocked())) {
-                    return blocked(proposal, "review_fix_order_locked");
-                }
                 if (!selectedIds.add(unit.getUnitId())) {
                     return blocked(proposal, "review_fix_selection_incomplete");
                 }
@@ -252,10 +245,6 @@ final class DirectReviewPreviewPlanner {
         Map<String, OrderedUnitDTO> orderedById = new LinkedHashMap<String, OrderedUnitDTO>();
         Integer previousPosition = null;
         for (OrderedUnitDTO unit : ordered) {
-            if (Boolean.TRUE.equals(unit.getLocked()) || Boolean.TRUE.equals(unit.getPinned())
-                    || unit.getPinnedPosition() != null) {
-                return blocked(proposal, "review_fix_order_locked");
-            }
             // 线上 group 方案的位置可能稀疏（1,2,8,9...），只要严格递增且唯一即可；
             // 回放时 applyFrozenOrdering 会统一重排为 1..n。
             if (Strings.isNullOrEmpty(unit.getUnitId()) || unit.getPosition() == null

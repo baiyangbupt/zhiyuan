@@ -84,6 +84,9 @@ final class RatioReviewPreviewPlanner {
                 || Strings.isNullOrEmpty(command.getCommandDigest())) {
             return null;
         }
+        if (ReviewProtectionSupport.hasProtection(state)) {
+            return null;
+        }
         // 组模式（专业组/专业单元）走 planUnits；普通专业模式保持原有路径。
         // 与 Search/Safety 切片同一 fail-closed 口径：优先规则留给确认链校验。
         boolean unitMode = "majorGroup".equalsIgnoreCase(
@@ -108,7 +111,7 @@ final class RatioReviewPreviewPlanner {
                 ? Integer.MAX_VALUE : item.getPosition()));
         for (DraftItemDTO item : workingItems) {
             if (item == null || Strings.isNullOrEmpty(item.getVolunteerId())
-                    || Boolean.TRUE.equals(item.getLocked()) || !selectedIds.add(item.getVolunteerId())) {
+                    || !selectedIds.add(item.getVolunteerId())) {
                 return null;
             }
         }
@@ -116,8 +119,6 @@ final class RatioReviewPreviewPlanner {
             OrderedItemDTO item = ordered.get(index);
             if (item == null || Strings.isNullOrEmpty(item.getVolunteerId())
                     || item.getPosition() == null || item.getPosition() != index + 1
-                    || Boolean.TRUE.equals(item.getLocked())
-                    || Boolean.TRUE.equals(item.getPinned()) || item.getPinnedPosition() != null
                     || orderedById.put(item.getVolunteerId(), item) != null) {
                 return null;
             }
@@ -132,6 +133,7 @@ final class RatioReviewPreviewPlanner {
         CanonicalPlanningObjectiveSetDTO objectives = copy(canonical, CanonicalPlanningObjectiveSetDTO.class);
         MutationPolicyDTO policy = new MutationPolicyDTO();
         policy.setAction(POLICY_ACTION);
+        policy.setRequiredMajorCount(state.getCandidatePoolState().getRequiredMajorCount());
         policy.setLockExisting(false);
         policy.setCountAsChurn(true);
         policy.setRequireCompensationSafe(true);
@@ -363,10 +365,6 @@ final class RatioReviewPreviewPlanner {
                     || orderedById.put(unit.getUnitId(), unit) != null) {
                 return null;
             }
-            if (Boolean.TRUE.equals(unit.getLocked()) || Boolean.TRUE.equals(unit.getPinned())
-                    || unit.getPinnedPosition() != null) {
-                return null;
-            }
             previousPosition = unit.getPosition();
         }
 
@@ -379,6 +377,7 @@ final class RatioReviewPreviewPlanner {
         CanonicalPlanningObjectiveSetDTO objectives = copy(canonical, CanonicalPlanningObjectiveSetDTO.class);
         MutationPolicyDTO policy = new MutationPolicyDTO();
         policy.setAction(POLICY_ACTION);
+        policy.setRequiredMajorCount(state.getCandidatePoolState().getRequiredMajorCount());
         policy.setLockExisting(false);
         policy.setCountAsChurn(true);
         policy.setRequireCompensationSafe(true);

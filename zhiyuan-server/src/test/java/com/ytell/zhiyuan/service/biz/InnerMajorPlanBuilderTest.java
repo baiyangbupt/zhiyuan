@@ -31,6 +31,18 @@ class InnerMajorPlanBuilderTest {
         assertEquals(8, plan.get("u1").size());
     }
 
+    @Test
+    void reusesStageOnePlanWithoutReselectingOrRequiringPolicyCount() {
+        CandidateFactDTO fact = fact("u1", 4);
+        fact.setPlannedCandidates(Arrays.asList(
+                fact.getRawCandidates().get(1), fact.getRawCandidates().get(0)));
+
+        assertEquals(Arrays.asList("u1-v2", "u1-v1"),
+                InnerMajorPlanBuilder.build(Arrays.asList(fact), null).get("u1"));
+        assertEquals(Arrays.asList("u1-v2", "u1-v1"),
+                InnerMajorPlanBuilder.build(Arrays.asList(fact), 1).get("u1"));
+    }
+
     private CandidateFactDTO fact(String unitId, int majors) {
         CandidateFactDTO fact = new CandidateFactDTO();
         fact.setEntityId(unitId);

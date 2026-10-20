@@ -38,8 +38,10 @@ final class InnerMajorPlanBuilder {
                     break;
                 }
             }
-            List<CandidateItemDTO> selected = GroupInnerMajorSelector.select(
-                    candidates, requiredMajorCount, unitEnrollRatio);
+            List<CandidateItemDTO> selected = fact.getPlannedCandidates() != null
+                    && !fact.getPlannedCandidates().isEmpty()
+                    ? fact.getPlannedCandidates()
+                    : GroupInnerMajorSelector.select(candidates, requiredMajorCount, unitEnrollRatio);
             List<String> ids = new ArrayList<String>();
             for (CandidateItemDTO candidate : selected) {
                 if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
