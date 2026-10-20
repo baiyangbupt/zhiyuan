@@ -502,6 +502,51 @@ public class PendingPlanningCommandBizServiceTest {
     }
 
     @Test
+    void shouldRouteClaimedReviewFixThroughTheDedicatedExecutorEntry() {
+        System.setProperty(ReviewFixCommandFlags.PROPERTY, "true");
+        try {
+            PendingPlanningCommandReq req = reviewFixPlanChangeReq();
+            when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+            when(planningStateService.loadPlanningStateReadOnly(101L)).thenReturn(state(12));
+            when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+            when(planningStateService.applyClaimedReviewFixProposal(1L, 101L, req))
+                    .thenReturn(reviewFixApplyResult(true));
+
+            PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+            assertTrue(response.getPostconditionReport().getSatisfied());
+            ArgumentCaptor<PlanningPendingCommandEntity> commandCaptor =
+                    ArgumentCaptor.forClass(PlanningPendingCommandEntity.class);
+            verify(commandSharedService).updateById(commandCaptor.capture());
+            assertEquals("succeeded", commandCaptor.getValue().getStatus());
+            verify(planningStateService).applyClaimedReviewFixProposal(1L, 101L, req);
+            verify(planningStateService, never()).applyFixProposal(eq(1L), eq(101L), any());
+        } finally {
+            System.clearProperty(ReviewFixCommandFlags.PROPERTY);
+        }
+    }
+
+    @Test
+    void shouldKeepUserGoalExecutionWhenReviewCommandIsEnabled() {
+        System.setProperty(ReviewFixCommandFlags.PROPERTY, "true");
+        try {
+            PendingPlanningCommandReq req = priorityPlanChangeReq("上海");
+            when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());
+            when(planningStateService.getPlanningState(101L)).thenReturn(state(12));
+            when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+            when(planningStateService.applyFixProposal(1L, 101L, req.getProposalApply()))
+                    .thenReturn(priorityApplyResult("上海", true));
+
+            PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+            assertTrue(response.getPostconditionReport().getSatisfied());
+            assertEquals(Integer.valueOf(1), response.getPostconditionReport().getPriorityRuleCount());
+        } finally {
+            System.clearProperty(ReviewFixCommandFlags.PROPERTY);
+        }
+    }
+
+    @Test
     void shouldApplyReviewFixProposalAndVerifyPostValidation() {
         PendingPlanningCommandReq req = reviewFixPlanChangeReq();
         when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(applyingPending());

@@ -106,7 +106,11 @@ public class PendingPlanningCommandBizService {
         if (existing != null) {
             return replay(existing, tenantId, chatSessionId, req);
         }
-        PlanningStateDTO before = planningStateService.getPlanningState(chatSessionId);
+        PlanningStateDTO before = APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())
+                && ReviewFixCommandFlags.enabled()
+                && RepairProposalTaxonomy.isReviewCheckSource(req.getProposalApply().getProposalSource())
+                ? planningStateService.loadPlanningStateReadOnly(chatSessionId)
+                : planningStateService.getPlanningState(chatSessionId);
         int currentVersion = before.getVersion() == null ? 0 : before.getVersion();
         if (currentVersion != req.getExpectedPlanVersion()) {
             throw new BusinessException(PLAN_VERSION_CONFLICT_CODE,
@@ -318,8 +322,14 @@ public class PendingPlanningCommandBizService {
                 }
             }
         } else if (APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())) {
-            proposalApplyRes = planningStateService.applyFixProposal(
-                    tenantId, chatSessionId, req.getProposalApply());
+            if (ReviewFixCommandFlags.enabled()
+                    && RepairProposalTaxonomy.isReviewCheckSource(req.getProposalApply().getProposalSource())) {
+                proposalApplyRes = planningStateService.applyClaimedReviewFixProposal(
+                        tenantId, chatSessionId, req);
+            } else {
+                proposalApplyRes = planningStateService.applyFixProposal(
+                        tenantId, chatSessionId, req.getProposalApply());
+            }
             state = proposalApplyRes.getState();
             steps.add("proposal_applied");
             steps.add("ordered_plan_regenerated");

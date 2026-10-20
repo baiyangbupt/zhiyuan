@@ -1138,7 +1138,7 @@ public class PlanningStateService {
         // 开关关闭时保留旧的“重新生成再应用”路径，作为回滚位。
         if (RepairProposalTaxonomy.isReviewCheckSource(safeReq.getProposalSource())
                 && ReviewFixCommandFlags.enabled()) {
-            return applyFrozenReviewFixProposal(tenantId, chatSessionId, safeReq);
+            throw new BusinessException(409, "review_fix_requires_pending");
         }
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         RepairProposalApplyPolicy.validateStateVersionGuard(safeReq, state);
@@ -1169,13 +1169,36 @@ public class PlanningStateService {
      * <p>只执行 prepare 冻结的那一份：工作草案 + 排序态原样写回（绝不重跑排序/重生成），
      * 写前比对方案内容与选中事实摘要，写后按原探针重新评价并做后置条件校验。
      * 任何一步不一致都 fail closed；后置不满足时抛 40905，让 pending 事务整体回滚。</p>
-     *
-     * <p>写前也做一次同样的后置校验：REST 直接 apply 没有外层事务，不能先落盘再抛错。</p>
      */
-    private FixProposalApplyRes applyFrozenReviewFixProposal(Long tenantId, Long chatSessionId,
-                                                             FixProposalApplyReq req) {
+    FixProposalApplyRes applyClaimedReviewFixProposal(Long tenantId, Long chatSessionId,
+                                                      PendingPlanningCommandReq command) {
+        if (!ReviewFixCommandFlags.enabled()) {
+            throw new BusinessException(409, "review_fix_command_disabled");
+        }
         PendingConfirmationRes pending = pendingConfirmationBizService
                 .getActiveOrApplying(tenantId, chatSessionId);
+        if (pending == null || pending.getDataValue() == null) {
+            throw new BusinessException(409, "review_fix_requires_pending");
+        }
+        if (command == null || command.getProposalApply() == null
+                || !"applying".equals(pending.getStatus())
+                || Strings.isNullOrEmpty(command.getClaimToken())
+                || !command.getClaimToken().equals(pending.getClaimToken())
+                || !Objects.equals(command.getPendingId(), pending.getPendingId())
+                || pending.getClaimExpiresAt() == null
+                || pending.getClaimExpiresAt().getTime() <= System.currentTimeMillis()
+                || Strings.isNullOrEmpty(command.getOperationId())
+                || !command.getOperationId().equals(stringValue(pending.getDataValue().get("operationId")))) {
+            throw new BusinessException(409, "review_fix_requires_claim");
+        }
+        FixProposalApplyReq req = RepairProposalApplyPolicy.safeRequest(command.getProposalApply());
+        RepairProposalApplyPolicy.validateRequest(req);
+        return applyFrozenReviewFixProposal(tenantId, chatSessionId, req, pending);
+    }
+
+    private FixProposalApplyRes applyFrozenReviewFixProposal(Long tenantId, Long chatSessionId,
+                                                             FixProposalApplyReq req,
+                                                             PendingConfirmationRes pending) {
         Map<String, Object> data = pending == null ? null : pending.getDataValue();
         if (data == null
                 || !RepairProposalTaxonomy.ProposalSource.REVIEW_CHECK.equals(
@@ -3081,6 +3104,7 @@ public class PlanningStateService {
         state.setOrderedPlanState(orderedPlanState);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO generateInitialPlan(Long tenantId, Long chatSessionId, InitialPlanGenerateReq req) {
         InitialPlanGenerateReq safeReq = req == null ? new InitialPlanGenerateReq() : req;
         PlanningStateDTO state = loadPlanningState(chatSessionId);

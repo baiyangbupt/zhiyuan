@@ -68,6 +68,7 @@ final class CanonicalPlanningRuntime {
                                                 Integer initialSelectionTargetCount,
                                                 boolean initialContentGuard) {
         CanonicalPlanningObjectiveSetDTO objectives = PlanningObjectiveCompiler.compileConfirmed(state);
+        boolean allowInitialFallback = initialContentGuard && !hasSelectionObjectives(state, objectives);
         boolean explicitInitialTarget = initialSelectionTargetCount != null
                 && initialSelectionTargetCount > 0;
         if (!hasSelectionObjectives(state, objectives) && !explicitInitialTarget) {
@@ -122,7 +123,7 @@ final class CanonicalPlanningRuntime {
                 defaultList(solved.getRemoveEntityIds()).size(),
                 defaultList(solved.getAddEntityIds()).size(),
                 solved.getCandidateCount());
-        if (initialContentGuard && "blocked".equals(solved.getStatus())) {
+        if (allowInitialFallback && "blocked".equals(solved.getStatus())) {
             PlanSolverResultDTO.DiagnosticDTO source = solved.getDiagnostics().isEmpty()
                     ? null : solved.getDiagnostics().get(0);
             String reason = source == null ? "solver_blocked" : source.getReasonCode();
@@ -143,6 +144,9 @@ final class CanonicalPlanningRuntime {
         if (initialContentGuard) {
             String violation = initialContentGuardViolation(snapshot.getFacts(), solved, unitMode);
             if (!Strings.isNullOrEmpty(violation)) {
+                if (!allowInitialFallback) {
+                    throw new BusinessException(409, "initial_content_guard: " + violation);
+                }
                 LOG.warn("initial content guard rejected solver: session={} violation={}",
                         state.getSessionId(), violation);
                 PlanSolverResultDTO fallback = noChange(objectives);
@@ -269,12 +273,15 @@ final class CanonicalPlanningRuntime {
         PlanSolverResultDTO mutation = new PlanSolverResultDTO();
         mutation.setRemoveEntityIds(expectedRemoved);
         mutation.setAddEntityIds(expectedAdded);
+        mutation.setSelectedMajorIdsByUnit(frozen.getSelectedMajorIdsByUnit());
+        verifyRetainedMajors(current, frozen);
         applySelection(state, candidateFacts, current, available, mutation);
         List<String> appliedIds = currentEntities(state.getWorkingPlanState(), candidateFacts, unitMode)
                 .stream().map(entity -> entity.entityId).collect(Collectors.toList());
         if (!sameIdentitySet(selectedIds, appliedIds)) {
             throw new BusinessException(409, "solver_frozen_selection_mismatch");
         }
+        verifyFrozenWorkingSelection(state, candidateFacts, frozen);
     }
 
     static void applyFrozenOrdering(PlanningStateDTO state, PlanSolverResultDTO frozen) {
@@ -305,12 +312,13 @@ final class CanonicalPlanningRuntime {
         CanonicalPlanningObjectiveSetDTO objectives = PlanningObjectiveCompiler.compileConfirmed(state);
         boolean unitMode = "unit".equals(objectives.getCountMode());
         List<CandidateItemDTO> candidateFacts = mergedCandidateFacts(state, effectiveCandidates);
-        List<String> actual = currentEntities(
-                state == null ? null : state.getWorkingPlanState(), candidateFacts, unitMode)
-                .stream().map(entity -> entity.entityId).collect(Collectors.toList());
+        List<Entity> current = currentEntities(
+                state == null ? null : state.getWorkingPlanState(), candidateFacts, unitMode);
+        List<String> actual = current.stream().map(entity -> entity.entityId).collect(Collectors.toList());
         if (!sameIdentitySet(defaultList(frozen.getSelectedEntityIds()), actual)) {
             throw new BusinessException(409, "solver_frozen_selection_mismatch");
         }
+        verifyRetainedMajors(current, frozen);
     }
 
     private static boolean sameIdentitySet(List<String> expected, List<String> actual) {
@@ -329,6 +337,42 @@ final class CanonicalPlanningRuntime {
         if (!defaultList(frozen.getOrderedEntityIds()).equals(actualOrdered)) {
             throw new BusinessException(409, "solver_frozen_order_mismatch");
         }
+        Map<String, List<String>> planned = frozen.getSelectedMajorIdsByUnit();
+        if (planned != null && !planned.isEmpty()) {
+            List<String> flattened = new ArrayList<String>();
+            for (OrderedUnitDTO unit : defaultList(state.getOrderedPlanState().getUnits())) {
+                List<String> actualMajors = defaultList(unit.getMajorItems()).stream()
+                        .map(PlanningUnitMajorDTO::getVolunteerId).collect(Collectors.toList());
+                List<String> expectedMajors = planned.get(unit.getUnitId());
+                if (expectedMajors == null || !sameIdentitySet(expectedMajors, actualMajors)) {
+                    throw new BusinessException(409, "solver_frozen_major_selection_mismatch");
+                }
+                flattened.addAll(actualMajors);
+            }
+            List<String> actualItems = defaultList(state.getOrderedPlanState().getItems()).stream()
+                    .map(OrderedItemDTO::getVolunteerId).collect(Collectors.toList());
+            if (!flattened.equals(actualItems)) {
+                throw new BusinessException(409, "solver_frozen_major_selection_mismatch");
+            }
+        }
+    }
+
+    private static void verifyRetainedMajors(List<Entity> current, PlanSolverResultDTO frozen) {
+        Map<String, List<String>> planned = frozen.getSelectedMajorIdsByUnit();
+        if (planned == null || planned.isEmpty()) {
+            return;
+        }
+        for (Entity entity : current) {
+            List<String> expected = planned.get(entity.entityId);
+            if (expected == null) {
+                continue;
+            }
+            List<String> actual = entity.candidates.stream().map(CandidateItemDTO::getVolunteerId)
+                    .collect(Collectors.toList());
+            if (!sameIdentitySet(expected, actual)) {
+                throw new BusinessException(409, "solver_frozen_major_selection_mismatch");
+            }
+        }
     }
 
     private static void validateFrozenResult(PlanSolverResultDTO frozen) {
@@ -346,6 +390,23 @@ final class CanonicalPlanningRuntime {
                 || new LinkedHashSet<String>(ordered).size() != ordered.size()
                 || !new LinkedHashSet<String>(selected).equals(new LinkedHashSet<String>(ordered))) {
             throw new BusinessException(409, "solver_frozen_identity_invalid");
+        }
+        Map<String, List<String>> planned = frozen.getSelectedMajorIdsByUnit();
+        if (planned != null && !planned.isEmpty()) {
+            if (!new LinkedHashSet<String>(selected).equals(planned.keySet())) {
+                throw new BusinessException(409, "solver_frozen_major_selection_mismatch");
+            }
+            Set<String> selectedMajors = new LinkedHashSet<String>();
+            for (List<String> majors : planned.values()) {
+                if (majors == null || majors.isEmpty()) {
+                    throw new BusinessException(409, "solver_frozen_major_selection_mismatch");
+                }
+                for (String volunteerId : majors) {
+                    if (Strings.isNullOrEmpty(volunteerId) || !selectedMajors.add(volunteerId)) {
+                        throw new BusinessException(409, "solver_frozen_major_selection_mismatch");
+                    }
+                }
+            }
         }
     }
 

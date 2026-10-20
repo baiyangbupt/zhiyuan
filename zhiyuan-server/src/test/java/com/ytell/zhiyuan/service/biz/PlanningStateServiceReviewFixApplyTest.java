@@ -17,12 +17,18 @@ import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandReq;
+import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes;
 import com.ytell.zhiyuan.model.dto.planning.PrepareResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewFixPrepareReq;
 import com.ytell.zhiyuan.model.dto.planning.ReviewFixPreviewDTO;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.entity.biz.ConversationProposalRequestEntity;
+import com.ytell.zhiyuan.model.entity.biz.PendingConfirmationEntity;
+import com.ytell.zhiyuan.model.entity.biz.PlanningPendingCommandEntity;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
+import com.ytell.zhiyuan.service.shared.PendingConfirmationSharedService;
+import com.ytell.zhiyuan.service.shared.PlanningPendingCommandSharedService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,6 +36,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.LinkedHashMap;
+import java.util.Date;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -103,10 +110,114 @@ class PlanningStateServiceReviewFixApplyTest {
     }
 
     @Test
+    void executorAppliesLegacyCountPreviewWithoutReadBackfillInvalidatingItsDigest() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        PlanningStateDTO before = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(Integer.valueOf(0), before.getOrderedPlanState().getSummary().getTargetCount());
+
+        PendingPlanningCommandRes result = executePreparedThroughExecutor();
+
+        assertEquals(Integer.valueOf(8), result.getResultPlanVersion());
+        assertTrue(result.getPostconditionReport().getSatisfied());
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(82, saved.getOrderedPlanState().getItems().size());
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void executorAppliesLegacyGroupCountPreviewWithoutReadBackfillInvalidatingItsDigest() {
+        useGroupCountTargetFixture();
+        prepareGroupCountTarget();
+        PlanningStateDTO before = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(Integer.valueOf(0), before.getOrderedPlanState().getSummary().getTargetCount());
+
+        PendingPlanningCommandRes result = executePreparedThroughExecutor();
+
+        assertEquals(Integer.valueOf(8), result.getResultPlanVersion());
+        assertTrue(result.getPostconditionReport().getSatisfied());
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals(46, saved.getOrderedPlanState().getUnits().size());
+        assertEquals(92, saved.getOrderedPlanState().getItems().size());
+        assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void executorRejectsRealVersionDriftWithoutBackfillingLegacyState() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.setVersion(8);
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException error = assertThrows(BusinessException.class, this::executePreparedThroughExecutor);
+
+        assertEquals(PendingPlanningCommandBizService.PLAN_VERSION_CONFLICT_CODE, error.getStatus());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void executorRejectsRealContentDriftWithoutBackfillingLegacyState() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        PlanningStateDTO drifted = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        drifted.getOrderedPlanState().getItems().get(0).setPinned(true);
+        row.setDataValue(JSON.toJSONString(drifted));
+        String baseline = row.getDataValue();
+
+        BusinessException error = assertThrows(BusinessException.class, this::executePreparedThroughExecutor);
+
+        assertEquals("review_fix_stale", error.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void publicReviewApplyRejectsPreparedPendingBeforeAnyWrite() {
+        prepare();
+        String baseline = row.getDataValue();
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, error.getStatus());
+        assertEquals("review_fix_requires_pending", error.getMessage());
+        assertEquals("active", activePending.getStatus());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void claimedApplyRejectsActivePendingBeforeAnyWrite() {
+        prepare();
+        String baseline = row.getDataValue();
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.applyClaimedReviewFixProposal(TENANT, SESSION, claimRequest(applyRequest())));
+
+        assertEquals("review_fix_requires_claim", error.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void claimedApplyRejectsAnExpiredClaimBeforeAnyWrite() {
+        prepare();
+        activePending.setStatus("applying");
+        activePending.setClaimToken("review-claim");
+        activePending.setClaimExpiresAt(new Date(System.currentTimeMillis() - 1000));
+        String baseline = row.getDataValue();
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.applyClaimedReviewFixProposal(TENANT, SESSION, claimRequest(applyRequest())));
+
+        assertEquals("review_fix_requires_claim", error.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
     void appliesTheFrozenOrderExactlyWithoutReSortingOrRegenerating() {
         prepare();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         assertNotNull(res.getProposal());
@@ -131,7 +242,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useGroupFixture();
         prepareGroup();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -163,7 +274,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_changed", ex.getMessage());
@@ -180,7 +291,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -197,7 +308,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_facts_changed", ex.getMessage());
@@ -221,7 +332,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
         assertEquals("review_fix_postcondition_failed", ex.getMessage());
@@ -235,7 +346,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useGroupCountTargetFixture();
         prepareGroupCountTarget();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -267,7 +378,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_changed", ex.getMessage());
@@ -284,7 +395,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -354,7 +465,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_changed", ex.getMessage());
@@ -369,7 +480,7 @@ class PlanningStateServiceReviewFixApplyTest {
         row.setDataValue(JSON.toJSONString(drifted));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -383,7 +494,7 @@ class PlanningStateServiceReviewFixApplyTest {
         row.setDataValue(JSON.toJSONString(drifted));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_facts_changed", ex.getMessage());
@@ -409,7 +520,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
         assertEquals("review_fix_postcondition_failed", ex.getMessage());
@@ -425,7 +536,7 @@ class PlanningStateServiceReviewFixApplyTest {
         activePending = null;
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_requires_pending", ex.getMessage());
@@ -436,7 +547,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useCountTargetFixture();
         prepareCountTarget();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -463,7 +574,7 @@ class PlanningStateServiceReviewFixApplyTest {
         System.clearProperty(ReviewFixSearchFlags.PROPERTY);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_search_disabled", ex.getMessage());
@@ -478,7 +589,7 @@ class PlanningStateServiceReviewFixApplyTest {
         System.setProperty(ReviewFixSearchFlags.STRATEGIES_PROPERTY, "ratio");
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_search_disabled", ex.getMessage());
@@ -495,7 +606,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_changed", ex.getMessage());
@@ -512,7 +623,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -530,7 +641,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
         assertEquals("review_fix_postcondition_failed", ex.getMessage());
@@ -544,7 +655,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useCoverageFixture();
         prepareCoverage();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -574,7 +685,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_changed", ex.getMessage());
@@ -591,7 +702,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -603,7 +714,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useSafetyFixture();
         prepareSafety();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -630,7 +741,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_changed", ex.getMessage());
@@ -647,7 +758,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -675,7 +786,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
         assertEquals("review_fix_postcondition_failed", ex.getMessage());
@@ -689,7 +800,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useGroupSafetyFixture();
         prepareGroupSafety();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -727,7 +838,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_changed", ex.getMessage());
@@ -744,7 +855,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -756,7 +867,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useGroupCoverageFixture();
         prepareGroupCoverage();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -788,7 +899,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useGroupRiskFixture();
         prepareGroupRisk();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -832,7 +943,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -844,7 +955,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useGroupRatioFixture();
         prepareGroupRatio();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -895,7 +1006,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_changed", ex.getMessage());
@@ -912,7 +1023,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -924,7 +1035,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useRatioFixture();
         prepareRatio();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -958,7 +1069,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_changed", ex.getMessage());
@@ -975,7 +1086,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -994,7 +1105,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
         assertEquals("review_fix_postcondition_failed", ex.getMessage());
@@ -1008,7 +1119,7 @@ class PlanningStateServiceReviewFixApplyTest {
         useRiskFixture();
         prepareRisk();
 
-        FixProposalApplyRes res = service.applyFixProposal(TENANT, SESSION, applyRequest());
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
 
         assertEquals("applied", res.getStatus());
         PlanningStateDTO applied = res.getState();
@@ -1036,7 +1147,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, req));
+                () -> applyPrepared(TENANT, SESSION, req));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_changed", ex.getMessage());
@@ -1053,7 +1164,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_stale", ex.getMessage());
@@ -1078,7 +1189,7 @@ class PlanningStateServiceReviewFixApplyTest {
         String baseline = row.getDataValue();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
 
         assertEquals(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE, ex.getStatus());
         assertEquals("review_fix_postcondition_failed", ex.getMessage());
@@ -1413,6 +1524,64 @@ class PlanningStateServiceReviewFixApplyTest {
         for (int index = 0; index < items.size(); index++) {
             items.getJSONObject(index).put("position", index + 1);
         }
+    }
+
+    private PendingPlanningCommandRes executePreparedThroughExecutor() {
+        row.setId(1L);
+        row.setChatSessionId(SESSION);
+        row.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        row.setDataVersion(0);
+        PendingPlanningCommandReq command = claimRequest(applyRequest());
+        command.setCommandType(PendingPlanningCommandBizService.APPLY_PLAN_CHANGE_PROPOSAL);
+        command.setExpectedPlanVersion(7);
+        command.setRegenerateOrderedPlan(true);
+        activePending.setStatus("applying");
+        activePending.setClaimToken(command.getClaimToken());
+        activePending.setClaimExpiresAt(new Date(System.currentTimeMillis() + 60000));
+
+        PendingConfirmationEntity pending = new PendingConfirmationEntity();
+        pending.setTenantId(TENANT);
+        pending.setChatSessionId(SESSION);
+        pending.setPendingId(activePending.getPendingId());
+        pending.setStatus(activePending.getStatus());
+        pending.setClaimToken(activePending.getClaimToken());
+        pending.setClaimExpiresAt(activePending.getClaimExpiresAt());
+        pending.setDataValue(JSON.toJSONString(activePending.getDataValue()));
+        PendingConfirmationSharedService pendingStorage = mock(PendingConfirmationSharedService.class);
+        when(pendingStorage.lockCurrent(TENANT, SESSION)).thenReturn(pending);
+        PlanningPendingCommandSharedService commandStorage = mock(PlanningPendingCommandSharedService.class);
+        when(commandStorage.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+        ReflectionTestUtils.setField(service, "volunteerSourceDataSyncService",
+                mock(VolunteerSourceDataSyncService.class));
+
+        PendingPlanningCommandBizService executor = new PendingPlanningCommandBizService();
+        ReflectionTestUtils.setField(executor, "planningStateService", service);
+        ReflectionTestUtils.setField(executor, "extraDataSharedService",
+                ReflectionTestUtils.getField(service, "chatSessionExtraDataSharedService"));
+        ReflectionTestUtils.setField(executor, "pendingSharedService", pendingStorage);
+        ReflectionTestUtils.setField(executor, "commandSharedService", commandStorage);
+        ReflectionTestUtils.setField(executor, "postconditionValidator", new UnifiedPlanPostconditionValidator());
+        return executor.execute(TENANT, SESSION, command);
+    }
+
+    private FixProposalApplyRes applyPrepared(Long tenantId, Long sessionId, FixProposalApplyReq request) {
+        PendingPlanningCommandReq command = claimRequest(request);
+        if (activePending != null) {
+            activePending.setStatus("applying");
+            activePending.setClaimToken("review-claim");
+            activePending.setClaimExpiresAt(new Date(System.currentTimeMillis() + 60000));
+        }
+        return service.applyClaimedReviewFixProposal(tenantId, sessionId, command);
+    }
+
+    private PendingPlanningCommandReq claimRequest(FixProposalApplyReq request) {
+        PendingPlanningCommandReq command = new PendingPlanningCommandReq();
+        command.setPendingId(activePending == null ? "missing" : activePending.getPendingId());
+        command.setClaimToken("review-claim");
+        command.setOperationId(activePending == null ? "missing"
+                : String.valueOf(activePending.getDataValue().get("operationId")));
+        command.setProposalApply(request);
+        return command;
     }
 
     private void prepare() {
