@@ -185,9 +185,11 @@ Java 全量：**1480 / 0 / 0 / 10**。
   admission_limit 在多个会话中均未增加。
 - 矩阵说明：flag on 且无 durable target 时，初始目标来自 requiredCount；
   900045 此前在显式 target=45 时会补 1 组，本矩阵保持 44。
-- 900016 回退根因不是内容护栏：分数 484 → `minLocalProtect=2`，而候选池
-  0 个保档 unit，safety 阶段本身不可行；启发式基线也缺这 2 个保底。
-  内容约束（风险/条目/preferred）并未额外收紧到不可行。
+- 900016 回退根因：solver 诊断为 `objective=safety`、
+  `保底阶段未证明最优，solverState=INFEASIBLE`。分数 484 →
+  `minLocalProtect=2`，而候选池 0 个保档 unit；启发式基线也缺这 2 个保底。
+  内容约束不是唯一可疑项，但 fallback 日志现在会带
+  `reason/objective/detail`，便于后续区分 safety 与内容约束。
 
 ## 9. 下一步
 

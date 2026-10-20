@@ -548,7 +548,7 @@ class CanonicalPlanningRuntimeTest {
 
         assertEquals("no_change", result.getStatus());
         assertEquals("initial_content_guard", result.getDiagnostics().get(0).getReasonCode());
-        assertTrue(result.getDiagnostics().get(0).getMessage().contains("constraints infeasible"));
+        assertTrue(result.getDiagnostics().get(0).getMessage().contains("initial solver blocked"));
     }
 
     @Test

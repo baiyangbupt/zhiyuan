@@ -120,15 +120,19 @@ final class CanonicalPlanningRuntime {
                 defaultList(solved.getAddEntityIds()).size(),
                 solved.getCandidateCount());
         if (initialContentGuard && "blocked".equals(solved.getStatus())) {
-            String reason = solved.getDiagnostics().isEmpty() ? "solver_blocked"
-                    : solved.getDiagnostics().get(0).getReasonCode();
-            LOG.warn("initial content constraints infeasible: session={} reason={}",
-                    state.getSessionId(), reason);
+            PlanSolverResultDTO.DiagnosticDTO source = solved.getDiagnostics().isEmpty()
+                    ? null : solved.getDiagnostics().get(0);
+            String reason = source == null ? "solver_blocked" : source.getReasonCode();
+            String objective = source == null ? null : source.getObjectiveId();
+            String detail = source == null ? null : source.getMessage();
+            LOG.warn("initial solver blocked, fallback heuristic: session={} reason={} objective={} detail={}",
+                    state.getSessionId(), reason, objective, detail);
             PlanSolverResultDTO fallback = noChange(objectives);
             PlanSolverResultDTO.DiagnosticDTO diagnostic = new PlanSolverResultDTO.DiagnosticDTO();
             diagnostic.setReasonCode("initial_content_guard");
             diagnostic.setObjectiveId("initial");
-            diagnostic.setMessage("initial content constraints infeasible: " + reason);
+            diagnostic.setMessage("initial solver blocked: reason=" + reason
+                    + ", objective=" + objective + ", detail=" + detail);
             fallback.getDiagnostics().add(diagnostic);
             return fallback;
         }
