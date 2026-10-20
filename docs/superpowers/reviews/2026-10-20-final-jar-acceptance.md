@@ -1,9 +1,10 @@
 # 最终 jar 验收（新求解器默认值 + 审查修复链）
 
-日期：2026-10-20。运行时提交：`c88ba7a`（`c6827d8` 修复合单元号；
+日期：2026-10-20。运行时提交：后端 `c88ba7a`（`c6827d8` 修复合单元号；
 `95e1597` 把推荐池档位比例投影进初始选择；`c88ba7a` 用 solver-only
-档位平衡修复空方案 user-goal fill；更早的 `3801a5f`、`b541c46` 仅测试/文档）。
-验收使用 `zhiyuan-server/target/zhiyuan-server.jar`。
+档位平衡修复空方案 user-goal fill；更早的 `3801a5f`、`b541c46` 仅测试/文档），
+Web `ec2ec0d`（解读卡列表字段降级）。验收使用
+`zhiyuan-server/target/zhiyuan-server.jar` 与 3201 开发实例。
 
 ## 1. 隔离环境
 
@@ -103,6 +104,30 @@ solverObjectiveDigest，也不产生 `tier_*` 冻结结果，因此后置校验�
 18 保**，WS 确认 `applied`。此前 10041993 的 32/13/0 是修复前结果；
 直接把档位加进 `stagedObjectives.tierAllocationConstraint` 会导致 40905
 `frozen objective result mismatch`，该尝试已回滚。
+
+### 浏览器确认卡片
+
+3201 开发实例 + Playwright 容器（`zhiyuan-e2e-playwright:1.55.0`，host
+network），localStorage 注入 900002 的 `token/botId/tenantId`。会话
+10041997（空方案、5785 候选）：
+
+- 真实模型在同一页面流式产出 `proposal.preview`；
+- 卡片实时渲染出“补齐到 45 个专业组”的标题、摘要、影响说明和
+  **采纳 / 放弃**按钮；
+- 点击“采纳”后卡片变为“已生效”，页面无异常；
+- 最终方案 45 组 = 14 冲 / 13 稳 / 18 保，version 0→3。
+
+本轮修了一个浏览器崩溃：`InterpretationCard` 收到非数组的
+`caveatDetails/scenarios/caveats` 时 `.filter/.map` 抛
+`TypeError`，整页空白。修复（`ec2ec0d`）：列表字段先
+`Array.isArray` 降级；修复后复跑同一确认路径，PAGE_ERRORS 为空。
+Web typecheck 通过；Node 20 下 `codexLocalRewrite.test.mjs` 的
+`Unable to deserialize cloned data` 是既有环境问题（Node 22 容器通过），
+与本改动无关。
+
+**已知 UI 缺口**：刷新页面后，active pending 只显示折叠的
+“方案调整预览 / 待处理”横条，没有摘要和采纳/放弃按钮；同一 pending
+在实时回合内卡面完整。用户仍可用聊天“确认”完成，但冷刷新卡片体验需要后续修。
 
 ### 仍需关注
 
