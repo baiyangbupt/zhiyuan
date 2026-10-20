@@ -1,9 +1,8 @@
 # 最终 jar 验收（新求解器默认值 + 审查修复链）
 
-日期：2026-10-20。运行时提交：后端 `c88ba7a`（`c6827d8` 修复合单元号；
-`95e1597` 把推荐池档位比例投影进初始选择；`c88ba7a` 用 solver-only
-档位平衡修复空方案 user-goal fill；更早的 `3801a5f`、`b541c46` 仅测试/文档），
-Web `ec2ec0d`（解读卡列表字段降级）。验收使用
+日期：2026-10-20。运行时提交：后端 `0d399fe`（含 `c88ba7a` solver-only
+档位平衡、`95e1597` 初始档位投影、`c6827d8` 复合单元号修复），Web
+`ec2ec0d`（解读卡列表字段降级）与 `0d399fe`（冷刷新提案卡）。验收使用
 `zhiyuan-server/target/zhiyuan-server.jar` 与 3201 开发实例。
 
 ## 1. 隔离环境
@@ -125,9 +124,12 @@ Web typecheck 通过；Node 20 下 `codexLocalRewrite.test.mjs` 的
 `Unable to deserialize cloned data` 是既有环境问题（Node 22 容器通过），
 与本改动无关。
 
-**已知 UI 缺口**：刷新页面后，active pending 只显示折叠的
-“方案调整预览 / 待处理”横条，没有摘要和采纳/放弃按钮；同一 pending
-在实时回合内卡面完整。用户仍可用聊天“确认”完成，但冷刷新卡片体验需要后续修。
+**冷刷新卡片已修（`0d399fe`）**：`LastProposalVo` 现在带冻结提案的
+title/summary/impact/status/requiresConfirmation；冷加载兜底卡把
+`active` 当作“待确认”而不是已落定，并通过
+`buildPendingConfirmationFrame` 发送标准确认帧。真栈 10041998：刷新后
+卡片完整显示摘要、影响说明和采纳/放弃按钮；点“采纳”后 pending 变
+`applied`，方案达到 45 组，页面无异常。
 
 ### 仍需关注
 
