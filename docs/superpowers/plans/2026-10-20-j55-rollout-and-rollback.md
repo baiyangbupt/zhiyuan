@@ -120,3 +120,28 @@ preview → prepare → claim → execute → complete
 - 合计 12/12；18290 仍停留在 Phase 1。
 - Phase 4（all）已有全策略隔离记录 11/12：group risk 完整链 passed；
   major_risk 夹具未触发 review finding 而跳过，RiskReplace planner 单测通过。
+
+## 10. Phase 4 全量切流（2026-10-21）
+
+按用户决定，跳过逐日观察，直接把本地测试栈 18290 切到全策略：
+
+```
+-Dreview.fix.command.enabled=true
+-Dreview.fix.search.enabled=true
+-Dreview.fix.search.strategies=all
+```
+
+切流后在同一 18290 上重跑全策略真栈验收（900700 / 900045 合成夹具，
+验收前备份 HEX、验收后恢复 planningState / planningCandidatePool 与
+pending 表）：
+
+- major：count 82、coverage 80、direct 3、safety 80、ratio 80 均 passed；
+  risk 夹具未触发 review finding，skipped。
+- majorGroup：count 46 组/92 条、coverage 4/4、direct 3/3、safety 44/88、
+  ratio 44/88、risk 4/4 均 passed。
+- 共 **11 passed / 1 skipped**；所有通过场景走完
+  preview→prepare→claim→execute→replay→complete，postcondition satisfied，
+  replay 不二次写入，组模式冻结 map 与最终单元一致。
+- 验收后 900045/900700 planningState 哈希恢复原值，pending 三类表清零。
+- 回滚：停 18290 后普通参数重启，或显式 `command.enabled=false`；
+  Search 单独回滚用 `search.enabled=false` / `strategies` 收窄。
