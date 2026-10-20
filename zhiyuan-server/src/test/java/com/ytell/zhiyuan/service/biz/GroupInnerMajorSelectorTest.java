@@ -32,6 +32,16 @@ class GroupInnerMajorSelectorTest {
     }
 
     @Test
+    void groupWithFewerMajorsThanRequiredKeepsAll() {
+        CandidateItemDTO v1 = candidate("v1", 50D, 40D);
+        CandidateItemDTO v2 = candidate("v2", 80D, 60D);
+        List<CandidateItemDTO> input = Arrays.asList(v1, v2);
+
+        assertEquals(input, GroupInnerMajorSelector.select(input, 6, 60D),
+                "组内专业不足 requiredMajorCount 时必须全部保留，不能补造或截断");
+    }
+
+    @Test
     void noCapKeepsOriginalList() {
         CandidateItemDTO v1 = candidate("v1", 50D, 40D);
         CandidateItemDTO v2 = candidate("v2", 80D, 60D);
