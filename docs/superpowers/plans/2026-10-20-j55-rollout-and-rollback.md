@@ -89,3 +89,16 @@ preview → prepare → claim → execute → complete
   preview/frozen replay 会携带 `selectedMajorIdsByUnit`，因此正式放量
   Phase 1 前必须在最终 jar 上重跑 Direct/Search 真栈验收，确认冻结专业
   清单、apply 物化和回滚仍一致；不能直接沿用默认关闭时期的验收结论。
+
+## 7. Phase 1 已开始（2026-10-21）
+
+- 隔离库全策略验收：Direct（major/group）完整确认链 passed；Search 族
+  （count/coverage/safety/ratio/risk，major/group）在开关关闭时均无可确认
+  proposal，共 12/12 检查通过。
+- 本地测试栈 18290 已按 Phase 1 启动：
+  `-Dreview.fix.command.enabled=true`，`review.fix.search.enabled` 未开；
+  只保留 Direct 倒挂确认。
+- 观察项：review preview 无写入、Direct prepare→claim→execute→complete、
+  pending 终态、失败命令回滚；一个完整业务日后再评估 Phase 2。
+- 回滚：停 18290 后按普通参数重启即可（或显式
+  `-Dreview.fix.command.enabled=false`）。
