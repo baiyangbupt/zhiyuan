@@ -21,4 +21,6 @@ public class MutationPolicyDTO {
     private Boolean requireCompensationSafe = false;
     /** 初始方案：把风险标签/条目膨胀/preferred 丢失作为 solver 硬约束。 */
     private Boolean initialContentGuard = false;
+    /** J5.4 实验：同档优先规则是否作为选择目标（否则只影响排序）。 */
+    private Boolean prioritySelection = false;
 }

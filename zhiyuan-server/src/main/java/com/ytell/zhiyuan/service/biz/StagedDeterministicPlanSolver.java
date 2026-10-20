@@ -206,6 +206,34 @@ final class StagedDeterministicPlanSolver {
             fixSafety.set(safetyDeficit, 1);
         }
 
+        boolean priorityApplicable = Boolean.TRUE.equals(safePolicy.getPrioritySelection())
+                && facts.stream().anyMatch(fact -> Boolean.TRUE.equals(fact.getPriorityMatched()));
+        if (priorityApplicable) {
+            Expression priorityObjective = model.addExpression("priority_objective").weight(-1);
+            for (int index = 0; index < facts.size(); index++) {
+                if (Boolean.TRUE.equals(facts.get(index).getPriorityMatched())) {
+                    priorityObjective.set(variables.get(index), 1);
+                }
+            }
+            Optimisation.Result prioritySolved = solvePhase(model, deadline, "priority");
+            if (prioritySolved == null || !prioritySolved.getState().isOptimal()) {
+                return blocked(result, started, phaseFailureReason(reduction, prioritySolved), "priority",
+                        "优先规则阶段未证明最优"
+                                + (prioritySolved == null ? "" : "，solverState="
+                                + prioritySolved.getState()));
+            }
+            int matched = priorityValue(facts, variables, prioritySolved);
+            levels.add(new ObjectiveLevel("priority", matched, matched, "matched_entities"));
+            levelDurations.add(lastPhaseDurationMs);
+            priorityObjective.weight(0);
+            Expression fixPriority = model.addExpression("fix_priority").lower(matched);
+            for (int index = 0; index < facts.size(); index++) {
+                if (Boolean.TRUE.equals(facts.get(index).getPriorityMatched())) {
+                    fixPriority.set(variables.get(index), 1);
+                }
+            }
+        }
+
         Expression churnExpression = null;
         Expression tierObjective = null;
         int currentCount = 0;
@@ -707,6 +735,18 @@ final class StagedDeterministicPlanSolver {
             result += Math.abs(actual - tierCount(anchor, tier));
         }
         return result;
+    }
+
+    private int priorityValue(List<CandidateFactDTO> facts, List<Variable> variables,
+                              Optimisation.Result solved) {
+        int matched = 0;
+        for (int index = 0; index < facts.size(); index++) {
+            if (Boolean.TRUE.equals(facts.get(index).getPriorityMatched())
+                    && solved.doubleValue(index) > 0.5D) {
+                matched++;
+            }
+        }
+        return matched;
     }
 
     private int utilityValue(List<CandidateFactDTO> facts, List<Variable> variables, Optimisation.Result solved) {

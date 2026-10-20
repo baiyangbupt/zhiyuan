@@ -447,6 +447,39 @@ class StagedDeterministicPlanSolverTest {
                 .collect(Collectors.joining(","));
     }
 
+    @Test
+    void prioritySelectionStagePrefersMatchedEntity() {
+        CandidateFactDTO current = fact("current", "stable", "浙江", true, false, 90, 0);
+        CandidateFactDTO preferred = fact("preferred", "stable", "浙江", false, false, 10, 1);
+        preferred.setPriorityMatched(true);
+        MutationPolicyDTO policy = policy("FILL", false);
+        policy.setPrioritySelection(true);
+
+        StagedDeterministicPlanSolver.Result result = solver.solve(
+                snapshot(current, preferred), objectives(1), policy);
+
+        assertEquals("ready", result.solverResult.getStatus(),
+                "diagnostics=" + result.solverResult.getDiagnostics());
+        assertEquals(Arrays.asList("preferred"), result.solverResult.getSelectedEntityIds());
+        assertEquals(1L, level(result, "priority"));
+    }
+
+    @Test
+    void prioritySelectionOffKeepsChurnBehavior() {
+        CandidateFactDTO current = fact("current", "stable", "浙江", true, false, 90, 0);
+        CandidateFactDTO preferred = fact("preferred", "stable", "浙江", false, false, 10, 1);
+        preferred.setPriorityMatched(true);
+        MutationPolicyDTO policy = policy("FILL", false);
+        policy.setPrioritySelection(false);
+
+        StagedDeterministicPlanSolver.Result result = solver.solve(
+                snapshot(current, preferred), objectives(1), policy);
+
+        assertEquals("ready", result.solverResult.getStatus());
+        assertEquals(Arrays.asList("current"), result.solverResult.getSelectedEntityIds());
+        assertTrue(result.levels.stream().noneMatch(item -> "priority".equals(item.level)));
+    }
+
     private CandidateFactDTO withUniqueDimensions(CandidateFactDTO fact) {
         fact.setMajorCategoryId("major-" + fact.getEntityId());
         fact.setSchoolLevel("level-" + fact.getEntityId());

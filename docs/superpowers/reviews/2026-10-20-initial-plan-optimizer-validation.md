@@ -168,7 +168,7 @@ staged solver。
 
 Java 全量：**1480 / 0 / 0 / 10**。
 
-## 8. 9 会话内容矩阵（flag on，无 durable target）
+## 8. 16 会话内容矩阵（flag on，无 durable target）
 
 | 会话 | 启发式 → solver | 风险标签 | preferred | 单组最大专业数 | 结果 |
 |---|---|---|---|---|---|
@@ -202,7 +202,26 @@ Java 全量：**1480 / 0 / 0 / 10**。
   内容约束不是唯一可疑项，但 fallback 日志现在会带
   `reason/objective/detail`，便于后续区分 safety 与内容约束。
 
-## 9. 下一步
+## 9. 优先规则选择实验（J5.4，默认关）
+
+新增实验开关 `planning.priority.selection.enabled`（默认 false）：
+
+- 关闭：行为不变，优先规则只影响排序。
+- 打开：solver 在 safety 之后增加 `priority` 阶段，最大化
+  `priorityMatched` 实体数；之后再进入 churn/档位、utility。
+- `MutationPolicyDTO.prioritySelection` 进入 solver inputDigest，便于审计。
+
+历史会话真栈：
+
+| 会话 | 规则 | 启发式匹配 | solver 匹配 | 结果 |
+|---|---|---|---|---|
+| 10041981 | city=北京 | 0/45 | 0/45 | 无匹配候选，不变 |
+| 10041984 | province=北方 15 省 | 4/45 | 11/45 | 优先规则明显生效，45 组 / 122 条 |
+
+内容护栏仍生效：风险标签、条目增长、preferred 丢失仍受约束。
+默认保持关闭，等待产品确认是否作为正式选择目标。
+
+## 10. 下一步
 
 1. 决定“无确认目标的新会话”是否也应让 solver 主导初始选择：
    - 若应：把 initial target（requiredCount/default 45）显式编译成初始

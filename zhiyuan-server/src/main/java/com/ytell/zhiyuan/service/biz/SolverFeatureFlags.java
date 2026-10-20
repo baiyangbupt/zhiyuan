@@ -18,4 +18,16 @@ final class SolverFeatureFlags {
         }
         return "true".equalsIgnoreCase(value) || "1".equals(value);
     }
+
+    /**
+     * J5.4 实验：优先规则作为选择阶段，而不只是排序目标。
+     * 默认关闭；关闭时行为与当前完全一致。
+     */
+    static boolean prioritySelectionEnabled() {
+        String value = System.getProperty("planning.priority.selection.enabled");
+        if (value == null) {
+            value = System.getenv("PLANNING_PRIORITY_SELECTION_ENABLED");
+        }
+        return "true".equalsIgnoreCase(value) || "1".equals(value);
+    }
 }

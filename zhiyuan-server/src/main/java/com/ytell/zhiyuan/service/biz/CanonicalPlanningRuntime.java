@@ -99,6 +99,7 @@ final class CanonicalPlanningRuntime {
         policy.setCountAsChurn(true);
         policy.setRequireCompensationSafe(true);
         policy.setInitialContentGuard(initialContentGuard);
+        policy.setPrioritySelection(SolverFeatureFlags.prioritySelectionEnabled());
         Set<String> availableIds = available.stream()
                 .map(entity -> entity.entityId)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
