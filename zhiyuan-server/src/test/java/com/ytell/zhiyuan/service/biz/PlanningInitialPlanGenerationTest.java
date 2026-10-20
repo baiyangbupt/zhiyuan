@@ -93,6 +93,49 @@ public class PlanningInitialPlanGenerationTest {
     }
 
     @Test
+    void initialPlanMustRunStagedSelectionWhenConfirmedTargetDiffersFromHeuristic() {
+        AtomicReference<ChatSessionExtraData> planningStateRef = bindPlanningStateStore();
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(3, 1, 1, 1));
+        response.setUserScoreDetail(buildScoreDetail());
+        response.setSprints(java.util.Arrays.asList(
+                buildSchool("ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "20"))));
+        response.setSafes(java.util.Arrays.asList(
+                buildSchool("ps2", "s2", "学校B", "北京", 2, buildMajorWithRatio("m2", "专业B", "55"))));
+        response.setProtects(java.util.Arrays.asList(
+                buildSchool("ps3", "s3", "学校C", "河北", 3, buildMajorWithRatio("m3", "专业C", "82"))));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        PlanningStateDTO first = planningStateService.generateInitialPlan(
+                1L, 1L, new InitialPlanGenerateReq());
+        assertEquals(Integer.valueOf(3), first.getOrderedPlanState().getSummary().getTotal());
+
+        // 下一次初始生成前：启发式仍会选 3 条，但已确认目标只有 2 条；
+        // 初始方案必须强制重算排序并让 staged solver 收敛到 2，而不是沿用
+        // saveWorkingPlanState 顺手同步出的 3 条 ordered。
+        first.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(2);
+        first.getWorkingPlanState().getItems().clear();
+        first.getWorkingPlanState().getUnits().clear();
+        first.getOrderedPlanState().getItems().clear();
+        first.getOrderedPlanState().getUnits().clear();
+        first.setInitialRecommendationState(null);
+        first.getStaleFlags().setInitialRecommendation(true);
+        first.getStaleFlags().setOrderedPlan(true);
+        planningStateRef.get().setDataValue(com.alibaba.fastjson.JSON.toJSONString(first));
+
+        InitialPlanGenerateReq req = new InitialPlanGenerateReq();
+        req.setOverwriteExistingDraft(true);
+        PlanningStateDTO second = planningStateService.generateInitialPlan(1L, 1L, req);
+
+        assertEquals(Integer.valueOf(3),
+                second.getInitialRecommendationState().getSummary().getTotal(),
+                "启发式初荐仍是 3 条，用来证明后续确实发生了 solver 重选");
+        assertEquals(Integer.valueOf(2), second.getOrderedPlanState().getSummary().getTotal());
+        assertEquals(2, second.getOrderedPlanState().getItems().size());
+    }
+
+    @Test
     void shouldGenerateInitialPlanFromRepairedInitialRecommendation() {
         bindPlanningStateStore();
 

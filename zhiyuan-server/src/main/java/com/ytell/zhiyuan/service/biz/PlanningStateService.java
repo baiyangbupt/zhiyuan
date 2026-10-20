@@ -3155,6 +3155,13 @@ public class PlanningStateService {
         }
         OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
         generateReq.setForceRegenerate(Boolean.TRUE.equals(safeReq.getForceRegenerate()));
+        // initial_auto：保存 working plan 时 syncOrderedPlanWithDraft 会顺手填好
+        // ordered 并清掉 stale 标记，generateOrderedPlan 会按“非强制且已有排序”
+        // 直接返回，导致 enforceSelection/staged solver 根本不执行。初始方案必须
+        // 强制重算排序，才能让已确认目标真正进入 solver。
+        if ("initial_auto".equals(mode)) {
+            generateReq.setForceRegenerate(true);
+        }
         generateReq.setRegroupByTier(Boolean.TRUE.equals(safeReq.getRegroupByTier()));
         // E 类嵌套写：内层 generateOrderedPlan 自己 CAS 落盘，返回态即"内层写进库里的那份"
         // （基线随之刷新），外层**不再**拿更早的快照当基线。
