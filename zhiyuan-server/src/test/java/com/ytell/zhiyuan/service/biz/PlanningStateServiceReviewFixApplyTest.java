@@ -409,6 +409,36 @@ class PlanningStateServiceReviewFixApplyTest {
                 PlanningStateServiceReviewFixPrepareTest.groupCountTargetFixture()));
     }
 
+    private void useCompositeGroupCountTargetFixture() {
+        PlanningStateDTO state = PlanningStateServiceReviewFixPrepareTest.groupCountTargetFixture();
+        for (CandidateItemDTO candidate : state.getCandidatePoolState().getItems()) {
+            candidate.setPlanSchoolDataId("c_" + candidate.getPlanSchoolDataId());
+        }
+        for (DraftUnitDTO unit : state.getWorkingPlanState().getUnits()) {
+            unit.setUnitId("c_" + unit.getUnitId());
+        }
+        for (OrderedUnitDTO unit : state.getOrderedPlanState().getUnits()) {
+            unit.setUnitId("c_" + unit.getUnitId());
+            unit.setPlanSchoolDataId("c_" + unit.getPlanSchoolDataId());
+        }
+        row.setDataValue(JSON.toJSONString(state));
+    }
+
+    @Test
+    void appliesGroupCountTargetWhenPlanSchoolDataIdContainsUnderscore() {
+        useCompositeGroupCountTargetFixture();
+        prepareGroupCountTarget();
+
+        FixProposalApplyRes res = applyPrepared(TENANT, SESSION, applyRequest());
+
+        assertEquals("applied", res.getStatus());
+        assertEquals(46, res.getState().getOrderedPlanState().getUnits().size());
+        assertEquals(92, res.getState().getOrderedPlanState().getItems().size());
+        for (OrderedUnitDTO unit : res.getState().getOrderedPlanState().getUnits()) {
+            assertTrue(unit.getUnitId().startsWith("c_"), "单元 id 不能被截断：" + unit.getUnitId());
+        }
+    }
+
     private void prepareGroupCountTarget() {
         ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
         FixProposalDTO proposal = null;

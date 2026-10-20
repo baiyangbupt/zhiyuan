@@ -13841,8 +13841,16 @@ public class PlanningStateService {
 
         Map<String, OrderedUnitDTO> unitMap = new LinkedHashMap<String, OrderedUnitDTO>();
         for (OrderedItemDTO item : defaultOrderedItems(items)) {
-            String unitId = resolveDraftOrOrderedUnitId(item);
             CandidateItemDTO resolvedCandidate = candidateResolver.resolve(item);
+            // 单元身份优先取候选的 planSchoolDataId：部分招生计划单元号本身含 "_"，
+            // 不能再用志愿行键的"_ 前段"反推，否则单元 id 会被截断而和冻结选择不一致。
+            String unitId = null;
+            if (resolvedCandidate != null) {
+                unitId = RepairCandidateSelector.resolveInitialRecommendationUnitId(resolvedCandidate);
+            }
+            if (Strings.isNullOrEmpty(unitId)) {
+                unitId = resolveDraftOrOrderedUnitId(item);
+            }
             OrderedUnitDTO unit = unitMap.computeIfAbsent(unitId, key -> {
                 OrderedUnitDTO dto = new OrderedUnitDTO();
                 dto.setUnitId(key);
