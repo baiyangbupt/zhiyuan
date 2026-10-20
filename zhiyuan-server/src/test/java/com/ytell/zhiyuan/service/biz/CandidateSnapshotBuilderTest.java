@@ -151,6 +151,28 @@ class CandidateSnapshotBuilderTest {
         assertTrue(error.getMessage().contains("tier_fact_conflict"));
     }
 
+    @Test
+    void unitFactCarriesPlannedMajorsWhenGroupInnerOptimizationOn() {
+        System.setProperty(GroupInnerMajorOptimizationFlags.PROPERTY, "on");
+        try {
+            PlanningStateDTO state = state("majorGroup");
+            state.getCandidatePoolState().setRequiredMajorCount(2);
+            state.getCandidatePoolState().setItems(Arrays.asList(
+                    candidate("u1_a", "u1", "浙江大学", "计算机", "稳", 90D, 80D, 0.7D, 6000),
+                    candidate("u1_b", "u1", "浙江大学", "软件工程", "稳", 85D, 75D, 0.6D, 6000),
+                    candidate("u1_c", "u1", "浙江大学", "人工智能", "稳", 80D, 70D, 0.5D, 6000)));
+
+            CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                    state, state.getCandidatePoolState().getItems());
+
+            CandidateFactDTO fact = fact(snapshot, "u1");
+            assertEquals(3, fact.getRawCandidates().size());
+            assertEquals(2, fact.getPlannedCandidates().size());
+        } finally {
+            System.clearProperty(GroupInnerMajorOptimizationFlags.PROPERTY);
+        }
+    }
+
     private PlanningStateDTO state(String volunteerModel) {
         PlanningStateDTO state = new PlanningStateDTO();
         CandidatePoolStateDTO pool = state.getCandidatePoolState();

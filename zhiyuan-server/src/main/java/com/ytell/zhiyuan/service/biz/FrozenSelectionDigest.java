@@ -46,9 +46,12 @@ final class FrozenSelectionDigest {
         List<String> selected = new ArrayList<String>();
         List<String> selectedIds = proposal == null || proposal.getSolverResult() == null
                 ? Collections.<String>emptyList() : proposal.getSolverResult().getSelectedEntityIds();
+        Map<String, List<String>> selectedMajorIdsByUnit =
+                proposal == null || proposal.getSolverResult() == null
+                        ? null : proposal.getSolverResult().getSelectedMajorIdsByUnit();
         for (String id : selectedIds) {
             CandidateFactDTO fact = facts.get(id);
-            selected.add(selectedFact(fact, id));
+            selected.add(selectedFact(fact, id, selectedMajorIdsByUnit));
         }
         payload.put("selected", selected);
         List<String> current = new ArrayList<String>();
@@ -89,16 +92,24 @@ final class FrozenSelectionDigest {
         }
     }
 
-    private static String selectedFact(CandidateFactDTO fact, String id) {
+    private static String selectedFact(CandidateFactDTO fact, String id,
+                                       Map<String, List<String>> selectedMajorIdsByUnit) {
         if (fact == null) {
             return id + "|missing";
         }
         // admissionRatio 是软数据，overlay 刷新会更新它，不应让预览失效；
         // 学费/生源省/档位是硬事实，变化必须重新预览。
-        return fact.getEntityId() + "|" + fact.getTier() + "|" + fact.getEligible()
+        String base = fact.getEntityId() + "|" + fact.getTier() + "|" + fact.getEligible()
                 + "|" + fact.getCurrent() + "|" + fact.getLocked() + "|" + fact.getPinned()
                 + "|" + fact.getProvinceName() + "|" + fact.getTuitionPerYear()
                 + "|" + sorted(fact.getVolunteerIds());
+        List<String> selectedMajors = selectedMajorIdsByUnit == null
+                ? null : selectedMajorIdsByUnit.get(id);
+        if (selectedMajors == null || selectedMajors.isEmpty()) {
+            // 未声明专业选择（含旧版无该 map 的冻结结果）时保持旧摘要逐字一致。
+            return base;
+        }
+        return base + "|majors=" + sorted(selectedMajors);
     }
 
     private static String currentFact(CandidateFactDTO fact) {

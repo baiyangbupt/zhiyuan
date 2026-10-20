@@ -262,7 +262,20 @@ solver 仍以 unit 为选择实体。
   组内不足 requiredMajorCount 时全保留；
 - 当前 solver 尚未写入 map，因此行为不变，为阶段 2 预留。
 
-Java 全量：**1492 / 0 / 0 / 10**。
+### 阶段 2 第一片：planned majors 进入求解输入
+
+- `CandidateSnapshotBuilder` 在 group-inner 开关 `on` 时生成
+  `plannedCandidates`，representative、utility、priorityMatched 使用计划专业；
+- solver coverage 使用计划专业；
+- 初始内容护栏的风险/条目/preferred 也按计划专业计数；
+- solver ready 后写入 `selectedMajorIdsByUnit`；`shadow` 只打差异日志；
+- `FrozenSelectionDigest/Guard` 已覆盖 selectedMajorIdsByUnit，旧 frozen
+  结果（空 map）保持逐字兼容。
+
+真栈 900045（显式 target 45，`requiredMajorCount=6`）：
+**45 组 / 133 条 / 单组最大 6**，与组内帽结果一致。
+
+Java 全量：**1502 / 0 / 0 / 10**。
 
 ## 12. 下一步
 

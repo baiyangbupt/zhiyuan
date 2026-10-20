@@ -23,4 +23,6 @@ public class MutationPolicyDTO {
     private Boolean initialContentGuard = false;
     /** J5.4 实验：同档优先规则是否作为选择目标（否则只影响排序）。 */
     private Boolean prioritySelection = false;
+    /** 两阶段组内选择：当前组内专业数量上限；null/≤0 表示不帽。 */
+    private Integer requiredMajorCount;
 }

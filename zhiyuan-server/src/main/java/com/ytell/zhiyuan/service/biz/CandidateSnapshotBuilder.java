@@ -310,11 +310,22 @@ final class CandidateSnapshotBuilder {
     private static CandidateFactDTO toFact(PlanningStateDTO state, Bucket bucket, PriorityRuleDTO priority) {
         List<CandidateItemDTO> candidates = defaultList(bucket.candidates);
         candidates.sort(candidateComparator());
-        CandidateItemDTO representative = candidates.isEmpty() ? new CandidateItemDTO() : candidates.get(0);
+        boolean unitMode = state != null && state.getCandidatePoolState() != null
+                && "majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel());
+        List<CandidateItemDTO> planned = Lists.newArrayList();
+        if (unitMode && GroupInnerMajorOptimizationFlags.enabled()) {
+            Integer requiredMajorCount = state.getCandidatePoolState().getRequiredMajorCount();
+            Double unitEnrollRatio = candidates.isEmpty() ? null : candidates.get(0).getSchoolEnrollRatio();
+            planned = GroupInnerMajorSelector.select(candidates, requiredMajorCount, unitEnrollRatio);
+        }
+        CandidateItemDTO representative = planned.isEmpty()
+                ? (candidates.isEmpty() ? new CandidateItemDTO() : candidates.get(0))
+                : planned.get(0);
         CandidateFactDTO fact = new CandidateFactDTO();
         fact.setEntityId(bucket.entityId);
         fact.setVolunteerIds(volunteerIds(candidates));
         fact.setRawCandidates(Lists.newArrayList(candidates));
+        fact.setPlannedCandidates(planned);
         fact.setSource(bucket.source);
         fact.setSchoolId(representative.getSchoolId());
         fact.setMajorId(representative.getMajorId());
@@ -350,7 +361,8 @@ final class CandidateSnapshotBuilder {
                 || allCompensationSafe(candidates);
         fact.setCompensationSafe(compensationSafe);
         fact.setUnitAllSafe(compensationSafe);
-        fact.setPriorityMatched(priority != null && candidates.stream()
+        List<CandidateItemDTO> priorityCandidates = planned.isEmpty() ? candidates : planned;
+        fact.setPriorityMatched(priority != null && priorityCandidates.stream()
                 .anyMatch(candidate -> PriorityRuleSupport.matches(candidate, priority)));
         return fact;
     }

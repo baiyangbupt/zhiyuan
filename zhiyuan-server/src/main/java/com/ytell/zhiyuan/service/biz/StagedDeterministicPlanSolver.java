@@ -440,6 +440,7 @@ final class StagedDeterministicPlanSolver {
                 .collect(java.util.stream.Collectors.toList()));
         result.setResolvedTierCounts(tierCounts(selected));
         populateObjectiveResults(result, safeObjectives, selected);
+        applyGroupInnerMajorPlan(result, safeSnapshot, safePolicy, selected);
         result.setStatus("ready");
         result.setSolverState(finalSolved.getState().toString());
         result.setSolverVersion(SOLVER_VERSION);
@@ -460,6 +461,37 @@ final class StagedDeterministicPlanSolver {
             result.getDiagnostics().add(cap);
         }
         return new Result(result, levels);
+    }
+
+    /**
+     * 两阶段组内选择阶段 2：只对实际选中的 unit 落 selectedMajorIdsByUnit。
+     * shadow 只打一行差异日志（selected units / planned majors / raw majors），
+     * 不写结果；off 保持空 map，继续走旧的组内物化。
+     */
+    private void applyGroupInnerMajorPlan(PlanSolverResultDTO result,
+                                          CandidateSnapshotDTO snapshot,
+                                          MutationPolicyDTO policy,
+                                          List<CandidateFactDTO> selected) {
+        String mode = GroupInnerMajorOptimizationFlags.mode();
+        if ("off".equals(mode)
+                || !"unit".equalsIgnoreCase(Strings.nullToEmpty(snapshot.getCountMode()).trim())) {
+            return;
+        }
+        Map<String, List<String>> plan = InnerMajorPlanBuilder.build(
+                selected, policy.getRequiredMajorCount());
+        if ("shadow".equals(mode)) {
+            int plannedMajors = 0;
+            int rawMajors = 0;
+            for (CandidateFactDTO fact : selected) {
+                List<String> majors = plan.get(fact.getEntityId());
+                plannedMajors += majors == null ? 0 : majors.size();
+                rawMajors += defaultList(fact.getRawCandidates()).size();
+            }
+            LOG.info("group-inner major optimization shadow: units={} plannedMajors={} rawMajors={}",
+                    selected.size(), plannedMajors, rawMajors);
+            return;
+        }
+        result.setSelectedMajorIdsByUnit(plan);
     }
 
     private String validatePolicy(List<CandidateFactDTO> facts,
@@ -547,7 +579,9 @@ final class StagedDeterministicPlanSolver {
     }
 
     private boolean matchesCoverage(CandidateFactDTO fact, CoverageRequirementDTO requirement) {
-        for (CandidateItemDTO candidate : defaultList(fact.getRawCandidates())) {
+        List<CandidateItemDTO> candidates = defaultList(fact.getPlannedCandidates()).isEmpty()
+                ? defaultList(fact.getRawCandidates()) : fact.getPlannedCandidates();
+        for (CandidateItemDTO candidate : candidates) {
             if (CoverageRequirementSupport.matches(candidate, requirement)) {
                 return true;
             }

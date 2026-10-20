@@ -70,4 +70,11 @@ public class CandidateFactDTO {
     /** unit 模式保留组内原始专业，供 coverage/eligibility 复用既有谓词。 */
     @JSONField(serialize = false)
     private List<CandidateItemDTO> rawCandidates = Lists.newArrayList();
+
+    /**
+     * 两阶段组内选择：阶段 1 看到的“组内计划专业”。
+     * 为空表示未启用/沿用 rawCandidates。
+     */
+    @JSONField(serialize = false)
+    private List<CandidateItemDTO> plannedCandidates = Lists.newArrayList();
 }

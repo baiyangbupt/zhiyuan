@@ -29,8 +29,7 @@ final class InitialContentPolicySupport {
         if (fact == null) {
             return tags;
         }
-        List<CandidateItemDTO> raw = fact.getRawCandidates() == null
-                ? java.util.Collections.<CandidateItemDTO>emptyList() : fact.getRawCandidates();
+        List<CandidateItemDTO> raw = candidatesForSelection(fact);
         if (raw.isEmpty()) {
             if (fact.getRiskFlags() != null) {
                 tags.addAll(fact.getRiskFlags());
@@ -104,8 +103,7 @@ final class InitialContentPolicySupport {
         int count = 0;
         for (CandidateFactDTO fact : facts == null
                 ? java.util.Collections.<CandidateFactDTO>emptyList() : facts) {
-            count += Math.max(1, fact.getRawCandidates() == null
-                    ? 0 : fact.getRawCandidates().size());
+            count += Math.max(1, candidatesForSelection(fact).size());
         }
         return count;
     }
@@ -114,8 +112,7 @@ final class InitialContentPolicySupport {
         if (!unitMode) {
             return 1;
         }
-        return Math.max(1, fact == null || fact.getRawCandidates() == null
-                ? 0 : fact.getRawCandidates().size());
+        return Math.max(1, fact == null ? 0 : candidatesForSelection(fact).size());
     }
 
     static int preferredCount(List<CandidateFactDTO> facts) {
@@ -129,16 +126,27 @@ final class InitialContentPolicySupport {
 
     static Set<String> preferredVolunteerIds(CandidateFactDTO fact) {
         Set<String> preferred = new LinkedHashSet<String>();
-        if (fact == null || fact.getRawCandidates() == null) {
+        if (fact == null) {
             return preferred;
         }
-        for (CandidateItemDTO candidate : fact.getRawCandidates()) {
+        for (CandidateItemDTO candidate : candidatesForSelection(fact)) {
             if (candidate != null && Boolean.TRUE.equals(candidate.getPreferred())
                     && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
                 preferred.add(candidate.getVolunteerId());
             }
         }
         return preferred;
+    }
+
+    static List<CandidateItemDTO> candidatesForSelection(CandidateFactDTO fact) {
+        if (fact == null) {
+            return java.util.Collections.emptyList();
+        }
+        if (fact.getPlannedCandidates() != null && !fact.getPlannedCandidates().isEmpty()) {
+            return fact.getPlannedCandidates();
+        }
+        return fact.getRawCandidates() == null
+                ? java.util.Collections.<CandidateItemDTO>emptyList() : fact.getRawCandidates();
     }
 
     static int itemAllowance(int baselineItems) {
