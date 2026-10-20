@@ -80,7 +80,64 @@ staged solver。
   selectionTarget/coverage/tier allocation，requiredCount 不会触发。此时初始
   选择仍是旧启发式。这是下一步需要产品拍板的语义缺口。
 
-## 5. 下一步
+## 5. 无目标 initial solver 灰度开关
+
+新增 `planning.initial.solver.enabled`（默认 false）：
+
+- 关闭：保持旧行为；只有已有 selectionTarget/coverage/tier 目标时 solver 参与。
+- 打开：`initial_auto` 把 `requiredCount/默认目标` 作为**临时** initial
+  target 传给 `enforceSelection`；目标只用于本次求解，不写入
+  `constraintState`，不成为 durable 用户目标。
+
+真栈（历史会话，无 confirmed target）：
+
+| 会话 | flag on 结果 | solver 日志 | 选择集 |
+|---|---|---|---|
+| 900700 | 80 条 | ready selected=80 add=0/remove=0 | 不变 |
+| 900045 | 44 组 | ready selected=44 add=0/remove=0 | 不变 |
+| 10041981（生产） | 45 组 | ready selected=45 add=0/remove=0 | 不变 |
+| 10041984（生产） | 45 组 | ready selected=45 add=0/remove=0 | 不变 |
+| 900018 | 80 组 | ready selected=80 add=0/remove=0 | 不变 |
+
+质量对比（flag on，target=requiredCount）：
+
+- 10041981/10041984/900700/900047/900018：solver 选择集与启发式完全一致。
+- 900045/900016：启发式分别少 1 组（44/45），solver 补齐到 45；
+  900016 为补足发生 7 remove/8 add，unit 数 44→45。
+- 结论：flag 打开主要修复“启发式数量不足”，完整方案保持原选择；可先
+  在测试环境打开，观察后再决定默认值。
+
+## 6. 内容级核验（不只数量）
+
+对 900016、900045、10041981 逐 unit 核对 school/province/tier/major/ratio：
+
+| 会话 | 启发式 | solver | 内容结论 |
+|---|---|---|---|
+| 900016 | 44 组 / 117 条 | 45 组 / 170 条；7 remove / 8 add | 引用完整、无重复；但新增含苏区专项与医学限制组，组内专业数最大 29，item 数明显膨胀 |
+| 900045 | 44 组 / 127 条 | 45 组 / 140 条；仅 add 1 | 新增华北科技学院第501组（13 个专业），无删除；补齐目标，内容自洽 |
+| 10041981（生产） | 45 组 / 153 条 | 完全一致 | tier 13/13/19，ratio 46–99，1 处 ratio 逆序；内容自洽 |
+
+通用检查：
+
+- `contentOkAll=true`：所有选中 unit 的 major volunteerId 都能在候选池找到，
+  且 `planSchoolDataId == unitId`；无重复 unit。
+- 900016/900045 的候选 ratio 全为 1.0，无法用 ratio 判断冲稳保难度，
+  只能验证顺序无 ratio 逆序。
+- 900016 的变化说明 solver 目前只按目标/效用选 unit，**没有内容风险护栏**：
+  - 新增“苏区专项”组；
+  - 新增带色盲/色弱限制的医学组；
+  - 单个大组 27–29 个专业，导致 item 数从 117 涨到 170。
+
+结论：数量与引用准确性通过；内容合理性在 900016 这类稀疏/特殊类型数据上
+未通过产品级验收。打开 `planning.initial.solver.enabled` 前，至少需要：
+
+1. 风险标签护栏：special_enrollment / cooperative / high_tuition /
+   admission_limit 的相对启发式不得增加；
+2. 组规模护栏：新增单组专业数/总 item 数相对启发式的上限；
+3. 用户意向覆盖：专业、城市、院校意向不能被 solver 改动破坏；
+4. 冲稳保 ratio 数据缺失时，不允许把全 1.0 当作有效难度信号。
+
+## 7. 下一步
 
 1. 决定“无确认目标的新会话”是否也应让 solver 主导初始选择：
    - 若应：把 initial target（requiredCount/default 45）显式编译成初始

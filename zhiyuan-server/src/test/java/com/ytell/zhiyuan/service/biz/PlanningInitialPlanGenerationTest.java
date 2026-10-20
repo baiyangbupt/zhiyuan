@@ -136,6 +136,59 @@ public class PlanningInitialPlanGenerationTest {
     }
 
     @Test
+    void initialSolverFlagCanRunWithoutConfirmedTarget() {
+        AtomicReference<ChatSessionExtraData> planningStateRef = bindPlanningStateStore();
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(3, 1, 1, 1));
+        response.setUserScoreDetail(buildScoreDetail());
+        response.setSprints(java.util.Arrays.asList(
+                buildSchool("ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "20"))));
+        response.setSafes(java.util.Arrays.asList(
+                buildSchool("ps2", "s2", "学校B", "北京", 2, buildMajorWithRatio("m2", "专业B", "55"))));
+        response.setProtects(java.util.Arrays.asList(
+                buildSchool("ps3", "s3", "学校C", "河北", 3, buildMajorWithRatio("m3", "专业C", "82"))));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        PlanningStateDTO first = planningStateService.generateInitialPlan(
+                1L, 1L, new InitialPlanGenerateReq());
+        assertEquals(3, first.getInitialRecommendationState().getItems().size());
+        assertTrue(first.getConstraintState().getHardPlanningObjectives().getSelectionTargetCount() == null);
+
+        // 模拟初荐只留下 2 条、但 requiredCount=3；无 durable selectionTarget。
+        // flag 打开后 initial_auto 应把 requiredCount 作为临时目标交给 solver，
+        // 因此最终 ordered 必须是 3 条；初荐仍保持 2 条，证明是 solver 补齐。
+        while (first.getInitialRecommendationState().getItems().size() > 2) {
+            first.getInitialRecommendationState().getItems().remove(
+                    first.getInitialRecommendationState().getItems().size() - 1);
+        }
+        first.getWorkingPlanState().getItems().clear();
+        first.getWorkingPlanState().getUnits().clear();
+        first.getOrderedPlanState().getItems().clear();
+        first.getOrderedPlanState().getUnits().clear();
+        first.getStaleFlags().setInitialRecommendation(false);
+        first.getStaleFlags().setOrderedPlan(true);
+        planningStateRef.get().setDataValue(com.alibaba.fastjson.JSON.toJSONString(first));
+
+        System.setProperty(InitialPlanSolverFlags.PROPERTY, "true");
+        try {
+            InitialPlanGenerateReq req = new InitialPlanGenerateReq();
+            req.setOverwriteExistingDraft(true);
+            PlanningStateDTO second = planningStateService.generateInitialPlan(1L, 1L, req);
+
+            assertEquals(2, second.getInitialRecommendationState().getItems().size(),
+                    "初荐仍是 2 条，solver 不得改写初荐域");
+            assertEquals(Integer.valueOf(3), second.getOrderedPlanState().getSummary().getTotal(),
+                    "initial solver 必须按 requiredCount 补到 3");
+            assertEquals(3, second.getOrderedPlanState().getItems().size());
+            assertTrue(second.getConstraintState().getHardPlanningObjectives()
+                    .getSelectionTargetCount() == null, "临时初始目标不得落成 durable 目标");
+        } finally {
+            System.clearProperty(InitialPlanSolverFlags.PROPERTY);
+        }
+    }
+
+    @Test
     void shouldGenerateInitialPlanFromRepairedInitialRecommendation() {
         bindPlanningStateStore();
 

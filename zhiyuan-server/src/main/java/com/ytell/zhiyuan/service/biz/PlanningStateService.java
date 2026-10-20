@@ -3056,7 +3056,8 @@ public class PlanningStateService {
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
         syncWorkingPlanWithEffectiveCandidatesForConfirmedRequirements(state, effectiveCandidates);
         if (frozenResult == null) {
-            CanonicalPlanningRuntime.enforceSelection(state, effectiveCandidates);
+            CanonicalPlanningRuntime.enforceSelection(state, effectiveCandidates,
+                    safeReq.getInitialSelectionTargetCount());
         } else {
             CanonicalPlanningRuntime.verifyFrozenWorkingSelection(state, effectiveCandidates, frozenResult);
         }
@@ -3161,6 +3162,13 @@ public class PlanningStateService {
         // 强制重算排序，才能让已确认目标真正进入 solver。
         if ("initial_auto".equals(mode)) {
             generateReq.setForceRegenerate(true);
+            if (InitialPlanSolverFlags.enabled()
+                    && !CanonicalPlanningRuntime.hasSelectionObjectives(state)) {
+                int initialTarget = resolveInitialRecommendationTargetCount(state);
+                if (initialTarget > 0) {
+                    generateReq.setInitialSelectionTargetCount(initialTarget);
+                }
+            }
         }
         generateReq.setRegroupByTier(Boolean.TRUE.equals(safeReq.getRegroupByTier()));
         // E 类嵌套写：内层 generateOrderedPlan 自己 CAS 落盘，返回态即"内层写进库里的那份"

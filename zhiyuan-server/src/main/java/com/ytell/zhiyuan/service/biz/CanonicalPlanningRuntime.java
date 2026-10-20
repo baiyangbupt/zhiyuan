@@ -47,8 +47,21 @@ final class CanonicalPlanningRuntime {
 
     static PlanSolverResultDTO enforceSelection(PlanningStateDTO state,
                                                 List<CandidateItemDTO> effectiveCandidates) {
+        return enforceSelection(state, effectiveCandidates, null);
+    }
+
+    /**
+     * @param initialSelectionTargetCount 非空时视为 initial 场景的显式目标：
+     *        即使没有 durable selectionTarget/coverage/tier，也允许 solver
+     *        以该目标选集合；仅作为本次求解输入，不写入 state。
+     */
+    static PlanSolverResultDTO enforceSelection(PlanningStateDTO state,
+                                                List<CandidateItemDTO> effectiveCandidates,
+                                                Integer initialSelectionTargetCount) {
         CanonicalPlanningObjectiveSetDTO objectives = PlanningObjectiveCompiler.compileConfirmed(state);
-        if (!hasSelectionObjectives(state, objectives)) {
+        boolean explicitInitialTarget = initialSelectionTargetCount != null
+                && initialSelectionTargetCount > 0;
+        if (!hasSelectionObjectives(state, objectives) && !explicitInitialTarget) {
             return noChange(objectives);
         }
         DraftPlanStateDTO draft = state == null ? null : state.getWorkingPlanState();
@@ -59,7 +72,9 @@ final class CanonicalPlanningRuntime {
         List<CandidateItemDTO> candidateFacts = mergedCandidateFacts(state, effectiveCandidates);
         List<Entity> current = currentEntities(draft, candidateFacts, unitMode);
         List<Entity> available = availableEntities(draft, candidateFacts, unitMode);
-        objectives = copyWithTarget(objectives, resolvedSelectionTarget(state, objectives, current));
+        objectives = copyWithTarget(objectives, explicitInitialTarget
+                ? initialSelectionTargetCount
+                : resolvedSelectionTarget(state, objectives, current));
         if (objectives.getTierAllocationConstraint() != null
                 && concat(current, available).stream().anyMatch(Entity::hasConflictingTier)) {
             throw new BusinessException(409, "tier_fact_conflict: 同一专业组存在多个冲稳保档位");
