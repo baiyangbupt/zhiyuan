@@ -3057,7 +3057,8 @@ public class PlanningStateService {
         syncWorkingPlanWithEffectiveCandidatesForConfirmedRequirements(state, effectiveCandidates);
         if (frozenResult == null) {
             CanonicalPlanningRuntime.enforceSelection(state, effectiveCandidates,
-                    safeReq.getInitialSelectionTargetCount());
+                    safeReq.getInitialSelectionTargetCount(),
+                    Boolean.TRUE.equals(safeReq.getInitialMode()));
         } else {
             CanonicalPlanningRuntime.verifyFrozenWorkingSelection(state, effectiveCandidates, frozenResult);
         }
@@ -3162,6 +3163,7 @@ public class PlanningStateService {
         // 强制重算排序，才能让已确认目标真正进入 solver。
         if ("initial_auto".equals(mode)) {
             generateReq.setForceRegenerate(true);
+            generateReq.setInitialMode(true);
             if (InitialPlanSolverFlags.enabled()
                     && !CanonicalPlanningRuntime.hasSelectionObjectives(state)) {
                 int initialTarget = resolveInitialRecommendationTargetCount(state);

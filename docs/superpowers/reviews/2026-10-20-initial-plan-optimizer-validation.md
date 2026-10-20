@@ -137,7 +137,29 @@ staged solver。
 3. 用户意向覆盖：专业、城市、院校意向不能被 solver 改动破坏；
 4. 冲稳保 ratio 数据缺失时，不允许把全 1.0 当作有效难度信号。
 
-## 7. 下一步
+## 7. 内容护栏落地（initialMode）
+
+`initial_auto` 的 `enforceSelection` 现在带内容护栏；solver 结果违反任一条件时
+返回 `no_change` 并回退启发式初始方案，同时写诊断
+`initial_content_guard`：
+
+1. **风险标签不增加**：special_enrollment / cooperative_program /
+   high_tuition / admission_limit，solver 选中数不得高于启发式基线。
+2. **条目不膨胀**：unit 模式按组内专业数计；允许上限
+   `max(5, ceil(baselineItems * 20%))`。
+3. **preferred 专业不丢失**：选中 preferred volunteer 数不得低于基线。
+
+真栈复跑（initial solver flag on）：
+
+| 会话 | 结果 | 说明 |
+|---|---|---|
+| 900016 | 回退启发式 44 组 / 117 条 | `special_enrollment increased: 4 -> 5`，solver 内容被拦截 |
+| 900045 | solver 45 组 / 140 条 | 条目增长 13 ≤ allowance，内容通过 |
+| 10041981（生产） | 与启发式一致 45 / 153 | 内容无变化 |
+
+Java 全量：**1477 / 0 / 0 / 10**。
+
+## 8. 下一步
 
 1. 决定“无确认目标的新会话”是否也应让 solver 主导初始选择：
    - 若应：把 initial target（requiredCount/default 45）显式编译成初始

@@ -47,17 +47,26 @@ final class CanonicalPlanningRuntime {
 
     static PlanSolverResultDTO enforceSelection(PlanningStateDTO state,
                                                 List<CandidateItemDTO> effectiveCandidates) {
-        return enforceSelection(state, effectiveCandidates, null);
+        return enforceSelection(state, effectiveCandidates, null, false);
+    }
+
+    static PlanSolverResultDTO enforceSelection(PlanningStateDTO state,
+                                                List<CandidateItemDTO> effectiveCandidates,
+                                                Integer initialSelectionTargetCount) {
+        return enforceSelection(state, effectiveCandidates, initialSelectionTargetCount, false);
     }
 
     /**
      * @param initialSelectionTargetCount 非空时视为 initial 场景的显式目标：
      *        即使没有 durable selectionTarget/coverage/tier，也允许 solver
      *        以该目标选集合；仅作为本次求解输入，不写入 state。
+     * @param initialContentGuard 初始方案专用：solver 结果不得引入新的风险标签、
+     *        不得让计划条目数膨胀、不得丢失既有 preferred 专业；违反时回退启发式。
      */
     static PlanSolverResultDTO enforceSelection(PlanningStateDTO state,
                                                 List<CandidateItemDTO> effectiveCandidates,
-                                                Integer initialSelectionTargetCount) {
+                                                Integer initialSelectionTargetCount,
+                                                boolean initialContentGuard) {
         CanonicalPlanningObjectiveSetDTO objectives = PlanningObjectiveCompiler.compileConfirmed(state);
         boolean explicitInitialTarget = initialSelectionTargetCount != null
                 && initialSelectionTargetCount > 0;
@@ -110,6 +119,20 @@ final class CanonicalPlanningRuntime {
                 defaultList(solved.getAddEntityIds()).size(),
                 solved.getCandidateCount());
         ensureReady(solved);
+        if (initialContentGuard) {
+            String violation = initialContentGuardViolation(snapshot.getFacts(), solved, unitMode);
+            if (!Strings.isNullOrEmpty(violation)) {
+                LOG.warn("initial content guard rejected solver: session={} violation={}",
+                        state.getSessionId(), violation);
+                PlanSolverResultDTO fallback = noChange(objectives);
+                PlanSolverResultDTO.DiagnosticDTO diagnostic = new PlanSolverResultDTO.DiagnosticDTO();
+                diagnostic.setReasonCode("initial_content_guard");
+                diagnostic.setObjectiveId("initial");
+                diagnostic.setMessage(violation);
+                fallback.getDiagnostics().add(diagnostic);
+                return fallback;
+            }
+        }
         applySelection(state, effectiveCandidates, current, available, solved);
         return solved;
     }
@@ -644,6 +667,151 @@ final class CanonicalPlanningRuntime {
         result.setMajorPlanTags(major == null ? Lists.newArrayList() : defaultList(major.getMajorPlanTags()));
         result.setTier(unit == null ? null : unit.getTier());
         return result;
+    }
+
+    /**
+     * 初始方案内容护栏：solver 只按目标/效用选集合，可能引入启发式没有的
+     * 专项/中外合作/高收费/限报，或把单个超大组带进来导致条目膨胀，或丢掉
+     * 用户 preferred 专业。任一发生则回退启发式初始方案。
+     */
+    private static String initialContentGuardViolation(List<CandidateFactDTO> facts,
+                                                       PlanSolverResultDTO solved,
+                                                       boolean unitMode) {
+        Map<String, CandidateFactDTO> byId = new LinkedHashMap<String, CandidateFactDTO>();
+        List<CandidateFactDTO> baseline = new ArrayList<CandidateFactDTO>();
+        for (CandidateFactDTO fact : defaultList(facts)) {
+            if (fact == null) {
+                continue;
+            }
+            byId.put(fact.getEntityId(), fact);
+            if (Boolean.TRUE.equals(fact.getCurrent())) {
+                baseline.add(fact);
+            }
+        }
+        List<CandidateFactDTO> selected = new ArrayList<CandidateFactDTO>();
+        for (String entityId : defaultList(solved.getSelectedEntityIds())) {
+            CandidateFactDTO fact = byId.get(entityId);
+            if (fact != null) {
+                selected.add(fact);
+            }
+        }
+        Map<String, Integer> baselineRisk = initialRiskCounts(baseline);
+        Map<String, Integer> selectedRisk = initialRiskCounts(selected);
+        for (String code : new String[]{"special_enrollment", "cooperative_program",
+                "high_tuition", "admission_limit"}) {
+            int before = baselineRisk.getOrDefault(code, 0);
+            int after = selectedRisk.getOrDefault(code, 0);
+            if (after > before) {
+                return code + " increased: " + before + " -> " + after;
+            }
+        }
+        int baselineItems = initialItemCount(baseline, unitMode);
+        int selectedItems = initialItemCount(selected, unitMode);
+        int allowance = Math.max(5, (int) Math.ceil(baselineItems * 0.20D));
+        if (selectedItems > baselineItems + allowance) {
+            return "item_count grew: " + baselineItems + " -> " + selectedItems
+                    + " (allowance " + allowance + ")";
+        }
+        int baselinePreferred = initialPreferredCount(baseline);
+        int selectedPreferred = initialPreferredCount(selected);
+        if (selectedPreferred < baselinePreferred) {
+            return "preferred majors lost: " + baselinePreferred + " -> " + selectedPreferred;
+        }
+        return null;
+    }
+
+    private static Map<String, Integer> initialRiskCounts(List<CandidateFactDTO> facts) {
+        Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
+        for (CandidateFactDTO fact : defaultList(facts)) {
+            Set<String> tags = new LinkedHashSet<String>();
+            List<CandidateItemDTO> raw = defaultList(fact.getRawCandidates());
+            if (raw.isEmpty()) {
+                tags.addAll(defaultList(fact.getRiskFlags()));
+                if (fact.getTuitionPerYear() != null && fact.getTuitionPerYear() > 20000) {
+                    tags.add("high_tuition");
+                }
+            } else {
+                for (CandidateItemDTO candidate : raw) {
+                    if (candidate == null) {
+                        continue;
+                    }
+                    tags.addAll(defaultList(candidate.getRiskFlags()));
+                    tags.addAll(defaultList(candidate.getReasonCodes()));
+                    tags.addAll(defaultList(candidate.getMustSubjects()));
+                    String text = Strings.nullToEmpty(candidate.getSchoolName())
+                            + Strings.nullToEmpty(candidate.getMajorName());
+                    if (candidate.getTuitionPerYear() != null
+                            && candidate.getTuitionPerYear() > 20000) {
+                        tags.add("high_tuition");
+                    }
+                    if (text.contains("中外合作")) {
+                        tags.add("cooperative_program");
+                    }
+                    if (containsAny(text, "专项", "公费", "定向", "免费医学生", "强基",
+                            "国家计划", "地方专项", "高校专项")) {
+                        tags.add("special_enrollment");
+                    }
+                    if (containsAny(text, "色盲", "色弱", "单科", "性别", "语种")) {
+                        tags.add("admission_limit");
+                    }
+                }
+            }
+            if (containsTag(tags, "special_enrollment")) {
+                counts.merge("special_enrollment", 1, Integer::sum);
+            }
+            if (containsTag(tags, "cooperative_program") || containsTag(tags, "cooperative")) {
+                counts.merge("cooperative_program", 1, Integer::sum);
+            }
+            if (containsTag(tags, "high_tuition") || containsTag(tags, "high_fee")) {
+                counts.merge("high_tuition", 1, Integer::sum);
+            }
+            if (containsTag(tags, "admission_limit")) {
+                counts.merge("admission_limit", 1, Integer::sum);
+            }
+        }
+        return counts;
+    }
+
+    private static boolean containsTag(Set<String> tags, String code) {
+        for (String tag : tags == null ? new LinkedHashSet<String>() : tags) {
+            if (tag != null && tag.toLowerCase().contains(code)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsAny(String text, String... keywords) {
+        for (String keyword : keywords) {
+            if (text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int initialItemCount(List<CandidateFactDTO> facts, boolean unitMode) {
+        if (!unitMode) {
+            return defaultList(facts).size();
+        }
+        int count = 0;
+        for (CandidateFactDTO fact : defaultList(facts)) {
+            count += Math.max(1, defaultList(fact.getRawCandidates()).size());
+        }
+        return count;
+    }
+
+    private static int initialPreferredCount(List<CandidateFactDTO> facts) {
+        Set<String> preferred = new LinkedHashSet<String>();
+        for (CandidateFactDTO fact : defaultList(facts)) {
+            for (CandidateItemDTO candidate : defaultList(fact.getRawCandidates())) {
+                if (candidate != null && Boolean.TRUE.equals(candidate.getPreferred())
+                        && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
+                    preferred.add(candidate.getVolunteerId());
+                }
+            }
+        }
+        return preferred.size();
     }
 
     private static PlanSolverResultDTO noChange(CanonicalPlanningObjectiveSetDTO objectives) {

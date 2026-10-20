@@ -11,4 +11,6 @@ public class OrderedPlanGenerateReq {
      * 不写入 constraintState，不作为 durable 用户目标。
      */
     private Integer initialSelectionTargetCount;
+    /** initial_auto 专用：开启初始方案内容护栏（风险标签/条目膨胀/preferred 丢失）。 */
+    private Boolean initialMode = false;
 }

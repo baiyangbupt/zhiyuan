@@ -461,6 +461,61 @@ class CanonicalPlanningRuntimeTest {
         return CanonicalPlanningRuntime.enforceOrdering(state, candidates);
     }
 
+    @Test
+    void initialContentGuardRejectsNewRiskTags() {
+        PlanningStateDTO state = state("major", 2);
+        CandidateItemDTO safe = candidate("v1", "u1", "数学", "稳", "北京", 10D);
+        CandidateItemDTO risky = candidate("v2", "u2", "专项计划实验班", "稳", "上海", 99D);
+        risky.setRiskFlags(Arrays.asList("special_enrollment"));
+        state.getCandidatePoolState().setItems(Arrays.asList(safe, risky));
+        state.getWorkingPlanState().getItems().add(draft(safe, false));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                state, state.getCandidatePoolState().getItems(), 2, true);
+
+        assertEquals("no_change", result.getStatus());
+        assertEquals("initial_content_guard", result.getDiagnostics().get(0).getReasonCode());
+        assertEquals(new java.util.HashSet<String>(Arrays.asList("v1")), draftIds(state));
+    }
+
+    @Test
+    void initialContentGuardRejectsItemCountExplosion() {
+        PlanningStateDTO state = state("majorGroup", 2);
+        CandidateItemDTO current = candidate("v1", "u1", "数学", "稳", "北京", 10D);
+        state.getCandidatePoolState().getItems().add(current);
+        state.getWorkingPlanState().getItems().add(draft(current, false));
+        for (int index = 2; index <= 31; index++) {
+            state.getCandidatePoolState().getItems().add(
+                    candidate("v" + index, "u2", "专业" + index, "稳", "上海", 99D));
+        }
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                state, state.getCandidatePoolState().getItems(), 2, true);
+
+        assertEquals("no_change", result.getStatus());
+        assertEquals("initial_content_guard", result.getDiagnostics().get(0).getReasonCode());
+        assertTrue(result.getDiagnostics().get(0).getMessage().contains("item_count grew"));
+    }
+
+    @Test
+    void initialContentGuardRejectsPreferredMajorLoss() {
+        PlanningStateDTO state = state("major", 1);
+        CandidateItemDTO preferred = candidate("v1", "u1", "数学", "稳", "北京", 10D);
+        preferred.setPreferred(true);
+        CandidateItemDTO other = candidate("v2", "u2", "法学", "稳", "上海", 99D);
+        state.getCandidatePoolState().setItems(Arrays.asList(preferred, other));
+        state.getWorkingPlanState().getItems().add(draft(preferred, false));
+        state.getWorkingPlanState().getItems().add(draft(other, false));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                state, state.getCandidatePoolState().getItems(), 1, true);
+
+        assertEquals("no_change", result.getStatus());
+        assertEquals("initial_content_guard", result.getDiagnostics().get(0).getReasonCode());
+        assertTrue(result.getDiagnostics().get(0).getMessage().contains("preferred majors lost"));
+        assertEquals(new java.util.HashSet<String>(Arrays.asList("v1", "v2")), draftIds(state));
+    }
+
     private PlanningStateDTO state(String volunteerModel, int targetCount) {
         PlanningStateDTO state = new PlanningStateDTO();
         state.setVersion(12);
