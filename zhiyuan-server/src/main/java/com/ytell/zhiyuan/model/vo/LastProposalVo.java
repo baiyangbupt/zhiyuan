@@ -44,6 +44,14 @@ public class LastProposalVo {
     /** 待确认行的 kind（前端兜底卡用来选标题口径）。 */
     private String kind;
 
+    /** 冻结提案的展示字段：冷加载兜底卡据此恢复标题/摘要/影响/状态与按钮。 */
+    private String title;
+    private String summary;
+    private String impact;
+    private String status;
+    private Boolean requiresConfirmation;
+    private String strategy;
+
     /**
      * 补录族的**结构化明细**（`dataValue.scoreSummary`：省份/科类/批次/各科/总分/位次）——
      * 冷加载兜底卡靠它把"更新成绩"渲染成一张像样的卡（2026-10-08：此前只给 ref，

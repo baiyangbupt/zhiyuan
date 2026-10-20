@@ -132,6 +132,7 @@ interface IMessageListProps {
     proposalRef?: string;
     proposalId?: string;
     actionStatus?: string;
+    sourceVersion?: number;
     /**
      * 待确认的家族（服务端 `LastProposalVo.kind`，2026-10-16 起随包已在 ✓）：
      * `score_update` / `career_update` / `plan_change_proposal`。
@@ -147,6 +148,10 @@ interface IMessageListProps {
      * 没有就退回老样子（标题"方案调整预览" + 状态标签 ✓），**不靠它们存在** ✗。
      */
     title?: string;
+    summary?: string;
+    impact?: string;
+    status?: string;
+    requiresConfirmation?: boolean;
     strategy?: string;
     blockingReason?: string;
     blockingReasonCodes?: string[];
@@ -1654,6 +1659,36 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     }
   };
 
+  const handleColdFallbackProposalDecision = async (action: 'confirm' | 'cancel') => {
+    const proposalRef = lastProposal?.proposalRef;
+    if (!proposalRef) return;
+    try {
+      setAnswerLoading(true);
+      setIsTimeout(false);
+      setThinkingHints([]);
+      clearAnswerTimeout();
+      answerTimeoutTimerRef.current = setTimeout(() => {
+        console.warn('⚠️ 回答超时，显示放弃等待按钮');
+        setIsTimeout(true);
+        message.warning('等待回复超时，您可以继续等待或放弃等待');
+      }, ANSWER_TIMEOUT);
+      scrollToBottom();
+      await sendMessageRef.current?.(
+        buildPendingConfirmationFrame({
+          sessionId: conversationSessionId,
+          userId: String(routerParams.userId || ''),
+          action,
+          proposalRef,
+          sourceVersion: lastProposal?.sourceVersion,
+          clientRequestId: stableClientRequestId('cold-proposal', proposalRef),
+        }),
+      );
+    } catch (error) {
+      resetAnswerLoading();
+      console.error('冷加载提案动作发送失败', error);
+    }
+  };
+
   // 消息反馈
   const handleClickFeedback = (feedback: number, type: 'link' | 'dislike', messageId: number) => {
     let newFeedback = 0;
@@ -2375,11 +2410,16 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                   diff: {
                     title:
                       lastProposal.title || (lastProposal.scoreSummary ? '更新成绩' : '方案调整预览'),
+                    summary: lastProposal.summary,
+                    impact: lastProposal.impact,
                     scoreUpdate: lastProposal.scoreSummary || undefined,
                     // **`blocked` 那一档要还原**（2026-10-08 用户实测：刷新后一张空的
                     // "方案调整预览"卡 ✗）：服务端把阻断原因带出来时照它画（"无法执行" Tag +
-                    // 解释/明细/建议 ✓）；带不出来就保持空 ✓（终态只读卡本来就不出按钮 ✓）。
-                    status: coldFallbackBlocked ? 'blocked' : '',
+                    // 解释/明细/建议 ✓）；带不出来就保持空 ✓。
+                    // active pending 刷新后仍要能确认：frozenProposal 的 ready/requiresConfirmation
+                    // 一并恢复，卡片才能重新出采纳/放弃按钮。
+                    status: coldFallbackBlocked ? 'blocked' : (lastProposal.status || ''),
+                    requiresConfirmation: lastProposal.requiresConfirmation,
                     strategy: lastProposal.strategy,
                     blockingReason: lastProposal.blockingReason,
                     blockingReasonCodes: lastProposal.blockingReasonCodes,
@@ -2390,12 +2430,18 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                   // 事件流里的结果优先 ✓（打字确认那条通道的结果只从这里来 ✓，
                   // 见 `coldFallbackLiveResult` 处的注释）；没有才退回详情快照 ✓。
                   coldFallbackLiveResult || {
-                    actionStatus: lastProposal.actionStatus,
+                    // active 表示"还没有执行结果"，不是"已落定"；传空串让
+                    // ProposalCard 按 ready 出采纳/放弃按钮。applying 仍传 applying
+                    // 以收起按钮，终态照原状态展示。
+                    actionStatus:
+                      String(lastProposal.actionStatus || '') === 'active'
+                        ? ''
+                        : lastProposal.actionStatus,
                     proposalRef: lastProposal.proposalRef,
                   }
                 }
-                onDecide={() => undefined}
-                disabled
+                onDecide={(action) => handleColdFallbackProposalDecision(action)}
+                disabled={String(lastProposal.actionStatus || '') === 'applying'}
               />
             </div>
           ) : null}

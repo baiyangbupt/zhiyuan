@@ -862,9 +862,14 @@ public class ChatSessionBizService {
         Object proposalId = null;
         Object sourceVersion = null;
         Map<String, Object> dataValue = pending.getDataValue();
+        Map<String, Object> frozenProposal = null;
         if (dataValue != null) {
             proposalId = dataValue.get("proposalId");
             sourceVersion = dataValue.get("sourceVersion");
+            Object frozen = dataValue.get("frozenProposal");
+            if (frozen instanceof Map) {
+                frozenProposal = (Map<String, Object>) frozen;
+            }
         }
         return LastProposalVo.builder()
                 .proposalRef(pending.getPendingId())
@@ -874,8 +879,16 @@ public class ChatSessionBizService {
                 .revision(pending.getRevision())
                 // 冷加载兜底卡要渲染成"像一张卡"（2026-10-08：只给 ref 时前端落兜底标题
                 // "方案调整预览"、明细全丢 ✗）：补录族把 scoreSummary 带上，前端可拼出
-                // "更新成绩"标题与结构化明细；其余（方案调整）保持原样。
+                // "更新成绩"标题与结构化明细；方案调整族把冻结提案的展示字段带上，
+                // 使刷新后的 pending 仍可确认/取消。
                 .kind(pending.getKind())
+                .title(frozenProposal == null ? null : asString(frozenProposal.get("title")))
+                .summary(frozenProposal == null ? null : asString(frozenProposal.get("summary")))
+                .impact(frozenProposal == null ? null : asString(frozenProposal.get("impact")))
+                .status(frozenProposal == null ? null : asString(frozenProposal.get("status")))
+                .requiresConfirmation(frozenProposal == null ? null
+                        : asBoolean(frozenProposal.get("requiresConfirmation")))
+                .strategy(frozenProposal == null ? null : asString(frozenProposal.get("strategy")))
                 .scoreSummary(dataValue == null ? null : dataValue.get("scoreSummary"))
                 .build();
     }
@@ -894,6 +907,21 @@ public class ChatSessionBizService {
             return null;
         }
     }
+
+    private String asString(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private Boolean asBoolean(Object value) {
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        if (value == null) {
+            return null;
+        }
+        return Boolean.valueOf(String.valueOf(value).trim());
+    }
+
 
     private StudentPlanningSummaryDTO buildStudentPlanningSummary(CreateSessionReq scoreDetail) {
         StudentPlanningSummaryDTO summary = new StudentPlanningSummaryDTO();
