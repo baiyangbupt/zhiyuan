@@ -94,6 +94,13 @@ current + available 的可用供给做上限；投影不可行则保持旧口径
 本轮投影只接在 initial selection 上；该路径最终仍是 32 冲 / 13 稳 / 0 保，
 需要后续把同一档位投影接进 user-goal fill，或由模型显式带档位要求。
 
+尝试直接把同一投影加到 user-goal fill 的 stagedObjectives 后，确认返回
+`40905 plan change postcondition failed: frozen objective result mismatch`：
+solver 产生了 `tier_exact` 结果，但 canonical objective / tierQuotaReport 里没有
+这条目标，后置校验按冻结结果逐项比对时拒绝。该尝试已回滚，未提交。下一步
+必须把隐式档位目标纳入 canonical/Proposal 的 tier quota 口径，或明确把
+solver-only 档位结果排除在冻结结果之外，不能只在 solver 输入里偷偷加约束。
+
 ### 仍需关注
 
 - **内容梯度**：10041991（user-goal fill）最终 45 组为 32 冲 / 13 稳 / **0 保**，
@@ -108,7 +115,7 @@ current + available 的可用供给做上限；投影不可行则保持旧口径
 
 ## 6. 收尾
 
-- 源环境 18290 保持普通启动（review 开关关闭），pid `14167`。
+- 源环境 18290 保持普通启动（review 开关关闭），pid `18199`。
 - 源库 900045/900700 planningState 哈希保持验收前值；真实模型验收只使用
   新建的 900002 测试会话。
 - Python 单元全量：**2978 passed / 32 skipped / 20 warnings**。
