@@ -17,11 +17,12 @@ public class PendingReconcileRes {
 
     public static final String RESULT_NO_OPERATION_SUBMITTED = "no_operation_submitted";
     public static final String RESULT_OPERATION_UNKNOWN = "operation_result_unknown";
+    public static final String RESULT_OPERATION_FAILED = "operation_failed";
 
     private String pendingId;
     private Long revision;
     private String pendingStatus;
-    /** succeeded | running | missing | null。 */
+    /** succeeded | failed | running | missing | null。 */
     private String operationStatus;
     private String outcome;
     private String resultCode;

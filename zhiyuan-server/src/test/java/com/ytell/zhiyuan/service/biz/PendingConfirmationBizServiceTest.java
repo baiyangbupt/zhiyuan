@@ -230,6 +230,44 @@ public class PendingConfirmationBizServiceTest {
     }
 
     @Test
+    void shouldReconcileFailedCommandAsKnownFailureInsteadOfUnknownResult() {
+        PendingConfirmationEntity current = entity(101L, "p-1", 5L, "applying");
+        current.setDataValue("{\"operationId\":\"op-failed\"}");
+        when(sharedService.lockCurrent(1L, 101L)).thenReturn(current);
+        PlanningPendingCommandEntity command = new PlanningPendingCommandEntity();
+        command.setTenantId(1L);
+        command.setChatSessionId(101L);
+        command.setPendingId("p-1");
+        command.setOperationId("op-failed");
+        command.setStatus("failed");
+        command.setResultJson("{\"status\":\"failed\",\"errorCode\":40905,\"reasonCode\":\"review_fix_postcondition_failed\"}");
+        when(commandSharedService.getByOperationId("op-failed")).thenReturn(command);
+        when(sharedService.compareAndSet(any(PendingConfirmationEntity.class),
+                eq(5L), eq("p-1"), eq("applying"))).thenReturn(true);
+
+        PendingReconcileRes response = service.reconcile(1L, 101L);
+
+        assertEquals(PendingReconcileRes.OUTCOME_EXPIRED, response.getOutcome());
+        assertEquals("failed", response.getOperationStatus());
+        assertEquals("40905", response.getResultCode());
+        assertTrue(response.getReceiptAvailable());
+        assertEquals("expired", response.getPendingStatus());
+    }
+
+    @Test
+    void shouldReturnPersistedFailureCodeForAlreadyExpiredPending() {
+        PendingConfirmationEntity current = entity(101L, "p-1", 6L, "expired");
+        current.setResultCode("40905");
+        when(sharedService.lockCurrent(1L, 101L)).thenReturn(current);
+
+        PendingReconcileRes response = service.reconcile(1L, 101L);
+
+        assertEquals(PendingReconcileRes.OUTCOME_NOT_APPLYING, response.getOutcome());
+        assertEquals("40905", response.getResultCode());
+        verify(sharedService, never()).compareAndSet(any(), anyLong(), anyString(), anyString());
+    }
+
+    @Test
     void shouldExpireMissingOperationWithinProofWindow() {
         PendingConfirmationEntity current = entity(101L, "p-1", 5L, "applying");
         current.setDataValue("{\"operationId\":\"op-missing\"}");

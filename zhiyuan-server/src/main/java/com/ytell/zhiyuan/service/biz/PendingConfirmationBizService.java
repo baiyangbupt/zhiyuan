@@ -329,6 +329,13 @@ public class PendingConfirmationBizService {
             return applied;
         }
 
+        if ("failed".equals(command.getStatus())) {
+            response.setOperationStatus("failed");
+            response.setReceiptAvailable(!Strings.isNullOrEmpty(command.getResultJson()));
+            return expire(response, current, failureResultCode(command),
+                    "该命令执行失败，方案事务已回滚，请重新预览后确认。");
+        }
+
         if ("running".equals(command.getStatus())) {
             if (!claimExpired) {
                 return stillApplying(response, operationStatus, null);
@@ -352,6 +359,19 @@ public class PendingConfirmationBizService {
         response.setOperationStatus(operationStatus);
         response.setMessage(message);
         return response;
+    }
+
+    private String failureResultCode(PlanningPendingCommandEntity command) {
+        try {
+            JSONObject receipt = JSONObject.parseObject(command.getResultJson());
+            String code = receipt == null ? null : receipt.getString("errorCode");
+            if (code != null && code.matches("[1-9][0-9]{2,4}")) {
+                return code;
+            }
+        } catch (RuntimeException invalidReceipt) {
+            return PendingReconcileRes.RESULT_OPERATION_FAILED;
+        }
+        return PendingReconcileRes.RESULT_OPERATION_FAILED;
     }
 
     private PendingReconcileRes expire(PendingReconcileRes response, PendingConfirmationEntity current,
@@ -393,6 +413,7 @@ public class PendingConfirmationBizService {
         response.setPendingId(entity.getPendingId());
         response.setRevision(entity.getRevision());
         response.setPendingStatus(entity.getStatus());
+        response.setResultCode(entity.getResultCode());
         response.setClaimExpiresAt(entity.getClaimExpiresAt());
         return response;
     }

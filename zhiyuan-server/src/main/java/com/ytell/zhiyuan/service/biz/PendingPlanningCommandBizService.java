@@ -30,10 +30,14 @@ import com.ytell.zhiyuan.model.entity.biz.PlanningPendingCommandEntity;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import com.ytell.zhiyuan.service.shared.PendingConfirmationSharedService;
 import com.ytell.zhiyuan.service.shared.PlanningPendingCommandSharedService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -47,6 +51,8 @@ import java.security.NoSuchAlgorithmException;
 
 @Service
 public class PendingPlanningCommandBizService {
+
+    private static final Logger LOG = LoggerFactory.getLogger(PendingPlanningCommandBizService.class);
 
     public static final int COMMAND_CONFLICT_CODE = 40903;
     public static final int PLAN_VERSION_CONFLICT_CODE = 40904;
@@ -80,6 +86,8 @@ public class PendingPlanningCommandBizService {
     private ConversationAccessService conversationAccessService;
     @Autowired
     private UnifiedPlanPostconditionValidator postconditionValidator;
+    @Autowired
+    private PlanningCommandFailureWriter failureWriter;
 
     @Transactional(rollbackFor = Exception.class)
     public PendingPlanningCommandRes execute(Long tenantId, Long chatSessionId,
@@ -106,6 +114,23 @@ public class PendingPlanningCommandBizService {
         if (existing != null) {
             return replay(existing, tenantId, chatSessionId, req);
         }
+        PlanningPendingCommandEntity command = buildCommand(tenantId, chatSessionId, req);
+        try {
+            return executeNewCommand(tenantId, chatSessionId, req, frozenCommand, command);
+        } catch (RuntimeException failure) {
+            if (isAuditableReviewCommand(req, pending)
+                    && (!(failure instanceof BusinessException)
+                    || ((BusinessException) failure).getStatus() != COMMAND_CONFLICT_CODE)) {
+                auditAfterRollback(command, pending, failure);
+            }
+            throw failure;
+        }
+    }
+
+    private PendingPlanningCommandRes executeNewCommand(Long tenantId, Long chatSessionId,
+                                                        PendingPlanningCommandReq req,
+                                                        Map<String, Object> frozenCommand,
+                                                        PlanningPendingCommandEntity command) {
         PlanningStateDTO before = APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())
                 && ReviewFixCommandFlags.enabled()
                 && RepairProposalTaxonomy.isReviewCheckSource(req.getProposalApply().getProposalSource())
@@ -118,7 +143,6 @@ public class PendingPlanningCommandBizService {
                             + " expected=" + req.getExpectedPlanVersion());
         }
 
-        PlanningPendingCommandEntity command = buildCommand(tenantId, chatSessionId, req);
         try {
             commandSharedService.save(command);
         } catch (DuplicateKeyException ex) {
@@ -135,6 +159,44 @@ public class PendingPlanningCommandBizService {
         command.setResultJson(JSONObject.toJSONString(compactResultForReplay(result)));
         commandSharedService.updateById(command);
         return result;
+    }
+
+    private boolean isAuditableReviewCommand(PendingPlanningCommandReq req,
+                                             PendingConfirmationEntity pending) {
+        if (!ReviewFixCommandFlags.enabled()
+                || !APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())
+                || !RepairProposalTaxonomy.isReviewCheckSource(req.getProposalApply().getProposalSource())) {
+            return false;
+        }
+        Map<String, Object> data = pendingData(pending);
+        return data != null
+                && "review_check".equals(stringValue(data.get("proposalSource")))
+                && req.getOperationId().equals(stringValue(data.get("operationId")))
+                && req.getProposalApply().getProposalId().equals(stringValue(data.get("proposalId")))
+                && String.valueOf(req.getExpectedPlanVersion()).equals(stringValue(data.get("sourceVersion")));
+    }
+
+    private void auditAfterRollback(PlanningPendingCommandEntity command,
+                                     PendingConfirmationEntity pending, RuntimeException failure) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            LOG.error("planning failure audit requires a transaction: operationId={}", command.getOperationId());
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_ROLLED_BACK) {
+                    return;
+                }
+                try {
+                    failureWriter.recordFailure(command, pending, failure);
+                } catch (RuntimeException auditFailure) {
+                    LOG.error("planning failure audit write failed: operationId={}, errorType={}",
+                            command.getOperationId(), auditFailure.getClass().getSimpleName());
+                }
+            }
+        });
     }
 
     /**
@@ -1335,6 +1397,10 @@ public class PendingPlanningCommandBizService {
                 || !req.getExpectedPlanVersion().equals(existing.getExpectedPlanVersion())
                 || !requestDigest(req).equals(existing.getRequestDigest())) {
             throw new BusinessException(COMMAND_CONFLICT_CODE, "operationId was used by another command");
+        }
+        if ("failed".equals(existing.getStatus())) {
+            throw new BusinessException(COMMAND_CONFLICT_CODE,
+                    "planning command failed; prepare a new proposal");
         }
         if (!"succeeded".equals(existing.getStatus()) || Strings.isNullOrEmpty(existing.getResultJson())) {
             throw new BusinessException(COMMAND_CONFLICT_CODE, "planning command is already running");
