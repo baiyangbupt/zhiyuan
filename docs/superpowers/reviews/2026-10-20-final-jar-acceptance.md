@@ -62,4 +62,5 @@ execute 拒绝、claim → execute → replay → complete、postcondition satis
 
 - 源环境 18290 保持普通启动（review 开关关闭），pid `21710`。
 - 源库 900045/900700 planningState 哈希保持验收前值。
+- Python 单元全量：**2978 passed / 32 skipped / 20 warnings**。
 - 未推送、未部署；隔离 schema 保留用于复核。
