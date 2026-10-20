@@ -162,6 +162,43 @@ class CanonicalPlanningRuntimeTest {
     }
 
     @Test
+    void shouldUsePriorityAsSelectionByDefaultAndAllowRollback() {
+        PlanningStateDTO state = state("major", 1);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(1);
+        CandidateItemDTO current = candidate("v1", "u1", "数学", "稳", "北京", 90D);
+        CandidateItemDTO preferred = candidate("v2", "u2", "法学", "稳", "上海", 10D);
+        state.getCandidatePoolState().setItems(Arrays.asList(current, preferred));
+        state.getWorkingPlanState().getItems().add(draft(current, false));
+        PriorityRuleSupport.persist(state, Arrays.asList(priority("上海")));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                state, state.getCandidatePoolState().getItems());
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(Arrays.asList("v2"), result.getSelectedEntityIds());
+        assertTrue(result.getStageResults().stream()
+                .anyMatch(stage -> "priority".equals(stage.getObjectiveId())
+                        && Long.valueOf(1L).equals(stage.getValue())));
+
+        System.setProperty("planning.priority.selection.enabled", "false");
+        try {
+            PlanningStateDTO rollback = state("major", 1);
+            rollback.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(1);
+            rollback.getCandidatePoolState().setItems(Arrays.asList(current, preferred));
+            rollback.getWorkingPlanState().getItems().add(draft(current, false));
+            PriorityRuleSupport.persist(rollback, Arrays.asList(priority("上海")));
+
+            PlanSolverResultDTO kept = CanonicalPlanningRuntime.enforceSelection(
+                    rollback, rollback.getCandidatePoolState().getItems());
+
+            assertEquals("ready", kept.getStatus());
+            assertEquals(Arrays.asList("v1"), kept.getSelectedEntityIds());
+        } finally {
+            System.clearProperty("planning.priority.selection.enabled");
+        }
+    }
+
+    @Test
     void shouldOrderDeterministicallyThroughPlanOrderingEngine() {
         PlanSolverResultDTO first = orderByShanghaiPriority();
         PlanSolverResultDTO second = orderByShanghaiPriority();

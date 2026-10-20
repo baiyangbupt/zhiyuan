@@ -202,11 +202,11 @@ Java 全量：**1480 / 0 / 0 / 10**。
   内容约束不是唯一可疑项，但 fallback 日志现在会带
   `reason/objective/detail`，便于后续区分 safety 与内容约束。
 
-## 9. 优先规则选择实验（J5.4，默认关）
+## 9. 优先规则正式进入选择（J5.4，默认开）
 
-新增实验开关 `planning.priority.selection.enabled`（默认 false）：
+开关 `planning.priority.selection.enabled` **默认开启**；显式设为 false 可回滚。
 
-- 关闭：行为不变，优先规则只影响排序。
+- 关闭：行为回到旧口径，优先规则只影响排序。
 - 打开：solver 在 safety 之后增加 `priority` 阶段，最大化
   `priorityMatched` 实体数；之后再进入 churn/档位、utility。
 - `MutationPolicyDTO.prioritySelection` 进入 solver inputDigest，便于审计。
@@ -219,7 +219,8 @@ Java 全量：**1480 / 0 / 0 / 10**。
 | 10041984 | province=北方 15 省 | 4/45 | 11/45 | 优先规则明显生效，45 组 / 122 条 |
 
 内容护栏仍生效：风险标签、条目增长、preferred 丢失仍受约束。
-默认保持关闭，等待产品确认是否作为正式选择目标。
+默认已开启；如需回滚：`-Dplanning.priority.selection.enabled=false`，
+行为回到“优先规则只影响排序”。
 
 ## 10. 下一步
 
