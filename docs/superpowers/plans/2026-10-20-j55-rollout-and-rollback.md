@@ -102,3 +102,12 @@ preview → prepare → claim → execute → complete
   pending 终态、失败命令回滚；一个完整业务日后再评估 Phase 2。
 - 回滚：停 18290 后按普通参数重启即可（或显式
   `-Dreview.fix.command.enabled=false`）。
+
+## 8. Phase 2 隔离预验收（2026-10-21，未放量）
+
+- 配置：`review.fix.command.enabled=true`、`review.fix.search.enabled=true`、
+  `review.fix.search.strategies=count,coverage`。
+- count / coverage / Direct 倒挂 × major/group 共 6 条完整确认链 passed。
+- safety / ratio / risk × major/group 共 6 项无可确认 proposal，策略过滤生效。
+- 合计 12/12 通过；**18290 仍停留在 Phase 1**，等 Phase 1 观察满一个业务日
+  后再切 Phase 2。
