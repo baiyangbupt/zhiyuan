@@ -33,6 +33,27 @@ execute 拒绝、claim → execute → replay → complete、postcondition satis
 组模式额外逐组核对：冻结 ordered units 非空；最终每个 unit 的
 `majorItems` 与该 unit 的冻结 `selectedMajorIdsByUnit` 集合一致。
 
+### 全策略扩展（major / majorGroup × direct / count / coverage / safety / ratio / risk）
+
+同一隔离库、同一最终 jar，追加 safety/ratio/risk 合成夹具，仍走完整
+preview → prepare → claim → execute → replay → complete：
+
+| 策略 | major | majorGroup |
+|---|---|---|
+| count | passed（82 条） | passed（46 组 / 92 条，map 46） |
+| coverage | passed（80 条） | passed（4 组 / 4 条，map 4） |
+| direct（倒挂） | passed（3 条） | passed（3 组 / 3 条） |
+| safety | passed（80 条） | passed（44 组 / 88 条，map 44） |
+| ratio | passed（80 条） | passed（44 组 / 88 条，map 44） |
+| risk（高收费） | skipped | passed（4 组 / 4 条，map 4） |
+
+- group_risk 的 proposal 为 `high_tuition`，确认后 postcondition satisfied。
+- major_risk 夹具在当前 review 口径下没有触发 `high_tuition` fail（review
+  返回 pass），因此没有可确认 proposal；这是夹具/审查输入问题，不是执行链
+  失败。RiskReplace planner 的直接单测在全量 Java 中通过。
+- 本批 11 个策略场景通过、1 个 fixture 跳过；所有通过场景均验证 replay
+  不二次写入、pending 终态 applied、冻结专业 map 与最终单元一致。
+
 ## 3. 默认参数初始方案（源测试库，逐会话 HEX 恢复）
 
 无额外 `-D`，初始 solver 与组内 MILP 均走默认 on：
