@@ -98,6 +98,7 @@ final class CanonicalPlanningRuntime {
         policy.setLockExisting(false);
         policy.setCountAsChurn(true);
         policy.setRequireCompensationSafe(true);
+        policy.setInitialContentGuard(initialContentGuard);
         Set<String> availableIds = available.stream()
                 .map(entity -> entity.entityId)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -118,6 +119,19 @@ final class CanonicalPlanningRuntime {
                 defaultList(solved.getRemoveEntityIds()).size(),
                 defaultList(solved.getAddEntityIds()).size(),
                 solved.getCandidateCount());
+        if (initialContentGuard && "blocked".equals(solved.getStatus())) {
+            String reason = solved.getDiagnostics().isEmpty() ? "solver_blocked"
+                    : solved.getDiagnostics().get(0).getReasonCode();
+            LOG.warn("initial content constraints infeasible: session={} reason={}",
+                    state.getSessionId(), reason);
+            PlanSolverResultDTO fallback = noChange(objectives);
+            PlanSolverResultDTO.DiagnosticDTO diagnostic = new PlanSolverResultDTO.DiagnosticDTO();
+            diagnostic.setReasonCode("initial_content_guard");
+            diagnostic.setObjectiveId("initial");
+            diagnostic.setMessage("initial content constraints infeasible: " + reason);
+            fallback.getDiagnostics().add(diagnostic);
+            return fallback;
+        }
         ensureReady(solved);
         if (initialContentGuard) {
             String violation = initialContentGuardViolation(snapshot.getFacts(), solved, unitMode);
@@ -695,123 +709,28 @@ final class CanonicalPlanningRuntime {
                 selected.add(fact);
             }
         }
-        Map<String, Integer> baselineRisk = initialRiskCounts(baseline);
-        Map<String, Integer> selectedRisk = initialRiskCounts(selected);
-        for (String code : new String[]{"special_enrollment", "cooperative_program",
-                "high_tuition", "admission_limit"}) {
+        Map<String, Integer> baselineRisk = InitialContentPolicySupport.riskCounts(baseline);
+        Map<String, Integer> selectedRisk = InitialContentPolicySupport.riskCounts(selected);
+        for (String code : InitialContentPolicySupport.RISK_CODES) {
             int before = baselineRisk.getOrDefault(code, 0);
             int after = selectedRisk.getOrDefault(code, 0);
             if (after > before) {
                 return code + " increased: " + before + " -> " + after;
             }
         }
-        int baselineItems = initialItemCount(baseline, unitMode);
-        int selectedItems = initialItemCount(selected, unitMode);
-        int allowance = Math.max(5, (int) Math.ceil(baselineItems * 0.20D));
+        int baselineItems = InitialContentPolicySupport.itemCount(baseline, unitMode);
+        int selectedItems = InitialContentPolicySupport.itemCount(selected, unitMode);
+        int allowance = InitialContentPolicySupport.itemAllowance(baselineItems);
         if (selectedItems > baselineItems + allowance) {
             return "item_count grew: " + baselineItems + " -> " + selectedItems
                     + " (allowance " + allowance + ")";
         }
-        int baselinePreferred = initialPreferredCount(baseline);
-        int selectedPreferred = initialPreferredCount(selected);
+        int baselinePreferred = InitialContentPolicySupport.preferredCount(baseline);
+        int selectedPreferred = InitialContentPolicySupport.preferredCount(selected);
         if (selectedPreferred < baselinePreferred) {
             return "preferred majors lost: " + baselinePreferred + " -> " + selectedPreferred;
         }
         return null;
-    }
-
-    private static Map<String, Integer> initialRiskCounts(List<CandidateFactDTO> facts) {
-        Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
-        for (CandidateFactDTO fact : defaultList(facts)) {
-            Set<String> tags = new LinkedHashSet<String>();
-            List<CandidateItemDTO> raw = defaultList(fact.getRawCandidates());
-            if (raw.isEmpty()) {
-                tags.addAll(defaultList(fact.getRiskFlags()));
-                if (fact.getTuitionPerYear() != null && fact.getTuitionPerYear() > 20000) {
-                    tags.add("high_tuition");
-                }
-            } else {
-                for (CandidateItemDTO candidate : raw) {
-                    if (candidate == null) {
-                        continue;
-                    }
-                    tags.addAll(defaultList(candidate.getRiskFlags()));
-                    tags.addAll(defaultList(candidate.getReasonCodes()));
-                    tags.addAll(defaultList(candidate.getMustSubjects()));
-                    String text = Strings.nullToEmpty(candidate.getSchoolName())
-                            + Strings.nullToEmpty(candidate.getMajorName());
-                    if (candidate.getTuitionPerYear() != null
-                            && candidate.getTuitionPerYear() > 20000) {
-                        tags.add("high_tuition");
-                    }
-                    if (text.contains("中外合作")) {
-                        tags.add("cooperative_program");
-                    }
-                    if (containsAny(text, "专项", "公费", "定向", "免费医学生", "强基",
-                            "国家计划", "地方专项", "高校专项")) {
-                        tags.add("special_enrollment");
-                    }
-                    if (containsAny(text, "色盲", "色弱", "单科", "性别", "语种")) {
-                        tags.add("admission_limit");
-                    }
-                }
-            }
-            if (containsTag(tags, "special_enrollment")) {
-                counts.merge("special_enrollment", 1, Integer::sum);
-            }
-            if (containsTag(tags, "cooperative_program") || containsTag(tags, "cooperative")) {
-                counts.merge("cooperative_program", 1, Integer::sum);
-            }
-            if (containsTag(tags, "high_tuition") || containsTag(tags, "high_fee")) {
-                counts.merge("high_tuition", 1, Integer::sum);
-            }
-            if (containsTag(tags, "admission_limit")) {
-                counts.merge("admission_limit", 1, Integer::sum);
-            }
-        }
-        return counts;
-    }
-
-    private static boolean containsTag(Set<String> tags, String code) {
-        for (String tag : tags == null ? new LinkedHashSet<String>() : tags) {
-            if (tag != null && tag.toLowerCase().contains(code)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean containsAny(String text, String... keywords) {
-        for (String keyword : keywords) {
-            if (text.contains(keyword)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static int initialItemCount(List<CandidateFactDTO> facts, boolean unitMode) {
-        if (!unitMode) {
-            return defaultList(facts).size();
-        }
-        int count = 0;
-        for (CandidateFactDTO fact : defaultList(facts)) {
-            count += Math.max(1, defaultList(fact.getRawCandidates()).size());
-        }
-        return count;
-    }
-
-    private static int initialPreferredCount(List<CandidateFactDTO> facts) {
-        Set<String> preferred = new LinkedHashSet<String>();
-        for (CandidateFactDTO fact : defaultList(facts)) {
-            for (CandidateItemDTO candidate : defaultList(fact.getRawCandidates())) {
-                if (candidate != null && Boolean.TRUE.equals(candidate.getPreferred())
-                        && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
-                    preferred.add(candidate.getVolunteerId());
-                }
-            }
-        }
-        return preferred.size();
     }
 
     private static PlanSolverResultDTO noChange(CanonicalPlanningObjectiveSetDTO objectives) {

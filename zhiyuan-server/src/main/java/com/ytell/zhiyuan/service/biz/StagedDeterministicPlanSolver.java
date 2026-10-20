@@ -166,6 +166,10 @@ final class StagedDeterministicPlanSolver {
         TierAllocationConstraintDTO tierConstraint = canonicalTierConstraint(
                 safeObjectives.getTierAllocationConstraint(), targetCount);
         addTierConstraints(model, variables, facts, tierConstraint);
+        if (Boolean.TRUE.equals(safePolicy.getInitialContentGuard())) {
+            addInitialContentConstraints(model, variables, facts,
+                    "unit".equals(safeSnapshot.getCountMode()));
+        }
 
         List<ObjectiveLevel> levels = new ArrayList<ObjectiveLevel>();
         List<Long> levelDurations = new ArrayList<Long>();
@@ -543,6 +547,55 @@ final class StagedDeterministicPlanSolver {
                 if (tier.equals(facts.get(index).getTier())) {
                     expression.set(variables.get(index), 1);
                 }
+            }
+        }
+    }
+
+    /**
+     * 初始方案内容约束：风险标签不超过启发式基线、条目数不超上限、preferred
+     * 专业不减少。作为 solver 硬约束，让求解器优先选择安全替代，而不是事后
+     * 整单回退。基线为空时不做比较（没有可参照的启发式内容）。
+     */
+    private void addInitialContentConstraints(ExpressionsBasedModel model,
+                                              List<Variable> variables,
+                                              List<CandidateFactDTO> facts,
+                                              boolean unitMode) {
+        List<CandidateFactDTO> baseline = new ArrayList<CandidateFactDTO>();
+        for (CandidateFactDTO fact : defaultList(facts)) {
+            if (Boolean.TRUE.equals(fact.getCurrent())) {
+                baseline.add(fact);
+            }
+        }
+        if (baseline.isEmpty()) {
+            return;
+        }
+        Map<String, Integer> riskCounts = InitialContentPolicySupport.riskCounts(baseline);
+        for (String code : InitialContentPolicySupport.RISK_CODES) {
+            int limit = riskCounts.getOrDefault(code, 0);
+            Expression riskCap = model.addExpression("initial_risk:" + code).upper(limit);
+            for (int index = 0; index < facts.size(); index++) {
+                if (InitialContentPolicySupport.hasRisk(
+                        InitialContentPolicySupport.riskTags(facts.get(index)), code)) {
+                    riskCap.set(variables.get(index), 1);
+                }
+            }
+        }
+        int baselineItems = InitialContentPolicySupport.itemCount(baseline, unitMode);
+        if (baselineItems > 0) {
+            int itemCap = baselineItems + InitialContentPolicySupport.itemAllowance(baselineItems);
+            Expression itemExpression = model.addExpression("initial_item_cap").upper(itemCap);
+            for (int index = 0; index < facts.size(); index++) {
+                itemExpression.set(variables.get(index),
+                        InitialContentPolicySupport.itemCount(facts.get(index), unitMode));
+            }
+        }
+        int baselinePreferred = InitialContentPolicySupport.preferredCount(baseline);
+        if (baselinePreferred > 0) {
+            Expression preferredFloor = model.addExpression("initial_preferred_floor")
+                    .lower(baselinePreferred);
+            for (int index = 0; index < facts.size(); index++) {
+                preferredFloor.set(variables.get(index),
+                        InitialContentPolicySupport.preferredVolunteerIds(facts.get(index)).size());
             }
         }
     }

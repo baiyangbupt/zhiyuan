@@ -139,9 +139,9 @@ staged solver。
 
 ## 7. 内容护栏落地（initialMode）
 
-`initial_auto` 的 `enforceSelection` 现在带内容护栏；solver 结果违反任一条件时
-返回 `no_change` 并回退启发式初始方案，同时写诊断
-`initial_content_guard`：
+`initial_auto` 的 `enforceSelection` 现在带内容护栏，分两层：
+
+**求解前硬约束**（`MutationPolicyDTO.initialContentGuard`）：
 
 1. **风险标签不增加**：special_enrollment / cooperative_program /
    high_tuition / admission_limit，solver 选中数不得高于启发式基线。
@@ -151,15 +151,18 @@ staged solver。
    `max(5, ceil(baselineItems * 20%))`。
 3. **preferred 专业不丢失**：选中 preferred volunteer 数不得低于基线。
 
+约束不可行时返回 `no_change` 并回退启发式初始方案，写
+`initial_content_guard` 诊断；求解后的同口径校验保留为兜底。
+
 真栈复跑（initial solver flag on）：
 
 | 会话 | 结果 | 说明 |
 |---|---|---|
-| 900016 | 回退启发式 44 组 / 117 条 | `special_enrollment increased: 4 -> 5`，solver 内容被拦截 |
+| 900016 | 回退启发式 44 组 / 117 条 | 内容约束不可行（`objective_set_infeasible`），未引入第 5 个 special |
 | 900045 | solver 45 组 / 140 条 | 条目增长 13 ≤ allowance，内容通过 |
 | 10041981（生产） | 与启发式一致 45 / 153 | 内容无变化 |
 
-Java 全量：**1477 / 0 / 0 / 10**。
+Java 全量：**1480 / 0 / 0 / 10**。
 
 ## 8. 下一步
 

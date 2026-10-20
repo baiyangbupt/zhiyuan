@@ -495,8 +495,25 @@ class CanonicalPlanningRuntimeTest {
 
             assertEquals("no_change", result.getStatus(), code);
             assertEquals("initial_content_guard", result.getDiagnostics().get(0).getReasonCode(), code);
-            assertTrue(result.getDiagnostics().get(0).getMessage().contains(code), code);
         }
+    }
+
+    @Test
+    void initialContentGuardLetsSolverChooseSafeAlternative() {
+        PlanningStateDTO state = state("major", 2);
+        CandidateItemDTO current = candidate("v1", "u1", "数学", "稳", "北京", 10D);
+        CandidateItemDTO risky = candidate("v2", "u2", "专项实验班", "稳", "上海", 99D);
+        risky.setRiskFlags(Arrays.asList("special_enrollment"));
+        CandidateItemDTO safe = candidate("v3", "u3", "法学", "稳", "江苏", 20D);
+        state.getCandidatePoolState().setItems(Arrays.asList(current, risky, safe));
+        state.getWorkingPlanState().getItems().add(draft(current, false));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                state, state.getCandidatePoolState().getItems(), 2, true);
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(new java.util.HashSet<String>(Arrays.asList("v1", "v3")),
+                new java.util.HashSet<String>(result.getSelectedEntityIds()));
     }
 
     @Test
@@ -531,11 +548,11 @@ class CanonicalPlanningRuntimeTest {
 
         assertEquals("no_change", result.getStatus());
         assertEquals("initial_content_guard", result.getDiagnostics().get(0).getReasonCode());
-        assertTrue(result.getDiagnostics().get(0).getMessage().contains("item_count grew"));
+        assertTrue(result.getDiagnostics().get(0).getMessage().contains("constraints infeasible"));
     }
 
     @Test
-    void initialContentGuardRejectsPreferredMajorLoss() {
+    void initialContentGuardKeepsPreferredMajor() {
         PlanningStateDTO state = state("major", 1);
         CandidateItemDTO preferred = candidate("v1", "u1", "数学", "稳", "北京", 10D);
         preferred.setPreferred(true);
@@ -547,10 +564,8 @@ class CanonicalPlanningRuntimeTest {
         PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
                 state, state.getCandidatePoolState().getItems(), 1, true);
 
-        assertEquals("no_change", result.getStatus());
-        assertEquals("initial_content_guard", result.getDiagnostics().get(0).getReasonCode());
-        assertTrue(result.getDiagnostics().get(0).getMessage().contains("preferred majors lost"));
-        assertEquals(new java.util.HashSet<String>(Arrays.asList("v1", "v2")), draftIds(state));
+        assertEquals("ready", result.getStatus());
+        assertEquals(Arrays.asList("v1"), result.getSelectedEntityIds());
     }
 
     private PlanningStateDTO state(String volunteerModel, int targetCount) {

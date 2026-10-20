@@ -19,4 +19,6 @@ public class MutationPolicyDTO {
     private Boolean countAsChurn = true;
     /** FILL/SCOPE/REFILL：候选必须通过补入安全谓词（旧 fill/scope 的过滤口径）。 */
     private Boolean requireCompensationSafe = false;
+    /** 初始方案：把风险标签/条目膨胀/preferred 丢失作为 solver 硬约束。 */
+    private Boolean initialContentGuard = false;
 }
