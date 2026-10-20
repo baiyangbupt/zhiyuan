@@ -3164,7 +3164,7 @@ public class PlanningStateService {
         if ("initial_auto".equals(mode)) {
             generateReq.setForceRegenerate(true);
             generateReq.setInitialMode(true);
-            if (InitialPlanSolverFlags.enabled()
+            if (InitialPlanSolverFlags.enabled(state.getSessionId())
                     && !CanonicalPlanningRuntime.hasSelectionObjectives(state)) {
                 int initialTarget = resolveInitialRecommendationTargetCount(state);
                 if (initialTarget > 0) {

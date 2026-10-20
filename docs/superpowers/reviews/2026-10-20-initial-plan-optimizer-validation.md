@@ -92,6 +92,8 @@ staged solver。
 - 打开：`initial_auto` 把 `requiredCount/默认目标` 作为**临时** initial
   target 传给 `enforceSelection`；目标只用于本次求解，不写入
   `constraintState`，不成为 durable 用户目标。
+- 会话级灰度：`planning.initial.solver.sessions=10041984,900016`
+  （逗号分隔 chatSessionId），全局关闭时只对列出的会话启用。
 
 真栈（历史会话，无 confirmed target）：
 
@@ -166,7 +168,7 @@ staged solver。
 | 900045 | solver 45 组 / 140 条 | 条目增长 13 ≤ allowance，内容通过 |
 | 10041981（生产） | 与启发式一致 45 / 153 | 内容无变化 |
 
-Java 全量：**1480 / 0 / 0 / 10**。
+Java 全量：**1485 / 0 / 0 / 10**。
 
 ## 8. 16 会话内容矩阵（flag on，无 durable target）
 
@@ -221,6 +223,10 @@ Java 全量：**1480 / 0 / 0 / 10**。
 内容护栏仍生效：风险标签、条目增长、preferred 丢失仍受约束。
 默认已开启；如需回滚：`-Dplanning.priority.selection.enabled=false`，
 行为回到“优先规则只影响排序”。
+
+会话级 initial 灰度真栈：`planning.initial.solver.sessions=10041984` 时，
+10041984 走 solver（优先匹配 4→11，45 组/122 条）；未列出的 10041981
+保持启发式（45 组/153 条）。
 
 ## 10. 下一步
 
