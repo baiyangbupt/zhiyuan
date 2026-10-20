@@ -250,7 +250,21 @@ Java 全量：**1489 / 0 / 0 / 10**。
 说明：这是“组内专业帽”落地，不是把组内专业变量直接加进 MILP；
 solver 仍以 unit 为选择实体。
 
-## 11. 下一步
+## 11. 组内选择两阶段：基础切片（2026-10-20）
+
+按两阶段方案先落基础设施，不改变现有求解行为：
+
+- `PlanSolverResultDTO.selectedMajorIdsByUnit`：unitId → 实际选中的专业
+  volunteerId 列表；
+- `CanonicalPlanningRuntime.applySelection`：有 map 时按 map 精确物化，
+  缺失专业 fail closed；无 map 时回退现有组内帽/全部专业；
+- `InnerMajorPlanBuilder`：按 group-inner 口径为每个 unit 预处理计划专业，
+  组内不足 requiredMajorCount 时全保留；
+- 当前 solver 尚未写入 map，因此行为不变，为阶段 2 预留。
+
+Java 全量：**1492 / 0 / 0 / 10**。
+
+## 12. 下一步
 
 1. 决定“无确认目标的新会话”是否也应让 solver 主导初始选择：
    - 若应：把 initial target（requiredCount/default 45）显式编译成初始
