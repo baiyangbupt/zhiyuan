@@ -168,7 +168,7 @@ staged solver。
 | 900045 | solver 45 组 / 140 条 | 条目增长 13 ≤ allowance，内容通过 |
 | 10041981（生产） | 与启发式一致 45 / 153 | 内容无变化 |
 
-Java 全量：**1485 / 0 / 0 / 10**。
+Java 全量：**1489 / 0 / 0 / 10**。
 
 ## 8. 16 会话内容矩阵（flag on，无 durable target）
 
@@ -228,7 +228,28 @@ Java 全量：**1485 / 0 / 0 / 10**。
 10041984 走 solver（优先匹配 4→11，45 组/122 条）；未列出的 10041981
 保持启发式（45 组/153 条）。
 
-## 10. 下一步
+## 10. 组内专业帽（J5.4 实验，默认关）
+
+新增 `planning.group-inner.major-cap.enabled`（默认 false）：
+
+- 打开后，solver **新增**一个专业组时，组内专业数按
+  `candidatePool.requiredMajorCount` 截断；
+- 选择口径与初始推荐 `buildPlanningUnit` 一致：先保留一个 safety major
+  （admissionRatio ≥ 组 enrollRatio），再按 preferred / 未来发展 / 意向 /
+  录取率 / 分数补足；
+- 已有单元不做裁剪，只影响本次新增。
+
+真栈 900045（显式 target 45，requiredMajorCount=6）：
+
+| 配置 | units | items | 单组最大专业数 |
+|---|---|---|---|
+| cap 关（此前） | 45 | 140 | 13 |
+| cap 开 | 45 | 133 | 6 |
+
+说明：这是“组内专业帽”落地，不是把组内专业变量直接加进 MILP；
+solver 仍以 unit 为选择实体。
+
+## 11. 下一步
 
 1. 决定“无确认目标的新会话”是否也应让 solver 主导初始选择：
    - 若应：把 initial target（requiredCount/default 45）显式编译成初始

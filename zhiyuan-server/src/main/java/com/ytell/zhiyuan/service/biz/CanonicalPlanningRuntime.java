@@ -403,12 +403,31 @@ final class CanonicalPlanningRuntime {
                     .collect(Collectors.toList()));
         }
         Map<String, Entity> availableById = byId(available);
+        boolean unitMode = state.getCandidatePoolState() != null
+                && "majorGroup".equalsIgnoreCase(state.getCandidatePoolState().getVolunteerModel());
+        Integer requiredMajorCount = state.getCandidatePoolState() == null
+                ? null : state.getCandidatePoolState().getRequiredMajorCount();
         for (String entityId : solved.getAddEntityIds()) {
             Entity entity = availableById.get(entityId);
             if (entity == null) {
                 throw new BusinessException(409, "solver_candidate_missing: " + entityId);
             }
-            for (CandidateItemDTO candidate : entity.candidates) {
+            List<CandidateItemDTO> candidatesToAdd = entity.candidates;
+            if (unitMode && GroupInnerMajorCapFlags.enabled()) {
+                Double unitEnrollRatio = null;
+                for (CandidateItemDTO candidate : entity.candidates) {
+                    if (candidate != null && candidate.getSchoolEnrollRatio() != null) {
+                        unitEnrollRatio = candidate.getSchoolEnrollRatio();
+                        break;
+                    }
+                }
+                List<CandidateItemDTO> capped = GroupInnerMajorSelector.select(
+                        entity.candidates, requiredMajorCount, unitEnrollRatio);
+                if (!capped.isEmpty()) {
+                    candidatesToAdd = capped;
+                }
+            }
+            for (CandidateItemDTO candidate : candidatesToAdd) {
                 if (!WorkingPlanMutationSupport.addWorkingPlanItemIfAllowed(
                         draft, candidate, "canonical_objective")) {
                     throw new BusinessException(409, "solver_candidate_apply_failed: " + candidate.getVolunteerId());

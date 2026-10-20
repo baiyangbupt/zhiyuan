@@ -162,6 +162,47 @@ class CanonicalPlanningRuntimeTest {
     }
 
     @Test
+    void shouldCapNewlyAddedGroupMajorsWhenFlagEnabled() {
+        System.setProperty(GroupInnerMajorCapFlags.PROPERTY, "true");
+        try {
+            PlanningStateDTO state = state("majorGroup", 1);
+            state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(1);
+            state.getCandidatePoolState().setRequiredMajorCount(2);
+            CandidateItemDTO v1 = candidate("v1", "u1", "数学", "稳", "北京", 90D);
+            CandidateItemDTO v2 = candidate("v2", "u1", "物理学", "稳", "北京", 80D);
+            CandidateItemDTO v3 = candidate("v3", "u1", "化学", "稳", "北京", 70D);
+            CandidateItemDTO v4 = candidate("v4", "u1", "生物学", "稳", "北京", 60D);
+            state.getCandidatePoolState().setItems(Arrays.asList(v1, v2, v3, v4));
+
+            PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                    state, state.getCandidatePoolState().getItems());
+
+            assertEquals("ready", result.getStatus());
+            assertEquals(2, state.getWorkingPlanState().getItems().size());
+        } finally {
+            System.clearProperty(GroupInnerMajorCapFlags.PROPERTY);
+        }
+    }
+
+    @Test
+    void shouldKeepAllGroupMajorsWhenCapFlagDisabled() {
+        PlanningStateDTO state = state("majorGroup", 1);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(1);
+        state.getCandidatePoolState().setRequiredMajorCount(2);
+        CandidateItemDTO v1 = candidate("v1", "u1", "数学", "稳", "北京", 90D);
+        CandidateItemDTO v2 = candidate("v2", "u1", "物理学", "稳", "北京", 80D);
+        CandidateItemDTO v3 = candidate("v3", "u1", "化学", "稳", "北京", 70D);
+        CandidateItemDTO v4 = candidate("v4", "u1", "生物学", "稳", "北京", 60D);
+        state.getCandidatePoolState().setItems(Arrays.asList(v1, v2, v3, v4));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                state, state.getCandidatePoolState().getItems());
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(4, state.getWorkingPlanState().getItems().size());
+    }
+
+    @Test
     void shouldUsePriorityAsSelectionByDefaultAndAllowRollback() {
         PlanningStateDTO state = state("major", 1);
         state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(1);
