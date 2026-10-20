@@ -59,11 +59,14 @@ type Props = {
 };
 
 const InterpretationCard: React.FC<Props> = ({ interpretation }) => {
-  const scenarios = interpretation.scenarios || [];
+  // 服务端/适配层偶发把列表字段序列化成对象或字符串；卡片必须降级而不是整页崩。
+  const scenarios = Array.isArray(interpretation.scenarios) ? interpretation.scenarios : [];
   const gap = dataGapText(interpretation);
-  const caveatDetails = (interpretation.caveatDetails || []).filter(
-    item => String(item.text || '').trim(),
-  );
+  const caveats = Array.isArray(interpretation.caveats) ? interpretation.caveats : [];
+  const caveatDetails = (Array.isArray(interpretation.caveatDetails)
+    ? interpretation.caveatDetails
+    : []
+  ).filter(item => String(item.text || '').trim());
   const hardCaveats = caveatDetails.filter(item => item.level === 'hard');
   const softCaveats = caveatDetails.filter(item => item.level !== 'hard');
   return (
@@ -103,7 +106,7 @@ const InterpretationCard: React.FC<Props> = ({ interpretation }) => {
               </Typography.Text>
             ) : null}
             {landing ? <div>{landing}</div> : null}
-            {(scenario.drivers || []).map((driver, driverIndex) => (
+            {(Array.isArray(scenario.drivers) ? scenario.drivers : []).map((driver, driverIndex) => (
               <div key={`d-${driverIndex}`}>
                 <Typography.Text type="secondary">{driver}</Typography.Text>
               </div>
@@ -134,9 +137,9 @@ const InterpretationCard: React.FC<Props> = ({ interpretation }) => {
             </div>
           ) : null}
         </>
-      ) : (interpretation.caveats || []).length > 0 ? (
+      ) : caveats.length > 0 ? (
         <div data-testid="interpretation-caveats" style={{ marginTop: 8 }}>
-          {(interpretation.caveats || []).map((caveat, index) => (
+          {caveats.map((caveat, index) => (
             <div key={`c-${index}`}>
               <Typography.Text type="secondary">{caveat}</Typography.Text>
             </div>
