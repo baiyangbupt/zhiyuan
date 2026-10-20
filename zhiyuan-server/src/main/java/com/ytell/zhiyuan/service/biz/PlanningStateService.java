@@ -1267,6 +1267,14 @@ public class PlanningStateService {
                 DirectReviewPreviewPlanner.planContentDigest(state))) {
             throw new BusinessException(409, "review_fix_stale");
         }
+        if (proposal.getSolverResult() != null
+                && ((state.getWorkingPlanState().getUnits() != null
+                && !state.getWorkingPlanState().getUnits().isEmpty())
+                || (state.getOrderedPlanState().getUnits() != null
+                && !state.getOrderedPlanState().getUnits().isEmpty()))) {
+            SearchReviewPreviewPlanner.normalizeGroupMode(state);
+        }
+        ReviewSolverContract.validateObjectives(state, data, proposal);
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(
                 tenantId, chatSessionId, state, false);
         // 组模式的冻结方案以 unit 为载体：事实摘要必须按 unit→major 顺序重算，
@@ -1332,6 +1340,7 @@ public class PlanningStateService {
             throw new BusinessException(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE,
                     "review_fix_postcondition_failed");
         }
+        ReviewSolverContract.validateFinalState(state, effectiveCandidates, proposal);
         // 回执的 postValidationPassed 读的是 resultState.reviewState.checks；
         // 冻结回放后必须把新鲜审查写回内存态，否则会拿旧 checks 误报 40905。
         state.setReviewState(freshReview);
@@ -3628,6 +3637,7 @@ public class PlanningStateService {
                     dataValue.put("commandDigest", proposal.getCommandDigest());
                     dataValue.put("previewDigest", proposal.getPreviewDigest());
                     putIfNotBlank(dataValue, "canonicalObjectiveDigest", proposal.getCanonicalObjectiveDigest());
+                    putIfNotBlank(dataValue, "solverObjectiveDigest", proposal.getSolverObjectiveDigest());
                     putIfNotBlank(dataValue, "hardObjectiveVersion", proposal.getHardObjectiveVersion());
                     dataValue.put("frozenProposal",
                             JSONObject.parseObject(JSONObject.toJSONString(proposal)));

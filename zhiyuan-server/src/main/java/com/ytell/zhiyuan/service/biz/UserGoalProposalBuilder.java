@@ -102,6 +102,7 @@ final class UserGoalProposalBuilder {
             return;
         }
         proposal.setCanonicalObjectiveDigest(objectiveSet.getObjectiveDigest());
+        proposal.setSolverObjectiveDigest(solverResult.getSolverObjectiveDigest());
         proposal.setSolverVersion(solverResult.getSolverVersion());
         proposal.setSolverInputDigest(solverResult.getInputDigest());
         // S4：从冻结求解结果透传硬目标契约版本；legacy solver 为 null。

@@ -60,7 +60,19 @@ class UnifiedPlanPostconditionValidator {
         FixProposalApplyReq applyReq = req == null ? null : req.getProposalApply();
         UserGoalFixProposalReq userGoal = applyReq == null ? null : applyReq.getUserGoalRequest();
         if (userGoal == null) {
-            return verifyReviewFixPostcondition(req, applyRes);
+            PlanChangePostconditionReportDTO report = verifyReviewFixPostcondition(req, applyRes);
+            FixProposalDTO proposal = applyRes == null ? null : applyRes.getProposal();
+            if (ReviewFixCommandFlags.enabled() && proposal != null && proposal.getSolverResult() != null
+                    && proposal.getFrozenReviewPlan() != null) {
+                ReviewSolverContract.validateFinalState(state,
+                        proposal.getFrozenReviewPlan().getSelectedFacts(), proposal);
+                report.setCanonicalObjectiveDigest(proposal.getCanonicalObjectiveDigest());
+                report.setSolverObjectiveDigest(proposal.getSolverObjectiveDigest());
+                report.setSolverVersion(proposal.getSolverVersion());
+                report.setSolverInputDigest(proposal.getSolverInputDigest());
+                report.setObjectiveResults(new ArrayList<>(proposal.getSolverResult().getObjectiveResults()));
+            }
+            return report;
         }
         FixProposalDTO authoritativeProposal = applyRes == null ? null : applyRes.getProposal();
         PlanSolverResultDTO frozenResult = validateCanonicalFrozenResult(

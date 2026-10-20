@@ -218,7 +218,8 @@ final class SafetyReviewPreviewPlanner {
                 command.getCommandDigest(), proposal.getActions())).substring(0, 16));
         proposal.setPreviewDigest(DirectReviewPreviewPlanner.digestJson(Arrays.asList(
                 proposal.getProposalId(), command.getEvaluationVersion(),
-                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(), frozen,
+                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(),
+                proposal.getSolverObjectiveDigest(), frozen,
                 proposal.getActions(), proposal.getDryRunResult(), postcondition)));
         if (confirmable) {
             proposal.setStatus("ready");
@@ -393,7 +394,8 @@ final class SafetyReviewPreviewPlanner {
                 command.getCommandDigest(), proposal.getActions())).substring(0, 16));
         proposal.setPreviewDigest(DirectReviewPreviewPlanner.digestJson(Arrays.asList(
                 proposal.getProposalId(), command.getEvaluationVersion(),
-                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(), frozen,
+                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(),
+                proposal.getSolverObjectiveDigest(), frozen,
                 proposal.getActions(), proposal.getDryRunResult(), postcondition)));
         if (confirmable) {
             proposal.setStatus("ready");
@@ -430,6 +432,7 @@ final class SafetyReviewPreviewPlanner {
         proposal.setImpact("只写回工作草案与排序态；本省保底要求仍由当前状态派生，不新增持久化目标。");
         // 预 enrich 的旧口径：与 apply 侧 compileConfirmed 重算保持逐字一致。
         proposal.setCanonicalObjectiveDigest(canonical.getObjectiveDigest());
+        proposal.setSolverObjectiveDigest(solverResult.getSolverObjectiveDigest());
         proposal.setSolverVersion(solverResult.getSolverVersion());
         proposal.setSolverInputDigest(solverResult.getInputDigest());
         proposal.setHardObjectiveVersion(solverResult.getHardObjectiveVersion());
@@ -560,6 +563,7 @@ final class SafetyReviewPreviewPlanner {
         proposal.setImpact("只写回工作草案与排序态；本省保底要求仍由当前状态派生，不新增持久化目标。");
         // 预 enrich 的旧口径：与 apply 侧 compileConfirmed 重算保持逐字一致。
         proposal.setCanonicalObjectiveDigest(canonical.getObjectiveDigest());
+        proposal.setSolverObjectiveDigest(solverResult.getSolverObjectiveDigest());
         proposal.setSolverVersion(solverResult.getSolverVersion());
         proposal.setSolverInputDigest(solverResult.getInputDigest());
         proposal.setHardObjectiveVersion(solverResult.getHardObjectiveVersion());

@@ -291,6 +291,14 @@ final class PlanningObjectiveCompiler {
         return result;
     }
 
+    static String solverObjectiveDigest(CanonicalPlanningObjectiveSetDTO objectiveSet) {
+        Map<String, Object> payload = new LinkedHashMap<String, Object>();
+        payload.put("objectiveDigest", digest(objectiveSet));
+        payload.put("utilityModel", objectiveSet.getUtilityModel());
+        payload.put("diversityPolicy", objectiveSet.getDiversityPolicy());
+        return EvaluationVersion.sha256(com.alibaba.fastjson.JSON.toJSONString(payload));
+    }
+
     private static String digest(CanonicalPlanningObjectiveSetDTO objectiveSet) {
         Map<String, Object> payload = new LinkedHashMap<String, Object>();
         payload.put("schemaVersion", objectiveSet.getSchemaVersion());

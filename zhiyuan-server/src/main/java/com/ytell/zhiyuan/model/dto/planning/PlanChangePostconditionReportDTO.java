@@ -12,6 +12,7 @@ public class PlanChangePostconditionReportDTO {
     private String proposalId;
     private String proposalStrategy;
     private String canonicalObjectiveDigest;
+    private String solverObjectiveDigest;
     private String solverVersion;
     private String solverInputDigest;
     private List<PlanSolverResultDTO.ObjectiveResultDTO> objectiveResults = Lists.newArrayList();

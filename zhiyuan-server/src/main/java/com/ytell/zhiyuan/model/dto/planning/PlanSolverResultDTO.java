@@ -29,6 +29,7 @@ public class PlanSolverResultDTO {
     private String hardObjectiveVersion;
     private String solverState;
     private String inputDigest;
+    private String solverObjectiveDigest;
     private Long durationMs = 0L;
     private Integer candidateCount = 0;
     private Integer constraintCount = 0;

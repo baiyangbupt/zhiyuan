@@ -27,6 +27,33 @@ class StagedDeterministicPlanSolverTest {
     private final StagedDeterministicPlanSolver solver = new StagedDeterministicPlanSolver();
 
     @Test
+    void auditDigestReflectsPatchedObjectivesRatherThanStaleCompilerMetadata() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                fact("protect", "protect", "浙江", true, false, 90, 0),
+                fact("stable", "stable", "浙江", true, false, 80, 1));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(2);
+        objectives.setObjectiveDigest("stale-pre-patch-objectives");
+        StructureTargetDTO structure = new StructureTargetDTO();
+        structure.setMinLocalProtect(0);
+        objectives.setStructureTarget(structure);
+        PlanSolverResultDTO before = solver.solve(snapshot, objectives, policy("FILL", false)).solverResult;
+        structure.setMinLocalProtect(1);
+        PlanSolverResultDTO after = solver.solve(snapshot, objectives, policy("FILL", false)).solverResult;
+
+        String beforeDigest = com.alibaba.fastjson.JSON.parseObject(
+                com.alibaba.fastjson.JSON.toJSONString(before)).getString("solverObjectiveDigest");
+        String afterDigest = com.alibaba.fastjson.JSON.parseObject(
+                com.alibaba.fastjson.JSON.toJSONString(after)).getString("solverObjectiveDigest");
+        assertEquals("ready", before.getStatus());
+        assertEquals("ready", after.getStatus());
+        assertNotNull(beforeDigest);
+        assertNotNull(afterDigest);
+        assertFalse(beforeDigest.equals("stale-pre-patch-objectives"));
+        assertFalse(beforeDigest.equals(afterDigest));
+        assertEquals(before.getSelectedEntityIds(), after.getSelectedEntityIds());
+    }
+
+    @Test
     void safetyDeficitWinsOverZeroChurn() {
         CandidateSnapshotDTO snapshot = snapshot(
                 fact("a-current-protect", "protect", "江苏", true, false, 90, 0),

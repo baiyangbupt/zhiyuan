@@ -134,6 +134,13 @@ class PlanningCommandFailureStackIntegrationTest {
         com.ytell.zhiyuan.model.dto.planning.PlanChangePostconditionReportDTO report =
                 commandService.execute(TENANT_ID, sessionId, command).getPostconditionReport();
         assertTrue(Boolean.TRUE.equals(report.getSatisfied()));
+        if (fixtureName.endsWith("count")) {
+            assertNotNull(report.getSolverObjectiveDigest());
+            assertNotNull(report.getCanonicalObjectiveDigest());
+            assertNotEquals(report.getCanonicalObjectiveDigest(), report.getSolverObjectiveDigest());
+            assertTrue(report.getObjectiveResults().stream().anyMatch(result ->
+                    "selection_target".equals(result.getObjectiveId()) && Boolean.TRUE.equals(result.getSatisfied())));
+        }
         String after = planningJson();
         assertTrue(JSONObject.parseObject(after).getIntValue("version") > versionBefore);
         assertEquals("succeeded", commandSharedService.getByOperationId(command.getOperationId()).getStatus());

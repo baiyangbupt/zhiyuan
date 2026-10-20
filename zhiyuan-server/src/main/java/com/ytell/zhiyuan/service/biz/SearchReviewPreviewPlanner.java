@@ -232,7 +232,8 @@ final class SearchReviewPreviewPlanner {
                 command.getCommandDigest(), proposal.getActions())).substring(0, 16));
         proposal.setPreviewDigest(DirectReviewPreviewPlanner.digestJson(Arrays.asList(
                 proposal.getProposalId(), command.getEvaluationVersion(),
-                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(), frozen,
+                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(),
+                proposal.getSolverObjectiveDigest(), frozen,
                 proposal.getActions(), proposal.getDryRunResult(), postcondition)));
         if (confirmable) {
             proposal.setStatus("ready");
@@ -423,7 +424,8 @@ final class SearchReviewPreviewPlanner {
                 command.getCommandDigest(), proposal.getActions())).substring(0, 16));
         proposal.setPreviewDigest(DirectReviewPreviewPlanner.digestJson(Arrays.asList(
                 proposal.getProposalId(), command.getEvaluationVersion(),
-                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(), frozen,
+                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(),
+                proposal.getSolverObjectiveDigest(), frozen,
                 proposal.getActions(), proposal.getDryRunResult(), postcondition)));
         if (confirmable) {
             proposal.setStatus("ready");
@@ -454,6 +456,7 @@ final class SearchReviewPreviewPlanner {
         proposal.setSummary(generated.getSummary());
         proposal.setImpact(generated.getImpact());
         proposal.setCanonicalObjectiveDigest(generated.getCanonicalObjectiveDigest());
+        proposal.setSolverObjectiveDigest(solverResult.getSolverObjectiveDigest());
         proposal.setSolverVersion(generated.getSolverVersion());
         proposal.setSolverInputDigest(generated.getSolverInputDigest());
         proposal.setHardObjectiveVersion(generated.getHardObjectiveVersion());
@@ -714,6 +717,7 @@ final class SearchReviewPreviewPlanner {
         proposal.setSummary(generated.getSummary());
         proposal.setImpact(generated.getImpact());
         proposal.setCanonicalObjectiveDigest(generated.getCanonicalObjectiveDigest());
+        proposal.setSolverObjectiveDigest(solverResult.getSolverObjectiveDigest());
         proposal.setSolverVersion(generated.getSolverVersion());
         proposal.setSolverInputDigest(generated.getSolverInputDigest());
         proposal.setHardObjectiveVersion(generated.getHardObjectiveVersion());

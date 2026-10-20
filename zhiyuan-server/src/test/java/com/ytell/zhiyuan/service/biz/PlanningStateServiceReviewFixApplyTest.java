@@ -10,6 +10,7 @@ import com.ytell.zhiyuan.mapper.ConversationProposalRequestMapper;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationUpsertReq;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalApplyRes;
 import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
@@ -17,6 +18,7 @@ import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandReq;
 import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes;
 import com.ytell.zhiyuan.model.dto.planning.PrepareResultDTO;
@@ -564,6 +566,271 @@ class PlanningStateServiceReviewFixApplyTest {
         PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
         assertEquals(82, orderedIds(saved).size());
         assertEquals(Integer.valueOf(8), saved.getVersion());
+    }
+
+    @Test
+    void rejectsFrozenConfirmedObjectiveDigestMismatchBeforeWriting() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        activePending.getDataValue().put("canonicalObjectiveDigest", "foreign-objectives");
+        JSONObject proposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        proposal.put("canonicalObjectiveDigest", "foreign-objectives");
+        String baseline = row.getDataValue();
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
+
+        assertEquals("review_fix_objectives_changed", failure.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void rejectsSearchProposalWithoutFrozenSolverResult(boolean removeMetadata) {
+        useCountTargetFixture();
+        prepareCountTarget();
+        JSONObject proposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        proposal.remove("solverResult");
+        if (removeMetadata) {
+            for (String field : new String[]{"canonicalObjectiveDigest", "solverObjectiveDigest",
+                    "solverVersion", "solverInputDigest", "hardObjectiveVersion"}) {
+                proposal.remove(field);
+                activePending.getDataValue().remove(field);
+            }
+        }
+        String baseline = row.getDataValue();
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, failure.getStatus());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void rejectsWorkingGroupMajorSelectionThatDisagreesWithOrderedPlan() {
+        useGroupCountTargetFixture();
+        prepareGroupCountTarget();
+        JSONObject frozen = (JSONObject) activePending.getDataValue().get("frozenReviewPlan");
+        JSONArray majors = frozen.getJSONObject("workingPlan").getJSONArray("units")
+                .getJSONObject(0).getJSONArray("majorItems");
+        assertTrue(majors.size() > 0);
+        majors.remove(0);
+        String baseline = row.getDataValue();
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
+
+        assertEquals(40905, failure.getStatus());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"empty", "missing", "reordered", "unknown"})
+    void rejectsFlattenedWorkingGroupItemsThatDisagreeWithSelectedMajors(String corruption) {
+        useGroupCountTargetFixture();
+        prepareGroupCountTarget();
+        JSONObject frozen = (JSONObject) activePending.getDataValue().get("frozenReviewPlan");
+        JSONArray items = frozen.getJSONObject("workingPlan").getJSONArray("items");
+        if ("empty".equals(corruption)) {
+            items.clear();
+        } else if ("missing".equals(corruption)) {
+            items.remove(0);
+        } else if ("reordered".equals(corruption)) {
+            java.util.Collections.swap(items, 0, 1);
+        } else {
+            items.getJSONObject(0).put("volunteerId", "not-selected");
+        }
+        String baseline = row.getDataValue();
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
+
+        assertEquals(40905, failure.getStatus());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void appliesGroupCountRepairWhenOnlyUnselectedPoolMajorAddsCoverageMatch() {
+        PlanningStateDTO state = PlanningStateServiceReviewFixPrepareTest.groupCountTargetFixture();
+        state.getCandidatePoolState().getItems().get(0).setMajorName("计算机科学与技术");
+        CandidateItemDTO unselected = JSON.parseObject(JSON.toJSONString(
+                state.getCandidatePoolState().getItems().get(2)), CandidateItemDTO.class);
+        unselected.setVolunteerId("u002-v3");
+        unselected.setMajorName("计算机科学与技术");
+        state.getCandidatePoolState().getItems().add(unselected);
+        CoverageRequirementDTO requirement = new CoverageRequirementDTO();
+        requirement.setDomain("major");
+        requirement.setKey("major");
+        requirement.setValues(Lists.newArrayList("计算机科学与技术"));
+        requirement.setMinCount(1);
+        state.getConstraintState().getHardPlanningObjectives().getCoverageRequirements().add(requirement);
+        row.setDataValue(JSON.toJSONString(state));
+        prepareGroupCountTarget();
+        JSONObject proposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        PlanSolverResultDTO solver = proposal.getObject("solverResult", PlanSolverResultDTO.class);
+        assertEquals(Integer.valueOf(1), solver.getObjectiveResults().stream()
+                .filter(result -> "coverage:0".equals(result.getObjectiveId())).findFirst().get().getActualCount());
+
+        FixProposalApplyRes applied = assertDoesNotThrow(() -> applyPrepared(TENANT, SESSION, applyRequest()));
+
+        assertEquals("applied", applied.getStatus());
+        assertFalse(applied.getState().getOrderedPlanState().getItems().stream()
+                .anyMatch(item -> "u002-v3".equals(item.getVolunteerId())));
+        assertEquals(46, applied.getState().getOrderedPlanState().getUnits().size());
+    }
+
+    @Test
+    void appliesLegacyGroupCoverageRepairWithoutExplicitVolunteerModel() {
+        PlanningStateDTO state = PlanningStateServiceReviewFixPrepareTest.groupCoverageFixture();
+        state.getCandidatePoolState().setVolunteerModel(null);
+        row.setDataValue(JSON.toJSONString(state));
+        String baseline = row.getDataValue();
+        prepareGroupCoverage();
+        assertEquals(baseline, row.getDataValue());
+
+        PendingPlanningCommandRes result = assertDoesNotThrow(this::executePreparedThroughExecutor);
+
+        assertTrue(result.getPostconditionReport().getSatisfied());
+        assertEquals(Integer.valueOf(8), result.getResultPlanVersion());
+        PlanningStateDTO saved = JSON.parseObject(row.getDataValue(), PlanningStateDTO.class);
+        assertEquals("majorGroup", saved.getCandidatePoolState().getVolunteerModel());
+        assertEquals(4, saved.getWorkingPlanState().getUnits().size());
+        assertEquals(4, saved.getOrderedPlanState().getUnits().size());
+    }
+
+    @Test
+    void olderFrozenReviewPendingWithoutSolverAuditDigestRemainsExecutable() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        activePending.getDataValue().remove("solverObjectiveDigest");
+        JSONObject proposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        proposal.remove("solverObjectiveDigest");
+        proposal.getJSONObject("solverResult").remove("solverObjectiveDigest");
+
+        assertEquals("applied", applyPrepared(TENANT, SESSION, applyRequest()).getStatus());
+    }
+
+    @Test
+    void rejectsDuplicateObjectiveResultsWithOtherwiseCorrectCountAndProbe() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        JSONObject proposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        JSONArray results = proposal.getJSONObject("solverResult").getJSONArray("objectiveResults");
+        results.add(results.get(0));
+        String baseline = row.getDataValue();
+
+        assertThrows(BusinessException.class, () -> applyPrepared(TENANT, SESSION, applyRequest()));
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void rejectsUnsupportedFrozenHardObjectiveMajorBeforeWriting() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        activePending.getDataValue().put("hardObjectiveVersion", "unsupported.1");
+        JSONObject proposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        proposal.put("hardObjectiveVersion", "unsupported.1");
+        proposal.getJSONObject("solverResult").put("hardObjectiveVersion", "unsupported.1");
+        String baseline = row.getDataValue();
+
+        assertThrows(BusinessException.class, () -> applyPrepared(TENANT, SESSION, applyRequest()));
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void rejectsDisagreementBetweenPendingAndFrozenObjectiveMetadata() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        activePending.getDataValue().put("canonicalObjectiveDigest", "foreign-objectives");
+        String baseline = row.getDataValue();
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
+
+        assertEquals("review_fix_objectives_changed", failure.getMessage());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void rejectsWrongSolverObjectiveAuditDigestBeforeWriting() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        JSONObject proposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        proposal.put("solverObjectiveDigest", "foreign-solver-objectives");
+        String baseline = row.getDataValue();
+
+        assertThrows(BusinessException.class, () -> applyPrepared(TENANT, SESSION, applyRequest()));
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void rejectsForgedFrozenObjectiveResultsEvenWhenOriginalCountProbePasses() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        JSONObject proposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        proposal.getJSONObject("solverResult").getJSONArray("objectiveResults")
+                .getJSONObject(0).put("actualCount", 83);
+        String baseline = row.getDataValue();
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> applyPrepared(TENANT, SESSION, applyRequest()));
+
+        assertEquals(40905, failure.getStatus());
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void rejectsMissingFrozenCoverageResultEvenWhenCoverageProbePasses() {
+        useCoverageFixture();
+        prepareCoverage();
+        JSONObject proposal = (JSONObject) activePending.getDataValue().get("frozenProposal");
+        proposal.getJSONObject("solverResult").getJSONArray("objectiveResults").remove(1);
+        String baseline = row.getDataValue();
+
+        assertThrows(BusinessException.class, () -> applyPrepared(TENANT, SESSION, applyRequest()));
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void rejectsFrozenOrderingThatDisagreesWithSolverEvenWhenCountProbePasses() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        JSONObject frozen = (JSONObject) activePending.getDataValue().get("frozenReviewPlan");
+        JSONArray items = frozen.getJSONObject("orderedPlan").getJSONArray("items");
+        Object first = items.get(0);
+        items.set(0, items.get(1));
+        items.set(1, first);
+        String baseline = row.getDataValue();
+
+        assertThrows(BusinessException.class, () -> applyPrepared(TENANT, SESSION, applyRequest()));
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void rejectsWorkingSelectionThatDisagreesWithFrozenSolver() {
+        useCountTargetFixture();
+        prepareCountTarget();
+        JSONObject frozen = (JSONObject) activePending.getDataValue().get("frozenReviewPlan");
+        frozen.getJSONObject("workingPlan").getJSONArray("items").remove(0);
+        String baseline = row.getDataValue();
+
+        assertThrows(BusinessException.class, () -> applyPrepared(TENANT, SESSION, applyRequest()));
+        assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void reviewReceiptUsesVerifiedSelectedFactsRatherThanStaleCandidateCache() {
+        useCoverageFixture();
+        prepareCoverage();
+        FixProposalApplyRes applied = applyPrepared(TENANT, SESSION, applyRequest());
+        for (CandidateItemDTO candidate : applied.getState().getCandidatePoolState().getItems()) {
+            candidate.setProvinceId("stale-cached-province");
+            candidate.setProvinceName("stale-cached-province");
+        }
+
+        assertTrue(new UnifiedPlanPostconditionValidator().validate(
+                claimRequest(applyRequest()), applied.getState(), applied).getSatisfied());
     }
 
     @Test

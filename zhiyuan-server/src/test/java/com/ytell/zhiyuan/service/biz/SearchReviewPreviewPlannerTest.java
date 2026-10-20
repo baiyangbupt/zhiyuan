@@ -40,6 +40,30 @@ class SearchReviewPreviewPlannerTest {
     private EvaluationFindingDTO finding;
     private List<CandidateItemDTO> candidates;
 
+    @Test
+    void previewDigestBindsSolverObjectivesEvenWhenSelectionDoesNotChange() {
+        String previous = System.getProperty("solver.v2.diversity");
+        try {
+            System.setProperty("solver.v2.diversity", "false");
+            FixProposalDTO before = plan(true);
+            System.setProperty("solver.v2.diversity", "true");
+            FixProposalDTO after = plan(true);
+
+            assertEquals("ready", before.getStatus());
+            assertEquals("ready", after.getStatus());
+            assertEquals(before.getCanonicalObjectiveDigest(), after.getCanonicalObjectiveDigest());
+            assertEquals(before.getFrozenReviewPlan(), after.getFrozenReviewPlan());
+            assertFalse(before.getSolverObjectiveDigest().equals(after.getSolverObjectiveDigest()));
+            assertFalse(before.getPreviewDigest().equals(after.getPreviewDigest()));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("solver.v2.diversity");
+            } else {
+                System.setProperty("solver.v2.diversity", previous);
+            }
+        }
+    }
+
     @BeforeEach
     void fixture() {
         state = new PlanningStateDTO();
@@ -118,6 +142,14 @@ class SearchReviewPreviewPlannerTest {
         assertEquals("ready", proposal.getSolverResult().getStatus());
         assertEquals(TARGET, proposal.getSolverResult().getSelectedEntityIds().size());
         assertNotNull(proposal.getCanonicalObjectiveDigest());
+        assertEquals(PlanningObjectiveCompiler.compileConfirmed(state).getObjectiveDigest(),
+                proposal.getCanonicalObjectiveDigest());
+        com.alibaba.fastjson.JSONObject metadata = JSON.parseObject(JSON.toJSONString(proposal));
+        String solverDigest = metadata.getString("solverObjectiveDigest");
+        assertNotNull(solverDigest);
+        assertFalse(solverDigest.isEmpty());
+        assertFalse(solverDigest.equals(proposal.getCanonicalObjectiveDigest()));
+        assertEquals(solverDigest, metadata.getJSONObject("solverResult").getString("solverObjectiveDigest"));
         assertTrue(proposal.getFindingPostcondition().getSatisfied());
         assertEquals("review_fix_prepare_unavailable", proposal.getBlockingReason());
 

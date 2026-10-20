@@ -41,6 +41,7 @@ public class FixProposalDTO {
     private Integer moveToPosition;
     private FixProposalDryRunResultDTO dryRunResult = new FixProposalDryRunResultDTO();
     private String canonicalObjectiveDigest;
+    private String solverObjectiveDigest;
     private String solverVersion;
     private String solverInputDigest;
     /** 硬目标契约版本（来自 solverResult；legacy 路径为 null）。 */

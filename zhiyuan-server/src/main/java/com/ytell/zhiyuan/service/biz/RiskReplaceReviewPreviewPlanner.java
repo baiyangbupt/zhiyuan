@@ -260,7 +260,8 @@ final class RiskReplaceReviewPreviewPlanner {
                 command.getCommandDigest(), proposal.getActions())).substring(0, 16));
         proposal.setPreviewDigest(DirectReviewPreviewPlanner.digestJson(Arrays.asList(
                 proposal.getProposalId(), command.getEvaluationVersion(),
-                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(), frozen,
+                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(),
+                proposal.getSolverObjectiveDigest(), frozen,
                 proposal.getActions(), proposal.getDryRunResult(), postcondition)));
         if (confirmable) {
             proposal.setStatus("ready");
@@ -465,7 +466,8 @@ final class RiskReplaceReviewPreviewPlanner {
                 command.getCommandDigest(), proposal.getActions())).substring(0, 16));
         proposal.setPreviewDigest(DirectReviewPreviewPlanner.digestJson(Arrays.asList(
                 proposal.getProposalId(), command.getEvaluationVersion(),
-                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(), frozen,
+                proposal.getPlanContentDigest(), proposal.getCanonicalObjectiveDigest(),
+                proposal.getSolverObjectiveDigest(), frozen,
                 proposal.getActions(), proposal.getDryRunResult(), postcondition)));
         if (confirmable) {
             proposal.setStatus("ready");
@@ -510,6 +512,7 @@ final class RiskReplaceReviewPreviewPlanner {
                 : "从当前候选池等量替换命中的风险专业组；确认后按冻结方案原样回放。");
         proposal.setImpact("只写回工作草案与排序态；风险标签仍由候选数据派生，不新增持久化目标。");
         proposal.setCanonicalObjectiveDigest(canonical.getObjectiveDigest());
+        proposal.setSolverObjectiveDigest(solverResult.getSolverObjectiveDigest());
         proposal.setSolverVersion(solverResult.getSolverVersion());
         proposal.setSolverInputDigest(solverResult.getInputDigest());
         proposal.setHardObjectiveVersion(solverResult.getHardObjectiveVersion());
@@ -643,6 +646,7 @@ final class RiskReplaceReviewPreviewPlanner {
         proposal.setImpact("只写回工作草案与排序态；风险标签仍由候选数据派生，不新增持久化目标。");
         // 预 enrich 的旧口径：与 apply 侧 compileConfirmed 重算保持逐字一致。
         proposal.setCanonicalObjectiveDigest(canonical.getObjectiveDigest());
+        proposal.setSolverObjectiveDigest(solverResult.getSolverObjectiveDigest());
         proposal.setSolverVersion(solverResult.getSolverVersion());
         proposal.setSolverInputDigest(solverResult.getInputDigest());
         proposal.setHardObjectiveVersion(solverResult.getHardObjectiveVersion());

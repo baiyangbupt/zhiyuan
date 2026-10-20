@@ -1165,6 +1165,7 @@ final class StagedDeterministicPlanSolver {
     private PlanSolverResultDTO baseResult(CanonicalPlanningObjectiveSetDTO objectives,
                                            CandidateSnapshotDTO snapshot) {
         PlanSolverResultDTO result = new PlanSolverResultDTO();
+        result.setSolverObjectiveDigest(PlanningObjectiveCompiler.solverObjectiveDigest(objectives));
         result.setSolverVersion(SOLVER_VERSION);
         result.setHardObjectiveVersion(HARD_OBJECTIVE_VERSION);
         result.setCandidateCount(snapshot == null || snapshot.getFacts() == null
