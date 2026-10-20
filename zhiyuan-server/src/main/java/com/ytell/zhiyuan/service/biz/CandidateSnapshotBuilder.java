@@ -369,8 +369,9 @@ final class CandidateSnapshotBuilder {
             planned = Lists.newArrayList(bucket.selectedCandidates);
         } else if (unitMode && GroupInnerMajorOptimizationFlags.enabled()) {
             Integer requiredMajorCount = state.getCandidatePoolState().getRequiredMajorCount();
-            Double unitEnrollRatio = candidates.isEmpty() ? null : candidates.get(0).getSchoolEnrollRatio();
-            planned = GroupInnerMajorPlanner.plan(candidates, requiredMajorCount, unitEnrollRatio);
+            List<CandidateItemDTO> planningCandidates = groupInnerPlanningCandidates(state, candidates);
+            Double unitEnrollRatio = firstSchoolEnrollRatio(planningCandidates);
+            planned = GroupInnerMajorPlanner.plan(planningCandidates, requiredMajorCount, unitEnrollRatio);
         }
         CandidateItemDTO representative = planned.isEmpty()
                 ? (candidates.isEmpty() ? new CandidateItemDTO() : candidates.get(0))
@@ -420,6 +421,35 @@ final class CandidateSnapshotBuilder {
         fact.setPriorityMatched(priority != null && priorityCandidates.stream()
                 .anyMatch(candidate -> PriorityRuleSupport.matches(candidate, priority)));
         return fact;
+    }
+
+    /**
+     * 组内计划只从满足已确认硬约束的专业里选；否则可能因为选中一个
+     * 被排除/不满足选科的专业，把整组误判为不合格。整组都不合格时
+     * 返回空计划，fact 仍回退原始候选计算 ineligible/展示元数据。
+     */
+    private static List<CandidateItemDTO> groupInnerPlanningCandidates(
+            PlanningStateDTO state, List<CandidateItemDTO> candidates) {
+        if (!GroupInnerMajorCapFlags.enabled()) {
+            return candidates;
+        }
+        List<CandidateItemDTO> eligible = new ArrayList<CandidateItemDTO>();
+        for (CandidateItemDTO candidate : candidates) {
+            if (candidate != null
+                    && RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state)) {
+                eligible.add(candidate);
+            }
+        }
+        return eligible;
+    }
+
+    private static Double firstSchoolEnrollRatio(List<CandidateItemDTO> candidates) {
+        for (CandidateItemDTO candidate : candidates) {
+            if (candidate != null && candidate.getSchoolEnrollRatio() != null) {
+                return candidate.getSchoolEnrollRatio();
+            }
+        }
+        return null;
     }
 
     private static boolean allEligible(PlanningStateDTO state, List<CandidateItemDTO> candidates) {

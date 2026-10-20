@@ -33,8 +33,17 @@
 不是 solver 失败；900040 的 planningState 超出 mysql client packet，未纳入本轮。
 扩展 golden：900501 / 900357 / 9702947 / 900019 / 900023 / 900031 /
 10041939 / 10041942 / 900017 / 10041980 / 10041958 全部 ready
-（80 或 45 目标，6–137ms）；10041983 因导出候选池为空继续 blocked
-（输入问题）。
+（80 或 45 目标，6–137ms）。
+
+**2026-10-20 通过内部 state API 重新导出**（绕开 mysql client packet）：
+
+| 会话 | pool | target | 结果 | 说明 |
+|---|---|---|---|---|
+| 900040 | 588 | 80 | ready 80 / 32ms | 组内计划 336（旧口径 390），7 个 unit 专业集合变化 |
+| 10041983 | 12510 | 80 | ready 80 / 58ms | reducer 裁到 261，`candidate_cap_applied` |
+
+之前的 900040 未纳入、10041983 candidate_shortage 都是导出输入问题，不是
+solver 失败；两份 state 可直接喂 `StagedSolverGoldenTest`，两次运行结果一致。
 
 ## 3. 初始生成模拟（修复前）
 
@@ -384,13 +393,15 @@ Java 全量：**1662 / 0 / 0 / 12**。
   这是“无确认目标”语义缺口的已知表现。
 - 本矩阵之后已把 initial solver 默认值改为 **true**；显式 false 或
   会话 allowlist 仍可按上述方式回滚/灰度。
+- 提交：`3059d6d`（组内两阶段 MILP）、`0d8bff5`（initial solver 默认 on
+  与 16 会话 A/B）。
 
 Java 全量：**1668 / 0 / 0 / 12**。
 
 ## 15. 下一步
 
-1. 扩大离线 golden corpus：补 900040、10041983 的完整候选池输入，并固定
-   期望 selected/ordered/stageResults。
+1. 900040 / 10041983 的 state 已能通过 API 导出并 golden-ready；如需长期
+   回归，应把导出步骤脚本化或落成 fixture，而不是依赖 `/tmp` 文件。
 2. 对 900016 / 10041984 这类“补齐或增条”的会话做真实模型多轮
    WS/浏览器验收，确认用户侧卡面与解释一致。
 3. J5.5 审查修复按 runbook 继续逐策略放量观测；默认开关仍保持关闭，

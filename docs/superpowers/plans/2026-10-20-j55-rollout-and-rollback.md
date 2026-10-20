@@ -81,5 +81,11 @@ preview → prepare → claim → execute → complete
 ## 6. 当前基线
 
 - Java 全量测试与 Python unit 全绿（数字见当次提交说明）。
-- 默认运行时：两个开关均关闭。
+- 默认运行时：两个 review 开关均关闭。
 - 最近验收：900700（major）、900045（majorGroup）各策略真栈通过并恢复。
+- **2026-10-20 求解器默认变化**：组内两阶段 MILP
+  （`planning.group-inner.major-optimization.enabled`）与 initial solver
+  （`planning.initial.solver.enabled`）均改为默认 on。review fix 的
+  preview/frozen replay 会携带 `selectedMajorIdsByUnit`，因此正式放量
+  Phase 1 前必须在最终 jar 上重跑 Direct/Search 真栈验收，确认冻结专业
+  清单、apply 物化和回滚仍一致；不能直接沿用默认关闭时期的验收结论。

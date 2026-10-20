@@ -173,6 +173,44 @@ class CandidateSnapshotBuilderTest {
         }
     }
 
+    @Test
+    void groupInnerPlanningSkipsMajorsThatViolateHardConstraints() {
+        PlanningStateDTO state = state("majorGroup");
+        state.getCandidatePoolState().setRequiredMajorCount(2);
+        state.getConstraintState().getHardConstraints()
+                .setMustIncludeMajors(Lists.newArrayList("法学"));
+        state.getCandidatePoolState().setItems(Arrays.asList(
+                candidate("u1_a", "u1", "学校A", "计算机", "稳", 100D, 90D, 0.5D, 6000),
+                candidate("u1_b", "u1", "学校A", "法学", "稳", 10D, 60D, 0.5D, 6000),
+                candidate("u1_c", "u1", "学校A", "数学", "稳", 90D, 80D, 0.5D, 6000)));
+
+        CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                state, state.getCandidatePoolState().getItems());
+
+        CandidateFactDTO fact = fact(snapshot, "u1");
+        assertEquals(1, fact.getPlannedCandidates().size());
+        assertEquals("u1_b", fact.getPlannedCandidates().get(0).getVolunteerId());
+        assertTrue(Boolean.TRUE.equals(fact.getEligible()));
+    }
+
+    @Test
+    void groupInnerPlanningLeavesFullyIneligibleUnitWithoutPlan() {
+        PlanningStateDTO state = state("majorGroup");
+        state.getCandidatePoolState().setRequiredMajorCount(2);
+        state.getConstraintState().getHardConstraints()
+                .setMustIncludeMajors(Lists.newArrayList("医学"));
+        state.getCandidatePoolState().setItems(Arrays.asList(
+                candidate("u1_a", "u1", "学校A", "计算机", "稳", 100D, 90D, 0.5D, 6000),
+                candidate("u1_b", "u1", "学校A", "法学", "稳", 90D, 80D, 0.5D, 6000)));
+
+        CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
+                state, state.getCandidatePoolState().getItems());
+
+        CandidateFactDTO fact = fact(snapshot, "u1");
+        assertTrue(fact.getPlannedCandidates().isEmpty());
+        assertFalse(Boolean.TRUE.equals(fact.getEligible()));
+    }
+
     private PlanningStateDTO state(String volunteerModel) {
         PlanningStateDTO state = new PlanningStateDTO();
         CandidatePoolStateDTO pool = state.getCandidatePoolState();
