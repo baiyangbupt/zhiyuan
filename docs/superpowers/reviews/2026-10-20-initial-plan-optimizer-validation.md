@@ -228,12 +228,13 @@ Java 全量：**1489 / 0 / 0 / 10**。
 10041984 走 solver（优先匹配 4→11，45 组/122 条）；未列出的 10041981
 保持启发式（45 组/153 条）。
 
-## 10. 组内专业帽（J5.4 实验，默认关）
+## 10. 组内专业帽（J5.4，默认开）
 
-新增 `planning.group-inner.major-cap.enabled`（默认 false）：
+`planning.group-inner.major-cap.enabled` **默认开启**；显式 false 可回滚。
 
-- 打开后，solver **新增**一个专业组时，组内专业数按
+- solver **新增**一个专业组时，组内专业数按
   `candidatePool.requiredMajorCount` 截断；
+- 组内专业本身不足 requiredMajorCount 时**全部保留**，不补造、不截断；
 - 选择口径与初始推荐 `buildPlanningUnit` 一致：先保留一个 safety major
   （admissionRatio ≥ 组 enrollRatio），再按 preferred / 未来发展 / 意向 /
   录取率 / 分数补足；
