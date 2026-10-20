@@ -111,3 +111,12 @@ preview → prepare → claim → execute → complete
 - safety / ratio / risk × major/group 共 6 项无可确认 proposal，策略过滤生效。
 - 合计 12/12 通过；**18290 仍停留在 Phase 1**，等 Phase 1 观察满一个业务日
   后再切 Phase 2。
+
+## 9. Phase 3 隔离预验收（2026-10-21，未放量）
+
+- 配置：`review.fix.search.strategies=count,coverage,safety,ratio`。
+- count/coverage/safety/ratio/Direct × major/group 共 10 条完整确认链 passed。
+- risk × major/group 被策略过滤、无 confirmable proposal，2 项通过。
+- 合计 12/12；18290 仍停留在 Phase 1。
+- Phase 4（all）已有全策略隔离记录 11/12：group risk 完整链 passed；
+  major_risk 夹具未触发 review finding 而跳过，RiskReplace planner 单测通过。
