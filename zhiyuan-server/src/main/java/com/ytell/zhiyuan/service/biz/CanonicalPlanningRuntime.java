@@ -17,6 +17,9 @@ import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierCountsDTO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -85,6 +88,15 @@ final class CanonicalPlanningRuntime {
         objectives = copyWithTarget(objectives, explicitInitialTarget
                 ? initialSelectionTargetCount
                 : resolvedSelectionTarget(state, objectives, current));
+        // 初始方案若没有 durable 配额目标，沿用推荐池的 requiredTierCounts
+        // 投影到本次目标数，避免默认 solver 把 45 条全排成冲/稳、没有保底。
+        if (explicitInitialTarget && objectives.getTierAllocationConstraint() == null) {
+            TierAllocationConstraintDTO initialTiers = projectInitialTierAllocation(
+                    state, objectives.getTargetCount(), concat(current, available));
+            if (initialTiers != null) {
+                objectives.setTierAllocationConstraint(initialTiers);
+            }
+        }
         if (objectives.getTierAllocationConstraint() != null
                 && concat(current, available).stream().anyMatch(Entity::hasConflictingTier)) {
             throw new BusinessException(409, "tier_fact_conflict: 同一专业组存在多个冲稳保档位");
@@ -872,6 +884,92 @@ final class CanonicalPlanningRuntime {
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 is unavailable", ex);
         }
+    }
+
+    /**
+     * 把推荐池的 requiredTierCounts 按目标数等比投影成精确档位配额。
+     * 没有推荐配额、目标为空或投影不可行时返回 null，保持原求解口径。
+     */
+    private static TierAllocationConstraintDTO projectInitialTierAllocation(
+            PlanningStateDTO state, Integer targetCount, List<Entity> selectable) {
+        if (state == null || state.getCandidatePoolState() == null
+                || targetCount == null || targetCount <= 0) {
+            return null;
+        }
+        Map<String, Integer> requiredTierCounts = null;
+        if (state.getInitialRecommendationState() != null
+                && state.getInitialRecommendationState().getSummary() != null) {
+            requiredTierCounts = state.getInitialRecommendationState()
+                    .getSummary().getTierCounts();
+        }
+        if (requiredTierCounts == null || requiredTierCounts.isEmpty()) {
+            requiredTierCounts = state.getCandidatePoolState().getRequiredTierCounts();
+        }
+        if (requiredTierCounts == null || requiredTierCounts.isEmpty()) {
+            return null;
+        }
+        int sprintAvailable = 0;
+        int stableAvailable = 0;
+        int protectAvailable = 0;
+        for (Entity entity : defaultList(selectable)) {
+            String tier = TierAllocationSupport.canonicalTierKey(entity.tier());
+            if ("sprint".equals(tier)) {
+                sprintAvailable++;
+            } else if ("stable".equals(tier)) {
+                stableAvailable++;
+            } else if ("protect".equals(tier)) {
+                protectAvailable++;
+            }
+        }
+        // 用可用单元数做上限，避免推荐池缺少某一档时把初始 solver 直接逼到不可行。
+        TierAllocationConstraintDTO bounds = new TierAllocationConstraintDTO();
+        bounds.setSprint(range(0, sprintAvailable));
+        bounds.setStable(range(0, stableAvailable));
+        bounds.setProtect(range(0, protectAvailable));
+        TierCountsDTO current = new TierCountsDTO();
+        for (Map.Entry<String, Integer> entry : requiredTierCounts.entrySet()) {
+            String tier = TierAllocationSupport.canonicalTierKey(entry.getKey());
+            int count = entry.getValue() == null ? 0 : Math.max(0, entry.getValue());
+            if ("sprint".equals(tier)) {
+                current.setSprintCount(defaultInt(current.getSprintCount()) + count);
+            } else if ("stable".equals(tier)) {
+                current.setStableCount(defaultInt(current.getStableCount()) + count);
+            } else if ("protect".equals(tier)) {
+                current.setProtectCount(defaultInt(current.getProtectCount()) + count);
+            }
+        }
+        TierCountsDTO projected = TierStructureProjection.project(current, targetCount, bounds);
+        if (projected == null) {
+            return null;
+        }
+        TierAllocationConstraintDTO allocation = new TierAllocationConstraintDTO();
+        allocation.setType("exact_counts");
+        allocation.setSprintCount(projected.getSprintCount());
+        allocation.setStableCount(projected.getStableCount());
+        allocation.setProtectCount(projected.getProtectCount());
+        allocation.setSprint(range(projected.getSprintCount()));
+        allocation.setStable(range(projected.getStableCount()));
+        allocation.setProtect(range(projected.getProtectCount()));
+        return allocation;
+    }
+
+    private static TierCountRangeDTO range(int min, int max) {
+        TierCountRangeDTO range = new TierCountRangeDTO();
+        range.setMinCount(Math.max(0, min));
+        range.setMaxCount(Math.max(min, max));
+        return range;
+    }
+
+    private static TierCountRangeDTO range(Integer count) {
+        int value = count == null ? 0 : Math.max(0, count);
+        TierCountRangeDTO range = new TierCountRangeDTO();
+        range.setMinCount(value);
+        range.setMaxCount(value);
+        return range;
+    }
+
+    private static int defaultInt(Integer value) {
+        return value == null ? 0 : value;
     }
 
     private static CanonicalPlanningObjectiveSetDTO copyWithTarget(

@@ -71,6 +71,38 @@ class CanonicalPlanningRuntimeTest {
     }
 
     @Test
+    void shouldProjectInitialTierCountsWhenNoDurableQuota() {
+        PlanningStateDTO state = state("major", 4);
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        state.getCandidatePoolState().getRequiredTierCounts().put("冲", 2);
+        state.getCandidatePoolState().getRequiredTierCounts().put("稳", 2);
+        state.getCandidatePoolState().getRequiredTierCounts().put("保", 4);
+        List<CandidateItemDTO> candidates = Arrays.asList(
+                candidate("s1", "us1", "数学", "冲", "浙江", 90D),
+                candidate("s2", "us2", "物理", "冲", "浙江", 89D),
+                candidate("s3", "us3", "化学", "冲", "浙江", 88D),
+                candidate("s4", "us4", "生物", "冲", "浙江", 87D),
+                candidate("t1", "ut1", "金融", "稳", "浙江", 86D),
+                candidate("t2", "ut2", "法学", "稳", "浙江", 85D),
+                candidate("t3", "ut3", "会计", "稳", "浙江", 84D),
+                candidate("t4", "ut4", "经济", "稳", "浙江", 83D),
+                candidate("p1", "up1", "医学", "保", "浙江", 82D),
+                candidate("p2", "up2", "药学", "保", "浙江", 81D),
+                candidate("p3", "up3", "护理", "保", "浙江", 80D),
+                candidate("p4", "up4", "中医", "保", "浙江", 79D));
+        state.getCandidatePoolState().setItems(candidates);
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                state, candidates, 4);
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(4, result.getSelectedEntityIds().size());
+        assertEquals(Integer.valueOf(1), result.getResolvedTierCounts().getSprintCount());
+        assertEquals(Integer.valueOf(1), result.getResolvedTierCounts().getStableCount());
+        assertEquals(Integer.valueOf(2), result.getResolvedTierCounts().getProtectCount());
+    }
+
+    @Test
     void shouldResolvePersistedRangesWithStagedSelection() {
         PlanningStateDTO state = state("major", 48);
         state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(3);
