@@ -398,6 +398,18 @@ Java 全量：**1662 / 0 / 0 / 12**。
 
 Java 全量：**1668 / 0 / 0 / 12**。
 
+### 冻结专业 map 的审查复核
+
+独立审查提出：组模式 Search/Ratio 预览可能清空 ordered units，只留 items，
+而 solverResult 携带非空 `selectedMajorIdsByUnit`，apply 时会触发
+`solver_frozen_major_selection_mismatch`（40905）。
+
+复核结论：**误报**。Search/Ratio/Safety/Risk 的组模式都先走 `planUnits`，
+冻结的 orderedPlan 同时保留 units 与 items；只有普通专业分支会清空 units。
+我们在 `PlanningStateServiceReviewFixApplyTest` 的组模式 count_target 用例中
+新增“预览 solverResult 必须带非空专业 map”的断言，现有 71 项 apply/prepare
+测试全部通过，覆盖了冻结选择 + 冻结专业 + 物化后置校验的完整路径。
+
 ## 15. 下一步
 
 1. 900040 / 10041983 的 state 已能通过 API 导出并 golden-ready；如需长期
