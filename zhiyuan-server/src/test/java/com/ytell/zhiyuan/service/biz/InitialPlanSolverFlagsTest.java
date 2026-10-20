@@ -15,7 +15,21 @@ class InitialPlanSolverFlagsTest {
     }
 
     @Test
-    void sessionAllowlistEnablesOnlyListedSessions() {
+    void defaultsToOn() {
+        assertTrue(InitialPlanSolverFlags.enabled());
+        assertTrue(InitialPlanSolverFlags.enabled(900045L));
+    }
+
+    @Test
+    void explicitOffRollsBack() {
+        System.setProperty(InitialPlanSolverFlags.PROPERTY, "false");
+        assertFalse(InitialPlanSolverFlags.enabled());
+        assertFalse(InitialPlanSolverFlags.enabled(900045L));
+    }
+
+    @Test
+    void sessionAllowlistEnablesOnlyListedSessionsWhenGlobalOff() {
+        System.setProperty(InitialPlanSolverFlags.PROPERTY, "false");
         System.setProperty(InitialPlanSolverFlags.SESSIONS_PROPERTY, "900016, 10041984");
 
         assertTrue(InitialPlanSolverFlags.enabled(900016L));
@@ -27,6 +41,7 @@ class InitialPlanSolverFlagsTest {
     @Test
     void globalSwitchOverridesSessionAllowlist() {
         System.setProperty(InitialPlanSolverFlags.PROPERTY, "true");
+        System.setProperty(InitialPlanSolverFlags.SESSIONS_PROPERTY, "900016");
         assertTrue(InitialPlanSolverFlags.enabled(123L));
         assertTrue(InitialPlanSolverFlags.enabled());
     }

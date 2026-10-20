@@ -15,6 +15,7 @@ class GroupInnerMajorPlannerTest {
     @AfterEach
     void clearFlag() {
         System.clearProperty(GroupInnerMajorOptimizationFlags.PROPERTY);
+        System.clearProperty(GroupInnerMajorCapFlags.PROPERTY);
     }
 
     @Test
@@ -35,6 +36,15 @@ class GroupInnerMajorPlannerTest {
 
         assertEquals(Arrays.asList("b", "c"), ids(planned),
                 "on 模式按 intent/quality/future 效用选择，而不是未来发展的单键排序");
+    }
+
+    @Test
+    void capOffKeepsAllMajorsEvenWhenOptimizationOn() {
+        System.setProperty(GroupInnerMajorOptimizationFlags.PROPERTY, "on");
+        System.setProperty(GroupInnerMajorCapFlags.PROPERTY, "false");
+
+        assertEquals(Arrays.asList("a", "b", "c"),
+                ids(GroupInnerMajorPlanner.plan(input(), 2, 60D)));
     }
 
     @Test

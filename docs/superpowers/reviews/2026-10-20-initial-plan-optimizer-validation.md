@@ -84,16 +84,17 @@ staged solver。
   selectionTarget/coverage/tier allocation，requiredCount 不会触发。此时初始
   选择仍是旧启发式。这是下一步需要产品拍板的语义缺口。
 
-## 5. 无目标 initial solver 灰度开关
+## 5. 无目标 initial solver 开关
 
-新增 `planning.initial.solver.enabled`（默认 false）：
+`planning.initial.solver.enabled`（2026-10-20 起默认 **true**）：
 
-- 关闭：保持旧行为；只有已有 selectionTarget/coverage/tier 目标时 solver 参与。
-- 打开：`initial_auto` 把 `requiredCount/默认目标` 作为**临时** initial
-  target 传给 `enforceSelection`；目标只用于本次求解，不写入
-  `constraintState`，不成为 durable 用户目标。
+- 关闭（显式 false）：保持旧行为；只有已有 selectionTarget/coverage/tier
+  目标时 solver 参与。
+- 打开：`initial_auto` 把 `requiredCount` 作为**临时** initial target 传给
+  `enforceSelection`；目标只用于本次求解，不写入 `constraintState`，不成为
+  durable 用户目标。
 - 会话级灰度：`planning.initial.solver.sessions=10041984,900016`
-  （逗号分隔 chatSessionId），全局关闭时只对列出的会话启用。
+  （逗号分隔 chatSessionId）；全局显式关闭时只对列出的会话启用。
 
 真栈（历史会话，无 confirmed target）：
 
@@ -110,8 +111,19 @@ staged solver。
 - 10041981/10041984/900700/900047/900018：solver 选择集与启发式完全一致。
 - 900045/900016：启发式分别少 1 组（44/45），solver 补齐到 45；
   900016 为补足发生 7 remove/8 add，unit 数 44→45。
-- 结论：flag 打开主要修复“启发式数量不足”，完整方案保持原选择；可先
-  在测试环境打开，观察后再决定默认值。
+- 结论：flag 打开主要修复“启发式数量不足”，完整方案保持原选择。
+
+2026-10-20 的 16 会话 A/B（同一批会话，组内 MILP 默认 on）：
+
+| 会话 | 启发式 | solver | 结论 |
+|---|---|---|---|
+| 900016 | 44 组 / 117 条 | 45 组 / 123 条 | 补齐 requiredCount；风险标签不变 |
+| 10041984 | 45 组 / 111 条 | 45 组 / 122 条 | preferred 104 不变；高收费标签 18→15 |
+| 其余 14 个 | — | — | units/items/档位/preferred/风险全部一致 |
+
+因此将默认值改为 **true**：无确认目标的新会话也由 solver 主导初始选择；
+显式 `-Dplanning.initial.solver.enabled=false` 可完整回滚，或配合
+`planning.initial.solver.sessions` 只对指定会话灰度。
 
 ## 6. 内容级核验（不只数量）
 
@@ -341,14 +353,45 @@ units=45 plannedMajors=133 rawMajors=194
 
 Java 全量：**1662 / 0 / 0 / 12**。
 
-## 14. 下一步
+## 14. 16 会话矩阵（组内 MILP 默认 on + initial solver）
 
-1. 决定“无确认目标的新会话”是否也应让 solver 主导初始选择：
-   - 若应：把 initial target（requiredCount/default 45）显式编译成初始
-     objective，并让 `hasSelectionObjectives` 对 initial 路径识别它；
-   - 若不应：保留启发式，但把“solver 不参与”作为明确契约，不再宣称初始
-     生成全面切换。
-2. 用同一批历史会话做“启发式 vs solver”质量对比：coverage、tier 偏差、
-   churn、本省保底、utility、耗时。
-3. 扩大离线 golden corpus：补 900040、10041983 的完整候选池输入，并固定
+在同一批历史会话上打开 `planning.initial.solver.enabled`，组内优化使用
+默认 on，逐会话生成并恢复 HEX：
+
+| 会话 | units | items | 单组最大 | 结果 |
+|---|---|---|---|---|
+| 900016 | 45 | 123 | 6 | 补齐到 45；本状态未复现旧 safety 回退 |
+| 900018 | 80 | 226 | 6 | 与旧矩阵一致 |
+| 900028 | 80 | 226 | 6 | 与旧矩阵一致 |
+| 900038 | 80 | 226 | 6 | 与旧矩阵一致 |
+| 900045 | 44 | 127 | 6 | 无 durable target，按 requiredCount=44 |
+| 900047 | 45 | 136 | 6 | 与旧矩阵一致 |
+| 900700 | — | 80 | 13 | major 模式，内容检查通过 |
+| 10041981 | 45 | 153 | 6 | 与旧矩阵一致 |
+| 10041984 | 45 | 122 | 6 | 与旧矩阵一致 |
+| 900019 | 45 | 132 | 6 | 与旧矩阵一致 |
+| 900357 | 45 | 121 | 6 | 与旧矩阵一致 |
+| 900501 | — | 80 | 1 | major 模式，内容检查通过 |
+| 9702947 | 45 | 130 | 6 | 与旧矩阵一致 |
+| 900017 | 45 | 136 | 6 | 与旧矩阵一致 |
+| 10041958 | 45 | 136 | 6 | 与旧矩阵一致 |
+| 10041980 | 45 | 133 | 6 | 与旧矩阵一致 |
+
+- 16/16 `contentOk=true`，无 blocked、无重复 unit、无缺失引用。
+- 900016 旧记录的 `safety` 回退没有复现；当前会话状态与旧矩阵快照不同
+  （约束目标/计划状态已变化），不能把差异直接归因于组内 MILP。
+- 900045 没有 durable target 时仍按 requiredCount=44，而不是显式 45；
+  这是“无确认目标”语义缺口的已知表现。
+- 本矩阵之后已把 initial solver 默认值改为 **true**；显式 false 或
+  会话 allowlist 仍可按上述方式回滚/灰度。
+
+Java 全量：**1668 / 0 / 0 / 12**。
+
+## 15. 下一步
+
+1. 扩大离线 golden corpus：补 900040、10041983 的完整候选池输入，并固定
    期望 selected/ordered/stageResults。
+2. 对 900016 / 10041984 这类“补齐或增条”的会话做真实模型多轮
+   WS/浏览器验收，确认用户侧卡面与解释一致。
+3. J5.5 审查修复按 runbook 继续逐策略放量观测；默认开关仍保持关闭，
+   避免与求解器默认切换叠加。
