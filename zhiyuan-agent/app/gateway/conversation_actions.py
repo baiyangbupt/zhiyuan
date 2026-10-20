@@ -427,6 +427,16 @@ def _proposal_apply_payload(
         "regenerateOrderedPlan": bool(active_data.get("regenerateOrderedPlan", True)),
         "rerunReview": bool(active_data.get("rerunReview", True)),
     }
+    # review_check 的 apply 会逐项比对这三个冻结摘要（Java 40908）；
+    # pending 里带了就透传，不能只靠 user_goal 分支。
+    for field_name, fallback_name in (
+        ("commandDigest", "command_digest"),
+        ("previewDigest", "preview_digest"),
+        ("evaluationVersion", "evaluation_version"),
+    ):
+        value = active_data.get(field_name, active_data.get(fallback_name))
+        if value is not None:
+            payload[field_name] = value
     # `user_goal` 来源的提案还要求带上原始目标（"user_goal proposal requires userGoalRequest"）：
     # 由 prepare 落进 pending 的 dataValue（见 Java 侧），这里原样透传。
     user_goal_request = active_data.get("userGoalRequest", active_data.get("user_goal_request"))
