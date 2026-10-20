@@ -168,7 +168,7 @@ staged solver。
 | 900045 | solver 45 组 / 140 条 | 条目增长 13 ≤ allowance，内容通过 |
 | 10041981（生产） | 与启发式一致 45 / 153 | 内容无变化 |
 
-Java 全量：**1489 / 0 / 0 / 10**。
+Java 全量：**1652 / 0 / 0 / 12**。
 
 ## 8. 16 会话内容矩阵（flag on，无 durable target）
 
@@ -275,9 +275,35 @@ solver 仍以 unit 为选择实体。
 真栈 900045（显式 target 45，`requiredMajorCount=6`）：
 **45 组 / 133 条 / 单组最大 6**，与组内帽结果一致。
 
-Java 全量：**1502 / 0 / 0 / 10**。
+Java 全量：**1652 / 0 / 0 / 12**。
 
-## 12. 下一步
+## 12. 外部修复复核 + 组内 shadow（2026-10-20）
+
+外部补充了审查/冻结链修复：
+
+- review 修复候选生命周期失效；
+- reducer/fact integrity 与 repair protection；
+- claimed execution / frozen plan replay 守卫；
+- 命令失败回滚后持久化；
+- frozen review solver objective contract 校验。
+
+合并后全量 Java **1652 / 0 / 0 / 12**。其中对组内有影响的修复：
+current unit 的 `plannedCandidates` 改为“当前实际选中的专业”，不再按帽重选；
+新增 unit 才使用组内帽/计划。
+
+shadow 真栈 900045（target 45）：
+
+```
+group-inner major optimization shadow:
+units=45 plannedMajors=133 rawMajors=194
+```
+
+结果仍按旧口径物化：45 组 / 133 条 / 单组最大 6，行为不变。
+
+当前结论：**阶段 1 planned input + selectedMajorIdsByUnit 已通；
+阶段 2 组内小 MILP 与 coverage/preferred 反馈仍未实现。**
+
+## 13. 下一步
 
 1. 决定“无确认目标的新会话”是否也应让 solver 主导初始选择：
    - 若应：把 initial target（requiredCount/default 45）显式编译成初始
