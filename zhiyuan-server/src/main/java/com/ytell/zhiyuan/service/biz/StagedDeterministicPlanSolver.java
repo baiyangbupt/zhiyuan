@@ -505,21 +505,45 @@ final class StagedDeterministicPlanSolver {
                 || !"unit".equalsIgnoreCase(Strings.nullToEmpty(snapshot.getCountMode()).trim())) {
             return;
         }
-        Map<String, List<String>> plan = InnerMajorPlanBuilder.build(
-                selected, policy.getRequiredMajorCount());
+        Integer requiredMajorCount = policy.getRequiredMajorCount();
         if ("shadow".equals(mode)) {
-            int plannedMajors = 0;
-            int rawMajors = 0;
-            for (CandidateFactDTO fact : selected) {
-                List<String> majors = plan.get(fact.getEntityId());
-                plannedMajors += majors == null ? 0 : majors.size();
-                rawMajors += defaultList(fact.getRawCandidates()).size();
-            }
-            LOG.info("group-inner major optimization shadow: units={} plannedMajors={} rawMajors={}",
-                    selected.size(), plannedMajors, rawMajors);
+            Map<String, List<String>> legacy = InnerMajorPlanBuilder.buildLegacy(
+                    selected, requiredMajorCount);
+            Map<String, List<String>> optimized = InnerMajorPlanBuilder.buildOptimized(
+                    selected, requiredMajorCount);
+            logMajorPlanComparison("shadow", selected, legacy, optimized);
             return;
         }
+        Map<String, List<String>> plan = InnerMajorPlanBuilder.build(
+                selected, requiredMajorCount);
+        logMajorPlanComparison("applied", selected,
+                InnerMajorPlanBuilder.buildLegacy(selected, requiredMajorCount), plan);
         result.setSelectedMajorIdsByUnit(plan);
+    }
+
+    private void logMajorPlanComparison(String stage,
+                                        List<CandidateFactDTO> selected,
+                                        Map<String, List<String>> legacy,
+                                        Map<String, List<String>> plan) {
+        int legacyMajors = 0;
+        int plannedMajors = 0;
+        int rawMajors = 0;
+        int changedUnits = 0;
+        for (CandidateFactDTO fact : selected) {
+            String entityId = fact.getEntityId();
+            List<String> legacyPlan = legacy.get(entityId);
+            List<String> plannedPlan = plan.get(entityId);
+            legacyMajors += legacyPlan == null ? 0 : legacyPlan.size();
+            plannedMajors += plannedPlan == null ? 0 : plannedPlan.size();
+            rawMajors += defaultList(fact.getRawCandidates()).size();
+            if (!new LinkedHashSet<String>(defaultList(legacyPlan))
+                    .equals(new LinkedHashSet<String>(defaultList(plannedPlan)))) {
+                changedUnits++;
+            }
+        }
+        LOG.info("group-inner major optimization {}: units={} rawMajors={} "
+                        + "legacyMajors={} plannedMajors={} changedUnits={}",
+                stage, selected.size(), rawMajors, legacyMajors, plannedMajors, changedUnits);
     }
 
     private String validatePolicy(List<CandidateFactDTO> facts,

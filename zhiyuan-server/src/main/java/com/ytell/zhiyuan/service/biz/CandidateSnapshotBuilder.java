@@ -370,7 +370,7 @@ final class CandidateSnapshotBuilder {
         } else if (unitMode && GroupInnerMajorOptimizationFlags.enabled()) {
             Integer requiredMajorCount = state.getCandidatePoolState().getRequiredMajorCount();
             Double unitEnrollRatio = candidates.isEmpty() ? null : candidates.get(0).getSchoolEnrollRatio();
-            planned = GroupInnerMajorSelector.select(candidates, requiredMajorCount, unitEnrollRatio);
+            planned = GroupInnerMajorPlanner.plan(candidates, requiredMajorCount, unitEnrollRatio);
         }
         CandidateItemDTO representative = planned.isEmpty()
                 ? (candidates.isEmpty() ? new CandidateItemDTO() : candidates.get(0))

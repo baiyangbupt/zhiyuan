@@ -503,7 +503,7 @@ final class CanonicalPlanningRuntime {
                         break;
                     }
                 }
-                List<CandidateItemDTO> capped = GroupInnerMajorSelector.select(
+                List<CandidateItemDTO> capped = GroupInnerMajorPlanner.plan(
                         entity.candidates, requiredMajorCount, unitEnrollRatio);
                 if (!capped.isEmpty()) {
                     candidatesToAdd = capped;

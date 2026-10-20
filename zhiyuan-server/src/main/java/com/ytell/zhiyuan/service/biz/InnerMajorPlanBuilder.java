@@ -23,6 +23,24 @@ final class InnerMajorPlanBuilder {
 
     static Map<String, List<String>> build(List<CandidateFactDTO> facts,
                                            Integer requiredMajorCount) {
+        return build(facts, requiredMajorCount, Planner.PRODUCTION);
+    }
+
+    /** shadow 专用：阶段一没有预计划时，用组内 MILP 计算新口径结果做对比。 */
+    static Map<String, List<String>> buildOptimized(List<CandidateFactDTO> facts,
+                                                    Integer requiredMajorCount) {
+        return build(facts, requiredMajorCount, Planner.OPTIMIZED);
+    }
+
+    /** 诊断专用：忽略阶段一预计划，按旧启发式重算，用于 on/shadow 对比。 */
+    static Map<String, List<String>> buildLegacy(List<CandidateFactDTO> facts,
+                                                 Integer requiredMajorCount) {
+        return build(facts, requiredMajorCount, Planner.LEGACY);
+    }
+
+    private static Map<String, List<String>> build(List<CandidateFactDTO> facts,
+                                                   Integer requiredMajorCount,
+                                                   Planner planner) {
         Map<String, List<String>> plan = new LinkedHashMap<String, List<String>>();
         for (CandidateFactDTO fact : facts == null
                 ? java.util.Collections.<CandidateFactDTO>emptyList() : facts) {
@@ -38,10 +56,23 @@ final class InnerMajorPlanBuilder {
                     break;
                 }
             }
-            List<CandidateItemDTO> selected = fact.getPlannedCandidates() != null
-                    && !fact.getPlannedCandidates().isEmpty()
-                    ? fact.getPlannedCandidates()
-                    : GroupInnerMajorSelector.select(candidates, requiredMajorCount, unitEnrollRatio);
+            boolean hasPlanned = planner != Planner.LEGACY
+                    && fact.getPlannedCandidates() != null
+                    && !fact.getPlannedCandidates().isEmpty();
+            List<CandidateItemDTO> selected;
+            if (hasPlanned) {
+                selected = fact.getPlannedCandidates();
+            } else if (planner == Planner.OPTIMIZED) {
+                selected = GroupInnerMajorPlanner.planOptimized(
+                        candidates, requiredMajorCount, unitEnrollRatio);
+            } else if (planner == Planner.LEGACY) {
+                selected = GroupInnerMajorCapFlags.enabled()
+                        ? GroupInnerMajorSelector.select(candidates, requiredMajorCount, unitEnrollRatio)
+                        : candidates;
+            } else {
+                selected = GroupInnerMajorPlanner.plan(
+                        candidates, requiredMajorCount, unitEnrollRatio);
+            }
             List<String> ids = new ArrayList<String>();
             for (CandidateItemDTO candidate : selected) {
                 if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
@@ -51,5 +82,9 @@ final class InnerMajorPlanBuilder {
             plan.put(fact.getEntityId(), ids);
         }
         return plan;
+    }
+
+    private enum Planner {
+        PRODUCTION, OPTIMIZED, LEGACY
     }
 }

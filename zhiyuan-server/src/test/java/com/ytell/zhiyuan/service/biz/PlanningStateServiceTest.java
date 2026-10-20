@@ -84,6 +84,7 @@ import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
 import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
 import com.ytell.zhiyuan.service.shared.PlanningDataFreshnessScheduleSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -201,6 +202,11 @@ public class PlanningStateServiceTest {
         ReflectionTestUtils.setField(planningStateService, "volunteerIntervalService", new VolunteerIntervalService());
         ReflectionTestUtils.setField(planningStateService, "majorExtraDataManager", majorExtraDataManager);
         ReflectionTestUtils.setField(planningStateService, "schoolManager", schoolManager);
+    }
+
+    @AfterEach
+    void clearGroupInnerOptimizationFlag() {
+        System.clearProperty(GroupInnerMajorOptimizationFlags.PROPERTY);
     }
 
     @Test
@@ -3590,6 +3596,8 @@ public class PlanningStateServiceTest {
 
     @Test
     void shouldProjectMajorGroupLossWithLegacySelectedMajorIdsBeforeFill() {
+        // 该用例覆盖旧版“无 selectedMajorIdsByUnit”回填路径，显式回滚组内 MILP。
+        System.setProperty(GroupInnerMajorOptimizationFlags.PROPERTY, "off");
         bindPlanningStateStore();
 
         PlanningStateDTO state = new PlanningStateDTO();

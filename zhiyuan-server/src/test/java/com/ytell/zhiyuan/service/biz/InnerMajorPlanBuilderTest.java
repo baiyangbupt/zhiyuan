@@ -43,6 +43,33 @@ class InnerMajorPlanBuilderTest {
                 InnerMajorPlanBuilder.build(Arrays.asList(fact), 1).get("u1"));
     }
 
+    @Test
+    void optimizedBuildExposesMilpDifferenceForShadow() {
+        CandidateFactDTO fact = new CandidateFactDTO();
+        fact.setEntityId("u1");
+        fact.getRawCandidates().add(candidate("a", 10D, 90D));
+        fact.getRawCandidates().add(candidate("b", 100D, 20D));
+        fact.getRawCandidates().add(candidate("c", 80D, 10D));
+
+        assertEquals(Arrays.asList("a", "b"),
+                InnerMajorPlanBuilder.buildLegacy(Arrays.asList(fact), 2).get("u1"));
+        assertEquals(Arrays.asList("b", "c"),
+                InnerMajorPlanBuilder.buildOptimized(Arrays.asList(fact), 2).get("u1"));
+    }
+
+    private CandidateItemDTO candidate(String id, Double intent, Double future) {
+        CandidateItemDTO candidate = new CandidateItemDTO();
+        candidate.setVolunteerId(id);
+        candidate.setPlanSchoolDataId("u1");
+        candidate.setSchoolEnrollRatio(60D);
+        candidate.setAdmissionRatio(50D);
+        candidate.setIntentScore(intent);
+        candidate.setFinalScore(0D);
+        candidate.setFutureDevelopmentScore(future);
+        candidate.setPreferred(false);
+        return candidate;
+    }
+
     private CandidateFactDTO fact(String unitId, int majors) {
         CandidateFactDTO fact = new CandidateFactDTO();
         fact.setEntityId(unitId);

@@ -303,7 +303,45 @@ units=45 plannedMajors=133 rawMajors=194
 当前结论：**阶段 1 planned input + selectedMajorIdsByUnit 已通；
 阶段 2 组内小 MILP 与 coverage/preferred 反馈仍未实现。**
 
-## 13. 下一步
+## 13. 组内两阶段 MILP（阶段 2）落地（2026-10-20）
+
+阶段 2 不再只是“帽 + 启发式”，而是每个专业组一个独立的小型 MILP：
+
+- **`UnitMajorSelector`**：`requiredMajorCount` 是等式约束；组内不足时全部保留；
+  有安全专业时至少选 1 个；先最大化 preferred 专业数并固定，再最大化组内效用；
+  同分用原始顺序稳定平局。效用与全局 solver 同权重：意向 40、质量 25、
+  安全 20、未来 10、成本 5（×100 定点，避免整数舍入抹平录取率差异）。
+- 单组预算 200ms，不可证明最优/异常时回退 `GroupInnerMajorSelector`，保证可用。
+- **`GroupInnerMajorPlanner`** 统一入口：`on` 走 MILP，`off` 走旧启发式；
+  组内帽开关关闭时直接全保留，确保 `planning.group-inner.major-cap.enabled=false`
+  仍是完整回滚路径。
+- **阶段一致性**：阶段一的 `plannedCandidates` 就是阶段二复用的计划；
+  `InnerMajorPlanBuilder.build` 不再重选，保证 coverage/preferred/风险基线
+  与最终物化使用同一组专业。新增回归覆盖“阶段二复用阶段一计划”。
+- **shadow** 现在同时计算旧启发式与新 MILP，只打日志不写结果：
+  `units/rawMajors/legacyMajors/plannedMajors/changedUnits`。
+- 默认值改为 **on**；显式 `-Dplanning.group-inner.major-optimization.enabled=off`
+  回滚，`shadow` 只观察。
+
+### 性能
+
+`UnitMajorSelectorPerformanceTest`：600 个专业组 × 13 个专业、每组选 6 个，
+预热后 **315ms**（预算 3s）。单组 200ms 上限只在异常/超大组触发。
+
+### 真栈
+
+| 会话 | 结果 | 组内差异 | 安全/偏好 |
+|---|---|---|---|
+| 900045（target 45） | 45 组 / 133 条 / 单组最大 6 | 8 个 unit 与旧启发式专业集合不同 | 安全专业 0 缺失，preferred 0 丢失 |
+| 10041984（target 45） | 45 组 / 122 条 | 0 个 unit 不同 | 安全/偏好一致 |
+
+说明：900045 的差异集中在大组（如 26 个专业选 6 个），MILP 按效用换掉了
+旧启发式只按未来/意向单键排序选中的专业；组内仍保留至少一个安全专业。
+10041984 的 preferred 覆盖很高，两种口径结果一致。
+
+Java 全量：**1662 / 0 / 0 / 12**。
+
+## 14. 下一步
 
 1. 决定“无确认目标的新会话”是否也应让 solver 主导初始选择：
    - 若应：把 initial target（requiredCount/default 45）显式编译成初始

@@ -44,6 +44,25 @@ class StagedDeterministicPlanSolverGroupInnerTest {
     }
 
     @Test
+    void reusesStageOneMajorPlanWithoutReselecting() {
+        System.setProperty(GroupInnerMajorOptimizationFlags.PROPERTY, "on");
+        MutationPolicyDTO policy = policy();
+        policy.setRequiredMajorCount(2);
+        CandidateFactDTO fact = unitFact("u1", 4);
+        fact.setPlannedCandidates(Arrays.asList(
+                fact.getRawCandidates().get(3), fact.getRawCandidates().get(1)));
+
+        StagedDeterministicPlanSolver.Result result = solver.solve(
+                snapshot(fact), objectives(1), policy);
+
+        assertEquals("ready", result.solverResult.getStatus(),
+                "diagnostics=" + result.solverResult.getDiagnostics());
+        assertEquals(Arrays.asList("u1-v4", "u1-v2"),
+                result.solverResult.getSelectedMajorIdsByUnit().get("u1"),
+                "阶段二必须复用阶段一计划，不能重新选专业");
+    }
+
+    @Test
     void offModeLeavesSelectedMajorsEmpty() {
         System.setProperty(GroupInnerMajorOptimizationFlags.PROPERTY, "off");
         MutationPolicyDTO policy = policy();

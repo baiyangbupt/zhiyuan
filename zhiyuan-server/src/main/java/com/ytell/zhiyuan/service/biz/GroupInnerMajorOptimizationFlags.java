@@ -4,7 +4,8 @@ package com.ytell.zhiyuan.service.biz;
  * 两阶段组内专业优化灰度。
  *
  * <p>{@code planning.group-inner.major-optimization.enabled}：
- * off（默认）| shadow | on。</p>
+ * on（默认）| off | shadow。显式 off 回滚到旧启发式；shadow 只对比日志、
+ * 不写 selectedMajorIdsByUnit。</p>
  */
 public final class GroupInnerMajorOptimizationFlags {
 
@@ -20,7 +21,7 @@ public final class GroupInnerMajorOptimizationFlags {
             value = System.getenv(ENV);
         }
         if (value == null || value.trim().isEmpty()) {
-            return "off";
+            return "on";
         }
         String normalized = value.trim().toLowerCase();
         if ("on".equals(normalized) || "true".equals(normalized) || "1".equals(normalized)) {
