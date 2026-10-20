@@ -99,6 +99,7 @@ class PlanningStateServiceReviewFixApplyTest {
     void tearDown() {
         System.clearProperty(ReviewFixCommandFlags.PROPERTY);
         System.clearProperty(ReviewFixSearchFlags.PROPERTY);
+        System.clearProperty(ReviewFixSearchFlags.STRATEGIES_PROPERTY);
     }
 
     @Test
@@ -467,6 +468,22 @@ class PlanningStateServiceReviewFixApplyTest {
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_search_disabled", ex.getMessage());
         assertEquals(baseline, row.getDataValue());
+    }
+
+    @Test
+    void searchStrategyAllowlistRejectsFrozenProposalOutsideAllowlist() {
+        useGroupSafetyFixture();
+        prepareGroupSafety();
+        String baseline = row.getDataValue();
+        System.setProperty(ReviewFixSearchFlags.STRATEGIES_PROPERTY, "ratio");
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.applyFixProposal(TENANT, SESSION, applyRequest()));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("review_fix_search_disabled", ex.getMessage());
+        assertEquals(baseline, row.getDataValue());
+        System.clearProperty(ReviewFixSearchFlags.STRATEGIES_PROPERTY);
     }
 
     @Test

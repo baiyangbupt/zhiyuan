@@ -99,6 +99,7 @@ class PlanningStateServiceReviewFixPrepareTest {
     void tearDown() {
         System.clearProperty(ReviewFixCommandFlags.PROPERTY);
         System.clearProperty(ReviewFixSearchFlags.PROPERTY);
+        System.clearProperty(ReviewFixSearchFlags.STRATEGIES_PROPERTY);
     }
 
     @Test
@@ -339,6 +340,21 @@ class PlanningStateServiceReviewFixPrepareTest {
         assertEquals(409, ex.getStatus());
         assertEquals("review_fix_search_disabled", ex.getMessage());
         assertTrue(upserts.isEmpty());
+    }
+
+    @Test
+    void searchStrategyAllowlistFiltersPreviewProposals() {
+        row.setDataValue(JSON.toJSONString(groupRatioFixture()));
+        System.setProperty(ReviewFixSearchFlags.STRATEGIES_PROPERTY, "ratio");
+
+        ReviewFixPreviewDTO preview = service.previewReviewFixProposals(TENANT, SESSION);
+
+        assertTrue(preview.getProposals().stream()
+                .anyMatch(item -> "ratio_distribution".equals(item.getFindingCode())));
+        assertFalse(preview.getProposals().stream()
+                .anyMatch(item -> "safety_guard".equals(item.getFindingCode())),
+                "allowlist 只开 ratio 时不得返回 safety 提案");
+        System.clearProperty(ReviewFixSearchFlags.STRATEGIES_PROPERTY);
     }
 
     private ReviewFixPrepareReq prepareRequest() {

@@ -1230,7 +1230,7 @@ public class PlanningStateService {
         boolean riskFill = RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(frozenStrategy)
                 && RiskReplaceReviewPreviewPlanner.isRiskFinding(frozenFindingCode)
                 && proposal.getSolverResult() != null;
-        if (!directInversion && !ReviewFixSearchFlags.enabled()) {
+        if (!directInversion && !ReviewFixSearchFlags.allows(frozenFindingCode)) {
             throw new BusinessException(409, "review_fix_search_disabled");
         }
         if (!directInversion && !searchFill && !safetyFill && !ratioFill && !riskFill) {
@@ -3492,24 +3492,25 @@ public class PlanningStateService {
         RatioReviewPreviewPlanner ratio = new RatioReviewPreviewPlanner();
         RiskReplaceReviewPreviewPlanner riskReplace = new RiskReplaceReviewPreviewPlanner();
         // Direct 倒挂只重排显式集合，跟随总开关；Search/Safety/Ratio/Risk 走
-        // staged solver 选集合，单独由 review.fix.search.enabled 放量。
-        boolean searchEnabled = ReviewFixSearchFlags.enabled();
+        // staged solver 选集合，由 review.fix.search.enabled +
+        // review.fix.search.strategies 分类放量。
         for (EvaluationFindingDTO finding : review.getFindings()) {
             FixProposalDTO proposal = direct.plan(state, effectiveCandidates, finding,
                     after -> evaluateReview(after, effectiveCandidates));
-            if (proposal == null && searchEnabled) {
+            boolean searchAllowed = ReviewFixSearchFlags.allows(finding.getCode());
+            if (proposal == null && searchAllowed) {
                 proposal = search.plan(state, effectiveCandidates, finding,
                         after -> evaluateReview(after, effectiveCandidates), confirmable);
             }
-            if (proposal == null && searchEnabled) {
+            if (proposal == null && searchAllowed) {
                 proposal = safety.plan(state, effectiveCandidates, finding,
                         after -> evaluateReview(after, effectiveCandidates), confirmable);
             }
-            if (proposal == null && searchEnabled) {
+            if (proposal == null && searchAllowed) {
                 proposal = ratio.plan(state, effectiveCandidates, finding,
                         after -> evaluateReview(after, effectiveCandidates), confirmable);
             }
-            if (proposal == null && searchEnabled) {
+            if (proposal == null && searchAllowed) {
                 proposal = riskReplace.plan(state, effectiveCandidates, finding,
                         after -> evaluateReview(after, effectiveCandidates), confirmable);
             }

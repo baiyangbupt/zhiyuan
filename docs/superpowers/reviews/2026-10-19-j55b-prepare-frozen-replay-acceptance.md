@@ -270,6 +270,9 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   - 总开关 `review.fix.command.enabled` 关闭：所有确认链不可用；
   - 总开关开、Search 关：只生成 Direct 倒挂，Search 提案不生成；
   - Search 提案在 prepare/apply 阶段返回 409 `review_fix_search_disabled`。
+- 新增 `review.fix.search.strategies` 分类 allowlist（空/`all` = 全部；
+  可填 `count,coverage,safety,ratio,risk`），支持按策略逐步放量；
+  apply 按冻结 finding 的分类再次校验。
 - 真栈门禁：900700 count_target 夹具下，Search 关时 preview 无 count/safety/
   ratio 提案；Search 开时进入 Search planner。夹具后已恢复 v1/80。
 - `PlanSolverResultDTO` 新增只读 `stageResults`（safety/churn/tier_anchor/
@@ -277,7 +280,9 @@ TEXT 量级，prepare 回填整份 preview 会 `Data too long`。现改为只回
   结构化日志；该字段不参与 `inputDigest` 与冻结回放判定。
 - 优化器确定性回归：同一输入重复 15 次、候选输入乱序、620 候选帽场景重复
   5 次，selected/ordered/stageResults 必须逐字一致。
-- Java 全量 **1466 / 0 / 0 / 10**。
+- 放量/回滚步骤见
+  `docs/superpowers/plans/2026-10-20-j55-rollout-and-rollback.md`。
+- Java 全量 **1472 / 0 / 0 / 10**。
 
 仍未覆盖：gap/edge 等 Search probe（设计首期 preview_only）；
 目标/档位/覆盖的 durable patch 持久化。
