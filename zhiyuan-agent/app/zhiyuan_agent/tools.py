@@ -7531,7 +7531,7 @@ def _review_fix_candidate_from_tool_return(content: Any) -> dict[str, Any] | Non
 def _latest_review_fix_prepare_candidate(
     ctx: RunContext[RequestContext],
 ) -> dict[str, Any] | None:
-    """按时间倒序扫描消息历史，找最近一次只读审查修复预览的冻结候选。
+    """只允许最近一次未被确认处理或其他预览取代的冻结候选。
 
     先扫当前 RunContext 的消息（本轮新产生的优先），再扫服务端补进来的
     运行时历史（直连短文本桥没有 `ctx.messages`）。两个来源不能混在一起
@@ -7547,11 +7547,12 @@ def _latest_review_fix_prepare_candidate(
     for messages in sources:
         for message in reversed(messages):
             for part in reversed(list(getattr(message, "parts", []) or [])):
-                if not isinstance(part, ToolReturnPart) or part.tool_name != "preview_plan_change":
+                if not isinstance(part, ToolReturnPart):
                     continue
-                candidate = _review_fix_candidate_from_tool_return(part.content)
-                if candidate:
-                    return candidate
+                if part.tool_name == "preview_plan_change":
+                    return _review_fix_candidate_from_tool_return(part.content)
+                if part.tool_name in {"confirm_pending", "preview_intent_change", "preview_plan_action"}:
+                    return None
     return None
 
 
@@ -9834,6 +9835,8 @@ async def _preview_review_repair_plan_change(
             # 计数修复目标内部等价：count_validation / count_target /
             # count_validation_hard 之间任意 count_* 来源码都算匹配。
             issue_matched = any(code.startswith("count_") for code in source_codes)
+        elif canonical_issue.startswith("coverage:"):
+            issue_matched = canonical_issue in source_codes
         elif coverage_fix_goal:
             # 覆盖修复目标内部等价：coverage / coverage:<i> 之间任意
             # coverage* 来源码都算匹配。
