@@ -1,8 +1,15 @@
 # Planning Integrity 真栈验收记录
 
-日期：2026-10-20。验收基线：`485cb2a` 加本轮修复；后续本地提交见文末。
+日期：2026-10-20。原轮验收基线：`485cb2a` 加当轮修复；后续本地提交与新验收见文末。
 
 ## 最新结论
+
+- 后续审计批 `65f58a7`、目标契约批 `915a8df` 已分开本地提交，未推送或部署。
+- 最终 Java 1652 项，0 failures / 0 errors / 12 skipped；Python 相关 66 passed；完整业务栈 8 passed、事务边界 4 passed。
+- 新包已在专用克隆库完成 6 条 HTTP 主链路、6 项取消/过期/锁定检查、5 类拒绝与失败审计、2 类兼容成功验收。
+- 临时服务已停止，原服务 PID/启动时间、原会话行与运行包哈希、已有前端改动均未变。真实模型 WS 和浏览器仍未验收。
+
+## 前轮 P2 结论
 
 **用户批准的 P2 已修复并复验通过，修复代码已获批准并分三批本地提交；不等于全部 J5.5 或发布验收通过。**
 
@@ -194,3 +201,63 @@ cd zhiyuan-agent
 提交前 fresh 验证：Java 1601 项，0 failures / 0 errors / 10 skipped；Python 2978 passed / 32 skipped / 20 warnings，均退出码 0。第二批另在不含执行修复的基线快照中独立全量验证，1581 项，0 failures / 0 errors / 10 skipped。
 
 本次收尾只重跑单测，不重新启动真栈或操作数据库；22 个通过场景仍指上节已完成的隔离验收。已有前端改动、旧未跟踪文档及私有证据全部保留在提交范围外。计划与验收记录作为单独文档批次保存，不推送、不部署、不重启原服务，也不宣称已关闭真实模型 WS、独立失败审计或完整目标摘要闭环。
+
+## 后续独立审计进展
+
+在 `5574a46` 之后，经用户批准继续落实失败命令的独立事务审计。该后续批次已通过
+Java 全量及专用新库中的 4 个事务测试，尚未提交或部署；它不改写本记录的原验收范围。
+实现、红绿证据、事务测试的替身边界与剩余目标摘要工作，见
+`docs/superpowers/reviews/2026-10-20-planning-failure-audit-verification.md`。
+
+## 后续执行契约与完整栈验证
+
+后续继续补齐日志脱敏、完整 Spring Boot / MyBatis prepare → claim → 执行事务验收，
+并落实 confirmed / solver 目标摘要分离与最终 frozen objectiveResults 对照。
+Java fresh 全量为 1643 项、0 failures / 0 errors / 12 skipped，Python 相关 66 passed；
+另在专用克隆库完成普通专业 / 专业组 Direct / Search 共 8 项真实回滚审计与成功重放验证。
+这些不是本记录原有的 22 个 HTTP/tool 场景，不冒充新的 HTTP、浏览器或真实模型 WS 验收。
+当前仍未提交或部署，运行包与原会话数据未变。详见
+`docs/superpowers/reviews/2026-10-20-review-solver-contract-verification.md`。
+
+## 分批提交后的新包 HTTP 验收
+
+本节针对 `65f58a7` 与 `915a8df` 两批代码。前文 22 个 HTTP/tool 场景及 1643 项单测均保留为历史证据，
+不将其冒充本次新包的全部覆盖；本次没有调用真实模型、WS 或 Python 对话工具。
+
+### 隔离边界
+
+- 构建项目：`/tmp/planning-review-submit-Ds1HZ3/complete/zhiyuan-server/`。最终离线 `package`
+  为 1652 项，0 failures / 0 errors / 12 skipped；运行 jar 仅由该临时目录提供。
+- 临时 jar SHA-256：`b1b07d60f8f8ebee8e3fd751d1cd1188846f86bf2e87bca0bd7903a1e3182298`。
+- 新 schema：`zhiyuan_integrity_acc_20261020_190727`；datasource 和 Flyway 的 URL/user/password
+  均显式指向新库，并移除继承环境中可能覆盖隔离配置的 Spring / JVM 参数；Redis 和临时文件独立。
+- 临时 Java / Agent 为 22645 / 22794，端口 18390 / 18391；Agent 只启动并做健康检查，HTTP 业务探针
+  直接访问临时 Java，不据此声称 Agent 对话链或模型 WS 已验收。
+- 原 3201 / 18290 / 18291 / 18292 服务未重启，原 `zhiyuan-server/target/zhiyuan-server.jar` 未替换。
+
+### 结果
+
+| 场景 | 数量 | 验证结果 |
+| --- | --- | --- |
+| 普通专业 / 专业组 × count / coverage / Direct inversion | 6 条主链路 | preview / prepare 只读；public apply 和未 claim 拒绝；claim → execute → replay → complete → applied；版本只增加一次、选择及组内专业身份与冻结结果一致 |
+| 普通专业 / 专业组 count 的取消、过期 claim、锁定 | 2 组、6 项检查 | 取消后不可 claim；过期 claim 不写方案；锁定方案不可确认 |
+| canonical 摘要篡改、objectiveResults 缺失、Search solverResult 缺失、平铺草案缺失、组内专业缺失 | 5 类拒绝链路 | 分别 409 / 40905；规划行哈希不变；failed command 独立持久化；原 pending expired；reconcile 保留失败码；同 operation 重放不再执行 |
+| 未选池内专业增加 coverage 匹配 | 1 条成功链路 | 冻结和回执的实际 coverage 均为 1，不误算为池内匹配的 2；完成正常提交和幂等重放 |
+| 有 units、缺 volunteerModel 的历史组状态 | 1 条成功链路 | 合法 coverage 提案完成确认执行，最终明确 majorGroup，摘要和目标回执均有效 |
+
+全部表列检查通过，探针退出码均为 0。五类损坏冻结数据通过**仅修改专用新库的 pending JSON**构造，
+用于验证持久化契约的拒绝边界，并不表示公开接口允许任意修改冻结内容；这五类均为写前拒绝，
+真正“方案已写入后注入失败再回滚”的证据仍来自同源码的 8 项完整 Spring / MyBatis 栈测试。
+
+### 收尾与证据
+
+- 仅停止本次临时 Java / Agent；确认两 PID 已消失、18390 / 18391 端口关闭。
+- 原 Java 20914、Agent 914、Rank 4258 / 2035、前端 31139 的 PID 和启动时间与验收前逐字一致。
+- 原会话 extra-data 行哈希、原运行 jar 哈希、已有前端 diff 指纹均未变化；新库与证据保留，不清理原库。
+- 私有目录：`.local/codex-local/planning-solver-contract-http-submit-20261020/`，包含 `run.json`、
+  `http-summary.json`、`http-results.json`、原始响应及执行脚本快照；配置和完整回执不进入 Git。
+  总结按表列验收动作计数，原始 JSON 记录粒度包含边界合集和兼容场景补充标记，不以 JSON 行数充当场景数。
+- 本节与计划、两份修复验证记录单独作为文档批次本地提交；没有 push、部署或现有服务重启。
+
+**下一发布关口仍是受控更新运行包，再做真实模型 WS、浏览器卡片和对话确认闭环。**
+失败审计进程崩溃窗口、存储失败重投及 failed 台账归档另列后续，不因本次 HTTP 通过而关闭。
