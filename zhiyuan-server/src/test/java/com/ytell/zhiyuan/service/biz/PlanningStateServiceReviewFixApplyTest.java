@@ -420,6 +420,9 @@ class PlanningStateServiceReviewFixApplyTest {
         }
         assertNotNull(proposal, "group count_target fixture 必须产出 Search 提案");
         assertEquals("ready", proposal.getStatus());
+        assertNotNull(proposal.getSolverResult());
+        assertFalse(proposal.getSolverResult().getSelectedMajorIdsByUnit().isEmpty(),
+                "组模式预览必须冻结 actual selected majors，才能覆盖 frozen replay 的专业校验");
         ReviewFixPrepareReq req = new ReviewFixPrepareReq();
         req.setProposalId(proposal.getProposalId());
         req.setPreviewDigest(proposal.getPreviewDigest());
