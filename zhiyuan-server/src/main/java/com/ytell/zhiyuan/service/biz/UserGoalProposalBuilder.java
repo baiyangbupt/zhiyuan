@@ -2499,6 +2499,7 @@ final class UserGoalProposalBuilder {
         // 用副本 enrich：proposal 的 canonicalObjectiveDigest 仍保持原口径，
         // 避免 apply 后置校验用 compileConfirmed 重算时 40905。
         CanonicalPlanningObjectiveSetDTO stagedObjectives = copyObjectiveSet(objectiveSet);
+        applyInitialTierBalanceForEmptyPlan(state, stagedObjectives, snapshot);
         PlanningObjectiveCompiler.enrichV2(state, stagedObjectives, policy);
         selection.solverResult = STAGED_SOLVER.solve(snapshot, stagedObjectives, policy).solverResult;
         if (RepairProposalTaxonomy.Status.BLOCKED.equals(selection.solverResult.getStatus())) {
@@ -2552,6 +2553,95 @@ final class UserGoalProposalBuilder {
             selection.add(additions.get(entityId));
         }
         return selection;
+    }
+
+    /**
+     * 空方案首次补齐时，把推荐池档位比例作为 solver-only 平衡约束；不写入
+     * canonical objective，也不产生 tier_* 冻结结果，避免 40905。
+     */
+    private static void applyInitialTierBalanceForEmptyPlan(
+            PlanningStateDTO state,
+            CanonicalPlanningObjectiveSetDTO stagedObjectives,
+            CandidateSnapshotDTO snapshot) {
+        if (state == null || stagedObjectives == null || snapshot == null
+                || stagedObjectives.getTierAllocationConstraint() != null
+                || stagedObjectives.getSolverTierBalance() != null) {
+            return;
+        }
+        for (CandidateFactDTO fact : defaultList(snapshot.getFacts())) {
+            if (Boolean.TRUE.equals(fact.getCurrent())) {
+                return;
+            }
+        }
+        Integer target = stagedObjectives.getTargetCount();
+        if (target == null || target <= 0) {
+            return;
+        }
+        Map<String, Integer> tierCounts = null;
+        if (state.getInitialRecommendationState() != null
+                && state.getInitialRecommendationState().getSummary() != null) {
+            tierCounts = state.getInitialRecommendationState().getSummary().getTierCounts();
+        }
+        if (tierCounts == null || tierCounts.isEmpty()) {
+            tierCounts = state.getCandidatePoolState() == null
+                    ? null : state.getCandidatePoolState().getRequiredTierCounts();
+        }
+        if (tierCounts == null || tierCounts.isEmpty()) {
+            return;
+        }
+        int sprint = 0;
+        int stable = 0;
+        int protect = 0;
+        for (CandidateFactDTO fact : defaultList(snapshot.getFacts())) {
+            String tier = TierAllocationSupport.canonicalTierKey(fact.getTier());
+            if ("sprint".equals(tier)) {
+                sprint++;
+            } else if ("stable".equals(tier)) {
+                stable++;
+            } else if ("protect".equals(tier)) {
+                protect++;
+            }
+        }
+        TierAllocationConstraintDTO bounds = new TierAllocationConstraintDTO();
+        bounds.setSprint(bound(0, sprint));
+        bounds.setStable(bound(0, stable));
+        bounds.setProtect(bound(0, protect));
+        TierCountsDTO current = new TierCountsDTO();
+        for (Map.Entry<String, Integer> entry : tierCounts.entrySet()) {
+            String tier = TierAllocationSupport.canonicalTierKey(entry.getKey());
+            int count = entry.getValue() == null ? 0 : Math.max(0, entry.getValue());
+            if ("sprint".equals(tier)) {
+                current.setSprintCount(defaultInt(current.getSprintCount()) + count);
+            } else if ("stable".equals(tier)) {
+                current.setStableCount(defaultInt(current.getStableCount()) + count);
+            } else if ("protect".equals(tier)) {
+                current.setProtectCount(defaultInt(current.getProtectCount()) + count);
+            }
+        }
+        TierCountsDTO projected = TierStructureProjection.project(current, target, bounds);
+        if (projected == null) {
+            return;
+        }
+        TierAllocationConstraintDTO allocation = new TierAllocationConstraintDTO();
+        allocation.setType("exact_counts");
+        allocation.setSprintCount(projected.getSprintCount());
+        allocation.setStableCount(projected.getStableCount());
+        allocation.setProtectCount(projected.getProtectCount());
+        allocation.setSprint(bound(projected.getSprintCount(), projected.getSprintCount()));
+        allocation.setStable(bound(projected.getStableCount(), projected.getStableCount()));
+        allocation.setProtect(bound(projected.getProtectCount(), projected.getProtectCount()));
+        stagedObjectives.setSolverTierBalance(allocation);
+    }
+
+    private static TierCountRangeDTO bound(Integer min, Integer max) {
+        TierCountRangeDTO range = new TierCountRangeDTO();
+        range.setMinCount(min == null ? 0 : Math.max(0, min));
+        range.setMaxCount(max == null ? 0 : Math.max(0, max));
+        return range;
+    }
+
+    private static int defaultInt(Integer value) {
+        return value == null ? 0 : value;
     }
 
     private static MutationPolicyDTO fillMutationPolicy(PlanningStateDTO state,

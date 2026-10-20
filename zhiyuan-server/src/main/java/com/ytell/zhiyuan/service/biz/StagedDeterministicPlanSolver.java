@@ -183,6 +183,11 @@ final class StagedDeterministicPlanSolver {
         TierAllocationConstraintDTO tierConstraint = canonicalTierConstraint(
                 safeObjectives.getTierAllocationConstraint(), targetCount);
         addTierConstraints(model, variables, facts, tierConstraint);
+        // 隐式档位平衡只约束求解，不写 tier_* objectiveResults，避免冻结结果
+        // 与 canonical/tierQuotaReport 不一致导致 40905。
+        TierAllocationConstraintDTO implicitTierBalance = canonicalTierConstraint(
+                safeObjectives.getSolverTierBalance(), targetCount);
+        addImplicitTierConstraints(model, variables, facts, implicitTierBalance);
         if (Boolean.TRUE.equals(safePolicy.getInitialContentGuard())) {
             addInitialContentConstraints(model, variables, facts,
                     "unit".equals(safeSnapshot.getCountMode()));
@@ -650,6 +655,30 @@ final class StagedDeterministicPlanSolver {
         for (String tier : TIERS) {
             TierCountRangeDTO bound = tierBound(constraint, tier);
             Expression expression = model.addExpression("tier:" + tier);
+            if (bound.getMinCount() != null) {
+                expression.lower(bound.getMinCount());
+            }
+            if (bound.getMaxCount() != null) {
+                expression.upper(bound.getMaxCount());
+            }
+            for (int index = 0; index < facts.size(); index++) {
+                if (tier.equals(facts.get(index).getTier())) {
+                    expression.set(variables.get(index), 1);
+                }
+            }
+        }
+    }
+
+    private void addImplicitTierConstraints(ExpressionsBasedModel model,
+                                            List<Variable> variables,
+                                            List<CandidateFactDTO> facts,
+                                            TierAllocationConstraintDTO constraint) {
+        if (constraint == null) {
+            return;
+        }
+        for (String tier : TIERS) {
+            TierCountRangeDTO bound = tierBound(constraint, tier);
+            Expression expression = model.addExpression("implicit_tier:" + tier);
             if (bound.getMinCount() != null) {
                 expression.lower(bound.getMinCount());
             }

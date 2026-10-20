@@ -15,6 +15,12 @@ public class CanonicalPlanningObjectiveSetDTO {
     private List<CoverageRequirementDTO> coverageConstraints = Lists.newArrayList();
     private TierQuotaGoalDTO tierAllocationGoal;
     private TierAllocationConstraintDTO tierAllocationConstraint;
+    /**
+     * solver-only 隐式档位平衡：只作为求解约束，不进入 canonical objective /
+     * solverObjectiveDigest，也不产生冻结的 tier_* objectiveResults。
+     * 用于空方案首次补齐时沿用推荐池档位比例。
+     */
+    private TierAllocationConstraintDTO solverTierBalance;
     private TierAllocationResolutionDTO tierAllocationResolution;
     private Boolean tierAllocationStateChanged = false;
     private List<PriorityRuleDTO> orderingConstraints = Lists.newArrayList();

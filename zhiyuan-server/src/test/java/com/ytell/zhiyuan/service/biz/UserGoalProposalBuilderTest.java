@@ -2522,6 +2522,42 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void emptyFillProjectsRecommendationTierMixWithoutFrozenTierResults() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setSourceProvinceName("浙江");
+        state.getCandidatePoolState().getRequiredTierCounts().put("冲", 2);
+        state.getCandidatePoolState().getRequiredTierCounts().put("稳", 2);
+        state.getCandidatePoolState().getRequiredTierCounts().put("保", 4);
+        int index = 0;
+        for (String tier : java.util.Arrays.asList("冲", "冲", "冲", "冲",
+                "稳", "稳", "稳", "稳", "保", "保", "保", "保")) {
+            CandidateItemDTO item = candidate("v" + index, "学校" + index,
+                    "专业" + index, "类别", 90D - index++);
+            item.setTier(tier);
+            state.getCandidatePoolState().getItems().add(item);
+        }
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, fillRequest(4))
+                .getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        java.util.Map<String, Long> selectedTiers = proposal.getSolverResult()
+                .getSelectedEntityIds().stream()
+                .map(id -> state.getCandidatePoolState().getItems().stream()
+                        .filter(item -> id.equals(item.getVolunteerId())).findFirst().orElse(null))
+                .filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.groupingBy(
+                        CandidateItemDTO::getTier, java.util.stream.Collectors.counting()));
+        assertEquals(Long.valueOf(1), selectedTiers.get("冲"));
+        assertEquals(Long.valueOf(1), selectedTiers.get("稳"));
+        assertEquals(Long.valueOf(2), selectedTiers.get("保"));
+        assertTrue(proposal.getSolverResult().getObjectiveResults().stream()
+                .noneMatch(item -> item != null && String.valueOf(item.getObjectiveType()).startsWith("tier_")),
+                "solver-only 档位平衡不能产生冻结的 tier_* 结果");
+    }
+
+    @Test
     void shouldBuildReadyAddUnitsPreviewForNamedTargets() {
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().getItems().add(candidate("v1", "中南大学", "临床医学", "医学", 92D));
