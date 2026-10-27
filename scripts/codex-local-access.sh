@@ -40,15 +40,37 @@ _codex_local_access_validate_origin() {
 
 codex_local_access_resolve() {
     ACCESS_MODE="${CODEX_LOCAL_ACCESS_MODE:-local}"
+    ACCESS_WEB_HOST="${CODEX_LOCAL_WEB_HOST:-127.0.0.1}"
     local public_origin="${CODEX_LOCAL_PUBLIC_ORIGIN:-}"
     local configured_outer="${CODEX_LOCAL_OUTER_API_BASE_URL:-}"
     local agent_port="${1:-18291}"
     local web_port="${2:-3201}"
 
+    if [[ "$ACCESS_WEB_HOST" != "127.0.0.1" ]]; then
+        [[ "$ACCESS_MODE" == "local" ]] || _codex_local_access_fail \
+            "a non-loopback web host is only supported in local mode"
+        [[ "$ACCESS_WEB_HOST" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] \
+            || _codex_local_access_fail "web host must be a private IPv4 address: $ACCESS_WEB_HOST"
+        local -a host_octets
+        local host_octet
+        IFS=. read -r -a host_octets <<< "$ACCESS_WEB_HOST"
+        for host_octet in "${host_octets[@]}"; do
+            (( 10#$host_octet <= 255 )) && [[ "$host_octet" == "0" || "$host_octet" != 0* ]] \
+                || _codex_local_access_fail "invalid web host: $ACCESS_WEB_HOST"
+        done
+        [[ "$ACCESS_WEB_HOST" == 10.* || "$ACCESS_WEB_HOST" == 192.168.* \
+            || "$ACCESS_WEB_HOST" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]] \
+            || _codex_local_access_fail "web host must be loopback or a private IPv4 address: $ACCESS_WEB_HOST"
+    fi
+
     case "$ACCESS_MODE" in
         local)
             ACCESS_WS_OVERRIDE="ws://127.0.0.1:$agent_port"
             ACCESS_ALLOWED_ORIGINS="http://127.0.0.1:$web_port,http://localhost:$web_port"
+            if [[ "$ACCESS_WEB_HOST" != "127.0.0.1" ]]; then
+                ACCESS_WS_OVERRIDE="ws://$ACCESS_WEB_HOST:$web_port"
+                ACCESS_ALLOWED_ORIGINS="http://$ACCESS_WEB_HOST:$web_port,$ACCESS_ALLOWED_ORIGINS"
+            fi
             ACCESS_OUTER_API_BASE_URL="${configured_outer:-$CODEX_LOCAL_DEFAULT_OUTER_API_BASE_URL}"
             ;;
         public-test)
@@ -74,6 +96,7 @@ codex_local_access_resolve() {
 
 codex_local_access_print() {
     printf 'CODEX_LOCAL_ACCESS_MODE=%s\n' "$ACCESS_MODE"
+    printf 'CODEX_LOCAL_WEB_HOST=%s\n' "$ACCESS_WEB_HOST"
     printf 'NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE="%s"\n' "$ACCESS_WS_OVERRIDE"
     printf 'NEXT_PUBLIC_OUTER_API_BASE_URL=%s\n' "$ACCESS_OUTER_API_BASE_URL"
     # 模式也下发到 Web ✓：公开测试模式下浏览器要**忽略**任何显式 base ✗、按同源派生 ✓。

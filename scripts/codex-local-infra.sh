@@ -11,6 +11,7 @@ SERVER_CONFIG="$STATE_DIR/application-codex-local.yml"
 MYSQL_PORT="${CODEX_LOCAL_MYSQL_PORT:-13306}"
 REDIS_PORT="${CODEX_LOCAL_REDIS_PORT:-16379}"
 MYSQL_DATABASE="${CODEX_LOCAL_MYSQL_DATABASE:-zhiyuan_codex_local}"
+PREPARE_TYPE_FALLBACK="${CODEX_LOCAL_PREPARE_TYPE_FALLBACK-PREDICT}"
 
 usage() {
     cat <<'EOF'
@@ -27,6 +28,7 @@ Environment:
   CODEX_LOCAL_COMPOSE_PROJECT Compose project name (default: zhiyuan-codex-local).
   CODEX_LOCAL_MYSQL_PORT      Host MySQL port (default: 13306).
   CODEX_LOCAL_REDIS_PORT      Host Redis port (default: 16379).
+  CODEX_LOCAL_PREPARE_TYPE_FALLBACK  Demo data mode (default: PREDICT; empty disables).
 EOF
 }
 
@@ -41,6 +43,11 @@ COMMAND="$1"
 case "$COMMAND" in
     start|stop|status|reset) ;;
     *) fail "unknown command: $COMMAND" ;;
+esac
+
+case "$PREPARE_TYPE_FALLBACK" in
+    ""|PREDICT|VOLUNTEER) ;;
+    *) fail "CODEX_LOCAL_PREPARE_TYPE_FALLBACK must be PREDICT, VOLUNTEER, or empty" ;;
 esac
 
 command -v docker >/dev/null 2>&1 || fail "required command is unavailable: docker"
@@ -108,6 +115,8 @@ spring:
 agent:
   zhiyuan:
     url: http://127.0.0.1:18291
+demo:
+  prepare-type-fallback: "$PREPARE_TYPE_FALLBACK"
 volunteer:
   rank:
     url: http://127.0.0.1:18292

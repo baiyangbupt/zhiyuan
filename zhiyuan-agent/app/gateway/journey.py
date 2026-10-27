@@ -95,6 +95,7 @@ class JourneyContext:
     plan_adjustment_stale: bool = False
     review_freshness: str = "absent"
     refresh_requirement: str = "none"
+    review_availability: dict[str, Any] = field(default_factory=dict)
     review_source_version: int | None = None
     review_stale: bool = False
     tier_quota_goal: bool = False
@@ -134,6 +135,13 @@ def from_snapshot(
     candidate_freshness = _as_str(raw.get("candidateFreshness")) or "absent"
     plan_freshness = _as_str(raw.get("planFreshness")) or "absent"
     review_freshness = _as_str(raw.get("reviewFreshness")) or "absent"
+    review_availability = (
+        raw.get("reviewAvailability")
+        if isinstance(raw.get("reviewAvailability"), Mapping)
+        else {}
+    )
+    if str(review_availability.get("mode") or "").lower() == "paused":
+        review_freshness = "paused"
     refresh_requirement = _as_str(raw.get("refreshRequirement")) or "none"
     if refresh_requirement == "none":
         # 旧 Java 没有 refreshRequirement 时的有界回落；只按组件 freshness 推。
@@ -141,7 +149,7 @@ def from_snapshot(
             refresh_requirement = "candidates"
         elif plan_freshness != "fresh":
             refresh_requirement = "plan"
-        elif review_freshness != "fresh":
+        elif review_freshness not in {"fresh", "paused"}:
             refresh_requirement = "review"
 
     context = JourneyContext(
@@ -169,6 +177,7 @@ def from_snapshot(
         plan_adjustment_stale=_as_bool(raw.get("planAdjustmentStale")),
         review_freshness=review_freshness,
         refresh_requirement=refresh_requirement,
+        review_availability=dict(review_availability),
         review_source_version=_as_int(raw.get("reviewSourceVersion")),
         review_stale=_as_bool(raw.get("reviewStale")),
         tier_quota_goal=_as_bool(raw.get("tierQuotaGoal")),
@@ -354,7 +363,7 @@ def recommended_next(context: JourneyContext) -> str:
         return "fill_to_count"
     if context.has_open_task:
         return "continue_task"
-    if context.refresh_requirement == "review":
+    if context.refresh_requirement == "review" and context.review_freshness != "paused":
         if context.manual_review_current:
             return "interpret_admission" if context.plan_interpretable else "wait"
         return "review_plan"
@@ -377,7 +386,9 @@ def context_text(context: JourneyContext) -> str:
         (
             f"新鲜度：候选 {context.candidate_freshness}；"
             f"方案 {context.plan_freshness}；"
-            f"规则审查 {context.review_freshness}；"
+            f"规则审查 {context.review_freshness}"
+            + ("（暂停：未运行，不代表通过）" if context.review_freshness == "paused" else "")
+            + "；"
             f"刷新要求 {context.refresh_requirement}"
         ),
         "新鲜度口径：以本块为准；staleFlags/staleMessage 是兼容字段，不据此判断规则审查是否新鲜。",
@@ -393,7 +404,9 @@ def context_text(context: JourneyContext) -> str:
             f"正式方案：{'可解读（' + str(context.ordered_entry_count) + ' 条 ordered）' if context.plan_interpretable else '尚不可解读（需要 ordered 方案）'}"
         ),
         (
-            "本版人工审查："
+            "本版人工审查：质量审查暂停，未运行"
+            if context.review_freshness == "paused"
+            else "本版人工审查："
             + ("已看过，与当前方案内容一致" if context.manual_review_current else "未看过")
         ),
         "可用动作：" + ("、".join(context.available_actions) or "无"),

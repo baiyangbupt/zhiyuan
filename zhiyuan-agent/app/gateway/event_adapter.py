@@ -158,6 +158,9 @@ def _interpretation_event(item: Mapping[str, Any]) -> dict[str, Any] | None:
         "ratioCoverage": data.get("ratioCoverage"),
         "dataCompleteness": data.get("dataCompleteness"),
         "orderAnomaly": data.get("orderAnomaly"),
+        "tierSequence": data.get("tierSequence"),
+        "tierSequenceStatus": data.get("tierSequenceStatus"),
+        "userOrderRespected": data.get("userOrderRespected"),
         "baseLanding": _scenario_summary(data.get("baseLanding")),
         "scenarios": [
             summary

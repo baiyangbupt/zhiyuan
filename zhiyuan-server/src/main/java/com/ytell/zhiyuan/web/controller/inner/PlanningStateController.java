@@ -2,7 +2,7 @@ package com.ytell.zhiyuan.web.controller.inner;
 
 import com.ytell.zhiyuan.common.base.BaseResponse;
 import com.ytell.zhiyuan.common.exception.BusinessException;
-import com.ytell.zhiyuan.model.dto.CreateSessionReq;
+import com.ytell.zhiyuan.model.dto.ScoreUpdatePatch;
 import com.ytell.zhiyuan.model.dto.planning.*;
 import com.ytell.zhiyuan.service.biz.CandidateCompareService;
 import com.ytell.zhiyuan.service.biz.CandidateComparisonService;
@@ -31,6 +31,7 @@ import com.alibaba.fastjson.JSON;
 import java.nio.charset.StandardCharsets;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/gaotu-assistant-bot/inner/planning/{tenantId}")
@@ -132,7 +133,7 @@ public class PlanningStateController {
     public BaseResponse<PlanningStateDTO> getState(@PathVariable("tenantId") Long tenantId,
                                                    @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
         log.info("getPlanningState: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.getPlanningState(chatSessionId));
+        return BaseResponse.success(planningStateService.getPlanningStateForOutput(chatSessionId));
     }
 
     @GetMapping("/session/workspace-state")
@@ -398,6 +399,15 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.getReviewState(chatSessionId));
     }
 
+    @GetMapping("/session/plan-quality")
+    @ApiOperation("方案质量评价 v2（只读：资格/偏好/结构/证据，不生成建议）")
+    public BaseResponse<PlanEvaluationDTO> getPlanQuality(
+            @PathVariable("tenantId") Long tenantId,
+            @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
+        log.info("getPlanQuality: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.evaluatePlanQuality(chatSessionId));
+    }
+
     /**
      * 录取解读（只读）：当前方案的结构与条件情景，不是录取预测。
      *
@@ -647,9 +657,10 @@ public class PlanningStateController {
     @ApiOperation("校验补录成绩草稿并返回结构化摘要（只读，不落任何状态）")
     public BaseResponse<ScoreUpdatePreviewDTO> previewScoreUpdate(@PathVariable("tenantId") Long tenantId,
                                                                   @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                                  @RequestBody CreateSessionReq req) {
+                                                                  @RequestBody(required = false) Map<String, Object> body) {
         log.info("previewScoreUpdate: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(chatSessionBizService.previewScoreUpdate(tenantId, chatSessionId, req));
+        return BaseResponse.success(chatSessionBizService.previewScoreUpdate(
+                tenantId, chatSessionId, ScoreUpdatePatch.fromRaw(body)));
     }
 
     @PostMapping("/session/score-update/prepare")
@@ -658,12 +669,18 @@ public class PlanningStateController {
                                                              @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
                                                              @ApiParam("幂等键：同一 requestId 重放返回同一次结果（同一个 operationId）")
                                                              @RequestParam("requestId") String requestId,
-                                                             @RequestBody CreateSessionReq req) {
-        CreateSessionReq safeReq = req == null ? new CreateSessionReq() : req;
-        String digest = DigestUtils.md5DigestAsHex(JSON.toJSONString(safeReq).getBytes(StandardCharsets.UTF_8));
+                                                             @RequestBody(required = false) Map<String, Object> body) {
+        ScoreUpdatePatch patch = ScoreUpdatePatch.fromRaw(body);
+        Integer sourceVersionGuard = patch.getSourceVersionGuard();
+        String digest = DigestUtils.md5DigestAsHex(
+                (patch.canonicalJson() + "|sourceVersionGuard=" + sourceVersionGuard
+                        + "|sourceMessageId=" + patch.getSourceMessageId()
+                        + "|sourceTurnId=" + patch.getSourceTurnId())
+                        .getBytes(StandardCharsets.UTF_8));
         log.info("prepareScoreUpdate: tenantId={}, chatSessionId={}, requestId={}", tenantId, chatSessionId, requestId);
         return BaseResponse.success(
-                chatSessionBizService.prepareScoreUpdateProposal(tenantId, chatSessionId, requestId, digest, safeReq));
+                chatSessionBizService.prepareScoreUpdateProposal(
+                        tenantId, chatSessionId, requestId, digest, patch));
     }
 
     @PostMapping("/session/fix-proposals/apply")

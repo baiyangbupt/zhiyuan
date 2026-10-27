@@ -13,6 +13,7 @@ import com.ytell.zhiyuan.model.dto.planning.DiversityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
 import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
+import com.ytell.zhiyuan.model.dto.planning.StructureQualityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
@@ -36,6 +37,7 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -51,6 +53,11 @@ final class StagedDeterministicPlanSolver {
     private static final Logger LOG = LoggerFactory.getLogger(StagedDeterministicPlanSolver.class);
 
     static final String SOLVER_VERSION = "ojalgo-48.4.2-j53-staged";
+    static final String ORDERING_INITIAL_TIER = "initial_tier_order_v1";
+    /** 初始方案严格质量序：不把“旧方案中的条目”无条件排在新增条目之前。 */
+    static final String ORDERING_INITIAL_TIER_STRICT = "initial_tier_strict_v1";
+    static final String ORDERING_PRESERVE_CURRENT = "preserve_current_v1";
+    static final String ORDERING_EXPLICIT_MOVE = "explicit_move_v1";
     static final String HARD_OBJECTIVE_VERSION = "solver-hard-objective-v1";
     private static final long TIME_BUDGET_MS = 2_000L;
     private static final int ITERATION_BUDGET = 100_000;
@@ -356,6 +363,11 @@ final class StagedDeterministicPlanSolver {
             }
         }
 
+        Expression structureUtilityFloor = addStructureUtilityFloor(
+                model, variables, facts, safeObjectives, deadline, result);
+        addStructureQualityStage(model, variables, facts, safeObjectives, tierConstraint,
+                targetCount, deadline, result, levels, levelDurations, structureUtilityFloor);
+
         long maxStableTotal = Math.max(0L, (long) facts.size() * Math.max(0, facts.size() - 1));
         long utilityWeight = maxStableTotal + 1L;
         Expression utilityObjective = model.addExpression("utility_objective")
@@ -461,7 +473,7 @@ final class StagedDeterministicPlanSolver {
         }
 
         List<CandidateFactDTO> selected = selectedFacts(facts, variables, finalSolved);
-        List<CandidateFactDTO> ordered = orderSelected(selected);
+        List<CandidateFactDTO> ordered = orderSelected(selected, safePolicy);
         result.setSelectedEntityIds(ids(selected));
         result.setOrderedEntityIds(ids(ordered));
         // 候选帽降维后 reduced facts 可能不含全部 current；移出名单必须按原始快照算，
@@ -477,6 +489,7 @@ final class StagedDeterministicPlanSolver {
         result.setStatus("ready");
         result.setSolverState(finalSolved.getState().toString());
         result.setSolverVersion(SOLVER_VERSION);
+        result.setOrderingPolicyVersion(safePolicy.getOrderingPolicyVersion());
         result.setInputDigest(inputDigest(safeSnapshot, safeObjectives, safePolicy));
         result.setDurationMs(elapsedMillis(started));
         populateStageResults(result, levels, levelDurations);
@@ -615,6 +628,221 @@ final class StagedDeterministicPlanSolver {
             }
         }
         return null;
+    }
+
+    /**
+     * 结构优化必须是有界软目标：先求无结构约束的效用最优值，再加一个效用下限。
+     * 防止为了把一个 1.0 桶换成已知桶，无限制牺牲院校/专业质量。
+     */
+    private Expression addStructureUtilityFloor(ExpressionsBasedModel model,
+                                                List<Variable> variables,
+                                                List<CandidateFactDTO> facts,
+                                                CanonicalPlanningObjectiveSetDTO objectives,
+                                                long deadline,
+                                                PlanSolverResultDTO result) {
+        StructureQualityPolicyDTO policy = objectives == null
+                ? null : objectives.getStructureQualityPolicy();
+        if (policy == null || "off".equalsIgnoreCase(policy.getMode())) {
+            return null;
+        }
+        double maxLossRatio = policy.getMaxUtilityLossRatio() == null
+                ? 0.03D : policy.getMaxUtilityLossRatio();
+        if (maxLossRatio <= 0D) {
+            return null;
+        }
+        long maxStableTotal = Math.max(0L, (long) facts.size() * Math.max(0, facts.size() - 1));
+        long utilityWeight = maxStableTotal + 1L;
+        Expression ceiling = model.addExpression("utility_ceiling_objective")
+                .weight(BigDecimal.valueOf(-utilityWeight));
+        for (int index = 0; index < facts.size(); index++) {
+            int utility = facts.get(index).getUtilityScore() == null
+                    ? 0 : facts.get(index).getUtilityScore();
+            ceiling.set(variables.get(index), BigDecimal.valueOf(utility));
+        }
+        Optimisation.Result solved = solvePhase(model, deadline, "utility_ceiling");
+        ceiling.weight(0);
+        if (solved == null || !solved.getState().isOptimal()) {
+            PlanSolverResultDTO.DiagnosticDTO diagnostic = new PlanSolverResultDTO.DiagnosticDTO();
+            diagnostic.setReasonCode("structure_utility_floor_unavailable");
+            diagnostic.setObjectiveId("structure_quality");
+            diagnostic.setMessage("未能求出无结构约束的效用上限，结构质量仅作影子观测");
+            result.getDiagnostics().add(diagnostic);
+            return null;
+        }
+        int optimum = utilityValue(facts, variables, solved);
+        long allowance = (long) Math.ceil(Math.abs((double) optimum) * maxLossRatio);
+        long floor = (long) optimum - allowance;
+        LOG.info("structure utility ceiling: optimum={} allowance={} floor={}", optimum, allowance, floor);
+        Expression utilityFloor = model.addExpression("utility_floor")
+                .lower(BigDecimal.valueOf(floor));
+        for (int index = 0; index < facts.size(); index++) {
+            int utility = facts.get(index).getUtilityScore() == null
+                    ? 0 : facts.get(index).getUtilityScore();
+            utilityFloor.set(variables.get(index), BigDecimal.valueOf(utility));
+        }
+        return utilityFloor;
+    }
+
+    /**
+     * Phase 2 影子/软约束：同档录取率桶集中度。
+     *
+     * <p>只惩罚未知/1.0 桶和单桶超额，不把 admissionRatio 当概率；求解失败时
+     * 不阻断主链路，只留下 diagnostic。后续可在这里增加 coverage/多样性。</p>
+     */
+    private void addStructureQualityStage(ExpressionsBasedModel model,
+                                          List<Variable> variables,
+                                          List<CandidateFactDTO> facts,
+                                          CanonicalPlanningObjectiveSetDTO objectives,
+                                          TierAllocationConstraintDTO tierConstraint,
+                                          int targetCount,
+                                          long deadline,
+                                          PlanSolverResultDTO result,
+                                          List<ObjectiveLevel> levels,
+                                          List<Long> levelDurations,
+                                          Expression utilityFloor) {
+        StructureQualityPolicyDTO policy = objectives == null
+                ? null : objectives.getStructureQualityPolicy();
+        if (policy == null || "off".equalsIgnoreCase(policy.getMode())) {
+            return;
+        }
+        Expression objective = model.addExpression("structure_quality_objective").weight(1);
+        List<Variable> excessVariables = new ArrayList<Variable>();
+        List<List<Integer>> cappedBuckets = new ArrayList<List<Integer>>();
+        List<Integer> bucketCaps = new ArrayList<Integer>();
+        List<Expression> coverageRequirements = new ArrayList<Expression>();
+        for (String tier : Arrays.asList("sprint", "stable", "protect")) {
+            int tierTarget = tierTargetCount(tier, tierConstraint, facts, targetCount);
+            if (tierTarget <= 0) {
+                continue;
+            }
+            Map<String, List<Integer>> buckets = new LinkedHashMap<String, List<Integer>>();
+            for (int index = 0; index < facts.size(); index++) {
+                CandidateFactDTO fact = facts.get(index);
+                if (fact == null || !tier.equals(fact.getTier())) {
+                    continue;
+                }
+                String bucket = fact.getRatioBucket();
+                if (bucket == null) {
+                    bucket = AdmissionRatioBucketSupport.bucket(fact.getTier(), fact.getAdmissionRatio());
+                }
+                buckets.computeIfAbsent(bucket, key -> new ArrayList<Integer>()).add(index);
+            }
+            List<Variable> tierCoverage = new ArrayList<Variable>();
+            for (Map.Entry<String, List<Integer>> entry : buckets.entrySet()) {
+                boolean unknown = AdmissionRatioBucketSupport.BUCKET_UNKNOWN.equals(entry.getKey());
+                double share = unknown
+                        ? (policy.getMaxUnknownBucketShare() == null ? 0.4D : policy.getMaxUnknownBucketShare())
+                        : (policy.getMaxSingleBucketShare() == null ? 0.5D : policy.getMaxSingleBucketShare());
+                // 用 floor 保证“占比不超过 X%”的口径与质量评价一致；ceil 会把
+                // 13*0.4=5.2 放宽成 6（46%），评价仍会判超限。
+                int cap = Math.max(0, (int) Math.floor(tierTarget * Math.max(0D, Math.min(1D, share))));
+                Variable excess = Variable.make("structure_excess_" + tier + "_" + entry.getKey())
+                        .integer(true).lower(0).upper(tierTarget);
+                model.addVariable(excess);
+                excessVariables.add(excess);
+                cappedBuckets.add(entry.getValue());
+                bucketCaps.add(cap);
+                Expression bucketCount = model.addExpression(
+                        "structure_bucket_" + tier + "_" + entry.getKey()).upper(cap);
+                for (Integer factIndex : entry.getValue()) {
+                    bucketCount.set(variables.get(factIndex), 1);
+                }
+                bucketCount.set(excess, -1);
+                objective.set(excess, BigDecimal.ONE);
+                if (!unknown) {
+                    // unknown/1.0 只限制占比，不算“有梯度的覆盖桶”。
+                    Variable coverage = Variable.make(
+                            "structure_coverage_" + tier + "_" + entry.getKey())
+                            .integer(true).lower(0).upper(1);
+                    model.addVariable(coverage);
+                    Expression covered = model.addExpression(
+                            "structure_covered_" + tier + "_" + entry.getKey()).lower(0);
+                    for (Integer factIndex : entry.getValue()) {
+                        covered.set(variables.get(factIndex), 1);
+                    }
+                    covered.set(coverage, -1);
+                    tierCoverage.add(coverage);
+                }
+            }
+            int minCoverage = policy.getMinBucketCoverage() == null
+                    ? 0 : Math.max(0, policy.getMinBucketCoverage());
+            minCoverage = Math.min(minCoverage, tierCoverage.size());
+            if (minCoverage > 0) {
+                Expression coverageRequirement = model.addExpression(
+                        "structure_coverage_requirement_" + tier).lower(minCoverage);
+                for (Variable coverage : tierCoverage) {
+                    coverageRequirement.set(coverage, 1);
+                }
+                coverageRequirements.add(coverageRequirement);
+            }
+        }
+        if (excessVariables.isEmpty()) {
+            objective.weight(0);
+            relaxStructureConstraints(utilityFloor, coverageRequirements);
+            return;
+        }
+        Optimisation.Result solved = solvePhase(model, deadline, "structure_quality");
+        if (solved == null || !solved.getState().isOptimal()) {
+            // 结构目标是软约束：不可证明时退回原选择，不让主链路 blocked。
+            // 覆盖/效用下限也必须一起放松，否则后续 utility 阶段仍会被它们卡死。
+            objective.weight(0);
+            relaxStructureConstraints(utilityFloor, coverageRequirements);
+            PlanSolverResultDTO.DiagnosticDTO diagnostic = new PlanSolverResultDTO.DiagnosticDTO();
+            diagnostic.setReasonCode("structure_quality_unavailable");
+            diagnostic.setObjectiveId("structure_quality");
+            diagnostic.setMessage("结构质量阶段未能证明最优，保留原有效用目标");
+            result.getDiagnostics().add(diagnostic);
+            return;
+        }
+        int excess = 0;
+        for (int bucketIndex = 0; bucketIndex < cappedBuckets.size(); bucketIndex++) {
+            int selected = 0;
+            for (Integer factIndex : cappedBuckets.get(bucketIndex)) {
+                if (solved.doubleValue(factIndex) > 0.5D) {
+                    selected++;
+                }
+            }
+            excess += Math.max(0, selected - bucketCaps.get(bucketIndex));
+        }
+        LOG.info("structure quality stage: excess={} cappedBuckets={}", excess, cappedBuckets.size());
+        levels.add(new ObjectiveLevel("structure_quality", excess, excess, "excess_count"));
+        levelDurations.add(lastPhaseDurationMs);
+        objective.weight(0);
+        Expression fixStructure = model.addExpression("fix_structure_quality").upper(excess);
+        for (Variable variable : excessVariables) {
+            fixStructure.set(variable, 1);
+        }
+    }
+
+    private void relaxStructureConstraints(Expression utilityFloor,
+                                           List<Expression> coverageRequirements) {
+        if (utilityFloor != null) {
+            utilityFloor.lower(BigDecimal.valueOf(-1_000_000_000_000L));
+        }
+        for (Expression requirement : defaultList(coverageRequirements)) {
+            requirement.lower(BigDecimal.ZERO);
+        }
+    }
+
+    private int tierTargetCount(String tier,
+                                TierAllocationConstraintDTO constraint,
+                                List<CandidateFactDTO> facts,
+                                int targetCount) {
+        if (constraint != null) {
+            TierCountRangeDTO bound = tierBound(constraint, tier);
+            if (bound != null && bound.getMinCount() != null) {
+                return Math.max(0, bound.getMinCount());
+            }
+        }
+        int count = 0;
+        for (CandidateFactDTO fact : facts) {
+            if (fact != null && tier.equals(fact.getTier())) {
+                count++;
+            }
+        }
+        // 未显式给出档位配额时，用总目标数估计该档最多会选多少；
+        // 不能直接用该档候选总数，否则候选池越大桶上限越宽，等于没有约束。
+        return Math.min(count, Math.max(0, targetCount));
     }
 
     private String addCoverage(ExpressionsBasedModel model,
@@ -946,7 +1174,90 @@ final class StagedDeterministicPlanSolver {
         return result;
     }
 
-    private List<CandidateFactDTO> orderSelected(List<CandidateFactDTO> selected) {
+    private List<CandidateFactDTO> orderSelected(List<CandidateFactDTO> selected,
+                                                 MutationPolicyDTO policy) {
+        String ordering = policy == null ? null : policy.getOrderingPolicyVersion();
+        if (ORDERING_INITIAL_TIER_STRICT.equals(ordering)) {
+            return orderByInitialTier(selected, false);
+        }
+        if (ORDERING_INITIAL_TIER.equals(ordering)) {
+            return orderByInitialTier(selected, true);
+        }
+        if (ORDERING_PRESERVE_CURRENT.equals(ordering) && hasCurrentPositions(selected)) {
+            return orderByCurrentPositions(selected);
+        }
+        return orderByTierBuckets(selected);
+    }
+
+    private boolean hasCurrentPositions(List<CandidateFactDTO> selected) {
+        for (CandidateFactDTO fact : defaultList(selected)) {
+            if (Boolean.TRUE.equals(fact.getCurrent()) && fact.getCurrentPosition() != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 首版：明确 sprint → stable → protect；同档内按用户可解释的质量序，
+     * 不再用内部 stableOrder（它由旧版意向分驱动，会把法学等历史偏好排到前面）。
+     */
+    private List<CandidateFactDTO> orderByInitialTier(List<CandidateFactDTO> selected,
+                                                      boolean preserveCurrentFirst) {
+        List<CandidateFactDTO> sorted = new ArrayList<CandidateFactDTO>(selected);
+        sorted.sort(Comparator.comparingInt((CandidateFactDTO fact) -> tierOrder(fact.getTier()))
+                .thenComparing(CandidateFactDTO::getFinalScore,
+                        Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(CandidateFactDTO::getAdmissionRatio,
+                        Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(CandidateFactDTO::getSchoolRank,
+                        Comparator.nullsLast(Integer::compareTo))
+                .thenComparing(CandidateFactDTO::getStableOrder,
+                        Comparator.nullsLast(Integer::compareTo)));
+        Map<String, List<CandidateFactDTO>> byTier = new LinkedHashMap<String, List<CandidateFactDTO>>();
+        for (CandidateFactDTO fact : sorted) {
+            byTier.computeIfAbsent(fact.getTier(), key -> new ArrayList<CandidateFactDTO>()).add(fact);
+        }
+        if (preserveCurrentFirst) {
+            return orderWithinTierBuckets(byTier);
+        }
+        List<CandidateFactDTO> result = new ArrayList<CandidateFactDTO>();
+        for (List<CandidateFactDTO> bucket : byTier.values()) {
+            result.addAll(bucket);
+        }
+        return result;
+    }
+
+    /** 普通补齐/加入：当前正式方案里的相对顺序固定；新条目排在当前条目之后。 */
+    private List<CandidateFactDTO> orderByCurrentPositions(List<CandidateFactDTO> selected) {
+        List<CandidateFactDTO> sorted = new ArrayList<CandidateFactDTO>(selected);
+        sorted.sort(Comparator
+                // 用户明确确认的优先规则可以越过普通保序；这不是系统隐式重排。
+                .comparingInt((CandidateFactDTO fact) -> Boolean.TRUE.equals(fact.getPriorityMatched()) ? 0 : 1)
+                .thenComparingInt(fact -> Boolean.TRUE.equals(fact.getCurrent()) ? 0 : 1)
+                .thenComparingInt(fact -> Boolean.TRUE.equals(fact.getCurrent())
+                        ? (fact.getCurrentPosition() == null ? Integer.MAX_VALUE : fact.getCurrentPosition())
+                        : Integer.MAX_VALUE)
+                .thenComparing(CandidateFactDTO::getStableOrder,
+                        Comparator.nullsLast(Integer::compareTo)));
+        return sorted;
+    }
+
+    private int tierOrder(String tier) {
+        String normalized = tier == null ? "" : tier.trim().toLowerCase(Locale.ROOT);
+        if ("冲".equals(normalized) || "sprint".equals(normalized)) {
+            return 0;
+        }
+        if ("稳".equals(normalized) || "stable".equals(normalized)) {
+            return 1;
+        }
+        if ("保".equals(normalized) || "protect".equals(normalized)) {
+            return 2;
+        }
+        return 3;
+    }
+
+    private List<CandidateFactDTO> orderByTierBuckets(List<CandidateFactDTO> selected) {
         List<CandidateFactDTO> sorted = new ArrayList<CandidateFactDTO>(selected);
         sorted.sort(Comparator.comparing(CandidateFactDTO::getStableOrder,
                 Comparator.nullsLast(Integer::compareTo)));
@@ -959,6 +1270,10 @@ final class StagedDeterministicPlanSolver {
             }
             bucket.add(fact);
         }
+        return orderWithinTierBuckets(byTier);
+    }
+
+    private List<CandidateFactDTO> orderWithinTierBuckets(Map<String, List<CandidateFactDTO>> byTier) {
         List<CandidateFactDTO> result = new ArrayList<CandidateFactDTO>();
         for (List<CandidateFactDTO> bucket : byTier.values()) {
             // 同档内：命中优先规则的前置；其余保持“已在本方案中的条目优先于新增条目”，
@@ -1065,6 +1380,26 @@ final class StagedDeterministicPlanSolver {
                                CanonicalPlanningObjectiveSetDTO objectives,
                                MutationPolicyDTO policy) {
         if (!Boolean.TRUE.equals(fact.getEligible())) {
+            return false;
+        }
+        if (policy != null && Boolean.FALSE.equals(policy.getAllowAdd())
+                && !Boolean.TRUE.equals(fact.getCurrent())) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(fact.getSpecialPlanConflict())
+                && !(Boolean.TRUE.equals(policy == null
+                ? null : policy.getAllowExistingSpecialPlanConflicts())
+                && "REMOVE".equalsIgnoreCase(policy.getAction())
+                && Boolean.FALSE.equals(policy.getAllowAdd())
+                && Boolean.TRUE.equals(fact.getCurrent()))) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(fact.getSpecialPlanUnknown())
+                && !(Boolean.TRUE.equals(policy == null
+                ? null : policy.getAllowExistingSpecialPlanConflicts())
+                && "REMOVE".equalsIgnoreCase(policy.getAction())
+                && Boolean.FALSE.equals(policy.getAllowAdd())
+                && Boolean.TRUE.equals(fact.getCurrent()))) {
             return false;
         }
         // 补入安全谓词只约束“本次新增”。current 项已经写在方案里，

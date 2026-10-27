@@ -175,6 +175,10 @@ final class CandidateSnapshotBuilder {
                     ? orderedByVolunteer.get(id).getLocked() : null);
             bucket.pinned |= Boolean.TRUE.equals(orderedByVolunteer.containsKey(id)
                     ? orderedByVolunteer.get(id).getPinned() : null);
+            OrderedItemDTO orderedItem = orderedByVolunteer.get(id);
+            if (orderedItem != null && orderedItem.getPosition() != null) {
+                bucket.currentPosition = orderedItem.getPosition();
+            }
         }
         // 存量项不在候选池也要保留 fact，否则 solver 会把它当不可见而删除。
         Set<String> currentIds = new LinkedHashSet<String>();
@@ -264,6 +268,9 @@ final class CandidateSnapshotBuilder {
             if (ordered != null) {
                 bucket.locked |= Boolean.TRUE.equals(ordered.getLocked());
                 bucket.pinned |= Boolean.TRUE.equals(ordered.getPinned());
+                if (ordered.getPosition() != null) {
+                    bucket.currentPosition = ordered.getPosition();
+                }
             }
             for (CandidateItemDTO candidate : bucket.candidates) {
                 DraftItemDTO draft = draftByVolunteer.get(candidate.getVolunteerId());
@@ -395,6 +402,14 @@ final class CandidateSnapshotBuilder {
         fact.setMajorSubCategoryId(representative.getMajorSubCategoryId());
         fact.setTuitionPerYear(representative.getTuitionPerYear());
         fact.setAdmissionRatio(representative.getAdmissionRatio());
+        // 与工作台/质量评价同口径：列表展示的是 schoolEnrollRatio（缺失时回退
+        // admissionRatio）。结构质量若按专业 admissionRatio 分桶，会出现“求解器
+        // 认为已限制，用户仍看到大量 1.0”的口径错位。
+        Double visibleRatio = representative.getSchoolEnrollRatio() != null
+                ? representative.getSchoolEnrollRatio() : representative.getAdmissionRatio();
+        fact.setRatioConfidence(AdmissionRatioBucketSupport.confidence(visibleRatio));
+        fact.setRatioBucket(AdmissionRatioBucketSupport.bucket(representative.getTier(), visibleRatio));
+        fact.setRatioBucketIndex(AdmissionRatioBucketSupport.bucketIndex(fact.getRatioBucket()));
         fact.setSchoolEnrollRatio(representative.getSchoolEnrollRatio());
         fact.setIntentScore(representative.getIntentScore());
         fact.setFinalScore(representative.getFinalScore());
@@ -407,12 +422,55 @@ final class CandidateSnapshotBuilder {
         fact.setCurrent(bucket.current);
         fact.setLocked(bucket.locked);
         fact.setPinned(bucket.pinned);
+        fact.setCurrentPosition(bucket.currentPosition);
         // 存量工作草案项即使缺候选事实也视为可保留；是否移除由动作的
         // removableEntityIds / 后置校验决定，不能在这里判成不合格。
         List<CandidateItemDTO> selected = planned.isEmpty() ? candidates : planned;
         fact.setEligible("working_plan".equals(bucket.source) || allEligible(state, selected));
         fact.setEligibilityReasonCodes(fact.getEligible()
                 ? Lists.newArrayList() : Lists.newArrayList("confirmed_hard_constraint"));
+        Boolean userSpecialPlan = state == null || state.getCandidatePoolState() == null
+                ? null : state.getCandidatePoolState().getSpecialPlan();
+        boolean specialPlanConflict = false;
+        if (unitMode) {
+            CandidateItemDTO groupRequirement = new CandidateItemDTO();
+            groupRequirement.setSchoolName(representative.getSchoolName());
+            groupRequirement.setDisplaySchoolName(representative.getDisplaySchoolName());
+            specialPlanConflict = SpecialPlanQualification.isConflict(
+                    groupRequirement, userSpecialPlan);
+        }
+        if (!specialPlanConflict) {
+            for (CandidateItemDTO candidate : selected) {
+                if (SpecialPlanQualification.isConflict(candidate, userSpecialPlan)) {
+                    specialPlanConflict = true;
+                    break;
+                }
+            }
+        }
+        fact.setSpecialPlanConflict(specialPlanConflict);
+        boolean specialPlanUnknown = false;
+        if (userSpecialPlan == null) {
+            if (unitMode) {
+                CandidateItemDTO groupRequirement = new CandidateItemDTO();
+                groupRequirement.setSchoolName(representative.getSchoolName());
+                groupRequirement.setDisplaySchoolName(representative.getDisplaySchoolName());
+                specialPlanUnknown = SpecialPlanRequirementSupport.requirement(groupRequirement).anyExplicit();
+            }
+            if (!specialPlanUnknown) {
+                for (CandidateItemDTO candidate : selected) {
+                    if (SpecialPlanQualification.isUnknownRequirement(candidate, null)) {
+                        specialPlanUnknown = true;
+                        break;
+                    }
+                }
+            }
+        }
+        fact.setSpecialPlanUnknown(specialPlanUnknown);
+        if (specialPlanConflict) {
+            fact.getEligibilityReasonCodes().add("special_plan_conflict");
+        } else if (specialPlanUnknown) {
+            fact.getEligibilityReasonCodes().add("special_plan_unknown");
+        }
         boolean compensationSafe = "working_plan".equals(bucket.source)
                 || allCompensationSafe(selected);
         fact.setCompensationSafe(compensationSafe);
@@ -649,6 +707,7 @@ final class CandidateSnapshotBuilder {
         private boolean current;
         private boolean locked;
         private boolean pinned;
+        private Integer currentPosition;
 
         private Bucket(String entityId, String source) {
             this.entityId = entityId;

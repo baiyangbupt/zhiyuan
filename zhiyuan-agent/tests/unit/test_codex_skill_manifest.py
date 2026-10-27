@@ -224,6 +224,55 @@ def test_write_rules_require_looking_up_codes_before_the_card() -> None:
     assert "非标准选科编码" in rules
 
 
+def test_plan_construction_asks_for_region_special_plan_and_tuition_first() -> None:
+    """出方案前问齐地域/专项/学费/层次，不能从方向直接跳排方案。"""
+    rules = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.write.md"
+    ).read_text(encoding="utf-8")
+    plan_skill = (
+        Path(__file__).parents[2]
+        / "skills"
+        / "codex-marketplace"
+        / "plugins"
+        / "zhiyuan-codex-planner"
+        / "skills"
+        / "plan-construction"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    for text in (rules, plan_skill):
+        assert "方案参数" in text
+        assert "地域" in text and "专项" in text and "学费" in text
+        assert "proposalRequest" in text
+
+
+def test_write_rules_do_not_present_candidate_tier_as_probability() -> None:
+    """点名推荐必须查历史线；候选池档位/录取率不是概率。"""
+    rules = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.write.md"
+    ).read_text(encoding="utf-8")
+
+    assert "档位不是概率" in rules
+    assert "admission.get_history" in rules
+    assert "尚未核对历史线" in rules
+    assert "admissionRatio" in rules
+
+
+def test_write_rules_treat_reported_total_as_authoritative() -> None:
+    """总分与各科原始分之和允许不一致（赋分/加分/听力）。
+
+    2026-10-27 用户实测：模型把六科相加去反推总分，要求用户改总分；这会把
+    一个正确的成绩单卡住。规则必须明确：总分是权威值，不得加总校验。
+    """
+    rules = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.write.md"
+    ).read_text(encoding="utf-8")
+
+    assert "总分是权威值" in rules
+    assert "禁止用各科加总" in rules
+    assert "赋分" in rules and "加分" in rules
+
+
 def test_write_rules_lookup_the_rank_before_uttering_one() -> None:
     """用户只给分数没给位次时的规则必须写死（2026-10-07 一分一段工具上线）：
 
@@ -444,3 +493,44 @@ def test_write_rules_pin_career_update_request_contract() -> None:
     assert "弱偏好" in rules
     assert "更新发展方向" in rules
     assert "一回合" in rules and "只出一件事" in rules
+
+
+def test_early_consultation_without_score_uses_catalog_and_does_not_loop_score() -> None:
+    """2026-10-27 / 10042005：用户没出分时，不能只反复问分数。
+
+    缺成绩阻塞的是录取结论，不是方向/目录/招生计划/章程探索；preview_majors
+    返回 score 缺口时应改走免分数 catalog/admission 查询，并在本轮停止追问分数。
+    """
+    dev = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.write.md"
+    ).read_text(encoding="utf-8")
+    assert "没有成绩 / 前期咨询" in dev
+    base_dev = (
+        Path(__file__).parents[2] / "skills" / "codex" / "developer_instructions.md"
+    ).read_text(encoding="utf-8")
+    assert "没出分也先聊方向" in base_dev
+    assert "同一会话最多问一次分数" in base_dev
+    assert "不要连续追问" in base_dev
+    assert "不要连续追问分数" in dev
+    assert "catalog.search_majors" in dev
+    assert "admission.get_enrollment_plan" in dev
+    assert "session_score_missing" in dev
+
+    profile = (_root() / "profile-discovery" / "SKILL.md").read_text(encoding="utf-8")
+    assert "免分数" in profile
+    assert "session_score_missing" in profile
+    assert "不要用“请先给分数”结束本轮" in profile
+
+    exploration = (_root() / "school-major-exploration" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "缺分数分支" in exploration
+    assert "catalog.list_admission_units" in exploration
+    assert "admission.get_enrollment_plan" in exploration
+    assert "不要连续追问分数" in exploration
+
+    guide = (
+        _root() / "profile-discovery" / "references" / "planner-questioning-guide.md"
+    ).read_text(encoding="utf-8")
+    assert "never repeat the score question" in guide
+    assert "direction/catalog exploration" in guide

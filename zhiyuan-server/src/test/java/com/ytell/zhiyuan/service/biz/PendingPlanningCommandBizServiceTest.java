@@ -1054,6 +1054,45 @@ public class PendingPlanningCommandBizServiceTest {
     }
 
     @Test
+    void shouldExecuteFrozenAddUnitsWhileReviewPausedAndRecordSkipped() {
+        String originalMode = System.getProperty(ReviewPolicy.PROPERTY);
+        System.setProperty(ReviewPolicy.PROPERTY, "paused");
+        try {
+            PendingPlanningCommandReq req = baseReq();
+            req.setOperationId("pending:p-1:add_units");
+            req.setCommandType(PendingPlanningCommandBizService.ADD_UNITS);
+            req.setVolunteerIds(Arrays.asList());
+            PendingConfirmationEntity pending = applyingPending();
+            pending.setDataValue(frozenData(Arrays.asList("v-new"), 2, true, 12));
+            when(pendingSharedService.lockCurrent(1L, 101L)).thenReturn(pending);
+            PlanningStateDTO before = addState(12, "v-old");
+            PlanningStateDTO after = addState(13, "v-old", "v-new");
+            when(planningStateService.getPlanningState(101L)).thenReturn(before, before, after);
+            when(planningStateService.updateSelectionTargetCount(101L, 2))
+                    .thenReturn(new PlanningStateVersionDTO());
+            when(planningStateService.resolveEffectiveCandidatesForProposal(any()))
+                    .thenReturn(Arrays.asList(addCandidate("v-old"), addCandidate("v-new")));
+            when(planningStateService.generateOrderedPlan(eq(1L), eq(101L), any(OrderedPlanGenerateReq.class)))
+                    .thenReturn(after);
+            when(commandSharedService.save(any(PlanningPendingCommandEntity.class))).thenReturn(true);
+
+            PendingPlanningCommandRes response = service.execute(1L, 101L, req);
+
+            assertEquals("applied", response.getStatus());
+            assertTrue(response.getCompletedSteps().contains("review_skipped_paused"));
+            assertFalse(response.getCompletedSteps().contains("review_rerun"));
+            assertEquals("paused", response.getReviewState().getStatus());
+            verify(planningStateService, never()).runReview(1L, 101L);
+        } finally {
+            if (originalMode == null) {
+                System.clearProperty(ReviewPolicy.PROPERTY);
+            } else {
+                System.setProperty(ReviewPolicy.PROPERTY, originalMode);
+            }
+        }
+    }
+
+    @Test
     void shouldRollbackFrozenAddUnitsWhenExistingItemWouldBeRemoved() {
         PendingPlanningCommandReq req = baseReq();
         req.setOperationId("pending:p-1:add_units");

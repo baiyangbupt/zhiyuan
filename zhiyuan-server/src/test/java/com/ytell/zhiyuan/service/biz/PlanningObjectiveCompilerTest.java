@@ -178,17 +178,17 @@ class PlanningObjectiveCompilerTest {
     }
 
     @Test
-    void shouldFailClosedForTierQuotaCompositeBeforeM3() {
+    void shouldCompileExactTierQuotaWithRequirement() {
         PlanningStateDTO state = state("major", 9, 3);
         UserGoalFixProposalReq request = fillRequest(3);
         request.setTierQuotaGoal(quotaRequest(1, 1, 1));
         request.getRequirements().add(requirement("include", "region", "province", 1, "上海"));
 
-        PlanningObjectiveCompiler.CompilationException error = assertThrows(
-                PlanningObjectiveCompiler.CompilationException.class,
-                () -> PlanningObjectiveCompiler.compile(state, request));
+        CanonicalPlanningObjectiveSetDTO objectives = PlanningObjectiveCompiler.compile(state, request);
 
-        assertEquals("tier_quota_composite_not_supported", error.getReasonCode());
+        assertEquals(1, objectives.getCoverageConstraints().size());
+        assertNotNull(objectives.getTierAllocationConstraint());
+        assertEquals(Integer.valueOf(1), objectives.getTierAllocationConstraint().getSprintCount());
     }
 
     @Test

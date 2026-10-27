@@ -252,6 +252,25 @@ async def test_a_failed_result_without_a_reason_still_continues() -> None:
 
 
 @pytest.mark.asyncio
+async def test_upstream_strategy_failure_is_not_explained_as_confirmation_expiry() -> None:
+    codex = _ScriptedCodex([{"responseType": "text", "message": "上游数据策略不可用，本次成绩没有更新。"}])
+    gateway, _ = _gateway(codex)
+
+    result = await _continue(
+        gateway,
+        status="failed",
+        extra={"code": "84009", "message": "当前策略已失效，请刷新页面"},
+    )
+
+    assert result is not None
+    nudge = codex.turns[0][-1]["text"]
+    assert "上游志愿数据策略" in nudge
+    assert "不是确认卡过期" in nudge
+    assert "不是登录凭证失效" in nudge
+    assert "核对取数模式" in nudge
+
+
+@pytest.mark.asyncio
 async def test_the_same_failed_result_never_continues_twice() -> None:
     """同一个操作失败结果重复到达 → 只续一次（幂等与 applied 同款）。"""
     codex = _ScriptedCodex([{"responseType": "text", "message": "接住失败。"}])

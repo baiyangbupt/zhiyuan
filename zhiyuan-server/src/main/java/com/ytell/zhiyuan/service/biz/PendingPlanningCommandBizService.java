@@ -107,7 +107,8 @@ public class PendingPlanningCommandBizService {
 
         pending = validatePendingOwner(tenantId, chatSessionId, req);
         frozenCommand = frozenCommand(pending);
-        assertRequestMatchesFrozen(req, frozenCommand, pendingData(pending));
+        pendingData = pendingData(pending);
+        assertRequestMatchesFrozen(req, frozenCommand, pendingData);
         extraDataSharedService.lockBySessionIdAndDataKey(
                 chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         existing = commandSharedService.getByOperationId(req.getOperationId());
@@ -116,7 +117,7 @@ public class PendingPlanningCommandBizService {
         }
         PlanningPendingCommandEntity command = buildCommand(tenantId, chatSessionId, req);
         try {
-            return executeNewCommand(tenantId, chatSessionId, req, frozenCommand, command);
+            return executeNewCommand(tenantId, chatSessionId, req, frozenCommand, pendingData, command);
         } catch (RuntimeException failure) {
             if (isAuditableReviewCommand(req, pending)
                     && (!(failure instanceof BusinessException)
@@ -130,7 +131,10 @@ public class PendingPlanningCommandBizService {
     private PendingPlanningCommandRes executeNewCommand(Long tenantId, Long chatSessionId,
                                                         PendingPlanningCommandReq req,
                                                         Map<String, Object> frozenCommand,
+                                                        Map<String, Object> pendingData,
                                                         PlanningPendingCommandEntity command) {
+        // 新执行才查暂停；成功/失败台账重放已在上面的 replay 分支返回，不受当前策略影响。
+        assertReviewNotPausedForNewCommand(req, pendingData);
         PlanningStateDTO before = APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())
                 && ReviewFixCommandFlags.enabled()
                 && RepairProposalTaxonomy.isReviewCheckSource(req.getProposalApply().getProposalSource())
@@ -163,17 +167,35 @@ public class PendingPlanningCommandBizService {
 
     private boolean isAuditableReviewCommand(PendingPlanningCommandReq req,
                                              PendingConfirmationEntity pending) {
-        if (!ReviewFixCommandFlags.enabled()
-                || !APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())
-                || !RepairProposalTaxonomy.isReviewCheckSource(req.getProposalApply().getProposalSource())) {
+        // 暂停拒绝的审计不能依赖 review.fix.* 灰度位：它描述的是 pending 的服务端来源，
+        // 不是请求方的自我声明。user_goal / score_update 等正常命令不在此列。
+        if (req == null || req.getProposalApply() == null
+                || !APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())) {
             return false;
         }
         Map<String, Object> data = pendingData(pending);
         return data != null
-                && "review_check".equals(stringValue(data.get("proposalSource")))
+                && data.get("proposalSource") != null
+                && RepairProposalTaxonomy.isReviewCheckSource(stringValue(data.get("proposalSource")))
                 && req.getOperationId().equals(stringValue(data.get("operationId")))
                 && req.getProposalApply().getProposalId().equals(stringValue(data.get("proposalId")))
                 && String.valueOf(req.getExpectedPlanVersion()).equals(stringValue(data.get("sourceVersion")));
+    }
+
+    /**
+     * paused 只拦 review_check 来源的新执行；user_goal / 成绩 / 原子动作继续跑自己的
+     * 真实后置。来源以 pending.dataValue 为准，不能信请求里的 proposalSource。
+     */
+    private void assertReviewNotPausedForNewCommand(PendingPlanningCommandReq req,
+                                                    Map<String, Object> pendingData) {
+        if (!ReviewPolicy.paused() || req == null
+                || !APPLY_PLAN_CHANGE_PROPOSAL.equals(req.getCommandType())) {
+            return;
+        }
+        if (pendingData != null && pendingData.get("proposalSource") != null
+                && RepairProposalTaxonomy.isReviewCheckSource(stringValue(pendingData.get("proposalSource")))) {
+            throw new BusinessException(409, ReviewPolicy.REASON_PAUSED);
+        }
     }
 
     private void auditAfterRollback(PlanningPendingCommandEntity command,
@@ -395,7 +417,10 @@ public class PendingPlanningCommandBizService {
             state = proposalApplyRes.getState();
             steps.add("proposal_applied");
             steps.add("ordered_plan_regenerated");
-            steps.add("review_rerun");
+            if (req.getProposalApply().getRerunReview() != null
+                    && req.getProposalApply().getRerunReview()) {
+                steps.add(ReviewPolicy.paused() ? "review_skipped_paused" : "review_rerun");
+            }
         } else if (UPDATE_SCORE_DETAIL.equals(req.getCommandType())) {
             // 执行体与 REST 补录完全同一条核心：合并 → 校验（失败回 110 并整体回滚）→
             // 落 userScoreDetail → 拉志愿数据 → 规划状态版本 +1 置 stale。
@@ -464,16 +489,50 @@ public class PendingPlanningCommandBizService {
             result.setShortage(constraintReport.getShortage());
             steps.add("postcondition_verified");
         }
+        // 回执里的 planningState 是响应副本；paused 时历史 review 仍留库审计，
+        // 但绝不能从这里继续注入旧 summary/风险数。
+        if (ReviewPolicy.paused()) {
+            state.setReviewState(ReviewPolicy.pausedProjection());
+        }
         result.setPlanningState(state);
         result.setReplayed(false);
         return result;
     }
 
     private OrderedPlanGenerateReq forceOrderedRegenerate() {
+        return forceOrderedRegenerate(false);
+    }
+
+    private OrderedPlanGenerateReq forceOrderedRegenerate(boolean allowExistingSpecialPlanConflicts) {
         OrderedPlanGenerateReq req = new OrderedPlanGenerateReq();
         req.setForceRegenerate(true);
         req.setRegroupByTier(true);
+        req.setAllowExistingSpecialPlanConflicts(allowExistingSpecialPlanConflicts);
         return req;
+    }
+
+    /**
+     * 命令后的质量审查：paused 时明确记录“跳过”，不调用旧规则、不增加审查版本。
+     * 真实后置由各命令在调用前独立完成；这里失败只影响审查，active 下仍按原 40907 回滚。
+     */
+    private ReviewStateDTO rerunReviewAfterMutation(Long tenantId, Long chatSessionId,
+                                                    boolean rerunReview, List<String> steps) {
+        if (!rerunReview) {
+            return null;
+        }
+        if (ReviewPolicy.paused()) {
+            steps.add("review_skipped_paused");
+            return ReviewPolicy.pausedProjection();
+        }
+        try {
+            ReviewStateDTO reviewState = planningStateService.runReview(tenantId, chatSessionId);
+            steps.add("review_rerun");
+            return reviewState;
+        } catch (Exception ex) {
+            // 不能 catch-return：@Transactional 会把已加入的方案提交。必须抛出回滚。
+            throw new BusinessException(REVIEW_FAILED_CODE,
+                    "review_failed: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
+        }
     }
 
     private PendingConfirmationEntity validatePendingOwner(Long tenantId, Long chatSessionId,
@@ -598,8 +657,18 @@ public class PendingPlanningCommandBizService {
      */
     private void assertPlanChangeProposalMatchesFrozen(FixProposalApplyReq applyReq,
                                                        Map<String, Object> pendingData) {
-        if (applyReq == null || pendingData == null
-                || !RepairProposalTaxonomy.isReviewCheckSource(applyReq.getProposalSource())) {
+        if (applyReq == null || pendingData == null) {
+            return;
+        }
+        // review_check pending 不能被改名成 user_goal 绕过暂停/冻结摘要。反向（旧的
+        // user_goal 请求未显式带来源）不在这里强制，避免破坏存量确认。
+        if (pendingData.get("proposalSource") != null
+                && RepairProposalTaxonomy.isReviewCheckSource(stringValue(pendingData.get("proposalSource")))
+                && !RepairProposalTaxonomy.isReviewCheckSource(applyReq.getProposalSource())) {
+            throw new BusinessException(COMMAND_CONTENT_MISMATCH_CODE,
+                    "command content mismatch: proposalSource");
+        }
+        if (!RepairProposalTaxonomy.isReviewCheckSource(applyReq.getProposalSource())) {
             return;
         }
         assertFrozenValue(pendingData, "commandDigest", applyReq.getCommandDigest());
@@ -650,8 +719,11 @@ public class PendingPlanningCommandBizService {
         }
         PlanningStateDTO current = planningStateService.getPlanningState(chatSessionId);
         Set<String> effectiveVolunteerIds = new LinkedHashSet<String>();
+        Boolean userSpecialPlan = current.getCandidatePoolState() == null
+                ? null : current.getCandidatePoolState().getSpecialPlan();
         for (CandidateItemDTO candidate : planningStateService.resolveEffectiveCandidatesForProposal(current)) {
-            if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
+            if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())
+                    && !SpecialPlanQualification.isConflict(candidate, userSpecialPlan)) {
                 effectiveVolunteerIds.add(candidate.getVolunteerId());
             }
         }
@@ -671,6 +743,14 @@ public class PendingPlanningCommandBizService {
         PlanningStateDTO state = planningStateService.generateOrderedPlan(
                 tenantId, chatSessionId, forceOrderedRegenerate());
         steps.add("ordered_plan_regenerated");
+        if (SpecialPlanQualification.stateHasConflict(state)) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "add_units postcondition failed: special_plan_conflict");
+        }
+        if (SpecialPlanQualification.stateHasUnknownSpecialPlan(state)) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "add_units postcondition failed: special_plan_unknown");
+        }
 
         Set<String> afterVolunteerIds = workingVolunteerIds(state);
         Set<String> afterUnitIds = workingUnitIds(state);
@@ -703,17 +783,13 @@ public class PendingPlanningCommandBizService {
                     "add_units postcondition failed: target=" + override + " actual=" + afterCount);
         }
 
-        ReviewStateDTO reviewState = null;
-        if (rerunReview) {
-            try {
-                reviewState = planningStateService.runReview(tenantId, chatSessionId);
-            } catch (Exception ex) {
-                // 不能 catch-return：@Transactional 会把已加入的方案提交。必须抛出回滚。
-                throw new BusinessException(REVIEW_FAILED_CODE,
-                        "review_failed: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
-            }
+        ReviewStateDTO reviewState = rerunReviewAfterMutation(
+                tenantId, chatSessionId, rerunReview, steps);
+        if (reviewState != null) {
             state = planningStateService.getPlanningState(chatSessionId);
-            steps.add("review_rerun");
+            if (ReviewPolicy.paused()) {
+                state.setReviewState(reviewState);
+            }
         }
 
         AddUnitsExecution execution = new AddUnitsExecution();
@@ -795,8 +871,11 @@ public class PendingPlanningCommandBizService {
 
         PlanningStateDTO current = planningStateService.getPlanningState(chatSessionId);
         Set<String> effectiveVolunteerIds = new LinkedHashSet<String>();
+        Boolean userSpecialPlan = current.getCandidatePoolState() == null
+                ? null : current.getCandidatePoolState().getSpecialPlan();
         for (CandidateItemDTO candidate : planningStateService.resolveEffectiveCandidatesForProposal(current)) {
-            if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())) {
+            if (candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId())
+                    && !SpecialPlanQualification.isConflict(candidate, userSpecialPlan)) {
                 effectiveVolunteerIds.add(candidate.getVolunteerId());
             }
         }
@@ -828,6 +907,14 @@ public class PendingPlanningCommandBizService {
         PlanningStateDTO state = planningStateService.generateOrderedPlan(
                 tenantId, chatSessionId, forceOrderedRegenerate());
         steps.add("ordered_plan_regenerated");
+        if (SpecialPlanQualification.stateHasConflict(state)) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "replace_units postcondition failed: special_plan_conflict");
+        }
+        if (SpecialPlanQualification.stateHasUnknownSpecialPlan(state)) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "replace_units postcondition failed: special_plan_unknown");
+        }
 
         Set<String> afterVolunteerIds = workingVolunteerIds(state);
         Set<String> afterUnitIds = workingUnitIds(state);
@@ -873,17 +960,13 @@ public class PendingPlanningCommandBizService {
                     "replace_units postcondition failed: target=" + expectedCount + " actual=" + afterCount);
         }
 
-        ReviewStateDTO reviewState = null;
-        if (rerunReview) {
-            try {
-                reviewState = planningStateService.runReview(tenantId, chatSessionId);
-            } catch (Exception ex) {
-                // 不能 catch-return：@Transactional 会把已替换的方案提交。必须抛出回滚。
-                throw new BusinessException(REVIEW_FAILED_CODE,
-                        "review_failed: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
-            }
+        ReviewStateDTO reviewState = rerunReviewAfterMutation(
+                tenantId, chatSessionId, rerunReview, steps);
+        if (reviewState != null) {
             state = planningStateService.getPlanningState(chatSessionId);
-            steps.add("review_rerun");
+            if (ReviewPolicy.paused()) {
+                state.setReviewState(reviewState);
+            }
         }
 
         ReplaceUnitsExecution execution = new ReplaceUnitsExecution();
@@ -970,7 +1053,7 @@ public class PendingPlanningCommandBizService {
             steps.add("working_plan_items_removed");
         }
         PlanningStateDTO state = planningStateService.generateOrderedPlan(
-                tenantId, chatSessionId, forceOrderedRegenerate());
+                tenantId, chatSessionId, forceOrderedRegenerate(true));
         steps.add("ordered_plan_regenerated");
 
         Set<String> afterVolunteerIds = workingVolunteerIds(state);
@@ -1009,16 +1092,13 @@ public class PendingPlanningCommandBizService {
                     "remove_units postcondition failed: target=" + expectedCount + " actual=" + afterCount);
         }
 
-        ReviewStateDTO reviewState = null;
-        if (rerunReview) {
-            try {
-                reviewState = planningStateService.runReview(tenantId, chatSessionId);
-            } catch (Exception ex) {
-                throw new BusinessException(REVIEW_FAILED_CODE,
-                        "review_failed: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
-            }
+        ReviewStateDTO reviewState = rerunReviewAfterMutation(
+                tenantId, chatSessionId, rerunReview, steps);
+        if (reviewState != null) {
             state = planningStateService.getPlanningState(chatSessionId);
-            steps.add("review_rerun");
+            if (ReviewPolicy.paused()) {
+                state.setReviewState(reviewState);
+            }
         }
 
         RemoveUnitsExecution execution = new RemoveUnitsExecution();
@@ -1056,6 +1136,10 @@ public class PendingPlanningCommandBizService {
         boolean rerunReview = Boolean.TRUE.equals(frozen.get("rerunReview"));
 
         PlanningStateDTO before = planningStateService.getPlanningState(chatSessionId);
+        if (SpecialPlanQualification.blocksNewSelection(before)) {
+            throw new BusinessException(POSTCONDITION_FAILED_CODE,
+                    "move_units requires existing special-plan conflicts or unknown requirements to be resolved first");
+        }
         boolean unitMode = isUnitMode(before);
         String targetKey = unitMode ? targetUnitId : targetVolunteerId;
         if (Strings.isNullOrEmpty(targetKey)) {
@@ -1115,16 +1199,13 @@ public class PendingPlanningCommandBizService {
                     "move_units postcondition failed: item set changed");
         }
 
-        ReviewStateDTO reviewState = null;
-        if (rerunReview) {
-            try {
-                reviewState = planningStateService.runReview(tenantId, chatSessionId);
-            } catch (Exception ex) {
-                throw new BusinessException(REVIEW_FAILED_CODE,
-                        "review_failed: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
-            }
+        ReviewStateDTO reviewState = rerunReviewAfterMutation(
+                tenantId, chatSessionId, rerunReview, steps);
+        if (reviewState != null) {
             state = planningStateService.getPlanningState(chatSessionId);
-            steps.add("review_rerun");
+            if (ReviewPolicy.paused()) {
+                state.setReviewState(reviewState);
+            }
         }
 
         MoveUnitsExecution execution = new MoveUnitsExecution();

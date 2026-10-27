@@ -12,6 +12,9 @@ final class ReviewWorkflowStatusResolver {
     }
 
     static String resolveRunStatus(ReviewStateDTO reviewState, FixProposalStateDTO fixProposalState) {
+        if (ReviewPolicy.isPaused(reviewState)) {
+            return "review_paused";
+        }
         if (reviewState == null || !"completed".equals(reviewState.getStatus())) {
             return "review_failed";
         }

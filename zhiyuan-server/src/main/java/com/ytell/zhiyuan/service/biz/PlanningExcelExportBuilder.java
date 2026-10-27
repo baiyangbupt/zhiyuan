@@ -45,7 +45,14 @@ public class PlanningExcelExportBuilder {
             throw new BusinessException(400, "当前方案缺少可导出的志愿明细");
         }
         renumberMainRows(mainList);
-        return new PlanningExportData(mainList, majorGroupMode);
+        List<String> notes = new ArrayList<String>();
+        if (SpecialPlanQualification.stateHasConflict(state)) {
+            notes.add("当前方案含已知专项资格冲突，仅为待清理草案，不能作为正式可报方案。");
+        }
+        if (ReviewPolicy.paused()) {
+            notes.add("方案质量审查当前暂停，本文件未完成质量核验。");
+        }
+        return new PlanningExportData(mainList, majorGroupMode, String.join(" ", notes));
     }
 
     private void renumberMainRows(List<ExcelUtil.VolunteerExcelData> mainList) {
@@ -342,10 +349,17 @@ public class PlanningExcelExportBuilder {
     public static class PlanningExportData {
         private final List<ExcelUtil.VolunteerExcelData> mainList;
         private final boolean majorGroupMode;
+        private final String note;
 
         public PlanningExportData(List<ExcelUtil.VolunteerExcelData> mainList, boolean majorGroupMode) {
+            this(mainList, majorGroupMode, null);
+        }
+
+        public PlanningExportData(List<ExcelUtil.VolunteerExcelData> mainList,
+                                  boolean majorGroupMode, String note) {
             this.mainList = mainList == null ? new ArrayList<ExcelUtil.VolunteerExcelData>() : mainList;
             this.majorGroupMode = majorGroupMode;
+            this.note = note;
         }
 
         public List<ExcelUtil.VolunteerExcelData> getMainList() {
@@ -354,6 +368,10 @@ public class PlanningExcelExportBuilder {
 
         public boolean isMajorGroupMode() {
             return majorGroupMode;
+        }
+
+        public String getNote() {
+            return note;
         }
     }
 

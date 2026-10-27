@@ -47,10 +47,12 @@ class PendingPlanningCommandFailureAuditTest {
     private PendingPlanningCommandReq request;
     private PendingConfirmationEntity pending;
     private String originalFlag;
+    private String originalReviewMode;
 
     @BeforeEach
     void setUp() {
         originalFlag = System.getProperty(ReviewFixCommandFlags.PROPERTY);
+        originalReviewMode = System.getProperty(ReviewPolicy.PROPERTY);
         System.setProperty(ReviewFixCommandFlags.PROPERTY, "true");
         TransactionSynchronizationManager.initSynchronization();
         TransactionSynchronizationManager.setActualTransactionActive(true);
@@ -82,6 +84,62 @@ class PendingPlanningCommandFailureAuditTest {
         } else {
             System.setProperty(ReviewFixCommandFlags.PROPERTY, originalFlag);
         }
+        if (originalReviewMode == null) {
+            System.clearProperty(ReviewPolicy.PROPERTY);
+        } else {
+            System.setProperty(ReviewPolicy.PROPERTY, originalReviewMode);
+        }
+    }
+
+    @Test
+    void shouldReplayPreviouslySucceededReviewCommandEvenWhenPaused() {
+        System.setProperty(ReviewPolicy.PROPERTY, "paused");
+        PlanningPendingCommandEntity existing = new PlanningPendingCommandEntity();
+        existing.setTenantId(1L);
+        existing.setChatSessionId(101L);
+        existing.setPendingId(request.getPendingId());
+        existing.setOperationId(request.getOperationId());
+        existing.setCommandType(request.getCommandType());
+        existing.setExpectedPlanVersion(request.getExpectedPlanVersion());
+        existing.setRequestDigest((String) ReflectionTestUtils.invokeMethod(service, "requestDigest", request));
+        existing.setStatus("succeeded");
+        com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes stored =
+                new com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes();
+        stored.setOperationId(request.getOperationId());
+        stored.setPendingId(request.getPendingId());
+        stored.setCommandType(request.getCommandType());
+        stored.setStatus("applied");
+        stored.setSourcePlanVersion(12);
+        stored.setResultPlanVersion(13);
+        existing.setResultJson(JSONObject.toJSONString(stored));
+        when(commandSharedService.getByOperationId(request.getOperationId())).thenReturn(existing);
+
+        com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes replay =
+                service.execute(1L, 101L, request);
+
+        assertEquals(Boolean.TRUE, replay.getReplayed());
+        assertEquals("applied", replay.getStatus());
+        verify(planningStateService, never()).applyClaimedReviewFixProposal(any(), any(), any());
+        verify(failureWriter, never()).recordFailure(any(), any(), any());
+    }
+
+    @Test
+    void shouldRejectPausedReviewExecutionAndAuditAfterRollback() {
+        System.setProperty(ReviewPolicy.PROPERTY, "paused");
+
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, request));
+
+        assertEquals(409, failure.getStatus());
+        assertEquals("review_paused", failure.getMessage());
+        verify(planningStateService, never()).applyClaimedReviewFixProposal(any(), any(), any());
+        verify(planningStateService, never()).applyFixProposal(any(), any(), any());
+        assertEquals(1, TransactionSynchronizationManager.getSynchronizations().size());
+
+        TransactionSynchronizationManager.getSynchronizations().get(0)
+                .afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+
+        verify(failureWriter).recordFailure(any(PlanningPendingCommandEntity.class), eq(pending), eq(failure));
     }
 
     @Test
@@ -198,6 +256,7 @@ class PendingPlanningCommandFailureAuditTest {
     @Test
     void shouldPreserveUserGoalFailurePathWithReviewFlagEnabled() {
         request.getProposalApply().setProposalSource("user_goal");
+        setPendingProposalSource("user_goal");
         UserGoalFixProposalReq goal = new UserGoalFixProposalReq();
         goal.setGoalType("fill_to_count");
         goal.setTargetCount(20);
@@ -213,14 +272,24 @@ class PendingPlanningCommandFailureAuditTest {
     }
 
     @Test
-    void shouldPreserveLegacyFailurePathWhenReviewFlagIsDisabled() {
+    void shouldPreserveLegacyReviewFailureAuditWhenReviewFlagIsDisabled() {
         System.setProperty(ReviewFixCommandFlags.PROPERTY, "false");
         when(planningStateService.applyFixProposal(eq(1L), eq(101L), any()))
                 .thenThrow(new BusinessException(40905, "legacy_failure"));
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> service.execute(1L, 101L, request));
 
-        assertThrows(BusinessException.class, () -> service.execute(1L, 101L, request));
+        verify(planningStateService).applyFixProposal(eq(1L), eq(101L), any());
+        assertEquals(1, TransactionSynchronizationManager.getSynchronizations().size());
+        TransactionSynchronizationManager.getSynchronizations().get(0)
+                .afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+        verify(failureWriter).recordFailure(any(PlanningPendingCommandEntity.class), eq(pending), eq(failure));
+    }
 
-        assertTrue(TransactionSynchronizationManager.getSynchronizations().isEmpty());
+    private void setPendingProposalSource(String source) {
+        JSONObject data = JSONObject.parseObject(pending.getDataValue());
+        data.put("proposalSource", source);
+        pending.setDataValue(data.toJSONString());
     }
 
     @Test

@@ -32,7 +32,7 @@ public class LastProposalVo {
     /** Java 编译器产出的提案号（`ugp_…`）。 */
     private String proposalId;
 
-    /** 待确认行的状态：active / applying / applied / cancelled / expired。 */
+    /** 展示状态：active / applying / applied / cancelled / expired / failed；执行失败不显示为过期。 */
     private String actionStatus;
 
     /** 提案编译时的计划版本（`dataValue.sourceVersion`）。 */
@@ -50,6 +50,9 @@ public class LastProposalVo {
     private String impact;
     private String status;
     private Boolean requiresConfirmation;
+    /** 旧审查暂停时，review_check 卡只能取消、不能确认；user_goal 卡不受影响。 */
+    private Boolean reviewPaused;
+    private String disabledReason;
     private String strategy;
 
     /**

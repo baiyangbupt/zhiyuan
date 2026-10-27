@@ -17,6 +17,11 @@ public class AdmissionInterpretationRes {
     public static final String SAFETY_NO_COVER = "无保底档位";
     public static final String SAFETY_UNKNOWN = "无法判断";
 
+    public static final String TIER_SEQUENCE_DEFAULT = "default";
+    public static final String TIER_SEQUENCE_INVERTED = "inverted";
+    public static final String TIER_SEQUENCE_UNKNOWN = "unknown";
+    public static final String TIER_SEQUENCE_ABSENT = "absent";
+
     public static final String COMPLETENESS_FULL = "完整";
     public static final String COMPLETENESS_PARTIAL = "有缺口";
     public static final String COMPLETENESS_SEVERE = "严重缺口";
@@ -34,6 +39,14 @@ public class AdmissionInterpretationRes {
     private Double dataCompleteness;
     private String dataCompletenessBand;
     private Boolean orderAnomaly;
+    /** 实际档位序列（冲/稳/保/unknown）；与是否用户主动排序分开表达。 */
+    private List<String> tierSequence = new ArrayList<String>();
+    /** default | inverted | unknown | absent。 */
+    private String tierSequenceStatus;
+    /** true/false 只表示已确认的用户排序；本轮没有来源时为 null（未知）。 */
+    private Boolean userOrderRespected;
+    /** 审查能力可用性；paused 时说明本解读不含质量审查结论。 */
+    private ReviewAvailabilityDTO reviewAvailability;
     private List<String> caveats = new ArrayList<String>();
     /** 与 caveats 同序的 structured 版本（旧消费者仍读 caveats）。 */
     private List<InterpretationCaveatDTO> caveatDetails = new ArrayList<InterpretationCaveatDTO>();

@@ -22,6 +22,8 @@ public class PlanSolverResultDTO {
     private List<StageResultDTO> stageResults = Lists.newArrayList();
     private List<DiagnosticDTO> diagnostics = Lists.newArrayList();
     private String solverVersion;
+    /** 排序动作语义版本；冻结回放不按新策略重排。 */
+    private String orderingPolicyVersion;
     /**
      * 硬目标契约版本：staged solver 写 {@code HARD_OBJECTIVE_VERSION}；
      * legacy solver 不写，保持 null（S4 兼容判据只在两侧都非空时启用）。

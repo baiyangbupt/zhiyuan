@@ -858,10 +858,35 @@ export interface PlanningStateRes {
       safetyOk?: boolean;
     };
   };
+  planQuality?: {
+    status?: string;
+    qualityPolicyVersion?: string;
+    evaluationVersion?: string;
+    hardFeasible?: boolean | null;
+    findings?: Array<{
+      code?: string;
+      layer?: string;
+      resultStatus?: string;
+      displaySeverity?: string;
+      summary?: string;
+      reasonCode?: string;
+    }>;
+    reviewAvailability?: {
+      mode?: string;
+      reasonCode?: string;
+      policyVersion?: string;
+    };
+  };
   reviewState?: {
     status?: string;
     reviewedAt?: string;
     sourceVersion?: number;
+    evaluationStatus?: string;
+    availability?: {
+      mode?: string;
+      reasonCode?: string;
+      policyVersion?: string;
+    };
     summary?: {
       totalRuleCount?: number;
       passedRuleCount?: number;

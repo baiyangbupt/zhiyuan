@@ -248,7 +248,7 @@ TURN_OUTPUT_SCHEMA: dict[str, Any] = {
             "properties": {
                 "actionType": {
                     "type": "string",
-                    "enum": ["none", "request_clarification", "continue_readonly", "create_proposal", "confirm_proposal", "cancel_proposal", "refresh_proposal"],
+                    "enum": ["none", "request_clarification", "continue_readonly", "confirm_proposal", "cancel_proposal"],
                 },
                 "proposalRef": {"type": ["string", "null"]},
                 "expectedSourceVersion": {"type": ["integer", "null"]},
@@ -475,6 +475,18 @@ def _score_update_summary_text(summary: Mapping[str, Any]) -> str:
         parts.append(f"总分 {summary['totalScore']}")
     if summary.get("totalScorePos") is not None:
         parts.append(f"位次 {summary['totalScorePos']}")
+    if summary.get("specialPlan") is not None:
+        label = summary.get("specialPlanLabel")
+        current_label = str(label) if label else (
+            "无专项资格" if summary.get("specialPlan") is False else "有专项资格（类别待核验）"
+        )
+        if summary.get("specialPlanPrevious") is not None:
+            previous_label = "无专项资格" if summary.get("specialPlanPrevious") is False else "有专项资格"
+            parts.append(f"专项资格：{previous_label} → {current_label}")
+        else:
+            parts.append(current_label)
+        if summary.get("specialPlanImpact"):
+            parts.append(str(summary["specialPlanImpact"]))
     subjects = summary.get("subjects")
     if isinstance(subjects, list):
         rendered = "、".join(
@@ -607,18 +619,35 @@ def _continuation_nudge_failed(action_result: Mapping[str, Any]) -> str:
     code = str(action_result.get("code") or "").strip()
     message = str(action_result.get("message") or "").strip()
     reason = f"{code}: {message}" if code and message else (code or message or "后端未给出具体原因")
+    strategy_failure = code == "84009"
+    review_paused = message.strip().lower() == "review_paused"
+    failure_context = (
+        "这次失败发生在上游志愿数据策略校验，不是确认卡过期，也不是登录凭证失效。"
+        "不要把它解释为确认窗口超时、令牌过期或用户成绩有误。"
+        if strategy_failure else
+        "方案质量审查当前暂停，旧审查卡不能确认；这不是卡片过期或用户操作错误。"
+        "方案本身仍可查看和修改，可以取消这张旧卡，按普通修改重新预览。"
+        if review_paused else ""
+    )
+    recovery_guidance = (
+        "② 给出替代路径：需要管理员核对取数模式，或等待上游数据策略就绪后重新生成成绩预览再确认。"
+        "不要建议靠反复刷新页面、重复确认、修改分数或放宽报考要求来解决这个错误；"
+        if strategy_failure else
+        "② 给出**替代路径**：放宽口径（把范围放小一点或换相近条件）、换一种做法"
+        "（换个顺序，比如先补进方案再设优先）、先补数据（先把缺的目标选进来）——"
+        "挑最贴合用户诉求的一到两种，并说清每种大概会得到什么；"
+    )
     return (
         f"{CONTINUATION_OPEN_TAG}\n"
         f"用户刚才的确认**执行失败**，本次改动没有生效{ref_clause}。"
         f"后端给出的原因：{reason}。"
+        f"{failure_context}"
         "这一段不是用户发来的消息，是系统在确认执行失败后自动触发的续接指令。\n"
         "请主动接住这一轮，把失败讲清楚、把路给出来：\n"
         "① **如实解释**刚才这一步为什么没成——把上面的原因翻成用户能懂的业务语言"
         "（不原样甩错误码/字段名，也不许含糊带过；原因里读不出的细节不要编造，"
         "就按这个原因的直白含义说明）；"
-        "② 给出**替代路径**：放宽口径（把范围放小一点或换相近条件）、换一种做法"
-        "（换个顺序，比如先补进方案再设优先）、先补数据（先把缺的目标选进来）——"
-        "挑最贴合用户诉求的一到两种，并说清每种大概会得到什么；"
+        f"{recovery_guidance}"
         "③ 不要重复已经说过的内容，也不要把责任推回给用户（别暗示「你没说清楚」）；"
         "④ 需要用户表态时用**封闭式**提问（给 2-4 个明确选项）；"
         "⑤ 不要原样重发同一个提案——同样的口径再来一次还会失败；用户要的若是原方向，"
@@ -759,7 +788,7 @@ _REPAIR_OUTPUT_EXCERPT_LIMIT = 1500
 _PROPOSAL_REFERENCE_REPAIR_HINT = (
     "你引用的提案不是当前有效提案（可能已被替换或失效）。不要再对这个引用发起确认/取消，"
     "也不要重复同一个动作。请三选一：①仍要确认，就改用本轮注入的内部状态里当前有效的提案"
-    "引用与版本；②重新发起提案（proposalRequest / create_proposal）；③直接向用户如实说明"
+    "引用与版本；②重新发起提案（只能把结构化目标放进 proposalRequest）；③直接向用户如实说明"
     "这张提案已失效、需要重新发起，不要声称已提交。"
 )
 
@@ -844,7 +873,16 @@ _PROPOSAL_SOURCE_VERSION_REPAIR_HINT = (
     "改成该值后重新输出。不要重复提交旧版本，也不要把 goalType 改成别的类型。"
 )
 
+_CONVERSATION_ACTION_NOT_EXECUTABLE_HINT = (
+    "本轮把「创建/刷新提案」写进了 conversationAction，但网关没有这个执行器，"
+    "所以不会生成任何待确认卡。方案生成必须把结构化目标放进 proposalRequest；"
+    "补录成绩放 scoreUpdateRequest，发展方向放 careerUpdateRequest。"
+    "conversationAction 只用于 confirm/cancel，或 none/request_clarification/continue_readonly。"
+    "不要在正文里声称已经生成卡片，除非 proposalRequest 已被接受。"
+)
+
 _REPAIR_HINT_BY_CODE = {
+    "conversation_action_not_executable": _CONVERSATION_ACTION_NOT_EXECUTABLE_HINT,
     "proposal_reference_mismatch": _PROPOSAL_REFERENCE_REPAIR_HINT,
     "proposal_version_mismatch": _PROPOSAL_REFERENCE_REPAIR_HINT,
     "proposal_source_version_mismatch": _PROPOSAL_SOURCE_VERSION_REPAIR_HINT,
@@ -1473,6 +1511,7 @@ class GatewayService:
         turn_id: str,
         request: ScoreUpdateRequest,
         snapshot: ConversationTurnSnapshot,
+        source_message_id: int | None = None,
     ) -> dict[str, Any]:
         """补录成绩（score_update 动作族）的 prepare/preview —— 与提案分支同构的一段。
 
@@ -1488,6 +1527,10 @@ class GatewayService:
                 "score update source version does not match the current snapshot",
             )
         payload = request.model_dump(by_alias=True, exclude_none=True)
+        # 来源由网关注入，不接受模型自报；Java 只会拿它核对持久化消息的会话/角色。
+        if source_message_id is not None:
+            payload["sourceMessageId"] = source_message_id
+        payload["sourceTurnId"] = str(turn_id)
         # **空数组 ≠ "把各科清空" ✗✓**：契约里 `subject_score_list` 的默认值是空列表 ✓，
         # `model_dump` 会把"模型没提各科"渲染成 `"subjectScoreList": []` ✗——而 Java 的合并是
         # "数组整体替换" ✓（表单补录要靠这条清空负面意向 ✓，改不得 ✓），于是空数组会把
@@ -2311,8 +2354,9 @@ class GatewayService:
         emit: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         key = _session_key(tenant_id, session_id)
+        user_message_id: int | None = None
         if self.message_store is not None:
-            await self.message_store.save_user_message(str(session_id), content)
+            user_message_id = await self.message_store.save_user_message(str(session_id), content)
 
         if self.mode == "legacy":
             reply = await self._legacy_reply(session_id, user_id, content)
@@ -2394,6 +2438,7 @@ class GatewayService:
                 snapshot.admission_mode,
                 state_patch,
                 emit=emit,
+                source_message_id=user_message_id,
             )
         )
         if self.mode == "codex_shadow":
@@ -2522,6 +2567,8 @@ class GatewayService:
         # 最后一条输入是**用户正文**还是**系统内部指令**（续接 nudge）。默认 True：
         # 绝大多数调用就是用户回合；续接路径显式传 False（见 `continue_after_action`）。
         content_is_user_message: bool = True,
+        # 网关已经持久化的用户消息 ID；只用于让 Java 核对来源，不是模型可编的字段。
+        source_message_id: int | None = None,
     ) -> dict[str, Any]:
         if self.codex is None:
             return {"error": "codex_unavailable", "events": []}
@@ -3116,6 +3163,7 @@ class GatewayService:
                     turn_id=turn_id,
                     request=output.score_update_request,
                     snapshot=snapshot,
+                    source_message_id=source_message_id,
                 )
             elif output.career_update_request is not None:
                 # **发展方向草稿**（career v1「完整落库」）——与提案/补录同一张卡、

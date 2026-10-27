@@ -108,6 +108,9 @@ class UnifiedPlanPostconditionValidator {
         boolean tierQuotaSatisfied = populateTierQuota(
                 report, state, userGoal, authoritativeProposal, planCandidates, majorGroupMode);
         populateSafety(report, state, planCandidates);
+        boolean specialPlanSatisfied = !SpecialPlanQualification.hasConflictInCandidates(
+                state, planCandidates)
+                && !SpecialPlanQualification.stateHasUnknownSpecialPlan(state);
 
         boolean countSatisfied = !countRequired || (targetCount != null
                 && actualCount == targetCount
@@ -116,7 +119,7 @@ class UnifiedPlanPostconditionValidator {
         validateCanonicalObjectiveResults(report, frozenResult);
         // J5.4 拍板：safety 只报告，不参与 satisfied；solver 软层、review 硬诊断。
         report.setSatisfied(countSatisfied && requirementsSatisfied
-                && priorityRulesSatisfied && tierQuotaSatisfied);
+                && priorityRulesSatisfied && tierQuotaSatisfied && specialPlanSatisfied);
         if (!Boolean.TRUE.equals(report.getSatisfied())) {
             throw new BusinessException(PendingPlanningCommandBizService.POSTCONDITION_FAILED_CODE,
                     "plan change postcondition failed: target=" + targetCount
@@ -179,6 +182,9 @@ class UnifiedPlanPostconditionValidator {
         int actualCount = actualCount(state, majorGroupMode);
         int shortage = enforceCountPreserved && countBefore != null
                 ? Math.max(0, countBefore - actualCount) : 0;
+        boolean specialPlanSatisfied = !SpecialPlanQualification.hasConflictInCandidates(
+                state, planCandidates)
+                && !SpecialPlanQualification.stateHasUnknownSpecialPlan(state);
         PlanChangePostconditionReportDTO report = new PlanChangePostconditionReportDTO();
         report.setGoalType(commandType);
         report.setCountMode(majorGroupMode ? "unit" : "volunteer");
@@ -191,7 +197,8 @@ class UnifiedPlanPostconditionValidator {
         // 只有**已确认约束**存在时才这么判 ✓（没有约束时"零违反"本来就是对的 ✓）。
         boolean vacuousEmpty = total == 0 && RepairCandidateEligibility.hasConfirmedHardConstraints(state);
         boolean countSatisfied = shortage == 0;
-        report.setSatisfied(violating == 0 && !vacuousEmpty && countSatisfied);
+        report.setSatisfied(violating == 0 && !vacuousEmpty && countSatisfied
+                && specialPlanSatisfied);
         if (!Boolean.TRUE.equals(report.getSatisfied())) {
             String reason = vacuousEmpty ? EMPTY_PLAN_VACUOUS_REASON
                     : !countSatisfied ? CONSTRAINT_COUNT_SHORTFALL_REASON : null;

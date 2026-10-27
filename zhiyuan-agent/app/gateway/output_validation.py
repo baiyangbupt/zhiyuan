@@ -144,6 +144,16 @@ def validate_turn_output(
                 "add_units proposal source version does not match the current snapshot",
             )
     action = output.conversation_action
+    if action.action_type in {"create_proposal", "refresh_proposal"}:
+        # 这两类没有执行器；如果同一轮没有真正的结构化提案，模型正文里的
+        # “已生成/刷新卡片”就是无承载的承诺（会话 10042001 的实际形状）。
+        if (proposal_request is None
+                and output.score_update_request is None
+                and output.career_update_request is None):
+            raise OutputContractError(
+                "conversation_action_not_executable",
+                "create/refresh proposal must use proposalRequest, not conversationAction",
+            )
     if action.action_type in {"confirm_proposal", "cancel_proposal"}:
         active = snapshot.active_proposal or {}
         active_ref = active.get("proposalRef") or active.get("proposalId") or active.get("pendingId")

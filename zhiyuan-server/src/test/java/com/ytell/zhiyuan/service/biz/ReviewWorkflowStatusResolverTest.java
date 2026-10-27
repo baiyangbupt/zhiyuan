@@ -22,6 +22,14 @@ public class ReviewWorkflowStatusResolverTest {
     }
 
     @Test
+    void shouldResolvePausedBeforeNoFix() {
+        ReviewStateDTO reviewState = ReviewPolicy.pausedProjection();
+
+        assertEquals("review_paused",
+                ReviewWorkflowStatusResolver.resolveRunStatus(reviewState, new FixProposalStateDTO()));
+    }
+
+    @Test
     void shouldResolveNoFixWhenThereAreNoProposals() {
         ReviewStateDTO reviewState = completedReview();
 

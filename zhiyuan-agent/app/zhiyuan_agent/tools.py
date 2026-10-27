@@ -2835,6 +2835,52 @@ def _review_career_labels(career_slots: list[str] | None) -> tuple[list[str], li
     return normalized, [to_career_label(value) for value in normalized]
 
 
+def _review_state_is_paused(review_state: Any) -> bool:
+    """paused 是能力可用性，不是失败；空 checks 绝不能当“无风险”。"""
+    state = review_state if isinstance(review_state, dict) else {}
+    status = str(state.get("status") or "").strip().lower()
+    availability = state.get("availability") if isinstance(state.get("availability"), dict) else {}
+    mode = str(availability.get("mode") or "").strip().lower()
+    return status == "paused" or mode == "paused"
+
+
+def _review_payload_is_paused(payload: Any) -> bool:
+    data = payload if isinstance(payload, dict) else {}
+    if _review_state_is_paused(data):
+        return True
+    for key in ("reviewState", "review"):
+        if _review_state_is_paused(data.get(key)):
+            return True
+    return False
+
+
+def _review_paused_payload(*, focus: str, review_state: Any = None) -> str:
+    state = review_state if isinstance(review_state, dict) else {}
+    availability = state.get("availability") if isinstance(state.get("availability"), dict) else {}
+    return _json(
+        {
+            "data": {
+                "focus": focus,
+                "has_plan": True,
+                "state_mutation": False,
+                "plan_mutation": False,
+                "review_status": "paused",
+                "review_availability": availability or {
+                    "mode": "paused",
+                    "reasonCode": "review_paused",
+                },
+                "issues": [],
+                "all_issue_count": 0,
+            },
+            "next_step": "respond",
+            "message": (
+                "方案质量审查当前暂停，这一轮没有运行旧审查，也不代表方案已通过或没有风险。"
+                "方案仍可查看、解释和修改；需要调整时我会先给确认预览。"
+            ),
+        }
+    )
+
+
 def _review_summary_counts(review_file: dict[str, Any], issues: list[dict[str, Any]]) -> dict[str, int]:
     summary = review_file.get("summary") if isinstance(review_file.get("summary"), dict) else {}
     risk_count = _as_int(review_file.get("risk_count") or summary.get("riskCount") or summary.get("risk_count"))
@@ -3364,6 +3410,10 @@ async def review_plan(
             review_data = _response_data(response)
             if isinstance(review_data.get("reviewState"), dict):
                 review_data = review_data["reviewState"]
+            if _review_payload_is_paused(review_data):
+                return _review_paused_payload(
+                    focus=normalized_focus, review_state=review_data
+                )
             if review_data:
                 sandbox = getattr(ctx.deps, "sandbox", None)
                 if sandbox is not None:
@@ -3395,6 +3445,8 @@ async def review_plan(
             review_error = str(exc)
 
     review_file = await _sandbox_data(ctx, "plan/review.json")
+    if _review_payload_is_paused(review_file):
+        return _review_paused_payload(focus=normalized_focus, review_state=review_file)
     checks = review_file.get("checks") if isinstance(review_file.get("checks"), list) else []
     issues = [_normalize_review_issue(check) for check in checks if isinstance(check, dict)]
     for issue in issues:
@@ -7089,6 +7141,8 @@ async def _review_issue_by_code(
     if not code:
         return None
     review_file = await _sandbox_data(ctx, "plan/review.json")
+    if _review_payload_is_paused(review_file):
+        return None
     checks = review_file.get("checks") if isinstance(review_file.get("checks"), list) else []
     issues = [
         _normalize_review_issue(check)
@@ -9800,6 +9854,11 @@ async def _preview_review_repair_plan_change(
         ]
     else:
         backend_response, backend_data, proposals = await _generate_review_repair_proposals(ctx)
+    if _review_payload_is_paused(backend_data):
+        return _review_paused_payload(
+            focus=str(repair_goal.get("objective") or "review_repair"),
+            review_state=backend_data,
+        )
     proposal_envelope_version = _as_int(
         backend_data.get("sourceVersionGuard") or backend_data.get("sourceVersion")
     )

@@ -32,6 +32,8 @@ public class CanonicalPlanningObjectiveSetDTO {
     private MutationPolicyDTO mutationPolicy;
     /** J5.3 P4：默认 null（等同 off）；solver.v2.diversity 开启时 enrichV2 写入 soft。 */
     private DiversityPolicyDTO diversityPolicy;
+    /** Phase 2：录取率桶/多样性结构质量策略；null/off 表示不启用。 */
+    private StructureQualityPolicyDTO structureQualityPolicy;
     private String hardObjectiveVersion;
     private String solverObjectiveVersion;
 }

@@ -92,6 +92,14 @@ def _data(response: Mapping[str, Any]) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _response_code(response: Mapping[str, Any]) -> str | None:
+    code = response.get("code")
+    result_code = response.get("resultCode") or _data(response).get("resultCode")
+    if str(code or "0") in {"0", "200"} and str(result_code or "") == "84009":
+        return "84009"
+    return str(code) if code is not None else None
+
+
 def _postcondition_satisfied(response: Mapping[str, Any]) -> bool | None:
     """从满足度报告里读成败（没有报告时返回 None）。
 
@@ -114,6 +122,8 @@ def _status(response: Mapping[str, Any]) -> str:
     value = str(response.get("status") or _data(response).get("status") or "").strip().lower()
     raw_code = response.get("code")
     code = str(raw_code).strip().lower() if raw_code is not None else ""
+    if _response_code(response) == "84009":
+        return "failed"
     # Java PendingConfirmation.resolve(confirm) first claims an active
     # snapshot and returns ``applying``.  That is an acknowledged in-progress
     # transition, not proof that the planning command has completed.
@@ -240,7 +250,7 @@ async def execute_conversation_action(
         status, proposal_ref, new_version,
         list(changes) if isinstance(changes, list) else [],
         data.get("reviewState") if isinstance(data.get("reviewState"), Mapping) else None,
-        str(response.get("code")) if response.get("code") is not None else None,
+        _response_code(response),
         str(response.get("msg") or response.get("message")) if response.get("msg") or response.get("message") else None,
         origin="user",
         action_type=action_type or None,
@@ -1142,7 +1152,7 @@ async def _execute_claimed_command(
         status,
         response.get("status"),
         response.get("code"),
-        response.get("message") or data.get("message"),
+        response.get("message") or response.get("msg") or data.get("message"),
     )
     # **执行失败不许读成 completed**：`_status` 对拿不准的响应一律 `failed` ✓
     # （"HTTP 成功不等于执行成功"那条注释在它上面）。
@@ -1213,7 +1223,7 @@ async def _execute_claimed_command(
         ),
         change_list,
         data.get("reviewState") if isinstance(data.get("reviewState"), Mapping) else None,
-        str(response.get("code")) if response.get("code") is not None else None,
+        _response_code(response),
         str(response.get("msg") or response.get("message")) if response.get("msg") or response.get("message") else None,
         origin="user",
         action_type=action_type or None,

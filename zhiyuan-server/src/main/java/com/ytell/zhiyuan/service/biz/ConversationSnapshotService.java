@@ -112,6 +112,12 @@ public class ConversationSnapshotService {
             putIfPresent(snapshot.getConfirmedConstraints(), "excludedSchools", explicit.getNegativeSchools());
             putIfPresent(snapshot.getConfirmedConstraints(), "excludedRegions", explicit.getNegativeRegions());
         }
+        StudentPlanningSummaryDTO student = workspace.getStudentSummary();
+        if (student != null && student.getSpecialPlan() != null) {
+            snapshot.getConfirmedConstraints().put("specialPlan", student.getSpecialPlan());
+            snapshot.getConfirmedConstraints().put("specialPlanLabel",
+                    student.getSpecialPlan() ? "有专项资格（类别待核验）" : "无专项资格");
+        }
         if (workspace.getConstraintState() != null) {
             HardConstraintsDTO hard = workspace.getConstraintState().getHardConstraints();
             SoftPreferencesDTO soft = workspace.getConstraintState().getSoftPreferences();
@@ -136,22 +142,30 @@ public class ConversationSnapshotService {
                 && workspace.getCandidatePoolState().getSummary() != null) {
             snapshot.getPreferences().put("candidateSummary", workspace.getCandidatePoolState().getSummary());
         }
-        if (workspace.getReviewState() != null && workspace.getReviewState().getSummary() != null) {
-            snapshot.getPreferences().put("reviewSummary", workspace.getReviewState().getSummary());
+        ReviewStateDTO reviewState = workspace.getReviewState();
+        if (reviewState != null && reviewState.getAvailability() != null) {
+            snapshot.getPreferences().put("reviewAvailability", reviewState.getAvailability());
         }
-        if (workspace.getReviewState() != null) {
-            // J5.2：统一评价的几个紧凑信号。只给派生值，不把 15 条 findings 塞进快照。
-            if (workspace.getReviewState().getEvaluationStatus() != null) {
-                snapshot.getPreferences().put("reviewEvaluationStatus",
-                        workspace.getReviewState().getEvaluationStatus());
+        if (!ReviewPolicy.isPaused(reviewState)) {
+            // 历史 summary/hardFeasible 只在 active 且确有审查时注入；paused 的空投影
+            // 不能被旧消费者误读成“0 风险/已通过”。
+            if (reviewState != null && reviewState.getSummary() != null) {
+                snapshot.getPreferences().put("reviewSummary", reviewState.getSummary());
             }
-            if (workspace.getReviewState().getEvaluationVersion() != null) {
-                snapshot.getPreferences().put("reviewEvaluationVersion",
-                        workspace.getReviewState().getEvaluationVersion());
-            }
-            if (workspace.getReviewState().getHardFeasible() != null) {
-                snapshot.getPreferences().put("reviewHardFeasible",
-                        workspace.getReviewState().getHardFeasible());
+            if (reviewState != null) {
+                // J5.2：统一评价的几个紧凑信号。只给派生值，不把 15 条 findings 塞进快照。
+                if (reviewState.getEvaluationStatus() != null) {
+                    snapshot.getPreferences().put("reviewEvaluationStatus",
+                            reviewState.getEvaluationStatus());
+                }
+                if (reviewState.getEvaluationVersion() != null) {
+                    snapshot.getPreferences().put("reviewEvaluationVersion",
+                            reviewState.getEvaluationVersion());
+                }
+                if (reviewState.getHardFeasible() != null) {
+                    snapshot.getPreferences().put("reviewHardFeasible",
+                            reviewState.getHardFeasible());
+                }
             }
         }
         if (workspace.getWorkflowStatus() != null) {
@@ -185,9 +199,18 @@ public class ConversationSnapshotService {
         proposal.put("kind", pending.getKind());
         proposal.put("actionFamily", pending.getActionFamily());
         proposal.put("status", pending.getStatus());
-        proposal.put("requiresConfirmation", "active".equals(pending.getStatus()));
         Map<String, Object> dataValue = pending.getDataValue() == null
                 ? new LinkedHashMap<String, Object>() : pending.getDataValue();
+        boolean reviewPaused = ReviewPolicy.paused()
+                && RepairProposalTaxonomy.isReviewCheckSource(
+                dataValue.get("proposalSource") == null
+                        ? null : String.valueOf(dataValue.get("proposalSource")));
+        // 旧 review 卡可以取消，但不能确认；user_goal / 成绩等正常卡不受影响。
+        proposal.put("requiresConfirmation", "active".equals(pending.getStatus()) && !reviewPaused);
+        if (reviewPaused) {
+            proposal.put("reviewPaused", true);
+            proposal.put("disabledReason", ReviewPolicy.REASON_PAUSED);
+        }
         Object sourceVersion = firstPresent(
                 dataValue.get("sourceVersion"),
                 dataValue.get("sourceBackendVersion"),
@@ -234,6 +257,8 @@ public class ConversationSnapshotService {
         journey.setSelectionCurrentCount(workspace.getSelectionCurrentCount());
         journey.setPlanVersion(snapshot.getSnapshotVersion());
         journey.setPlanContentDigest(planContentDigest(ordered, working));
+        journey.setReviewAvailability(workspace.getReviewState() == null
+                ? null : workspace.getReviewState().getAvailability());
         journey.setReviewSourceVersion(workspace.getReviewState() == null
                 ? null : workspace.getReviewState().getSourceVersion());
         journey.setTierQuotaGoal(hasTierQuotaGoal(workspace));
@@ -243,7 +268,8 @@ public class ConversationSnapshotService {
         journey.setStale(isStale(flags));
         journey.setStaleReasonCode(flags == null ? null : blankToNull(flags.getReasonCode()));
         journey.setStaleMessage(truncate(flags == null ? null : blankToNull(flags.getMessage()), 200));
-        journey.setReviewStale(flags != null && Boolean.TRUE.equals(flags.getReview()));
+        journey.setReviewStale(!ReviewPolicy.paused()
+                && flags != null && Boolean.TRUE.equals(flags.getReview()));
         journey.setPlanAdjustmentStale(flags != null && Boolean.TRUE.equals(flags.getPlanAdjustment()));
 
         String candidateFreshness = candidateFreshness(
@@ -362,6 +388,9 @@ public class ConversationSnapshotService {
     }
 
     private String reviewFreshness(ReviewStateDTO review, StaleFlagsDTO flags) {
+        if (ReviewPolicy.isPaused(review)) {
+            return "paused";
+        }
         if (review == null || review.getSourceVersion() == null
                 || "idle".equalsIgnoreCase(String.valueOf(review.getStatus()))) {
             return "absent";
@@ -379,7 +408,8 @@ public class ConversationSnapshotService {
         if (!"fresh".equals(planFreshness)) {
             return "plan";
         }
-        if (!"fresh".equals(reviewFreshness)) {
+        // paused 不要求用户/模型“重新审查”；否则会形成无法完成的循环建议。
+        if (!"fresh".equals(reviewFreshness) && !"paused".equals(reviewFreshness)) {
             return "review";
         }
         return "none";

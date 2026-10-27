@@ -25,4 +25,13 @@ public class MutationPolicyDTO {
     private Boolean prioritySelection = false;
     /** 两阶段组内选择：当前组内专业数量上限；null/≤0 表示不帽。 */
     private Integer requiredMajorCount;
+    /**
+     * 排序动作语义：initial_tier_order_v1 / preserve_current_v1 / explicit_move_v1。
+     * null 保留旧客户端行为；新链路必须显式写入并随 inputDigest 冻结。
+     */
+    private String orderingPolicyVersion;
+    /**
+     * 纯删除等收敛动作允许暂时保留已存在的专项冲突项；新增/补齐/替换/首版必须为 false。
+     */
+    private Boolean allowExistingSpecialPlanConflicts = false;
 }

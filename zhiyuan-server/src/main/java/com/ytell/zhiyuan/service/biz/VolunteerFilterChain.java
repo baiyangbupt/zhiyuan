@@ -426,8 +426,11 @@ public class VolunteerFilterChain {
             return false;
         }
 
-        // 检查专业名称是否包含专项计划关键词
-        return name.contains("专项计划")||name.contains("国家专项")||name.contains("地方专项");
+        // 名称兜底：只识别三类明确专项，不把泛词“专项/定向/公费”当成资格事实。
+        return name.contains("专项计划")
+                || name.contains("国家专项")
+                || name.contains("地方专项")
+                || name.contains("高校专项");
     }
 
     /**

@@ -15,6 +15,7 @@ BACKEND_PORT="${CODEX_LOCAL_BACKEND_PORT:-18290}"
 AGENT_PORT="${CODEX_LOCAL_AGENT_PORT:-18291}"
 RANK_PORT="${CODEX_LOCAL_RANK_PORT:-18292}"
 WEB_PORT="${CODEX_LOCAL_WEB_PORT:-3201}"
+REVIEW_MODE="${CODEX_LOCAL_REVIEW_MODE:-active}"
 RUN_DIR="${CODEX_LOCAL_RUN_DIR:-}"
 CODEX_BIN="${CODEX_APP_SERVER_BIN:-codex}"
 SKIP_WEB=false
@@ -40,6 +41,7 @@ Options:
   --agent-port PORT          Default: 18291
   --rank-port PORT           Default: 18292
   --web-port PORT            Default: 3201
+  --web-host ADDRESS         Loopback by default; private IPv4 enables LAN Web access.
   --run-dir PATH             Fresh directory below .runtime/ for this run.
   --skip-web                 Do not start Next.js.
   --skip-build               Use the existing backend jar.
@@ -94,6 +96,11 @@ while [[ $# -gt 0 ]]; do
         --web-port)
             require_option_value "$1" "${2:-}"
             WEB_PORT="$2"
+            shift 2
+            ;;
+        --web-host)
+            require_option_value "$1" "${2:-}"
+            CODEX_LOCAL_WEB_HOST="$2"
             shift 2
             ;;
         --run-dir)
@@ -161,7 +168,7 @@ mkdir -p "$RUN_DIR/logs" "$RUN_DIR/pids"
 BACKEND_URL="http://127.0.0.1:$BACKEND_PORT"
 AGENT_URL="http://127.0.0.1:$AGENT_PORT"
 RANK_URL="http://127.0.0.1:$RANK_PORT"
-WEB_URL="http://127.0.0.1:$WEB_PORT"
+WEB_URL="http://$ACCESS_WEB_HOST:$WEB_PORT"
 
 cat > "$RUN_DIR/stack.env" <<EOF
 BACKEND_URL=$BACKEND_URL
@@ -231,6 +238,8 @@ if [[ "$SKIP_BUILD" == false ]]; then
     )
 fi
 
+cp "$ROOT_DIR/zhiyuan-server/target/zhiyuan-server.jar" "$RUN_DIR/zhiyuan-server.jar"
+
 start_service "rank" "$ROOT_DIR/zhiyuan-rank" \
     "$ROOT_DIR/zhiyuan-rank/.venv/bin/gunicorn" -w 1 -b "127.0.0.1:$RANK_PORT" app:app
 wait_for_http "rank" "$RANK_URL/health"
@@ -244,11 +253,13 @@ wait_for_http "rank" "$RANK_URL/health"
 #   → 前端"任何 403 整页跳回 /login" ✓ → 弹回登录页 ✓）。这里用**同一个访问面助手**算出的集合 ✓
 #   （`ACCESS_ALLOWED_ORIGINS` ✓，与 agent 侧同源 ✓），不写第二份判据 ✓，也不做通配 ✓。
 start_service "backend" "$ROOT_DIR/zhiyuan-server" \
-    java -jar "$ROOT_DIR/zhiyuan-server/target/zhiyuan-server.jar" \
+    env "PLANNING_REVIEW_MODE=$REVIEW_MODE" \
+    java "-Dplanning.review.mode=$REVIEW_MODE" -jar "$RUN_DIR/zhiyuan-server.jar" \
     "--spring.profiles.active=localtest" \
     "--spring.config.additional-location=file:$SERVER_CONFIG" \
     "--server.port=$BACKEND_PORT" \
     "--server.address=127.0.0.1" \
+    "--planning.review.mode=$REVIEW_MODE" \
     "--conversation.ws.allowed-origins=https://test-www.gaotuzhiyuan.com,http://127.0.0.1:3001,${ACCESS_ALLOWED_ORIGINS}" \
     "--agent.zhiyuan.url=$AGENT_URL" \
     "--volunteer.rank.url=$RANK_URL"
@@ -309,7 +320,7 @@ if [[ "$SKIP_WEB" == false ]]; then
         "NEXT_PUBLIC_OUTER_API_BASE_URL=$ACCESS_OUTER_API_BASE_URL" \
         "NEXT_PUBLIC_CODEX_ACCESS_MODE=$ACCESS_MODE" \
         "NEXT_DIST_DIR=.next-dev" \
-        "$ROOT_DIR/zhiyuan-web/node_modules/.bin/next" dev -H 127.0.0.1 -p "$WEB_PORT"
+        "$ROOT_DIR/zhiyuan-web/node_modules/.bin/next" dev -H "$ACCESS_WEB_HOST" -p "$WEB_PORT"
     wait_for_http "web" "$WEB_URL/gaotu-assistant-agent/health"
 fi
 

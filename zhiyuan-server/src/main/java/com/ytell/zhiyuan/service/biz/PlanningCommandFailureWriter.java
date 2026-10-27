@@ -78,7 +78,7 @@ public class PlanningCommandFailureWriter {
         String message = failure.getMessage();
         if (message != null) {
             String reason = message.split("[:\\s]", 2)[0];
-            if (reason.matches("review_fix_[a-z_]{1,64}")) {
+            if ("review_paused".equals(reason) || reason.matches("review_fix_[a-z_]{1,64}")) {
                 return reason;
             }
         }

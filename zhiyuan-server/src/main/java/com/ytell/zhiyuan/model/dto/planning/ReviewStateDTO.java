@@ -32,4 +32,12 @@ public class ReviewStateDTO {
     private Boolean hardFeasible;
     /** 15 个 probe 的全量 findings（含 pass）；checks 暂保留兼容。 */
     private List<EvaluationFindingDTO> findings = Lists.newArrayList();
+
+    /**
+     * 审查能力可用性（paused 时优先于历史结论）。
+     *
+     * <p>paused 投影会清空 summary/checks/findings/hardFeasible，消费者必须先读本字段，
+     * 不能把空结果当成“0 风险/审查通过”。</p>
+     */
+    private ReviewAvailabilityDTO availability;
 }

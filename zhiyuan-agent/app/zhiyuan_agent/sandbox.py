@@ -299,10 +299,22 @@ def _plan_summary_file_from_backend_state(state: dict[str, Any]) -> dict[str, An
 
 def _review_file_from_backend_state(state: dict[str, Any]) -> dict[str, Any]:
     review_state = _as_dict(state.get("reviewState"))
+    availability = _as_dict(review_state.get("availability"))
+    paused = (
+        str(review_state.get("status") or "").strip().lower() == "paused"
+        or str(availability.get("mode") or "").strip().lower() == "paused"
+    )
     summary = _as_dict(review_state.get("summary"))
     checks = review_state.get("checks") if isinstance(review_state.get("checks"), list) else []
+    if paused:
+        # 对外投影不应带旧 summary/checks；这里再兜一层，防止旧缓存/旧前端误读。
+        summary = {}
+        checks = []
     return {
-        "available": bool(review_state),
+        "available": bool(review_state) and not paused,
+        "paused": paused,
+        "status": str(review_state.get("status") or "").strip(),
+        "availability": availability,
         "version": _as_int(state.get("version")),
         "summary": summary,
         "checks": checks,

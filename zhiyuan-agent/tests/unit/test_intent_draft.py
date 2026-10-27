@@ -164,7 +164,7 @@ def test_model_goal_aliases_are_normalized_to_plan_commands():
     assert [op.kind for op in composite_set.operations] == ["constrain", "add"]
 
 
-def test_fill_with_requirements_is_not_marked_ready_atomic():
+def test_fill_with_requirements_is_one_atomic_user_goal_proposal():
     draft = IntentDraft(
         source_turn_id="t-fill-req",
         user_text="补到 50 条，以电气为主",
@@ -179,12 +179,85 @@ def test_fill_with_requirements_is_not_marked_ready_atomic():
 
     change_set = build_change_set(draft)
 
-    assert change_set.status == "needs_constraints_first"
-    assert change_set.atomic is False
-    assert [op.kind for op in change_set.operations] == ["constrain", "fill"]
+    # fill 的 requirements 是本次补齐的选入条件，Java user-goal prepare
+    # 能在同一张卡里编译；不能再拆成 constrain + fill，否则网关会丢掉
+    # proposalRequest，正文说有卡但实际没有卡（10042002 实测）。
+    assert change_set.status == "ready"
+    assert change_set.atomic is True
+    assert [op.kind for op in change_set.operations] == ["fill"]
     assert change_set.operations[0].requirements[0].min_count == 30
-    assert change_set.operations[1].requirements[0].min_count == 30
-    assert change_set.operations[1].count == 50
+    assert change_set.operations[0].count == 50
+
+
+def test_read_only_query_target_may_name_school_only():
+    draft = IntentDraft(
+        source_turn_id="t-school-query",
+        user_text="湖南大学录取分数多少",
+        goal_family="query",
+        action="query_admission",
+        targets=[{"schoolName": "湖南大学"}],
+        validity="this_adjustment",
+    )
+
+    assert draft.targets[0].school_name == "湖南大学"
+    assert draft.targets[0].major_name is None
+
+
+def test_plan_mutation_target_still_requires_major_or_volunteer_id():
+    draft = IntentDraft(
+        source_turn_id="t-school-write",
+        user_text="把湖南大学加进方案",
+        goal_family="plan_mutation",
+        action="add_units",
+        targets=[{"schoolName": "湖南大学"}],
+        validity="this_adjustment",
+    )
+
+    change_set = build_change_set(draft)
+
+    assert change_set.status == "needs_clarification"
+    assert change_set.atomic is False
+    assert any("院校+专业" in item for item in change_set.unresolved)
+
+
+def test_generate_plan_alias_is_a_supported_first_version_fill():
+    for extra in ("fill", "generate"):
+        draft = IntentDraft(
+            source_turn_id="t-generate-plan",
+            user_text="可以 出一版方案",
+            goal_family="plan_mutation",
+            action="generate_plan",
+            additional_mutations=[extra],
+            scopes=[{"scopeType": "region", "name": "地域", "values": ["江西省", "省外"], "strength": "prefer"}],
+            count=15,
+            validity="session_future",
+        )
+
+        change_set = build_change_set(draft)
+
+        assert change_set.status == "ready"
+        assert change_set.atomic is True
+        assert [op.kind for op in change_set.operations] == ["fill"]
+        assert change_set.operations[0].count == 15
+
+
+def test_fill_with_an_extra_structural_mutation_still_needs_negotiation():
+    draft = IntentDraft(
+        source_turn_id="t-fill-remove",
+        user_text="补到 50 条，同时删掉 B",
+        goal_family="plan_mutation",
+        action="fill_to_count",
+        count=50,
+        additional_mutations=["remove"],
+        targets=[{"school_name": "B大学", "major_name": "计算机"}],
+        validity="this_adjustment",
+    )
+
+    change_set = build_change_set(draft)
+
+    assert change_set.status == "needs_negotiation"
+    assert change_set.atomic is False
+    assert {op.kind for op in change_set.operations} == {"fill", "remove"}
 
 
 def test_ready_change_sets_are_always_atomic():

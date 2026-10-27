@@ -88,6 +88,7 @@ public class EvaluationContextBuilder {
             entry.setPosition(unit.getPosition());
             entry.setSchoolName(unit.getSchoolName());
             entry.setProvinceName(unit.getProvinceName());
+            entry.setSchoolNature(unit.getSchoolNature());
             entry.setPathTier(unit.getTier());
             entry.setSchoolRatio(unit.getSchoolEnrollRatio());
             entry.setMajorRatio(unit.getAdmissionRatio());
@@ -96,10 +97,21 @@ public class EvaluationContextBuilder {
             List<String> tags = Lists.newArrayList();
             List<CandidateItemDTO> unitCandidates = Lists.newArrayList();
             for (PlanningUnitMajorDTO major : defaultList(unit.getMajorItems())) {
+                if (major == null) {
+                    continue;
+                }
+                addUnique(entry.getSelectedMajorNames(), major.getMajorName());
+                for (String tag : defaultList(major.getMajorPlanTags())) {
+                    addUnique(tags, tag);
+                }
+                for (String tag : defaultList(major.getReasonCodes())) {
+                    addUnique(tags, tag);
+                }
                 CandidateItemDTO candidate = byVolunteer.get(major.getVolunteerId());
                 if (candidate == null) {
                     continue;
                 }
+                addUnique(entry.getSelectedMajorNames(), candidate.getMajorName());
                 unitCandidates.add(candidate);
                 for (String tag : riskTags(candidate)) {
                     if (!tags.contains(tag)) {
@@ -149,6 +161,7 @@ public class EvaluationContextBuilder {
                     entry.setPathTier(candidate.getTier());
                 }
                 entry.setProvinceName(candidate.getProvinceName());
+                entry.setSchoolNature(candidate.getSchoolNature());
                 entry.setSchoolRatio(candidate.getSchoolEnrollRatio());
                 entry.setMajorRatio(candidate.getAdmissionRatio());
                 entry.setTuitionPerYear(candidate.getTuitionPerYear());
@@ -182,12 +195,25 @@ public class EvaluationContextBuilder {
                 result.add(value);
             }
         }
+        for (List<String> values : Lists.newArrayList(candidate.getMajorPlanTags(),
+                candidate.getSchoolPopupTags(), candidate.getSchoolBasicTags(), candidate.getMajorRankTags())) {
+            for (String value : defaultList(values)) {
+                addUnique(result, value);
+            }
+        }
+        addUnique(result, candidate.getDisplaySchoolName());
         if (((candidate.getSchoolName() != null && candidate.getSchoolName().contains("中外合作"))
                 || (candidate.getMajorName() != null && candidate.getMajorName().contains("中外合作")))
                 && !result.contains("cooperative_program")) {
             result.add("cooperative_program");
         }
         return result;
+    }
+
+    private void addUnique(List<String> values, String value) {
+        if (!Strings.isNullOrEmpty(value) && !values.contains(value)) {
+            values.add(value);
+        }
     }
 
     private List<String> matchedCoverageIds(List<CandidateItemDTO> candidates,

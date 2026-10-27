@@ -17,6 +17,7 @@ import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
+import com.ytell.zhiyuan.model.dto.planning.StructureQualityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountsDTO;
@@ -70,6 +71,15 @@ final class CanonicalPlanningRuntime {
                                                 List<CandidateItemDTO> effectiveCandidates,
                                                 Integer initialSelectionTargetCount,
                                                 boolean initialContentGuard) {
+        return enforceSelection(state, effectiveCandidates, initialSelectionTargetCount,
+                initialContentGuard, false);
+    }
+
+    static PlanSolverResultDTO enforceSelection(PlanningStateDTO state,
+                                                List<CandidateItemDTO> effectiveCandidates,
+                                                Integer initialSelectionTargetCount,
+                                                boolean initialContentGuard,
+                                                boolean allowExistingSpecialPlanConflicts) {
         CanonicalPlanningObjectiveSetDTO objectives = PlanningObjectiveCompiler.compileConfirmed(state);
         boolean allowInitialFallback = initialContentGuard && !hasSelectionObjectives(state, objectives);
         boolean explicitInitialTarget = initialSelectionTargetCount != null
@@ -107,12 +117,23 @@ final class CanonicalPlanningRuntime {
         CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
                 state, candidateFacts, CandidateSnapshotBuilder.CurrentSource.WORKING);
         MutationPolicyDTO policy = new MutationPolicyDTO();
-        policy.setAction("INITIAL");
-        policy.setLockExisting(false);
-        policy.setCountAsChurn(true);
+        policy.setAction(allowExistingSpecialPlanConflicts ? "REMOVE" : "INITIAL");
+        policy.setAllowAdd(!allowExistingSpecialPlanConflicts);
+        policy.setLockExisting(allowExistingSpecialPlanConflicts);
+        // 初始方案不是“用户已确认方案”的增量修订：结构质量开启时不再优先保留
+        // 上一版自动方案，否则 churn 会固定住 42/45 条，梯度/多样性只能最多换 3 条。
+        // 普通补齐/替换仍保留 churn 语义。
+        boolean structureQualityActive = !"off".equals(SolverFeatureFlags.structureQualityMode());
+        policy.setCountAsChurn(!(initialContentGuard && structureQualityActive));
         policy.setRequireCompensationSafe(true);
         policy.setInitialContentGuard(initialContentGuard);
         policy.setPrioritySelection(SolverFeatureFlags.prioritySelectionEnabled());
+        policy.setOrderingPolicyVersion(allowExistingSpecialPlanConflicts
+                ? StagedDeterministicPlanSolver.ORDERING_PRESERVE_CURRENT
+                : initialContentGuard
+                ? StagedDeterministicPlanSolver.ORDERING_INITIAL_TIER_STRICT
+                : StagedDeterministicPlanSolver.ORDERING_INITIAL_TIER);
+        policy.setAllowExistingSpecialPlanConflicts(allowExistingSpecialPlanConflicts);
         policy.setRequiredMajorCount(state.getCandidatePoolState() == null
                 ? null : state.getCandidatePoolState().getRequiredMajorCount());
         Set<String> availableIds = available.stream()
@@ -135,6 +156,7 @@ final class CanonicalPlanningRuntime {
                 defaultList(solved.getRemoveEntityIds()).size(),
                 defaultList(solved.getAddEntityIds()).size(),
                 solved.getCandidateCount());
+        logStructureQualityShadow(state, snapshot, stagedObjectives, policy, solved);
         if (allowInitialFallback && "blocked".equals(solved.getStatus())) {
             PlanSolverResultDTO.DiagnosticDTO source = solved.getDiagnostics().isEmpty()
                     ? null : solved.getDiagnostics().get(0);
@@ -534,9 +556,9 @@ final class CanonicalPlanningRuntime {
                 draft, state.getCandidatePoolState());
     }
 
-    private static void applyOrdering(PlanningStateDTO state,
-                                      List<String> orderedEntityIds,
-                                      boolean unitMode) {
+    static void applyOrdering(PlanningStateDTO state,
+                              List<String> orderedEntityIds,
+                              boolean unitMode) {
         if (state == null || state.getOrderedPlanState() == null) {
             return;
         }
@@ -849,6 +871,201 @@ final class CanonicalPlanningRuntime {
             return "preferred majors lost: " + baselinePreferred + " -> " + selectedPreferred;
         }
         return null;
+    }
+
+    /**
+     * Phase 2 影子：正常选择不变，额外用 soft 结构策略求解一次并打印分布。
+     * 只用于本地/灰度验证，不写 state、不影响用户方案。
+     */
+    private static void logStructureQualityShadow(PlanningStateDTO state,
+                                                  CandidateSnapshotDTO snapshot,
+                                                  CanonicalPlanningObjectiveSetDTO objectives,
+                                                  MutationPolicyDTO policy,
+                                                  PlanSolverResultDTO base) {
+        if (!SolverFeatureFlags.structureQualityShadowEnabled()
+                || base == null || !"ready".equals(base.getStatus())
+                || objectives == null) {
+            return;
+        }
+        StructureQualityPolicyDTO configured = objectives.getStructureQualityPolicy();
+        if (configured != null && !"off".equalsIgnoreCase(configured.getMode())) {
+            return;
+        }
+        try {
+            CanonicalPlanningObjectiveSetDTO shadowObjectives = JSON.parseObject(
+                    JSON.toJSONString(objectives), CanonicalPlanningObjectiveSetDTO.class);
+            StructureQualityPolicyDTO shadowPolicy = new StructureQualityPolicyDTO();
+            shadowPolicy.setMode("soft");
+            shadowObjectives.setStructureQualityPolicy(shadowPolicy);
+            PlanSolverResultDTO shadow = new StagedDeterministicPlanSolver()
+                    .solve(snapshot, shadowObjectives, policy).solverResult;
+            LOG.info("structure-quality shadow: session={} base={}/{} shadow={}/{} base={} shadow={} diff={}",
+                    state == null ? null : state.getSessionId(),
+                    base.getStatus(), defaultList(base.getSelectedEntityIds()).size(),
+                    shadow.getStatus(), defaultList(shadow.getSelectedEntityIds()).size(),
+                    structureProfile(snapshot, base.getSelectedEntityIds()),
+                    structureProfile(snapshot, shadow.getSelectedEntityIds()),
+                    idDiff(base.getSelectedEntityIds(), shadow.getSelectedEntityIds()));
+            logFreshStructureShadow(state, snapshot, objectives, policy);
+            logRelaxedChurnShadow(state, snapshot, objectives, policy, base);
+        } catch (RuntimeException ex) {
+            LOG.warn("structure-quality shadow failed: session={} error={}",
+                    state == null ? null : state.getSessionId(), ex.getMessage());
+        }
+    }
+
+    /**
+     * 初始方案候选策略：保留 current/guard，只把 churn 从最高优先级拿掉，
+     * 让结构质量可以在候选池里换组。仍只打日志。
+     */
+    private static void logRelaxedChurnShadow(PlanningStateDTO state,
+                                              CandidateSnapshotDTO snapshot,
+                                              CanonicalPlanningObjectiveSetDTO objectives,
+                                              MutationPolicyDTO policy,
+                                              PlanSolverResultDTO base) {
+        CanonicalPlanningObjectiveSetDTO softObjectives = JSON.parseObject(
+                JSON.toJSONString(objectives), CanonicalPlanningObjectiveSetDTO.class);
+        StructureQualityPolicyDTO softPolicy = new StructureQualityPolicyDTO();
+        softPolicy.setMode("soft");
+        softObjectives.setStructureQualityPolicy(softPolicy);
+        MutationPolicyDTO relaxedPolicy = JSON.parseObject(
+                JSON.toJSONString(policy), MutationPolicyDTO.class);
+        relaxedPolicy.setCountAsChurn(false);
+        PlanSolverResultDTO relaxed = new StagedDeterministicPlanSolver()
+                .solve(snapshot, softObjectives, relaxedPolicy).solverResult;
+        LOG.info("structure-quality relaxed shadow: session={} base={}/{} relaxed={}/{} "
+                        + "relaxed={} diff={}",
+                state == null ? null : state.getSessionId(),
+                base.getStatus(), defaultList(base.getSelectedEntityIds()).size(),
+                relaxed.getStatus(), defaultList(relaxed.getSelectedEntityIds()).size(),
+                structureProfile(snapshot, relaxed.getSelectedEntityIds()),
+                idDiff(base.getSelectedEntityIds(), relaxed.getSelectedEntityIds()));
+    }
+
+    /**
+     * 诊断 churn 锁定对结构优化的影响：忽略现有方案（current=false、不算 churn），
+     * 分别跑 fresh base / fresh soft。只打日志，不写 state。
+     */
+    private static void logFreshStructureShadow(PlanningStateDTO state,
+                                                CandidateSnapshotDTO snapshot,
+                                                CanonicalPlanningObjectiveSetDTO objectives,
+                                                MutationPolicyDTO policy) {
+        CandidateSnapshotDTO fresh = JSON.parseObject(
+                JSON.toJSONString(snapshot), CandidateSnapshotDTO.class);
+        for (CandidateFactDTO fact : defaultList(fresh.getFacts())) {
+            fact.setCurrent(false);
+            fact.setLocked(false);
+            fact.setPinned(false);
+            fact.setCurrentPosition(null);
+            // ratioBucket 是 @JSONField(serialize=false)，clone 后要按同一可见口径重建。
+            Double visibleRatio = fact.getSchoolEnrollRatio() != null
+                    ? fact.getSchoolEnrollRatio() : fact.getAdmissionRatio();
+            fact.setRatioConfidence(AdmissionRatioBucketSupport.confidence(visibleRatio));
+            fact.setRatioBucket(AdmissionRatioBucketSupport.bucket(fact.getTier(), visibleRatio));
+            fact.setRatioBucketIndex(AdmissionRatioBucketSupport.bucketIndex(fact.getRatioBucket()));
+        }
+        MutationPolicyDTO freshPolicy = JSON.parseObject(
+                JSON.toJSONString(policy), MutationPolicyDTO.class);
+        freshPolicy.setAction("FILL");
+        freshPolicy.setAllowAdd(true);
+        freshPolicy.setLockExisting(false);
+        freshPolicy.setCountAsChurn(false);
+        freshPolicy.setInitialContentGuard(false);
+        freshPolicy.setForcedAddEntityIds(new LinkedHashSet<String>());
+        freshPolicy.setForcedRemoveEntityIds(new LinkedHashSet<String>());
+
+        CanonicalPlanningObjectiveSetDTO baseObjectives = JSON.parseObject(
+                JSON.toJSONString(objectives), CanonicalPlanningObjectiveSetDTO.class);
+        baseObjectives.setStructureQualityPolicy(null);
+        PlanSolverResultDTO freshBase = new StagedDeterministicPlanSolver()
+                .solve(fresh, baseObjectives, freshPolicy).solverResult;
+
+        CanonicalPlanningObjectiveSetDTO softObjectives = JSON.parseObject(
+                JSON.toJSONString(objectives), CanonicalPlanningObjectiveSetDTO.class);
+        StructureQualityPolicyDTO softPolicy = new StructureQualityPolicyDTO();
+        softPolicy.setMode("soft");
+        softObjectives.setStructureQualityPolicy(softPolicy);
+        PlanSolverResultDTO freshSoft = new StagedDeterministicPlanSolver()
+                .solve(fresh, softObjectives, freshPolicy).solverResult;
+        String guard = initialContentGuardViolation(snapshot.getFacts(), freshSoft,
+                "unit".equals(fresh.getCountMode()));
+        LOG.info("structure-quality fresh shadow: session={} base={}/{} soft={}/{} base={} soft={} "
+                        + "diff={} guard={}",
+                state == null ? null : state.getSessionId(),
+                freshBase.getStatus(), defaultList(freshBase.getSelectedEntityIds()).size(),
+                freshSoft.getStatus(), defaultList(freshSoft.getSelectedEntityIds()).size(),
+                structureProfile(fresh, freshBase.getSelectedEntityIds()),
+                structureProfile(fresh, freshSoft.getSelectedEntityIds()),
+                idDiff(freshBase.getSelectedEntityIds(), freshSoft.getSelectedEntityIds()),
+                guard);
+    }
+
+    private static String idDiff(List<String> baseIds, List<String> shadowIds) {
+        Set<String> baseSet = new LinkedHashSet<String>(defaultList(baseIds));
+        Set<String> shadowSet = new LinkedHashSet<String>(defaultList(shadowIds));
+        int onlyBase = 0;
+        for (String id : baseSet) {
+            if (!shadowSet.contains(id)) {
+                onlyBase++;
+            }
+        }
+        int onlyShadow = 0;
+        for (String id : shadowSet) {
+            if (!baseSet.contains(id)) {
+                onlyShadow++;
+            }
+        }
+        return onlyBase + "/" + onlyShadow;
+    }
+
+    private static String structureProfile(CandidateSnapshotDTO snapshot, List<String> selectedIds) {
+        Map<String, CandidateFactDTO> byId = new LinkedHashMap<String, CandidateFactDTO>();
+        for (CandidateFactDTO fact : defaultList(snapshot == null ? null : snapshot.getFacts())) {
+            if (fact != null && fact.getEntityId() != null) {
+                byId.put(fact.getEntityId(), fact);
+            }
+        }
+        Map<String, Map<String, Integer>> tierBuckets = new LinkedHashMap<String, Map<String, Integer>>();
+        Map<String, Integer> provinces = new LinkedHashMap<String, Integer>();
+        Map<String, Integer> natures = new LinkedHashMap<String, Integer>();
+        for (String tier : Lists.newArrayList("sprint", "stable", "protect")) {
+            tierBuckets.put(tier, new LinkedHashMap<String, Integer>());
+        }
+        for (String id : defaultList(selectedIds)) {
+            CandidateFactDTO fact = byId.get(id);
+            if (fact == null) {
+                continue;
+            }
+            String tier = fact.getTier();
+            Map<String, Integer> buckets = tierBuckets.get(tier);
+            if (buckets == null) {
+                buckets = new LinkedHashMap<String, Integer>();
+                tierBuckets.put(tier, buckets);
+            }
+            String bucket = fact.getRatioBucket();
+            if (bucket == null) {
+                bucket = AdmissionRatioBucketSupport.bucket(tier, fact.getAdmissionRatio());
+            }
+            buckets.put(bucket, buckets.getOrDefault(bucket, 0) + 1);
+            String province = Strings.nullToEmpty(fact.getProvinceName()).trim();
+            provinces.put(province, provinces.getOrDefault(province, 0) + 1);
+            String nature = Strings.nullToEmpty(fact.getSchoolNature()).trim();
+            natures.put(nature, natures.getOrDefault(nature, 0) + 1);
+        }
+        StringBuilder profile = new StringBuilder("tiers=");
+        for (Map.Entry<String, Map<String, Integer>> entry : tierBuckets.entrySet()) {
+            profile.append(entry.getKey()).append(entry.getValue()).append(';');
+        }
+        profile.append(" provinceTop=").append(topCounts(provinces, 3));
+        profile.append(" nature=").append(natures);
+        return profile.toString();
+    }
+
+    private static List<Map.Entry<String, Integer>> topCounts(Map<String, Integer> counts, int limit) {
+        List<Map.Entry<String, Integer>> entries = new ArrayList<Map.Entry<String, Integer>>(counts.entrySet());
+        entries.sort((left, right) -> Integer.compare(right.getValue(), left.getValue()));
+        return entries.size() <= limit ? entries : new ArrayList<Map.Entry<String, Integer>>(
+                entries.subList(0, limit));
     }
 
     private static PlanSolverResultDTO noChange(CanonicalPlanningObjectiveSetDTO objectives) {

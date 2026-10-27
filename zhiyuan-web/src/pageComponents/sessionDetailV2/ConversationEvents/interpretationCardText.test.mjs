@@ -37,7 +37,7 @@ test('缺数据用“无法判断/数据缺口”，不伪装安全', () => {
   );
   assert.equal(
     dataGapText({ safetyCoverage: '无保底档位', orderAnomaly: true }),
-    '安全覆盖：无保底档位；顺序有异常',
+    '安全覆盖：无保底档位；存在跨档位排列（按实际顺序展示，不自动修正）',
   );
   assert.equal(dataGapText({}), '');
 });

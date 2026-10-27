@@ -48,6 +48,9 @@ export type InterpretationPayload = {
   ratioCoverage?: number;
   dataCompleteness?: number;
   orderAnomaly?: boolean;
+  tierSequence?: string[];
+  tierSequenceStatus?: string;
+  userOrderRespected?: boolean | null;
   baseLanding?: InterpretationScenario;
   scenarios?: InterpretationScenario[];
   caveats?: string[];

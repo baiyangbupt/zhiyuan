@@ -3049,6 +3049,13 @@ public class PlanningStateServiceTest {
         DraftSelectReq selectReq = new DraftSelectReq();
         selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1", "ps1_m2"));
         planningStateService.selectDraftItems(1L, selectReq);
+        com.ytell.zhiyuan.model.dto.planning.UpdateExplicitProfileReq profileReq =
+                new com.ytell.zhiyuan.model.dto.planning.UpdateExplicitProfileReq();
+        com.ytell.zhiyuan.model.dto.planning.UpdateExplicitProfileReq.PreferenceGroup majors =
+                new com.ytell.zhiyuan.model.dto.planning.UpdateExplicitProfileReq.PreferenceGroup();
+        majors.setPositive(java.util.Arrays.asList("专业A1"));
+        profileReq.setMajorPreferences(majors);
+        planningStateService.updateExplicitProfile(1L, profileReq);
         PlanningStateDTO orderedState = planningStateService.generateOrderedPlan(1L, 1L, new OrderedPlanGenerateReq());
 
         ReviewCheckDTO reviewCheck = ReflectionTestUtils.invokeMethod(
@@ -3072,6 +3079,25 @@ public class PlanningStateServiceTest {
 
 
 
+
+    @Test
+    void shouldNotReportNonIntentWhenNoConfirmedPositiveMajorIntent() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.majorGroup.name());
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "v1", "u1", "s1", "专业组A", "稳", "专业A1", 0.6D, 60D, 0.5D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "v2", "u1", "s1", "专业组A", "保", "专业A2", 0.4D, 10D, 0.5D, false));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("v1", "专业组A", "专业A1", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("v2", "专业组A", "专业A2", "保", 2));
+
+        ReviewCheckDTO check = ReflectionTestUtils.invokeMethod(
+                planningStateService, "reviewMajorGroupSafetyIntentAlignment", state);
+
+        assertNotNull(check);
+        assertTrue(Boolean.TRUE.equals(check.getPassed()));
+        assertTrue(check.getDetail().contains("没有已确认的专业正向意向"));
+    }
 
     @Test
     void shouldNotExposeGroupInnerSafetyGuardInMajorGroupPlanAdjustment() {
@@ -10430,6 +10456,7 @@ public class PlanningStateServiceTest {
         pending.setPendingId("test-pending");
         java.util.Map<String, Object> dataValue = new java.util.LinkedHashMap<String, Object>();
         dataValue.put("proposalId", proposal.getProposalId());
+        dataValue.put("policyVersion", PlanningStateService.PLANNING_POLICY_VERSION);
         dataValue.put("frozenProposal", com.alibaba.fastjson.JSON.parseObject(
                 com.alibaba.fastjson.JSON.toJSONString(proposal)));
         dataValue.put("frozenRequestDigest", FrozenSelectionDigest.requestDigest(userGoalRequest));

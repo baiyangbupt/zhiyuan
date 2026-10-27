@@ -42,6 +42,8 @@ public class ConversationJourneyDTO {
     private String reviewFreshness = "absent";
     /** none | candidates | plan | review；按 candidates→plan→review 取第一个非 fresh。 */
     private String refreshRequirement = "none";
+    /** 审查能力可用性；paused 时优先于 freshness/stale，不能解释成已审查。 */
+    private ReviewAvailabilityDTO reviewAvailability;
     private Integer reviewSourceVersion;
     private Boolean reviewStale = false;
     private Boolean tierQuotaGoal = false;

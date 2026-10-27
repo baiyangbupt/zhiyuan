@@ -54,6 +54,10 @@ export type ScoreUpdateSummary = {
   batchScore?: number;
   totalScore?: number;
   totalScorePos?: number;
+  specialPlan?: boolean;
+  specialPlanLabel?: string;
+  specialPlanPrevious?: boolean;
+  specialPlanImpact?: string;
   subjects?: { subject?: string; subjectName?: string; score?: number }[];
 };
 
@@ -69,6 +73,9 @@ export type ProposalPayload = {
     status?: string;
     strategy?: string;
     requiresConfirmation?: boolean;
+    /** 旧审查暂停：卡可查看/取消，但不能确认。 */
+    reviewPaused?: boolean;
+    disabledReason?: string;
     blockingReason?: string;
     blockingReasonCodes?: string[];
     /**
@@ -202,7 +209,7 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
   const settled = isSettledProposalStatus(action);
   // 要不要出按钮的判据在 `proposalCardText.mjs` ✓（2026-10-13：info/preview_only 这类
   // "没有可确认动作"的已知状态由状态表自保 ✓——"无需调整"的卡不许配确认按钮 ✗）。
-  const needsConfirm = proposalNeedsConfirmation({
+  const needsConfirm = !diff.reviewPaused && proposalNeedsConfirmation({
     status,
     actionStatus: action,
     requiresConfirmation: diff.requiresConfirmation,
@@ -341,6 +348,19 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
                 .join(' · ')}
             </Typography.Text>
           </div>
+          {scoreUpdate.specialPlan !== undefined ? (
+            <div data-testid="proposal-score-special-plan">
+              <Typography.Text type="secondary">
+                {scoreUpdate.specialPlanPrevious !== undefined
+                  ? `专项资格：${scoreUpdate.specialPlanPrevious ? '有' : '无'} → ${
+                      scoreUpdate.specialPlan ? '有（类别待核验）' : '无'
+                    }`
+                  : scoreUpdate.specialPlanLabel
+                    || (scoreUpdate.specialPlan ? '有专项资格（类别待核验）' : '无专项资格')}
+                {scoreUpdate.specialPlanImpact ? `；${scoreUpdate.specialPlanImpact}` : ''}
+              </Typography.Text>
+            </div>
+          ) : null}
         </div>
       ) : null}
       {/*
@@ -403,6 +423,14 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
         否则只能反复点同一个确认 ✗。文案走 `proposalFailureText` ✓：**code 作锚点、
         说中文** ✓（M1——Java 的内部英文消息不再直出 ✗）。
       */}
+      {diff.reviewPaused ? (
+        <Alert
+          type="info"
+          showIcon
+          data-testid="proposal-review-paused"
+          message="方案质量审查暂停，这张旧审查卡不能确认；可以取消。方案本身仍可查看和修改。"
+        />
+      ) : null}
       {action === 'failed' ? (
         <Alert
           type="error"

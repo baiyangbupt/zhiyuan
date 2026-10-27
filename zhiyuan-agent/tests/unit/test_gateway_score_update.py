@@ -18,6 +18,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from app.gateway.contracts import ConversationTurnSnapshot, ScoreUpdateRequest
 from app.gateway.output_validation import OutputContractError
@@ -68,6 +69,19 @@ def _request(**overrides) -> ScoreUpdateRequest:
     }
     payload.update(overrides)
     return ScoreUpdateRequest.model_validate(payload)
+
+
+def test_special_plan_keeps_tri_state_and_rejects_strings():
+    assert "specialPlan" not in _request().model_dump(by_alias=True, exclude_none=True)
+    assert _request(specialPlan=False).model_dump(by_alias=True, exclude_none=True)["specialPlan"] is False
+    assert _request(specialPlan=True).model_dump(by_alias=True, exclude_none=True)["specialPlan"] is True
+    with pytest.raises(ValidationError):
+        _request(specialPlan="false")
+
+
+def test_special_plan_summary_is_visible_on_the_card_text():
+    text = _score_update_summary_text({**SUMMARY, "specialPlan": False, "specialPlanLabel": "无专项资格"})
+    assert "无专项资格" in text
 
 
 def _gateway(*, mode: str = "codex_write", active: dict | None = None) -> GatewayService:
@@ -124,6 +138,7 @@ async def test_write_mode_prepares_the_pending_and_returns_the_flat_card_shape(m
         turn_id="turn-9",
         request=_request(),
         snapshot=_snapshot(),
+        source_message_id=321,
     )
 
     # prepare 的形状：requestId = 租户:会话:回合（同一回合重试＝重放，同一个 operationId）
@@ -132,6 +147,8 @@ async def test_write_mode_prepares_the_pending_and_returns_the_flat_card_shape(m
     assert args == ("t1", "s1")
     assert kwargs["request_id"] == "t1:s1:turn-9"
     assert kwargs["payload"]["sourceVersionGuard"] == 8
+    assert kwargs["payload"]["sourceMessageId"] == 321
+    assert kwargs["payload"]["sourceTurnId"] == "turn-9"
     assert kwargs["payload"]["totalScore"] == 641
     assert kwargs["payload"]["subjectScoreList"] == [{"subject": "chinese", "score": 118}], \
         "用户**真说了**各科时原样透传（Java 侧的整体替换语义在这里才是对的）"

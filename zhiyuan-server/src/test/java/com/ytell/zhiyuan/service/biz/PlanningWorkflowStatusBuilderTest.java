@@ -52,6 +52,21 @@ public class PlanningWorkflowStatusBuilderTest {
     }
 
     @Test
+    void shouldNotTreatPausedReviewAsPendingOrPassed() {
+        PlanningStateDTO state = orderedState();
+        state.getStaleFlags().setReview(true);
+        state.setReviewState(ReviewPolicy.pausedProjection());
+
+        PlanningWorkflowStatusDTO status = PlanningWorkflowStatusBuilder.build(state, null);
+
+        assertEquals("ready", status.getPlanStatus());
+        assertEquals("方案已生成，待核验", status.getPlanMessage());
+        assertEquals("paused", status.getReviewStatus());
+        assertEquals("review_paused", status.getReviewReasonCode());
+        assertTrue(status.getReviewMessage().contains("暂停"));
+    }
+
+    @Test
     void shouldResolveLegacyReadonlyPlan() {
         PlanningStateDTO state = orderedState();
         state.getOrderedPlanState().setGenerationMode("legacy_submitted");

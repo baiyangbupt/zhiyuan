@@ -11,6 +11,7 @@ import com.ytell.zhiyuan.model.dto.planning.HardConstraintsDTO;
 import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PriorityRuleDTO;
+import com.ytell.zhiyuan.model.dto.planning.StructureQualityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
 import com.ytell.zhiyuan.model.dto.planning.UtilityModelDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierAllocationResolutionDTO;
@@ -108,6 +109,14 @@ final class PlanningObjectiveCompiler {
             diversity.setMode("soft");
             source.setDiversityPolicy(diversity);
         }
+        String structureQualityMode = SolverFeatureFlags.structureQualityMode();
+        if (!"off".equals(structureQualityMode)) {
+            StructureQualityPolicyDTO structureQuality = new StructureQualityPolicyDTO();
+            structureQuality.setMode(structureQualityMode);
+            structureQuality.setMaxUtilityLossRatio(
+                    SolverFeatureFlags.structureQualityMaxUtilityLossRatio());
+            source.setStructureQualityPolicy(structureQuality);
+        }
         source.setHardObjectiveVersion(StagedDeterministicPlanSolver.HARD_OBJECTIVE_VERSION);
         source.setSolverObjectiveVersion(SOLVER_OBJECTIVE_VERSION);
         freezeDigest(source);
@@ -146,6 +155,8 @@ final class PlanningObjectiveCompiler {
             throw new CompilationException("priority_rule_invalid", priorityError);
         }
         boolean hasRequestedTierGoal = request.getTierQuotaGoal() != null;
+        boolean exactRequestedTierGoal = hasRequestedTierGoal
+                && "exact_counts".equalsIgnoreCase(request.getTierQuotaGoal().getType());
         boolean hasRequestedRequirements = !defaultList(request.getRequirements()).isEmpty();
         boolean hasRequestedPriorities = !defaultList(request.getPriorityRules()).isEmpty();
         boolean hasConfirmedTierGoal = TierAllocationSupport.confirmedGoal(state) != null;
@@ -153,11 +164,14 @@ final class PlanningObjectiveCompiler {
                 CoverageRequirementSupport.confirmedRequirements(state)).isEmpty();
         boolean hasConfirmedPriorities = !defaultList(
                 PriorityRuleSupport.confirmedRules(state)).isEmpty();
-        if (hasRequestedTierGoal && (hasRequestedRequirements || hasRequestedPriorities
-                || hasConfirmedCoverage || hasConfirmedPriorities)
+        // 精确配额可以作为本轮要求的一部分与 coverage 同时编译；范围/比例配额
+        // 仍要求先单独确认，避免把未验证的组合当成原子动作。
+        if (hasRequestedTierGoal && (hasRequestedPriorities || hasConfirmedCoverage
+                || hasConfirmedPriorities
+                || (!exactRequestedTierGoal && hasRequestedRequirements))
                 || hasConfirmedTierGoal && (hasRequestedRequirements || hasRequestedPriorities)) {
             throw new CompilationException("tier_quota_composite_not_supported",
-                    "M2 冲稳保目标暂不能新建或修改与普通要求、覆盖目标或优先规则的组合。");
+                    "冲稳保目标暂不能与该组合一起新建或修改；精确配额 + 专业要求请直接走同一张卡。");
         }
         if (hasRequestedTierGoal && !FILL_TO_COUNT.equals(goalType)) {
             throw new CompilationException("tier_quota_invalid",
@@ -317,6 +331,9 @@ final class PlanningObjectiveCompiler {
         }
         if (objectiveSet.getMutationPolicy() != null) {
             payload.put("mutationPolicy", objectiveSet.getMutationPolicy());
+        }
+        if (objectiveSet.getStructureQualityPolicy() != null) {
+            payload.put("structureQualityPolicy", objectiveSet.getStructureQualityPolicy());
         }
         if (!Strings.isNullOrEmpty(objectiveSet.getHardObjectiveVersion())) {
             payload.put("hardObjectiveVersion", objectiveSet.getHardObjectiveVersion());

@@ -766,7 +766,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const workingPlanSummary = workingPlanState?.summary;
   const orderedSummary = planningState?.orderedPlanState?.summary;
   const reviewSummary = planningState?.reviewState?.summary;
+  const planQuality = planningState?.planQuality;
+  const qualityFindings = planQuality?.findings || [];
+  const qualityPendingCount = qualityFindings.filter(finding =>
+    ['fail', 'warn', 'unknown'].includes(String(finding?.resultStatus || ''))
+  ).length;
+  const hasPlanQuality = Boolean(planQuality && planQuality.status !== 'no_plan');
   const workflowStatus = planningState?.workflowStatus;
+  const reviewPaused =
+    planningState?.reviewState?.status === 'paused' ||
+    planningState?.reviewState?.availability?.mode === 'paused' ||
+    workflowStatus?.reviewStatus === 'paused';
   const dataFreshnessState = planningState?.dataFreshnessState;
   const candidateRiskHints = planningState?.candidatePoolState?.riskHints || [];
   const isLegacySubmittedPlan = planningState?.orderedPlanState?.generationMode === 'legacy_submitted';
@@ -2435,6 +2445,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!routerParams?.tenantId || !routerParams?.chatSessionId || !orderedItems.length) {
       return;
     }
+    if (reviewPaused) {
+      message.info('方案质量审查当前暂停，这一轮不会运行旧审查，也不代表方案已通过或没有风险。');
+      return;
+    }
     if (forceRunReview || !reviewSummary || isReviewStale) {
       if (actionLoading) {
         return;
@@ -2455,7 +2469,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           } else {
             await fetchWorkspaceState();
           }
-          message.success('审查完成');
+          if (data?.status === 'review_paused' || data?.reviewState?.status === 'paused') {
+            message.info('方案质量审查当前暂停，未运行旧审查；这不代表方案已通过或没有风险。');
+          } else {
+            message.success('审查完成');
+          }
         } else {
           message.error(msg || '审查失败');
         }
@@ -4329,6 +4347,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     return `${Number.isInteger(value) ? value : value.toFixed(1)}%`;
   };
 
+  // 录取率字段是百分比点：1.0 表示 1%，不是 100%。上游可能把
+  // “低于/接近 1%”压到 1.0，产品口径显示为“≤1%”。
+  const formatAdmissionPercent = (value?: number | null) => {
+    if (value === null || value === undefined || value < 0) {
+      return '-';
+    }
+    if (value > 0 && value <= 1) {
+      return '≤1%';
+    }
+    return formatPercent(value);
+  };
+
   const formatNumber = (value?: number | null) => {
     if (value === null || value === undefined || value < 0) {
       return '-';
@@ -4391,7 +4421,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               <div className={style.majorLine}>{majorName}</div>
               <div className={style.orderedMajorPrimaryTags}>
                 <Tag bordered={false} color="orange">
-                  专业录取率 {formatPercent(candidateItem?.admissionRatio)}
+                  专业录取率 {formatAdmissionPercent(candidateItem?.admissionRatio)}
                 </Tag>
               </div>
             </div>
@@ -4463,7 +4493,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             </div>
           </div>
           <div className={`${style.cardMetrics} ${style.orderedMobileMetrics}`}>
-            <span>专业录取率 {formatPercent(candidateItem?.admissionRatio)}</span>
+            <span>专业录取率 {formatAdmissionPercent(candidateItem?.admissionRatio)}</span>
             <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
             <span>区间位次 #{formatNumber(candidateItem?.rankInTier)}</span>
             <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
@@ -4960,8 +4990,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const candidateLoadedEntryTotal = candidatePoolResult.items?.length || 0;
   const reviewPassedRuleCount = reviewSummary?.passedRuleCount ?? reviewSummary?.passedCount ?? 0;
   const reviewTotalRuleCount = reviewSummary?.totalRuleCount ?? reviewSummary?.total ?? 0;
-  const reviewOverviewLabel =
-    workflowStatus?.reviewStatus === 'has_risk'
+  const reviewOverviewLabel = hasPlanQuality
+    ? qualityPendingCount > 0
+      ? `质量待核验 ${qualityPendingCount}`
+      : '质量评估完成'
+    : reviewPaused
+    ? '质量待核验'
+    : workflowStatus?.reviewStatus === 'has_risk'
       ? '方案有风险'
       : workflowStatus?.reviewStatus === 'has_warning'
         ? '方案有提醒'
@@ -4980,7 +5015,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         workflowStatus?.reviewStatus || ''
       )
     );
-  const reviewActionLabel = hasReviewResult ? '重新审查' : '审查';
+  const reviewActionLabel = reviewPaused
+    ? '质量待核验'
+    : hasReviewResult
+      ? '重新审查'
+      : '审查';
   const reviewOverviewReason =
     workflowStatus?.reviewStatus === 'stale'
       ? workflowStatus?.reviewReasonMessage ||
@@ -5316,9 +5355,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           </div>
           <div className={style.metricCard}>
             <div className={style.metricValue}>
-              {reviewSummary ? `${reviewPassedRuleCount}/${reviewTotalRuleCount}` : '0/0'}
+              {hasPlanQuality
+                ? qualityPendingCount
+                : reviewPaused
+                  ? '—'
+                  : reviewSummary
+                    ? `${reviewPassedRuleCount}/${reviewTotalRuleCount}`
+                    : '0/0'}
             </div>
-            <div className={style.metricLabel}>审查</div>
+            <div className={style.metricLabel}>质量</div>
             <div className={style.metricMeta}>{reviewOverviewLabel}</div>
             {reviewOverviewReason && (
               <div className={style.metricHint} title={reviewOverviewReason}>
@@ -5637,7 +5682,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 </div>
                                 <div className={`${style.candidateGroupScore} ${getTierClassName(group.tier)}`}>
                                   <div className={style.candidateGroupScoreValue}>
-                                    {formatPercent(group.schoolEnrollRatio)}
+                                    {formatAdmissionPercent(group.schoolEnrollRatio)}
                                   </div>
                                   <div className={style.candidateGroupScoreTier}>
                                     {normalizeTierLabel(group.tier)}
@@ -5744,7 +5789,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                           style={{ gridColumn: '7', gridRow: '1 / span 3' }}
                                         >
                                           <div className={`${style.majorRatioBadge} ${getTierClassName(getMajorTierLabel(item))}`}>
-                                            <span>{formatPercent(item.admissionRatio) || '--'}</span>
+                                            <span>{formatAdmissionPercent(item.admissionRatio) || '--'}</span>
                                             <span>{getMajorTierLabel(item)}</span>
                                           </div>
                                         </div>
@@ -5757,11 +5802,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         </div>
                                         {isMinipMobileLayout ? (
                                           <span className={`${style.mobileMajorRatioTag} ${getTierClassName(getMajorTierLabel(item))}`}>
-                                            {formatPercent(item.admissionRatio) || '--'} {getMajorTierLabel(item)}
+                                            {formatAdmissionPercent(item.admissionRatio) || '--'} {getMajorTierLabel(item)}
                                           </span>
                                         ) : (
                                           <div className={`${style.majorRatioBadge} ${getTierClassName(getMajorTierLabel(item))}`}>
-                                            <span>{formatPercent(item.admissionRatio) || '--'}</span>
+                                            <span>{formatAdmissionPercent(item.admissionRatio) || '--'}</span>
                                             <span>{getMajorTierLabel(item)}</span>
                                           </div>
                                         )}
@@ -5920,7 +5965,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                         icon={<SafetyCertificateOutlined />}
                         loading={actionLoading === 'review'}
                         onClick={() => handleOpenReviewWorkflowModal(true)}
-                        disabled={!orderedItems.length}
+                        disabled={!orderedItems.length || reviewPaused}
                       >
                         {reviewActionLabel}
                       </Button>
@@ -6003,7 +6048,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     ))}
                                     {group.schoolEnrollRatio !== undefined && group.schoolEnrollRatio !== null ? (
                                       <Tag bordered={false} color="orange" key={`${group.key}-school-enroll-ratio`}>
-                                        录取率 {formatPercent(group.schoolEnrollRatio)}
+                                        录取率 {formatAdmissionPercent(group.schoolEnrollRatio)}
                                       </Tag>
                                     ) : null}
                                     <Tag bordered={false} className={style.orderedMajorTotalTag} key={`${group.key}-major-total-count`}>
@@ -6350,7 +6395,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     ))}
                                     {candidateItem?.admissionRatio !== undefined && candidateItem?.admissionRatio !== null ? (
                                       <Tag bordered={false} color="orange" key={`${item.volunteerId}-admission-ratio`}>
-                                        录取率 {formatPercent(candidateItem.admissionRatio)}
+                                        录取率 {formatAdmissionPercent(candidateItem.admissionRatio)}
                                       </Tag>
                                     ) : null}
                                   </div>

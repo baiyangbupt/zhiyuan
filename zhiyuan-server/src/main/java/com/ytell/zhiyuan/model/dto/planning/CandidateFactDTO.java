@@ -33,6 +33,13 @@ public class CandidateFactDTO {
     private String majorSubCategoryId;
     private Integer tuitionPerYear;
     private Double admissionRatio;
+    /** 1.0 等大量同值更像上游默认/截断，不能当真实概率。 */
+    @JSONField(serialize = false)
+    private String ratioConfidence;
+    @JSONField(serialize = false)
+    private String ratioBucket;
+    @JSONField(serialize = false)
+    private Integer ratioBucketIndex;
     private Double schoolEnrollRatio;
     private Double intentScore;
     private Double finalScore;
@@ -54,6 +61,15 @@ public class CandidateFactDTO {
     private Boolean locked = false;
     private Boolean pinned = false;
     private Integer stableOrder;
+    /** 存量正式方案里的位置；只用于 preserve_current_v1 保序，不进入快照摘要。 */
+    @JSONField(serialize = false)
+    private Integer currentPosition;
+    /** 用户明确无专项时，该实体是否含已知专项要求；求解资格判定使用。 */
+    @JSONField(serialize = false)
+    private Boolean specialPlanConflict = false;
+    /** 用户还没有专项资格事实时，该实体是否含明确专项要求。 */
+    @JSONField(serialize = false)
+    private Boolean specialPlanUnknown = false;
 
     /** 内部效用分量，0..100；不序列化到 API。 */
     @JSONField(serialize = false)

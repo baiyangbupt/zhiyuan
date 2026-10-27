@@ -37,7 +37,9 @@ test('updates only the referenced pending card from authoritative action states'
 });
 
 test('formats backend artifact values without parsing assistant markdown', () => {
-  assert.equal(formatAdmissionProbability(0.68), '68%');
+  assert.equal(formatAdmissionProbability(0.68), '≤1%');
+  assert.equal(formatAdmissionProbability(1), '≤1%');
+  assert.equal(formatAdmissionProbability(38), '38%');
   assert.equal(formatRank(18320), '18320');
   assert.equal(normalizeConversationEvent({ type: 'planning.status', payload: {} }).type, 'planning.status');
 });

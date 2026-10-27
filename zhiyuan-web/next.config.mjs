@@ -148,6 +148,10 @@ async rewrites() {
       return [
         ...INTERNAL_PATH_GUARDS,
         {
+          source: '/ws/chat',
+          destination: `${devDomainAgent}/ws/chat`,
+        },
+        {
           source: '/gaotu-assistant-bot/:path*',
           destination: `${devDomainInner}/gaotu-assistant-bot/:path*`,
         },

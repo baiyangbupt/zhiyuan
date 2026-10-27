@@ -26,6 +26,38 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CanonicalPlanningRuntimeTest {
 
     @Test
+    void internalRemovalSelectionKeepsExistingConflictWithoutAddingAlternatives() {
+        PlanningStateDTO state = state("major", 1);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(1);
+        state.getCandidatePoolState().setSpecialPlan(false);
+        CandidateItemDTO current = candidate("v1", "u1", "数学（国家专项）", "稳", "北京", 10D);
+        CandidateItemDTO addition = candidate("v2", "u2", "法学", "保", "上海", 99D);
+        state.getCandidatePoolState().setItems(Arrays.asList(current, addition));
+        state.getWorkingPlanState().getItems().add(draft(current, false));
+
+        PlanSolverResultDTO result = CanonicalPlanningRuntime.enforceSelection(
+                state, state.getCandidatePoolState().getItems(), null, false, true);
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(Arrays.asList("v1"), result.getSelectedEntityIds());
+        assertTrue(result.getAddEntityIds().isEmpty());
+    }
+
+    @Test
+    void internalRemovalSelectionCannotFillAStaleLargerTarget() {
+        PlanningStateDTO state = state("major", 2);
+        state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(2);
+        CandidateItemDTO current = candidate("v1", "u1", "数学", "稳", "北京", 10D);
+        CandidateItemDTO addition = candidate("v2", "u2", "法学", "保", "上海", 99D);
+        state.getCandidatePoolState().setItems(Arrays.asList(current, addition));
+        state.getWorkingPlanState().getItems().add(draft(current, false));
+
+        assertThrows(BusinessException.class, () -> CanonicalPlanningRuntime.enforceSelection(
+                state, state.getCandidatePoolState().getItems(), null, false, true));
+        assertEquals(new java.util.HashSet<String>(Arrays.asList("v1")), draftIds(state));
+    }
+
+    @Test
     void shouldRestorePersistedSelectionTargetWithoutOtherObjectives() {
         PlanningStateDTO state = state("major", 48);
         state.getConstraintState().getHardPlanningObjectives().setSelectionTargetCount(2);

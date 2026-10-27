@@ -256,6 +256,24 @@ export const orderedTurns = state =>
   Object.values(state.turns).sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
 
 /**
+ * 确认/取消动作回合的**回执文本**：服务端在 action 回合固定回
+ * "操作已处理。"（`server.py::_run_native_turn`），真正的跟话在同一次
+ * 动作续接的新回合里。回执不是助手答案，也没有落历史，不能被当成
+ * 一条未锚定的终态消息堆到时间线底部。
+ *
+ * 只过滤"动作结果 + 这句固定文本 + 没有别的可见内容"的回合：
+ * 模型自己说同一句话、或动作回合带了错误/提案/流式文本，都照常显示。
+ */
+export const ACTION_RECEIPT_REPLY = '操作已处理。';
+
+export const isActionReceiptOnlyTurn = turn => {
+  if (!turn || !turn.actionResult) return false;
+  const answer = String(turn.answer?.message || '').trim();
+  if (answer !== ACTION_RECEIPT_REPLY) return false;
+  return !turn.proposal && !turn.error && !turn.interpretation && !turn.answerStream;
+};
+
+/**
  * 工具进度**展示序列**：同一工具、同一标签的**连续**步骤合并成一条，带 `count`。
  *
  * 2026-10-17 真事故：一个续接回合做了 15 次 `admission.check_eligibility`，

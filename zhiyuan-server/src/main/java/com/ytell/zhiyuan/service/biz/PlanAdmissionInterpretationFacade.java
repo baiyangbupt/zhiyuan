@@ -54,12 +54,37 @@ public class PlanAdmissionInterpretationFacade {
             req.setAdmissionMode(groupMode ? "major_group" : "major");
         }
         // J5.2：解读消费统一评价 findings（drivers/caveats）；没有评价时退回纯结构解读。
+        // paused 时不消费历史 findings，只保留可验证的结构解释。
+        boolean reviewPaused = ReviewPolicy.paused();
         java.util.List<com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO> findings =
-                state.getReviewState() == null || state.getReviewState().getFindings() == null
+                reviewPaused || state.getReviewState() == null || state.getReviewState().getFindings() == null
                         ? java.util.Collections
                         .<com.ytell.zhiyuan.model.dto.planning.EvaluationFindingDTO>emptyList()
                         : state.getReviewState().getFindings();
-        return interpretationService.interpret(req, buildEntries(state, groupMode), findings);
+        AdmissionInterpretationRes res = interpretationService.interpret(
+                req, buildEntries(state, groupMode), findings);
+        if (SpecialPlanQualification.stateHasConflict(state)) {
+            String caveat = "当前方案含已知专项资格冲突，只能作为待清理草案查看，不能当作正式可报方案";
+            res.getCaveats().add(caveat);
+            com.ytell.zhiyuan.model.dto.planning.InterpretationCaveatDTO detail =
+                    new com.ytell.zhiyuan.model.dto.planning.InterpretationCaveatDTO();
+            detail.setText(caveat);
+            detail.setLevel("hard");
+            detail.setCode("special_plan_conflict");
+            res.getCaveatDetails().add(detail);
+        }
+        if (reviewPaused) {
+            res.setReviewAvailability(ReviewPolicy.availability());
+            String caveat = "方案质量审查暂停，当前解读只说明方案结构，不含审查通过或风险结论";
+            res.getCaveats().add(caveat);
+            com.ytell.zhiyuan.model.dto.planning.InterpretationCaveatDTO detail =
+                    new com.ytell.zhiyuan.model.dto.planning.InterpretationCaveatDTO();
+            detail.setText(caveat);
+            detail.setLevel("soft");
+            detail.setCode(ReviewPolicy.REASON_PAUSED);
+            res.getCaveatDetails().add(detail);
+        }
+        return res;
     }
 
     static List<InterpretationEntryDTO> buildEntries(PlanningStateDTO state, boolean groupMode) {

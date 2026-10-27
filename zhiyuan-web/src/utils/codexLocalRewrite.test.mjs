@@ -24,6 +24,7 @@ test('development rewrites route the Agent and Java services independently', asy
       destinations['/gaotu-assistant-agent/:path*'],
       'http://127.0.0.1:18291/gaotu-assistant-agent/:path*'
     );
+    assert.equal(destinations['/ws/chat'], 'http://127.0.0.1:18291/ws/chat');
   } finally {
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) {

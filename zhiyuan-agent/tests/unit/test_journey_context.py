@@ -219,6 +219,25 @@ def test_manual_review_digest_skips_repeat_review_recommendation() -> None:
     assert changed is not None and changed.recommended_next == "review_plan"
 
 
+def test_paused_review_is_not_recommended_as_review_work() -> None:
+    context = from_snapshot(
+        snapshot(
+            journey_block(
+                reviewFreshness="paused",
+                reviewAvailability={"mode": "paused", "reasonCode": "review_paused"},
+                refreshRequirement="none",
+                reviewStale=True,
+            )
+        )
+    )
+
+    assert context is not None
+    assert context.review_freshness == "paused"
+    assert context.refresh_requirement == "none"
+    assert context.recommended_next != "review_plan"
+    assert "暂停" in context_text(context)
+
+
 def test_open_task_takes_precedence_over_default_recommendation() -> None:
     context = from_snapshot(snapshot(journey_block()), has_open_task=True)
 

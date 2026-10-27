@@ -316,6 +316,8 @@ async def test_action_path_executes_on_the_authoritative_snapshot_not_the_stale_
 @pytest.mark.parametrize(("response", "expected_status"), [
     ({"code": 0, "data": {"status": "cancelled"}}, "cancelled"),
     ({"code": 0, "data": {"status": "expired"}}, "expired"),
+    ({"code": 84009, "data": {"status": "expired"}}, "failed"),
+    ({"code": 0, "data": {"status": "expired", "resultCode": "84009"}}, "failed"),
     ({"code": 0, "data": {"status": "stale_state"}}, "stale_state"),
     ({"code": 0, "data": {"status": "active"}}, "failed"),
     ({"code": 0, "data": {}}, "failed"),

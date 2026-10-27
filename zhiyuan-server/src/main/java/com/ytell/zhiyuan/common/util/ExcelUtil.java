@@ -30,6 +30,12 @@ public class ExcelUtil {
      * @return Excel文件的字节数组
      */
     public static byte[] generateVolunteerExcel(CreateSessionReq userScoreDetail, List<VolunteerExcelData> mainData, List<VolunteerExcelData> backupData, boolean multiMajor) {
+        return generateVolunteerExcel(userScoreDetail, mainData, backupData, multiMajor, null);
+    }
+
+    public static byte[] generateVolunteerExcel(CreateSessionReq userScoreDetail, List<VolunteerExcelData> mainData,
+                                               List<VolunteerExcelData> backupData, boolean multiMajor,
+                                               String note) {
         try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
              Workbook workbook = new XSSFWorkbook()) {
 
@@ -46,6 +52,21 @@ public class ExcelUtil {
 
             // 第一行：省份、分数、选科 + 下载时间
             rowIndex = createDownloadTimeRow(sheet, rowIndex, headerStyle, multiMajor, userScoreDetail);
+
+            // 可选警告行：草案/冲突/审查暂停必须在导出件里可见，不能只藏在卡片里。
+            if (note != null && !note.trim().isEmpty()) {
+                Row noteRow = sheet.createRow(rowIndex++);
+                Cell noteCell = noteRow.createCell(0);
+                noteCell.setCellValue(note.trim());
+                CellStyle noteStyle = workbook.createCellStyle();
+                noteStyle.setWrapText(true);
+                Font noteFont = workbook.createFont();
+                noteFont.setBold(true);
+                noteFont.setColor(IndexedColors.RED.getIndex());
+                noteStyle.setFont(noteFont);
+                noteCell.setCellStyle(noteStyle);
+                sheet.addMergedRegion(new CellRangeAddress(noteRow.getRowNum(), noteRow.getRowNum(), 0, 8));
+            }
 
             // 第二行：年份分组表头
             rowIndex = createYearGroupHeaderRow(sheet, rowIndex, subHeaderStyle, year, multiMajor);

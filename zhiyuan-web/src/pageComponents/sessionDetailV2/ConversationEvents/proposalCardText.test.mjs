@@ -19,6 +19,21 @@ import {
   proposalSummaryDuplicatesReason,
 } from './proposalCardText.mjs';
 
+test('review_paused 放在 msg 时也按中文暂停文案展示', () => {
+  const text = proposalFailureText({ code: 409, message: 'review_paused' });
+  assert.match(text, /\[409\]/);
+  assert.match(text, /审查当前暂停/);
+  assert.match(text, /可以取消/);
+});
+
+test('84009 按上游数据策略失败展示，而非要求用户反复刷新确认', () => {
+  const text = proposalFailureText({ code: 84009, message: '当前策略已失效，请刷新页面' });
+  assert.match(text, /84009/);
+  assert.match(text, /上游.*数据策略/);
+  assert.match(text, /核对.*模式/);
+  assert.doesNotMatch(text, /请刷新页面/);
+});
+
 // ── 终态判据（H1 的"按钮复活"就是漏在 `stale_state` 上） ──────────────────────
 
 test('stale_state 是终态：被取代的卡不许再给按钮（F09 拒绝路径）', () => {

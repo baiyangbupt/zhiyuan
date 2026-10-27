@@ -1,6 +1,8 @@
 package com.ytell.zhiyuan.service.biz;
 
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
+import com.ytell.zhiyuan.model.dto.planning.CandidateSnapshotDTO;
+import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
 import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalActionDTO;
@@ -15,8 +17,10 @@ import com.ytell.zhiyuan.model.dto.planning.ReplacementPairDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierQuotaGoalRequestDTO;
+import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -1850,7 +1854,7 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
-    void shouldBlockExactTierQuotaComposite() {
+    void shouldNotRejectExactTierQuotaOnlyBecauseRequirementsArePresent() {
         PlanningStateDTO state = state(12);
         UserGoalFixProposalReq req = new UserGoalFixProposalReq();
         req.setGoalType("fill_to_count");
@@ -1861,9 +1865,7 @@ public class UserGoalProposalBuilderTest {
 
         FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
 
-        assertEquals("blocked", proposal.getStatus());
-        assertEquals("tier_quota_composite_not_supported", proposal.getBlockingReasonCodes().get(0));
-        assertTrue(proposal.getActions().isEmpty());
+        assertFalse(proposal.getBlockingReasonCodes().contains("tier_quota_composite_not_supported"));
     }
 
     @Test
@@ -2214,6 +2216,49 @@ public class UserGoalProposalBuilderTest {
         assertEquals("user_goal_unclear", proposal.getBlockingReasonCodes().get(0));
         assertTrue(proposal.getBlockingReason().contains("目标还不够明确"));
         assertFalse(proposal.getRequiresConfirmation());
+    }
+
+    @Test
+    void genericFirstVersionFillDoesNotClaimConfirmedRequirementsOrRepeatCaveat() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(
+                candidate("v1", "学校A", "电气工程及其自动化", "电气类", 90D));
+        state.getCandidatePoolState().getItems().add(
+                candidate("v2", "学校B", "自动化", "自动化类", 88D));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, fillRequest(2))
+                .getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getSummary().contains("按默认平衡"));
+        assertFalse(proposal.getSummary().contains("符合已确认要求"));
+        assertTrue(proposal.getSummary().contains("不限专业的探索草案"));
+        assertFalse(proposal.getImpact().contains("不限专业的探索草案"),
+                "探索提示只应出现一次，不能 summary/impact 各贴一遍");
+    }
+
+    @Test
+    void firstVersionFillWithMajorRequirementDoesNotClaimUnlimitedExploration() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().getItems().add(
+                candidate("v1", "学校A", "电气工程及其自动化", "电气类", 90D));
+        state.getCandidatePoolState().getItems().add(
+                candidate("v2", "学校B", "自动化", "自动化类", 88D));
+        UserGoalFixProposalReq req = fillRequest(2);
+        UserGoalFixProposalReq.RequirementDTO requirement =
+                new UserGoalFixProposalReq.RequirementDTO();
+        requirement.setKind("include");
+        requirement.setDomain("major");
+        requirement.setKey("major");
+        requirement.setValues(java.util.Arrays.asList("电气工程及其自动化", "自动化"));
+        requirement.setMinCount(2);
+        req.getRequirements().add(requirement);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertFalse(proposal.getSummary().contains("不限专业的探索草案"));
+        assertFalse(proposal.getImpact().contains("不限专业的探索草案"));
     }
 
     private PlanningStateDTO state(Integer version) {
@@ -3062,6 +3107,24 @@ public class UserGoalProposalBuilderTest {
 
         assertEquals("ready", proposal.getStatus());
         assertEquals(java.util.Arrays.asList("v2"), proposal.getAffectedVolunteerIds());
+    }
+
+    @Test
+    void fillPolicyUsesInitialTierOrderOnlyForARealFirstVersion() {
+        PlanningStateDTO empty = state(12);
+        MutationPolicyDTO first = ReflectionTestUtils.invokeMethod(
+                UserGoalProposalBuilder.class, "fillMutationPolicy",
+                empty, new CanonicalPlanningObjectiveSetDTO(), new CandidateSnapshotDTO(), false);
+        assertEquals(StagedDeterministicPlanSolver.ORDERING_INITIAL_TIER,
+                first.getOrderingPolicyVersion());
+
+        PlanningStateDTO existing = state(12);
+        existing.getOrderedPlanState().getItems().add(ordered("v1", "中南大学", "临床医学", false));
+        MutationPolicyDTO preserve = ReflectionTestUtils.invokeMethod(
+                UserGoalProposalBuilder.class, "fillMutationPolicy",
+                existing, new CanonicalPlanningObjectiveSetDTO(), new CandidateSnapshotDTO(), false);
+        assertEquals(StagedDeterministicPlanSolver.ORDERING_PRESERVE_CURRENT,
+                preserve.getOrderingPolicyVersion());
     }
 
     @Test

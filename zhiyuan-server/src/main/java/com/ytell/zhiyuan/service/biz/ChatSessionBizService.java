@@ -22,6 +22,7 @@ import com.ytell.zhiyuan.manager.ali.AliOSSService;
 import com.ytell.zhiyuan.manager.rank.VolunteerRankClient;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.RecommendSubMajorRequest;
+import com.ytell.zhiyuan.model.dto.ScoreUpdatePatch;
 import com.ytell.zhiyuan.model.dto.RecommendSubMajorResponse;
 import com.ytell.zhiyuan.model.dto.UpdateScoreDetailRes;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
@@ -97,6 +98,9 @@ public class ChatSessionBizService {
     private ChatSessionSharedService chatSessionSharedService;
     @Autowired
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
+    /** 补录专项资格的来源证据：核验网关持久化的用户消息，不把模型文本当事实。 */
+    @Autowired
+    private com.ytell.zhiyuan.service.shared.ChatMessageSharedService chatMessageSharedService;
     /** 会话详情里"最后一条提案"那一格要读它（见 `buildLastProposal`）。 */
     @Autowired
     private PendingConfirmationBizService pendingConfirmationBizService;
@@ -383,17 +387,24 @@ public class ChatSessionBizService {
      * （2026-10-07 审查 M3），这里如实更正。</p>
      */
     public ScoreUpdatePreviewDTO previewScoreUpdate(Long tenantId, Long chatSessionId, CreateSessionReq req) {
-        Long userId = conversationAccessService.requireSessionUserId(tenantId, chatSessionId);
-        return buildScoreUpdatePreview(tenantId, chatSessionId, req, userId);
+        return previewScoreUpdate(tenantId, chatSessionId, ScoreUpdatePatch.fromDto(req));
     }
 
-    private ScoreUpdatePreviewDTO buildScoreUpdatePreview(Long tenantId, Long chatSessionId,
-                                                          CreateSessionReq req, Long userId) {
-        if (req == null || isEmptyScoreUpdateRequest(req)) {
+    public ScoreUpdatePreviewDTO previewScoreUpdate(Long tenantId, Long chatSessionId, ScoreUpdatePatch patch) {
+        Long userId = conversationAccessService.requireSessionUserId(tenantId, chatSessionId);
+        Integer sourceVersion = scoreUpdateSourceVersion(chatSessionId, patch);
+        return buildScoreUpdatePreview(chatSessionId,
+                resolveScoreUpdateRequest(tenantId, chatSessionId, patch, userId), sourceVersion);
+    }
+
+    private CreateSessionReq resolveScoreUpdateRequest(Long tenantId, Long chatSessionId,
+                                                        ScoreUpdatePatch patch, Long userId) {
+        if (patch == null || patch.isEmpty()) {
             throw new BusinessException(110, "补录成绩参数不能为空");
         }
         conversationAccessService.requireOwnedSession(tenantId, chatSessionId, userId);
-        CreateSessionReq merged = mergeScoreDetail(loadSessionScoreDetail(chatSessionId), req);
+        validateScoreUpdateSource(chatSessionId, patch);
+        CreateSessionReq merged = mergeScoreDetail(loadSessionScoreDetail(chatSessionId), patch);
         normalizeScoreUpdateDefaults(merged);
         // 2-1. 与执行段同一步、同一个位置：位次缺失时按一分一段补最保守位次，让预览的字段集
         // 等于执行集（2026-10-07 审查 M3）。纯内存补齐 + 一次上游只读查询，不落盘。
@@ -407,12 +418,39 @@ public class ChatSessionBizService {
             throw new BusinessException(110, checkRightsResVo.getReason());
         }
 
+        return merged;
+    }
+
+    private ScoreUpdatePreviewDTO buildScoreUpdatePreview(Long chatSessionId, CreateSessionReq merged,
+                                                           Integer sourceVersion) {
         ScoreUpdatePreviewDTO preview = new ScoreUpdatePreviewDTO();
         preview.setStatus("ready");
         preview.setRequiresConfirmation(Boolean.TRUE);
-        preview.setSourceVersion(currentPlanningVersion(chatSessionId));
-        preview.setSummary(buildScoreUpdateSummary(merged));
+        preview.setSourceVersion(sourceVersion);
+        Map<String, Object> summary = buildScoreUpdateSummary(merged);
+        CreateSessionReq existing = loadSessionScoreDetail(chatSessionId);
+        if (existing != null && existing.getSpecialPlan() != null
+                && !java.util.Objects.equals(existing.getSpecialPlan(), merged.getSpecialPlan())) {
+            summary.put("specialPlanPrevious", existing.getSpecialPlan());
+            summary.put("specialPlanChanged", true);
+        }
+        preview.setSummary(summary);
+        requireScoreUpdateVersion(sourceVersion, currentPlanningVersion(chatSessionId));
         return preview;
+    }
+
+    private Integer scoreUpdateSourceVersion(Long chatSessionId, ScoreUpdatePatch patch) {
+        Integer sourceVersion = currentPlanningVersion(chatSessionId);
+        if (patch != null && patch.getSourceVersionGuard() != null) {
+            requireScoreUpdateVersion(patch.getSourceVersionGuard(), sourceVersion);
+        }
+        return sourceVersion;
+    }
+
+    private void requireScoreUpdateVersion(Integer expected, Integer actual) {
+        if (!java.util.Objects.equals(expected, actual)) {
+            throw new BusinessException(409, "score_update_stale: 方案或成绩已变化，请重新预览后确认");
+        }
     }
 
     /** "什么都没带"的草稿没有可确认的内容；带任一字段才允许进入预览。 */
@@ -423,6 +461,7 @@ public class ChatSessionBizService {
                 && req.getTotalScore() == null
                 && req.getTotalScorePos() == null
                 && req.getExamYear() == null
+                && req.getSpecialPlan() == null
                 && CollectionUtil.isEmpty(req.getSubjectScoreList())
                 && CollectionUtil.isEmpty(req.getSubjectList());
     }
@@ -452,6 +491,13 @@ public class ChatSessionBizService {
         }
         putIfPresentSummary(summary, "totalScore", merged.getTotalScore());
         putIfPresentSummary(summary, "totalScorePos", merged.getTotalScorePos());
+        if (merged.getSpecialPlan() != null) {
+            summary.put("specialPlan", merged.getSpecialPlan());
+            summary.put("specialPlanLabel", merged.getSpecialPlan() ? "有专项资格（具体类别待核验）" : "无专项资格");
+            summary.put("specialPlanImpact", merged.getSpecialPlan()
+                    ? "有专项自述不等于所有专项计划均可报，具体类别仍需核验"
+                    : "将排除已识别的国家/地方/高校专项计划；其他资格未知项仍待核验");
+        }
         List<Map<String, Object>> subjects = Lists.newArrayList();
         if (merged.getSubjectScoreList() != null) {
             for (CreateSessionReq.SubjectScore item : merged.getSubjectScoreList()) {
@@ -480,7 +526,7 @@ public class ChatSessionBizService {
      *
      * <p>落进 pending 的 dataValue：`operationId`（Java 产出的幂等键，执行时必须原样复用）、
      * `proposalSource=score_update`、`sourceVersion`（确认时的计划版本守门值）、
-     * `scoreUpdateRequest`（增量草稿原样——执行时由 Java 从服务端既有成绩再合并一次）、
+     * `scoreUpdateRequest`（合并归一后的成绩快照，含预览时确定的取数模式）、
      * `scoreSummary`（卡片展示用）。</p>
      *
      * <p>已有 pending 行时按 CAS 修订号**替换**（不是像用户目标提案那样把
@@ -489,6 +535,12 @@ public class ChatSessionBizService {
      */
     public PrepareResultDTO prepareScoreUpdateProposal(Long tenantId, Long chatSessionId, String requestId,
                                                        String requestDigest, CreateSessionReq req) {
+        return prepareScoreUpdateProposal(tenantId, chatSessionId, requestId, requestDigest,
+                ScoreUpdatePatch.fromDto(req));
+    }
+
+    public PrepareResultDTO prepareScoreUpdateProposal(Long tenantId, Long chatSessionId, String requestId,
+                                                       String requestDigest, ScoreUpdatePatch patch) {
         PendingConfirmationRes active = pendingConfirmationBizService.getCurrent(tenantId, chatSessionId);
         String activePendingStatus = active == null ? null : active.getStatus();
         Long expectedRevision = active == null || active.getRevision() == null ? 0L : active.getRevision();
@@ -496,14 +548,26 @@ public class ChatSessionBizService {
         return conversationProposalRequestService.prepareOnce(
                 tenantId, chatSessionId, requestId, requestDigest, activePendingStatus,
                 () -> {
-                    ScoreUpdatePreviewDTO preview = buildScoreUpdatePreview(tenantId, chatSessionId, req, userId);
+                    Integer sourceVersion = scoreUpdateSourceVersion(chatSessionId, patch);
+                    CreateSessionReq merged = resolveScoreUpdateRequest(tenantId, chatSessionId, patch, userId);
+                    ScoreUpdatePreviewDTO preview = buildScoreUpdatePreview(chatSessionId, merged, sourceVersion);
                     String operationId = UUID.randomUUID().toString().replace("-", "");
                     Map<String, Object> dataValue = new LinkedHashMap<String, Object>();
                     dataValue.put("operationId", operationId);
                     dataValue.put("proposalSource", "score_update");
                     dataValue.put("sourceVersion", preview.getSourceVersion());
-                    dataValue.put("scoreUpdateRequest", JSONObject.parseObject(JSONObject.toJSONString(req)));
+                    dataValue.put("scoreUpdateRequest", JSONObject.parseObject(JSONObject.toJSONString(merged)));
                     dataValue.put("scoreSummary", preview.getSummary());
+                    if (patch.getSourceMessageId() != null || patch.getSourceTurnId() != null) {
+                        Map<String, Object> source = new LinkedHashMap<String, Object>();
+                        if (patch.getSourceMessageId() != null) {
+                            source.put("messageId", patch.getSourceMessageId());
+                        }
+                        if (patch.getSourceTurnId() != null) {
+                            source.put("turnId", patch.getSourceTurnId());
+                        }
+                        dataValue.put("scoreUpdateSource", source);
+                    }
                     PendingConfirmationUpsertReq upsert = new PendingConfirmationUpsertReq();
                     upsert.setChatSessionId(chatSessionId);
                     upsert.setPendingId(UUID.randomUUID().toString());
@@ -544,14 +608,133 @@ public class ChatSessionBizService {
 
     /**
      * 补录请求只保证"增量正确"：以既有成绩 JSON 为底，把请求里**非空的**字段深度合并进去
-     * （嵌套对象逐字段合并，数组/标量整体替换）。这样 prepareType、意愿、学费区间等
+     * （嵌套对象逐字段合并，各科按编码合并，其他数组/标量整体替换）。这样 prepareType、意愿、学费区间等
      * 没在补录表单里出现的字段不会被抹掉。
      */
+    /**
+     * 来源证据只用于核对“这条草稿来自本会话的哪条用户消息”，不写进成绩真相。
+     * 兼容旧表单/旧网关：没有来源 ID 时不伪造；一旦带了就必须能对上会话与用户角色。
+     */
+    private void validateScoreUpdateSource(Long chatSessionId, ScoreUpdatePatch patch) {
+        if (patch == null || patch.getSourceMessageId() == null) {
+            return;
+        }
+        com.ytell.zhiyuan.model.entity.biz.ChatMessage message =
+                chatMessageSharedService.getMessageById(null, patch.getSourceMessageId());
+        if (message == null
+                || !java.util.Objects.equals(chatSessionId, message.getChatSessionId())) {
+            throw new BusinessException(403, "来源消息不属于当前会话，请重新描述要更新的信息");
+        }
+        String from = message.getMessageFrom() == null ? "" : message.getMessageFrom().trim();
+        if (!"1".equals(from) && !"user".equalsIgnoreCase(from)) {
+            throw new BusinessException(403, "来源消息不是用户消息，请重新描述要更新的信息");
+        }
+    }
+
     private CreateSessionReq mergeScoreDetail(CreateSessionReq existing, CreateSessionReq incoming) {
+        return mergeScoreDetail(existing, incoming,
+                incoming == null ? new JSONObject() : (JSONObject) JSON.toJSON(incoming));
+    }
+
+    /**
+     * 增量补录的合并：source 只含 HTTP 原始白名单字段，带默认值的 DTO 不参与覆盖。
+     * 这样只确认 `specialPlan=false` 不会把存量 `filterType=3` 冲成默认 `2`。
+     */
+    private CreateSessionReq mergeScoreDetail(CreateSessionReq existing, ScoreUpdatePatch patch) {
+        CreateSessionReq incoming = patch == null ? null : patch.getValue();
+        return mergeScoreDetail(existing, incoming,
+                patch == null ? new JSONObject() : patch.getRaw());
+    }
+
+    private CreateSessionReq mergeScoreDetail(CreateSessionReq existing, CreateSessionReq incoming,
+                                              JSONObject source) {
         JSONObject target = existing == null ? new JSONObject() : (JSONObject) JSON.toJSON(existing);
-        JSONObject source = (JSONObject) JSON.toJSON(incoming);
         deepMergeJson(target, source);
-        return JSONObject.parseObject(target.toJSONString(), CreateSessionReq.class);
+        CreateSessionReq merged = JSONObject.parseObject(target.toJSONString(), CreateSessionReq.class);
+        merged.setSubjectScoreList(mergeSubjectScores(existing, incoming, merged));
+        if (existing != null && incoming.getTotalScore() == null
+                && !Objects.equals(subjectScoreValues(existing), subjectScoreValues(merged))) {
+            throw new BusinessException(110, "各科成绩已变化，请同时提供更新后的总分，避免沿用旧总分");
+        }
+        Map<String, Integer> previousScores = subjectScoreValues(existing);
+        Map<String, Integer> mergedScores = subjectScoreValues(merged);
+        if (incoming.getSubjectList() == null && !previousScores.keySet().equals(mergedScores.keySet())) {
+            merged.setSubjectList(null);
+        }
+        if (incoming.getStrengthSubjectList() == null && !previousScores.equals(mergedScores)) {
+            merged.setStrengthSubjectList(null);
+        }
+        fillSubjectListFromScoresIfNeeded(merged);
+        if (existing != null && incoming.getTotalScorePos() == null
+                && !Objects.equals(rankLookupContext(existing), rankLookupContext(merged))) {
+            merged.setTotalScorePos(null);
+        }
+        return merged;
+    }
+
+    private List<CreateSessionReq.SubjectScore> mergeSubjectScores(CreateSessionReq existing,
+                                                                  CreateSessionReq incoming,
+                                                                  CreateSessionReq merged) {
+        boolean contextChanged = existing != null
+                && (!Objects.equals(provinceCodeOf(existing), provinceCodeOf(merged))
+                || !Objects.equals(subjectTypeCodeOf(existing), subjectTypeCodeOf(merged)));
+        CreateSessionReq scoreInput = incoming;
+        if (incoming.getSubjectScoreList() == null) {
+            if (!contextChanged) {
+                return merged.getSubjectScoreList();
+            }
+            scoreInput = merged;
+        }
+        if (CollectionUtil.isEmpty(scoreInput.getSubjectScoreList())) {
+            return merged.getSubjectScoreList();
+        }
+        validateScoreUpdateSubjectCodes(scoreInput);
+        Map<String, CreateSessionReq.SubjectScore> updates = new LinkedHashMap<>();
+        for (CreateSessionReq.SubjectScore subject : scoreInput.getSubjectScoreList()) {
+            if (updates.put(subject.getSubject(), subject) != null) {
+                throw new BusinessException(110, "同一科目的成绩不能重复提交");
+            }
+        }
+        if (existing == null || CollectionUtil.isEmpty(existing.getSubjectScoreList()) || updates.isEmpty()) {
+            return merged.getSubjectScoreList();
+        }
+        Map<String, Integer> existingScores = subjectScoreValues(existing);
+        boolean selectionChanged = !existingScores.keySet().containsAll(updates.keySet())
+                || contextChanged;
+        if (selectionChanged) {
+            if (!updates.keySet().containsAll(java.util.Arrays.asList("08", "10", "11"))
+                    || updates.size() < existingScores.size()) {
+                throw new BusinessException(110, "省份或选科已变化，请完整提供更新后的各科成绩和总分");
+            }
+            return merged.getSubjectScoreList();
+        }
+        List<CreateSessionReq.SubjectScore> subjects = Lists.newArrayList();
+        for (CreateSessionReq.SubjectScore previous : existing.getSubjectScoreList()) {
+            JSONObject subject = (JSONObject) JSON.toJSON(previous);
+            CreateSessionReq.SubjectScore update = updates.get(previous.getSubject());
+            if (update != null) {
+                deepMergeJson(subject, (JSONObject) JSON.toJSON(update));
+            }
+            subjects.add(subject.toJavaObject(CreateSessionReq.SubjectScore.class));
+        }
+        return subjects;
+    }
+
+    private Map<String, Integer> subjectScoreValues(CreateSessionReq req) {
+        Map<String, Integer> scores = new LinkedHashMap<>();
+        if (req != null && req.getSubjectScoreList() != null) {
+            for (CreateSessionReq.SubjectScore subject : req.getSubjectScoreList()) {
+                if (subject != null) {
+                    scores.put(subject.getSubject(), subject.getScore());
+                }
+            }
+        }
+        return scores;
+    }
+
+    private List<Object> rankLookupContext(CreateSessionReq req) {
+        return java.util.Arrays.asList(req.getTotalScore(), req.getExamYear(), provinceCodeOf(req),
+                subjectTypeCodeOf(req), batchLevelOf(req), req.getBatch() == null ? null : req.getBatch().getCode());
     }
 
     private void deepMergeJson(JSONObject target, JSONObject source) {
@@ -871,10 +1054,14 @@ public class ChatSessionBizService {
                 frozenProposal = (Map<String, Object>) frozen;
             }
         }
+        boolean reviewPaused = ReviewPolicy.paused()
+                && dataValue != null
+                && RepairProposalTaxonomy.isReviewCheckSource(asString(dataValue.get("proposalSource")));
         return LastProposalVo.builder()
                 .proposalRef(pending.getPendingId())
                 .proposalId(proposalId == null ? null : String.valueOf(proposalId))
-                .actionStatus(pending.getStatus())
+                .actionStatus("expired".equals(pending.getStatus()) && "fail".equals(pending.getResolvedAction())
+                        ? "failed" : pending.getStatus())
                 .sourceVersion(asInteger(sourceVersion))
                 .revision(pending.getRevision())
                 // 冷加载兜底卡要渲染成"像一张卡"（2026-10-08：只给 ref 时前端落兜底标题
@@ -886,8 +1073,11 @@ public class ChatSessionBizService {
                 .summary(frozenProposal == null ? null : asString(frozenProposal.get("summary")))
                 .impact(frozenProposal == null ? null : asString(frozenProposal.get("impact")))
                 .status(frozenProposal == null ? null : asString(frozenProposal.get("status")))
-                .requiresConfirmation(frozenProposal == null ? null
+                .requiresConfirmation(reviewPaused ? Boolean.FALSE
+                        : frozenProposal == null ? null
                         : asBoolean(frozenProposal.get("requiresConfirmation")))
+                .reviewPaused(reviewPaused ? Boolean.TRUE : null)
+                .disabledReason(reviewPaused ? ReviewPolicy.REASON_PAUSED : null)
                 .strategy(frozenProposal == null ? null : asString(frozenProposal.get("strategy")))
                 .scoreSummary(dataValue == null ? null : dataValue.get("scoreSummary"))
                 .build();
@@ -931,6 +1121,7 @@ public class ChatSessionBizService {
         summary.setSex(formatSex(scoreDetail.getSex()));
         summary.setScore(scoreDetail.getTotalScore());
         summary.setRank(scoreDetail.getTotalScorePos());
+        summary.setSpecialPlan(scoreDetail.getSpecialPlan());
         if (scoreDetail.getBatch() != null) {
             summary.setBatchName(defaultString(scoreDetail.getBatch().getName()));
             if (scoreDetail.getBatch().getScore() != null) {

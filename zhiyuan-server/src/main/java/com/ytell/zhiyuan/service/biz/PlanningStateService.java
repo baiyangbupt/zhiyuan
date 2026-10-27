@@ -75,6 +75,8 @@ public class PlanningStateService {
     /** overlay 合并落盘的 CAS 重试次数（每次都是"重读最新行→合并→CAS"，全输就放弃，下次读再刷）。 */
     private static final int RECOMMENDATION_OVERLAY_PERSIST_ATTEMPTS = 3;
 
+    /** user_goal \u51bb\u7ed3\u63d0\u6848\u7684\u6392\u5e8f/\u8d44\u683c\u8bed\u4e49\u7248\u672c\uff1b\u65e7 pending \u7f3a\u5b83\u5fc5\u987b\u91cd\u65b0\u9884\u89c8\u3002 */
+    static final String PLANNING_POLICY_VERSION = "planning-policy-v1";
     private static final String COOPERATIVE_SCHOOL_TAG = "\u4e2d\u5916\u5408\u4f5c";
     private static final String COOPERATIVE_MAJOR_TAG = "\u4e2d\u5916\u5408\u4f5c\u529e\u5b66";
 
@@ -246,6 +248,18 @@ public class PlanningStateService {
         return state;
     }
 
+    /**
+     * 全量状态接口的响应副本：paused 时清掉历史 review 结论，但不改写落库状态。
+     *
+     * <p>内部写路径仍使用 {@link #getPlanningState(Long)}，避免把 paused 投影保存回库、
+     * 抹掉审计用的历史审查行。</p>
+     */
+    public PlanningStateDTO getPlanningStateForOutput(Long chatSessionId) {
+        PlanningStateDTO state = getPlanningState(chatSessionId);
+        ReviewPolicy.projectForOutput(state);
+        return state;
+    }
+
     public PlanningStateSummaryDTO getPlanningStateSummary(Long chatSessionId) {
         PlanningStateDTO state = getPlanningState(chatSessionId);
         PlanningStateSummaryDTO summary = new PlanningStateSummaryDTO();
@@ -272,6 +286,8 @@ public class PlanningStateService {
     }
 
     public PlanningWorkspaceStateRes buildPlanningWorkspaceStateRes(Long tenantId, PlanningStateDTO state) {
+        // 工作台是一次响应投影：paused 时不把旧 summary/checks 继续当背书。
+        ReviewPolicy.projectForOutput(state);
         PlanningWorkspaceStateRes res = new PlanningWorkspaceStateRes();
         res.setSessionId(state.getSessionId());
         res.setVersion(state.getVersion());
@@ -294,9 +310,37 @@ public class PlanningStateService {
         res.setWorkingPlanState(state.getWorkingPlanState());
         res.setOrderedPlanState(state.getOrderedPlanState());
         res.setReviewState(state.getReviewState());
+        res.setPlanQuality(buildPlanQualityEvaluation(state));
         res.setOperationLogs(state.getOperationLogs());
         res.setWorkflowStatus(PlanningWorkflowStatusBuilder.build(state, findLatestExportBehaviorEvent(state)));
         return res;
+    }
+
+    /**
+     * C 批质量评价接入工作台：只读、失败不影响工作台主响应。
+     * 旧 reviewState 仍按 paused 投影；新评价单独挂在 planQuality，避免把
+     * "暂停"当成"没有质量问题"。
+     */
+    private PlanEvaluationDTO buildPlanQualityEvaluation(PlanningStateDTO state) {
+        if (state == null || state.getOrderedPlanState() == null) {
+            return null;
+        }
+        boolean hasPlan = (state.getOrderedPlanState().getItems() != null
+                && !state.getOrderedPlanState().getItems().isEmpty())
+                || (state.getOrderedPlanState().getUnits() != null
+                && !state.getOrderedPlanState().getUnits().isEmpty());
+        if (!hasPlan) {
+            return null;
+        }
+        try {
+            CandidatePoolStateDTO pool = state.getCandidatePoolState();
+            return new PlanQualityEvaluationService().evaluate(state,
+                    pool == null ? Lists.newArrayList() : pool.getItems());
+        } catch (RuntimeException ex) {
+            log.warn("buildPlanQualityEvaluation failed sessionId={}",
+                    state.getSessionId(), ex);
+            return null;
+        }
     }
 
     private StudentPlanningSummaryDTO buildStudentPlanningSummary(PlanningStateDTO state) {
@@ -308,11 +352,13 @@ public class PlanningStateService {
                 summary.setScore(candidatePoolState.getUserScore());
                 summary.setBatchScore(candidatePoolState.getBatchScore());
                 summary.setProvinceName(candidatePoolState.getSourceProvinceName());
+                summary.setSpecialPlan(candidatePoolState.getSpecialPlan());
             }
             summary.setStrengthSubjects(resolveStrengthSubjects(state, null));
             return summary;
         }
         summary.setSex(formatSex(scoreDetail.getSex()));
+        summary.setSpecialPlan(scoreDetail.getSpecialPlan());
         summary.setExamYear(scoreDetail.getExamYear());
         summary.setScore(scoreDetail.getTotalScore());
         summary.setRank(scoreDetail.getTotalScorePos());
@@ -488,6 +534,7 @@ public class PlanningStateService {
         target.setUserScore(source.getUserScore());
         target.setBatchScore(source.getBatchScore());
         target.setSourceProvinceName(source.getSourceProvinceName());
+        target.setSpecialPlan(source.getSpecialPlan());
         target.setVolunteerModel(source.getVolunteerModel());
         target.setSourceSummary(source.getSourceSummary());
         target.setSummary(source.getSummary());
@@ -640,6 +687,10 @@ public class PlanningStateService {
         if (state.getCandidateViewState() == null) {
             state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
         }
+        Boolean previousSpecialPlan = state.getCandidatePoolState() == null
+                ? null : state.getCandidatePoolState().getSpecialPlan();
+        boolean specialPlanChanged = scoreDetail != null
+                && !java.util.Objects.equals(previousSpecialPlan, scoreDetail.getSpecialPlan());
         refreshCandidatePoolScoreContext(state.getCandidatePoolState(), scoreDetail);
 
         state.setSessionId(chatSessionId);
@@ -651,8 +702,11 @@ public class PlanningStateService {
         if (preferenceChanged) {
             ReviewInvalidationPolicy.markPreferenceIntentStale(state);
         }
-        state.getStaleFlags().setReasonCode("score_detail_updated");
-        state.getStaleFlags().setMessage(preferenceChanged
+        state.getStaleFlags().setReasonCode(specialPlanChanged
+                ? "special_plan_updated" : "score_detail_updated");
+        state.getStaleFlags().setMessage(specialPlanChanged
+                ? "专项资格已更新，候选池、专家推荐与当前方案需要重新核对。"
+                : preferenceChanged
                 ? "成绩与报考意向已补录，候选池、专家推荐与当前方案需要重新计算。"
                 : "成绩信息已补录，候选池、专家推荐与当前方案需要重新计算。");
     }
@@ -676,6 +730,7 @@ public class PlanningStateService {
         if (scoreDetail.getProvince() != null && !Strings.isNullOrEmpty(scoreDetail.getProvince().getName())) {
             candidatePoolState.setSourceProvinceName(scoreDetail.getProvince().getName());
         }
+        candidatePoolState.setSpecialPlan(scoreDetail.getSpecialPlan());
     }
 
     public CandidateViewStateDTO getCandidateViewState(Long chatSessionId) {
@@ -831,7 +886,8 @@ public class PlanningStateService {
                 userScoreDetail,
                 exportData.getMainList(),
                 Lists.<ExcelUtil.VolunteerExcelData>newArrayList(),
-                exportData.isMajorGroupMode());
+                exportData.isMajorGroupMode(),
+                exportData.getNote());
         PlanningBehaviorEventDTO exportEvent = buildBehaviorEvent(
                 state,
                 tenantId,
@@ -849,7 +905,21 @@ public class PlanningStateService {
     }
 
     public ReviewStateDTO getReviewState(Long chatSessionId) {
+        if (ReviewPolicy.paused()) {
+            return ReviewPolicy.pausedProjection();
+        }
         return getPlanningState(chatSessionId).getReviewState();
+    }
+
+    /**
+     * C 批质量评价 v2：只读，不运行旧 probe、不生成可确认建议。
+     * 与 paused 隔离：旧经验审查仍暂停，但新的资格/偏好/结构诊断可独立查看。
+     */
+    public com.ytell.zhiyuan.model.dto.planning.PlanEvaluationDTO evaluatePlanQuality(Long chatSessionId) {
+        PlanningStateDTO state = loadPlanningStateReadOnly(chatSessionId);
+        List<CandidateItemDTO> candidates = resolveEffectiveCandidates(
+                null, chatSessionId, state, false);
+        return new PlanQualityEvaluationService().evaluate(state, candidates);
     }
 
     public List<ReviewRuleMetadataDTO> listReviewRuleMetadata() {
@@ -857,6 +927,9 @@ public class PlanningStateService {
     }
 
     public FixProposalStateDTO generateFixProposals(Long tenantId, Long chatSessionId) {
+        if (ReviewPolicy.paused()) {
+            return pausedFixProposalState(chatSessionId);
+        }
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         ReviewStateDTO reviewState = state.getReviewState();
         if (reviewState == null || reviewState.getChecks() == null || reviewState.getChecks().isEmpty()
@@ -871,6 +944,17 @@ public class PlanningStateService {
         CompensationPreviewDTO compensationPreview = buildCompensationPreview(proposalAnalysisState, effectiveCandidates);
         FixProposalStateDTO proposalState = buildFixProposalState(proposalAnalysisState, reviewState, compensationPreview);
         return proposalState;
+    }
+
+    private FixProposalStateDTO pausedFixProposalState(Long chatSessionId) {
+        PlanningStateDTO state = loadPlanningStateReadOnly(chatSessionId);
+        FixProposalStateDTO result = new FixProposalStateDTO();
+        result.setStatus("paused");
+        result.setProposalSource(RepairProposalTaxonomy.ProposalSource.REVIEW_CHECK);
+        result.setSourceVersion(state == null ? null : state.getVersion());
+        result.setTotal(0);
+        result.setProposals(Lists.newArrayList());
+        return result;
     }
 
     public FixProposalStateDTO generateUserGoalFixProposals(Long chatSessionId, UserGoalFixProposalReq req) {
@@ -944,6 +1028,7 @@ public class PlanningStateService {
                     Map<String, Object> dataValue = new LinkedHashMap<String, Object>();
                     dataValue.put("operationId", operationId);
                     dataValue.put("proposalSource", "user_goal");
+                    dataValue.put("policyVersion", PLANNING_POLICY_VERSION);
                     if (req != null) {
                         // `user_goal` 来源的提案在 apply 时**要求带上原始目标**
                         // （`PendingPlanningCommandBizService`："user_goal proposal requires userGoalRequest"）
@@ -1131,6 +1216,10 @@ public class PlanningStateService {
     public FixProposalApplyRes applyFixProposal(Long tenantId, Long chatSessionId, FixProposalApplyReq req) {
         FixProposalApplyReq safeReq = RepairProposalApplyPolicy.safeRequest(req);
         RepairProposalApplyPolicy.validateRequest(safeReq);
+        if (ReviewPolicy.paused() && !RepairProposalTaxonomy.isUserGoalSource(safeReq.getProposalSource())) {
+            // 旧 review 来源的直调入口同样必须被暂停拦住；user_goal 不是审查动作，继续执行。
+            throw new BusinessException(409, "review_paused");
+        }
         if (RepairProposalTaxonomy.isUserGoalSource(safeReq.getProposalSource())) {
             return applyUserGoalFixProposal(tenantId, chatSessionId, safeReq);
         }
@@ -1172,6 +1261,9 @@ public class PlanningStateService {
      */
     FixProposalApplyRes applyClaimedReviewFixProposal(Long tenantId, Long chatSessionId,
                                                       PendingPlanningCommandReq command) {
+        if (ReviewPolicy.paused()) {
+            throw new BusinessException(409, "review_paused");
+        }
         if (!ReviewFixCommandFlags.enabled()) {
             throw new BusinessException(409, "review_fix_command_disabled");
         }
@@ -1381,6 +1473,21 @@ public class PlanningStateService {
             throw new BusinessException(409,
                     "user_goal_frozen_proposal_missing: 预览已失效，请重新生成");
         }
+        Object pendingPolicy = pending.getDataValue().get("policyVersion");
+        if (pendingPolicy == null
+                || !PLANNING_POLICY_VERSION.equals(String.valueOf(pendingPolicy))) {
+            throw new BusinessException(409,
+                    "user_goal_frozen_policy_stale: 预览生成于旧排序/资格策略，请重新生成预览");
+        }
+        // 来源由服务端 pending 绑定，不能靠请求改名。review_check pending 伪装成
+        // user_goal 时 paused 必须明确拒绝，active 也视为冻结来源不匹配。
+        // 来源缺失的是更早的存量 user_goal pending，按原兼容路径处理，不凭缺失反推 review。
+        Object pendingSource = pending.getDataValue().get("proposalSource");
+        if (pendingSource != null && RepairProposalTaxonomy.isReviewCheckSource(
+                stringValue(pendingSource))) {
+            throw new BusinessException(409, ReviewPolicy.paused()
+                    ? ReviewPolicy.REASON_PAUSED : "user_goal_frozen_proposal_mismatch");
+        }
         Object pendingProposalId = pending.getDataValue().get("proposalId");
         if (!req.getProposalId().equals(pendingProposalId)) {
             throw new BusinessException(409,
@@ -1455,6 +1562,9 @@ public class PlanningStateService {
         persistUserGoalTuitionRange(chatSessionId, resolveUserGoalTuitionRange(userGoalRequest));
         state = applySupportedFixProposalStrategy(tenantId, chatSessionId, req, proposal, state);
 
+        if (ReviewPolicy.paused()) {
+            state.setReviewState(ReviewPolicy.pausedProjection());
+        }
         FixProposalApplyRes res = new FixProposalApplyRes();
         res.setStatus("applied");
         res.setMessage("已按这次目标调整当前方案，并刷新当前方案状态");
@@ -1928,7 +2038,7 @@ public class PlanningStateService {
                                                                  Long chatSessionId,
                                                                  FixProposalApplyReq req,
                                                                  PlanningStateDTO state) {
-        if (Boolean.TRUE.equals(req.getRerunReview())) {
+        if (Boolean.TRUE.equals(req.getRerunReview()) && !ReviewPolicy.paused()) {
             runReview(tenantId, chatSessionId);
             state = getPlanningState(chatSessionId);
         }
@@ -2418,12 +2528,16 @@ public class PlanningStateService {
                 ? Math.round(response.getUserScoreDetail().getBatch().getScore()) : null);
         candidatePoolState.setSourceProvinceName(response.getUserScoreDetail() != null && response.getUserScoreDetail().getProvince() != null
                 ? response.getUserScoreDetail().getProvince().getName() : null);
+        candidatePoolState.setSpecialPlan(response.getUserScoreDetail() == null
+                ? null : response.getUserScoreDetail().getSpecialPlan());
         List<CandidateItemDTO> items = Lists.newArrayList();
         items.addAll(flattenCandidates(response.getSprints(), "冲"));
         items.addAll(flattenCandidates(response.getSafes(), "稳"));
         items.addAll(flattenCandidates(response.getProtects(), "保"));
         List<CandidateItemDTO> normalizedItems = enrichCandidateMajorTaxonomyFields(
                 normalizeCandidateIdentities(candidatePoolState, items));
+        normalizedItems = SpecialPlanQualification.filterKnownConflicts(
+                normalizedItems, candidatePoolState.getSpecialPlan());
         candidatePoolState.setItems(normalizedItems);
         recalculateCandidatePoolSummary(candidatePoolState);
         populateCandidatePoolSourceSummary(candidatePoolState, items, normalizedItems);
@@ -3087,10 +3201,12 @@ public class PlanningStateService {
         OrderedPlanStateDTO orderedPlanState = state.getOrderedPlanState();
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
         syncWorkingPlanWithEffectiveCandidatesForConfirmedRequirements(state, effectiveCandidates);
+        PlanSolverResultDTO selectionResult = null;
         if (frozenResult == null) {
-            CanonicalPlanningRuntime.enforceSelection(state, effectiveCandidates,
+            selectionResult = CanonicalPlanningRuntime.enforceSelection(state, effectiveCandidates,
                     safeReq.getInitialSelectionTargetCount(),
-                    Boolean.TRUE.equals(safeReq.getInitialMode()));
+                    Boolean.TRUE.equals(safeReq.getInitialMode()),
+                    Boolean.TRUE.equals(safeReq.getAllowExistingSpecialPlanConflicts()));
         } else {
             CanonicalPlanningRuntime.verifyFrozenWorkingSelection(state, effectiveCandidates, frozenResult);
         }
@@ -3099,6 +3215,16 @@ public class PlanningStateService {
         orderedPlanState.setItems(items);
         if (isMajorGroupMode(state.getCandidatePoolState())) {
             orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(items, state.getDraftPlanState(), effectiveCandidates));
+        }
+        // solver 返回的 orderedEntityIds 才是首版/补齐的最终顺序；applySelection 只按
+        // 选入集合写入 working plan，若不在这里应用，solver 的分档/分数序会被工作台
+        // 的旧顺序覆盖（10042004 实测：13/13/19 正确但同档 15/27/57 处逆序）。
+        if (frozenResult == null && selectionResult != null
+                && selectionResult.getOrderedEntityIds() != null
+                && !selectionResult.getOrderedEntityIds().isEmpty()) {
+            CanonicalPlanningRuntime.applyOrdering(state,
+                    selectionResult.getOrderedEntityIds(),
+                    isMajorGroupMode(state.getCandidatePoolState()));
         }
         syncOrderedPlanWithEffectiveCandidatesForConfirmedRequirements(state, effectiveCandidates);
         if (frozenResult == null) {
@@ -3109,8 +3235,37 @@ public class PlanningStateService {
             CanonicalPlanningRuntime.applyFrozenOrdering(state, frozenResult);
             CanonicalPlanningRuntime.verifyFrozenState(state, frozenResult);
         }
+        markCanonicalGenerationMode(state, safeReq, frozenResult);
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
+    }
+
+    /**
+     * 方案实际由 canonical solver 生成/重算后，不能继续沿用 load 时
+     * 老方案导入留下的 generationMode=legacy_import；否则审计和前端会把
+     * 新 solver 方案误判为旧版方案。首版仍保持 initial_auto 口径。
+     */
+    private void markCanonicalGenerationMode(PlanningStateDTO state,
+                                             OrderedPlanGenerateReq req,
+                                             PlanSolverResultDTO frozenResult) {
+        if (state == null || state.getOrderedPlanState() == null) {
+            return;
+        }
+        String mode = null;
+        if (Boolean.TRUE.equals(req.getInitialMode())
+                || req.getInitialSelectionTargetCount() != null) {
+            mode = "initial_auto";
+        } else if (frozenResult != null || CanonicalPlanningRuntime.hasSelectionObjectives(state)) {
+            mode = "solver_revision";
+        }
+        if (mode == null) {
+            return;
+        }
+        state.getOrderedPlanState().setGenerationMode(mode);
+        if (state.getPlanGenerationState() == null) {
+            state.setPlanGenerationState(new PlanGenerationStateDTO());
+        }
+        state.getPlanGenerationState().setMode(mode);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -3427,6 +3582,10 @@ public class PlanningStateService {
     @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO sortOrderedPlan(Long chatSessionId, OrderedPlanSortReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        if (SpecialPlanQualification.blocksNewSelection(state)) {
+            throw new BusinessException(409,
+                    "sort requires existing special-plan conflicts or unknown requirements to be resolved first");
+        }
         // RETRY_REPLAY：排序是纯内存变换（按当前态重排，重放幂等），行为事件只记一次
         OrderedPlanSortOutcome outcome = applyOrderedPlanSort(state, chatSessionId, req);
         if (!outcome.applied) {
@@ -3490,6 +3649,10 @@ public class PlanningStateService {
     }
 
     public ReviewStateDTO runReview(Long tenantId, Long chatSessionId) {
+        // paused 不是“审查失败”，而是未运行：不落盘、不增加版本、不返回旧结论。
+        if (ReviewPolicy.paused()) {
+            return ReviewPolicy.pausedProjection();
+        }
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         ReviewStateDTO reviewState = runReviewInternal(tenantId, chatSessionId, state);
         // B+C：审查结论以**最新态**重算（resolveEffectiveCandidates 读外部/缓存，不重放旧快照结论）；
@@ -3507,6 +3670,15 @@ public class PlanningStateService {
     }
 
     public ReviewFixPreviewDTO previewReviewFixProposals(Long tenantId, Long chatSessionId) {
+        if (ReviewPolicy.paused()) {
+            PlanningStateDTO state = loadPlanningStateReadOnly(chatSessionId);
+            ReviewFixPreviewDTO preview = new ReviewFixPreviewDTO();
+            preview.setStatus("paused");
+            preview.setSourceVersion(state == null ? null : state.getVersion());
+            preview.setReview(ReviewPolicy.pausedProjection());
+            preview.setProposals(Lists.newArrayList());
+            return preview;
+        }
         PlanningStateDTO state = loadReviewFixPreviewState(chatSessionId);
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, false);
         ReviewStateDTO review = evaluateReview(state, effectiveCandidates);
@@ -3598,6 +3770,9 @@ public class PlanningStateService {
      */
     public PrepareResultDTO prepareReviewFixProposal(Long tenantId, Long chatSessionId, String requestId,
                                                      String requestDigest, ReviewFixPrepareReq req) {
+        if (ReviewPolicy.paused()) {
+            throw new BusinessException(409, "review_paused");
+        }
         if (!ReviewFixCommandFlags.enabled()) {
             throw new BusinessException(409, "review_fix_command_disabled");
         }
@@ -3764,6 +3939,7 @@ public class PlanningStateService {
         // 先产出 findings，再由它派生 summary（J5.2a）；评价失败时回退旧 checks 统计。
         attachPlanEvaluation(state, effectiveCandidates, reviewState);
         recalculateReviewSummary(reviewState);
+        reviewState.setAvailability(ReviewPolicy.availability());
 
         return reviewState;
     }
@@ -6195,6 +6371,8 @@ public class PlanningStateService {
         PlanningStateDTO analysisState = new PlanningStateDTO();
         analysisState.setSessionId(state.getSessionId());
         analysisState.setVersion(state.getVersion());
+        // 已确认的专业正向意向在 profileState 里；分析态不带上会把“有意向”误判成“无来源”。
+        analysisState.setProfileState(state.getProfileState());
         analysisState.setCandidatePoolState(state.getCandidatePoolState());
         analysisState.setConstraintState(state.getConstraintState());
         analysisState.setWorkingPlanState(state.getWorkingPlanState());
@@ -7194,11 +7372,15 @@ public class PlanningStateService {
                 ? Math.round(response.getUserScoreDetail().getBatch().getScore()) : null);
         candidatePoolState.setSourceProvinceName(response.getUserScoreDetail() != null && response.getUserScoreDetail().getProvince() != null
                 ? response.getUserScoreDetail().getProvince().getName() : null);
+        candidatePoolState.setSpecialPlan(response.getUserScoreDetail() == null
+                ? null : response.getUserScoreDetail().getSpecialPlan());
         List<CandidateItemDTO> items = Lists.newArrayList();
         items.addAll(flattenCandidates(response.getSprints(), "冲"));
         items.addAll(flattenCandidates(response.getSafes(), "稳"));
         items.addAll(flattenCandidates(response.getProtects(), "保"));
         List<CandidateItemDTO> normalizedItems = normalizeCandidateIdentities(candidatePoolState, items);
+        normalizedItems = SpecialPlanQualification.filterKnownConflicts(
+                normalizedItems, candidatePoolState.getSpecialPlan());
         candidatePoolState.setItems(normalizedItems);
         recalculateCandidatePoolSummary(candidatePoolState);
         populateCandidatePoolSourceSummary(candidatePoolState, items, normalizedItems);
@@ -9331,6 +9513,7 @@ public class PlanningStateService {
         slim.setUserScore(pool.getUserScore());
         slim.setBatchScore(pool.getBatchScore());
         slim.setSourceProvinceName(pool.getSourceProvinceName());
+        slim.setSpecialPlan(pool.getSpecialPlan());
         slim.setVolunteerModel(pool.getVolunteerModel());
         slim.setSourceSummary(pool.getSourceSummary());
         slim.setSummary(pool.getSummary());
@@ -12256,6 +12439,11 @@ public class PlanningStateService {
             check.setDetail("当前不是专业组模式，无需检查组内托底专业与意向的一致性。");
             return check;
         }
+        if (!hasConfirmedPositiveMajorIntent(state)) {
+            // preferred/intentScore 只是探索排序启发，不能当成“用户喜欢”的证据。
+            check.setDetail("当前没有已确认的专业正向意向，本次不判断“非意向托底”。");
+            return check;
+        }
 
         Map<String, CandidateItemDTO> candidateMap = defaultCandidates(state.getCandidatePoolState() == null
                 ? null
@@ -12342,6 +12530,34 @@ public class PlanningStateService {
         check.setDetail(String.format("以下专业组的托底专业与当前已选意向不完全一致：%s。", String.join("、", affectedUnitNames)));
         check.setSuggestedAction("建议确认这些专业组是否接受用非核心意向专业换取更稳妥的录取安全垫。");
         return check;
+    }
+
+    private boolean hasConfirmedPositiveMajorIntent(PlanningStateDTO state) {
+        if (state == null) {
+            return false;
+        }
+        if (state.getProfileState() != null
+                && state.getProfileState().getExplicitProfile() != null
+                && state.getProfileState().getExplicitProfile().getPositiveMajors() != null
+                && !state.getProfileState().getExplicitProfile().getPositiveMajors().isEmpty()) {
+            return true;
+        }
+        if (state.getConstraintState() != null
+                && state.getConstraintState().getHardConstraints() != null) {
+            if ((state.getConstraintState().getHardConstraints().getMustIncludeMajors() != null
+                    && !state.getConstraintState().getHardConstraints().getMustIncludeMajors().isEmpty())
+                    || (state.getConstraintState().getHardConstraints().getMustIncludeMajorIds() != null
+                    && !state.getConstraintState().getHardConstraints().getMustIncludeMajorIds().isEmpty())) {
+                return true;
+            }
+        }
+        List<PriorityRuleDTO> rules = PriorityRuleSupport.confirmedRules(state);
+        for (PriorityRuleDTO rule : rules == null ? Lists.<PriorityRuleDTO>newArrayList() : rules) {
+            if (rule != null && "major".equalsIgnoreCase(Strings.nullToEmpty(rule.getDomain()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private ReviewCheckDTO buildFixedNoticeCheck(String code, String level, String summary, String detail) {
@@ -13645,6 +13861,7 @@ public class PlanningStateService {
             policy.setAction("REFILL");
             policy.setLockExisting(true);
             policy.setCountAsChurn(false);
+            policy.setOrderingPolicyVersion(StagedDeterministicPlanSolver.ORDERING_PRESERVE_CURRENT);
             CanonicalPlanningObjectiveSetDTO objectives = PlanningObjectiveCompiler.compileConfirmed(state);
             CanonicalPlanningObjectiveSetDTO stagedObjectives = JSON.parseObject(
                     JSON.toJSONString(objectives), CanonicalPlanningObjectiveSetDTO.class);
@@ -13922,13 +14139,18 @@ public class PlanningStateService {
                 unit.setPosition(item.getPosition());
             }
         }
-        for (OrderedUnitDTO unit : unitMap.values()) {
+        List<OrderedUnitDTO> units = Lists.newArrayList(unitMap.values());
+        for (int index = 0; index < units.size(); index++) {
+            OrderedUnitDTO unit = units.get(index);
             unit.setMajorItems(sortSelectedMajorsForDisplay(unit.getMajorItems()));
             if (unit.getTotalMajorCount() == null || unit.getTotalMajorCount() <= 0) {
                 unit.setTotalMajorCount(defaultPlanningUnitMajors(unit.getMajorItems()).size());
             }
+            // 组位置必须是 1..N 的连续序号；旧实现拿组内第一条专业的全局 item
+            // position 当前缀，45 组会显示成 1,2,8,9,11…（10042004 实测）。
+            unit.setPosition(index + 1);
         }
-        return Lists.newArrayList(unitMap.values());
+        return units;
     }
 
     private void fillOrderedUnitGroupFields(OrderedUnitDTO unit,

@@ -84,6 +84,13 @@ final class PlanningWorkflowStatusBuilder {
             status.setPlanMessage("已加入方案，待生成顺序");
             return;
         }
+        ReviewStateDTO reviewState = state == null ? null : state.getReviewState();
+        if (ReviewPolicy.paused() || ReviewPolicy.isPaused(reviewState)) {
+            // paused 不是“待审查”的短暂状态：方案已生成，但质量结论未运行。
+            status.setPlanStatus("ready");
+            status.setPlanMessage("方案已生成，待核验");
+            return;
+        }
         if (state != null && state.getStaleFlags() != null && Boolean.TRUE.equals(state.getStaleFlags().getReview())) {
             status.setPlanStatus("pending_review");
             status.setPlanMessage("方案已生成，待审查");
@@ -101,6 +108,13 @@ final class PlanningWorkflowStatusBuilder {
 
     private static void applyReviewStatus(PlanningWorkflowStatusDTO status, PlanningStateDTO state) {
         ReviewStateDTO review = state == null ? null : state.getReviewState();
+        if (ReviewPolicy.paused() || ReviewPolicy.isPaused(review)) {
+            status.setReviewStatus("paused");
+            status.setReviewMessage("方案质量审查暂停，当前结果待核验");
+            status.setReviewReasonCode(ReviewPolicy.REASON_PAUSED);
+            status.setReviewReasonMessage("方案质量审查暂停，当前结果待核验，不代表审查通过");
+            return;
+        }
         if (state != null && state.getStaleFlags() != null && Boolean.TRUE.equals(state.getStaleFlags().getReview())
                 && review != null && !Strings.isNullOrEmpty(review.getReviewedAt())) {
             status.setReviewStatus("stale");

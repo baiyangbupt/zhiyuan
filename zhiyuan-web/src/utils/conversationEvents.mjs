@@ -52,7 +52,8 @@ const V1_PAYLOAD_WHITELIST = {
   'interpretation.preview': [
     'status', 'planVersion', 'admissionMode', 'safetyCoverage',
     'dataCompletenessBand', 'tierCoverage', 'ratioCoverage', 'dataCompleteness',
-    'orderAnomaly', 'baseLanding', 'scenarios', 'caveats', 'caveatDetails',
+    'orderAnomaly', 'tierSequence', 'tierSequenceStatus', 'userOrderRespected',
+    'baseLanding', 'scenarios', 'caveats', 'caveatDetails',
   ],
   'assistant.delta': ['chunk', 'itemId'],
   'assistant.completed': ['message', 'responseType', 'executionStatus', 'limitations'],
@@ -140,12 +141,17 @@ export const applyPendingActionResult = (card, result) => {
   return { ...card, status: result.actionStatus, clickable: false, clicked: result.actionStatus === 'applied' };
 };
 
-export const formatAdmissionProbability = value => {
+// 录取率字段是百分比点（38 = 38%，1.0 = 1%），不是 0–1 小数。
+// 1.0 可能是上游对极低录取率的截断/取整，展示为“≤1%”，避免误读成 100%。
+export const formatAdmissionRate = value => {
   const parsed = toFiniteNumber(value);
   if (parsed === null) return '—';
-  const percentage = parsed >= 0 && parsed <= 1 ? parsed * 100 : parsed;
-  return `${Math.round(percentage)}%`;
+  if (parsed > 0 && parsed <= 1) return '≤1%';
+  return `${Math.round(parsed)}%`;
 };
+
+// 保留旧导出名，避免调用方一次性大改；语义已统一为录取率百分比。
+export const formatAdmissionProbability = formatAdmissionRate;
 
 export const formatRank = value => {
   const parsed = toFiniteNumber(value);

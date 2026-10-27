@@ -60,6 +60,9 @@ export function dataGapText(payload) {
   if (safety) parts.push(`安全覆盖：${safety}`);
   const band = DATA_BAND_TEXT[payload?.dataCompletenessBand];
   if (band) parts.push(band);
-  if (payload?.orderAnomaly) parts.push('顺序有异常');
+  if (payload?.tierSequenceStatus === 'unknown') parts.push('档位顺序只能部分判断');
+  if (payload?.orderAnomaly || payload?.tierSequenceStatus === 'inverted') {
+    parts.push('存在跨档位排列（按实际顺序展示，不自动修正）');
+  }
   return parts.join('；');
 }

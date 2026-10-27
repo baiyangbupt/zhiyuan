@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -24,6 +25,7 @@ import pytest
 from app.gateway import conversation_actions
 from app.gateway.service import GatewayService
 from app.harness.binding import ThreadBinding
+from app.server import _run_native_turn
 
 
 class _MessageStore:
@@ -220,6 +222,56 @@ async def test_confirm_from_the_model_runs_the_card_path_and_lands_in_the_turn_r
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["card", "text"])
+@pytest.mark.parametrize("business_code", [0, 84009])
+async def test_score_updates_share_the_same_execution_and_failure_contract(monkeypatch, entry, business_code):
+    workspace = _workspace()
+    workspace["activeProposal"].update(kind="score_update", actionFamily="update_score_detail")
+    workspace["activeProposal"]["data"] = {
+        "operationId": "op-score-1",
+        "proposalSource": "score_update",
+        "sourceVersion": 5,
+        "scoreUpdateRequest": {"totalScore": 478, "totalScorePos": 131069},
+    }
+    action = {
+        "actionType": "confirm_proposal", "proposalRef": "pending-1",
+        "expectedSourceVersion": 5, "intent": "explicit",
+    }
+    resolver = _Recorder([
+        {"code": 0, "data": {"status": "applying", "revision": 2}},
+        {"code": 0, "data": {"status": "applied" if business_code == 0 else "expired"}},
+    ])
+    executor = _Recorder([
+        {"code": 0, "data": {"status": "applied", "resultPlanVersion": 7}}
+        if business_code == 0 else {"code": 84009, "msg": "当前策略已失效，请刷新页面"},
+    ])
+    monkeypatch.setattr(conversation_actions, "resolve_pending_confirmation", resolver)
+    monkeypatch.setattr(conversation_actions, "execute_pending_planning_command", executor)
+    gateway, _ = _gateway(_CodexHarness(_output(action)), workspace)
+
+    if entry == "text":
+        result = await _turn(gateway)
+    else:
+        async def emit(event):
+            return None
+
+        result = await _run_native_turn(
+            gateway,
+            SimpleNamespace(session_id="session-1", user_id="user-1", content="", conversation_action=action),
+            "tenant-1", "ui-card", emit,
+        )
+
+    assert len(executor.calls) == 1
+    execution = executor.calls[0][1]
+    assert execution["command_type"] == "update_score_detail"
+    assert execution["score_update"] == {"totalScore": 478, "totalScorePos": 131069}
+    assert execution["operation_id"] == "op-score-1"
+    assert execution["claim_token"] == resolver.calls[0][1]["claim_token"]
+    assert result["actionResult"]["actionStatus"] == ("applied" if business_code == 0 else "failed")
+    assert result["actionResult"]["code"] == str(business_code)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("java_response", "expected_status", "expected_code"),
     [
@@ -283,8 +335,8 @@ async def test_an_executor_crash_becomes_a_failed_result_not_a_broken_turn(monke
 
 
 @pytest.mark.asyncio
-async def test_action_types_without_an_executor_keep_the_old_behaviour():
-    """④ `refresh_proposal` 这类没有执行器的动作：不执行、不产结果事件 ✓（原行为不动 ✓）。"""
+async def test_action_types_without_an_executor_are_rejected_as_contract_errors():
+    """④ 无执行器的 create/refresh 不能静默变成“已生成”的正文承诺。"""
     codex = _CodexHarness(_output({
         "actionType": "refresh_proposal",
         "proposalRef": "pending-1",
@@ -294,7 +346,7 @@ async def test_action_types_without_an_executor_keep_the_old_behaviour():
 
     result = await _turn(gateway)
 
-    assert result.get("error") is None
+    assert "conversation_action_not_executable" in str(result.get("error") or "")
     assert result.get("actionResult") is None, "没有执行器就**不许**凭空产一条结果事件 ✗"
 
 

@@ -61,6 +61,24 @@ public class PlanningExcelExportBuilderTest {
     }
 
     @Test
+    void exportCarriesSpecialPlanConflictWarning() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setSpecialPlan(false);
+        CandidateItemDTO candidate = buildCandidate("v1", "s1", "1001", "学校A", "计算机（国家专项）",
+                "080901", 12, 8500, "4年", 52d);
+        candidate.setMajorPlanTags(Arrays.asList("国家专项"));
+        state.getCandidatePoolState().setItems(Arrays.asList(candidate));
+        state.getOrderedPlanState().setItems(Arrays.asList(
+                buildOrderedItem(1, "v1", "冲", "学校A", "计算机（国家专项）")));
+
+        PlanningExcelExportBuilder.PlanningExportData exportData = builder.build(state, new CreateSessionReq());
+
+        assertTrue(exportData.getNote().contains("专项资格冲突"));
+        assertTrue(exportData.getNote().contains("不能作为正式可报方案"));
+    }
+
+    @Test
     void shouldRenumberMajorGroupExportRowsContinuously() {
         PlanningStateDTO state = new PlanningStateDTO();
         state.getCandidatePoolState().setVolunteerModel("majorGroup");

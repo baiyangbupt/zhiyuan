@@ -21,6 +21,25 @@ disabled external-service placeholders. It is the `CODEX_LOCAL_SERVER_CONFIG`
 input for the application stack below. `stop` retains data; `reset` removes
 only this project and its two named volumes.
 
+The launcher passes `CODEX_LOCAL_REVIEW_MODE` (default `active`) to the backend
+as `planning.review.mode`; set it to `paused` only for the affected local
+environment after the Java/Agent/Web review-consumer changes are deployed. The
+paused policy does not run old review rules, returns `reviewState.status=paused`
+with empty findings/summary, and still allows user-goal/score/plan actions with
+their real postconditions.
+
+The generated local-only file also persists `demo.prepare-type-fallback: "PREDICT"`.
+This keeps demo score updates on the available prediction data when the upstream
+province policy has switched to `VOLUNTEER` before that dataset is ready. It is a
+fallback only: explicitly requested or already stored modes are not overwritten,
+and production profiles still default to province policy. The selected mode is
+frozen into the score confirmation payload together with the previewed scores.
+Set `CODEX_LOCAL_PREPARE_TYPE_FALLBACK=VOLUNTEER` when generating a local file to
+test that mode, or set it to an empty string to disable the fallback. Private
+configurations supplied separately must declare the setting themselves; do not
+depend on a one-off `/tmp` restart script carrying the flag. Existing processes
+must be restarted to load a changed Spring configuration.
+
 `scripts/start-codex-local.sh` starts a fresh local validation stack on ports
 `18290` (Java), `18291` (Agent), `18292` (Rank), and `3201` (Web). It is a
 separate path from `scripts/start-all.sh`: it never adopts a listener, changes
@@ -71,7 +90,9 @@ bash scripts/start-codex-local.sh --skip-web
 ```
 
 By default the script builds a current Java jar. Use `--skip-build` only after
-building `zhiyuan-server` yourself. It writes logs, PID records, the binding
+building `zhiyuan-server` yourself. The jar is copied into the run directory
+before launch, so later Maven builds cannot invalidate a running JVM's nested
+jar entries. It writes logs, PID records, the binding
 registry, and health responses to a fresh `.runtime/codex-local-*` directory.
 The ready message prints that directory and the exact stop command:
 
@@ -104,6 +125,21 @@ operator-owned property represented by `CODEX_LOCAL_DATASET=private-resettable`.
 Real Pending/CAS HTTP E2E must run only after that private dataset is prepared.
 
 ## 访问面：本地模式与公开测试模式（Task C2）
+
+默认 Web 仅监听 `127.0.0.1:3201`，其他机器不能通过服务器内网 IP 直接访问。
+需要局域网浏览器验收时，在现有启动参数上增加 `--web-host 10.218.4.10`，或设置
+`CODEX_LOCAL_WEB_HOST=10.218.4.10`。仅允许显式 RFC1918 私有 IPv4，拒绝通配地址和公网 IP；
+不改变默认回环模式，也不改变公开测试模式的 HTTPS 约束。
+
+此时 Web 监听指定内网地址；浏览器 WebSocket 走同源 `/ws/chat`，由 Next 转发到回环 Agent，
+并自动把该 Web origin 加入票据/连接白名单。Java、Agent、Rank 仍只监听回环，内部 API
+路径仍由代理守卫拒绝。不要仅修改 Next 的监听地址、却保留浏览器的回环 WebSocket override。
+
+只检查解析结果、不启动或重启服务：
+
+```bash
+bash scripts/start-codex-local.sh --web-host 10.218.4.10 --print-access-env
+```
 
 隔离栈有两套**访问面**口径，由 `CODEX_LOCAL_ACCESS_MODE` 选择 ✓：
 

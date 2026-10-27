@@ -547,6 +547,22 @@ class ScoreUpdateRequest(_ContractModel):
     total_score_pos: int | None = None
     exam_year: int | None = None
     subject_score_list: list[ScoreUpdateSubjectScore] = Field(default_factory=list)
+    # 三态：None=本轮未更新；False=用户明确没有任何专项；True=只表示“有某种专项”，
+    # 具体类别仍需核验。不能用缺失反推 false。
+    special_plan: bool | None = Field(
+        default=None,
+        description=(
+            "专项资格三态：用户明确说没有任何专项时填 false；只泛称有专项时填 true"
+            "（具体类别仍待核验）；未回答/不知道/只否认某一类时不要填。不要从上下文猜测。"
+        ),
+    )
+
+    @field_validator("special_plan", mode="before")
+    @classmethod
+    def _strict_special_plan_bool(cls, value: Any) -> Any:
+        if value is None or isinstance(value, bool):
+            return value
+        raise ValueError("specialPlan must be true, false, or null")
 
 
 class CareerUpdateRequest(_ContractModel):

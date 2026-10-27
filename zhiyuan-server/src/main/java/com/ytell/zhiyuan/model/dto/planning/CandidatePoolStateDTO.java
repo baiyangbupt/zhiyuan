@@ -21,6 +21,8 @@ public class CandidatePoolStateDTO {
     private Integer userScore;
     private Integer batchScore;
     private String sourceProvinceName;
+    /** 用户专项资格只读投影（权威仍在 userScoreDetail）；null=未回答，false=明确无专项。 */
+    private Boolean specialPlan;
     private String volunteerModel;
     private List<CandidateItemDTO> items = Lists.newArrayList();
     private SourceSummary sourceSummary = new SourceSummary();

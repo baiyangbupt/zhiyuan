@@ -387,6 +387,33 @@ public class ConversationSnapshotServiceTest {
         assertEquals(43, snapshot.getJourney().getSelectionCurrentCount().intValue());
     }
 
+    @Test
+    void shouldNotExposePausedReviewSummaryOrHardFeasible() {
+        String originalMode = System.getProperty(ReviewPolicy.PROPERTY);
+        System.setProperty(ReviewPolicy.PROPERTY, "paused");
+        try {
+            PlanningWorkspaceStateRes workspace = workspace(42, 101L);
+            workspace.setReviewState(ReviewPolicy.pausedProjection());
+            doReturn(workspace).when(planningStateService).getPlanningWorkspaceState(eq(7L), eq(101L));
+            doReturn(null).when(pendingConfirmationBizService).getActiveOrApplying(7L, 101L);
+
+            ConversationTurnSnapshotDTO snapshot = service.getTurnSnapshot(7L, 101L);
+
+            assertFalse(snapshot.getPreferences().containsKey("reviewSummary"));
+            assertFalse(snapshot.getPreferences().containsKey("reviewHardFeasible"));
+            assertEquals("paused", snapshot.getJourney().getReviewFreshness());
+            assertFalse("review".equals(snapshot.getJourney().getRefreshRequirement()));
+            assertEquals("paused",
+                    snapshot.getJourney().getReviewAvailability().getMode());
+        } finally {
+            if (originalMode == null) {
+                System.clearProperty(ReviewPolicy.PROPERTY);
+            } else {
+                System.setProperty(ReviewPolicy.PROPERTY, originalMode);
+            }
+        }
+    }
+
     private PlanningWorkspaceStateRes workspace(Integer version, Long sessionId) {
         PlanningWorkspaceStateRes workspace = new PlanningWorkspaceStateRes();
         workspace.setVersion(version);

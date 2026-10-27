@@ -8,6 +8,7 @@ import com.ytell.zhiyuan.model.dto.planning.DiversityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountsDTO;
+import com.ytell.zhiyuan.model.dto.planning.StructureQualityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
 import org.junit.jupiter.api.Test;
 
@@ -51,6 +52,210 @@ class StagedDeterministicPlanSolverTest {
         assertFalse(beforeDigest.equals("stale-pre-patch-objectives"));
         assertFalse(beforeDigest.equals(afterDigest));
         assertEquals(before.getSelectedEntityIds(), after.getSelectedEntityIds());
+    }
+
+    @Test
+    void initialTierOrderIsSprintStableProtectEvenWhenStableOrderStartsWithStable() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                fact("stable", "stable", "浙江", false, false, 90, 0),
+                fact("protect", "protect", "浙江", false, false, 90, 1),
+                fact("sprint", "sprint", "浙江", false, false, 90, 2));
+        MutationPolicyDTO policy = policy("FILL", false);
+        policy.setOrderingPolicyVersion(StagedDeterministicPlanSolver.ORDERING_INITIAL_TIER);
+
+        PlanSolverResultDTO result = solver.solve(snapshot, objectives(3), policy).solverResult;
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(Arrays.asList("sprint", "stable", "protect"), result.getOrderedEntityIds());
+    }
+
+    @Test
+    void structureQualityCapsUnknownRatioBucketWithoutChangingHardStructure() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                fact("unknown-1", "sprint", "浙江", false, false, 100, 0),
+                fact("unknown-2", "sprint", "浙江", false, false, 100, 1),
+                fact("unknown-3", "sprint", "浙江", false, false, 100, 2),
+                fact("unknown-4", "sprint", "浙江", false, false, 100, 3),
+                fact("unknown-5", "sprint", "浙江", false, false, 100, 4),
+                fact("known-1", "sprint", "浙江", false, false, 10, 5),
+                fact("known-2", "sprint", "浙江", false, false, 10, 6),
+                fact("known-3", "sprint", "浙江", false, false, 10, 7));
+        for (CandidateFactDTO fact : snapshot.getFacts()) {
+            if (fact.getEntityId().startsWith("unknown")) {
+                fact.setRatioBucket("unknown");
+            } else {
+                fact.setRatioBucket("known-3".equals(fact.getEntityId())
+                        ? "sprint_15_30" : "sprint_5_15");
+            }
+        }
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(5);
+        StructureQualityPolicyDTO structure = new StructureQualityPolicyDTO();
+        structure.setMode("soft");
+        structure.setMaxUnknownBucketShare(0.4D);
+        structure.setMaxUtilityLossRatio(0D);
+        objectives.setStructureQualityPolicy(structure);
+
+        PlanSolverResultDTO result = solver.solve(snapshot, objectives, policy("FILL", false)).solverResult;
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(5, result.getSelectedEntityIds().size());
+        long unknownSelected = result.getSelectedEntityIds().stream()
+                .filter(id -> id.startsWith("unknown")).count();
+        assertEquals(2, unknownSelected);
+    }
+
+    @Test
+    void structureQualityFallsBackWhenUtilityFloorWouldBlock() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                fact("unknown-1", "sprint", "浙江", false, false, 100, 0),
+                fact("unknown-2", "sprint", "浙江", false, false, 100, 1),
+                fact("unknown-3", "sprint", "浙江", false, false, 100, 2),
+                fact("unknown-4", "sprint", "浙江", false, false, 100, 3),
+                fact("unknown-5", "sprint", "浙江", false, false, 100, 4),
+                fact("known-1", "sprint", "浙江", false, false, 10, 5),
+                fact("known-2", "sprint", "浙江", false, false, 10, 6),
+                fact("known-3", "sprint", "浙江", false, false, 10, 7));
+        for (CandidateFactDTO fact : snapshot.getFacts()) {
+            fact.setRatioBucket(fact.getEntityId().startsWith("unknown")
+                    ? "unknown" : "sprint_5_15");
+        }
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(5);
+        StructureQualityPolicyDTO structure = new StructureQualityPolicyDTO();
+        structure.setMode("soft");
+        structure.setMaxUnknownBucketShare(0.4D);
+        objectives.setStructureQualityPolicy(structure);
+
+        PlanSolverResultDTO result = solver.solve(snapshot, objectives, policy("FILL", false)).solverResult;
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(5, result.getSelectedEntityIds().size());
+        assertTrue(result.getDiagnostics().stream()
+                .anyMatch(item -> "structure_quality_unavailable".equals(item.getReasonCode())));
+    }
+
+    @Test
+    void initialStrictOrderDoesNotPutExistingItemsBeforeHigherQualityAdds() {
+        CandidateFactDTO current = fact("current", "sprint", "浙江", true, false, 90, 0);
+        current.setFinalScore(80D);
+        CandidateFactDTO added = fact("added", "sprint", "浙江", false, false, 90, 1);
+        added.setFinalScore(95D);
+        MutationPolicyDTO policy = policy("FILL", false);
+        policy.setOrderingPolicyVersion(StagedDeterministicPlanSolver.ORDERING_INITIAL_TIER_STRICT);
+
+        PlanSolverResultDTO result = solver.solve(
+                snapshot(current, added), objectives(2), policy).solverResult;
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(Arrays.asList("added", "current"), result.getOrderedEntityIds());
+    }
+
+    @Test
+    void initialTierOrderUsesVisibleQualityRatherThanLegacyStableOrder() {
+        CandidateFactDTO lower = fact("lower", "sprint", "浙江", false, false, 90, 0);
+        lower.setFinalScore(80D);
+        CandidateFactDTO higher = fact("higher", "sprint", "浙江", false, false, 90, 1);
+        higher.setFinalScore(90D);
+
+        MutationPolicyDTO policy = policy("FILL", false);
+        policy.setOrderingPolicyVersion(StagedDeterministicPlanSolver.ORDERING_INITIAL_TIER);
+
+        PlanSolverResultDTO result = solver.solve(
+                snapshot(lower, higher), objectives(2), policy).solverResult;
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(Arrays.asList("higher", "lower"), result.getOrderedEntityIds());
+    }
+
+    @Test
+    void preserveCurrentKeepsExistingRelativeOrderAndAppendsNewItems() {
+        CandidateFactDTO protect = fact("protect", "protect", "浙江", true, false, 90, 0);
+        protect.setCurrentPosition(1);
+        CandidateFactDTO sprint = fact("sprint", "sprint", "浙江", true, false, 90, 1);
+        sprint.setCurrentPosition(2);
+        CandidateFactDTO stable = fact("stable", "stable", "浙江", true, false, 90, 2);
+        stable.setCurrentPosition(3);
+        CandidateFactDTO added = fact("added", "sprint", "浙江", false, false, 90, 3);
+        CandidateSnapshotDTO snapshot = snapshot(protect, sprint, stable, added);
+        MutationPolicyDTO policy = policy("FILL", false);
+        policy.setOrderingPolicyVersion(StagedDeterministicPlanSolver.ORDERING_PRESERVE_CURRENT);
+
+        PlanSolverResultDTO result = solver.solve(snapshot, objectives(4), policy).solverResult;
+
+        assertEquals("ready", result.getStatus());
+        assertEquals(Arrays.asList("protect", "sprint", "stable", "added"),
+                result.getOrderedEntityIds());
+    }
+
+    @Test
+    void knownSpecialPlanConflictIsNotSelectableForNewSelection() {
+        CandidateFactDTO conflict = fact("conflict", "sprint", "浙江", false, false, 100, 0);
+        conflict.setSpecialPlanConflict(true);
+        CandidateFactDTO clean = fact("clean", "stable", "浙江", false, false, 10, 1);
+        MutationPolicyDTO policy = policy("FILL", false);
+
+        PlanSolverResultDTO result = solver.solve(snapshot(conflict, clean), objectives(1), policy).solverResult;
+
+        assertEquals("ready", result.getStatus());
+        assertFalse(result.getSelectedEntityIds().contains("conflict"));
+        assertTrue(result.getSelectedEntityIds().contains("clean"));
+    }
+
+    @Test
+    void nonRemoveActionCannotKeepSpecialPlanConflictByEnablingExemption() {
+        for (String action : Arrays.asList("INITIAL", "FILL", "ADD", "REPLACE", "REFILL")) {
+            CandidateFactDTO conflict = fact("conflict", "stable", "浙江", true, false, 100, 0);
+            conflict.setSpecialPlanConflict(true);
+            MutationPolicyDTO policy = policy(action, true);
+            policy.setAllowExistingSpecialPlanConflicts(true);
+
+            PlanSolverResultDTO result = solver.solve(snapshot(conflict), objectives(1), policy).solverResult;
+
+            assertEquals("blocked", result.getStatus(), action);
+        }
+    }
+
+    @Test
+    void pureRemoveCannotAddNewItemsToMeetTarget() {
+        CandidateFactDTO current = fact("current", "stable", "浙江", true, false, 10, 0);
+        CandidateFactDTO added = fact("added", "protect", "浙江", false, false, 100, 1);
+        MutationPolicyDTO policy = policy("REMOVE", true);
+        policy.setAllowAdd(false);
+        policy.setAllowExistingSpecialPlanConflicts(true);
+
+        PlanSolverResultDTO result = solver.solve(snapshot(current, added), objectives(2), policy).solverResult;
+
+        assertEquals("blocked", result.getStatus());
+    }
+
+    @Test
+    void unknownSpecialPlanRequirementIsNotSelectableForNewSelection() {
+        CandidateFactDTO unknown = fact("unknown", "sprint", "浙江", false, false, 100, 0);
+        unknown.setSpecialPlanUnknown(true);
+        CandidateFactDTO clean = fact("clean", "stable", "浙江", false, false, 10, 1);
+        MutationPolicyDTO policy = policy("FILL", false);
+
+        PlanSolverResultDTO result = solver.solve(snapshot(unknown, clean), objectives(1), policy).solverResult;
+
+        assertEquals("ready", result.getStatus());
+        assertFalse(result.getSelectedEntityIds().contains("unknown"));
+        assertTrue(result.getSelectedEntityIds().contains("clean"));
+    }
+
+    @Test
+    void pureRemoveMayKeepExistingSpecialPlanConflict() {
+        CandidateFactDTO conflict = fact("conflict", "protect", "浙江", true, false, 100, 0);
+        conflict.setSpecialPlanConflict(true);
+        CandidateFactDTO clean = fact("clean", "stable", "浙江", true, false, 10, 1);
+        MutationPolicyDTO policy = policy("REMOVE", false);
+        policy.setAllowAdd(false);
+        policy.setLockExisting(true);
+        policy.setAllowExistingSpecialPlanConflicts(true);
+
+        PlanSolverResultDTO result = solver.solve(snapshot(conflict, clean), objectives(2), policy).solverResult;
+
+        assertEquals("ready", result.getStatus());
+        assertTrue(result.getSelectedEntityIds().contains("conflict"));
+        assertTrue(result.getSelectedEntityIds().contains("clean"));
     }
 
     @Test

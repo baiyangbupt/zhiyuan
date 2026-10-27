@@ -78,6 +78,7 @@ public class PlanAdmissionInterpretationService {
             res.setDataCompleteness(0.0);
             res.setDataCompletenessBand(AdmissionInterpretationRes.COMPLETENESS_SEVERE);
             res.setOrderAnomaly(false);
+            res.setTierSequenceStatus(AdmissionInterpretationRes.TIER_SEQUENCE_ABSENT);
             addCaveat(caveats, caveatDetails,
                     "当前没有可解读的方案条目，请先排出方案。", "soft", null);
             enrichWithFindings(res, findings);
@@ -121,7 +122,8 @@ public class PlanAdmissionInterpretationService {
         InterpretationEntryDTO baseEntry = firstStableOrSafe(entries);
         InterpretationEntryDTO upsideEntry = bestReach(entries);
         InterpretationEntryDTO downsideEntry = lastSafe(entries);
-        boolean orderAnomaly = hasOrderAnomaly(entries);
+        boolean orderAnomaly = applyTierSequenceDiagnostics(
+                res, entries, caveats, caveatDetails);
         res.setOrderAnomaly(orderAnomaly);
 
         if (baseEntry != null) {
@@ -362,20 +364,63 @@ public class PlanAdmissionInterpretationService {
         return last;
     }
 
-    private boolean hasOrderAnomaly(List<InterpretationEntryDTO> entries) {
-        int firstSafe = -1;
-        int firstNonSafe = -1;
-        for (int i = 0; i < entries.size(); i++) {
-            String tier = normalizeTier(entries.get(i).getPathTier());
-            if (InterpretationEntryDTO.TIER_BAO.equals(tier) && firstSafe < 0) {
-                firstSafe = i;
+    /**
+     * 单一结构诊断：实际档位序列是否违反默认 sprint→stable→protect。
+     *
+     * <p>unknown 不当作正常（status=unknown），但也不冒充“用户已授权非标准顺序”；
+     * 没有已确认顺序来源时 userOrderRespected=null。</p>
+     */
+    private boolean applyTierSequenceDiagnostics(AdmissionInterpretationRes res,
+                                                 List<InterpretationEntryDTO> entries,
+                                                 List<String> caveats,
+                                                 List<InterpretationCaveatDTO> caveatDetails) {
+        List<String> sequence = new ArrayList<String>();
+        int unknown = 0;
+        int previousRank = -1;
+        boolean inverted = false;
+        for (InterpretationEntryDTO entry : entries) {
+            String tier = normalizeTier(entry.getPathTier());
+            sequence.add(tier);
+            if (InterpretationEntryDTO.TIER_UNKNOWN.equals(tier)) {
+                unknown++;
+                continue;
             }
-            if ((InterpretationEntryDTO.TIER_WEN.equals(tier)
-                    || InterpretationEntryDTO.TIER_CHONG.equals(tier)) && firstNonSafe < 0) {
-                firstNonSafe = i;
+            int rank = tierRank(tier);
+            if (previousRank >= 0 && rank < previousRank) {
+                inverted = true;
             }
+            previousRank = Math.max(previousRank, rank);
         }
-        return firstSafe >= 0 && firstNonSafe >= 0 && firstSafe < firstNonSafe;
+        res.setTierSequence(sequence);
+        res.setUserOrderRespected(null);
+        if (unknown > 0) {
+            res.setTierSequenceStatus(inverted
+                    ? AdmissionInterpretationRes.TIER_SEQUENCE_INVERTED
+                    : AdmissionInterpretationRes.TIER_SEQUENCE_UNKNOWN);
+            addCaveat(caveats, caveatDetails,
+                    "方案有 " + unknown + " 条档位未知，结构顺序只能部分判断。",
+                    "soft", "tier_sequence_unknown");
+        } else {
+            res.setTierSequenceStatus(inverted
+                    ? AdmissionInterpretationRes.TIER_SEQUENCE_INVERTED
+                    : AdmissionInterpretationRes.TIER_SEQUENCE_DEFAULT);
+        }
+        if (inverted) {
+            addCaveat(caveats, caveatDetails,
+                    "方案存在跨档位排列（实际顺序不是默认的冲→稳→保）；如非你主动调整过顺序，建议复核。",
+                    "soft", "tier_sequence_inverted");
+        }
+        return inverted;
+    }
+
+    private int tierRank(String tier) {
+        if (InterpretationEntryDTO.TIER_CHONG.equals(tier)) {
+            return 0;
+        }
+        if (InterpretationEntryDTO.TIER_WEN.equals(tier)) {
+            return 1;
+        }
+        return 2;
     }
 
     private String evaluateSafetyCoverage(int tierKnown, int safeCount, int safeKnownRatio) {
@@ -459,7 +504,7 @@ public class PlanAdmissionInterpretationService {
             scenario.getDrivers().add("专业录取率=" + formatRatio(landing.getMajorRatio()));
         }
         if (orderAnomaly) {
-            scenario.getCaveats().add("方案顺序异常，按实际顺序展示。");
+            scenario.getCaveats().add("方案存在跨档位排列，按实际顺序展示，不自动修正。");
         }
         return scenario;
     }

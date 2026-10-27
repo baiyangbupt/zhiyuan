@@ -1,8 +1,11 @@
 package com.ytell.zhiyuan.service.biz;
 
+import com.alibaba.fastjson.JSON;
 import com.google.common.collect.Lists;
+import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
+import com.ytell.zhiyuan.model.dto.ScoreUpdatePatch;
 import com.ytell.zhiyuan.model.dto.gaotu.req.ScorePositionRangeReq;
 import com.ytell.zhiyuan.model.dto.gaotu.res.ScorePositionRangeRes;
 import com.ytell.zhiyuan.model.dto.inner.PendingConfirmationRes;
@@ -11,8 +14,12 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PrepareResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.ScoreUpdatePreviewDTO;
 import com.ytell.zhiyuan.model.enums.OperateCheckPoint;
+import com.ytell.zhiyuan.model.entity.biz.ChatMessage;
+import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.vo.CheckRightsResVo;
+import com.ytell.zhiyuan.model.vo.LastProposalVo;
 import com.ytell.zhiyuan.service.GaotuService;
+import com.ytell.zhiyuan.service.shared.ChatMessageSharedService;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -21,6 +28,7 @@ import org.mockito.Mockito;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -62,6 +70,7 @@ public class ChatSessionBizServiceScoreUpdatePrepareTest {
         // 空会话：没有既有的 userScoreDetail 行（补录就是给这种会话写的）。
         extraDataSharedService = mock(ChatSessionExtraDataSharedService.class);
         ReflectionTestUtils.setField(service, "chatSessionExtraDataSharedService", extraDataSharedService);
+        ReflectionTestUtils.setField(service, "chatMessageSharedService", mock(ChatMessageSharedService.class));
         // 位次补齐（preview 也要走，见 2026-10-07 审查 M3）用替身上游。
         gaotuService = mock(GaotuService.class);
         ReflectionTestUtils.setField(service, "gaotuService", gaotuService);
@@ -116,6 +125,65 @@ public class ChatSessionBizServiceScoreUpdatePrepareTest {
                         return dto;
                     }
                 });
+    }
+
+    @Test
+    void prepareRejectsStaleScoreUpdateSourceVersion() {
+        Map<String, Object> body = JSON.parseObject(JSON.toJSONString(scoreRequest()));
+        body.put("sourceVersionGuard", 4);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.prepareScoreUpdateProposal(1L, 2L, "req-stale", "digest-stale",
+                        ScoreUpdatePatch.fromRaw(body)));
+
+        assertTrue(error.getMessage().contains("score_update_stale"));
+        assertTrue(upserted.isEmpty());
+        Mockito.verifyNoInteractions(gaotuService);
+    }
+
+    @Test
+    void prepareKeepsMatchingSourceVersionOutsideScoreFacts() {
+        Map<String, Object> body = JSON.parseObject(JSON.toJSONString(scoreRequest()));
+        body.put("sourceVersionGuard", "5");
+        ScoreUpdatePatch patch = ScoreUpdatePatch.fromRaw(body);
+
+        PrepareResultDTO prepared = service.prepareScoreUpdateProposal(
+                1L, 2L, "req-guard", "digest-guard", patch);
+
+        assertEquals(5, ((ScoreUpdatePreviewDTO) prepared.getResult()).getSourceVersion());
+        assertEquals(5, upserted.get(0).getDataValue().get("sourceVersion"));
+        assertFalse(patch.getRaw().containsKey("sourceVersionGuard"));
+        Map<?, ?> frozen = (Map<?, ?>) upserted.get(0).getDataValue().get("scoreUpdateRequest");
+        assertFalse(frozen.containsKey("sourceVersionGuard"));
+    }
+
+    @Test
+    void prepareRejectsVersionChangeDuringScoreMergeInsteadOfRebinding() {
+        PlanningStateService planning = (PlanningStateService)
+                ReflectionTestUtils.getField(service, "planningStateService");
+        PlanningStateDTO before = new PlanningStateDTO();
+        before.setVersion(5);
+        PlanningStateDTO after = new PlanningStateDTO();
+        after.setVersion(6);
+        when(planning.getPlanningState(2L)).thenReturn(before, after);
+        Map<String, Object> body = JSON.parseObject(JSON.toJSONString(scoreRequest()));
+        body.put("sourceVersionGuard", 5);
+
+        assertThrows(BusinessException.class,
+                () -> service.prepareScoreUpdateProposal(1L, 2L, "req-race", "digest-race",
+                        ScoreUpdatePatch.fromRaw(body)));
+
+        assertTrue(upserted.isEmpty());
+    }
+
+    @Test
+    void scoreUpdateRejectsInvalidVersionGuards() {
+        for (Object guard : new Object[] {true, -1, 4.5D, "bad", "2147483648"}) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("specialPlan", false);
+            body.put("sourceVersionGuard", guard);
+            assertThrows(BusinessException.class, () -> ScoreUpdatePatch.fromRaw(body));
+        }
     }
 
     @Test
@@ -262,6 +330,418 @@ public class ChatSessionBizServiceScoreUpdatePrepareTest {
         Map<?, ?> summary = (Map<?, ?>) upserted.get(0).getDataValue().get("scoreSummary");
         assertEquals(43879, summary.get("totalScorePos"),
                 "卡片摘要与执行集一致：补出来的位次要进摘要");
+    }
+
+    @Test
+    void previewMergesSingleSubjectWithoutDroppingOtherScores() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        CreateSessionReq.SubjectScore math = new CreateSessionReq.SubjectScore();
+        math.setSubject("10");
+        math.setScore(136);
+        update.setSubjectScoreList(Lists.newArrayList(math));
+        update.setTotalScore(626);
+        update.setTotalScorePos(7000);
+
+        Map<String, Object> summary = service.previewScoreUpdate(1L, 2L, update).getSummary();
+        List<?> subjects = (List<?>) summary.get("subjects");
+
+        assertEquals(3, subjects.size());
+        assertEquals(118, ((Map<?, ?>) subjects.get(0)).get("score"));
+        assertEquals(136, ((Map<?, ?>) subjects.get(1)).get("score"));
+        assertEquals(126, ((Map<?, ?>) subjects.get(2)).get("score"));
+    }
+
+    @Test
+    void previewRequiresNewTotalWhenSubjectScoresChange() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        CreateSessionReq.SubjectScore math = new CreateSessionReq.SubjectScore();
+        math.setSubject("10");
+        math.setScore(136);
+        update.setSubjectScoreList(Lists.newArrayList(math));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.previewScoreUpdate(1L, 2L, update));
+
+        assertEquals(110, error.getStatus());
+        assertTrue(error.getMessage().contains("总分"));
+        assertTrue(upserted.isEmpty());
+    }
+
+    @Test
+    void previewRecalculatesInheritedRankWhenTotalChanges() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        update.setTotalScore(626);
+        ScorePositionRangeRes range = new ScorePositionRangeRes();
+        range.setLowestRank(7000);
+        when(gaotuService.getScorePositionRange(any())).thenReturn(range);
+
+        Map<String, Object> summary = service.previewScoreUpdate(1L, 2L, update).getSummary();
+
+        assertEquals(7000, summary.get("totalScorePos"));
+        assertEquals(626, summary.get("totalScore"));
+    }
+
+    @Test
+    void previewDoesNotKeepOldRankWhenNewRankIsUnavailable() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        update.setTotalScore(626);
+
+        Map<String, Object> summary = service.previewScoreUpdate(1L, 2L, update).getSummary();
+
+        assertFalse(summary.containsKey("totalScorePos"));
+    }
+
+    @Test
+    void previewKeepsExplicitRankWhenTotalChanges() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        update.setTotalScore(626);
+        update.setTotalScorePos(7001);
+
+        Map<String, Object> summary = service.previewScoreUpdate(1L, 2L, update).getSummary();
+
+        assertEquals(7001, summary.get("totalScorePos"));
+        Mockito.verify(gaotuService, Mockito.never()).getScorePositionRange(any());
+    }
+
+    @Test
+    void previewRecalculatesRankWhenExamYearChanges() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        update.setExamYear(2027);
+        ScorePositionRangeRes range = new ScorePositionRangeRes();
+        range.setLowestRank(7200);
+        when(gaotuService.getScorePositionRange(any())).thenReturn(range);
+
+        Map<String, Object> summary = service.previewScoreUpdate(1L, 2L, update).getSummary();
+
+        assertEquals(7200, summary.get("totalScorePos"));
+    }
+
+    @Test
+    void previewKeepsRankWhenRankContextDoesNotChange() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        update.setTotalScore(621);
+
+        Map<String, Object> summary = service.previewScoreUpdate(1L, 2L, update).getSummary();
+
+        assertEquals(8123, summary.get("totalScorePos"));
+        Mockito.verify(gaotuService, Mockito.never()).getScorePositionRange(any());
+    }
+
+    @Test
+    void previewMergesUpdatesToAllMainSubjectsWithoutDroppingElectives() {
+        storeScore(completeScoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        update.setSubjectScoreList(scoreRequest().getSubjectScoreList());
+        update.setTotalScore(621);
+
+        Map<String, Object> summary = service.previewScoreUpdate(1L, 2L, update).getSummary();
+
+        assertEquals(6, ((List<?>) summary.get("subjects")).size());
+    }
+
+    @Test
+    void previewReplacesElectivesWhenACompleteNewScoreSheetIsProvided() {
+        storeScore(completeScoreRequest());
+        CreateSessionReq update = completeScoreRequest();
+        update.getSubjectScoreList().get(5).setSubject("06");
+        update.getSubjectScoreList().get(5).setSubjectName("生物");
+
+        Map<String, Object> summary = service.previewScoreUpdate(1L, 2L, update).getSummary();
+        List<?> subjects = (List<?>) summary.get("subjects");
+
+        assertEquals(6, subjects.size());
+        assertTrue(JSON.toJSONString(subjects).contains("生物"));
+        assertFalse(JSON.toJSONString(subjects).contains("地理"));
+    }
+
+    @Test
+    void previewRejectsPartialChangesToTheSelectedSubjects() {
+        storeScore(completeScoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        CreateSessionReq.SubjectScore biology = new CreateSessionReq.SubjectScore();
+        biology.setSubject("06");
+        biology.setScore(80);
+        update.setSubjectScoreList(Lists.newArrayList(biology));
+        update.setTotalScore(621);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.previewScoreUpdate(1L, 2L, update));
+
+        assertEquals(110, error.getStatus());
+        assertTrue(error.getMessage().contains("完整"));
+    }
+
+    @Test
+    void prepareRejectsContextChangesOnIncompleteInheritedScores() {
+        CreateSessionReq previous = scoreRequest();
+        previous.setSubjectScoreList(Lists.newArrayList(previous.getSubjectScoreList().get(1)));
+        storeScore(previous);
+        CreateSessionReq update = new CreateSessionReq();
+        CreateSessionReq.Province province = new CreateSessionReq.Province();
+        province.setCode("430000");
+        update.setProvince(province);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.prepareScoreUpdateProposal(1L, 2L, "req-context", "digest-context", update));
+
+        assertEquals(110, error.getStatus());
+        assertTrue(error.getMessage().contains("完整"));
+        assertTrue(upserted.isEmpty());
+    }
+
+    @Test
+    void prepareRebuildsSelectedAndStrengthSubjectsWhenElectivesChange() {
+        CreateSessionReq previous = completeScoreRequest();
+        ReflectionTestUtils.invokeMethod(service, "fillSubjectListFromScoresIfNeeded", previous);
+        previous.setStrengthSubjectList(Lists.newArrayList(previous.getSubjectScoreList().get(5)));
+        storeScore(previous);
+        CreateSessionReq update = completeScoreRequest();
+        update.getSubjectScoreList().get(5).setSubject("06");
+        update.getSubjectScoreList().get(5).setSubjectName("生物");
+
+        service.prepareScoreUpdateProposal(1L, 2L, "req-electives", "digest-electives", update);
+
+        CreateSessionReq frozen = JSON.parseObject(
+                JSON.toJSONString(upserted.get(0).getDataValue().get("scoreUpdateRequest")), CreateSessionReq.class);
+        assertEquals(3, frozen.getSubjectList().size());
+        assertEquals("06", frozen.getSubjectList().get(2).getValue());
+        assertFalse(frozen.getStrengthSubjectList().stream().anyMatch(subject -> "04".equals(subject.getSubject())));
+    }
+
+    @Test
+    void prepareRefreshesInheritedStrengthScoresAfterAnElectiveScoreCorrection() {
+        CreateSessionReq previous = completeScoreRequest();
+        ReflectionTestUtils.invokeMethod(service, "fillSubjectListFromScoresIfNeeded", previous);
+        storeScore(previous);
+        CreateSessionReq update = new CreateSessionReq();
+        CreateSessionReq.SubjectScore geography = new CreateSessionReq.SubjectScore();
+        geography.setSubject("04");
+        geography.setScore(99);
+        update.setSubjectScoreList(Lists.newArrayList(geography));
+        update.setTotalScore(640);
+        update.setTotalScorePos(7000);
+
+        service.prepareScoreUpdateProposal(1L, 2L, "req-strength", "digest-strength", update);
+
+        CreateSessionReq frozen = JSON.parseObject(
+                JSON.toJSONString(upserted.get(0).getDataValue().get("scoreUpdateRequest")), CreateSessionReq.class);
+        assertEquals("04", frozen.getStrengthSubjectList().get(0).getSubject());
+        assertEquals(99, frozen.getStrengthSubjectList().get(0).getScore());
+    }
+
+    @Test
+    void previewRecalculatesRankWhenProvinceChanges() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        CreateSessionReq.Province province = new CreateSessionReq.Province();
+        province.setCode("430000");
+        update.setProvince(province);
+        assertRankRecalculated(update);
+    }
+
+    @Test
+    void previewRecalculatesRankWhenSubjectTypeChanges() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        CreateSessionReq.SubjectType type = new CreateSessionReq.SubjectType();
+        type.setCode("LS");
+        update.setSubjectType(type);
+        assertRankRecalculated(update);
+    }
+
+    @Test
+    void previewRecalculatesRankWhenBatchChanges() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        CreateSessionReq.Batch batch = new CreateSessionReq.Batch();
+        batch.setCode("4");
+        batch.setLevel("02");
+        update.setBatch(batch);
+        assertRankRecalculated(update);
+    }
+
+    private void assertRankRecalculated(CreateSessionReq update) {
+        ScorePositionRangeRes range = new ScorePositionRangeRes();
+        range.setLowestRank(7200);
+        when(gaotuService.getScorePositionRange(any())).thenReturn(range);
+
+        Map<String, Object> summary = service.previewScoreUpdate(1L, 2L, update).getSummary();
+
+        assertEquals(7200, summary.get("totalScorePos"));
+    }
+
+    @Test
+    void previewRejectsDuplicateSubjectCodes() {
+        storeScore(scoreRequest());
+        CreateSessionReq update = new CreateSessionReq();
+        CreateSessionReq.SubjectScore math = new CreateSessionReq.SubjectScore();
+        math.setSubject("10");
+        math.setScore(136);
+        update.setSubjectScoreList(Lists.newArrayList(math, math));
+        update.setTotalScore(626);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.previewScoreUpdate(1L, 2L, update));
+
+        assertEquals(110, error.getStatus());
+    }
+
+    @Test
+    void previewAcceptsSpecialPlanOnlyWithoutRequiringScoreReentry() {
+        storeScore(completeScoreRequest());
+        Map<String, Object> body = new LinkedHashMap<String, Object>();
+        body.put("specialPlan", false);
+
+        Map<String, Object> summary = service.previewScoreUpdate(
+                1L, 2L, ScoreUpdatePatch.fromRaw(body)).getSummary();
+
+        assertEquals(Boolean.FALSE, summary.get("specialPlan"));
+        assertEquals("无专项资格", summary.get("specialPlanLabel"));
+        assertTrue(String.valueOf(summary.get("specialPlanImpact")).contains("排除"));
+        assertTrue(upserted.isEmpty(), "preview 不落 pending");
+    }
+
+    @Test
+    void specialPlanPatchDoesNotResetExistingFilterTypeOrOtherScoreFacts() {
+        CreateSessionReq previous = completeScoreRequest();
+        previous.setFilterType("3");
+        storeScore(previous);
+        Map<String, Object> body = new LinkedHashMap<String, Object>();
+        body.put("specialPlan", false);
+
+        service.prepareScoreUpdateProposal(
+                1L, 2L, "req-special", "digest-special", ScoreUpdatePatch.fromRaw(body));
+
+        CreateSessionReq frozen = JSON.parseObject(
+                JSON.toJSONString(upserted.get(0).getDataValue().get("scoreUpdateRequest")),
+                CreateSessionReq.class);
+        assertEquals("3", frozen.getFilterType());
+        assertEquals(Boolean.FALSE, frozen.getSpecialPlan());
+        assertEquals(621, frozen.getTotalScore());
+        assertEquals(8123, frozen.getTotalScorePos());
+        assertEquals(completeScoreRequest().getSubjectScoreList().size(),
+                frozen.getSubjectScoreList().size());
+    }
+
+    @Test
+    void scoreUpdateSourceIsVerifiedAgainstPersistedUserMessage() {
+        ChatMessageSharedService messages = mock(ChatMessageSharedService.class);
+        ReflectionTestUtils.setField(service, "chatMessageSharedService", messages);
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(77L);
+        userMessage.setChatSessionId(2L);
+        userMessage.setMessageFrom("1");
+        when(messages.getMessageById(null, 77L)).thenReturn(userMessage);
+        Map<String, Object> body = new LinkedHashMap<String, Object>();
+        body.put("specialPlan", false);
+        body.put("sourceMessageId", 77);
+        body.put("sourceTurnId", "turn-1");
+        storeScore(completeScoreRequest());
+
+        ScoreUpdatePatch patch = ScoreUpdatePatch.fromRaw(body);
+        ScoreUpdatePreviewDTO preview = service.previewScoreUpdate(1L, 2L, patch);
+
+        assertEquals(Boolean.FALSE, preview.getSummary().get("specialPlan"));
+    }
+
+    @Test
+    void scoreUpdateSourceFromAnotherSessionIsRejected() {
+        ChatMessageSharedService messages = mock(ChatMessageSharedService.class);
+        ReflectionTestUtils.setField(service, "chatMessageSharedService", messages);
+        ChatMessage foreign = new ChatMessage();
+        foreign.setId(77L);
+        foreign.setChatSessionId(999L);
+        foreign.setMessageFrom("1");
+        when(messages.getMessageById(null, 77L)).thenReturn(foreign);
+        Map<String, Object> body = new LinkedHashMap<String, Object>();
+        body.put("specialPlan", false);
+        body.put("sourceMessageId", 77);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.previewScoreUpdate(1L, 2L, ScoreUpdatePatch.fromRaw(body)));
+
+        assertEquals(403, error.getStatus());
+    }
+
+    @Test
+    void specialPlanMustBeStrictBoolean() {
+        Map<String, Object> body = new LinkedHashMap<String, Object>();
+        body.put("specialPlan", "false");
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> ScoreUpdatePatch.fromRaw(body));
+
+        assertEquals(110, error.getStatus());
+        assertTrue(error.getMessage().contains("专项"));
+    }
+
+    @Test
+    void prepareFreezesTheResolvedDemoModeInThePendingRequest() {
+        ReflectionTestUtils.setField(service, "prepareTypeFallback", "PREDICT");
+
+        service.prepareScoreUpdateProposal(1L, 2L, "req-mode", "digest-mode", scoreRequest());
+
+        Map<?, ?> request = (Map<?, ?>) upserted.get(0).getDataValue().get("scoreUpdateRequest");
+        Map<?, ?> prepareType = (Map<?, ?>) request.get("prepareType");
+        assertNotNull(prepareType);
+        assertEquals("PREDICT", prepareType.get("code"));
+    }
+
+    @Test
+    void lastProposalProjectsExecutionFailureAsFailedInsteadOfExpired() {
+        currentPending = new PendingConfirmationRes();
+        currentPending.setPendingId("pending-failed");
+        currentPending.setStatus("expired");
+        currentPending.setResolvedAction("fail");
+        currentPending.setResultCode("84009");
+
+        LastProposalVo last = ReflectionTestUtils.invokeMethod(service, "buildLastProposal", 1L, 2L);
+
+        assertNotNull(last);
+        assertEquals("failed", last.getActionStatus());
+    }
+
+    @Test
+    void lastProposalKeepsActualExpiryDistinctFromExecutionFailure() {
+        currentPending = new PendingConfirmationRes();
+        currentPending.setPendingId("pending-expired");
+        currentPending.setStatus("expired");
+        currentPending.setResolvedAction("expire");
+        currentPending.setResultCode("version_mismatch");
+
+        LastProposalVo last = ReflectionTestUtils.invokeMethod(service, "buildLastProposal", 1L, 2L);
+
+        assertNotNull(last);
+        assertEquals("expired", last.getActionStatus());
+    }
+
+    private void storeScore(CreateSessionReq req) {
+        ChatSessionExtraData row = new ChatSessionExtraData();
+        row.setDataValue(JSON.toJSONString(req));
+        when(extraDataSharedService.getBySessionIdAndDataKey(
+                2L, ChatSessionExtraDataConstants.USER_SCORE_KEY)).thenReturn(row);
+    }
+
+    private CreateSessionReq completeScoreRequest() {
+        CreateSessionReq req = scoreRequest();
+        String[] codes = {"01", "05", "04"};
+        String[] names = {"物理", "化学", "地理"};
+        int[] scores = {86, 80, 80};
+        for (int index = 0; index < codes.length; index++) {
+            CreateSessionReq.SubjectScore subject = new CreateSessionReq.SubjectScore();
+            subject.setSubject(codes[index]);
+            subject.setSubjectName(names[index]);
+            subject.setScore(scores[index]);
+            req.getSubjectScoreList().add(subject);
+        }
+        return req;
     }
 
     private CreateSessionReq scoreRequest() {

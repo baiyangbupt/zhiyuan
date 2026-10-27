@@ -149,6 +149,8 @@ export const PROPOSAL_STALE_STATE_TEXT = '方案已变化，请重新生成预�
 
 /** `failed` 的**按 code 说中文**映射 ✓（M1）。锚点是 `code` ✓，文案是中文 ✓。 */
 const FAILURE_TEXT_BY_CODE = {
+  '84009': '上游志愿数据策略暂不可用，本次更新未生效。请联系管理员核对取数模式或等待数据就绪后重新生成预览。',
+  review_paused: '方案质量审查当前暂停，这张旧审查卡不能确认；可以取消。方案本身仍可查看和修改。',
   proposal_reference_mismatch: '这张确认已经失效（会话里已有更新的预览），请用最新预览重新确认。',
   proposal_version_missing: '这张卡没有带上版本信息，请重新生成预览后再确认。',
   proposal_version_mismatch: '方案在你确认前发生了变化，请重新生成预览后再确认。',
@@ -208,7 +210,9 @@ const CJK_CHARACTER = /[㐀-鿿]/;
 export function proposalFailureText({ code, message } = {}) {
   const rawCode = String(code ?? '').trim();
   const rawMessage = String(message ?? '').trim();
-  const mapped = failureTextByCode(rawCode);
+  // 有些 Java 拒绝把原因放在 msg（如 code=409,msg=review_paused）；msg 本身是
+  // 已知失败码时也查同一张中文表，不把内部英文直接铺给用户。
+  const mapped = failureTextByCode(rawCode) || failureTextByCode(rawMessage);
   const text = mapped || (CJK_CHARACTER.test(rawMessage) ? rawMessage : DEFAULT_FAILURE_TEXT);
   return rawCode ? `[${rawCode}] ${text}` : text;
 }

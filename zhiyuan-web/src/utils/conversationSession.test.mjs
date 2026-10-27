@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   createConversationState,
   hasStructuredUnderstanding,
+  isActionReceiptOnlyTurn,
   orderedSteps,
   pendingClarifications,
   reduceConversation,
@@ -512,6 +513,31 @@ test('同工具不同标签不合并', () => {
   const steps = orderedSteps(state.turns.t);
   assert.equal(steps.length, 2);
   assert.deepEqual(steps.map(step => step.count), [1, 1]);
+});
+
+test('动作回执只有固定“操作已处理”时不算可见回答', () => {
+  const state = reduceConversation(
+    baseline(),
+    event({
+      type: 'conversationAction.result',
+      payload: { actionStatus: 'applied', proposalRef: 'p1' },
+    }),
+  );
+  const withReceipt = reduceConversation(
+    state,
+    event({
+      sequence: 2,
+      type: 'assistant.completed',
+      payload: { message: '操作已处理。' },
+    }),
+  );
+
+  assert.equal(isActionReceiptOnlyTurn(withReceipt.turns.t), true);
+  assert.equal(isActionReceiptOnlyTurn({ ...withReceipt.turns.t, actionResult: undefined }), false);
+  assert.equal(isActionReceiptOnlyTurn({
+    ...withReceipt.turns.t,
+    answer: { message: '已按你的要求更新方案。' },
+  }), false);
 });
 
 test('interpretation.preview 落到回合的解读卡，后到覆盖先到（同回合只留一张）', () => {

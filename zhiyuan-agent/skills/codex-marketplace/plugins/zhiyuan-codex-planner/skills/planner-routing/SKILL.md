@@ -75,6 +75,10 @@ version: 1.0.0
    阻塞的是**录取结论**（分数、概率、冲稳保、能不能报），不阻塞方向性解释与维度对比。
    两者要分开说：能说的先说完，再在最后问缺的那几项；**能推断的不问**（优势科目由会话
    各科分数推断、上下文已交代的意向不复问），缺的那几项也尽量用**封闭式选项**问。
+   成绩缺失时可走 `school-major-exploration` 的免分数目录/招生计划查询
+   （`catalog.search_majors`/`get_major`、`catalog.search_schools`/`get_school`、
+   `catalog.list_admission_units` + `admission.get_enrollment_plan`、`admission.get_charter`）；
+   用户已说没出分时，**不要连续追问分数**。
 4. **交接要点名**：本轮结束时说明下一轮会走哪个技能、需要用户给什么。
    一轮只走一个技能，不要在同一轮里跨阶段。
 5. **推进靠主持，不靠反问**：每一步都**先宣布下一步做什么、然后直接开始**（能先给的内容先给），

@@ -26,6 +26,8 @@ public class PlanningWorkspaceStateRes {
     private DraftPlanStateDTO workingPlanState = new DraftPlanStateDTO();
     private OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
     private ReviewStateDTO reviewState = new ReviewStateDTO();
+    /** C 批只读质量评价：资格/偏好/结构/证据；旧 reviewState 仍可 paused。 */
+    private PlanEvaluationDTO planQuality;
     private List<OperationLogDTO> operationLogs = Lists.newArrayList();
 
     /**

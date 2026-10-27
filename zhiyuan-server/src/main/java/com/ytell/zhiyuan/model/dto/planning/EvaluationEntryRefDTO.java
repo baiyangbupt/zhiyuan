@@ -18,11 +18,13 @@ public class EvaluationEntryRefDTO {
     private Integer position;
     private String schoolName;
     private String majorName;
+    private List<String> selectedMajorNames = Lists.newArrayList();
     private String pathTier;
     private Double schoolRatio;
     private Double majorRatio;
     private Integer tuitionPerYear;
     private String provinceName;
+    private String schoolNature;
     private List<String> riskFlags = Lists.newArrayList();
     /** reasonCodes + riskFlags + mustSubjects 的并集（review 限报/专项判据同源）。 */
     private List<String> riskTags = Lists.newArrayList();

@@ -149,6 +149,33 @@ def test_local_mode_keeps_loopback_ws_override() -> None:
 
     assert result.returncode == 0, result.stderr
     assert 'NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE="ws://127.0.0.1:18291"' in result.stdout
+    assert "CODEX_LOCAL_WEB_HOST=127.0.0.1" in result.stdout
+
+
+def test_private_lan_web_host_uses_same_origin_websocket_and_origin_allowlist() -> None:
+    result = _access_env("--web-host", "10.218.4.10", env={"CODEX_LOCAL_ACCESS_MODE": "local"})
+
+    assert result.returncode == 0, result.stderr
+    assert "CODEX_LOCAL_WEB_HOST=10.218.4.10" in result.stdout
+    assert 'NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE="ws://10.218.4.10:3201"' in result.stdout
+    assert "http://10.218.4.10:3201" in result.stdout
+
+
+def test_web_host_rejects_wildcard_public_and_malformed_addresses() -> None:
+    for host in ("0.0.0.0", "8.8.8.8", "10.218.4.999", "example.com", "10.1.1.1/path"):
+        result = _access_env(env={"CODEX_LOCAL_WEB_HOST": host})
+
+        assert result.returncode != 0, host
+        assert "web host" in result.stderr.lower()
+
+
+def test_web_launcher_uses_resolved_web_host_without_exposing_backend_services() -> None:
+    source = START.read_text(encoding="utf-8")
+
+    assert 'dev -H "$ACCESS_WEB_HOST" -p "$WEB_PORT"' in source
+    assert 'WEB_URL="http://$ACCESS_WEB_HOST:$WEB_PORT"' in source
+    assert '"--server.address=127.0.0.1"' in source
+    assert '--host 127.0.0.1 --port "$AGENT_PORT"' in source
 
 
 def test_public_test_mode_clears_ws_override_and_requires_explicit_test_outer() -> None:
@@ -214,3 +241,10 @@ def test_lifecycle_scripts_require_a_per_run_process_marker() -> None:
     assert 'exec env "CODEX_LOCAL_RUN_DIR=$RUN_DIR" setsid "$@"' in start_source
     assert "environment_matches_run" in stop_source
     assert 'CODEX_LOCAL_RUN_DIR=$RUN_DIR' in stop_source
+
+
+def test_backend_runs_from_a_per_run_jar_not_the_mutable_build_output() -> None:
+    source = START.read_text(encoding="utf-8")
+
+    assert 'cp "$ROOT_DIR/zhiyuan-server/target/zhiyuan-server.jar" "$RUN_DIR/zhiyuan-server.jar"' in source
+    assert '-jar "$RUN_DIR/zhiyuan-server.jar"' in source

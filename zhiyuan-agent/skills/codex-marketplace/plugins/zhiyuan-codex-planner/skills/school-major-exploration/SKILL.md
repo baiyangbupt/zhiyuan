@@ -39,10 +39,27 @@ version: 1.0.0
 - `entity.resolve`
 - `catalog.search_schools`、`catalog.get_school`
 - `catalog.search_majors`、`catalog.get_major`
+- `catalog.list_admission_units` + `admission.get_enrollment_plan`（本省招生组/专业/选考要求，免分数）
+- `admission.get_charter`（招生章程原文，免分数）
 - `recommendation.preview_majors`（只读：方向级聚合预览，按画像取 topN）
 - 仅只读；禁止 profile、plan、recommendation 写操作。
 
 ## 标准步骤
+
+### 缺分数分支（2026-10-27）
+
+用户还没出分、只有模考，或明确说只想先了解方向时，**不要用“先补分数”结束本轮**：
+
+- 先给方向/院校/专业信息：`catalog.search_majors` / `get_major`（专业目录、培养/就业信息）、
+  `catalog.search_schools` / `get_school`（院校层次、地域、性质）、
+  `catalog.list_admission_units` + `admission.get_enrollment_plan`（本省招生组/专业/选考要求，免分数）、
+  `admission.get_charter`（招生章程原文，免分数）。
+- `recommendation.preview_majors` 返回 `session_score_missing` / `session_profile_incomplete` 时，
+  改走上面的免分数查询；不要连续追问分数，也不要把通用知识说成查询结果。
+- 分数/位次**同一会话最多在末尾作为可选补充问一次**（“有模考或位次就发我，没有也可以先按方向看”）；
+  用户已说没出分后，后续轮次不再重复问，除非用户主动提供或进入录取结论阶段。
+- 录取结论（具体候选、录取率、冲稳保、能不能报、方案）仍然要说“等成绩/位次再做”；方向性
+  内容不受影响。
 
 ### 阶段 0 · 分类，并把分类说出来
 

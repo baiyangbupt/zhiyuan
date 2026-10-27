@@ -28,6 +28,7 @@ import useAuthParams from '@/hooks/useAuthParams';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import {
   createConversationState,
+  isActionReceiptOnlyTurn,
   orderedSteps,
   pendingClarifications,
   reduceConversation,
@@ -43,6 +44,7 @@ import {
 } from '@/utils/conversationProtocol.mjs';
 import ClarificationCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ClarificationCard';
 import ProposalCard from '@/pageComponents/sessionDetailV2/ConversationEvents/ProposalCard';
+import InterpretationCard from '@/pageComponents/sessionDetailV2/ConversationEvents/InterpretationCard';
 import { coldFallbackProposalVisible, legacyPendingCardBadgeText, proposalFailureText } from '@/pageComponents/sessionDetailV2/ConversationEvents/proposalCardText.mjs';
 import UnderstandingCard from '@/pageComponents/sessionDetailV2/ConversationEvents/UnderstandingCard';
 import { WebSocketMessage } from '@/hooks/websocket';
@@ -152,6 +154,8 @@ interface IMessageListProps {
     impact?: string;
     status?: string;
     requiresConfirmation?: boolean;
+    reviewPaused?: boolean;
+    disabledReason?: string;
     strategy?: string;
     blockingReason?: string;
     blockingReasonCodes?: string[];
@@ -1728,6 +1732,9 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   // 不许认领 ✗，否则历史那条会被它"占位成空" ✗（消息静默消失 ✓ 事故）。
   const renderableTurns = (Object.values(conversationState.turns || {}) as any[]).filter(turn => {
     if (!turn || !turn.id) return false; // 空回合（老信封双发）不渲染，状态照旧保留 ✓
+    // 确认/取消回执不是回答：动作卡已经显示生效/取消，固定回执文本没有落历史，
+    // 留在时间线上只会作为"未锚定终态"堆在底部（用户实测重复出现）。
+    if (isActionReceiptOnlyTurn(turn)) return false;
     const steps = orderedSteps(turn) as any[];
     const pending = pendingClarifications(turn);
     const streamText = extractStreamMessage(turn.answerStream);
@@ -1907,6 +1914,12 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
             turn.terminal ? undefined : () => handleSteerTurn(turn.id, '补充说明')
           }
         />
+        {/* 录取解读：结构与条件情景，不是概率；只展示服务端给的有界摘要。 */}
+        {turn.interpretation ? (
+          <div className={style.turnLiveCard}>
+            <InterpretationCard interpretation={turn.interpretation} />
+          </div>
+        ) : null}
         {/* 提案卡移动到底部渲染（2026-10-08 用户实测顺序不对：卡片跑在引导文案之上 ✗）——
             见下方终态答案 / 错误之后。 */}
         {/*
@@ -2420,6 +2433,8 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                     // 一并恢复，卡片才能重新出采纳/放弃按钮。
                     status: coldFallbackBlocked ? 'blocked' : (lastProposal.status || ''),
                     requiresConfirmation: lastProposal.requiresConfirmation,
+                    reviewPaused: lastProposal.reviewPaused,
+                    disabledReason: lastProposal.disabledReason,
                     strategy: lastProposal.strategy,
                     blockingReason: lastProposal.blockingReason,
                     blockingReasonCodes: lastProposal.blockingReasonCodes,

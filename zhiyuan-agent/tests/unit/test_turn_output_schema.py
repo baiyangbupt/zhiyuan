@@ -108,6 +108,7 @@ def test_turn_output_schema_declares_the_score_update_draft() -> None:
         "totalScorePos",
         "examYear",
         "subjectScoreList",
+        "specialPlan",
     }
     assert schema["properties"]["sourceVersionGuard"]["minimum"] == 0
     # 归一化后：对象自身的键提升到同层 + null 分支留在 anyOf 里（与 proposalRequest 同款）

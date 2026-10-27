@@ -27,4 +27,8 @@ public class PlanEvaluationDTO {
     private List<EvaluationFindingDTO> findings = Lists.newArrayList();
     private Boolean hardFeasible = false;
     private String objectiveDigest;
+    /** C 批次新评价策略版本；旧 probe 仍由 objectiveModelVersion 标识。 */
+    private String qualityPolicyVersion;
+    /** 当前旧经验审查的可用性，与新评价分开。 */
+    private ReviewAvailabilityDTO reviewAvailability;
 }

@@ -1003,8 +1003,12 @@ final class UserGoalProposalBuilder {
             List<CoverageEntity> retained = buildRetainedCoverageEntities(current, projection, unitMode);
             MutationPolicyDTO policy = new MutationPolicyDTO();
             policy.setAction("REMOVE");
+            policy.setAllowAdd(false);
             policy.setLockExisting(true);
             policy.setCountAsChurn(false);
+            policy.setOrderingPolicyVersion(StagedDeterministicPlanSolver.ORDERING_PRESERVE_CURRENT);
+            // 纯删除允许分次清冲突，不能因为“还剩别的冲突”把本次删除整体判死。
+            policy.setAllowExistingSpecialPlanConflicts(true);
             policy.getForcedRemoveEntityIds().addAll(unitMode
                     ? removal.unitIds : removal.volunteerIds);
             CandidateSnapshotDTO snapshot = CandidateSnapshotBuilder.build(
@@ -1500,6 +1504,7 @@ final class UserGoalProposalBuilder {
             policy.setAction("ADD");
             policy.setLockExisting(true);
             policy.setCountAsChurn(false);
+            policy.setOrderingPolicyVersion(StagedDeterministicPlanSolver.ORDERING_PRESERVE_CURRENT);
             policy.setRequireCompensationSafe("scope".equals(solverPath));
             for (FillOption option : available) {
                 String entityId = option.entityId(unitMode);
@@ -1600,6 +1605,7 @@ final class UserGoalProposalBuilder {
             policy.setAction("REPLACE");
             policy.setLockExisting(true);
             policy.setCountAsChurn(false);
+            policy.setOrderingPolicyVersion(StagedDeterministicPlanSolver.ORDERING_PRESERVE_CURRENT);
             policy.getForcedRemoveEntityIds().addAll(unitMode
                     ? removal.unitIds : removal.volunteerIds);
             for (FillOption option : available) {
@@ -1740,8 +1746,12 @@ final class UserGoalProposalBuilder {
         PriorityRuleDTO priorityRule = req == null || defaultList(req.getPriorityRules()).isEmpty()
                 ? null : req.getPriorityRules().get(0);
         TierQuotaGoalRequestDTO tierQuotaGoal = req == null ? null : req.getTierQuotaGoal();
-        if (tierQuotaGoal != null && (!defaultList(req.getRequirements()).isEmpty()
-                || !defaultList(req.getPriorityRules()).isEmpty())) {
+        boolean exactTierQuota = tierQuotaGoal != null
+                && "exact_counts".equalsIgnoreCase(tierQuotaGoal.getType());
+        // 精确配额 + 专业/覆盖要求可以同卡执行（solver 同时带 tierAllocationConstraint
+        // 和 coverageConstraints）。范围配额与优先规则仍走旧的拆步保护。
+        if (tierQuotaGoal != null && (!defaultList(req.getPriorityRules()).isEmpty()
+                || (!exactTierQuota && !defaultList(req.getRequirements()).isEmpty()))) {
             return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
                     REASON_TIER_QUOTA_COMPOSITE_NOT_SUPPORTED,
                     tierAllocationLabel(tierQuotaGoal)
@@ -2039,8 +2049,9 @@ final class UserGoalProposalBuilder {
                 + (majorGroupMode ? "院校专业组" : "志愿") + "在所在档位内前移";
         if (!hasProjectedRequirements && !hasPriorityRule && !hasTierQuota) {
             proposal.setSummary("当前方案有 " + currentCount + (majorGroupMode ? " 个专业组" : " 个志愿")
-                    + "；本次将从符合已确认要求的候选中补入 " + gap + " 个，达到 " + targetCount + " 个。");
-            proposal.setImpact("确认前不会改动方案；确认后只应用这份预览中的候选，并重新生成和审查方案。");
+                    + "；本次按默认平衡从当前候选池补入 " + gap + " 个，达到 " + targetCount + " 个。");
+            proposal.setImpact("确认前不会改动方案；确认后只应用这份预览中的候选并重新生成方案。"
+                    + reviewImpactSuffix());
         } else if (removeCount == 0 && gap == 0) {
             if (hasTierQuota && !hasProjectedRequirements && !hasPriorityRule) {
                 proposal.setSummary("当前方案有 " + currentCount
@@ -2053,7 +2064,8 @@ final class UserGoalProposalBuilder {
                         + "，数量和集合已经满足目标；本轮要求：" + combinedObjectiveSummary
                         + prioritySummary + "。确认后会采纳并刷新方案。");
             }
-            proposal.setImpact("确认前不会改动方案；确认后会在同一事务中持久化本轮要求、执行同档硬序并重新审查方案。");
+            proposal.setImpact("确认前不会改动方案；确认后会在同一事务中持久化本轮要求、执行同档硬序并重新生成方案。"
+                    + reviewImpactSuffix());
         } else {
             String objectiveSummary = Strings.isNullOrEmpty(combinedObjectiveSummary)
                     ? "补齐数量" : combinedObjectiveSummary;
@@ -2061,7 +2073,14 @@ final class UserGoalProposalBuilder {
                     + "；本轮要求：" + objectiveSummary + "。本次先移出 " + removeCount
                     + " 个不符合或需等量替换的项目，再补入 " + adjustedGap
                     + " 个符合本轮及已确认要求的候选，最终达到 " + targetCount + " 个" + prioritySummary + "。");
-            proposal.setImpact("确认前不会改动方案；确认后会在同一事务中持久化本轮要求、应用最终集合、执行同档硬序并重新审查方案。");
+            proposal.setImpact("确认前不会改动方案；确认后会在同一事务中持久化本轮要求、应用最终集合、执行同档硬序并重新生成方案。"
+                    + reviewImpactSuffix());
+        }
+        if (isFirstVersionFill(state) && !hasConfirmedMajorIntent(state)
+                && !hasMajorRequirement(req)) {
+            String exploration = "这是不限专业的探索草案，专业方向尚未确认；探索范围可能包含法学、财经等非理工方向，"
+                    + "如需限定方向请先说明。确认只授权本次预览，不等于确定主线。";
+            proposal.setSummary(proposal.getSummary() + " " + exploration);
         }
         proposal.setRequiresConfirmation(true);
         populateFillDryRun(proposal, state, currentCount, targetCount,
@@ -2652,6 +2671,10 @@ final class UserGoalProposalBuilder {
         policy.setAction("FILL");
         policy.setLockExisting(false);
         policy.setCountAsChurn(true);
+        // 空正式方案且空草案的补齐 = 真实首版；其余补齐固定 current 相对顺序。
+        policy.setOrderingPolicyVersion(isFirstVersionFill(state)
+                ? StagedDeterministicPlanSolver.ORDERING_INITIAL_TIER
+                : StagedDeterministicPlanSolver.ORDERING_PRESERVE_CURRENT);
         policy.setRequiredMajorCount(state == null || state.getCandidatePoolState() == null
                 ? null : state.getCandidatePoolState().getRequiredMajorCount());
         if (!allowStructuralReplacement) {
@@ -2665,6 +2688,72 @@ final class UserGoalProposalBuilder {
             }
         }
         return policy;
+    }
+
+    /**
+     * 本提案自带专业方向要求时，首版就不是“不限专业”的探索稿。
+     * 不能只看已落库画像：用户在这一轮说“电气/自动化为主”，要求随
+     * proposalRequest 进来，卡片摘要必须按这个口径解释。
+     */
+    private static String reviewImpactSuffix() {
+        return ReviewPolicy.paused()
+                ? "质量审查当前暂停，结果待核验。"
+                : "并重新审查方案。";
+    }
+
+    private static boolean hasMajorRequirement(UserGoalFixProposalReq req) {
+        if (req == null) {
+            return false;
+        }
+        for (UserGoalFixProposalReq.RequirementDTO requirement : defaultList(req.getRequirements())) {
+            if (requirement != null && "major".equalsIgnoreCase(requirement.getDomain())
+                    && requirement.getValues() != null && !requirement.getValues().isEmpty()) {
+                return true;
+            }
+        }
+        for (UserGoalFixProposalReq.ScopeDTO scope : defaultList(req.getTargetScopes())) {
+            if (scope != null && "major".equalsIgnoreCase(scope.getScopeType())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasConfirmedMajorIntent(PlanningStateDTO state) {
+        if (state == null) {
+            return false;
+        }
+        if (state.getProfileState() != null
+                && state.getProfileState().getExplicitProfile() != null
+                && state.getProfileState().getExplicitProfile().getPositiveMajors() != null
+                && !state.getProfileState().getExplicitProfile().getPositiveMajors().isEmpty()) {
+            return true;
+        }
+        if (state.getConstraintState() == null
+                || state.getConstraintState().getHardConstraints() == null) {
+            return false;
+        }
+        return (state.getConstraintState().getHardConstraints().getMustIncludeMajors() != null
+                && !state.getConstraintState().getHardConstraints().getMustIncludeMajors().isEmpty())
+                || (state.getConstraintState().getHardConstraints().getMustIncludeMajorIds() != null
+                && !state.getConstraintState().getHardConstraints().getMustIncludeMajorIds().isEmpty());
+    }
+
+    private static boolean isFirstVersionFill(PlanningStateDTO state) {
+        if (state == null) {
+            return true;
+        }
+        boolean hasOrdered = state.getOrderedPlanState() != null
+                && ((state.getOrderedPlanState().getItems() != null
+                && !state.getOrderedPlanState().getItems().isEmpty())
+                || (state.getOrderedPlanState().getUnits() != null
+                && !state.getOrderedPlanState().getUnits().isEmpty()));
+        boolean hasWorking = state.getWorkingPlanState() != null
+                && ((state.getWorkingPlanState().getItems() != null
+                && !state.getWorkingPlanState().getItems().isEmpty())
+                || (state.getWorkingPlanState().getUnits() != null
+                && !state.getWorkingPlanState().getUnits().isEmpty()));
+        return !hasOrdered && !hasWorking;
     }
 
     private static boolean isStagedInfeasible(String reasonCode) {

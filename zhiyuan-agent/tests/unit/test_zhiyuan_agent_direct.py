@@ -4849,6 +4849,46 @@ async def test_review_plan_reads_sandbox_review_without_mutation(mocker):
     run_mock.assert_not_awaited()
 
 
+async def test_review_plan_returns_paused_without_claiming_pass_or_risk(mocker):
+    mocker.patch(
+        "app.zhiyuan_agent.tools.internal_client.run_planning_review",
+        AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "status": "paused",
+                    "evaluationStatus": "unavailable",
+                    "availability": {
+                        "mode": "paused",
+                        "reasonCode": "review_paused",
+                        "policyVersion": "review-containment-v1",
+                    },
+                    "summary": None,
+                    "checks": [],
+                },
+            }
+        ),
+    )
+    ctx = _context_with_review()
+
+    result = _load(
+        await review_plan(
+            make_run_context(request_context=ctx),
+            focus="full_review",
+            force_refresh=True,
+        )
+    )
+
+    assert result["next_step"] == "respond"
+    assert result["data"]["review_status"] == "paused"
+    assert result["data"]["review_availability"]["mode"] == "paused"
+    assert result["data"]["issues"] == []
+    assert result["data"]["all_issue_count"] == 0
+    assert result["data"]["state_mutation"] is False
+    assert "暂停" in result["message"]
+    assert "通过" in result["message"] and "没有风险" in result["message"]
+
+
 async def test_review_plan_force_refresh_primes_review_cache(mocker):
     run_mock = mocker.patch(
         "app.zhiyuan_agent.tools.internal_client.run_planning_review",

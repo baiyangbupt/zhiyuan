@@ -38,9 +38,12 @@ class IntentTarget(_DraftModel):
 
     @model_validator(mode="after")
     def _require_identifier(self):
-        names = bool((self.school_name or "").strip() and (self.major_name or "").strip())
-        if not names and not (self.volunteer_id or "").strip():
-            raise ValueError("intent target requires school+major or volunteerId")
+        # 只读查询可以只点学校名（“湖南大学录取分多少”），不必编造专业；
+        # 写动作的“院校+专业/volunteerId”完整性在 ChangeSet 层校验。
+        if not ((self.school_name or "").strip()
+                or (self.major_name or "").strip()
+                or (self.volunteer_id or "").strip()):
+            raise ValueError("intent target requires a school, major, or volunteerId")
         return self
 
 
@@ -128,6 +131,9 @@ class ChangeSet(_DraftModel):
 _ACTION_ALIASES = {
     "add_units": "add",
     "fill_to_count": "fill",
+    # 模型会把“出一版方案/生成方案”写成 generate_plan；它是首版补齐的
+    # 用户语义，不是尚未支持的整案重排（reorder/generate 才是 planned）。
+    "generate_plan": "fill",
     "only_keep_scope": "constrain",
     "exclude_scope": "constrain",
     "tuition_budget_scope": "constrain",
@@ -301,6 +307,19 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
     }
     is_plan_mutation = action in mutation_kinds
     is_constraint_action = action in {"constrain", "prioritize"}
+    if is_plan_mutation and any(
+            target is not None
+            and not (str(target.school_name or "").strip()
+                     and str(target.major_name or "").strip())
+            and not str(target.volunteer_id or "").strip()
+            for target in draft.targets):
+        return ChangeSet(
+            status="needs_clarification",
+            operations=[],
+            unresolved=["方案变更目标需要院校+专业或 volunteerId"],
+            reason="写动作不能只给学校名，避免把整所学校误当成一个可加入/移除的志愿。",
+            atomic=False,
+        )
     gate_scopes = draft.scopes
     if action in {"remove", "move"} and _scope_restates_targets(draft.scopes, draft.targets):
         gate_scopes = []
@@ -326,8 +345,12 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
 
     # 模型常把主动作本身也写进 additionalMutations（实测：move_units + ["move"]）：
     # 这不是额外变更，不能因此判成复合动作。
-    structural = ([action] if is_plan_mutation else []) + [
-        kind for kind in draft.additional_mutations if kind != action
+    # `generate` 和 `fill` 在首版里是同一个执行机制；模型常把主动作
+    # 同时写进 additionalMutations，不能因此判成复合动作。
+    primary = action
+    structural = ([primary] if is_plan_mutation else []) + [
+        kind for kind in draft.additional_mutations
+        if kind != primary and not (primary == "fill" and kind == "generate")
     ]
     # 约束动作本来就由 `apply_constraint_and_regenerate` 负责“移出 + 补足”
     # （学费清理/范围筛选都是这样执行的）。`replace/fill/remove` 在这里是执行机制，
@@ -388,10 +411,14 @@ def _build_change_set_inner(draft: IntentDraft) -> ChangeSet:
             atomic=False,
         )
 
-    if has_constraints and structural:
-        # 任何结构动作 + 约束都不是一个原子操作：先约束、再动作。
-        # 包括 fill + requirements（补足并满足覆盖）、remove + exclude、
-        # constrain + additionalMutations 等。
+    if has_constraints and structural and not (
+            action == "fill" and len(structural) == 1 and structural[0] == "fill"):
+        # 除 fill 外的结构动作 + 约束都不是一个原子操作：先约束、再动作。
+        # `fill_to_count` 是例外：它的 requirements/scopes 是“这次补齐选什么”的
+        # 选入条件，`proposalRequest` 会原样交给 Java 的 user-goal prepare 编译；
+        # 实测 prepare 能同一次生成 ready 卡（2026-10-21 会话 10042002）。
+        # 若仍在这里拆成 constrain + fill，网关会丢掉同轮 proposalRequest，
+        # 用户只会看到正文说“有卡”而实际没有卡。
         operations = [
             ChangeOperation(
                 kind="constrain",
