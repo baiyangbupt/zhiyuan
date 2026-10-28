@@ -78,8 +78,22 @@ def _unwrap_internal_state(text: str) -> str:
     return body
 
 
-def _working_set_payload(text: str) -> dict:
-    return json.loads(_unwrap_internal_state(text).split("结构化状态：", 1)[1])
+def _working_set_payload(items: list[dict]) -> dict:
+    """Locate the typed working-set block despite additional context items."""
+    matches = []
+    for item in items:
+        text = item.get("text", "")
+        if not text.startswith(INTERNAL_STATE_OPEN_TAG + "\n"):
+            continue
+        body = _unwrap_internal_state(text)
+        _, marker, serialized = body.partition("结构化状态：")
+        if not marker:
+            continue
+        payload = json.loads(serialized)
+        if payload.get("kind") == "conversation_working_set":
+            matches.append(payload)
+    assert len(matches) == 1, "one complete working-set context is required"
+    return matches[0]
 
 
 def _snapshot() -> dict:
@@ -209,7 +223,7 @@ async def test_gateway_injects_adjacent_snapshot_as_state_patch() -> None:
     assert second["statePatch"]["targetVersion"] == 43
     assert codex.injected == []
     assert json.loads(_unwrap_internal_state(codex.turns[-1]["input"][0]["text"]))["kind"] == "state_patch"
-    working_set = _working_set_payload(codex.turns[-1]["input"][1]["text"])
+    working_set = _working_set_payload(codex.turns[-1]["input"])
     assert working_set["kind"] == "conversation_working_set"
     assert working_set["snapshotVersion"] == 43
     assert working_set["lastResponseType"] == "text"
@@ -414,7 +428,7 @@ async def test_readonly_gateway_preserves_candidates_for_followup_fact_query() -
     assert first["reply"] == "已找到候选学校"
     assert second["reply"] == "已查询候选学校的历史分数"
     assert codex.injected == []
-    turn_working_set = _working_set_payload(codex.turns[-1]["input"][1]["text"])
+    turn_working_set = _working_set_payload(codex.turns[-1]["input"])
     assert [item["entityId"] for item in turn_working_set["candidateSet"]["items"]] == [
         "school-1",
         "school-2",
@@ -837,7 +851,7 @@ async def test_evidence_follows_the_snapshot_not_the_process_memory() -> None:
         content="再问一句",
     )
 
-    payload = _working_set_payload(codex.turns[-1]["input"][1]["text"])
+    payload = _working_set_payload(codex.turns[-1]["input"])
     ids = [item["evidenceId"] for item in payload["evidenceRefs"]]
 
     assert "ev-stale" not in ids, "Java 判成 stale 的证据不许留在进程内存里"

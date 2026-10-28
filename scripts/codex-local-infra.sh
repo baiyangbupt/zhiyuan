@@ -135,6 +135,8 @@ gaotu:
 
 ali:
   oss:
+    enabled: false
+    namespace: codex-local
     endpoint: https://oss-cn-beijing.aliyuncs.com
     region: cn-beijing
     bucket: codex-local-disabled

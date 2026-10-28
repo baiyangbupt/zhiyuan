@@ -2,8 +2,10 @@ package com.ytell.zhiyuan.service.biz;
 
 import com.ytell.zhiyuan.common.exception.ConversationAccessException;
 import com.ytell.zhiyuan.manager.cache.ConversationWsTicketStore;
+import com.ytell.zhiyuan.mapper.UserMapper;
 import com.ytell.zhiyuan.model.dto.conversation.TicketIdentity;
 import com.ytell.zhiyuan.model.entity.biz.ChatSession;
+import com.ytell.zhiyuan.model.entity.biz.User;
 import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,8 +21,8 @@ import java.util.Objects;
 /**
  * 会话归属与 WS 票据签发。
  *
- * <p>唯一入口是"这个登录用户能不能碰这个会话"。三条比对缺一不可：
- * 租户、用户、机器人。任何一项不符都回**同一个** 403——
+ * <p>唯一入口是"这个登录用户能不能碰这个会话"。会话租户、会话用户、
+ * 当前用户的租户都必须一致；签票时还要比对机器人。任何一项不符都回**同一个** 403——
  * 区分"不存在"与"不是你的"等于确认了一次越权探测。
  */
 @Service
@@ -30,6 +32,9 @@ public class ConversationAccessService {
 
     @Autowired
     private ChatSessionSharedService chatSessionSharedService;
+
+    @Autowired
+    private UserMapper userMapper;
 
     @Autowired
     private ConversationWsTicketStore ticketStore;
@@ -47,6 +52,12 @@ public class ConversationAccessService {
                 || !Objects.equals(session.getTenantId(), tenantId)
                 || !Objects.equals(session.getUserId(), principalUserId)) {
             // 与"不存在"同一个回包：不泄露 session 是否存在。
+            throw new ConversationAccessException(403, "session_forbidden");
+        }
+        // 旧版允许账户在任意路径租户下创建会话；即便会话行归该 user，
+        // 当前账户所属租户已不匹配时也不能继续读取旧会话或取得 WS 票据。
+        User user = userMapper.selectById(principalUserId);
+        if (user == null || !Objects.equals(user.getTenantId(), tenantId)) {
             throw new ConversationAccessException(403, "session_forbidden");
         }
         return session;

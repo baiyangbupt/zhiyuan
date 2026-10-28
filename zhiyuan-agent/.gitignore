@@ -42,6 +42,11 @@ env/
 # Claude Code
 .claude/
 .agents
+!skills/codex-marketplace/.agents/
+skills/codex-marketplace/.agents/*
+!skills/codex-marketplace/.agents/plugins/
+skills/codex-marketplace/.agents/plugins/*
+!skills/codex-marketplace/.agents/plugins/marketplace.json
 .agent
 .pi
 .continue

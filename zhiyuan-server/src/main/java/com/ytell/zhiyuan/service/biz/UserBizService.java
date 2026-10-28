@@ -4,12 +4,14 @@ import cn.hutool.core.collection.CollectionUtil;
 import cn.hutool.core.date.DateUtil;
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.common.util.DataDealUtil;
+import com.ytell.zhiyuan.common.util.PasswordHashing;
 import com.ytell.zhiyuan.mapper.UserAuthMapper;
 import com.ytell.zhiyuan.mapper.UserCredentialMapper;
 import com.ytell.zhiyuan.mapper.UserMapper;
@@ -82,16 +84,76 @@ public class UserBizService {
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
 
     public UserLoginResponse login(UserLoginRequest request) {
+        if (request == null || Strings.isNullOrEmpty(request.getUserName())
+                || request.getUserName().trim().isEmpty() || !PasswordHashing.validPassword(request.getPassword())) {
+            throw invalidUsernamePassword();
+        }
         QueryWrapper<UserCredential> queryWrapper = new QueryWrapper<>();
         queryWrapper.lambda().eq(UserCredential::getIdentifier, request.getUserName());
         queryWrapper.lambda().eq(UserCredential::getLoginType, LoginType.USERNAME);
-        queryWrapper.lambda().eq(UserCredential::getPasswordHash, request.getPassword());
-        UserCredential userCredential = userCredentialMapper.selectOne(queryWrapper);
-        if (userCredential == null) {
-            throw new BusinessException(404, "用户名或者密码错误");
+        // Retain the historical ability to distinguish two same-name accounts
+        // by their passwords, while bounding expensive password verification.
+        queryWrapper.last("LIMIT 2");
+        List<UserCredential> candidates = userCredentialMapper.selectList(queryWrapper);
+        if (CollectionUtil.isEmpty(candidates)) {
+            throw invalidUsernamePassword();
         }
-        User user = userMapper.selectById(userCredential.getUserId());
-        return buildLoginResponse(user, userCredential.getLoginToken(), null);
+        if (candidates.size() > 1) {
+            QueryWrapper<UserCredential> countQuery = new QueryWrapper<>();
+            countQuery.lambda().eq(UserCredential::getIdentifier, request.getUserName());
+            countQuery.lambda().eq(UserCredential::getLoginType, LoginType.USERNAME);
+            Long count = userCredentialMapper.selectCount(countQuery);
+            if (count == null || count != 2L) {
+                // Never authenticate a candidate from an arbitrary truncated set.
+                throw invalidUsernamePassword();
+            }
+        }
+        UserCredential credential = null;
+        for (UserCredential candidate : candidates) {
+            if (candidate != null && candidate.getLoginType() == LoginType.USERNAME
+                    && PasswordHashing.matches(request.getPassword(), candidate.getPasswordHash())) {
+                if (credential != null) {
+                    throw invalidUsernamePassword();
+                }
+                credential = candidate;
+            }
+        }
+        if (credential == null) {
+            throw invalidUsernamePassword();
+        }
+        if (PasswordHashing.isLegacy(credential.getPasswordHash())) {
+            if (credential.getCredentialId() == null) {
+                throw invalidUsernamePassword();
+            }
+            UpdateWrapper<UserCredential> upgrade = new UpdateWrapper<>();
+            upgrade.eq("credential_id", credential.getCredentialId())
+                    .eq("login_type", LoginType.USERNAME.getCode())
+                    .apply("BINARY password_hash = {0}", credential.getPasswordHash())
+                    .set("password_hash", PasswordHashing.hash(request.getPassword()));
+            int updated = userCredentialMapper.update(null, upgrade);
+            if (updated != 1) {
+                // A concurrent password change must not be overwritten or authenticated
+                // using the old value. Another login's identical upgrade is harmless.
+                UserCredential current = userCredentialMapper.selectById(credential.getCredentialId());
+                if (current == null || current.getLoginType() != LoginType.USERNAME
+                        || !Objects.equals(current.getIdentifier(), credential.getIdentifier())
+                        || !Objects.equals(current.getUserId(), credential.getUserId())
+                        || PasswordHashing.isLegacy(current.getPasswordHash())
+                        || !PasswordHashing.matches(request.getPassword(), current.getPasswordHash())) {
+                    throw invalidUsernamePassword();
+                }
+                credential = current;
+            }
+        }
+        User user = userMapper.selectById(credential.getUserId());
+        if (user == null) {
+            throw invalidUsernamePassword();
+        }
+        return buildLoginResponse(user, credential.getLoginToken(), null);
+    }
+
+    private BusinessException invalidUsernamePassword() {
+        return new BusinessException(404, "用户名或者密码错误");
     }
 
     @Transactional

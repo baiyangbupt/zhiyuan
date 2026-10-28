@@ -19,7 +19,24 @@ class ArtifactStoreError(RuntimeError):
         super().__init__(code)
 
 
+_MAX_JSON_NESTING = 64
+
+
 def _canonical(value: Any) -> str:
+    # json.dumps recursion behaviour varies across Python versions. Bound the
+    # accepted JSON shape explicitly rather than relying on RecursionError.
+    # Iterators keep the validator stack proportional to depth, not row count.
+    stack = [iter((value,))]
+    while stack:
+        try:
+            item = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+            continue
+        if isinstance(item, (Mapping, list, tuple)):
+            if len(stack) > _MAX_JSON_NESTING:
+                raise ValueError("artifact_json_too_deep")
+            stack.append(iter(item.values() if isinstance(item, Mapping) else item))
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 

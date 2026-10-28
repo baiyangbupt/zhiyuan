@@ -26,6 +26,7 @@ from app.gateway.access import (
     bind_message_identity,
 )
 from app.util import internal_client
+from app.util.uvicorn_log_privacy import install_uvicorn_query_privacy
 from app.gateway.session_runtime import (
     ACCEPTED,
     BUSY,
@@ -54,6 +55,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+install_uvicorn_query_privacy()
 
 logger = logging.getLogger(__name__)
 
@@ -620,8 +622,8 @@ async def _handle_gateway_ws_loop(ws: WebSocket, gateway) -> None:
         store=getattr(ws.app.state, "event_store", None),
         on_overflow=lambda: _close_slow_consumer(ws, "native"),
     )
-    # 补发要在 `start()` **之前**入队：队列是 FIFO、发送器只有一个，
-    # 于是"先补发、后实时"由队列顺序保证，不靠时序假设。
+    # Stored replay is staged separately from the bounded live queue. The sender
+    # drains replay first, then live frames, dropping overlap by epoch/sequence.
     try:
         key = _resume_session_key(ws)
         if isinstance(runtime, SessionRuntime) and key is not None:
@@ -636,7 +638,7 @@ async def _handle_gateway_ws_loop(ws: WebSocket, gateway) -> None:
         # 别的会话的流里 ✗，那条会话的页面于是什么都不显示 ✓）。
         # compat 路由早就这么摘了 ✓（见 `_handle_gateway_compat_ws_loop` ✓），native 这条漏了 ✗。
         session_key = getattr(channel, "session_key", None)
-        if runtime is not None and session_key is not None and _DETACH_ON_CLOSE:
+        if runtime is not None and session_key is not None:
             runtime.detach_connection(session_key, channel)
         await channel.close()
 
@@ -666,7 +668,7 @@ def _resume_session_key(ws: WebSocket) -> SessionKey | None:
 
 
 async def _replay_on_connect(ws: WebSocket, runtime: object, channel) -> None:
-    """断线连上时的补发——**有游标补尾巴、没游标补当前回合**。
+    """断线恢复：有游标补尾巴，无游标补当前回合，空闲时对齐持久状态。
 
     两类断线要的东西不一样：
     · 刷新 → 页面状态被清掉、**没有**游标 → 只能补"还在跑的那一回合"；
@@ -701,7 +703,7 @@ async def _replay_tail(store, runtime, channel, key: SessionKey, epoch: str, sin
         # 游标用不了（代际变了 / 窗口被裁 / 游标超前）：这**就是** resync 那一格的用途。
         # 代际给**当前**那个——给客户端手上那个旧的，会让它继续按另一条时间线走。
         watermark = await store.watermark(key)
-        await channel.emit_frame(
+        await channel.emit_replay_frame(
             resync_snapshot(
                 session_id=key.session_id,
                 turn_id=turn.ui_turn_id if turn is not None else "",
@@ -711,36 +713,28 @@ async def _replay_tail(store, runtime, channel, key: SessionKey, epoch: str, sin
         )
         return
     for event in events:
-        await channel.emit_frame(event.model_dump(by_alias=True))
+        await channel.emit_replay_frame(event.model_dump(by_alias=True))
 
 
 async def _replay_active_turn(store, runtime, channel, key: SessionKey) -> None:
-    """把**还在跑的那一回合**补出来（刷新那条路：客户端手上没有游标）。
+    """Replay only the active turn; idle refreshes re-read durable state/cards.
 
-    只补**当前回合**：已结束的回合落在消息历史里，一起补会让同一个回合在页面上
-    出现两次（F10 的 ② 钉的就是这条）。
-
-    两条顺序都不能反（两条补发路径都遵守）：
-    1. `session.resync` 在前、补事件在后——反了的话补出来的序号会撞上客户端
-       旧基线，被判成缺口 → 永久 resync；
-    2. **先登记连接、再读存储**——这中间的实时事件会同时进队列与重放列表
-       （客户端按 (代际, 序号) 去重）；先读后登记则会**丢**那条。这套合同里
-       "缺口只允许 resync"（A6 不变量），所以宁可重、不可丢。
-
-    补发**以"有在跑的回合"为前提** ✗✓，**登记不以它为前提** ✓✓：没有在跑的回合时
-    也要把这条连接登记成"会话当前连接"（见下面那段的实测理由 ✓）——别的活儿
-    （确认/取消 ✓）不挂回合 ✓，它们的终态同样走"会话当前连接" ✓。
+    Register before reading so concurrent events are captured. ConnectionChannel
+    stages store frames ahead of those live events and drops overlap by cursor.
+    Completed assistant answers remain in message history and are not replayed.
     """
-    # **没游标的连接也要重新登记为"会话当前连接"** ✓✓——哪怕这一刻没有在跑的回合 ✓：
-    # 确认/取消那一段**不挂回合**（`SessionRuntime.detach_work` ✓），它可能正跑在
-    # 用户上一次连接上 ✓；那时页面重连（刷新/断线 ✓）而这里直接 return ✗，事件就会
-    # 推给一条**已经死了**的旧连接 ✓✗——服务端明明 `applied` 了 ✓、事件流里也有结果 ✓，
-    # 页面却永远等不到"已生效" ✗（实测复现：重连后 `ws2 received result frames: 0` ✓）。
-    # 登记不改补发语义 ✓：新连接不补任何事件（下面照旧只补**当前回合** ✓）。
     channel.bind_session(key)
     runtime.attach_connection(key, channel)
     turn = runtime.active_turn(key)
     if turn is None:
+        # Completed actions are not chat turns and can finish while disconnected.
+        # Refresh durable messages/cards without replaying old assistant answers.
+        epoch = await store.current_epoch(key)
+        if epoch is not None:
+            await channel.emit_replay_frame(resync_snapshot(
+                session_id=key.session_id, turn_id="", stream_epoch=epoch,
+                baseline={"reason": "idle_reconnect", "lastSequence": await store.watermark(key)},
+            ))
         return
     epoch = await store.current_epoch(key)
     if epoch is None:
@@ -752,7 +746,7 @@ async def _replay_active_turn(store, runtime, channel, key: SessionKey) -> None:
     if events is None:
         # 补不出来（代际对不上 / 窗口被裁过）：**这**才是 resync 那一格的用途——
         # 把基线重置到水位线，客户端按消息历史重建（它收到这条会去对齐列表）。
-        await channel.emit_frame(
+        await channel.emit_replay_frame(
             resync_snapshot(
                 session_id=key.session_id,
                 turn_id=turn.ui_turn_id,
@@ -761,19 +755,18 @@ async def _replay_active_turn(store, runtime, channel, key: SessionKey) -> None:
             )
         )
         return
-    # 补得出来就**只补事件、不发 resync**：reducer 的首帧无条件采纳代际与序号，
-    # 后面的事件按 +1 连续接上；先发 resync 会把基线设到水位线，反而把补出来的
-    # 事件整段判成重复而丢掉（`conversationSession.mjs` 的 resync 分支）。
-    # 过滤放行**当前回合的原生号** ✓（防御，非充分 ✗✓）：正常情况下澄清事件已在
-    # broker 边界翻成业务号 ✓（`user_input._business_turn_id` ✓，那才是真修 ✓）；
-    # 万一原生号漏进流里（旧事件/映射未绑 ✓），过滤也不该把在飞的卡丢掉 ✗——
-    # 宁可多补一条（卡回来 ✓），不可"服务端有、用户看不到" ✗。
+    # The cursor is session-global. Once the active turn begins, replay every
+    # subsequent session event, including detached action results from another
+    # turn. Filtering by turnId would create holes (e.g. 10, 12 without 11).
+    # Completed answers before the active turn remain solely in message history.
     allowed_turn_ids = {turn.ui_turn_id}
     if turn.codex_turn_id:
         allowed_turn_ids.add(turn.codex_turn_id)
+    started = False
     for event in events:
-        if event.turn_id in allowed_turn_ids:
-            await channel.emit_frame(event.model_dump(by_alias=True))
+        started = started or event.turn_id in allowed_turn_ids
+        if started:
+            await channel.emit_replay_frame(event.model_dump(by_alias=True))
 
 
 async def _native_gateway_loop(ws: WebSocket, gateway, runtime, channel) -> None:
@@ -1084,36 +1077,33 @@ def _observed_tool_status(result: Mapping[str, Any]) -> str:
 
 
 def _action_result_payload(result: Mapping[str, Any], action_result: Mapping[str, Any]) -> dict[str, Any]:
-    """`conversationAction.result` 的载荷形状（前端白名单 ✓，一个键不多 ✓）。
+    """Keep the durable action event small; REST owns full review/workspace detail."""
+    def text(value: Any, limit: int) -> str:
+        rendered = str(value)
+        return rendered if len(rendered) <= limit else rendered[:limit - 1] + "…"
 
-    键名照前端白名单 ✓（`conversationEvents.mjs:34`：proposalRef / actionStatus /
-    newStateVersion / workspaceVersion ✓）；`workspaceVersion` 在**外层**的
-    `snapshotVersion` 里 ✓（白名单没有 actualChanges 的位置 ✗，不带 ✓）。
-
-    **失败原因不许静默** ✓✓（110 / 40904 / 84009 / -1 …）：卡要能说出"未生效 +
-    为什么" ✓——Java 的业务码与消息在 `actionResult.code/message` 上（网关
-    `_execute_claimed_command` 从响应体里翻出来 ✓），这里原样带给前端 ✓
-    （前端白名单 `conversationEvents.mjs` 同款扩了 `code`/`message` ✓）。
-    """
-    payload = {
-        key: action_result[key]
-        for key in ("proposalRef", "actionStatus", "newStateVersion")
-        if action_result.get(key) is not None
-    }
-    if result.get("snapshotVersion") is not None:
-        payload["workspaceVersion"] = result["snapshotVersion"]
-    for key in (
-        "code",
-        "message",
-        "actualChanges",
-        "reviewState",
-        "origin",
-        "actionType",
-        "scope",
-        "receipt",
-    ):
+    payload: dict[str, Any] = {"requiresWorkspaceReload": True}
+    for key, limit in (("proposalRef", 128), ("actionStatus", 32), ("code", 80),
+                       ("message", 500), ("origin", 32), ("actionType", 96), ("scope", 32)):
         if action_result.get(key) is not None:
-            payload[key] = action_result[key]
+            payload[key] = text(action_result[key], limit)
+    for key, value in (("newStateVersion", action_result.get("newStateVersion")),
+                       ("workspaceVersion", result.get("snapshotVersion"))):
+        if isinstance(value, int) and not isinstance(value, bool):
+            payload[key] = value
+    source = action_result.get("receipt")
+    if isinstance(source, Mapping):
+        receipt = {}
+        for key in ("operationId", "actionType", "countMode"):
+            if source.get(key) is not None:
+                receipt[key] = text(source[key], 128)
+        for key in ("before", "after", "addedCount", "removedCount", "reorderedCount"):
+            value = source.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                receipt[key] = value
+        if isinstance(source.get("postconditionSatisfied"), bool):
+            receipt["postconditionSatisfied"] = source["postconditionSatisfied"]
+        payload["receipt"] = receipt
     return payload
 
 
@@ -1661,14 +1651,6 @@ def _as_mapping(frame) -> dict:
 # 回合失败时给用户看的话 ✓：与 `_run_native_turn` 兜底那条**同一句** ✓——
 # 两处文案不一致的话，"同一类失败"在两条路上会长得不一样 ✓。
 _RECOVERABLE_TURN_FAILURE = "当前对话引擎暂时不可用，请稍后重试。"
-
-# 连接关闭时是否**摘掉**它（`detach_connection`）✓——**待裁决，默认关** ✗✓。
-# 开着的理由：不摘的话，这条会话的"当前连接"还是这条死连接 ✗，而回合的进度与终态走的是
-# "会话当前连接" ✓（`_session_emitter` ✓）——事件会发进死 socket ✗。
-# 关着的理由（实测）：打开之后全套开始**发飘** ✗——同一批用例两轮结果不同 ✓
-# （test4/F12 在"回合块没出现"上红 ✓，账本里成对出现 60s 超时 ✗），而它们的改动面
-# 与那两处无关 ✓。所以先按"一次只动一个变量"退回来 ✓，等把飘的机理查清再决定 ✓。
-_DETACH_ON_CLOSE = os.environ.get("CODEX_DETACH_ON_CLOSE", "0") == "1"
 
 _CONTROL_FAILURE_TEXT = {
     "no_active_turn": "这个回合已经结束了，可以直接发新消息。",

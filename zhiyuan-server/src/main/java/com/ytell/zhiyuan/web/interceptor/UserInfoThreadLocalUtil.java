@@ -7,7 +7,11 @@ public class UserInfoThreadLocalUtil {
      * 设置数据到当前线程
      */
     public static void set(UserBaseData o) {
-        threadLocal.set(o);
+        if (o == null) {
+            threadLocal.remove();
+        } else {
+            threadLocal.set(o);
+        }
     }
 
     /**

@@ -1,0 +1,593 @@
+{
+  "base_commit": "916cc845e3947809b43f108be7ec39c4e1bfd6e8",
+  "date": "2026-10-28",
+  "status": "local_core_flow_browser_confirmation_reconnect_and_full_regressions_verified; controlled_real_data_and_external_ingress_pending",
+  "fixes": [
+    "public user_goal apply requires confirmed command path",
+    "claim ownership requires explicit transitionApplied=true",
+    "single-flight runtime recovery and per-generation validation",
+    "ordered bounded replay and authoritative card refresh",
+    "pinned Codex version and effective tool policy",
+    "packaged skill resource reader without shell",
+    "model prose withheld until final business validation",
+    "PydanticAI usage property and retry feedback compatibility",
+    "explicit artifact nesting depth boundary",
+    "restore marketplace manifest with narrow ignore exceptions",
+    "isolate history environment in tests and stabilize smoke curl stub",
+    "salted PBKDF2 username credentials and conditional legacy upgrade",
+    "public session/profile/message/volunteer ownership guards and tenant-safe create/list",
+    "central ownership check validates actual user tenant",
+    "request-scoped thread identity cleanup and credential log removal",
+    "isolated reusable codex-test account with target and fixture ownership checks",
+    "exact simple-model candidate exchange reduction and strict utility/stable solver stages",
+    "long utility totals and versioned solver provenance",
+    "bounded durable action receipts with REST detail reload",
+    "V1 resync instead of silent legacy fallback when event storage fails",
+    "explicit OSS disabled gate and opt-in environment key namespace",
+    "named isolated development accounts with separate private credentials",
+    "cold REST proposal reconstructs bounded receipt from scope-matched succeeded command",
+    "transactional same-name account creation under InnoDB REPEATABLE_READ for admin and fixture writers",
+    "reusable synthetic source probe with dry-run and strict isolated-target validation",
+    "Uvicorn HTTP and WebSocket query redaction before handlers including raw record args"
+  ],
+  "python": {
+    "command": ".venv/bin/python /tmp/zhiyuan-offline-pytest.py tests/unit tests/integration -m 'not e2e' --timeout=15 -o faulthandler_timeout=30 -q --tb=short",
+    "current": {
+      "passed": 3288,
+      "failed": 0,
+      "skipped": 23,
+      "deselected": 32,
+      "warnings": 1
+    },
+    "baseline": {
+      "passed": 3184,
+      "failed": 30,
+      "skipped": 23,
+      "deselected": 32
+    },
+    "new_failure_ids": [],
+    "first_round": {
+      "passed": 3204,
+      "failed": 28,
+      "skipped": 23,
+      "deselected": 32
+    },
+    "resolved_first_round_failure_ids": [
+      "tests/integration/test_request_context_integration.py::test_different_contexts_for_different_requests",
+      "tests/integration/test_request_context_integration.py::test_request_context_in_real_agent_run",
+      "tests/integration/test_request_context_integration.py::test_request_context_with_message_history",
+      "tests/integration/test_shadow_gateway.py::test_evidence_follows_the_snapshot_not_the_process_memory",
+      "tests/integration/test_shadow_gateway.py::test_gateway_injects_adjacent_snapshot_as_state_patch",
+      "tests/integration/test_shadow_gateway.py::test_readonly_gateway_preserves_candidates_for_followup_fact_query",
+      "tests/unit/test_artifact_store.py::test_deeply_nested_payload_cannot_escape_the_issuance_error_boundary",
+      "tests/unit/test_base_agent.py::test_run_can_return_directly_after_user_facing_tool_result",
+      "tests/unit/test_base_agent.py::test_run_repeated_policy_tool_loop_renders_json_summary_as_user_text",
+      "tests/unit/test_base_agent.py::test_run_repeated_query_tool_loop_falls_back_when_recent_return_failed",
+      "tests/unit/test_base_agent.py::test_run_repeated_readonly_explore_tool_loop_reuses_recent_return",
+      "tests/unit/test_base_agent.py::test_run_stops_repeated_admission_score_tool_loop_before_request_limit",
+      "tests/unit/test_base_agent.py::test_run_stops_repeated_query_tool_loop_generically",
+      "tests/unit/test_base_agent.py::test_run_stops_repeated_score_line_tool_loop_before_request_limit",
+      "tests/unit/test_codex_skill_manifest.py::test_the_marketplace_lists_this_plugin",
+      "tests/unit/test_config.py::test_history_config_default_values",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_agent_forces_stability_options_into_one_exact_proposal_retry",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_continues_after_answer_policy_tool",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_continues_after_query_plan_tool",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_rejects_first_text_and_requires_bounded_tool_retry",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_rejects_invalid_first_tool_arguments_before_execution",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_rejects_locatorless_replace_call_before_tool_execution",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_rejects_missing_required_pending_resolution_before_tool_execution",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_rejects_missing_required_semantic_requirements_before_tool_execution",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_rejects_multiple_first_tool_calls_before_execution",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_retries_accidental_tier_composite_before_tool_execution",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_retries_ambiguous_saved_target_for_tier_goal",
+      "tests/unit/test_zhiyuan_agent_direct.py::test_zhiyuan_agent_returns_directly_after_review_plan_tool"
+    ],
+    "previous_green": {
+      "passed": 3241,
+      "failed": 0,
+      "skipped": 23,
+      "deselected": 32,
+      "warnings": 1
+    },
+    "previous_account_round": {
+      "passed": 3253,
+      "failed": 0,
+      "skipped": 23,
+      "deselected": 32,
+      "warnings": 1
+    },
+    "sandbox_retry": {
+      "status": "interrupted",
+      "reason": "Restricted sandbox has /dev/null permission errors and disallows local socket setup; test run emitted setup errors and stalled; superseded by host offline rerun",
+      "used_as_success_evidence": false
+    },
+    "final_execution_environment": "host process with offline socket guard and backend/rank forced to loopback port 9",
+    "duration_seconds": 70.66,
+    "final_log": "zhiyuan-agent/.runtime/architecture-hardening-20261028/zhiyuan-overall-python-tests-final-host.log"
+  },
+  "java": {
+    "command": "mvn -q package",
+    "tests": 1809,
+    "failures": 0,
+    "errors": 0,
+    "previous_targeted": {
+      "tests": 75,
+      "failures": 0,
+      "errors": 0
+    },
+    "passed": 1797,
+    "skipped": 12,
+    "baseline_failure_reproduced": true,
+    "previous_round": {
+      "tests": 1793,
+      "passed": 1780,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 12,
+      "preexisting_failure": "StagedSolverPerformanceTest.solvesSixHundredCandidatesWithinBudget",
+      "baseline_failure_reproduced": true
+    },
+    "solver_performance_failure_resolved": true,
+    "solver_version": "ojalgo-48.4.2-j53-staged-lex2"
+  },
+  "web": {
+    "node": "22",
+    "typecheck_exit_code": 0,
+    "unit_test_files": 20,
+    "unit_failures": 0
+  },
+  "real_codex": {
+    "version": "0.165.0",
+    "effective_startup_policy": "passed",
+    "inherited_extra_mcp_rejected_before_launch": "passed",
+    "model_read_packaged_skill_via_mcp": "passed"
+  },
+  "review": {
+    "parallel_implementation_lines": 3,
+    "cross_review_findings_addressed": [
+      "unknown claim response",
+      "idle reconnect lastProposal",
+      "global stream sequence holes",
+      "hooks/image/computer tool flags",
+      "restart configuration validation",
+      "evidence scope instruction drift",
+      "duplicate username compatibility and admin precheck",
+      "byte-exact password upgrade CAS",
+      "stale fixture account overwrite prevention",
+      "public legacy endpoint IDOR and unscoped message pagination",
+      "legacy cross-tenant owner sessions",
+      "thread identity cleanup across synchronous and asynchronous requests"
+    ],
+    "final_independent_review": "No additional high-severity finding identified in account/session/receipt/concurrency changes; database uniqueness limitation retained"
+  },
+  "limitations": [
+    "No production deployment, production database writes or production OSS object migration. Local accounts and explicitly marked synthetic sessions were created.",
+    "Reference validation does not establish prose semantic correctness.",
+    "Single Gateway worker remains a deployment requirement.",
+    "23 Python tests skipped and 32 E2E cases deselected; separately recorded live WS and browser checks do not replace all excluded cases.",
+    "Real admission source and outer policy/batch APIs are disabled in the isolated stack; catalog availability and synthetic planning do not validate actual admission data or recommendation quality.",
+    "Username migration rejects ambiguous matches, more than two same-name legacy rows, and reserved hash-marker legacy plaintext; targeted manual migration/reset may be needed.",
+    "Admin and fixture creation serialize same-name writers using InnoDB REPEATABLE_READ transactions. No database uniqueness constraint exists; writers bypassing this locking protocol can still create duplicates.",
+    "Default production OSS key format remains legacy for compatibility; no production object migration performed.",
+    "Public TCP 3201 remains unverified from an independent external network. Local Chromium uses a restricted private proxy preserving public origin. No configured cloud-management connector, CLI or credential was found."
+  ],
+  "evidence_directory": "zhiyuan-agent/.runtime/architecture-hardening-20261028",
+  "business_runtime": {
+    "binary": ".local/codex-runtime/node_modules/.bin/codex",
+    "launcher": ".local/codex-local/run-business-codex.py",
+    "home": ".local/codex-local/business-codex-home",
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "wire_api": "responses",
+    "credential_source": "DeepSeek-specific block in ~/.bashrc; injected into child environment only",
+    "chatgpt_auth_reused": false,
+    "model_catalog_http_status": 200,
+    "isolated_model_skill_probe": "passed",
+    "infra": {
+      "mysql": "127.0.0.1:13306",
+      "redis": "127.0.0.1:16379",
+      "healthy": true
+    },
+    "application_stack_started": true,
+    "application_run_directory": ".runtime/codex-local-20261028-132911-1170024",
+    "application_health_http_status": {
+      "backend": 200,
+      "agent": 200,
+      "rank": 200,
+      "web": 200
+    },
+    "business_home_verified_in_agent_process": true,
+    "developer_codex_configuration_reused": false,
+    "latest_runtime_health_evidence": ".runtime/account-data-validation-20261028/final-health.json",
+    "running_jar_matches_latest_build": true,
+    "latest_agent_pid": 1294390
+  },
+  "public_access": {
+    "origin": "http://101.42.252.196:3201",
+    "mode": "public-ip-test",
+    "private_listener": "10.0.8.9:3201",
+    "independent_proxy": true,
+    "existing_sites_modified": false,
+    "page_http_status": 200,
+    "internal_paths_http_status": 404,
+    "password_login_and_user_info": "passed",
+    "authenticated_websocket_handshake_status": 101,
+    "messages_sent": 0,
+    "browser_login": {
+      "login_http_status": 200,
+      "login_business_code": 0,
+      "redirect_path": "/session",
+      "page_errors": 0,
+      "failed_request_paths": [
+        "/ui/default-avator.png"
+      ],
+      "network_view": "local browser with public IP mapped to private listener; not external internet verification"
+    },
+    "external_internet_access": "not_verified; host direct to public port 3201 times out while port 80 responds; cloud inbound rule requires confirmation",
+    "credential_file_is_private": true,
+    "fixture": {
+      "user_id": 1,
+      "session_id": 1,
+      "tenant_id": 1
+    },
+    "evidence_directory": ".runtime/public-browser-validation-20261028"
+  },
+  "account_validation": {
+    "account": "codex-test",
+    "gaotu_user_account_required": false,
+    "credential_file": ".local/codex-local/browser-test-credentials.json",
+    "credential_file_mode": "0600",
+    "fixture_prepare_repeated_successfully": true,
+    "same_user_id_and_password_preserved": true,
+    "password_and_token_printed": false,
+    "rights": [
+      {
+        "endpoint": "limit-settings",
+        "http": 200,
+        "code": 0,
+        "data": {
+          "createSession": {
+            "settingCount": 100,
+            "useCount": 4
+          },
+          "modifyUserInfo": null
+        }
+      },
+      {
+        "endpoint": "check-rights?checkPoint=CreateSession&prepareType=PREDICT",
+        "http": 200,
+        "code": 0,
+        "data": {
+          "canOperate": true,
+          "reason": ""
+        }
+      },
+      {
+        "endpoint": "check-rights?checkPoint=ModifyScore&prepareType=PREDICT",
+        "http": 200,
+        "code": 0,
+        "data": {
+          "canOperate": true,
+          "reason": ""
+        }
+      },
+      {
+        "endpoint": "check-rights?checkPoint=DoChat&prepareType=PREDICT",
+        "http": 200,
+        "code": 0,
+        "data": {
+          "canOperate": true,
+          "reason": ""
+        }
+      }
+    ],
+    "live_isolation_before": ".runtime/account-data-validation-20261028/before.json",
+    "live_isolation_after": ".runtime/account-data-validation-20261028/after.json",
+    "actors": [
+      "owner",
+      "same tenant different user",
+      "different tenant different user"
+    ],
+    "cross_owner_reads_and_writes_forbidden": true,
+    "denied_writes_leave_owner_database_rows_unchanged": true,
+    "missing_session_message_pagination_forbidden": true,
+    "wrong_tenant_create_and_list_forbidden": true,
+    "latest_authenticated_ws_handshake_status": 101,
+    "latest_empty_ws_session_id": 4,
+    "ws_messages_sent": 0,
+    "shared_account_means_shared_history": true,
+    "script_safety_unit_tests": 15,
+    "authentication_path": "local username credential; ytell channel; existing authenticated request and ticket path retained",
+    "rights_can_operate_all_true": true,
+    "named_account_isolation": {
+      "distinct_accounts": true,
+      "distinct_private_passwords": true,
+      "qa_session": 5,
+      "results": [
+        {
+          "case": "qa-own",
+          "status": 200
+        },
+        {
+          "case": "qa-other",
+          "status": 403
+        },
+        {
+          "case": "common-other",
+          "status": 403
+        },
+        {
+          "case": "qa-forged-list-userId",
+          "status": 200,
+          "returned_count": 1
+        },
+        {
+          "case": "common-forged-list-userId",
+          "status": 200,
+          "returned_count": 4
+        }
+      ]
+    },
+    "concurrent_admin_creation": {
+      "requests": 8,
+      "before_accepted": 8,
+      "after_accepted": 1,
+      "after_conflicts": 7,
+      "after_user_rows": 1,
+      "after_credential_rows": 1,
+      "orphan_rows": 0,
+      "fixture_cleaned": true,
+      "strategy": "InnoDB REPEATABLE_READ transaction and indexed SELECT FOR UPDATE on username; lock conflict returns business code 409",
+      "scope": "Admin HTTP and test-account helper use locking protocol; no database UNIQUE constraint, direct writers bypassing protocol are not protected",
+      "evidence_before": ".runtime/account-data-validation-20261028/admin-race-before.json",
+      "evidence_after": ".runtime/account-data-validation-20261028/admin-race-after.json"
+    }
+  },
+  "catalog_validation": {
+    "live_school_lookup_nonempty": true,
+    "live_major_tree_top_level_nodes": 12,
+    "live_region_tree_top_level_nodes": 31,
+    "gaotu_called_for_catalog": false,
+    "catalog_version": "dev"
+  },
+  "storage_environment_boundary": {
+    "legacy_oss_key": "session_volunteer/{sessionId}{suffix}.json",
+    "current_local_oss_bucket_disabled": true,
+    "production_bucket_accessed": false,
+    "shared_bucket_collision_risk_confirmed_by_source": true,
+    "required_test_configuration": "disabled OSS or dedicated bucket; never reuse production bucket",
+    "namespace_migration_implemented": false,
+    "oss_enabled": false,
+    "namespace": "codex-local",
+    "optional_namespace_implemented": true,
+    "prefix_applied_to_get_put_presign_and_signature": true,
+    "namespaced_reads_do_not_fallback_to_legacy_keys": true,
+    "unsafe_namespaced_key_segments_rejected": true,
+    "disabled_sdk_zero_interactions_unit_test": true,
+    "local_preflight_rejects_unisolated_oss": true,
+    "production_legacy_keys_preserved_by_default": true,
+    "production_objects_migrated": false,
+    "runtime_cold_read": {
+      "session": 2,
+      "http_business_code": 0,
+      "original_candidates_imported": 12,
+      "startup_disabled_log_verified": true,
+      "sdk_initialized": false,
+      "final_temp_downloads_skipped": true,
+      "strace_observation_seconds": 30,
+      "observed_connect_calls": 0,
+      "qualification": "connect-only trace during cold read; existing database/Redis connections can be reused; no packet capture or all-workload network isolation claim",
+      "trace_evidence": "zhiyuan-agent/.runtime/architecture-hardening-20261028/oss-cold-connect-trace.log",
+      "backend_log": ".runtime/codex-local-20261028-132911-1170024/logs/backend.log"
+    },
+    "legacy_key_includes_environment_or_tenant_namespace": false
+  },
+  "solver_validation": {
+    "baseline_600_candidates_80_targets": "solver_timeout at about 2024 ms",
+    "fixed_targeted_600_candidates_80_targets_ms": 45,
+    "fixed_state": "OPTIMAL",
+    "candidate_exchange_reduction": {
+      "original": 600,
+      "retained": 160,
+      "scope": "equivalent coefficients in current simple MIP model; complex policies use full model"
+    },
+    "internal_budget_ms": 2000,
+    "test_budget_ms": 5000,
+    "budgets_unchanged": true,
+    "exhaustive_small_case_lexicographic_check": true,
+    "large_stable_order_case": true,
+    "utility_total_3000000000_case": true,
+    "final_full_java_suite_green": true
+  },
+  "gateway_confirmation_validation": {
+    "synthetic": true,
+    "sessionId": 3,
+    "previewNoBusinessWrite": true,
+    "legitimatePendingIssued": true,
+    "gatewayClaimAndConfirmApplied": true,
+    "exactMovePersisted": true,
+    "selectedCount": 10,
+    "versionBefore": 5,
+    "versionAfter": 7,
+    "duplicateConfirmNoSecondWrite": true,
+    "duplicateActionStatus": "stale_state",
+    "realAdmissionValidated": false,
+    "networkIsolationPreviouslyFailed": true,
+    "pendingRevisionActive": 4,
+    "pendingRevisionApplied": 6,
+    "pendingRevisionAfterDuplicate": 6,
+    "commandRowsForOperation": 1,
+    "commandStatus": "succeeded",
+    "coldRestProposalApplied": true,
+    "candidateCountAfterConfirm": 12,
+    "v1ResultBytes": 697,
+    "v1ResultSequence": 35,
+    "after_final_stack_restart": {
+      "duplicateExistingAppliedPending": true,
+      "noSecondWrite": true,
+      "version": 7,
+      "actionStatus": "stale_state",
+      "synthetic": true,
+      "pendingRevisionAfterDuplicate": 6,
+      "pendingStatus": "applied",
+      "commandRowCountUnchanged": true,
+      "finalRestartRun": "codex-local-20261028-132911-1170024",
+      "v1ResultSequence": 52,
+      "newPreviewCreated": false,
+      "newBusinessWrite": false
+    },
+    "scope": "real authenticated WebSocket + business DeepSeek Codex App Server + Java claims/execution + SQL/REST readback; synthetic session 3, move_units"
+  },
+  "synthetic_planning_initial_round": {
+    "status": "PERSISTENCE_PASSED_EXTERNAL_ISOLATION_FAILED",
+    "noGaotuOssLogActivity": false,
+    "forbiddenLogPatternCount": 8,
+    "synthetic": true,
+    "sessionId": 3,
+    "candidateCount": 12,
+    "selectedCount": 10,
+    "orderedCount": 10,
+    "version": 3,
+    "historicalVersions": [
+      0,
+      1,
+      3
+    ],
+    "sourceSha256": "483415e2f8486ff3b0bf37f0b06c1bf7fa4444afc05c114707144b2ac7e04b18",
+    "noGenerationOrInitializationRepeated": true,
+    "planningDocumentsUnchangedByResume": true,
+    "confirmed": false,
+    "realAdmissionValidated": false,
+    "generationAndPersistencePassed": true,
+    "network_isolation": false,
+    "realadmission": false,
+    "confirm": false,
+    "networkIsolationFailure": "Initial workspace-state on scored session without planningState attempted OSS FINAL then TEMP legacy import; both failed, ORIGINAL then imported locally.",
+    "evidence_source_directory": "/tmp/zhiyuan-SYNTHETIC-chain-20261028-124854-57300219"
+  },
+  "action_event_validation": {
+    "previous_review_bytes": 29365,
+    "event_store_limit_bytes": 16384,
+    "real_v1_result_bytes": 697,
+    "result_metadata_bounded": true,
+    "details_fetched_via_rest": true,
+    "store_failure_control_event": "session.resync, sequence 0",
+    "legacy_fallback_removed_when_store_configured": true,
+    "frontend_consumes_reload_flag": true,
+    "frontend_refreshes_messages_workspace_and_parent_detail": true,
+    "frontend_displays_compact_change_counts": true,
+    "cold_rest_receipt_counts_available": true,
+    "cold_receipt_lookup": "tenant + session + pending + operation + commandType + succeeded; result identity and bounds checked"
+  },
+  "synthetic_source_reusable_probe": {
+    "script": "scripts/validation/probe_synthetic_source_chain.py",
+    "fixture_builder": "scripts/validation/build_synthetic_source_fixture.py",
+    "safety_unit_tests": 8,
+    "evidence_directory": ".runtime/validation/zhiyuan-SYNTHETIC-chain-20261028-134427-b6973940",
+    "synthetic": true,
+    "sessionId": 6,
+    "poolCount": 12,
+    "selectedCount": 10,
+    "orderedCount": 10,
+    "beforeVersion": 0,
+    "poolVersion": 1,
+    "finalVersion": 3,
+    "schedule": "0\tPREDICT",
+    "sourceSha256": "5fa2a3b40e147b6776b6a47519106a3eae5bbd6af07200ae6e8c3fe65a596e59",
+    "confirmed": false,
+    "realAdmissionValidated": false,
+    "remoteBridgeObservedInLog": false,
+    "qualification": "synthetic local API/SQL chain only; observed log window is not packet-level isolation proof"
+  },
+  "validation_scope": {
+    "architecture": "Web UI -> authenticated Gateway -> dedicated Codex App Server / MCP -> Java domain commands -> isolated MySQL/Redis/Rank",
+    "business_model_configurable": true,
+    "current_business_model": "deepseek-flash",
+    "developer_codex_separate": true,
+    "local_severe_findings_addressed": [
+      "ownership and tenant checks",
+      "unconfirmed write path and claim ownership",
+      "runtime recovery and reconnect replay",
+      "oversized action receipts and cold receipt restoration",
+      "password storage and concurrent account creation",
+      "test OSS boundary",
+      "solver performance and long utility totals"
+    ],
+    "release_gate": "Local synthetic acceptance; production release and real admission quality are not certified"
+  },
+  "browser_confirmation_validation": {
+    "realBrowserLogin": true,
+    "realNaturalLanguagePreview": true,
+    "actualConfirmationButtonClicked": true,
+    "previewNoWrite": true,
+    "numberedV1Applied": true,
+    "liveCompactReceiptVisible": true,
+    "workspaceUpdated": true,
+    "reloadAppliedRecovered": true,
+    "coldCompactReceiptVisible": true,
+    "reconnectAppliedRecovered": true,
+    "freshWebSocketOpenedAfterForcedDisconnect": true,
+    "postReconnectResyncObserved": false,
+    "duplicateConfirmActionReconstructedFromRealPreview": true,
+    "duplicateNoSecondWrite": true,
+    "versionBefore": 7,
+    "versionAfter": 9,
+    "pendingRef": "8dc8e280-5f68-4224-b8fb-28d39b587276",
+    "pageErrors": 0,
+    "realAdmissionValidated": false,
+    "networkView": "local Chromium through target-restricted private proxy preserving public origin; not independent external-network verification",
+    "evidence_directory": "zhiyuan-agent/.runtime/architecture-hardening-20261028/browser-final",
+    "original_button_evidence": "/tmp/zhiyuan-browser-confirm-1793166220806",
+    "reconnect_validation": "Only business /ws/chat closed; old socket CLOSED, new socket OPEN; received pong and conversationAction.result on new connection",
+    "cursor_note": "Fresh resync not required for valid incremental cursor; no new resync observed",
+    "duplicate_result": "stale_state",
+    "actual_confirmation_effect": "Synthetic session 3 advanced from version 7 to 9; repeated confirm and reload/reconnect did not advance version",
+    "post_logging_fix_retest": {
+      "realBrowserLogin": true,
+      "realNaturalLanguagePreview": true,
+      "actualConfirmationButtonClicked": true,
+      "previewNoWrite": true,
+      "numberedV1Applied": true,
+      "liveCompactReceiptVisible": true,
+      "workspaceUpdated": true,
+      "reloadAppliedRecovered": true,
+      "coldCompactReceiptVisible": true,
+      "reconnectAppliedRecovered": true,
+      "freshWebSocketOpenedAfterForcedDisconnect": true,
+      "postReconnectResyncObserved": false,
+      "duplicateConfirmActionReconstructedFromRealPreview": true,
+      "duplicateNoSecondWrite": true,
+      "versionBefore": 7,
+      "versionAfter": 9,
+      "pendingRef": "8dc8e280-5f68-4224-b8fb-28d39b587276",
+      "pageErrors": 0,
+      "realAdmissionValidated": false,
+      "networkView": "local Chromium through target-restricted private proxy preserving public origin; not independent external-network verification",
+      "evidence_directory": "zhiyuan-agent/.runtime/architecture-hardening-20261028/browser-after-log-privacy"
+    }
+  },
+  "request_log_privacy": {
+    "unit_tests": 12,
+    "applies_to": [
+      "uvicorn.access",
+      "uvicorn.error"
+    ],
+    "filter_installed_by": "app.server module initialization",
+    "retains_path": true,
+    "removes_complete_query": true,
+    "sentinel_probe": {
+      "invalidTicketRejected": true,
+      "sentinelAbsentFromLogs": true,
+      "redactedHttpPathObserved": true,
+      "redactedWsPathObserved": true
+    },
+    "actual_browser_after_restart": {
+      "agentPid": 1294390,
+      "postRestartWsRecords": 4,
+      "allWsQueriesRedacted": true,
+      "postRestartWsTicketQueryAbsent": true,
+      "historicalLogsNotRewritten": true
+    },
+    "historical_private_logs_not_rewritten": true
+  }
+}

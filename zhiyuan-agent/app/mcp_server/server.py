@@ -26,13 +26,14 @@ from app.mcp_server.tools_readonly import (
     ReadonlyDomainTools,
     _kind_for,
 )
+from app.mcp_server.skill_resources import list_skills, read_skill
 from app.util import internal_client
 
 try:
     from mcp.server import Server as SdkServer
     from mcp.server.models import InitializationOptions
     from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, ToolAnnotations
+    from mcp.types import Resource, Tool, ToolAnnotations
 except ImportError:  # pragma: no cover - exercised only before dependency installation
     SdkServer = None  # type: ignore[assignment,misc]
     InitializationOptions = Any  # type: ignore[assignment,misc]
@@ -528,6 +529,14 @@ def build_sdk_server(
         instructions="Read-only Zhiyuan catalog and admission facts; all writes are denied.",
     )
 
+    @server.list_resources()
+    async def list_resources():
+        return [Resource(**entry) for entry in list_skills()]
+
+    @server.read_resource()
+    async def read_resource(uri):
+        return read_skill(str(uri))["contents"][0]["text"]
+
     @server.list_tools()
     async def list_tools() -> list[Tool]:
         return [
@@ -700,7 +709,7 @@ def serve(binding_registry_path: str) -> None:
         if method == "initialize":
             result = {
                 "protocolVersion": params.get("protocolVersion", MCP_PROTOCOL_VERSION),
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "resources": {}},
                 "serverInfo": {"name": "zhiyuan-domain-readonly", "version": "0.1.0"},
                 "instructions": "Read-only Zhiyuan catalog and admission facts; all writes are denied.",
             }
@@ -721,10 +730,16 @@ def serve(binding_registry_path: str) -> None:
                 "isError": False,
             }
         elif method == "resources/list":
-            # 我们不暴露 resource，但**必须回答**：真实 MCP 客户端在握手后会
-            # 逐一探测 resources/list 与 resources/templates/list，收不到应答就
-            # 一直等，整个 server 卡在未连接状态（实测 mcpServerStatus/list 超时）。
-            result = {"resources": []}
+            result = {"resources": list_skills()}
+        elif method == "resources/read":
+            try:
+                result = read_skill(str(params.get("uri") or ""))
+            except ValueError:
+                response = {"jsonrpc": "2.0", "id": request_id,
+                            "error": {"code": -32602, "message": "unknown_skill_resource"}}
+                sys.stdout.write(json.dumps(response) + "\n")
+                sys.stdout.flush()
+                continue
         elif method == "resources/templates/list":
             result = {"resourceTemplates": []}
         elif method == "prompts/list":

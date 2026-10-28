@@ -46,7 +46,7 @@ const V1_PAYLOAD_WHITELIST = {
   'conversationAction.result': [
     'proposalRef', 'actionStatus', 'newStateVersion', 'workspaceVersion',
     'actualChanges', 'reviewState', 'code', 'message',
-    'origin', 'actionType', 'scope', 'receipt',
+    'origin', 'actionType', 'scope', 'receipt', 'requiresWorkspaceReload',
   ],
   // 解读卡只放有界摘要；完整 path/evidenceRefs 由服务端在适配层裁掉。
   'interpretation.preview': [
@@ -328,3 +328,9 @@ export const normalizeConversationEvent = event => {
   }
   return null;
 };
+
+
+/** A result can require canonical reload even when a duplicate/stale action did not apply. */
+export const shouldReloadAfterConversationAction = event =>
+  event?.type === 'conversationAction.result'
+  && (event.payload?.actionStatus === 'applied' || event.payload?.requiresWorkspaceReload === true);

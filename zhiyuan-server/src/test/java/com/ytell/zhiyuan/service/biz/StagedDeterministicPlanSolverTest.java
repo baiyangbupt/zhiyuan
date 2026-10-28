@@ -4,12 +4,15 @@ import com.ytell.zhiyuan.model.dto.planning.CandidateFactDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateSnapshotDTO;
 import com.ytell.zhiyuan.model.dto.planning.CanonicalPlanningObjectiveSetDTO;
+import com.ytell.zhiyuan.model.dto.planning.CoverageRequirementDTO;
 import com.ytell.zhiyuan.model.dto.planning.DiversityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.MutationPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanSolverResultDTO;
 import com.ytell.zhiyuan.model.dto.planning.TierCountsDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureQualityPolicyDTO;
 import com.ytell.zhiyuan.model.dto.planning.StructureTargetDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierAllocationConstraintDTO;
+import com.ytell.zhiyuan.model.dto.planning.TierCountRangeDTO;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -26,6 +29,127 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class StagedDeterministicPlanSolverTest {
 
     private final StagedDeterministicPlanSolver solver = new StagedDeterministicPlanSolver();
+
+    @Test
+    void stableOrderNeverOverridesOnePointOfUtility() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                fact("high-utility", "stable", "浙江", false, false, 10, 1_000_000),
+                fact("low-utility", "stable", "浙江", false, false, 9, 0));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(1);
+        // Keep both candidates in the MIP to exercise the separate objective phases.
+        DiversityPolicyDTO disabledDiversity = new DiversityPolicyDTO();
+        disabledDiversity.setMode("off");
+        objectives.setDiversityPolicy(disabledDiversity);
+
+        PlanSolverResultDTO result = solver.solve(snapshot, objectives, policy("FILL", false)).solverResult;
+
+        assertEquals("ready", result.getStatus(), "diagnostics=" + result.getDiagnostics());
+        assertEquals(Arrays.asList("high-utility"), result.getSelectedEntityIds());
+    }
+
+    @Test
+    void utilitySumAboveIntegerRangeRemainsExactInFrozenStageAndTieBreaker() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                fact("first", "stable", "浙江", false, false, 1_500_000_000, 0),
+                fact("second", "stable", "浙江", false, false, 1_500_000_000, 1),
+                fact("lower", "stable", "浙江", false, false, 1_499_999_999, 2));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(2);
+        DiversityPolicyDTO disabledDiversity = new DiversityPolicyDTO();
+        disabledDiversity.setMode("off");
+        objectives.setDiversityPolicy(disabledDiversity);
+
+        StagedDeterministicPlanSolver.Result solved = solver.solve(
+                snapshot, objectives, policy("FILL", false));
+
+        assertEquals("ready", solved.solverResult.getStatus(),
+                "diagnostics=" + solved.solverResult.getDiagnostics());
+        assertEquals(Arrays.asList("first", "second"), solved.solverResult.getSelectedEntityIds());
+        assertEquals(3_000_000_000L, level(solved, "utility"));
+        assertEquals(3_000_000_000L, solved.solverResult.getStageResults().stream()
+                .filter(stage -> "utility".equals(stage.getObjectiveId()))
+                .findFirst().get().getValue().longValue());
+    }
+
+    @Test
+    void exactExchangeReductionMatchesExhaustiveLexicographicOptimum() {
+        CandidateSnapshotDTO snapshot = snapshot(
+                fact("a", "sprint", "浙江", false, false, 9, 0),
+                fact("b", "sprint", "江苏", false, false, 10, 1),
+                fact("c", "sprint", "江苏", false, false, 10, 2),
+                fact("d", "stable", "浙江", false, false, 8, 3),
+                fact("e", "stable", "浙江", false, false, 8, 4),
+                fact("f", "protect", "浙江", false, false, 7, 5),
+                fact("g", "protect", "江苏", false, false, 9, 6),
+                fact("h", "protect", "浙江", false, false, 6, 7));
+        CanonicalPlanningObjectiveSetDTO objectives = objectives(3);
+        TierAllocationConstraintDTO tiers = new TierAllocationConstraintDTO();
+        tiers.setType("exact_counts");
+        TierCountRangeDTO one = new TierCountRangeDTO();
+        one.setMinCount(1);
+        one.setMaxCount(1);
+        tiers.setSprint(one);
+        tiers.setStable(one);
+        tiers.setProtect(one);
+        objectives.setTierAllocationConstraint(tiers);
+        CoverageRequirementDTO coverage = new CoverageRequirementDTO();
+        coverage.setDomain("region");
+        coverage.setKey("province");
+        coverage.setValues(Arrays.asList("浙江"));
+        coverage.setMinCount(1);
+        objectives.setCoverageConstraints(Arrays.asList(coverage));
+        StructureTargetDTO structure = new StructureTargetDTO();
+        structure.setMinLocalProtect(1);
+        objectives.setStructureTarget(structure);
+
+        PlanSolverResultDTO actual = solver.solve(snapshot, objectives, policy("FILL", false)).solverResult;
+        assertEquals("ready", actual.getStatus(), "diagnostics=" + actual.getDiagnostics());
+        assertEquals(exhaustiveBestForThreeTiers(snapshot.getFacts()), actual.getSelectedEntityIds());
+        assertEquals(Arrays.asList("b", "d", "f"), actual.getSelectedEntityIds());
+        assertTrue(org.ojalgo.optimisation.Optimisation.State
+                .valueOf(actual.getSolverState()).isOptimal());
+    }
+
+    private List<String> exhaustiveBestForThreeTiers(List<CandidateFactDTO> facts) {
+        int bestDeficit = Integer.MAX_VALUE;
+        int bestUtility = Integer.MIN_VALUE;
+        int bestStable = Integer.MAX_VALUE;
+        List<String> best = null;
+        for (int mask = 0; mask < (1 << facts.size()); mask++) {
+            if (Integer.bitCount(mask) != 3) {
+                continue;
+            }
+            int sprint = 0, stable = 0, protect = 0, localProtect = 0, covered = 0;
+            int utility = 0, stableOrder = 0;
+            List<String> ids = new ArrayList<String>();
+            for (int index = 0; index < facts.size(); index++) {
+                if ((mask & (1 << index)) == 0) {
+                    continue;
+                }
+                CandidateFactDTO fact = facts.get(index);
+                ids.add(fact.getEntityId());
+                sprint += "sprint".equals(fact.getTier()) ? 1 : 0;
+                stable += "stable".equals(fact.getTier()) ? 1 : 0;
+                protect += "protect".equals(fact.getTier()) ? 1 : 0;
+                covered += "浙江".equals(fact.getProvinceName()) ? 1 : 0;
+                localProtect += "protect".equals(fact.getTier())
+                        && "浙江".equals(fact.getProvinceName()) ? 1 : 0;
+                utility += fact.getUtilityScore();
+                stableOrder += fact.getStableOrder();
+            }
+            if (sprint != 1 || stable != 1 || protect != 1 || covered < 1) {
+                continue;
+            }
+            int deficit = Math.max(0, 1 - localProtect);
+            if (deficit < bestDeficit || deficit == bestDeficit && (utility > bestUtility
+                    || utility == bestUtility && stableOrder < bestStable)) {
+                bestDeficit = deficit;
+                bestUtility = utility;
+                bestStable = stableOrder;
+                best = ids;
+            }
+        }
+        return best;
+    }
 
     @Test
     void auditDigestReflectsPatchedObjectivesRatherThanStaleCompilerMetadata() {

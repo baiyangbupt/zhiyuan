@@ -116,7 +116,10 @@ def test_extra_fields_ignored():
     assert not hasattr(cfg, "unknown_field")
 
 
-def test_history_config_default_values():
+def test_history_config_default_values(monkeypatch):
+    # _env_file=None disables dotenv only; a previous test may still have
+    # supplied the real environment variable in this pytest process.
+    monkeypatch.delenv("HISTORY_DB_PATH", raising=False)
     cfg = HistoryConfig(_env_file=None)
     assert cfg.db_path == "./data/chat_history.db"
 

@@ -175,6 +175,7 @@ class CanonicalPlanningRuntimeTest {
                 state, state.getCandidatePoolState().getItems());
 
         assertEquals("ready", result.getStatus());
+        assertEquals("ojalgo-48.4.2-j53-staged-lex2", StagedDeterministicPlanSolver.SOLVER_VERSION);
         assertEquals(StagedDeterministicPlanSolver.SOLVER_VERSION, result.getSolverVersion());
         assertEquals(64, result.getInputDigest().length());
         assertEquals(Arrays.asList("v1", "v2"), result.getSelectedEntityIds());

@@ -1,9 +1,15 @@
 package com.ytell.zhiyuan.web.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ytell.zhiyuan.common.config.GlobalExceptionHandler;
 import com.ytell.zhiyuan.model.dto.integration.ExternalSessionInitializeReq;
 import com.ytell.zhiyuan.model.dto.integration.ExternalSessionInitializeRes;
+import com.ytell.zhiyuan.model.entity.biz.User;
 import com.ytell.zhiyuan.service.biz.IntegrationSessionService;
+import com.ytell.zhiyuan.service.biz.UserBizService;
+import com.ytell.zhiyuan.web.interceptor.UserBaseData;
+import com.ytell.zhiyuan.web.interceptor.UserInfoThreadLocalUtil;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -27,16 +33,42 @@ public class IntegrationSessionControllerTest {
 
     private MockMvc mockMvc;
     private IntegrationSessionService integrationSessionService;
+    private UserBizService userBizService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
         IntegrationSessionController controller = new IntegrationSessionController();
         integrationSessionService = Mockito.mock(IntegrationSessionService.class);
+        userBizService = Mockito.mock(UserBizService.class);
         ReflectionTestUtils.setField(controller, "integrationSessionService", integrationSessionService);
+        ReflectionTestUtils.setField(controller, "userBizService", userBizService);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
+                .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
+        UserBaseData principal = new UserBaseData();
+        principal.setUserId(7L);
+        UserInfoThreadLocalUtil.set(principal);
+        User user = new User();
+        user.setId(7L);
+        user.setTenantId(1L);
+        doReturn(user).when(userBizService).getUserInfo(7L);
+    }
+
+    @AfterEach
+    void tearDown() {
+        UserInfoThreadLocalUtil.remove();
+    }
+
+    @Test
+    void rejectsCrossTenantInitializationBeforeCreatingSession() throws Exception {
+        mockMvc.perform(post("/gaotu-assistant-bot/chat/2/integration/session/initialize")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"externalRequestId\":\"ext-1\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.msg").value("session_forbidden"));
+        Mockito.verifyNoInteractions(integrationSessionService);
     }
 
     @Test

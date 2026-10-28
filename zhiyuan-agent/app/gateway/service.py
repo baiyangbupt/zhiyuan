@@ -1298,6 +1298,7 @@ class GatewayService:
         self.base_instructions = base_instructions
         self.developer_instructions = developer_instructions
         self._threads: dict[SessionKey, str] = {}
+        self._threads_generation = self._codex_generation()
         self._snapshots: dict[SessionKey, ConversationTurnSnapshot] = {}
         self._working_sets: dict[SessionKey, ConversationWorkingSet] = {}
         self.artifact_store = artifact_store
@@ -1355,6 +1356,7 @@ class GatewayService:
         sessionId——两个租户同号时会返回**先匹配到的那一个**。现在键本身就是
         权威身份，查表即答案，不再有"猜租户"的分支。
         """
+        self._invalidate_stale_threads()
         for key, bound_thread in self._threads.items():
             if str(bound_thread) == str(thread_id):
                 return key
@@ -1378,6 +1380,7 @@ class GatewayService:
     @_session_owner("gateway_read", key_argument=True)
     async def interrupt_codex_turn(self, key: Any, codex_turn_id: str) -> bool:
         """停止一个**原生**回合。只停推理，不撤销已提交的 Java 事务。"""
+        self._invalidate_stale_threads()
         thread_id = self._threads.get(self._as_session_key(key))
         if not thread_id or self.codex is None:
             return False
@@ -1386,6 +1389,7 @@ class GatewayService:
 
     @_session_owner("gateway_read", key_argument=True)
     async def steer_codex_turn(self, key: Any, codex_turn_id: str, text: str) -> bool:
+        self._invalidate_stale_threads()
         thread_id = self._threads.get(self._as_session_key(key))
         if not thread_id or self.codex is None:
             return False
@@ -1712,10 +1716,18 @@ class GatewayService:
         """重拉原生 runtime。调用点只有恢复路径：ThreadRecovery 的进程退出分支、
         `_ensure_thread` 的兜底、回合内的兜底——三处都必须经过这里，否则新进程
         会拿到死进程的 threadId。"""
-        restart = getattr(self.codex, "restart", None)
+        restart = getattr(self.codex, "restart_if_unhealthy", None)
+        conditional = restart is not None
+        if restart is None:
+            restart = getattr(self.codex, "restart", None)
         if restart is None:
             raise RuntimeError("codex harness cannot restart")
-        await _maybe_await(restart())
+        restarted = await _maybe_await(restart())
+        if conditional and not restarted:
+            # Another session already installed and initialized a new child.
+            # Its recovery path owns clearing the old process's thread cache.
+            self._invalidate_stale_threads()
+            return
         # 重拉之后，缓存里每一个 threadId 都属于**已经死掉的那个进程**：codex 的
         # thread 表是进程内的（`turn_processor.rs` 的 `load_thread` →
         # `thread_manager.get_thread`），没在新进程里 resume 过就一律回
@@ -1724,13 +1736,27 @@ class GatewayService:
         # 直到人工重启"，正是 A7 要修的那个症状（实测：19:56 那次复现）。
         # 清空后每个会话在下一轮各自走 `load_or_resume`：有绑定的 resume（rollout
         # 在磁盘上，模型侧上下文保得住），查不到绑定的才重建。
-        if self._threads:
+        old_count = len(self._threads)
+        if self._codex_generation() is not None:
+            self._invalidate_stale_threads()
+        else:
+            self._threads.clear()
+        if old_count and not self._threads:
             logger.warning(
                 "dropping %d cached thread binding(s) after a runtime restart "
                 "(they belong to the dead process)",
-                len(self._threads),
+                old_count,
             )
+
+    def _codex_generation(self) -> str | None:
+        generation = getattr(getattr(self.codex, "client", None), "runtime_generation", None)
+        return generation if isinstance(generation, str) else None
+
+    def _invalidate_stale_threads(self) -> None:
+        generation = self._codex_generation()
+        if generation is not None and generation != self._threads_generation:
             self._threads.clear()
+            self._threads_generation = generation
 
     @_session_owner("gateway_read")
     async def get_current_snapshot(
@@ -2586,6 +2612,7 @@ class GatewayService:
         action_result_payload: dict[str, Any] | None = None
         action_snapshot_version: int | None = None
         try:
+            self._invalidate_stale_threads()
             thread_id = self._threads.get(key)
             if not thread_id:
                 thread_id = await self._ensure_thread(key, snapshot)

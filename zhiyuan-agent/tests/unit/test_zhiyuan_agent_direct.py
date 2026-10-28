@@ -22,6 +22,26 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+try:
+    from pydantic_ai.messages import RetryFeedbackPart
+except ImportError:  # pydantic-ai versions before retry feedback was split from retry prompts
+    RetryFeedbackPart = RetryPromptPart
+
+_RETRY_FEEDBACK_TYPES = (RetryPromptPart, RetryFeedbackPart)
+
+
+def _is_model_retry_feedback(part: Any) -> bool:
+    """Recognize retry feedback as stored or prepared for a FunctionModel."""
+    if isinstance(part, _RETRY_FEEDBACK_TYPES):
+        return True
+    if isinstance(part, ToolReturnPart):
+        return getattr(part, "outcome", None) == "retried"
+    return (
+        isinstance(part, UserPromptPart)
+        and isinstance(part.content, str)
+        and "<retry_feedback>" in part.content
+        and "</retry_feedback>" in part.content
+    )
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import ToolDefinition
@@ -1709,7 +1729,7 @@ async def test_agent_forces_stability_options_into_one_exact_proposal_retry(mock
             part
             for message in messages
             for part in message.parts
-            if isinstance(part, RetryPromptPart)
+            if _is_model_retry_feedback(part)
         ]
         if retry_parts:
             saw_retry_prompt = True
@@ -3684,7 +3704,7 @@ async def test_zhiyuan_agent_rejects_first_text_and_requires_bounded_tool_retry(
             return ModelResponse(parts=[TextPart(content="我已经生成了待确认内容，请确认。")])
         assert agent_info.allow_text_output is False
         assert any(
-            isinstance(part, RetryPromptPart)
+            _is_model_retry_feedback(part)
             for message in messages
             for part in message.parts
         )
@@ -3735,7 +3755,7 @@ async def test_zhiyuan_agent_rejects_multiple_first_tool_calls_before_execution(
                 ]
             )
         assert any(
-            isinstance(part, RetryPromptPart)
+            _is_model_retry_feedback(part)
             for message in messages
             for part in message.parts
         )
@@ -3796,7 +3816,7 @@ async def test_zhiyuan_agent_rejects_locatorless_replace_call_before_tool_execut
                 ]
             )
         assert any(
-            isinstance(part, RetryPromptPart)
+            _is_model_retry_feedback(part)
             for message in messages
             for part in message.parts
         )
@@ -3865,7 +3885,7 @@ async def test_zhiyuan_agent_rejects_invalid_first_tool_arguments_before_executi
                 ]
             )
         assert any(
-            isinstance(part, RetryPromptPart)
+            _is_model_retry_feedback(part)
             for message in messages
             for part in message.parts
         )
@@ -11379,7 +11399,7 @@ async def test_zhiyuan_agent_rejects_missing_required_pending_resolution_before_
                 ]
             )
         assert any(
-            isinstance(part, RetryPromptPart)
+            _is_model_retry_feedback(part)
             for message in messages
             for part in message.parts
         )
@@ -11451,7 +11471,7 @@ async def test_zhiyuan_agent_rejects_missing_required_semantic_requirements_befo
                 ]
             )
         assert any(
-            isinstance(part, RetryPromptPart)
+            _is_model_retry_feedback(part)
             for message in messages
             for part in message.parts
         )

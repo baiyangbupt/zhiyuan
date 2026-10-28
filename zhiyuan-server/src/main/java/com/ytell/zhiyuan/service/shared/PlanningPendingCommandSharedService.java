@@ -18,6 +18,28 @@ public class PlanningPendingCommandSharedService
         return this.getOne(query);
     }
 
+    /** Cold receipt must come from this exact pending operation, never a different session's command. */
+    public PlanningPendingCommandEntity getSucceededForPendingOperation(
+            Long tenantId, Long chatSessionId, String pendingId,
+            String operationId, String commandType) {
+        if (tenantId == null || chatSessionId == null || pendingId == null
+                || operationId == null || commandType == null) {
+            return null;
+        }
+        QueryWrapper<PlanningPendingCommandEntity> query = new QueryWrapper<PlanningPendingCommandEntity>();
+        query.lambda()
+                .eq(PlanningPendingCommandEntity::getTenantId, tenantId)
+                .eq(PlanningPendingCommandEntity::getChatSessionId, chatSessionId)
+                .eq(PlanningPendingCommandEntity::getPendingId, pendingId)
+                .eq(PlanningPendingCommandEntity::getOperationId, operationId)
+                .eq(PlanningPendingCommandEntity::getCommandType, commandType)
+                .eq(PlanningPendingCommandEntity::getStatus, "succeeded")
+                .orderByDesc(PlanningPendingCommandEntity::getUpdateTime)
+                .orderByDesc(PlanningPendingCommandEntity::getId)
+                .last("limit 1");
+        return this.getOne(query);
+    }
+
     public int deleteSucceededUpdatedBefore(Date cutoff, int batchSize) {
         if (cutoff == null) {
             throw new IllegalArgumentException("cutoff is required");

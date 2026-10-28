@@ -7,7 +7,7 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any, AsyncIterator, cast
 
-from app.harness.client import AppServerClient
+from app.harness.client import AppServerClient, AppServerExited
 from app.harness.turn_result import CodexTurnResult, TurnStatus
 
 logger = logging.getLogger(__name__)
@@ -23,22 +23,51 @@ class CodexAppServerHarness:
         approval_policy: str | None = None,
         sandbox_policy: str | dict[str, Any] | None = None,
         capabilities: dict[str, Any] | None = None,
+        before_start: Callable[[], Awaitable[None]] | None = None,
+        after_initialize: Callable[[AppServerClient], Awaitable[None]] | None = None,
     ) -> None:
         self.client = AppServerClient(command, request_timeout=request_timeout)
         self.skill_root = skill_root
         self.approval_policy = approval_policy
         self.sandbox_policy = sandbox_policy
         self.capabilities = capabilities
+        self.before_start = before_start
+        self.after_initialize = after_initialize
         # 保留握手响应：探针要据它判断服务端是否接受了声明，而不是假定接受。
         self.initialize_result: dict[str, Any] | None = None
+        self._recovery_lock = asyncio.Lock()
+        self._ready = asyncio.Event()
+        self._ready_error: BaseException | None = None
 
     async def start(self) -> None:
-        await self.client.start()
+        async with self._recovery_lock:
+            self._ready.clear()
+            self._ready_error = None
+            try:
+                if self.before_start is not None:
+                    await self.before_start()
+                await self.client.start()
+                await self._initialize()
+                self._ready.set()
+            except BaseException as exc:
+                # A failed policy or compatibility check must not leave an
+                # unverified child that recovery mistakes for a healthy one.
+                self.initialize_result = None
+                try:
+                    await self.client.close()
+                finally:
+                    self._ready_error = exc
+                    self._ready.set()
+                raise
+
+    async def _initialize(self) -> None:
         self.initialize_result = await self.client.initialize(
             client_name="zhiyuan_gateway",
             client_version="0.1.0",
             capabilities=self.capabilities,
         )
+        if self.after_initialize is not None:
+            await self.after_initialize(self.client)
 
     def set_server_request_handler(self, handler: Any) -> None:
         self.client.server_request_handler = handler
@@ -46,18 +75,63 @@ class CodexAppServerHarness:
     def set_server_request_lease_factory(self, factory: Any) -> None:
         self.client.server_request_lease_factory = factory
 
+    async def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        # A replacement child must finish initialize before another session
+        # sends thread/turn RPCs to it. Do not hold the recovery lock while
+        # waiting for an RPC response: a server request may need a reciprocal
+        # turn/interrupt RPC before the original request can finish.
+        await self._ready.wait()
+        if self._ready_error is not None:
+            raise AppServerExited("app server generation is not initialized") from self._ready_error
+        return await self.client.request(method, params)
+
     async def restart(self) -> None:
         """重拉原生 runtime 并重新握手。
 
         握手必须重做：能力声明（原生提问那套）是每次连接谈的，
         重拉之后不重新声明，模型就再也提不了问——而且链路上不会报错。
         """
-        await self.client.restart()
-        self.initialize_result = await self.client.initialize(
-            client_name="zhiyuan_gateway",
-            client_version="0.1.0",
-            capabilities=self.capabilities,
-        )
+        async with self._recovery_lock:
+            self._ready.clear()
+            self._ready_error = None
+            try:
+                if self.before_start is not None:
+                    await self.before_start()
+                await self.client.restart()
+                await self._initialize()
+                self._ready.set()
+            except BaseException as exc:
+                self.initialize_result = None
+                try:
+                    await self.client.close()
+                finally:
+                    self._ready_error = exc
+                    self._ready.set()
+                raise
+
+    async def restart_if_unhealthy(self) -> bool:
+        """Recover a failed shared runtime once, including its handshake."""
+        async with self._recovery_lock:
+            if not self.client.needs_restart:
+                return False
+            self._ready.clear()
+            self._ready_error = None
+            try:
+                if self.before_start is not None:
+                    await self.before_start()
+                restarted = await self.client.restart_if_unhealthy()
+                if restarted:
+                    await self._initialize()
+                self._ready.set()
+                return restarted
+            except BaseException as exc:
+                self.initialize_result = None
+                try:
+                    await self.client.close()
+                finally:
+                    self._ready_error = exc
+                    self._ready.set()
+                raise
 
     async def create_thread(
         self,
@@ -80,13 +154,13 @@ class CodexAppServerHarness:
         sandbox_mode = _sandbox_mode(self.sandbox_policy)
         if sandbox_mode is not None:
             params["sandbox"] = sandbox_mode
-        return await self.client.request("thread/start", params)
+        return await self._request("thread/start", params)
 
     async def resume_thread(self, thread_id: str) -> dict[str, Any]:
-        return await self.client.request("thread/resume", {"threadId": thread_id})
+        return await self._request("thread/resume", {"threadId": thread_id})
 
     async def inject_items(self, thread_id: str, items: list[dict[str, Any]]) -> dict[str, Any]:
-        return await self.client.request(
+        return await self._request(
             "thread/inject_items", {"threadId": thread_id, "items": items}
         )
 
@@ -108,7 +182,7 @@ class CodexAppServerHarness:
             params["approvalPolicy"] = effective_approval_policy
         if effective_sandbox_policy is not None:
             params["sandboxPolicy"] = _sandbox_policy(effective_sandbox_policy)
-        return await self.client.request("turn/start", params)
+        return await self._request("turn/start", params)
 
     async def start_turn_and_collect(
         self,
@@ -241,13 +315,13 @@ class CodexAppServerHarness:
     async def steer_turn(
         self, thread_id: str, turn_id: str, input_items: list[dict[str, Any]]
     ) -> dict[str, Any]:
-        return await self.client.request(
+        return await self._request(
             "turn/steer",
             {"threadId": thread_id, "expectedTurnId": turn_id, "input": input_items},
         )
 
     async def interrupt_turn(self, thread_id: str, turn_id: str) -> dict[str, Any]:
-        return await self.client.request(
+        return await self._request(
             "turn/interrupt", {"threadId": thread_id, "turnId": turn_id}
         )
 
@@ -276,7 +350,12 @@ class CodexAppServerHarness:
             yield await self.next_event()
 
     async def close(self) -> None:
-        await self.client.close()
+        async with self._recovery_lock:
+            try:
+                await self.client.close()
+            finally:
+                self._ready_error = AppServerExited("app server closed")
+                self._ready.set()
 
 
 def _matches_turn(notification: dict[str, Any], thread_id: str, turn_id: str) -> bool:

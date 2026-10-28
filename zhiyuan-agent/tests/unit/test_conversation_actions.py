@@ -101,7 +101,7 @@ async def test_confirm_claim_is_reported_as_applying_until_command_completes():
     """claim 的 `applying` **不是终态**：P2 之后它会继续走 execute，结果以 execute 为准。"""
 
     async def resolver(*args, **kwargs):
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         return {"code": 0, "data": {"status": "applied", "stateVersion": 9}}
@@ -116,6 +116,55 @@ async def test_confirm_claim_is_reported_as_applying_until_command_completes():
     )
     assert result.action_status == "applied"
     assert result.new_state_version == 9
+
+
+@pytest.mark.asyncio
+async def test_duplicate_confirm_does_not_execute_with_an_unowned_claim_token():
+    """Java returns applying with transitionApplied=false for another live claimant."""
+    calls = []
+
+    async def resolver(*args, **kwargs):
+        calls.append(kwargs)
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": False}}
+
+    async def executor(*args, **kwargs):
+        raise AssertionError("a duplicate confirmation must not execute")
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7",
+        session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending(),
+        resolver=resolver,
+        executor=executor,
+    )
+
+    assert result.action_status == "applying"
+    assert result.code == "pending_already_applying"
+    assert len(calls) == 1
+    assert calls[0]["action"] == "confirm"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transition", [None, "missing"])
+async def test_confirm_requires_explicit_claim_transition_before_execute(transition):
+    data = {"status": "applying", "revision": 4}
+    if transition != "missing":
+        data["transitionApplied"] = transition
+
+    async def resolver(*args, **kwargs):
+        return {"code": 0, "data": data}
+
+    async def executor(*args, **kwargs):
+        raise AssertionError("unconfirmed claim must not execute")
+
+    result = await execute_conversation_action(
+        tenant_id="tenant-7", session_id="s1",
+        action={"actionType": "confirm_proposal", "proposalRef": "pending-1"},
+        snapshot=snapshot_with_pending(), resolver=resolver, executor=executor,
+    )
+    assert result.action_status == "applying"
+    assert result.code == "pending_claim_unconfirmed"
 
 
 @pytest.mark.asyncio
@@ -421,7 +470,7 @@ async def test_confirm_runs_claim_then_execute_with_the_same_claim_token():
 
     async def resolver(*args, **kwargs):
         claim_tokens.append(kwargs.get("claim_token"))
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         execute_calls.append(kwargs)
@@ -457,7 +506,7 @@ async def _claim_then_execute(monkeypatch, goal: dict | None, *, snapshot_extra:
     async def resolver(session_id, **kwargs):
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "applied"}}
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         execute_calls.append(kwargs)
@@ -572,7 +621,7 @@ async def test_counting_goal_passes_through_optional_hard_objective_version() ->
     execute_calls = []
 
     async def resolver(*args, **kwargs):
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         execute_calls.append(kwargs)
@@ -617,7 +666,7 @@ async def test_duplicate_confirm_executes_only_once():
     第二次 resolve 不再是 applying（pending 已不 active），于是**不再执行**。
     """
     resolve_results = [
-        {"code": 0, "data": {"status": "applying", "revision": 4}},
+        {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}},
         {"code": 0, "data": {"status": "stale_state"}},
     ]
     executions = []
@@ -671,7 +720,7 @@ async def test_expired_proposal_is_refused_without_executing():
 async def test_execute_failure_is_reported_as_failed_not_completed():
     """异常 4（执行失败）：状态落 failed，**不许报 completed**（P2b 只降不升同理）。"""
     async def resolver(*args, **kwargs):
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         return {"code": 500, "data": {"status": "failed"}, "msg": "backend exploded"}
@@ -689,7 +738,7 @@ async def test_execute_failure_is_reported_as_failed_not_completed():
 async def test_missing_operation_id_refuses_to_execute():
     """operationId 只能来自 Java 编译产出：pending 里没有 → **拒绝执行**，不自铸幂等键。"""
     async def resolver(*args, **kwargs):
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         raise AssertionError("没有 operationId 时不许执行")
@@ -717,7 +766,7 @@ async def test_constraint_apply_status_comes_from_postcondition_report() -> None
     async def resolver(session_id, **kwargs):
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "applied"}}
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         return {
@@ -752,7 +801,7 @@ async def test_constraint_apply_reports_failed_when_postcondition_unsatisfied() 
     async def resolver(session_id, **kwargs):
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "applied"}}
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         return {
@@ -782,7 +831,7 @@ async def test_constraint_apply_without_any_signal_stays_failed() -> None:
     async def resolver(session_id, **kwargs):
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "applied"}}
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         return {"code": 0, "data": {"completedSteps": ["constraint_updated"]}}
@@ -859,7 +908,7 @@ async def test_scope_suffix_normalizes_without_entity_type() -> None:
 
 
 async def _stub_catalog(mapping: dict[str, str], monkeypatch=None) -> None:
-    """把目录查询打桩成"只有这张表里的名字解析得出 ID" ✓（按省/市两个入口分别兜 ✓）。"""
+    """把省市目录打桩；专业默认无精确项，供名字兜底路径验证。"""
     from app.util import internal_client as _client
 
     async def fake_lookup(name: str):
@@ -869,8 +918,12 @@ async def _stub_catalog(mapping: dict[str, str], monkeypatch=None) -> None:
         key = "cityCode" if len(code) > 6 else "provinceCode"
         return {"resultType": "exact", "data": {key: code, "cityName" if key == "cityCode" else "provinceName": name}}
 
+    async def fake_major_lookup(name: str, education_level: str | None = None):
+        return {"resultType": "empty", "data": None}
+
     _client.catalog_lookup_city = fake_lookup
     _client.catalog_lookup_province = fake_lookup
+    _client.catalog_lookup_major = fake_major_lookup
 
 
 @pytest.mark.asyncio
@@ -1095,7 +1148,7 @@ async def _confirm_score_update(snapshot_payload: dict, *, execute_response: dic
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "applied"}}
         claim_tokens.append(kwargs.get("claim_token"))
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         execute_calls.append(kwargs)
@@ -1186,7 +1239,7 @@ async def test_score_update_refuses_to_execute_when_the_pending_is_incomplete(
     current["activeProposal"]["data"].pop(removed_key)
 
     async def resolver(session_id=None, *args, **kwargs):
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         raise AssertionError("pending 不完整时执行器一次都不该被调")

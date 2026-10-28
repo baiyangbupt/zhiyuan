@@ -142,7 +142,8 @@ class CodexAppServerConfig(BaseSettings):
     }
 
     bin: str = "codex"
-    commit: str = "89650c6"
+    commit: str = "89650c6"  # Deprecated metadata; expected_version is enforced.
+    expected_version: str = "0.165.0"
     transport: str = "stdio"
     timeout_seconds: float = 30.0
     approval_policy: str = "never"

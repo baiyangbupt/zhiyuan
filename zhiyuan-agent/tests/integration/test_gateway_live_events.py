@@ -681,7 +681,7 @@ async def test_without_a_store_the_legacy_frame_is_still_sent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failing_store_degrades_instead_of_dropping_the_event() -> None:
+async def test_a_failing_store_requests_resync_without_emitting_a_legacy_frame() -> None:
     key = SessionKey(tenant_id="tenant-1", session_id="42")
     frames: list[dict] = []
 
@@ -703,5 +703,10 @@ async def test_a_failing_store_degrades_instead_of_dropping_the_event() -> None:
     await asyncio.sleep(0.05)
     await channel.close()
 
-    # 入流出错不能让整轮**静默少事件**：退回旧信封发出去，用户至少看得到内容。
-    assert frames == [{"type": "tool.progress", "content": "legacy"}]
+    assert len(frames) == 1
+    assert frames[0]["protocolVersion"] == 1
+    assert frames[0]["type"] == "session.resync"
+    assert frames[0]["sessionId"] == "42"
+    assert frames[0]["sequence"] == 0  # control frame, never a fabricated stored sequence
+    assert frames[0]["payload"]["baseline"]["reason"] == "event_store_append_failed"
+    assert "content" not in frames[0]

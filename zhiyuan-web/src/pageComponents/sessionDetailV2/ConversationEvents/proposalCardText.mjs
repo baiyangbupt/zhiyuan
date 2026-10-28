@@ -564,3 +564,19 @@ export function coldFallbackProposalVisible({
   if (COLD_FALLBACK_HIDDEN_KINDS.has(kindValue)) return false;
   return true;
 }
+
+
+/** Compact server receipts replace full review/change documents on V1 events. */
+export function compactActionReceiptText(actionResult) {
+  if (Array.isArray(actionResult?.actualChanges) && actionResult.actualChanges.length) return '';
+  const receipt = actionResult?.receipt;
+  if (!receipt || typeof receipt !== 'object') return '';
+  const count = value => Number.isSafeInteger(value) && value >= 0;
+  const unit = ['unit', 'group', 'majorGroup'].includes(receipt.countMode) ? '组' : '条';
+  const parts = [];
+  for (const [key, label] of [['addedCount', '新增'], ['removedCount', '删除'], ['reorderedCount', '调整顺序']]) {
+    if (count(receipt[key])) parts.push(`${label} ${receipt[key]} ${unit}`);
+  }
+  if (count(receipt.after)) parts.push(`当前方案 ${receipt.after} ${unit}`);
+  return parts.join('；');
+}

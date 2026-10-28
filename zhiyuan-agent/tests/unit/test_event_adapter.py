@@ -22,40 +22,21 @@ def test_event_adapter_never_exposes_raw_tool_arguments() -> None:
     assert "userId" not in json.dumps(event)
 
 
-def test_event_adapter_maps_safe_assistant_delta_and_completion() -> None:
-    delta = adapt_codex_item({"type": "item/agentMessage/delta", "delta": "候选"})
-    completed = adapt_codex_item({"type": "turn/completed", "message": "已完成"})
-
-    # 增量与 live 那条路（`adapt_notification`）**同一份形状**：`{chunk, itemId?}`——
-    # 此前这里是老形状 `content`（V1 白名单模型没有这个字段，到前端会被整条丢掉）。
-    assert delta == {"type": "assistant.delta", "payload": {"chunk": "候选"}}
-    # 终态走 **V1 白名单形状** ✓✓（`conversationEvents.mjs:35` ✓）：前端 V1 那条路
-    # （`toConversationEvent` ✓，页面导入的就是它 ✓）从 `payload.message` 取答案 ✓；
-    # 先前给的是 `content` ✗——V1 模型没有这个字段 ✓，会被丢掉 ✓
-    #（真栈实测：帧到了、UI 渲染不出答案 ✓）。
-    assert completed == {
-        "type": "assistant.completed",
-        "payload": {
-            "message": "已完成",
-            "responseType": "text",
-            "executionStatus": "completed",
-            "limitations": [],
-        },
-    }
-
-
-def test_event_adapter_keeps_item_id_only_when_present() -> None:
-    """`itemId` 是可选键 ✓：真 codex 带它 ✓、替身不带 ✓——不带时必须**不填** ✓，
-    填个空串会让前端把一个 `''` 键当真 item 去归并 ✓。"""
-    with_id = adapt_codex_item(
-        {"type": "item/agentMessage/delta", "delta": "x", "itemId": "msg_1"}
-    )
-    without_id = adapt_codex_item({"type": "item/agentMessage/delta", "delta": "x"})
-
-    assert with_id == {"type": "assistant.delta", "payload": {"chunk": "x", "itemId": "msg_1"}}
-    assert without_id == {"type": "assistant.delta", "payload": {"chunk": "x"}}
-    # 空增量不产事件（否则会凭空多出 `{"chunk": ""}` 的空帧）。
-    assert adapt_codex_item({"type": "item/agentMessage/delta", "delta": ""}) is None
+def test_raw_model_prose_never_leaves_adapter_before_validation() -> None:
+    from app.gateway.event_adapter import adapt_notification
+    secret = '某校最低分999分，保证录取'
+    for item_type in (
+        "item/agentMessage/delta", "agentMessage/delta", "assistant.delta",
+        "turn/completed", "item/agentMessage/completed", "assistant.completed",
+    ):
+        assert adapt_codex_item({"type": item_type, "delta": secret, "message": secret}) is None
+    for method in ("item/agentMessage/delta", "agentMessage/delta"):
+        assert adapt_notification({"method": method, "params": {"delta": secret}}, "t1") == []
+    progress = adapt_notification({"method": "item/started", "params": {
+        "item": {"type": "mcpToolCall", "id": "c1", "tool": "admission.get_history"}
+    }}, "t1")
+    assert progress[0]["type"] == "tool.progress"
+    assert secret not in json.dumps(progress)
 
 
 def test_event_adapter_drops_unknown_internal_items() -> None:

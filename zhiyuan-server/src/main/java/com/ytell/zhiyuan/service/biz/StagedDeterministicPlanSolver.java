@@ -52,7 +52,7 @@ final class StagedDeterministicPlanSolver {
 
     private static final Logger LOG = LoggerFactory.getLogger(StagedDeterministicPlanSolver.class);
 
-    static final String SOLVER_VERSION = "ojalgo-48.4.2-j53-staged";
+    static final String SOLVER_VERSION = "ojalgo-48.4.2-j53-staged-lex2";
     static final String ORDERING_INITIAL_TIER = "initial_tier_order_v1";
     /** 初始方案严格质量序：不把“旧方案中的条目”无条件排在新增条目之前。 */
     static final String ORDERING_INITIAL_TIER_STRICT = "initial_tier_strict_v1";
@@ -156,6 +156,8 @@ final class StagedDeterministicPlanSolver {
         if (policyError != null) {
             return blocked(result, started, "mutation_policy_conflict", null, policyError);
         }
+
+        facts = pruneEquivalentChoices(facts, safeSnapshot, safeObjectives, safePolicy, targetCount);
 
         ExpressionsBasedModel model = new ExpressionsBasedModel();
         List<Variable> variables = new ArrayList<Variable>();
@@ -368,15 +370,13 @@ final class StagedDeterministicPlanSolver {
         addStructureQualityStage(model, variables, facts, safeObjectives, tierConstraint,
                 targetCount, deadline, result, levels, levelDurations, structureUtilityFloor);
 
-        long maxStableTotal = Math.max(0L, (long) facts.size() * Math.max(0, facts.size() - 1));
-        long utilityWeight = maxStableTotal + 1L;
         Expression utilityObjective = model.addExpression("utility_objective")
-                .weight(BigDecimal.valueOf(-utilityWeight));
+                .weight(BigDecimal.valueOf(-1L));
         for (int index = 0; index < facts.size(); index++) {
             int utility = facts.get(index).getUtilityScore() == null ? 0 : facts.get(index).getUtilityScore();
             utilityObjective.set(variables.get(index), BigDecimal.valueOf(utility));
         }
-        Expression stableObjective = model.addExpression("stable_objective").weight(1);
+        Expression stableObjective = model.addExpression("stable_objective").weight(0);
         for (int index = 0; index < facts.size(); index++) {
             stableObjective.set(variables.get(index),
                     BigDecimal.valueOf(Math.max(0, facts.get(index).getStableOrder())));
@@ -387,23 +387,26 @@ final class StagedDeterministicPlanSolver {
                     "效用阶段未证明最优"
                             + (utilitySolved == null ? "" : "，solverState=" + utilitySolved.getState()));
         }
-        int utilityValue = utilityValue(facts, variables, utilitySolved);
+        long utilityValue = utilityValue(facts, variables, utilitySolved);
         levels.add(new ObjectiveLevel("utility", utilityValue, utilityValue, "utility_points"));
         levelDurations.add(lastPhaseDurationMs);
         utilityObjective.weight(0);
-        stableObjective.weight(0);
+
+        // Stable order is a tie breaker. Prove the pure utility optimum first;
+        // mixing both scores into one large weighted MIP makes equal-utility
+        // candidates substantially harder to certify within the shared budget.
+        Expression fixUtility = model.addExpression("fix_utility").level(utilityValue);
+        for (int index = 0; index < facts.size(); index++) {
+            int utility = facts.get(index).getUtilityScore() == null
+                    ? 0 : facts.get(index).getUtilityScore();
+            fixUtility.set(variables.get(index), BigDecimal.valueOf(utility));
+        }
 
         Optimisation.Result finalSolved = utilitySolved;
         DiversityPolicyDTO diversity = safeObjectives.getDiversityPolicy();
         if (diversity != null && "soft".equalsIgnoreCase(
                 Strings.nullToEmpty(diversity.getMode()).trim())) {
             // P3 只固定纯 utility 表达式；stable 留到 P4 做次级交换。
-            Expression fixUtility = model.addExpression("fix_utility").level(utilityValue);
-            for (int index = 0; index < facts.size(); index++) {
-                int utility = facts.get(index).getUtilityScore() == null
-                        ? 0 : facts.get(index).getUtilityScore();
-                fixUtility.set(variables.get(index), BigDecimal.valueOf(utility));
-            }
             Set<CandidateFactDTO> eligibleFacts = Collections.newSetFromMap(
                     new IdentityHashMap<CandidateFactDTO, Boolean>());
             eligibleFacts.addAll(eligible);
@@ -426,7 +429,7 @@ final class StagedDeterministicPlanSolver {
                 levelDurations.add(0L);
             } else {
                 Expression diversityObjective = model.addExpression("diversity_objective")
-                        .weight(BigDecimal.valueOf(utilityWeight));
+                        .weight(BigDecimal.ONE);
                 List<Variable> excessVariables = new ArrayList<Variable>();
                 for (int index = 0; index < groups.size(); index++) {
                     DiversityGroup group = groups.get(index);
@@ -461,16 +464,17 @@ final class StagedDeterministicPlanSolver {
                     fixDiversity.set(excess, 1);
                 }
             }
-            stableObjective.weight(1);
-            Optimisation.Result stableSolved = solvePhase(model, deadline, "diversity_stable");
-            if (stableSolved == null || !stableSolved.getState().isOptimal()) {
-                return blocked(result, started, phaseFailureReason(reduction, stableSolved),
-                        "diversity", "多样性平局阶段未证明最优"
-                                + (stableSolved == null ? "" : "，solverState="
-                                + stableSolved.getState()));
-            }
-            finalSolved = stableSolved;
         }
+
+        stableObjective.weight(1);
+        Optimisation.Result stableSolved = solvePhase(model, deadline, "stable");
+        if (stableSolved == null || !stableSolved.getState().isOptimal()) {
+            return blocked(result, started, phaseFailureReason(reduction, stableSolved),
+                    "stable", "平局阶段未证明最优"
+                            + (stableSolved == null ? "" : "，solverState="
+                            + stableSolved.getState()));
+        }
+        finalSolved = stableSolved;
 
         List<CandidateFactDTO> selected = selectedFacts(facts, variables, finalSolved);
         List<CandidateFactDTO> ordered = orderSelected(selected, safePolicy);
@@ -650,10 +654,8 @@ final class StagedDeterministicPlanSolver {
         if (maxLossRatio <= 0D) {
             return null;
         }
-        long maxStableTotal = Math.max(0L, (long) facts.size() * Math.max(0, facts.size() - 1));
-        long utilityWeight = maxStableTotal + 1L;
         Expression ceiling = model.addExpression("utility_ceiling_objective")
-                .weight(BigDecimal.valueOf(-utilityWeight));
+                .weight(BigDecimal.valueOf(-1L));
         for (int index = 0; index < facts.size(); index++) {
             int utility = facts.get(index).getUtilityScore() == null
                     ? 0 : facts.get(index).getUtilityScore();
@@ -669,7 +671,7 @@ final class StagedDeterministicPlanSolver {
             result.getDiagnostics().add(diagnostic);
             return null;
         }
-        int optimum = utilityValue(facts, variables, solved);
+        long optimum = utilityValue(facts, variables, solved);
         long allowance = (long) Math.ceil(Math.abs((double) optimum) * maxLossRatio);
         long floor = (long) optimum - allowance;
         LOG.info("structure utility ceiling: optimum={} allowance={} floor={}", optimum, allowance, floor);
@@ -987,6 +989,88 @@ final class StagedDeterministicPlanSolver {
         return solved;
     }
 
+    /**
+     * Exact exchange reduction for the simple staged model. Within one group,
+     * every candidate has identical coefficients in every hard constraint and
+     * every objective before utility. Any feasible selection uses no more than
+     * its tier's upper bound from that group. Replacing a discarded candidate
+     * with an unused retained candidate therefore preserves feasibility and
+     * cannot lower utility (or worsen stable order on a utility tie).
+     *
+     * Keep the original model for policies whose candidate coefficients include
+     * additional dimensions such as initial-content or diversity.
+     */
+    private List<CandidateFactDTO> pruneEquivalentChoices(
+            List<CandidateFactDTO> facts, CandidateSnapshotDTO snapshot,
+            CanonicalPlanningObjectiveSetDTO objectives, MutationPolicyDTO policy,
+            int targetCount) {
+        if (facts.size() <= targetCount || objectives.getDiversityPolicy() != null
+                || objectives.getStructureQualityPolicy() != null
+                || Boolean.TRUE.equals(policy.getInitialContentGuard())
+                || Boolean.TRUE.equals(policy.getPrioritySelection())
+                || !Boolean.TRUE.equals(policy.getAllowAdd())
+                || !policy.getForcedAddEntityIds().isEmpty()
+                || !policy.getForcedRemoveEntityIds().isEmpty()
+                || !policy.getFrozenRequiredEntityIds().isEmpty()
+                || !policy.getRemovableEntityIds().isEmpty()) {
+            return facts;
+        }
+        for (CandidateFactDTO fact : facts) {
+            if (!isEligible(fact, objectives, policy)
+                    || Boolean.TRUE.equals(fact.getCurrent())
+                    || Boolean.TRUE.equals(fact.getLocked())
+                    || Boolean.TRUE.equals(fact.getPinned())) {
+                return facts;
+            }
+        }
+
+        TierAllocationConstraintDTO explicit = canonicalTierConstraint(
+                objectives.getTierAllocationConstraint(), targetCount);
+        TierAllocationConstraintDTO implicit = canonicalTierConstraint(
+                objectives.getSolverTierBalance(), targetCount);
+        Map<List<Object>, List<CandidateFactDTO>> groups = new LinkedHashMap<List<Object>, List<CandidateFactDTO>>();
+        for (CandidateFactDTO fact : facts) {
+            List<Object> key = new ArrayList<Object>();
+            key.add(fact.getTier());
+            key.add(isLocalProtect(fact, snapshot.getSourceProvince()));
+            for (CoverageRequirementDTO coverage : defaultList(objectives.getCoverageConstraints())) {
+                key.add(matchesCoverage(fact, coverage));
+            }
+            groups.computeIfAbsent(key, ignored -> new ArrayList<CandidateFactDTO>()).add(fact);
+        }
+        Set<String> retained = new LinkedHashSet<String>();
+        Comparator<CandidateFactDTO> order = Comparator
+                .comparingInt((CandidateFactDTO fact) -> fact.getUtilityScore() == null
+                        ? 0 : fact.getUtilityScore()).reversed()
+                .thenComparingInt(CandidateFactDTO::getStableOrder);
+        for (Map.Entry<List<Object>, List<CandidateFactDTO>> entry : groups.entrySet()) {
+            List<CandidateFactDTO> candidates = entry.getValue();
+            candidates.sort(order);
+            int bound = targetCount;
+            String tier = (String) entry.getKey().get(0);
+            for (TierAllocationConstraintDTO constraint : Arrays.asList(explicit, implicit)) {
+                if (constraint != null && TIERS.contains(tier)) {
+                    bound = Math.min(bound, tierBound(constraint, tier).getMaxCount());
+                }
+            }
+            for (int index = 0; index < Math.min(bound, candidates.size()); index++) {
+                retained.add(candidates.get(index).getEntityId());
+            }
+        }
+        if (retained.size() == facts.size()) {
+            return facts;
+        }
+        List<CandidateFactDTO> pruned = new ArrayList<CandidateFactDTO>();
+        for (CandidateFactDTO fact : facts) {
+            if (retained.contains(fact.getEntityId())) {
+                pruned.add(fact);
+            }
+        }
+        LOG.info("staged solver exact exchange reduction: original={} retained={}",
+                facts.size(), pruned.size());
+        return pruned;
+    }
+
     private String phaseFailureReason(CandidatePoolReducer.Reduction reduction,
                                       Optimisation.Result result) {
         if (result == null) {
@@ -1091,8 +1175,8 @@ final class StagedDeterministicPlanSolver {
         return matched;
     }
 
-    private int utilityValue(List<CandidateFactDTO> facts, List<Variable> variables, Optimisation.Result solved) {
-        int result = 0;
+    private long utilityValue(List<CandidateFactDTO> facts, List<Variable> variables, Optimisation.Result solved) {
+        long result = 0L;
         for (int index = 0; index < facts.size(); index++) {
             if (solved.doubleValue(index) > 0.5D) {
                 result += facts.get(index).getUtilityScore() == null ? 0 : facts.get(index).getUtilityScore();

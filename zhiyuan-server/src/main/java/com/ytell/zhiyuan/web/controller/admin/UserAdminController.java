@@ -3,6 +3,7 @@ package com.ytell.zhiyuan.web.controller.admin;
 import cn.hutool.core.date.DateUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.common.util.PasswordHashing;
 import com.ytell.zhiyuan.mapper.UserCredentialMapper;
 import com.ytell.zhiyuan.mapper.UserMapper;
 import com.ytell.zhiyuan.model.dto.gaotu.res.UserRightsByUserIdRes;
@@ -17,9 +18,13 @@ import com.ytell.zhiyuan.service.biz.UserBizService;
 import io.swagger.annotations.Api;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Date;
+import java.util.List;
 import java.util.UUID;
 
 @Slf4j
@@ -41,24 +46,44 @@ public class UserAdminController {
     private GaotuService gaotuService;
 
     @PostMapping("/add-user")
+    @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
     public Boolean addUser(@RequestBody AddUserRequest request) {
-//
-        User user = new User();
-        user.setTenantId(request.getTenantId());
-        user.setBotId(request.getBotId());
-        user.setIsCustomer(false);
-        user.setChannel("ytell");
-        // 设置B端用户的默认限制（更高的限制）
-        user.setLimitSettings(userBizService.generateDefaultLimitSettings(false, "ytell", UserLevel.SUPER_VIP));
-        userMapper.insert(user);
-//
-        UserCredential userCredential = new UserCredential();
-        userCredential.setUserId(user.getId());
-        userCredential.setIdentifier(request.getUserName());
-        userCredential.setPasswordHash(request.getPassword());
-        userCredential.setLoginToken(UUID.randomUUID().toString());
-        userCredential.setLoginType(LoginType.USERNAME);
-        userCredentialMapper.insert(userCredential);
+        if (request == null || request.getUserName() == null || request.getUserName().trim().isEmpty()
+                || !PasswordHashing.validPassword(request.getPassword())) {
+            throw new BusinessException(400, "用户名和密码不能为空或无效");
+        }
+        String passwordHash = PasswordHashing.hash(request.getPassword());
+        // InnoDB's repeatable-read locking read protects the missing identifier
+        // range as well as an existing row. Competing inserts either observe the
+        // winner or lose a deadlock; the whole user + credential transaction rolls back.
+        try {
+            List<UserCredential> existing = userCredentialMapper.selectList(
+                    new QueryWrapper<UserCredential>().lambda()
+                            .select(UserCredential::getCredentialId)
+                            .eq(UserCredential::getIdentifier, request.getUserName())
+                            .eq(UserCredential::getLoginType, LoginType.USERNAME)
+                            .last("LIMIT 1 FOR UPDATE"));
+            if (existing == null || !existing.isEmpty()) {
+                throw new BusinessException(409, "用户名已存在或暂时不可创建");
+            }
+            User user = new User();
+            user.setTenantId(request.getTenantId());
+            user.setBotId(request.getBotId());
+            user.setUserName(request.getUserName());
+            user.setIsCustomer(false);
+            user.setChannel("ytell");
+            user.setLimitSettings(userBizService.generateDefaultLimitSettings(false, "ytell", UserLevel.SUPER_VIP));
+            userMapper.insert(user);
+            UserCredential userCredential = new UserCredential();
+            userCredential.setUserId(user.getId());
+            userCredential.setIdentifier(request.getUserName());
+            userCredential.setPasswordHash(passwordHash);
+            userCredential.setLoginToken(UUID.randomUUID().toString());
+            userCredential.setLoginType(LoginType.USERNAME);
+            userCredentialMapper.insert(userCredential);
+        } catch (PessimisticLockingFailureException conflict) {
+            throw new BusinessException(409, "账户创建发生并发冲突，请重试");
+        }
         return Boolean.TRUE;
     }
 

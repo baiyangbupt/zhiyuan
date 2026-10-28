@@ -181,6 +181,22 @@ public class PlanningFacadeControllerTest {
     }
 
     @Test
+    void refusesDirectUserGoalApplyBeforeCallingPlanningService() throws Exception {
+        when(conversationAccessService.requireOwnedSession(TENANT, SESSION, PRINCIPAL)).thenReturn(new ChatSession());
+
+        mockMvc.perform(post("/gaotu-assistant-bot/chat/1/planning/session/fix-proposals/apply")
+                        .param("chatSessionId", "42")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"proposalId\":\"p1\",\"proposalSource\":\"user_goal\",\"sourceVersionGuard\":3}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(409))
+                .andExpect(jsonPath("$.msg").value("user_goal_requires_confirmation"));
+
+        Mockito.verify(planningStateService, Mockito.never())
+                .applyFixProposal(eq(TENANT), eq(SESSION), any(FixProposalApplyReq.class));
+    }
+
+    @Test
     void keepsTheExportContentDispositionHeaders() throws Exception {
         when(conversationAccessService.requireOwnedSession(TENANT, SESSION, PRINCIPAL)).thenReturn(new ChatSession());
         when(planningStateService.exportOrderedPlan(TENANT, SESSION))

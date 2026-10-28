@@ -136,7 +136,7 @@ async def test_gateway_constraint_confirm_merges_into_userprofile(monkeypatch, b
     async def resolver(session_id, **kwargs):
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "applied"}}
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         execute_calls.append(kwargs)
@@ -215,7 +215,7 @@ async def test_gateway_confirm_does_not_merge_when_command_fails(monkeypatch, ba
     async def resolver(session_id, **kwargs):
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "failed"}}
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         return {"code": 40001, "data": {"status": "failed"}}

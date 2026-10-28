@@ -90,6 +90,45 @@ def test_preflight_requires_an_explicit_isolated_data_source(tmp_path: Path) -> 
     assert "private-resettable" in result.stderr
 
 
+def test_preflight_rejects_oss_without_explicit_isolation(tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    config = tmp_path / "application-codex-local.yml"
+    base = {
+        "CODEX_LOCAL_SERVER_CONFIG": str(config),
+        "CODEX_LOCAL_DATASET": "private-resettable",
+        "CODEX_LOCAL_CODEX_HOME": str(codex_home),
+    }
+    for oss in (
+        "bucket: production-bucket\n",
+        "enabled: true\n    bucket: production-bucket\n",
+        "enabled: true\n    namespace: codex-local\n    bucket: codex-local-disabled\n",
+        "enabled: true\n    namespace: ../production\n    bucket: test-bucket\n",
+    ):
+        config.write_text("ali:\n  oss:\n    " + oss, encoding="utf-8")
+        result = _run(PREFLIGHT, "--skip-web", "--skip-build", env=base)
+        assert result.returncode != 0
+        assert "OSS configuration" in result.stderr
+
+
+def test_preflight_accepts_disabled_or_namespaced_oss_configuration(tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    config = tmp_path / "application-codex-local.yml"
+    base = {
+        "CODEX_LOCAL_SERVER_CONFIG": str(config),
+        "CODEX_LOCAL_DATASET": "private-resettable",
+        "CODEX_LOCAL_CODEX_HOME": str(codex_home),
+    }
+    for oss in (
+        "enabled: false\n    bucket: codex-local-disabled\n",
+        "enabled: true\n    namespace: codex-local-a\n    bucket: isolated-test-bucket\n",
+    ):
+        config.write_text("ali:\n  oss:\n    " + oss, encoding="utf-8")
+        result = _run(PREFLIGHT, "--skip-web", "--skip-build", env=base)
+        assert "OSS configuration" not in result.stderr
+
+
 def test_stop_refuses_to_target_an_arbitrary_directory(tmp_path: Path) -> None:
     result = _run(STOP, str(tmp_path))
 
@@ -248,3 +287,79 @@ def test_backend_runs_from_a_per_run_jar_not_the_mutable_build_output() -> None:
 
     assert 'cp "$ROOT_DIR/zhiyuan-server/target/zhiyuan-server.jar" "$RUN_DIR/zhiyuan-server.jar"' in source
     assert '-jar "$RUN_DIR/zhiyuan-server.jar"' in source
+
+
+def test_public_ip_test_is_explicit_and_uses_exact_origin_with_same_origin_ws():
+    result = _access_env(env={
+        "CODEX_LOCAL_ACCESS_MODE": "public-ip-test",
+        "CODEX_LOCAL_PUBLIC_ORIGIN": "http://101.42.252.196:3201",
+        "CODEX_LOCAL_OUTER_API_BASE_URL": "https://test-api.gaotuzhiyuan.com",
+        "NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE": "ws://127.0.0.1:18291",
+    })
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert 'NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE=""' in lines
+    assert "NEXT_PUBLIC_CODEX_ACCESS_MODE=public-ip-test" in lines
+    assert "CODEX_WS_ALLOWED_ORIGINS=http://101.42.252.196:3201" in lines
+    assert "CODEX_LOCAL_WEB_HOST=127.0.0.1" in lines
+    assert "NEXT_PUBLIC_OUTER_API_BASE_URL=https://test-api.gaotuzhiyuan.com" in lines
+
+
+def test_public_ip_test_rejects_ambiguous_or_non_routable_origins():
+    for bad in (
+        "", "https://101.42.252.196:3201", "http://example.com:3201",
+        "http://101.42.252.196", "http://101.42.252.196:0", "http://101.42.252.196:65536",
+        "http://101.42.252.196:03201", "http://101.042.252.196:3201",
+        "http://101.42.252.999:3201", "http://127.0.0.1:3201", "http://127.1.2.3:3201",
+        "http://0.0.0.0:3201", "http://0.1.2.3:3201", "http://224.0.0.1:3201",
+        "http://255.255.255.255:3201", "http://user:pass@101.42.252.196:3201",
+        "http://101.42.252.196:3201/", "http://101.42.252.196:3201/path",
+        "http://101.42.252.196:3201?mode=test", "http://101.42.252.196:3201#fragment",
+        "http://[::1]:3201", "http://101.42.252.196:3201\n",
+    ):
+        result = _access_env(env={
+            "CODEX_LOCAL_ACCESS_MODE": "public-ip-test", "CODEX_LOCAL_PUBLIC_ORIGIN": bad,
+            "CODEX_LOCAL_OUTER_API_BASE_URL": "https://test-api.gaotuzhiyuan.com",
+        })
+        assert result.returncode != 0, bad
+        assert "origin" in result.stderr.lower(), (bad, result.stderr)
+
+
+def test_public_ip_test_requires_an_explicit_separate_outer():
+    for outer in ("", "http://101.42.252.196:3201", "http://101.42.252.196:3201/"):
+        result = _access_env(env={
+            "CODEX_LOCAL_ACCESS_MODE": "public-ip-test",
+            "CODEX_LOCAL_PUBLIC_ORIGIN": "http://101.42.252.196:3201",
+            "CODEX_LOCAL_OUTER_API_BASE_URL": outer,
+        })
+        assert result.returncode != 0
+        assert "outer" in result.stderr.lower(), result.stderr
+
+
+def test_https_public_test_does_not_accept_the_http_ip_opt_in_origin():
+    result = _access_env(env={
+        "CODEX_LOCAL_ACCESS_MODE": "public-test",
+        "CODEX_LOCAL_PUBLIC_ORIGIN": "http://101.42.252.196:3201",
+        "CODEX_LOCAL_OUTER_API_BASE_URL": "https://test-api.gaotuzhiyuan.com",
+    })
+    assert result.returncode != 0
+    assert "must use https" in result.stderr
+
+
+
+def test_public_ip_test_default_http_port_matches_browser_origin():
+    result = _access_env(env={
+        "CODEX_LOCAL_ACCESS_MODE": "public-ip-test",
+        "CODEX_LOCAL_PUBLIC_ORIGIN": "http://101.42.252.196:80",
+        "CODEX_LOCAL_OUTER_API_BASE_URL": "https://test-api.gaotuzhiyuan.com",
+    })
+    assert result.returncode == 0, result.stderr
+    assert "CODEX_WS_ALLOWED_ORIGINS=http://101.42.252.196" in result.stdout.splitlines()
+    for outer in ("http://101.42.252.196", "http://101.42.252.196:80/"):
+        rejected = _access_env(env={
+            "CODEX_LOCAL_ACCESS_MODE": "public-ip-test",
+            "CODEX_LOCAL_PUBLIC_ORIGIN": "http://101.42.252.196:80",
+            "CODEX_LOCAL_OUTER_API_BASE_URL": outer,
+        })
+        assert rejected.returncode != 0
+        assert "outer" in rejected.stderr.lower()

@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 @Service
 @Slf4j
@@ -34,16 +35,28 @@ import java.util.Map;
 
 public class AliOSSService {
 
+    private static final Pattern NAMESPACE_PATTERN = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]{0,63}");
+
+    public static class OssUnavailableException extends IllegalStateException {
+        public OssUnavailableException() {
+            super("OSS is disabled for this environment");
+        }
+    }
+
     @Autowired
     private OssProperties ossProperties;
     private OSS ossClient;
 
     @PostConstruct
     public void init() {
-        log.info("初始化OSS客户端，endpoint: {},Region:{}, accessKeyId: {}, bucket: {}",
+        namespace();
+        if (!ossProperties.isEnabled()) {
+            log.info("OSS disabled for this environment");
+            return;
+        }
+        log.info("初始化OSS客户端，endpoint: {}, region: {}, bucket: {}",
                 ossProperties.getEndpoint(),
                 ossProperties.getRegion(),
-                ossProperties.getAccessKeyId(),
                 ossProperties.getBucket());
 
         // 创建OSSClient实例。
@@ -70,6 +83,8 @@ public class AliOSSService {
      * 官方链接地址：https://help.aliyun.com/document_detail/31926.html?spm=a2c4g.11186623.6.1737.5f3e3bd36kleqs
      */
     public Map<String, String> getSignature(String dir) {
+        requireEnabled();
+        String scopedDir = scopedKey(dir, true);
         Map<String, String> respMap = new LinkedHashMap<>();
         //host的格式为 bucketName.endpoint
         String host = "https://" + ossProperties.getBucket() + "." + ossProperties.getEndpoint();
@@ -81,7 +96,7 @@ public class AliOSSService {
             // PostObject请求最大可支持的文件大小为5 GB，即CONTENT_LENGTH_RANGE为5*1024*1024*1024。
             PolicyConditions policyConditions = new PolicyConditions();
             policyConditions.addConditionItem(PolicyConditions.COND_CONTENT_LENGTH_RANGE, 0, 200 * 1024 * 1024);
-            policyConditions.addConditionItem(MatchMode.StartWith, PolicyConditions.COND_KEY, dir);
+            policyConditions.addConditionItem(MatchMode.StartWith, PolicyConditions.COND_KEY, scopedDir);
 
             String postPolicy = ossClient.generatePostPolicy(expiration, policyConditions);
             byte[] binaryData = postPolicy.getBytes(StandardCharsets.UTF_8);
@@ -92,7 +107,7 @@ public class AliOSSService {
             respMap.put("bucket", ossProperties.getBucket());
             respMap.put("policy", encodedPolicy);
             respMap.put("signature", postSignature);
-            respMap.put("dir", dir);
+            respMap.put("dir", scopedDir);
             respMap.put("host", host);
             respMap.put("expire", String.valueOf(expireEndTime / 1000));
         } catch (Exception e) {
@@ -107,11 +122,13 @@ public class AliOSSService {
      * @param file 文件
      */
     public String uploadFile(String fileName, File file) {
+        requireEnabled();
+        String objectKey = scopedKey(fileName);
         log.info("开始上传文件到OSS，bucket: {}, fileName: {}, fileSize: {} bytes",
-                ossProperties.getBucket(), fileName, file.length());
+                ossProperties.getBucket(), objectKey, file.length());
 
         // 上传文件
-        PutObjectResult putObjectResult = ossClient.putObject(ossProperties.getBucket(), fileName, file);
+        PutObjectResult putObjectResult = ossClient.putObject(ossProperties.getBucket(), objectKey, file);
 
         log.info("文件上传成功，ETag: {}", putObjectResult.getETag());
         return putObjectResult.getETag();
@@ -122,10 +139,11 @@ public class AliOSSService {
      * 获取下载地址
      */
     public String getDownloadUrl(String fileName) {
+        requireEnabled();
         // 设置URL过期时间为10年
         Date expiration = new Date(System.currentTimeMillis() + 3600L * 1000 * 24 * 20 * 365);
         // 生成URL
-        URL url = ossClient.generatePresignedUrl(ossProperties.getBucket(), fileName, expiration);
+        URL url = ossClient.generatePresignedUrl(ossProperties.getBucket(), scopedKey(fileName), expiration);
         String s = url.toString().substring(0, url.toString().indexOf("?"));
         //生产环境中，OSS地址为内网地址，在此处转成外网地址
         if (s.contains("-internal")) {
@@ -141,12 +159,17 @@ public class AliOSSService {
      * @return 是否下载成功
      */
     public boolean downloadFile(String fileName, String localFilePath) {
+        if (!ossProperties.isEnabled()) {
+            log.info("OSS download skipped because OSS is disabled");
+            return false;
+        }
+        String objectKey = scopedKey(fileName);
         log.info("开始从OSS下载文件，bucket: {}, fileName: {}, localFilePath: {}",
-                ossProperties.getBucket(), fileName, localFilePath);
+                ossProperties.getBucket(), objectKey, localFilePath);
 
         try {
             // 获取OSS对象
-            OSSObject ossObject = ossClient.getObject(ossProperties.getBucket(), fileName);
+            OSSObject ossObject = ossClient.getObject(ossProperties.getBucket(), objectKey);
 
             // 创建本地文件目录
             File localFile = new File(localFilePath);
@@ -173,6 +196,48 @@ public class AliOSSService {
             log.error("从OSS下载文件失败，fileName: {}, localFilePath: {}", fileName, localFilePath, e);
             return false;
         }
+    }
+
+    private void requireEnabled() {
+        if (!ossProperties.isEnabled()) {
+            throw new OssUnavailableException();
+        }
+    }
+
+    private String scopedKey(String key) {
+        return scopedKey(key, false);
+    }
+
+    private String scopedKey(String key, boolean directory) {
+        String namespace = namespace();
+        if (namespace == null) {
+            return key;
+        }
+        if (key == null || key.trim().isEmpty() || key.startsWith("/") || key.indexOf('\\') >= 0) {
+            throw new IllegalArgumentException("OSS key must be relative within ali.oss.namespace");
+        }
+        String[] segments = key.split("/", -1);
+        for (int i = 0; i < segments.length; i++) {
+            String segment = segments[i];
+            if (segment.isEmpty() && directory && i == segments.length - 1) {
+                continue;
+            }
+            if (segment.isEmpty() || ".".equals(segment) || "..".equals(segment)) {
+                throw new IllegalArgumentException("OSS key must be relative within ali.oss.namespace");
+            }
+        }
+        return namespace + "/" + key;
+    }
+
+    private String namespace() {
+        String value = ossProperties.getNamespace();
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        if (!NAMESPACE_PATTERN.matcher(value).matches()) {
+            throw new IllegalArgumentException("ali.oss.namespace must be one safe path segment");
+        }
+        return value;
     }
 
 

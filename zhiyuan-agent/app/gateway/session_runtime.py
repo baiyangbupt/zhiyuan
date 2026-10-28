@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.gateway.ui_events import SessionKey
+from app.gateway.ui_events import EVENT_TYPES, SessionKey, resync_snapshot
 from app.gateway.session_lifecycle import SessionLease, SessionLifecycle
 
 
@@ -130,6 +130,10 @@ class ConnectionChannel:
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize)
         self._task: asyncio.Task[None] | None = None
         self.overflowed = False
+        # Stored replay has its own bounded window; it must not fill the live queue
+        # before the sender starts. Live frames collected during replay follow it.
+        self._replay_frames: list[dict[str, Any]] = []
+        self._replay_watermarks: dict[str, int] = {}
 
     def start(self) -> None:
         if self._closed:
@@ -204,12 +208,34 @@ class ConnectionChannel:
                         "sessionId": self._session_key.session_id,
                     },
                 )
-            except Exception:
-                # 入流出错不能让整轮**静默少事件**：退回旧信封发出去，
-                # 至少用户看得到内容；恢复语义降级为"不可用"。
-                await self.emit_frame(
-                    self._frame_builder(event) if self._frame_builder is not None else event
-                )
+            except Exception as exc:
+                # A V1 connection must not silently downgrade to the legacy
+                # projection, which loses action status and cannot be replayed.
+                # Exception bodies may contain the rejected event: log only type.
+                event_type = event.get("type")
+                logger.error("event_store_append_failed event_type=%s error_class=%s",
+                             event_type if event_type in EVENT_TYPES else "unknown", type(exc).__name__)
+                epoch = ""
+                watermark = 0
+                try:
+                    epoch = str(await self._store.current_epoch(self._session_key) or "")
+                    watermark = await self._store.watermark(self._session_key)
+                except Exception:
+                    pass
+                baseline: dict[str, Any] = {"reason": "event_store_append_failed", "lastSequence": watermark}
+                if event_type == "conversationAction.result":
+                    source = event.get("payload")
+                    if isinstance(source, Mapping):
+                        baseline["actionResult"] = {
+                            key: value[:128] if isinstance(value, str) else value
+                            for key in ("proposalRef", "actionStatus", "newStateVersion", "workspaceVersion")
+                            if isinstance((value := source.get(key)), (str, int))
+                        }
+                await self.emit_frame(resync_snapshot(
+                    session_id=self._session_key.session_id,
+                    turn_id=str(event.get("turnId") or self._turn_id),
+                    stream_epoch=epoch, baseline=baseline,
+                ))
                 return
             await self.emit_frame(numbered.model_dump(by_alias=True))
             return
@@ -217,9 +243,28 @@ class ConnectionChannel:
             self._frame_builder(event) if self._frame_builder is not None else event
         )
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    async def emit_replay_frame(self, frame: dict[str, Any]) -> None:
+        """Queue the already bounded store replay ahead of concurrent live frames."""
+        if self._closed or self.overflowed:
+            return
+        self._replay_frames.append(frame)
+        epoch = frame.get("streamEpoch")
+        sequence = frame.get("sequence")
+        if epoch and isinstance(sequence, int) and sequence > 0:
+            self._replay_watermarks[str(epoch)] = max(
+                sequence, self._replay_watermarks.get(str(epoch), 0)
+            )
+        elif frame.get("type") == "session.resync" and epoch:
+            baseline = (frame.get("payload") or {}).get("baseline") or {}
+            self._replay_watermarks[str(epoch)] = int(baseline.get("lastSequence") or 0)
+
     async def emit_frame(self, frame: dict[str, Any]) -> None:
         """已经拼好的帧（例如终态回复）原样入队——不要再包一层。"""
-        if self.overflowed:
+        if self._closed or self.overflowed:
             return
         try:
             self._queue.put_nowait(frame)
@@ -232,13 +277,24 @@ class ConnectionChannel:
             await self._on_overflow()
 
     async def _drain(self) -> None:
+        replay = iter(self._replay_frames)
         while not self.overflowed:
-            event = await self._queue.get()
+            event = next(replay, None)
+            if event is None:
+                self._replay_frames.clear()
+                event = await self._queue.get()
+                epoch = str(event.get("streamEpoch") or "")
+                sequence = event.get("sequence")
+                if (isinstance(sequence, int) and sequence > 0
+                        and sequence <= self._replay_watermarks.get(epoch, 0)):
+                    continue
             try:
                 delivered = await self._send(event)
             except Exception:
+                self._closed = True
                 return
             if not delivered:
+                self._closed = True
                 return
 
     async def close(self) -> None:
@@ -253,6 +309,8 @@ class ConnectionChannel:
                 await asyncio.gather(self._task, return_exceptions=True)
         finally:
             self._task = None
+            self._replay_frames.clear()
+            self._replay_watermarks.clear()
             if self._connection_lease is not None:
                 self._connection_lease.close()
             self._close_waiter.set_result(None)
@@ -352,7 +410,9 @@ class SessionRuntime:
     async def publish(self, key: SessionKey, event: dict[str, Any]) -> bool:
         """把事件推到该会话的当前连接。没有连接时返回 False，不排队。"""
         channel = self._channels.get(key)
-        if channel is None:
+        if channel is None or getattr(channel, "closed", False):
+            if channel is not None:
+                self.detach_connection(key, channel)
             return False
         lease = self.lifecycle.acquire(key, "publish")
         try:

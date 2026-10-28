@@ -29,6 +29,8 @@ NOTIFICATION_BACKLOG_TTL_SECONDS = 60.0
 # 进程从此再也读不到任何回复，**每一轮都超时，CPU 却空着**（评估器最初报的就是这个）。
 # 16 MiB 比实测最大值高两个数量级；它只是个缓冲上限，不会预分配内存。
 DEFAULT_STDOUT_LINE_LIMIT = 16 * 1024 * 1024
+PROCESS_GRACEFUL_SHUTDOWN_SECONDS = 2.0
+PROCESS_KILL_SHUTDOWN_SECONDS = 2.0
 
 
 class RequestLease(Protocol):
@@ -71,6 +73,8 @@ class AppServerClient:
         self.line_limit = line_limit
         self.process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
+        self._watch_task: asyncio.Task[None] | None = None
         self._pending: dict[int | str, asyncio.Future[dict[str, Any]]] = {}
         self._notification_backlog: list[tuple[float, dict[str, Any]]] = []
         self._notification_waiters: list[
@@ -78,6 +82,10 @@ class AppServerClient:
         ] = []
         self._next_id = 0
         self._closed = False
+        # start/close/restart all mutate the same process and reader handles.
+        # Serializing only restart is insufficient: a concurrent close can
+        # otherwise return early after _closed flips and overwrite a new child.
+        self._lifecycle_lock = asyncio.Lock()
         self.server_request_handler = server_request_handler
         self.server_request_lease_factory = server_request_lease_factory
         self._server_request_tasks: set[asyncio.Task[None]] = set()
@@ -128,6 +136,10 @@ class AppServerClient:
         return len(self._pending)
 
     async def start(self) -> None:
+        async with self._lifecycle_lock:
+            await self._start_unlocked()
+
+    async def _start_unlocked(self) -> None:
         if self.process is not None:
             return
         self.process = await asyncio.create_subprocess_exec(
@@ -144,8 +156,8 @@ class AppServerClient:
         if self._on_runtime_started is not None:
             self._on_runtime_started(self.runtime_generation)
         self._reader_task = asyncio.create_task(self._read_stdout())
-        asyncio.create_task(self._read_stderr())
-        asyncio.create_task(self._watch_process_exit())
+        self._stderr_task = asyncio.create_task(self._read_stderr())
+        self._watch_task = asyncio.create_task(self._watch_process_exit())
 
     async def _watch_process_exit(self) -> None:
         """进程退出时把**退出码**记下来。
@@ -452,25 +464,76 @@ class AppServerClient:
             logger.debug("app-server: %s", raw_line.decode(errors="replace").rstrip())
 
     async def close(self) -> None:
-        if self._closed:
+        async with self._lifecycle_lock:
+            await self._close_unlocked()
+
+    async def _close_unlocked(self) -> None:
+        if (
+            self._closed
+            and (self.process is None or self.process.returncode is not None)
+            and self._reader_task is None
+            and self._stderr_task is None
+            and self._watch_task is None
+        ):
             return
         self._closed = True
         if self.process is not None:
             if self.process.stdin is not None:
                 self.process.stdin.close()
+            process_wait = asyncio.create_task(self.process.wait())
             try:
-                await asyncio.wait_for(self.process.wait(), timeout=2)
-            except (asyncio.TimeoutError, ProcessLookupError):
-                self.process.kill()
-                await self.process.wait()
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            await asyncio.gather(self._reader_task, return_exceptions=True)
+                try:
+                    # Keep one waiter across both deadlines. Cancelling
+                    # Process.wait() at the first can strand the second.
+                    await asyncio.wait_for(
+                        asyncio.shield(process_wait),
+                        timeout=PROCESS_GRACEFUL_SHUTDOWN_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    try:
+                        self.process.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(process_wait),
+                            timeout=PROCESS_KILL_SHUTDOWN_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        # A reaped child may still wait for pipe EOF. A live
+                        # child must retain its handle for a later retry.
+                        if self.process.returncode is None:
+                            raise RuntimeError("app server did not exit after kill")
+            finally:
+                if not process_wait.done():
+                    process_wait.cancel()
+                await asyncio.gather(process_wait, return_exceptions=True)
+        tasks = [
+            task for task in (self._reader_task, self._stderr_task, self._watch_task)
+            if task is not None
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._reader_task = None
+        self._stderr_task = None
+        self._watch_task = None
 
     @property
     def is_running(self) -> bool:
         """进程还在吗。已退出与从未启动是两种状态，但对调用方同样是"用不了"。"""
         return self.process is not None and self.process.returncode is None
+
+    @property
+    def needs_restart(self) -> bool:
+        """Whether the current child or its stdout protocol reader has ended."""
+        return (
+            self._closed
+            or self.process is None
+            or not self.is_running
+            or self._ended_generation == self.runtime_generation
+        )
 
     async def restart(self) -> None:
         """重拉 app-server。
@@ -479,7 +542,25 @@ class AppServerClient:
         resume 某个 thread 时 codex 直接退出）。没有这个入口，恢复路径就只能
         撞在一个死进程上，整个 agent 跟着一起废——新建会话也一样失败。
         """
-        await self.close()
+        async with self._lifecycle_lock:
+            await self._restart_unlocked()
+
+    async def restart_if_unhealthy(self) -> bool:
+        """Single-flight recovery for callers that observed one child failure.
+
+        Recheck under the lock: another session may already have installed a
+        healthy generation while this caller was waiting to recover.
+        """
+        async with self._lifecycle_lock:
+            if not self.needs_restart:
+                return False
+            await self._restart_unlocked()
+            return True
+
+    async def _restart_unlocked(self) -> None:
+        await self._close_unlocked()
+        if self.process is not None and self.process.returncode is None:
+            raise RuntimeError("cannot replace a live app server")
         self._closed = False
         # 死进程留下的在途状态一律丢掉：backlog 与 pending 都是它的遗物，
         # 带着它们重拉等于把旧世界的等待者接到新进程上。
@@ -490,4 +571,4 @@ class AppServerClient:
                 future.set_exception(AppServerExited("app server restarted"))
         self._notification_waiters.clear()
         self.process = None
-        await self.start()
+        await self._start_unlocked()

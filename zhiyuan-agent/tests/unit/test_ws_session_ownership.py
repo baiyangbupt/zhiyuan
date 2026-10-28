@@ -50,8 +50,7 @@ async def test_trusted_connection_is_owned_before_first_message_and_released_on_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancel", [False, True])
-@pytest.mark.parametrize("detach", [False, True])
-async def test_replay_failure_or_cancel_closes_connection_and_preserves_route_policy(monkeypatch, cancel, detach):
+async def test_replay_failure_or_cancel_always_detaches_closed_connection(cancel):
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -64,7 +63,6 @@ async def test_replay_failure_or_cancel_closes_connection_and_preserves_route_po
     runtime.detach_work(KEY, release.wait, label="detached action")
     await runtime.submit(KEY, client_request_id="", ui_turn_id="turn-1", work=asyncio.Event().wait)
     socket, receiving = socket_for(runtime, store=SimpleNamespace(current_epoch=current_epoch))
-    monkeypatch.setattr("app.server._DETACH_ON_CLOSE", detach)
     task = asyncio.create_task(_handle_gateway_ws_loop(socket, None))
     try:
         await entered.wait()
@@ -77,7 +75,7 @@ async def test_replay_failure_or_cancel_closes_connection_and_preserves_route_po
         result = (await asyncio.gather(task, return_exceptions=True))[0]
         assert isinstance(result, asyncio.CancelledError if cancel else RuntimeError)
         assert runtime.lifecycle.inspect(KEY).owners.get("connection", 0) == 0
-        assert runtime.current_channel(KEY) is (None if detach else channel)
+        assert runtime.current_channel(KEY) is None
     finally:
         release.set()
         task.cancel()

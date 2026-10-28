@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 from app.config import CodexAppServerConfig
 from app.gateway.artifact_store import SqliteArtifactStore
 from app.gateway.service import GatewayService
+from app.gateway.runtime_policy import policy_arguments, verify_binary, validate_effective_policy
 from app.gateway.session_lifecycle import SessionLifecycle
 from app.gateway.session_reclaim import SessionReclaimPreflight
 from app.gateway.session_runtime import SessionRuntime
@@ -46,6 +47,7 @@ NATIVE_USER_INPUT_CAPABILITIES = {
     "extensions": {"openai/standard-form-input": {}},
 }
 from app.harness.codex import CodexAppServerHarness
+from app.mcp_server.skill_resources import skill_instructions
 
 
 @dataclass(slots=True)
@@ -77,6 +79,7 @@ def build_codex_command(mode: str, config: CodexAppServerConfig) -> list[str]:
             "}"
         )
         command.extend(["--config", mcp_config])
+    command.extend(policy_arguments())
     if config.user_input_mode == "native":
         # 默认不传：这是"替运维做了一次他们没做过的决定"，
         # 而那条路的开关是 A1 实证过的、有前提的。
@@ -115,15 +118,24 @@ async def build_gateway_runtime(
     skill_root = resolved_config.skill_root or str(
         Path(__file__).resolve().parents[2] / "skills" / "codex"
     )
-    if codex is None:
+    owns_codex = codex is None
+    if owns_codex:
         if resolved_config.transport != "stdio":
             raise ValueError(f"unsupported Codex transport: {resolved_config.transport}")
+
+        async def verify_effective(client):
+            if mode in {"codex_readonly", "codex_write"}:
+                effective = await client.request("config/read", {"includeLayers": False, "cwd": skill_root})
+                validate_effective_policy(effective)
+
         codex = CodexAppServerHarness(
             build_codex_command(mode, resolved_config),
             request_timeout=resolved_config.timeout_seconds,
             skill_root=skill_root,
             approval_policy=resolved_config.approval_policy,
             sandbox_policy=resolved_config.sandbox_policy,
+            before_start=lambda: verify_binary(resolved_config),
+            after_initialize=verify_effective,
             # 能力声明与开关必须同进同退：只开开关不声明能力，
             # 服务端不会把标准表单请求转发过来。
             capabilities=(
@@ -146,6 +158,9 @@ async def build_gateway_runtime(
             write_rules = _load_default_instructions(skill_root, "developer_instructions.write.md")
             if write_rules:
                 developer_instructions = f"{developer_instructions}\n\n{write_rules}"
+
+    if mode in {"codex_readonly", "codex_write"}:
+        developer_instructions = f"{developer_instructions}\n\n{skill_instructions()}"
 
     await codex.start()
     # 没有这一步，原生提问会被 client 的默认分支回成 `{"result": null}`——

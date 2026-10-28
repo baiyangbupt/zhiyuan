@@ -393,6 +393,41 @@ async def test_a_runtime_restart_drops_the_threads_of_the_dead_process() -> None
 
 
 @pytest.mark.asyncio
+async def test_two_sessions_recover_one_shared_failed_runtime(monkeypatch) -> None:
+    harness = await _harness()
+    gateway = _gateway(harness, None)
+    first = SessionKey(tenant_id="1", session_id="42")
+    second = SessionKey(tenant_id="2", session_id="42")
+    gateway._threads.update({first: "old-first", second: "old-second"})
+    process = harness.client.process
+    assert process is not None
+    old_generation = harness.client.runtime_generation
+    starts = 0
+    original_start = harness.client._start_unlocked
+
+    async def count_start() -> None:
+        nonlocal starts
+        starts += 1
+        await original_start()
+
+    monkeypatch.setattr(harness.client, "_start_unlocked", count_start)
+    await harness.client.request("test/exit", {})
+    assert harness.client._reader_task is not None
+    await asyncio.wait_for(harness.client._reader_task, timeout=5)
+
+    try:
+        await asyncio.gather(gateway._restart_runtime(), gateway._restart_runtime())
+        assert starts == 1
+        assert harness.client.runtime_generation != old_generation
+        assert harness.client.is_running
+        assert gateway._threads == {}
+        assert (await _turn(gateway, tenant_id="1", session_id="42")).get("reply")
+        assert (await _turn(gateway, tenant_id="2", session_id="42")).get("reply")
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
 async def test_after_a_runtime_restart_the_bound_thread_is_resumed_not_rebuilt() -> None:
     """重拉换掉的是**进程**，不是 thread：有绑定的会话下一轮 resume 回来。
 

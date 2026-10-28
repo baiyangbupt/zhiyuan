@@ -2,6 +2,7 @@ package com.ytell.zhiyuan.web.controller;
 
 import com.ytell.zhiyuan.common.base.BaseResponse;
 import com.ytell.zhiyuan.common.exception.ConversationAccessException;
+import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.planning.CandidateFilterOptionsDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolQueryReq;
@@ -199,6 +200,12 @@ public class PlanningFacadeController {
                                                               @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
                                                               @RequestBody(required = false) FixProposalApplyReq req) {
         requireOwnedSession(tenantId, chatSessionId);
+        // user_goal 的唯一写入口是 pending confirm -> claimed command execute。
+        // 直接调用此 facade 没有 claimToken，也不会写 operation 台账或完成 pending。
+        if (req != null && "user_goal".equalsIgnoreCase(
+                req.getProposalSource() == null ? "" : req.getProposalSource().trim())) {
+            throw new BusinessException(409, "user_goal_requires_confirmation");
+        }
         log.info("facade applyFixProposal: tenantId={}, chatSessionId={}, proposalId={}",
                 tenantId, chatSessionId, req == null ? null : req.getProposalId());
         return BaseResponse.success(planningStateService.applyFixProposal(tenantId, chatSessionId, req));

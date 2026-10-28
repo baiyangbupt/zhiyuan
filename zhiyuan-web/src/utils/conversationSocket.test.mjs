@@ -57,3 +57,16 @@ test('public-test ignores a stale non-empty legacy base (任务书验收原文)'
     'wss://test-wwww.gaotuzhiyuan.com'
   );
 });
+
+test('public-ip-test always uses the page origin despite stale overrides', () => {
+  for (const override of ['', undefined, 'ws://127.0.0.1:18291', 'wss://old.example']) {
+    assert.equal(
+      socketBase({ protocol: 'http:', host: '101.42.252.196:3201' }, override, 'public-ip-test'),
+      'ws://101.42.252.196:3201'
+    );
+  }
+  assert.equal(
+    socketBase({ protocol: 'https:', host: '101.42.252.196:3201' }, 'ws://old.example', 'public-ip-test'),
+    'wss://101.42.252.196:3201'
+  );
+});

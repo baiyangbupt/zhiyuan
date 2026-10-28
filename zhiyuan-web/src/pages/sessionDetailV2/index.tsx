@@ -198,6 +198,13 @@ const SessionDetailV2 = () => {
     proposalRef?: string;
     proposalId?: string;
     actionStatus?: string;
+    receipt?: {
+      addedCount?: number;
+      removedCount?: number;
+      reorderedCount?: number;
+      after?: number;
+      countMode?: string;
+    };
     /** 下面几格服务端**可能**会带上（`blocked` 那一档的卡要说得出"为什么" ✓）：
      *  有就展示、没有就优雅降级 ✓——前端不依赖它们存在 ✗（口径见 `MessageList`）。 */
     kind?: string;
@@ -529,6 +536,7 @@ const SessionDetailV2 = () => {
         setFetchFlag={setFetchFlag}
         doChatRights={doChatRights || undefined}
         onWorkspaceIntent={handleWorkspaceIntent}
+        onSessionResync={fetchSessionDetail}
         lastProposal={lastProposal}
         alwaysShowQuickReplyActions={isMobile}
         quickReplyActions={

@@ -176,7 +176,7 @@ async def _turn(gateway: GatewayService, turn_id: str = "ui-1") -> dict[str, Any
 async def test_confirm_from_the_model_runs_the_card_path_and_lands_in_the_turn_result(monkeypatch):
     """① 打字"确认" → 执行链走完（claim→execute→complete），结果挂进回合结果 ✓。"""
     resolver = _Recorder([
-        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}},
         {"code": 0, "status": "completed"},
     ])
     executor = _Recorder([
@@ -238,7 +238,7 @@ async def test_score_updates_share_the_same_execution_and_failure_contract(monke
         "expectedSourceVersion": 5, "intent": "explicit",
     }
     resolver = _Recorder([
-        {"code": 0, "data": {"status": "applying", "revision": 2}},
+        {"code": 0, "data": {"status": "applying", "revision": 2, "transitionApplied": True}},
         {"code": 0, "data": {"status": "applied" if business_code == 0 else "expired"}},
     ])
     executor = _Recorder([
@@ -310,7 +310,7 @@ async def test_a_rejected_confirm_reports_a_failure_code_instead_of_being_droppe
 @pytest.mark.asyncio
 async def test_an_executor_crash_becomes_a_failed_result_not_a_broken_turn(monkeypatch):
     """③ 执行器抛异常 → failed 结果（有码有措辞）✓——不静默、也不整轮崩溃 ✓。"""
-    resolver = _Recorder([{"code": 0, "status": "applying", "data": {"revision": 2}}])
+    resolver = _Recorder([{"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}}])
 
     async def _boom(*args, **kwargs):
         raise RuntimeError("java down")
@@ -355,7 +355,7 @@ async def test_add_units_confirm_uses_frozen_command_and_skips_proposal_apply(mo
     """点名加入：网关只发 5 个字段，不构造 proposalApply/canonical；
     回执 actualChanges/reviewState 透传到 conversationAction.result。"""
     resolver = _Recorder([
-        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}},
         {"code": 0, "status": "completed"},
     ])
     executor = _Recorder([
@@ -423,7 +423,7 @@ async def test_add_units_confirm_uses_frozen_command_and_skips_proposal_apply(mo
 async def test_replace_units_confirm_uses_frozen_command_and_skips_proposal_apply(monkeypatch):
     """等量替换：网关同样只发 5 个字段，换入/换出集合由 Java 从 frozenCommand 读取。"""
     resolver = _Recorder([
-        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}},
         {"code": 0, "status": "completed"},
     ])
     executor = _Recorder([
@@ -492,7 +492,7 @@ async def test_replace_units_confirm_uses_frozen_command_and_skips_proposal_appl
 @pytest.mark.asyncio
 async def test_remove_units_confirm_uses_frozen_command_and_reports_removed(monkeypatch):
     resolver = _Recorder([
-        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}},
         {"code": 0, "status": "completed"},
     ])
     executor = _Recorder([
@@ -557,7 +557,7 @@ async def test_remove_units_confirm_uses_frozen_command_and_reports_removed(monk
 @pytest.mark.asyncio
 async def test_move_units_confirm_uses_frozen_command_and_reports_positions(monkeypatch):
     resolver = _Recorder([
-        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}},
         {"code": 0, "status": "completed"},
     ])
     executor = _Recorder([

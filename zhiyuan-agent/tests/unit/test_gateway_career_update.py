@@ -341,7 +341,7 @@ async def test_the_full_chain_from_prepared_pending_to_patched_profile(monkeypat
         resolve_calls.append(kwargs)
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "applied"}}
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         raise AssertionError("career_update 不许走 pending-command 执行器（Java 没有这一族）")
@@ -402,7 +402,7 @@ async def test_a_replayed_pending_that_is_already_recorded_is_a_no_op(monkeypatc
     async def resolver(session_id=None, *args, **kwargs):
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "applied"}}
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     payload = {
         "pendingId": "career_p",
@@ -450,7 +450,7 @@ async def test_unreadable_profile_refuses_to_write(monkeypatch):
         resolve_calls.append(kwargs)
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "failed"}}
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     payload = {
         "pendingId": "career_p",
@@ -496,7 +496,7 @@ async def test_refuses_to_execute_when_the_pending_is_incomplete(monkeypatch, re
     payload.pop(removed_key)
 
     async def resolver(session_id=None, *args, **kwargs):
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         raise AssertionError("pending 不完整时执行器一次都不该被调")
@@ -545,7 +545,7 @@ async def test_detection_accepts_each_producer_marker(monkeypatch, marker: str) 
     async def resolver(session_id=None, *args, **kwargs):
         if kwargs.get("action") in {"complete", "fail"}:
             return {"code": 0, "data": {"status": "applied"}}
-        return {"code": 0, "data": {"status": "applying", "revision": 4}}
+        return {"code": 0, "data": {"status": "applying", "revision": 4, "transitionApplied": True}}
 
     async def executor(*args, **kwargs):
         raise AssertionError("career_update 不许走 pending-command 执行器")

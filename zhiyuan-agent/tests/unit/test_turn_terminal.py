@@ -377,14 +377,15 @@ async def test_a_conversation_action_result_is_emitted() -> None:
         "workspaceVersion",
         "code",
         "message",
-        "actualChanges",
-        "reviewState",
+        "requiresWorkspaceReload",
     }
     assert payload["actionStatus"] == "cancelled"
     assert payload["workspaceVersion"] == 3
-    # 回执字段（actualChanges/reviewState）已进白名单：卡要能展示真实变更，
-    # 不能只给 actionStatus（2026-10-17/18 add_units 回执链）。
-    assert payload["actualChanges"] == {}
+    # Detailed state is fetched independently; large reviews must not overflow
+    # the event store and lose this confirmation receipt.
+    assert payload["requiresWorkspaceReload"] is True
+    assert "actualChanges" not in payload
+    assert "reviewState" not in payload
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ import {
   parseConversationActionResult,
   applyPendingActionResult,
   sanitizeV1Payload,
+  shouldReloadAfterConversationAction,
 } from './conversationEvents.mjs';
 
 test('reads action results from native and compatibility websocket envelopes', () => {
@@ -346,6 +347,7 @@ test('失败原因、回执与 J3 动作元数据随动作结果通过白名单'
       origin: 'user',
       actionType: 'add_units',
       scope: 'plan',
+      requiresWorkspaceReload: true,
       receipt,
       actualChanges,
       reviewState,
@@ -359,6 +361,7 @@ test('失败原因、回执与 J3 动作元数据随动作结果通过白名单'
   assert.equal(normalized.payload.origin, 'user');
   assert.equal(normalized.payload.actionType, 'add_units');
   assert.equal(normalized.payload.scope, 'plan');
+  assert.equal(normalized.payload.requiresWorkspaceReload, true);
   assert.deepEqual(normalized.payload.receipt, receipt);
   assert.deepEqual(normalized.payload.actualChanges, actualChanges);
   assert.deepEqual(normalized.payload.reviewState, reviewState);
@@ -399,4 +402,16 @@ test('interpretation.preview 是合法 V1 事件，且只放行有界摘要字�
   assert.equal(payload.caveatDetails[1].level, 'soft');
   assert.equal(payload.path, undefined);
   assert.equal(payload.evidenceRefs, undefined);
+});
+
+
+test('action results refresh canonical workspace and parent detail when applied or explicitly requested', () => {
+  const event = payload => ({type:'conversationAction.result',payload});
+  assert.equal(shouldReloadAfterConversationAction(event({actionStatus:'applied'})),true);
+  for (const actionStatus of ['stale_state','failed','cancelled','applying']) {
+    assert.equal(shouldReloadAfterConversationAction(event({actionStatus,requiresWorkspaceReload:true})),true);
+    assert.equal(shouldReloadAfterConversationAction(event({actionStatus})),false);
+    assert.equal(shouldReloadAfterConversationAction(event({actionStatus,requiresWorkspaceReload:'true'})),false);
+  }
+  assert.equal(shouldReloadAfterConversationAction({type:'tool.progress',payload:{requiresWorkspaceReload:true}}),false);
 });

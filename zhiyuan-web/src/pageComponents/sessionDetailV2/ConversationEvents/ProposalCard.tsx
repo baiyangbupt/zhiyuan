@@ -3,6 +3,7 @@ import { Alert, Button, Space, Tag, Typography } from 'antd';
 
 import {
   PROPOSAL_STALE_STATE_TEXT,
+  compactActionReceiptText,
   isSettledProposalStatus,
   proposalBlockedText,
   proposalCardStatusTagText,
@@ -113,6 +114,13 @@ type Props = {
     proposalRef?: string;
     code?: string;
     message?: string;
+    receipt?: {
+      addedCount?: number;
+      removedCount?: number;
+      reorderedCount?: number;
+      after?: number;
+      countMode?: string;
+    };
     actualChanges?: Array<{
       type?: string;
       volunteerIds?: string[];
@@ -153,6 +161,7 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
   // 判据全在 `proposalDecision.mjs`（纯逻辑 + 单测 ✓）；这里只做"挂表 + 定时器 + 渲染"。
   // 旧实现在这放了个 `submitting`，但它只包住"发帧"那一个 await ✗——`sendMessage`
   // 是即发即返回的 ✓，帧一出门 loading 就没了 ✓，而结果要等 claim/execute 才回来 ✓。
+  const compactReceipt = compactActionReceiptText(actionResult);
   const [decision, setDecision] = useState<any>(null);
   // ref 是同步的真相来源（同一帧里的重复点击靠它拦 ✓），state 只负责触发渲染 ✓。
   const decisionRef = useRef<any>(null);
@@ -444,8 +453,9 @@ const ProposalCard: React.FC<Props> = ({ proposal, onDecide, actionResult, disab
         旧后端没有这两个字段时整块不渲染，旧前端行为不变。
       */}
       {action === 'applied' &&
-      (actionResult?.actualChanges?.length || actionResult?.reviewState?.summary) ? (
+      (actionResult?.actualChanges?.length || actionResult?.reviewState?.summary || compactReceipt) ? (
         <div data-testid="proposal-action-receipt" style={{ marginTop: 8, fontSize: 13 }}>
+          {compactReceipt ? <div data-testid="proposal-compact-receipt">{compactReceipt}</div> : null}
           {actionResult?.actualChanges?.map((change, index) => {
             const before = change.targetCountBefore;
             const after =

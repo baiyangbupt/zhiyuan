@@ -33,7 +33,7 @@ import {
   pendingClarifications,
   reduceConversation,
 } from '@/utils/conversationSession.mjs';
-import { isConversationV1Event, toConversationEvent } from '@/utils/conversationEvents.mjs';
+import { isConversationV1Event, toConversationEvent, shouldReloadAfterConversationAction } from '@/utils/conversationEvents.mjs';
 import { fetchWsTicketApi } from '@/service/apis/conversationAccess';
 import {
   buildClarificationAnswerFrame,
@@ -121,6 +121,7 @@ interface IMessageListProps {
   quickReplyActions?: IQuickReplyAction[];
   alwaysShowQuickReplyActions?: boolean;
   onWorkspaceIntent?: (intent: Omit<PlanningWorkspaceIntent, 'nonce'>) => void;
+  onSessionResync?: () => void;
   /**
    * **会话里最后一条提案的落定状态**（来自会话详情 ✓）：冷加载时补一张卡用 ✓✗。
    *
@@ -134,6 +135,13 @@ interface IMessageListProps {
     proposalRef?: string;
     proposalId?: string;
     actionStatus?: string;
+    receipt?: {
+      addedCount?: number;
+      removedCount?: number;
+      reorderedCount?: number;
+      after?: number;
+      countMode?: string;
+    };
     sourceVersion?: number;
     /**
      * 待确认的家族（服务端 `LastProposalVo.kind`，2026-10-16 起随包已在 ✓）：
@@ -393,6 +401,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     quickReplyActions,
     alwaysShowQuickReplyActions,
     onWorkspaceIntent,
+    onSessionResync,
     lastProposal,
     setScrollEleIndex,
     setFetchFlag,
@@ -936,16 +945,15 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
           resetAnswerLoading();
           fetchLatestMessageList();
         } else if (conversationEvent.type === 'session.resync') {
-          // resync 重置了基线，列表必须整体对齐，否则页面会停在旧基线上。
+          // Actions can finish while disconnected; parent detail owns lastProposal.
           fetchLatestMessageList();
-        } else if (
-          conversationEvent.type === 'conversationAction.result' &&
-          (conversationEvent.payload as any)?.actionStatus === 'applied'
-        ) {
-          // 只有**已生效**才对齐：确认中、已取消、过期都不需要重拉，
-          // 而"确认中"去重拉会让用户以为已经生效了。
+          onSessionResync?.();
+          setFetchFlag(prev => prev + 1);
+        } else if (shouldReloadAfterConversationAction(conversationEvent)) {
+          // The result requests canonical state, including the parent's lastProposal.
           resetAnswerLoading();
           fetchLatestMessageList();
+          onSessionResync?.();
           // 工作区也要跟着刷新：正式方案变了而工作区停旧版本，
           // 用户会照着旧方案继续操作。
           setFetchFlag(prev => prev + 1);
@@ -2453,6 +2461,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                         ? ''
                         : lastProposal.actionStatus,
                     proposalRef: lastProposal.proposalRef,
+                    receipt: lastProposal.receipt,
                   }
                 }
                 onDecide={(action) => handleColdFallbackProposalDecision(action)}

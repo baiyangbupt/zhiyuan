@@ -38,10 +38,13 @@ import com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerSourceDataSnapshot;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateVersionDTO;
 import com.ytell.zhiyuan.model.dto.planning.PrepareResultDTO;
+import com.ytell.zhiyuan.model.dto.planning.PendingPlanningCommandRes;
+import com.ytell.zhiyuan.model.dto.planning.PlanChangePostconditionReportDTO;
 import com.ytell.zhiyuan.model.dto.planning.ScoreUpdatePreviewDTO;
 import com.ytell.zhiyuan.model.dto.planning.StudentPlanningSummaryDTO;
 import com.ytell.zhiyuan.model.dto.volunteer.VolunteerSchoolGroup;
 import com.ytell.zhiyuan.model.entity.biz.ChatSession;
+import com.ytell.zhiyuan.model.entity.biz.PlanningPendingCommandEntity;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.enums.*;
 import com.ytell.zhiyuan.model.req.ChatSessionPageQuery;
@@ -49,6 +52,7 @@ import com.ytell.zhiyuan.model.vo.*;
 import com.ytell.zhiyuan.service.GaotuService;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
+import com.ytell.zhiyuan.service.shared.PlanningPendingCommandSharedService;
 import com.ytell.zhiyuan.service.volunteer.AdvantageSubjectService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerDataTransformService;
 import com.ytell.zhiyuan.web.interceptor.UserBaseData;
@@ -104,6 +108,8 @@ public class ChatSessionBizService {
     /** 会话详情里"最后一条提案"那一格要读它（见 `buildLastProposal`）。 */
     @Autowired
     private PendingConfirmationBizService pendingConfirmationBizService;
+    @Autowired
+    private PlanningPendingCommandSharedService planningPendingCommandSharedService;
     @Autowired
     private GaotuService gaotuService;
     @Autowired
@@ -1080,7 +1086,79 @@ public class ChatSessionBizService {
                 .disabledReason(reviewPaused ? ReviewPolicy.REASON_PAUSED : null)
                 .strategy(frozenProposal == null ? null : asString(frozenProposal.get("strategy")))
                 .scoreSummary(dataValue == null ? null : dataValue.get("scoreSummary"))
+                .receipt(loadColdExecutionReceipt(tenantId, chatSessionId, pending, dataValue))
                 .build();
+    }
+
+    private LastProposalVo.Receipt loadColdExecutionReceipt(
+            Long tenantId, Long chatSessionId, PendingConfirmationRes pending,
+            Map<String, Object> dataValue) {
+        if (!"applied".equals(pending.getStatus()) || dataValue == null) {
+            return null;
+        }
+        String operationId = boundedText(dataValue.get("operationId"), 128);
+        String actionType = boundedText(pending.getActionFamily(), 96);
+        if (operationId == null || actionType == null
+                || (dataValue.get("commandType") != null
+                && !actionType.equals(asString(dataValue.get("commandType"))))) {
+            return null;
+        }
+        try {
+            PlanningPendingCommandEntity command = planningPendingCommandSharedService
+                    .getSucceededForPendingOperation(tenantId, chatSessionId,
+                            pending.getPendingId(), operationId, actionType);
+            if (command == null || !Objects.equals(tenantId, command.getTenantId())
+                    || !Objects.equals(chatSessionId, command.getChatSessionId())
+                    || !pending.getPendingId().equals(command.getPendingId())
+                    || !operationId.equals(command.getOperationId())
+                    || !actionType.equals(command.getCommandType())
+                    || !"succeeded".equals(command.getStatus())
+                    || Strings.isNullOrEmpty(command.getResultJson())) {
+                return null;
+            }
+            PendingPlanningCommandRes result = JSONObject.parseObject(
+                    command.getResultJson(), PendingPlanningCommandRes.class);
+            if (result == null || !operationId.equals(result.getOperationId())
+                    || !pending.getPendingId().equals(result.getPendingId())
+                    || !actionType.equals(result.getCommandType())
+                    || (result.getStatus() != null && !"applied".equals(result.getStatus()))) {
+                return null;
+            }
+            PlanChangePostconditionReportDTO report = result.getPostconditionReport();
+            LastProposalVo.Receipt receipt = new LastProposalVo.Receipt();
+            receipt.setOperationId(operationId);
+            receipt.setActionType(actionType);
+            receipt.setCountMode(report == null ? null : boundedText(report.getCountMode(), 32));
+            receipt.setBefore(boundedCount(result.getTargetCountBefore() != null
+                    ? result.getTargetCountBefore() : report == null ? null : report.getCountBefore()));
+            receipt.setAfter(boundedCount(result.getTargetCountAfter() != null
+                    ? result.getTargetCountAfter() : report == null ? null : report.getActualCount()));
+            receipt.setAddedCount(boundedCount(result.getAddedVolunteerCount() != null
+                    ? result.getAddedVolunteerCount() : report == null ? null : report.getAddedVolunteerCount()));
+            receipt.setRemovedCount(boundedCount(result.getRemovedVolunteerCount() != null
+                    ? result.getRemovedVolunteerCount() : report == null ? null : report.getRemovedVolunteerCount()));
+            if (result.getMovedUnitIds() != null && !result.getMovedUnitIds().isEmpty()) {
+                receipt.setReorderedCount(boundedCount(result.getMovedUnitIds().size()));
+            } else if (result.getMovedVolunteerIds() != null && !result.getMovedVolunteerIds().isEmpty()) {
+                receipt.setReorderedCount(boundedCount(result.getMovedVolunteerIds().size()));
+            }
+            receipt.setPostconditionSatisfied(report == null ? null : report.getSatisfied());
+            return receipt;
+        } catch (RuntimeException ex) {
+            // 详情仍可显示提案；损坏或暂不可读的命令台账不能变成猜测的回执。
+            log.warn("getUserSessionDetail: cold execution receipt unavailable, chatSessionId={}, errorClass={}",
+                    chatSessionId, ex.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    private String boundedText(Object value, int maxLength) {
+        String text = value == null ? null : String.valueOf(value).trim();
+        return text == null || text.isEmpty() || text.length() > maxLength ? null : text;
+    }
+
+    private Integer boundedCount(Integer value) {
+        return value != null && value >= 0 && value <= 1_000_000 ? value : null;
     }
 
     /** `dataValue` 里的值是 JSON 反序列化出来的 `Object`：不是数字就当作没有，别让详情接口为此报错。 */

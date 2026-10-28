@@ -542,7 +542,7 @@ async def test_a_model_confirm_puts_a_result_event_on_the_stream(monkeypatch) ->
     from app.harness.binding import ThreadBinding
 
     resolve = _JavaRecorder([
-        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}},
         {"code": 0, "status": "completed"},
     ])
     execute = _JavaRecorder([
@@ -695,7 +695,7 @@ async def test_a_clicked_confirm_continues_the_thread_on_a_fresh_turn(monkeypatc
     from app.harness.binding import ThreadBinding
 
     resolve = _JavaRecorder([
-        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}},
         {"code": 0, "status": "completed"},
     ])
     execute = _JavaRecorder([
@@ -856,7 +856,7 @@ async def test_a_failed_confirm_gets_a_continuation_turn_that_owns_the_failure(m
     from app.harness.binding import ThreadBinding
 
     resolve = _JavaRecorder([
-        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}},
         {"code": 0, "status": "failed"},  # 回写 pending 的 fail（claim token 复用 ✓）
     ])
     execute = _JavaRecorder([
@@ -966,7 +966,7 @@ async def test_a_failed_continuation_is_told_once_and_never_loops(monkeypatch) -
     from app.harness.binding import ThreadBinding
 
     resolve = _JavaRecorder([
-        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}},
         {"code": 0, "status": "completed"},
     ])
     execute = _JavaRecorder([
@@ -1205,7 +1205,7 @@ async def test_a_clicked_career_confirm_patches_the_profile_and_continues(monkey
     from app.util import internal_client
 
     resolve = _JavaRecorder([
-        {"code": 0, "status": "applying", "data": {"revision": 2}},
+        {"code": 0, "status": "applying", "data": {"revision": 2, "transitionApplied": True}},
         {"code": 0, "status": "completed"},
     ])
     execute = _JavaRecorder([])  # career 不许走 pending-command 执行器

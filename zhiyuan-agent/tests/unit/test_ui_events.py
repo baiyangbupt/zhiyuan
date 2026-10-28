@@ -86,9 +86,8 @@ def test_adapter_output_never_contains_raw_arguments_or_results() -> None:
         assert "minScore" not in rendered
 
 
-def test_agent_message_delta_is_a_discardable_hint_with_minimal_payload() -> None:
-    """增量提示的最小形状 ✓：`{chunk, itemId?}` ✓——`itemId` 缺省**不填** ✓
-    （替身的增量就不带它 ✓），空增量不产事件 ✓（不然会多出空帧 ✓）。"""
+def test_agent_message_delta_is_private_until_business_validation() -> None:
+    """No raw prose, including a readable prefix, may precede validation."""
     with_item = adapt_notification(
         {"method": "item/agentMessage/delta",
          "params": {"delta": "你", "itemId": "msg_1", "turnId": "turn_1"}},
@@ -98,8 +97,8 @@ def test_agent_message_delta_is_a_discardable_hint_with_minimal_payload() -> Non
         {"method": "item/agentMessage/delta", "params": {"delta": "好"}}, "ui-turn"
     )
 
-    assert with_item == [{"type": "assistant.delta", "payload": {"chunk": "你", "itemId": "msg_1"}}]
-    assert without_item == [{"type": "assistant.delta", "payload": {"chunk": "好"}}]
+    assert with_item == []
+    assert without_item == []
     assert adapt_notification(
         {"method": "item/agentMessage/delta", "params": {"delta": ""}}, "ui-turn"
     ) == []

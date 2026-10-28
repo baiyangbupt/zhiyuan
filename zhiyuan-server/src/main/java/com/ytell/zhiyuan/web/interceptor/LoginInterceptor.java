@@ -7,7 +7,6 @@ import com.ytell.zhiyuan.model.entity.biz.UserAuth;
 import com.ytell.zhiyuan.model.entity.biz.UserCredential;
 import com.ytell.zhiyuan.model.enums.AuthTypeEnum;
 import com.ytell.zhiyuan.service.biz.UserBizService;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.handler.HandlerInterceptorAdapter;
@@ -16,7 +15,6 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 @Service
-@Slf4j
 public class LoginInterceptor extends HandlerInterceptorAdapter {
     @Autowired
     private UserBizService userBizService;
@@ -47,15 +45,21 @@ public class LoginInterceptor extends HandlerInterceptorAdapter {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+        // Servlet worker threads are reused, including after rejected requests.
+        UserInfoThreadLocalUtil.remove();
         String token = request.getHeader("tk");
         String platform = request.getHeader("pf");
         //必须有token
         if (Strings.isNullOrEmpty(token) || Strings.isNullOrEmpty(platform)) {
-            log.info("login=>token:{},pf:{}", token, platform);
             throw deny(request);
         }
         //不同渠道处理不同
-        AuthTypeEnum authTypeEnum = AuthTypeEnum.valueOf(platform);
+        AuthTypeEnum authTypeEnum;
+        try {
+            authTypeEnum = AuthTypeEnum.valueOf(platform);
+        } catch (IllegalArgumentException exception) {
+            throw deny(request);
+        }
         //微信渠道校验
         if (authTypeEnum.equals(AuthTypeEnum.WECHAT_MP)) {
             UserAuth userAuth = userBizService.getUserAuthByToken(authTypeEnum, token);
@@ -64,7 +68,7 @@ public class LoginInterceptor extends HandlerInterceptorAdapter {
             }
             //线程缓存数据
             UserBaseData baseData = new UserBaseData();
-            baseData.setAuthType(AuthTypeEnum.valueOf(platform));
+            baseData.setAuthType(authTypeEnum);
             baseData.setUnionId(userAuth.getUnionId());
             baseData.setOpenId(userAuth.getOpenId());
             baseData.setUserId(userAuth.getUserId());
@@ -77,7 +81,7 @@ public class LoginInterceptor extends HandlerInterceptorAdapter {
             }
             //线程缓存数据
             UserBaseData baseData = new UserBaseData();
-            baseData.setAuthType(AuthTypeEnum.valueOf(platform));
+            baseData.setAuthType(authTypeEnum);
             baseData.setUserId(userCredential.getUserId());
             UserInfoThreadLocalUtil.set(baseData);
         }
@@ -85,5 +89,16 @@ public class LoginInterceptor extends HandlerInterceptorAdapter {
 
     }
 
+    @Override
+    public void afterConcurrentHandlingStarted(HttpServletRequest request, HttpServletResponse response,
+                                               Object handler) {
+        // Async MVC releases this worker before afterCompletion on redispatch.
+        UserInfoThreadLocalUtil.remove();
+    }
 
+    @Override
+    public void afterCompletion(HttpServletRequest request, HttpServletResponse response,
+                                Object handler, Exception exception) {
+        UserInfoThreadLocalUtil.remove();
+    }
 }

@@ -34,14 +34,109 @@ class UserAdminControllerTest {
 
     @BeforeEach
     void setUp() {
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+                new org.apache.ibatis.builder.MapperBuilderAssistant(
+                        new com.baomidou.mybatisplus.core.MybatisConfiguration(), ""), UserCredential.class);
         controller = new UserAdminController();
         userCredentialMapper = Mockito.mock(UserCredentialMapper.class);
+        when(userCredentialMapper.selectList(any())).thenReturn(java.util.Collections.emptyList());
         userBizService = Mockito.mock(UserBizService.class);
         gaotuService = Mockito.mock(GaotuService.class);
 
         ReflectionTestUtils.setField(controller, "userCredentialMapper", userCredentialMapper);
         ReflectionTestUtils.setField(controller, "userBizService", userBizService);
         ReflectionTestUtils.setField(controller, "gaotuService", gaotuService);
+    }
+
+    @Test
+    void newlyCreatedUsernameCredentialDoesNotStorePlaintext() {
+        com.ytell.zhiyuan.mapper.UserMapper users = Mockito.mock(com.ytell.zhiyuan.mapper.UserMapper.class);
+        ReflectionTestUtils.setField(controller, "userMapper", users);
+        com.ytell.zhiyuan.model.req.AddUserRequest request = new com.ytell.zhiyuan.model.req.AddUserRequest();
+        request.setUserName("new-user");
+        request.setPassword("new-secret");
+        assertTrue(controller.addUser(request));
+        org.mockito.ArgumentCaptor<com.ytell.zhiyuan.model.entity.biz.User> userCapture =
+                org.mockito.ArgumentCaptor.forClass(com.ytell.zhiyuan.model.entity.biz.User.class);
+        verify(users).insert(userCapture.capture());
+        assertEquals("new-user", userCapture.getValue().getUserName());
+        org.mockito.ArgumentCaptor<UserCredential> capture = org.mockito.ArgumentCaptor.forClass(UserCredential.class);
+        verify(userCredentialMapper).insert(capture.capture());
+        String encoded = capture.getValue().getPasswordHash();
+        org.junit.jupiter.api.Assertions.assertNotEquals("new-secret", encoded);
+        assertTrue(com.ytell.zhiyuan.common.util.PasswordHashing.matches("new-secret", encoded));
+        org.junit.jupiter.api.Assertions.assertFalse(com.ytell.zhiyuan.common.util.PasswordHashing.matches(encoded, encoded));
+    }
+
+    @Test
+    void emptyAdminPasswordDoesNotCreateEitherRow() {
+        com.ytell.zhiyuan.mapper.UserMapper users = Mockito.mock(com.ytell.zhiyuan.mapper.UserMapper.class);
+        ReflectionTestUtils.setField(controller, "userMapper", users);
+        com.ytell.zhiyuan.model.req.AddUserRequest request = new com.ytell.zhiyuan.model.req.AddUserRequest();
+        request.setUserName("new-user");
+        request.setPassword("");
+        assertThrows(BusinessException.class, () -> controller.addUser(request));
+        Mockito.verifyNoInteractions(users, userCredentialMapper);
+    }
+
+    @Test
+    void adminCannotCreateAnotherUsernameCredentialWithTheSameIdentifier() {
+        com.ytell.zhiyuan.mapper.UserMapper users = Mockito.mock(com.ytell.zhiyuan.mapper.UserMapper.class);
+        ReflectionTestUtils.setField(controller, "userMapper", users);
+        when(userCredentialMapper.selectList(any())).thenReturn(
+                java.util.Collections.singletonList(new UserCredential()));
+        com.ytell.zhiyuan.model.req.AddUserRequest request = new com.ytell.zhiyuan.model.req.AddUserRequest();
+        request.setUserName("existing-user");
+        request.setPassword("new-password");
+        assertThrows(BusinessException.class, () -> controller.addUser(request));
+        Mockito.verifyNoInteractions(users);
+        Mockito.verify(userCredentialMapper, Mockito.never()).insert(any(UserCredential.class));
+    }
+
+    @Test
+    void missingUsernameIsCheckedWithALockingReadAndNoPasswordPredicate() {
+        com.ytell.zhiyuan.mapper.UserMapper users = Mockito.mock(com.ytell.zhiyuan.mapper.UserMapper.class);
+        ReflectionTestUtils.setField(controller, "userMapper", users);
+        com.ytell.zhiyuan.model.req.AddUserRequest request = new com.ytell.zhiyuan.model.req.AddUserRequest();
+        request.setUserName("new-user");
+        request.setPassword("new-secret");
+        assertTrue(controller.addUser(request));
+        org.mockito.ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.Wrapper<UserCredential>> capture =
+                org.mockito.ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(userCredentialMapper).selectList(capture.capture());
+        String condition = capture.getValue().getSqlSegment();
+        assertTrue(condition.contains("FOR UPDATE"));
+        assertTrue(condition.contains("identifier"));
+        org.junit.jupiter.api.Assertions.assertFalse(condition.contains("password_hash"));
+        verify(userCredentialMapper, Mockito.never()).selectCount(any());
+    }
+
+    @Test
+    void losingConcurrentInsertReturnsAConflictForTheTransactionToRollBack() {
+        com.ytell.zhiyuan.mapper.UserMapper users = Mockito.mock(com.ytell.zhiyuan.mapper.UserMapper.class);
+        ReflectionTestUtils.setField(controller, "userMapper", users);
+        Mockito.doThrow(new org.springframework.dao.PessimisticLockingFailureException("synthetic deadlock"))
+                .when(userCredentialMapper).insert(any(UserCredential.class));
+        com.ytell.zhiyuan.model.req.AddUserRequest request = new com.ytell.zhiyuan.model.req.AddUserRequest();
+        request.setUserName("new-user");
+        request.setPassword("new-secret");
+        BusinessException failure = assertThrows(BusinessException.class, () -> controller.addUser(request));
+        assertEquals(409, failure.getStatus());
+    }
+
+    @Test
+    void conflictingLockReadReturnsConflictBeforeCreatingEitherRow() {
+        com.ytell.zhiyuan.mapper.UserMapper users = Mockito.mock(com.ytell.zhiyuan.mapper.UserMapper.class);
+        ReflectionTestUtils.setField(controller, "userMapper", users);
+        when(userCredentialMapper.selectList(any())).thenThrow(
+                new org.springframework.dao.PessimisticLockingFailureException("synthetic lock timeout"));
+        com.ytell.zhiyuan.model.req.AddUserRequest request = new com.ytell.zhiyuan.model.req.AddUserRequest();
+        request.setUserName("new-user");
+        request.setPassword("new-secret");
+        BusinessException failure = assertThrows(BusinessException.class, () -> controller.addUser(request));
+        assertEquals(409, failure.getStatus());
+        Mockito.verifyNoInteractions(users);
+        Mockito.verify(userCredentialMapper, Mockito.never()).insert(any(UserCredential.class));
     }
 
     @Test

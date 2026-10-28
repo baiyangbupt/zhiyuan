@@ -61,4 +61,20 @@ public class LastProposalVo {
      * 卡片落兜底标题"方案调整预览"、明细全丢 ✗）；方案调整族为 null。
      */
     private Object scoreSummary;
+
+    /** 仅在同一 pending 的命令已成功落库后，从执行回执投影出的有界摘要。 */
+    private Receipt receipt;
+
+    @Data
+    public static class Receipt {
+        private String operationId;
+        private String actionType;
+        private String countMode;
+        private Integer before;
+        private Integer after;
+        private Integer addedCount;
+        private Integer removedCount;
+        private Integer reorderedCount;
+        private Boolean postconditionSatisfied;
+    }
 }

@@ -157,6 +157,26 @@ async def test_run_single_node(client, mocker):
     assert result == "hello"
 
 
+@pytest.mark.parametrize("usage_api", ["property", "method", "async_method"])
+async def test_run_accepts_usage_property_and_legacy_methods(client, mocker, usage_api):
+    mocker.patch("app.agent.base_agent.Agent")
+    agent = BaseAgent(llm_client=client, instructions="test")
+    ctx_mgr, agent_run = _make_agent_run([MagicMock()], final_output="hello")
+    expected_usage = RunUsage(requests=2, tool_calls=1)
+    if usage_api == "property":
+        agent_run.usage = expected_usage
+    elif usage_api == "async_method":
+        agent_run.usage = AsyncMock(return_value=expected_usage)
+    else:
+        agent_run.usage = MagicMock(return_value=expected_usage)
+    agent.agent.iter = MagicMock(return_value=ctx_mgr)
+
+    output, _, _, usage = await agent.run_with_message_deltas("hi")
+
+    assert output == "hello"
+    assert usage is expected_usage
+
+
 # ---- 6. run 多节点 ----
 
 async def test_run_multi_nodes(client, mocker):

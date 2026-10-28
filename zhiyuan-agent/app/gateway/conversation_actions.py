@@ -220,6 +220,21 @@ async def execute_conversation_action(
     )
     status = _status(response)
     data = _data(response)
+    if resolve_action == "confirm" and status == "applying" and data.get("transitionApplied") is not True:
+        # Java sets transitionApplied=true only when this request acquired the
+        # claim. An existing claimant returns false; an absent/null field is
+        # also insufficient proof of ownership. Never execute with a token we
+        # have not proved the server accepted.
+        already_applying = data.get("transitionApplied") is False
+        return ConversationActionResult(
+            "applying", proposal_ref,
+            code="pending_already_applying" if already_applying else "pending_claim_unconfirmed",
+            message="待确认操作正在执行，请稍后刷新结果。" if already_applying
+            else "无法确认执行权，请刷新结果。",
+            origin="user",
+            action_type=str(active_data.get("commandType") or "").strip() or None,
+            scope=_action_scope(str(active_data.get("commandType") or "")),
+        )
     if resolve_action == "confirm" and status == "applying":
         # 认领成功 ≠ 执行完成：把第二段（execute）走完，用户确认才算落地。
         return await _execute_claimed_command(

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   COLD_FALLBACK_HIDDEN_KINDS,
+  compactActionReceiptText,
   COLD_FALLBACK_SETTLED_HIDDEN_KINDS,
   PROPOSAL_STALE_STATE_TEXT,
   UNKNOWN_STATUS_TEXT,
@@ -535,4 +536,22 @@ test('无 proposalRef → 不画（旧判据第一条逐字保留）；已落定
 test('J4b 新增动作有中文 strategy 名', () => {
   assert.equal(proposalStrategyLabel('remove_units'), '移除志愿');
   assert.equal(proposalStrategyLabel('move_units'), '调整顺序');
+});
+
+
+test('compact server receipt shows actual counts and final size without internal identifiers', () => {
+  const text=compactActionReceiptText({receipt:{operationId:'private-op',actionType:'move_units',
+    addedCount:0,removedCount:0,reorderedCount:1,after:10,countMode:'volunteer'}});
+  assert.equal(text,'新增 0 条；删除 0 条；调整顺序 1 条；当前方案 10 条');
+  assert.doesNotMatch(text,/private-op|move_units|operationId/);
+  assert.equal(compactActionReceiptText({receipt:{addedCount:2,removedCount:1,after:11,countMode:'unit'}}),
+    '新增 2 组；删除 1 组；当前方案 11 组');
+});
+
+test('compact receipt does not duplicate detailed changes or invent missing counts', () => {
+  assert.equal(compactActionReceiptText({actualChanges:[{type:'move'}],receipt:{reorderedCount:1}}),'');
+  assert.equal(compactActionReceiptText({receipt:{operationId:'internal-only'}}),'');
+  assert.equal(compactActionReceiptText({receipt:{addedCount:-1,removedCount:'2',after:null}}),'');
+  assert.equal(compactActionReceiptText({receipt:{after:0}}),'当前方案 0 条');
+  assert.equal(compactActionReceiptText(null),'');
 });

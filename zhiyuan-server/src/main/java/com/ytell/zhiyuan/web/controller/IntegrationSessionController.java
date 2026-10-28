@@ -2,14 +2,21 @@ package com.ytell.zhiyuan.web.controller;
 
 import com.alibaba.fastjson.JSONObject;
 import com.ytell.zhiyuan.common.base.BaseResponse;
+import com.ytell.zhiyuan.common.exception.ConversationAccessException;
 import com.ytell.zhiyuan.model.dto.integration.ExternalSessionInitializeReq;
 import com.ytell.zhiyuan.model.dto.integration.ExternalSessionInitializeRes;
+import com.ytell.zhiyuan.model.entity.biz.User;
 import com.ytell.zhiyuan.service.biz.IntegrationSessionService;
+import com.ytell.zhiyuan.service.biz.UserBizService;
+import com.ytell.zhiyuan.web.interceptor.UserBaseData;
+import com.ytell.zhiyuan.web.interceptor.UserInfoThreadLocalUtil;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.Objects;
 
 @RestController
 @RequestMapping("/gaotu-assistant-bot/chat/{tenantId}/integration")
@@ -19,11 +26,21 @@ public class IntegrationSessionController {
 
     @Autowired
     private IntegrationSessionService integrationSessionService;
+    @Autowired
+    private UserBizService userBizService;
 
     @PostMapping({"/session/initialize", "/v1/session/initialize"})
     @ApiOperation("外部授权初始化会话并生成方案")
     public BaseResponse<ExternalSessionInitializeRes> initializeSession(@PathVariable("tenantId") Long tenantId,
                                                                         @RequestBody ExternalSessionInitializeReq req) {
+        UserBaseData principal = UserInfoThreadLocalUtil.get();
+        if (principal == null || principal.getUserId() == null) {
+            throw new ConversationAccessException(401, "unauthenticated");
+        }
+        User user = userBizService.getUserInfo(principal.getUserId());
+        if (tenantId == null || user == null || !Objects.equals(user.getTenantId(), tenantId)) {
+            throw new ConversationAccessException(403, "session_forbidden");
+        }
         log.info("initializeExternalSession: tenantId={}, req={}", tenantId, JSONObject.toJSONString(req));
         return BaseResponse.success(integrationSessionService.initializeSession(tenantId, req));
     }

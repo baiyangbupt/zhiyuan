@@ -84,6 +84,8 @@ def test_generated_local_config_persists_demo_mode_across_regeneration(tmp_path,
         assert config.get("demo", {}).get("prepare-type-fallback") == (
             "PREDICT" if fallback is None else fallback
         )
+        assert config["ali"]["oss"]["enabled"] is False
+        assert config["ali"]["oss"]["namespace"] == "codex-local"
 
 
 def test_invalid_demo_mode_is_rejected_before_private_state_is_created(tmp_path) -> None:

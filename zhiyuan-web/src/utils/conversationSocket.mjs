@@ -15,13 +15,14 @@
  * @returns {string} 形如 `wss://host` 或 `ws://host`（无尾斜杠 ✓）
  */
 export const PUBLIC_TEST_ACCESS_MODE = 'public-test';
+export const PUBLIC_IP_TEST_ACCESS_MODE = 'public-ip-test';
 
 export function socketBase(location, override, mode) {
   // 公开测试模式：**忽略一切显式 base**（含历史遗留的 `NEXT_PUBLIC_AGENT_WS_BASE` ✗）,
   // 一律按 `window.location` 派生同源 ✓——任务书的验收就是这一条：
   // "旧 `WS_BASE` 非空、override 为空、public-test 模式，仍必须得到当前域名 wss" ✓。
   // 其他模式保持既有优先级 ✓（显式 override 优先 ✓，其次由调用点决定要不要给遗留值 ✓）。
-  if (mode === PUBLIC_TEST_ACCESS_MODE) {
+  if (mode === PUBLIC_TEST_ACCESS_MODE || mode === PUBLIC_IP_TEST_ACCESS_MODE) {
     return `${location?.protocol === 'https:' ? 'wss:' : 'ws:'}//${location?.host ?? ''}`;
   }
   const explicit = typeof override === 'string' ? override.trim() : '';

@@ -15,11 +15,17 @@ import com.ytell.zhiyuan.model.req.MessageFeedbackReq;
 import com.ytell.zhiyuan.model.req.UpdateTuitionRangeReq;
 import com.ytell.zhiyuan.model.vo.ChatSessionVo;
 import com.ytell.zhiyuan.model.vo.MessageVo;
+import com.ytell.zhiyuan.common.exception.ConversationAccessException;
 import com.ytell.zhiyuan.service.biz.ChatMessageBizService;
 import com.ytell.zhiyuan.service.biz.ChatSessionBizService;
+import com.ytell.zhiyuan.service.biz.ConversationAccessService;
+import com.ytell.zhiyuan.service.biz.UserBizService;
 import com.ytell.zhiyuan.service.biz.UserProfileService;
 import com.ytell.zhiyuan.service.biz.VolunteerBizService;
 import com.ytell.zhiyuan.model.req.UserIntentEmotionSaveReq;
+import com.ytell.zhiyuan.model.entity.biz.User;
+import com.ytell.zhiyuan.web.interceptor.UserBaseData;
+import com.ytell.zhiyuan.web.interceptor.UserInfoThreadLocalUtil;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +38,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Objects;
 
 @RestController
 @RequestMapping("/gaotu-assistant-bot/chat/{tenantId}")
@@ -50,6 +57,29 @@ public class ChatController {
 
     @Autowired
     private VolunteerBizService volunteerBizService;
+    @Autowired
+    private ConversationAccessService conversationAccessService;
+    @Autowired
+    private UserBizService userBizService;
+
+    private Long requirePrincipal() {
+        UserBaseData principal = UserInfoThreadLocalUtil.get();
+        if (principal == null || principal.getUserId() == null) {
+            throw new ConversationAccessException(401, "unauthenticated");
+        }
+        return principal.getUserId();
+    }
+
+    private void requireTenant(Long tenantId) {
+        User user = userBizService.getUserInfo(requirePrincipal());
+        if (tenantId == null || user == null || !Objects.equals(user.getTenantId(), tenantId)) {
+            throw new ConversationAccessException(403, "session_forbidden");
+        }
+    }
+
+    private void requireOwnedSession(Long tenantId, Long sessionId) {
+        conversationAccessService.requireOwnedSession(tenantId, sessionId, requirePrincipal());
+    }
 
 
     /**
@@ -59,6 +89,7 @@ public class ChatController {
     @ApiOperation("创建会话")
     public BaseResponse<ChatSessionVo> createChatSession(@PathVariable("tenantId") Long tenantId,
                                                          @RequestBody CreateSessionReq createSessionReq) {
+        requireTenant(tenantId);
         log.info("createChatSession:{}", JSONObject.toJSONString(createSessionReq));
         return BaseResponse.success(chatSessionBizService.createChatSession(tenantId, createSessionReq));
     }
@@ -68,6 +99,7 @@ public class ChatController {
     public BaseResponse<Boolean> updateTuitionRange(@PathVariable("tenantId") Long tenantId,
                                                     @RequestParam("chatSessionId") Long chatSessionId,
                                                     @RequestBody UpdateTuitionRangeReq req) {
+        requireOwnedSession(tenantId, chatSessionId);
         log.info("updateTuitionRange: tenantId={}, chatSessionId={}, req={}", tenantId, chatSessionId, JSONObject.toJSONString(req));
         return BaseResponse.success(chatSessionBizService.updateTuitionRange(tenantId, chatSessionId, req.getMin(), req.getMax()));
     }
@@ -84,6 +116,7 @@ public class ChatController {
     public BaseResponse<UpdateScoreDetailRes> updateScoreDetail(@PathVariable("tenantId") Long tenantId,
                                                                 @RequestParam("chatSessionId") Long chatSessionId,
                                                                 @RequestBody CreateSessionReq req) {
+        requireOwnedSession(tenantId, chatSessionId);
         log.info("updateScoreDetail: tenantId={}, chatSessionId={}, req={}",
                 tenantId, chatSessionId, JSONObject.toJSONString(req));
         return BaseResponse.success(chatSessionBizService.updateScoreDetail(tenantId, chatSessionId, req));
@@ -93,6 +126,7 @@ public class ChatController {
     @ApiOperation("对话分页列表")
     public BaseResponse<BasePage<ChatSessionVo>> pageUserSession(@PathVariable("tenantId") Long tenantId,
                                                                  @RequestBody ChatSessionPageQuery req) {
+        requireTenant(tenantId);
         log.info("pageUserSession:{}", JSONObject.toJSONString(req));
         return BaseResponse.success(chatSessionBizService.pageUserSession(tenantId, req));
     }
@@ -101,6 +135,7 @@ public class ChatController {
     @ApiOperation("获取会话详情")
     public BaseResponse<ChatSessionVo> getUserSessionDetail(@PathVariable("tenantId") Long tenantId,
                                                             @RequestParam Long chatSessionId) {
+        requireOwnedSession(tenantId, chatSessionId);
         return BaseResponse.success(chatSessionBizService.getUserSessionDetail(tenantId, chatSessionId));
     }
 
@@ -112,6 +147,10 @@ public class ChatController {
     @ApiOperation("分页获取对话消息")
     public BaseResponse<BasePage<MessageVo>> pageMessage(@PathVariable("tenantId") Long tenantId,
                                                          @RequestBody ChatMessagePageReq chatMessagePageReq) {
+        if (chatMessagePageReq == null || chatMessagePageReq.getChatSessionId() == null) {
+            throw new ConversationAccessException(403, "session_forbidden");
+        }
+        requireOwnedSession(tenantId, chatMessagePageReq.getChatSessionId());
         log.info("pageMessage:{}", JSONObject.toJSONString(chatMessagePageReq));
         return BaseResponse.success(chatMessageBizService.pageMessage(tenantId, chatMessagePageReq));
     }
@@ -120,6 +159,16 @@ public class ChatController {
     @ApiOperation("更新消息反馈")
     public BaseResponse<Boolean> updateMessageFeedback(@PathVariable("tenantId") Long tenantId,
                                                        @RequestBody MessageFeedbackReq req) {
+        if (req == null || req.getMessageId() == null) {
+            throw new ConversationAccessException(403, "session_forbidden");
+        }
+        MessageVo message;
+        try {
+            message = chatMessageBizService.getMessageById(tenantId, req.getMessageId());
+        } catch (com.ytell.zhiyuan.common.exception.BusinessException ex) {
+            throw new ConversationAccessException(403, "session_forbidden");
+        }
+        requireOwnedSession(tenantId, message.getChatSessionId());
         log.info("updateMessageFeedback: tenantId={}, req={}", tenantId, JSONObject.toJSONString(req));
         return BaseResponse.success(chatMessageBizService.updateMessageFeedback(tenantId, req.getMessageId(), req.getFeedback()));
     }
@@ -131,6 +180,7 @@ public class ChatController {
     @ApiOperation("获取志愿推荐列表")
     public BaseResponse<VolunteerRecommendListResponse> getVolunteerRecommendList(@PathVariable("tenantId") Long tenantId,
                                                                                   @RequestParam("chatSessionId") Long chatSessionId) {
+        requireOwnedSession(tenantId, chatSessionId);
         log.info("getVolunteerRecommendList: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
         return BaseResponse.success(volunteerBizService.recommendVolunteerList(tenantId, chatSessionId,false,true));
     }
@@ -139,6 +189,7 @@ public class ChatController {
     @ApiOperation("提交志愿列表")
     public BaseResponse<Boolean> submitVolunteerList(@PathVariable("tenantId") Long tenantId,
                                                      @RequestParam("chatSessionId") Long chatSessionId) {
+        requireOwnedSession(tenantId, chatSessionId);
         log.info("submitVolunteerList: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
         return BaseResponse.success(volunteerBizService.submitVolunteerList(tenantId, chatSessionId));
     }
@@ -147,6 +198,7 @@ public class ChatController {
     @ApiOperation("导出志愿列表")
     public ResponseEntity<ByteArrayResource> exportVolunteerList(@PathVariable("tenantId") Long tenantId,
                                                                  @RequestParam("chatSessionId") Long chatSessionId) {
+        requireOwnedSession(tenantId, chatSessionId);
         log.info("exportVolunteerList: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
 
         try {
@@ -189,6 +241,7 @@ public class ChatController {
     @ApiOperation("获取用户信息-基本信息")
     public BaseResponse<UserBasicProfileResponse> userBasicProfile(@PathVariable("tenantId") Long tenantId,
                                                                    @RequestParam("chatSessionId") Long chatSessionId) {
+        requireOwnedSession(tenantId, chatSessionId);
         log.info("userBasicProfile:chatSessionId:{}", chatSessionId);
         return BaseResponse.success(userProfileService.getUserBasicProfile(chatSessionId));
     }
@@ -197,6 +250,7 @@ public class ChatController {
     @ApiOperation("获取用户信息-意向信息")
     public BaseResponse<List<ProfileKVDto>> userDynasticProfile(@PathVariable("tenantId") Long tenantId,
                                                                 @RequestParam("chatSessionId") Long chatSessionId) {
+        requireOwnedSession(tenantId, chatSessionId);
         log.info("userDynasticProfile:chatSessionId:{}", chatSessionId);
         return BaseResponse.success(userProfileService.userDynasticProfile(chatSessionId));
     }
@@ -205,6 +259,7 @@ public class ChatController {
     @ApiOperation("保存用户意向情绪")
     public BaseResponse<Boolean> saveUserDynasticProfile(@PathVariable("tenantId") Long tenantId,
                                                          @RequestBody UserIntentEmotionSaveReq req) {
+        requireOwnedSession(tenantId, req == null ? null : req.getChatSessionId());
         log.info("saveUserDynasticProfile: tenantId={}, req={}", tenantId, JSONObject.toJSONString(req));
         return BaseResponse.success(userProfileService.saveUserIntentEmotion(req));
     }
@@ -213,6 +268,7 @@ public class ChatController {
     @ApiOperation("根据用户成绩-推荐专业")
     public BaseResponse<List<RecommendSubMajorResponse.MajorRecommendItem>> userMajorRecommend(@PathVariable("tenantId") Long tenantId,
                                                                                                @RequestBody CreateSessionReq createSessionReq) {
+        requireTenant(tenantId);
         log.info("userMajorRecommend:createSessionReq:{}", createSessionReq);
         return BaseResponse.success(chatSessionBizService.recommendMajor(createSessionReq));
     }

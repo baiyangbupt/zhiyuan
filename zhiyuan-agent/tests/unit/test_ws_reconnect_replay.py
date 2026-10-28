@@ -92,6 +92,8 @@ class _Channel:
     async def emit_frame(self, frame) -> None:
         self.frames.append(frame)
 
+    emit_replay_frame = emit_frame
+
 
 def _socket(store, *, granted: str = "900047", asked: str | None = "900047", **params) -> object:
     """假连接 ✓：票据给出的会话是 `granted` ✓，URL 里说的是 `asked` ✓。"""
@@ -313,26 +315,18 @@ async def test_window_gone_resets_the_baseline_to_the_watermark() -> None:
 
 
 @pytest.mark.asyncio
-async def test_nothing_is_sent_when_no_turn_is_running() -> None:
-    """没有在跑的回合、也没有游标：别出声——静默重连不该被塞一条控制帧。
-
-    **但连接要登记** ✓✓：不登记的话，这条会话的"当前连接"还是那条已经死掉的旧连接 ✗，
-    而**不挂回合**的活儿（确认/取消 ✓，见 `SessionRuntime.detach_work` ✓）照样想推给它 ✗
-    → 服务端明明执行成功、事件流里也有结果 ✓，用户页面却永远等不到"已生效" ✗
-    （实测复现：重连后的新连接 `received result frames: 0` ✓）。
-    登记**不违反**"别出声" ✓：一条帧都不发 ✓（不补发、不 resync ✓）。
-    """
-    store = _ReplayStore(epoch="epoch-a", events=[_event(1, "turn-live")])
+async def test_idle_reconnect_refreshes_durable_cards_without_replaying_answers() -> None:
+    store = _ReplayStore(epoch="epoch-a", events=[_event(1, "turn-done")], watermark=7)
     channel = _Channel()
     runtime = _Runtime(store, None)
 
     await _replay_on_connect(_socket(store), runtime, channel)
 
-    assert channel.frames == []
-    assert channel.bound == [("session", _key())]
+    assert [frame["type"] for frame in channel.frames] == ["session.resync"]
+    assert channel.frames[0]["payload"]["baseline"] == {
+        "reason": "idle_reconnect", "lastSequence": 7,
+    }
     assert runtime.attached == [_key()]
-    # 不补发 ⇒ 连存储都不读 ✓（`current_epoch` 是补发的第一步 ✓）。
-    assert store.calls == ["attach"]
 
 
 @pytest.mark.asyncio
@@ -410,3 +404,117 @@ async def test_turn_events_work_without_a_runtime() -> None:
     await emit({"type": "tool.progress"})
 
     assert channel.events == [{"type": "tool.progress"}]
+
+
+@pytest.mark.asyncio
+async def test_large_replay_does_not_overflow_the_live_queue() -> None:
+    from app.gateway.session_runtime import ConnectionChannel
+
+    sent = []
+    complete = asyncio.Event()
+
+    async def send(frame):
+        sent.append(frame)
+        if len(sent) == 600:
+            complete.set()
+        return True
+
+    store = _ReplayStore(
+        epoch="epoch-a", events=[_event(i, "turn-live") for i in range(1, 601)],
+    )
+    runtime = SessionRuntime()
+    channel = ConnectionChannel(send, maxsize=256)
+    await _replay_on_connect(
+        _socket(store, epoch="epoch-a", since="0"), runtime, channel,
+    )
+    channel.start()
+    try:
+        await asyncio.wait_for(complete.wait(), 1)
+        assert not channel.overflowed
+        assert [frame["sequence"] for frame in sent] == list(range(1, 601))
+    finally:
+        await channel.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overlap", [False, True])
+async def test_live_events_during_store_read_follow_replay_without_duplicates(overlap) -> None:
+    from app.gateway.session_runtime import ConnectionChannel
+
+    reading = asyncio.Event()
+    release = asyncio.Event()
+    sent = []
+    complete = asyncio.Event()
+
+    class Store(_ReplayStore):
+        async def replay(self, key, epoch, after):
+            reading.set()
+            await release.wait()
+            return [_event(i, "turn-live") for i in range(1, 4 if overlap else 3)]
+
+        async def append(self, key, event):
+            return _event(3, "turn-live")
+
+    async def send(frame):
+        sent.append(frame)
+        if len(sent) == 3:
+            complete.set()
+        return True
+
+    store = Store(epoch="epoch-a", events=[])
+    runtime = SessionRuntime()
+    channel = ConnectionChannel(send, store=store)
+    reconnect = asyncio.create_task(_replay_on_connect(
+        _socket(store, epoch="epoch-a", since="0"), runtime, channel,
+    ))
+    try:
+        await asyncio.wait_for(reading.wait(), 1)
+        assert await runtime.publish(_key(), {"type": "tool.progress"})
+        release.set()
+        await reconnect
+        channel.start()
+        await asyncio.wait_for(complete.wait(), 1)
+        await asyncio.sleep(0)
+        assert [frame["sequence"] for frame in sent] == [1, 2, 3]
+    finally:
+        release.set()
+        await asyncio.gather(reconnect, return_exceptions=True)
+        await channel.close()
+
+
+@pytest.mark.asyncio
+async def test_closed_channel_is_not_a_successful_publish_target() -> None:
+    from app.gateway.session_runtime import ConnectionChannel
+
+    async def send(frame):
+        raise AssertionError("closed sender must not run")
+
+    runtime = SessionRuntime()
+    channel = ConnectionChannel(send)
+    runtime.attach_connection(_key(), channel)
+    await channel.close()
+    assert not await runtime.publish(_key(), {"type": "turn.completed"})
+    assert runtime.current_channel(_key()) is None
+    await channel.emit_frame({"type": "turn.completed"})
+    assert channel._queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_active_replay_preserves_global_sequence_with_detached_action_in_the_middle():
+    old_answer = UiEvent(
+        type="assistant.completed", sessionId="900047", turnId="old-turn",
+        streamEpoch="epoch-a", sequence=1, payload={"message": "already in history"},
+    )
+    action_result = UiEvent(
+        type="conversationAction.result", sessionId="900047", turnId="action-turn",
+        streamEpoch="epoch-a", sequence=3,
+        payload={"proposalRef": "p1", "actionStatus": "applied"},
+    )
+    store = _ReplayStore(epoch="epoch-a", events=[
+        old_answer, _event(2, "turn-live"), action_result, _event(4, "turn-live"),
+    ])
+    channel = _Channel()
+    await _replay_on_connect(_socket(store), _Runtime(store, _running_turn()), channel)
+    assert [frame["sequence"] for frame in channel.frames] == [2, 3, 4]
+    assert channel.frames[1]["type"] == "conversationAction.result"
+    assert all(frame["type"] != "assistant.completed" for frame in channel.frames)

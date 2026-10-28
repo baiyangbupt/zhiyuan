@@ -1,0 +1,20 @@
+{
+  "name": "zhiyuan-local",
+  "interface": {
+    "displayName": "志愿本地插件"
+  },
+  "plugins": [
+    {
+      "name": "zhiyuan-codex-planner",
+      "source": {
+        "source": "local",
+        "path": "./plugins/zhiyuan-codex-planner"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -132,6 +132,8 @@ def test_production_stdio_loop_answers_every_request_with_an_id(tmp_path) -> Non
         {"jsonrpc": "2.0", "id": 2, "method": "resources/list", "params": {}},
         {"jsonrpc": "2.0", "id": 3, "method": "resources/templates/list", "params": {}},
         {"jsonrpc": "2.0", "id": 4, "method": "totally/unknown", "params": {}},
+        {"jsonrpc": "2.0", "id": 5, "method": "resources/read", "params": {"uri": "skill://zhiyuan/planner-routing/SKILL.md"}},
+        {"jsonrpc": "2.0", "id": 6, "method": "resources/read", "params": {"uri": "file:///etc/passwd"}},
         {"jsonrpc": "2.0", "method": "notifications/initialized"},  # 通知无 id，不该有应答
     ]
     completed = subprocess.run(
@@ -142,8 +144,10 @@ def test_production_stdio_loop_answers_every_request_with_an_id(tmp_path) -> Non
 
     answered = {json.loads(line)["id"]: json.loads(line) for line in completed.stdout.splitlines()}
 
-    assert set(answered) == {1, 2, 3, 4}
-    assert answered[2]["result"] == {"resources": []}
+    assert set(answered) == {1, 2, 3, 4, 5, 6}
+    assert any(r["uri"] == "skill://zhiyuan/planner-routing/SKILL.md" for r in answered[2]["result"]["resources"])
+    assert "## 适用条件" in answered[5]["result"]["contents"][0]["text"]
+    assert answered[6]["error"]["code"] == -32602
     assert answered[3]["result"] == {"resourceTemplates": []}
     assert answered[4]["error"]["code"] == -32601
 

@@ -2,8 +2,10 @@ package com.ytell.zhiyuan.service.biz;
 
 import com.ytell.zhiyuan.common.exception.ConversationAccessException;
 import com.ytell.zhiyuan.manager.cache.ConversationWsTicketStore;
+import com.ytell.zhiyuan.mapper.UserMapper;
 import com.ytell.zhiyuan.model.dto.conversation.TicketIdentity;
 import com.ytell.zhiyuan.model.entity.biz.ChatSession;
+import com.ytell.zhiyuan.model.entity.biz.User;
 import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -21,16 +23,23 @@ public class ConversationAccessServiceTest {
 
     private ConversationAccessService service;
     private ChatSessionSharedService sessionService;
+    private UserMapper userMapper;
     private ConversationWsTicketStore ticketStore;
 
     @BeforeEach
     void setUp() {
         service = new ConversationAccessService();
         sessionService = Mockito.mock(ChatSessionSharedService.class);
+        userMapper = Mockito.mock(UserMapper.class);
         ticketStore = Mockito.mock(ConversationWsTicketStore.class);
         ReflectionTestUtils.setField(service, "chatSessionSharedService", sessionService);
+        ReflectionTestUtils.setField(service, "userMapper", userMapper);
         ReflectionTestUtils.setField(service, "ticketStore", ticketStore);
         ReflectionTestUtils.setField(service, "allowedOrigins", "http://127.0.0.1:3201,https://test-wwww.gaotuzhiyuan.com");
+        User owner = new User();
+        owner.setId(7L);
+        owner.setTenantId(1L);
+        when(userMapper.selectById(7L)).thenReturn(owner);
     }
 
     @Test
@@ -58,6 +67,28 @@ public class ConversationAccessServiceTest {
 
         assertEquals(403, assertThrows(ConversationAccessException.class,
                 () -> service.issueTicket(2L, 42L, 3L, 7L, "http://127.0.0.1:3201")).getStatus());
+    }
+
+    @Test
+    void anOldCrossTenantSessionOwnedByTheSameUserIsStillRefused() {
+        // 旧接口曾允许 user 7（租户 1）把自己的会话建在租户 2。
+        when(sessionService.getById(42L)).thenReturn(session(2L, 7L, 3L));
+
+        ConversationAccessException ex = assertThrows(ConversationAccessException.class,
+                () -> service.requireOwnedSession(2L, 42L, 7L));
+        assertEquals(403, ex.getStatus());
+        assertEquals("session_forbidden", ex.getMessage());
+    }
+
+    @Test
+    void deletedUserCannotReuseAnOldOwnedSession() {
+        when(sessionService.getById(42L)).thenReturn(session(1L, 7L, 3L));
+        when(userMapper.selectById(7L)).thenReturn(null);
+
+        ConversationAccessException ex = assertThrows(ConversationAccessException.class,
+                () -> service.requireOwnedSession(1L, 42L, 7L));
+        assertEquals(403, ex.getStatus());
+        assertEquals("session_forbidden", ex.getMessage());
     }
 
     @Test

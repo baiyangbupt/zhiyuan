@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import sys
 from pathlib import Path
 
@@ -14,9 +15,38 @@ from app.harness.client import (
 )
 from app.harness.codex import CodexAppServerHarness
 from app.harness.codex import _extract_output, _terminal_status
+import app.harness.client as client_module
 
 
 FAKE_SERVER = Path(__file__).resolve().parents[1] / "fixtures" / "codex" / "fake_app_server.py"
+
+
+class _StubbornProcess:
+    def __init__(self, *, kill_raises: bool = False, exit_on_kill: bool = False) -> None:
+        self.stdin = io.StringIO()
+        self.returncode: int | None = None
+        self.kill_raises = kill_raises
+        self.exit_on_kill = exit_on_kill
+        self.kill_calls = 0
+        self._exited = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self._exited.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        if self.kill_raises:
+            raise PermissionError("kill rejected")
+        if self.exit_on_kill:
+            self.returncode = -9
+            self._exited.set()
+
+
+def _shorten_shutdown_deadlines(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "PROCESS_GRACEFUL_SHUTDOWN_SECONDS", 0.01)
+    monkeypatch.setattr(client_module, "PROCESS_KILL_SHUTDOWN_SECONDS", 0.01)
 
 
 @pytest.mark.asyncio
@@ -83,9 +113,11 @@ async def test_client_surfaces_json_rpc_error() -> None:
 
 @pytest.mark.asyncio
 async def test_client_times_out_without_leaking_pending_request() -> None:
-    client = AppServerClient([sys.executable, str(FAKE_SERVER)], request_timeout=0.02)
+    client = AppServerClient([sys.executable, str(FAKE_SERVER)], request_timeout=1.0)
     await client.start()
     await client.initialize(client_name="test", client_version="0")
+    # The timeout under test is the hanging RPC, not Python child startup.
+    client.request_timeout = 0.02
 
     with pytest.raises(AppServerTimeout):
         await client.request("test/hang", {})
@@ -126,6 +158,203 @@ async def test_client_marks_pending_requests_failed_when_process_exits(caplog) -
         await asyncio.sleep(0.01)
     assert "exited on its own returncode=0" in caplog.text, caplog.text
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_recovery_restarts_only_one_failed_generation(monkeypatch) -> None:
+    harness = CodexAppServerHarness([sys.executable, str(FAKE_SERVER)])
+    await harness.start()
+    old_process = harness.client.process
+    old_generation = harness.client.runtime_generation
+    assert old_process is not None
+
+    started_processes = [old_process]
+    original_start = harness.client._start_unlocked
+
+    async def record_start() -> None:
+        await original_start()
+        started_processes.append(harness.client.process)
+
+    monkeypatch.setattr(harness.client, "_start_unlocked", record_start)
+    await harness.client.request("test/exit", {})
+    assert harness.client._reader_task is not None
+    await asyncio.wait_for(harness.client._reader_task, timeout=5)
+
+    try:
+        results = await asyncio.wait_for(asyncio.gather(
+            harness.restart_if_unhealthy(),
+            harness.restart_if_unhealthy(),
+        ), timeout=5)
+        assert sorted(results) == [False, True]
+        assert len(started_processes) == 2
+        assert harness.client.runtime_generation != old_generation
+        assert harness.client.process is started_processes[1]
+        assert harness.client.is_running
+        assert (await asyncio.wait_for(harness.create_thread(), timeout=5))["thread"]["id"] == "thr_test"
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_client_concurrent_forced_restarts_keep_one_live_handle(monkeypatch) -> None:
+    client = AppServerClient([sys.executable, str(FAKE_SERVER)])
+    await client.start()
+    await client.initialize(client_name="test", client_version="0")
+    started_processes = [client.process]
+    original_start = client._start_unlocked
+
+    async def record_start() -> None:
+        await original_start()
+        started_processes.append(client.process)
+
+    monkeypatch.setattr(client, "_start_unlocked", record_start)
+    try:
+        await asyncio.wait_for(asyncio.gather(client.restart(), client.restart()), timeout=10)
+        assert len(started_processes) == 3
+        assert all(process is not None for process in started_processes)
+        assert all(process.returncode is not None for process in started_processes[:-1])
+        assert client.process is started_processes[-1]
+        assert client.is_running
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_close_retries_when_kill_fails_without_replacing_live_child(monkeypatch) -> None:
+    _shorten_shutdown_deadlines(monkeypatch)
+    client = AppServerClient(["not-used"])
+    process = _StubbornProcess(kill_raises=True)
+    client.process = process  # type: ignore[assignment]
+
+    with pytest.raises(PermissionError, match="kill rejected"):
+        await client.close()
+    assert client.process is process
+    assert client.needs_restart
+    with pytest.raises(PermissionError, match="kill rejected"):
+        await client.restart_if_unhealthy()
+    assert client.process is process
+    assert process.kill_calls == 2
+
+    process.kill_raises = False
+    process.exit_on_kill = True
+    await client.close()
+    assert process.returncode == -9
+    assert process.kill_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_close_retries_when_killed_child_remains_live(monkeypatch) -> None:
+    _shorten_shutdown_deadlines(monkeypatch)
+    client = AppServerClient(["not-used"])
+    process = _StubbornProcess()
+    client.process = process  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="did not exit after kill"):
+        await client.close()
+    assert client.process is process
+    assert client.needs_restart
+    with pytest.raises(RuntimeError, match="did not exit after kill"):
+        await client.restart()
+    assert client.process is process
+    assert process.kill_calls == 2
+
+    process.exit_on_kill = True
+    await client.close()
+    assert process.returncode == -9
+    assert process.kill_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_harness_checks_each_runtime_generation_before_use() -> None:
+    calls: list[tuple[str, str | None]] = []
+    harness: CodexAppServerHarness
+
+    async def before_start() -> None:
+        calls.append(("before", None))
+
+    async def after_initialize(client: AppServerClient) -> None:
+        assert (await client.request("test/echo", {"value": "ready"}))["value"] == "ready"
+        calls.append(("after", client.runtime_generation))
+
+    harness = CodexAppServerHarness(
+        [sys.executable, str(FAKE_SERVER)],
+        before_start=before_start,
+        after_initialize=after_initialize,
+    )
+    await harness.start()
+    first_generation = harness.client.runtime_generation
+    try:
+        await harness.restart()
+        second_generation = harness.client.runtime_generation
+        assert second_generation != first_generation
+        assert calls == [
+            ("before", None), ("after", first_generation),
+            ("before", None), ("after", second_generation),
+        ]
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_generation_check_closes_child_and_remains_recoverable() -> None:
+    checks = 0
+
+    async def after_initialize(client: AppServerClient) -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 1:
+            raise RuntimeError("policy rejected")
+
+    harness = CodexAppServerHarness(
+        [sys.executable, str(FAKE_SERVER)], after_initialize=after_initialize,
+    )
+    with pytest.raises(RuntimeError, match="policy rejected"):
+        await harness.start()
+    assert not harness.client.is_running
+    assert harness.client.needs_restart
+    try:
+        assert await harness.restart_if_unhealthy() is True
+        assert checks == 2
+        assert harness.client.is_running
+        assert (await harness.create_thread())["thread"]["id"] == "thr_test"
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_restart_wakes_waiting_requests_and_can_recover() -> None:
+    checks = 0
+    checking = asyncio.Event()
+    reject = asyncio.Event()
+
+    async def after_initialize(client: AppServerClient) -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            checking.set()
+            await reject.wait()
+            raise RuntimeError("replacement rejected")
+
+    harness = CodexAppServerHarness(
+        [sys.executable, str(FAKE_SERVER)], after_initialize=after_initialize,
+    )
+    await harness.start()
+    try:
+        restart = asyncio.create_task(harness.restart())
+        await asyncio.wait_for(checking.wait(), timeout=5)
+        waiting_request = asyncio.create_task(harness.create_thread())
+        await asyncio.sleep(0)
+        reject.set()
+        with pytest.raises(RuntimeError, match="replacement rejected"):
+            await asyncio.wait_for(restart, timeout=5)
+        with pytest.raises(AppServerExited, match="not initialized"):
+            await asyncio.wait_for(waiting_request, timeout=5)
+        assert harness.client.needs_restart
+        assert await harness.restart_if_unhealthy() is True
+        assert checks == 3
+        assert (await harness.create_thread())["thread"]["id"] == "thr_test"
+    finally:
+        await harness.close()
 
 
 @pytest.mark.asyncio

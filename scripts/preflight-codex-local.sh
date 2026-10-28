@@ -155,6 +155,35 @@ validate_private_server_config() {
     fi
 }
 
+validate_oss_isolation() {
+    local python="$ROOT_DIR/zhiyuan-agent/.venv/bin/python"
+    [[ -x "$python" ]] || fail "Agent virtual environment is unavailable"
+    "$python" - "$SERVER_CONFIG" <<'PY' || fail "OSS configuration must explicitly disable OSS or declare a codex-local namespace and bucket"
+import re
+import sys
+import yaml
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        config = yaml.safe_load(stream) or {}
+    oss = (config.get("ali") or {}).get("oss") or {}
+    if oss.get("enabled") is False:
+        sys.exit(0)
+    namespace = oss.get("namespace")
+    bucket = oss.get("bucket")
+    if (oss.get("enabled") is True
+            and isinstance(namespace, str)
+            and re.fullmatch(r"codex-local(?:-[A-Za-z0-9_-]+)?", namespace)
+            and isinstance(bucket, str)
+            and bucket.strip()
+            and bucket != "codex-local-disabled"):
+        sys.exit(0)
+except (OSError, TypeError, AttributeError, yaml.YAMLError):
+    pass
+sys.exit(1)
+PY
+}
+
 validate_isolated_data_source() {
     [[ "$DATA_SOURCE" == "private-resettable" ]] || fail \
         "--data-source or CODEX_LOCAL_DATASET must be exactly private-resettable"
@@ -186,6 +215,7 @@ validate_port "agent port" "$AGENT_PORT"
 validate_port "rank port" "$RANK_PORT"
 validate_port "web port" "$WEB_PORT"
 validate_run_dir
+validate_oss_isolation
 
 [[ "$BACKEND_PORT" != "$AGENT_PORT" && "$BACKEND_PORT" != "$RANK_PORT" && "$BACKEND_PORT" != "$WEB_PORT" ]] \
     || fail "stack ports must be distinct"

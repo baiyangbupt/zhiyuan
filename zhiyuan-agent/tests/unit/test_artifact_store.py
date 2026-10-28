@@ -151,3 +151,33 @@ def test_deeply_nested_payload_cannot_escape_the_issuance_error_boundary(tmp_pat
         nested = {"nested": nested}
     with pytest.raises(ArtifactStoreError, match="artifact_invalid"):
         _issue(store, payload=nested)
+
+
+def _nested_json(containers):
+    value = "leaf"
+    for depth in range(containers):
+        value = {"nested": value}
+    return value
+
+
+@pytest.mark.parametrize("field", ["arguments", "payload"])
+def test_issuance_rejects_overdeep_inputs_independently_of_encoder_recursion_limit(tmp_path, field):
+    store = SqliteArtifactStore(str(tmp_path / "store.sqlite3"))
+    with pytest.raises(ArtifactStoreError, match="artifact_invalid"):
+        _issue(store, **{field: _nested_json(65)})
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM codex_artifact_issuance").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("field", ["arguments", "payload"])
+def test_supported_nested_inputs_keep_canonical_digest_and_retry_identity(tmp_path, field):
+    import json
+    store = SqliteArtifactStore(str(tmp_path / "store.sqlite3"))
+    value = _nested_json(64)
+    record = _issue(store, **{field: value})
+    expected = hashlib.sha256(json.dumps(
+        value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+    ).encode()).hexdigest()
+    assert record["paramsDigest" if field == "arguments" else "payloadDigest"] == expected
+    assert _issue(store, **{field: value}) == record
+    assert _read(store, record) == {record["artifactId"]: record}

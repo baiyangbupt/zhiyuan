@@ -38,6 +38,27 @@ _codex_local_access_validate_origin() {
     [[ "$host_part" != *"@"* ]] || _codex_local_access_fail "public origin must not carry credentials: $origin"
 }
 
+# Deliberate HTTP opt-in for a temporary IPv4 test entry behind the local proxy.
+# Canonical spelling keeps the allowlist identical to the browser Origin header.
+_codex_local_access_validate_ip_origin() {
+    local origin="$1"
+    [[ "$origin" =~ ^http://([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}):([0-9]{1,5})$ ]] \
+        || _codex_local_access_fail "public-ip-test origin must be http://IPv4:port without credentials, path, query or fragment"
+    local ip="${BASH_REMATCH[1]}"
+    local port="${BASH_REMATCH[2]}"
+    local -a octets
+    local octet
+    IFS=. read -r -a octets <<< "$ip"
+    for octet in "${octets[@]}"; do
+        (( 10#$octet <= 255 )) && [[ "$octet" == "0" || "$octet" != 0* ]] \
+            || _codex_local_access_fail "public-ip-test origin has an invalid IPv4 address"
+    done
+    (( 10#${octets[0]} > 0 && 10#${octets[0]} != 127 && 10#${octets[0]} < 224 )) \
+        || _codex_local_access_fail "public-ip-test origin cannot use zero, loopback, multicast or reserved IPv4"
+    [[ "$port" != 0* ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) \
+        || _codex_local_access_fail "public-ip-test origin has an invalid port"
+}
+
 codex_local_access_resolve() {
     ACCESS_MODE="${CODEX_LOCAL_ACCESS_MODE:-local}"
     ACCESS_WEB_HOST="${CODEX_LOCAL_WEB_HOST:-127.0.0.1}"
@@ -73,23 +94,37 @@ codex_local_access_resolve() {
             fi
             ACCESS_OUTER_API_BASE_URL="${configured_outer:-$CODEX_LOCAL_DEFAULT_OUTER_API_BASE_URL}"
             ;;
-        public-test)
-            _codex_local_access_validate_origin "$public_origin"
+        public-test|public-ip-test)
+            if [[ "$ACCESS_MODE" == "public-ip-test" ]]; then
+                _codex_local_access_validate_ip_origin "$public_origin"
+                # Browsers omit the default HTTP port in their Origin header.
+                [[ "$public_origin" != *:80 ]] || public_origin="${public_origin%:80}"
+            else
+                _codex_local_access_validate_origin "$public_origin"
+            fi
             # Agent 的 Origin 白名单：公开 origin **必须**在里面 ✓（否则真浏览器连不上 ✗），
             # 回环也留着 ✓（本机自测与冒烟要走 ✓）。
             ACCESS_ALLOWED_ORIGINS="$public_origin,http://127.0.0.1:$web_port,http://localhost:$web_port"
+            if [[ "$ACCESS_MODE" == "public-ip-test" ]]; then
+                ACCESS_ALLOWED_ORIGINS="$public_origin"
+            fi
             # 公开模式**必须显式给 outer** ✗：不显式就会悄悄回落到生产源 ✗，
             # 而这一模式的全部意义就是"只连受控测试源" ✓。
             [[ -n "$configured_outer" ]] || _codex_local_access_fail \
-                "public-test mode requires an explicit CODEX_LOCAL_OUTER_API_BASE_URL (refusing the default production outer)"
-            [[ "$configured_outer" != "${public_origin%/}" ]] || _codex_local_access_fail \
+                "$ACCESS_MODE mode requires an explicit CODEX_LOCAL_OUTER_API_BASE_URL (refusing the default production outer)"
+            local outer_comparison="$configured_outer"
+            if [[ "$ACCESS_MODE" == "public-ip-test" ]]; then
+                outer_comparison="${outer_comparison%/}"
+                [[ "$outer_comparison" != *:80 ]] || outer_comparison="${outer_comparison%:80}"
+            fi
+            [[ "$outer_comparison" != "${public_origin%/}" ]] || _codex_local_access_fail \
                 "outer API base must not point at the public origin itself: $configured_outer"
             # 清空 override ✓：让浏览器按 `window.location` 派生同源 wss ✓。
             ACCESS_WS_OVERRIDE=""
             ACCESS_OUTER_API_BASE_URL="$configured_outer"
             ;;
         *)
-            _codex_local_access_fail "unknown CODEX_LOCAL_ACCESS_MODE: $ACCESS_MODE (want local|public-test)"
+            _codex_local_access_fail "unknown CODEX_LOCAL_ACCESS_MODE: $ACCESS_MODE (want local|public-test|public-ip-test)"
             ;;
     esac
 }

@@ -33,11 +33,23 @@ set -eu
 output=''
 url=''
 write_out=''
+config=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -m|-w|-o)
       [ "$1" = "-o" ] && output="$2"
       [ "$1" = "-w" ] && write_out="$2"
+      shift 2
+      ;;
+    --config)
+      if [ "$2" = "-" ]; then
+        # Real curl consumes --config - from stdin. Without this read, the
+        # writer can hit SIGPIPE under release-smoke.sh's pipefail setting.
+        config="$(cat)"
+      fi
+      shift 2
+      ;;
+    --proto)
       shift 2
       ;;
     -*)
@@ -49,6 +61,13 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+if [[ "$url" == *"/inner/"* ]]; then
+  expected_config="header = \\"X-Internal-Service-Token: ${INTERNAL_SERVICE_TOKEN}\\""
+  if [ "$config" != "$expected_config" ]; then
+    printf 'missing or incorrect internal credential\\n' >&2
+    exit 22
+  fi
+fi
 body='<html><script id="__NEXT_DATA__"></script>{"status":"UP","data":{}}</html>'
 if [ -n "$output" ]; then
   printf '%s' "$body" > "$output"
@@ -92,5 +111,6 @@ printf '%s' "${write_out//\\%\\{http_code\\}/200}"
         f"http://127.0.0.1:3001{expected_session_path.replace('/session', '/sessionDetailV2')}"
         in urls
     )
+    assert "http://127.0.0.1:18090/gaotu-assistant-bot/inner/planning/1/review/rules" in urls
     if base_path == "":
         assert "web basePath manifest    PASS  development basePath disabled" in result.stdout

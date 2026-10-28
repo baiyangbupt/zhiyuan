@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import contextlib
+import inspect
 import json
 import re
 import time
@@ -151,6 +152,16 @@ class BaseAgent(Generic[T]):
     async def on_complete(self, agent_run: Any) -> None:
         """钩子：运行结束后调用，子类可覆写。"""
 
+    @staticmethod
+    async def _run_usage(agent_run: Any) -> RunUsage:
+        """Read usage from both method-based and property-based pydantic-ai runs."""
+        usage = agent_run.usage
+        if callable(usage):
+            usage = usage()
+        if inspect.isawaitable(usage):
+            usage = await usage
+        return usage
+
     def get_progress_hint(self, tool_name: str) -> str | None:
         """将工具名映射为用户可见的中文提示。子类可覆写。返回 None 表示不推送。"""
         return None
@@ -260,9 +271,7 @@ class BaseAgent(Generic[T]):
 
                 repeat_guard_output = self._guard_repeated_tool_calls(tool_names, observability)
                 if repeat_guard_output:
-                    usage = agent_run.usage()
-                    if hasattr(usage, "__await__"):
-                        usage = await usage
+                    usage = await self._run_usage(agent_run)
                     partial_messages = await self._resolve_messages(agent_run.all_messages())
                     guarded_tool_name = str(observability.get("guardedToolName") or tool_names[0])
                     guarded_tool_count = int(observability.get("guardedToolCount") or 0)
@@ -343,9 +352,7 @@ class BaseAgent(Generic[T]):
                     direct_output = self.render_direct_tool_output(tool_names, render_tool_returns, deps)
                     if direct_output:
                         output = self._sanitize_model_output(direct_output)
-                        usage = agent_run.usage()
-                        if hasattr(usage, "__await__"):
-                            usage = await usage
+                        usage = await self._run_usage(agent_run)
                         observability["completed"] = True
                         observability["directToolReturn"] = True
                         observability["totalDurationMs"] = int((time.monotonic() - run_started_at) * 1000)
@@ -372,9 +379,7 @@ class BaseAgent(Generic[T]):
             await self.on_complete(agent_run)
 
             output = self._sanitize_model_output(agent_run.result.output)
-            usage = agent_run.usage()
-            if hasattr(usage, "__await__"):
-                usage = await usage
+            usage = await self._run_usage(agent_run)
             observability["completed"] = True
             observability["totalDurationMs"] = int((time.monotonic() - run_started_at) * 1000)
             observability["requests"] = usage.requests
